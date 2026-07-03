@@ -5340,14 +5340,29 @@ function mapQueueItem(item) {
     const displayQuality = isVideo
         ? 'Video'
         : mapBitrate(rawQuality);
+    const taskId = String(item.uuid || '');
+    const prefetchArtworkStatus = item.prefetchArtworkStatus ?? item.PrefetchArtworkStatus;
+    const prefetchLyricsStatus = item.prefetchLyricsStatus ?? item.PrefetchLyricsStatus;
+    const prefetchLyricsType = item.prefetchLyricsType ?? item.PrefetchLyricsType;
+    updateTaskPrefetchStatus(
+        taskId,
+        prefetchArtworkStatus,
+        prefetchLyricsStatus,
+        prefetchLyricsType);
+    const mappedStatus = mapStatus(item.status);
+    const lyricsStateReset = (mappedStatus === 'queued' || mappedStatus === 'retrying')
+        && prefetchLyricsStatus !== undefined
+        && !String(prefetchLyricsStatus || '').trim()
+        && !String(prefetchLyricsType || '').trim()
+        && !String(item.lyricsStatus || item.lyrics_status || '').trim();
     return {
-        taskId: item.uuid,
+        taskId,
         title: resolveQueueItemTitle(item) || 'Unknown',
         artist: resolveQueueItemArtist(item) || 'Unknown',
         rawQuality: String(rawQuality || '').trim(),
         quality: displayQuality,
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
-        status: mapStatus(item.status),
+        status: mappedStatus,
         rawStatus: item.rawStatus || item.RawStatus || item.status,
         progress: normalizeQueueProgressPercent(item.progress),
         downloaded: normalizeQueueCounter(item.downloaded || item.Downloaded),
@@ -5361,6 +5376,7 @@ function mapQueueItem(item) {
         canDelete: getQueueBoolFlag(item, 'canDelete', 'CanDelete'),
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         lyricsBadges: getLyricsBadges(item),
+        lyricsStateReset,
         cover: getCoverFromPayload(item)
     };
 }
@@ -5492,9 +5508,12 @@ function mergeQueueTask(existing, incoming) {
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
-        lyricsBadges: Array.isArray(incoming.lyricsBadges) && incoming.lyricsBadges.length > 0
-            ? incoming.lyricsBadges
-            : existing.lyricsBadges,
+        lyricsBadges: incoming.lyricsStateReset
+            ? []
+            : (Array.isArray(incoming.lyricsBadges) && incoming.lyricsBadges.length > 0
+                ? incoming.lyricsBadges
+                : existing.lyricsBadges),
+        lyricsStateReset: incoming.lyricsStateReset,
         cover: String(incoming.cover || '').trim() || existing.cover
     };
 }
@@ -6127,6 +6146,11 @@ function applyQueueRealtimeUpdate(payload) {
     }
     if (status === 'queued' && nextProgress !== null && nextProgress <= 0) {
         resetQueueProgressCache(taskId);
+        clearTaskPrefetchStatus(taskId);
+        if (Array.isArray(task.lyricsBadges) && task.lyricsBadges.length > 0) {
+            task.lyricsBadges = [];
+            taskChanged = true;
+        }
     }
     if (!status && nextProgress !== null && nextProgress > 0 && task.status === 'queued') {
         task.status = 'running';
@@ -6581,6 +6605,13 @@ function getLyricsBadges(item) {
         const statusBadges = getLyricsBadgesFromStatus(item.lyricsStatus || item.lyrics_status || '');
         if (statusBadges.length) {
             badges.push(...statusBadges);
+        }
+    }
+    if (badges.length === 0) {
+        const prefetchBadges = getLyricsBadgesFromStatus(
+            item.prefetchLyricsType || item.PrefetchLyricsType || '');
+        if (prefetchBadges.length) {
+            badges.push(...prefetchBadges);
         }
     }
     return badges;

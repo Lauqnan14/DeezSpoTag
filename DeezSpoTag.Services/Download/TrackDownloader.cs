@@ -31,11 +31,6 @@ public class TrackDownloader
     private const string ArtistType = "artist";
     private const string UnknownArtist = "Unknown Artist";
     private const string DeezerSource = "deezer";
-    private const string FetchingStatus = "fetching";
-    private const string SkippedStatus = "skipped";
-    private const string CompletedStatus = "completed";
-    private const string FailedStatus = "failed";
-    private const string NoLyricsStatus = "no-lyrics";
     private static readonly string[] BlockedGenres = ["other", "others"];
     private readonly ILogger<TrackDownloader> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -53,8 +48,6 @@ public class TrackDownloader
     private readonly ILastFmArtistImageResolver? _lastFmArtistImageResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
-    private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
-    private readonly IDeezSpoTagListener _deezspotagListener;
     private readonly IServiceProvider _serviceProvider;
 
     // File extensions mapping (ported from deezspotag extensions)
@@ -178,18 +171,6 @@ public class TrackDownloader
         public string? OverwritePolicyOverride { get; init; }
     }
 
-    private sealed class DeferredPostDownloadRequest
-    {
-        public required string QueueUuid { get; init; }
-        public bool ShouldFetchArtwork { get; init; }
-        public bool ShouldFetchLyrics { get; init; }
-        public required Track Track { get; init; }
-        public required DeezSpoTagModels.TrackDownloadResult DownloadResult { get; init; }
-        public required PathGenerationResult PathResult { get; init; }
-        public required DeezSpoTagSettings Settings { get; init; }
-        public required string ExpectedOutputPath { get; init; }
-    }
-
     private sealed class AlbumArtworkPopulationRequest
     {
         public required DeezSpoTagModels.TrackDownloadResult DownloadResult { get; init; }
@@ -216,7 +197,6 @@ public class TrackDownloader
         public required string Extension { get; init; }
         public required string WritePath { get; set; }
         public required int SelectedFormat { get; init; }
-        public bool EnableDeferredSidecarTasks { get; init; } = true;
         public required CancellationToken CancellationToken { get; init; }
     }
 
@@ -227,7 +207,6 @@ public class TrackDownloader
         DownloadObject DownloadObject,
         DeezSpoTagSettings Settings,
         IDownloadListener? Listener,
-        bool EnableDeferredSidecarTasks = true,
         bool AllowInEngineBitrateFallback = true,
         CancellationToken CancellationToken = default);
 
@@ -252,8 +231,6 @@ public class TrackDownloader
         _lastFmArtistImageResolver = serviceProvider.GetService<ILastFmArtistImageResolver>();
         _appleCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
         _tagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
-        _postDownloadTaskScheduler = serviceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
-        _deezspotagListener = serviceProvider.GetRequiredService<IDeezSpoTagListener>();
 
         _tempDir = Path.Join(Path.GetTempPath(), "deezspotag-imgs");
         Directory.CreateDirectory(_tempDir);
@@ -334,7 +311,6 @@ public class TrackDownloader
                     Extension = extension,
                     WritePath = writePath,
                     SelectedFormat = selectedFormat,
-                    EnableDeferredSidecarTasks = request.EnableDeferredSidecarTasks,
                     CancellationToken = cancellationToken
                 };
 
@@ -469,26 +445,6 @@ public class TrackDownloader
                 context.Track.Id);
         }
 
-        if (context.EnableDeferredSidecarTasks)
-        {
-            try
-            {
-                await QueueDeferredPostDownloadTasksAsync(
-                    context.DownloadObject,
-                    context.Track,
-                    context.DownloadResult,
-                    context.PathResult,
-                    context.Settings,
-                    context.WritePath);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Deferred Deezer sidecar scheduling failed for track {TrackId}; continuing with audio download.",
-                    context.Track.Id);
-            }
-        }
 
         var downloadUrl = await ResolveRequiredDownloadUrlAsync(context.Track, context.SelectedFormat);
         await StreamTrackToFileAsync(
@@ -2010,180 +1966,6 @@ public class TrackDownloader
                 settings.RetryDelaySeconds,
                 settings.RetryDelayIncrease),
             cancellationToken: cancellationToken);
-    }
-
-    private async Task QueueDeferredPostDownloadTasksAsync(
-        DownloadObject downloadObject,
-        Track track,
-        DeezSpoTagModels.TrackDownloadResult result,
-        PathGenerationResult pathResult,
-        DeezSpoTagSettings settings,
-        string expectedOutputPath)
-    {
-        var shouldFetchArtwork = settings.SaveArtwork || settings.SaveArtworkArtist || settings.SaveAnimatedArtwork;
-        var shouldFetchLyrics = ShouldSaveLyrics(settings);
-        if (!shouldFetchArtwork && !shouldFetchLyrics)
-        {
-            return;
-        }
-
-        var queueUuid = string.IsNullOrWhiteSpace(downloadObject.Uuid) ? "unknown" : downloadObject.Uuid;
-        SendPrefetchStatus(
-            queueUuid,
-            shouldFetchArtwork ? FetchingStatus : SkippedStatus,
-            shouldFetchLyrics ? FetchingStatus : SkippedStatus);
-
-        var request = new DeferredPostDownloadRequest
-        {
-            QueueUuid = queueUuid,
-            ShouldFetchArtwork = shouldFetchArtwork,
-            ShouldFetchLyrics = shouldFetchLyrics,
-            Track = track,
-            DownloadResult = result,
-            PathResult = pathResult,
-            Settings = settings,
-            ExpectedOutputPath = expectedOutputPath
-        };
-
-        await _postDownloadTaskScheduler.EnqueueAsync(
-            queueUuid,
-            DeezerSource,
-            (_, token) => RunDeferredPostDownloadTasksAsync(request, token),
-            CancellationToken.None);
-    }
-
-    private async Task RunDeferredPostDownloadTasksAsync(
-        DeferredPostDownloadRequest request,
-        CancellationToken cancellationToken)
-    {
-        var initialArtworkStatus = request.ShouldFetchArtwork ? FetchingStatus : SkippedStatus;
-        var initialLyricsStatus = request.ShouldFetchLyrics ? FetchingStatus : SkippedStatus;
-
-        Task<string> artworkTask = Task.FromResult(initialArtworkStatus);
-        if (request.ShouldFetchArtwork)
-        {
-            artworkTask = RunArtworkPrefetchTaskAsync(request, initialLyricsStatus, cancellationToken);
-        }
-
-        Task<(string status, string lyricsType)> lyricsTask = Task.FromResult((initialLyricsStatus, string.Empty));
-        if (request.ShouldFetchLyrics && !string.IsNullOrWhiteSpace(request.ExpectedOutputPath))
-        {
-            lyricsTask = RunLyricsPrefetchTaskAsync(request, initialArtworkStatus, cancellationToken);
-        }
-
-        await Task.WhenAll(artworkTask, lyricsTask);
-    }
-
-    private async Task<string> RunArtworkPrefetchTaskAsync(
-        DeferredPostDownloadRequest request,
-        string initialLyricsStatus,
-        CancellationToken cancellationToken)
-    {
-        var artworkStatus = await DownloadArtworkAsync(request.Track, request.DownloadResult, request.Settings, cancellationToken)
-            ? CompletedStatus
-            : FailedStatus;
-        SendPrefetchStatus(request.QueueUuid, artworkStatus, initialLyricsStatus);
-        return artworkStatus;
-    }
-
-    private async Task<(string status, string lyricsType)> RunLyricsPrefetchTaskAsync(
-        DeferredPostDownloadRequest request,
-        string initialArtworkStatus,
-        CancellationToken cancellationToken)
-    {
-        var lyricsSaveResultInfo = await SaveLyricsAfterDownloadAsync(
-            request.Track,
-            request.PathResult,
-            request.ExpectedOutputPath,
-            request.Settings,
-            request.QueueUuid,
-            initialArtworkStatus,
-            cancellationToken);
-        SendPrefetchStatus(request.QueueUuid, initialArtworkStatus, lyricsSaveResultInfo.status, lyricsSaveResultInfo.lyricsType);
-        return lyricsSaveResultInfo;
-    }
-
-    private void SendPrefetchStatus(string queueUuid, string? artworkStatus, string? lyricsStatus, string? lyricsType = null)
-    {
-        Queue.QueuePrefetchStatusHelper.Send(
-            _deezspotagListener,
-            queueUuid,
-            artworkStatus,
-            lyricsStatus,
-            lyricsType);
-    }
-
-    private async Task<(string status, string lyricsType)> SaveLyricsAfterDownloadAsync(
-        Track track,
-        PathGenerationResult pathResult,
-        string outputPath,
-        DeezSpoTagSettings settings,
-        string queueUuid,
-        string artworkStatus,
-        CancellationToken cancellationToken)
-    {
-        var lyricsType = string.Empty;
-        try
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Attempting deferred lyrics save for track {TrackId} with settings SaveLyrics={SaveLyrics}, SyncedLyrics={SyncedLyrics}",
-                    track.Id,
-                    settings.SaveLyrics,
-                    settings.SyncedLyrics);            }
-
-            var outputIoPath = DownloadPathResolver.ResolveIoPath(outputPath);
-            var filePath = Path.GetDirectoryName(outputIoPath)
-                           ?? DownloadPathResolver.ResolveIoPath(pathResult.FilePath);
-            var filename = ResolveAudioFilenameStem(outputIoPath);
-            Directory.CreateDirectory(filePath);
-            var extrasPath = DownloadPathResolver.ResolveIoPath(pathResult.ExtrasPath);
-            var coverPath = DownloadPathResolver.ResolveIoPath(pathResult.CoverPath ?? string.Empty);
-            var artistPath = DownloadPathResolver.ResolveIoPath(pathResult.ArtistPath ?? string.Empty);
-            var paths = (filePath, filename, extrasPath, coverPath, artistPath);
-
-            var lyrics = await _lyricsService.ResolveLyricsAsync(track, settings, cancellationToken);
-            lyricsType = LyricsPrefetchTypeHelper.ResolveFromLyrics(lyrics);
-            if (!string.IsNullOrWhiteSpace(lyricsType))
-            {
-                SendPrefetchStatus(queueUuid, artworkStatus, FetchingStatus, lyricsType);
-            }
-            if (lyrics != null && string.IsNullOrEmpty(lyrics.ErrorMessage))
-            {
-                track.Lyrics ??= new Lyrics(track.LyricsId ?? "0");
-                track.Lyrics.Unsync = lyrics.UnsyncedLyrics ?? "";
-                if (lyrics.IsSynced())
-                {
-                    track.Lyrics.Sync = lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title);
-                }
-
-                await _lyricsService.SaveLyricsAsync(lyrics, track, paths, settings, cancellationToken);
-            }
-            else
-            {
-                await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken);
-            }
-
-            var savedLyricsType = LyricsPrefetchTypeHelper.ResolveSavedLyricsType(filePath, filename);
-            if (!string.IsNullOrWhiteSpace(savedLyricsType))
-            {
-                lyricsType = savedLyricsType;
-            }
-
-            var status = string.IsNullOrWhiteSpace(lyricsType) ? NoLyricsStatus : CompletedStatus;
-            return (status, lyricsType);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Deferred Deezer lyrics save failed for {Path}", outputPath);
-            return (FailedStatus, lyricsType);
-        }
-    }
-
-    private static bool ShouldSaveLyrics(DeezSpoTagSettings settings)
-    {
-        return LyricsSettingsPolicy.CanFetchLyrics(settings);
     }
 
     private async Task EnsureLyricsForTaggingAsync(

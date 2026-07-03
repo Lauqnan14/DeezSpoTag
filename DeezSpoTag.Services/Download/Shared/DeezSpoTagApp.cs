@@ -615,6 +615,12 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         payloadObj.Remove("LyricsStatus");
         payloadObj.Remove("lyricsStatus");
         payloadObj.Remove("lyrics_status");
+        payloadObj["PrefetchArtworkStatus"] = string.Empty;
+        payloadObj.Remove("prefetchArtworkStatus");
+        payloadObj["PrefetchLyricsStatus"] = string.Empty;
+        payloadObj.Remove("prefetchLyricsStatus");
+        payloadObj["PrefetchLyricsType"] = string.Empty;
+        payloadObj.Remove("prefetchLyricsType");
     }
 
     private async Task UpdateWatchlistTrackStatusAsync(string payloadJson, string status, CancellationToken cancellationToken)

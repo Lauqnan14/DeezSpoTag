@@ -485,7 +485,6 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             DownloadObject: preparation.DownloadObject,
             Settings: request.Settings,
             Listener: new DownloadListenerAdapter(_listener),
-            EnableDeferredSidecarTasks: false,
             AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(request.Payload),
             CancellationToken: cancellationToken));
     }
@@ -561,6 +560,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
                 expectedOutputPath,
                 _postDownloadTaskScheduler,
                 _lyricsService,
+                _queueRepository,
                 _listener,
                 _activityLog,
                 _logger,

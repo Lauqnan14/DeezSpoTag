@@ -518,6 +518,7 @@ internal static class EngineQueueProcessorHelper
     {
         var scheduler = context.ServiceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
         var lyricsService = context.ServiceProvider.GetRequiredService<LyricsService>();
+        var queueRepository = context.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
         return new EngineAudioPostDownloadHelper.PrefetchRequest(
             context.QueueUuid,
             context.Context,
@@ -526,6 +527,7 @@ internal static class EngineQueueProcessorHelper
             context.ExpectedOutputPath,
             scheduler,
             lyricsService,
+            queueRepository,
             context.Listener,
             context.ActivityLog,
             context.Logger,

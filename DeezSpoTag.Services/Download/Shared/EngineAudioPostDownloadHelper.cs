@@ -112,6 +112,7 @@ public static partial class EngineAudioPostDownloadHelper
         string ExpectedOutputPath,
         IPostDownloadTaskScheduler TaskScheduler,
         LyricsService LyricsService,
+        DownloadQueueRepository QueueRepository,
         IDeezSpoTagListener Listener,
         IActivityLogWriter ActivityLog,
         ILogger Logger,
@@ -1737,11 +1738,30 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
+        var initialArtworkStatus = requirements.ShouldFetchArtwork ? FetchingStatus : SkippedStatus;
+        var initialLyricsStatus = requirements.ShouldFetchLyrics ? FetchingStatus : SkippedStatus;
+        try
+        {
+            await request.QueueRepository.UpdatePrefetchProgressAsync(
+                prefetchPaths.QueueUuid,
+                initialArtworkStatus,
+                initialLyricsStatus,
+                string.Empty,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            request.Logger.LogDebug(
+                ex,
+                "{Engine} failed to persist initial prefetch progress for {QueueUuid}",
+                request.Engine,
+                prefetchPaths.QueueUuid);
+        }
         QueuePrefetchStatusHelper.Send(
             request.Listener,
             prefetchPaths.QueueUuid,
-            requirements.ShouldFetchArtwork ? FetchingStatus : SkippedStatus,
-            requirements.ShouldFetchLyrics ? FetchingStatus : SkippedStatus);
+            initialArtworkStatus,
+            initialLyricsStatus);
 
         var execution = new PrefetchExecutionContext(request, prefetchPaths, requirements, gateState);
         try
@@ -1763,6 +1783,23 @@ public static partial class EngineAudioPostDownloadHelper
                 "{Engine} prefetch scheduling failed for {QueueUuid}",
                 request.Engine,
                 prefetchPaths.QueueUuid);
+            try
+            {
+                await request.QueueRepository.UpdatePrefetchProgressAsync(
+                    prefetchPaths.QueueUuid,
+                    requirements.ShouldFetchArtwork ? FailedStatus : SkippedStatus,
+                    requirements.ShouldFetchLyrics ? FailedStatus : SkippedStatus,
+                    string.Empty,
+                    CancellationToken.None);
+            }
+            catch (Exception persistEx) when (persistEx is not OperationCanceledException)
+            {
+                request.Logger.LogDebug(
+                    persistEx,
+                    "{Engine} failed to persist failed prefetch scheduling state for {QueueUuid}",
+                    request.Engine,
+                    prefetchPaths.QueueUuid);
+            }
             QueuePrefetchStatusHelper.Send(
                 request.Listener,
                 prefetchPaths.QueueUuid,
@@ -1782,10 +1819,12 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken token)
     {
         var completionResult = BuildDefaultPrefetchCompletionResult(execution.Requirements);
+        var runState = new PrefetchRunState(execution.Requirements);
 
         try
         {
             var runtime = ResolvePrefetchRuntimeServices(provider);
+            await PersistPrefetchProgressAsync(execution, runState, token);
             var settings = execution.Request.Settings;
             var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
             var preferMaxQualityCover = settings.EmbedMaxQualityCover;
@@ -1807,7 +1846,6 @@ public static partial class EngineAudioPostDownloadHelper
                     execution.Request.Payload.Isrc,
                     execution.Request.Logger),
                 token);
-            var runState = new PrefetchRunState(execution.Requirements);
             var artworkTask = BuildArtworkPrefetchTask(
                 execution,
                 runtime,
@@ -1942,11 +1980,39 @@ public static partial class EngineAudioPostDownloadHelper
         }
         finally
         {
+            await PersistPrefetchProgressAsync(execution, runState, CancellationToken.None);
             QueuePrefetchStatusHelper.Send(
                 execution.Request.Listener,
                 execution.Paths.QueueUuid,
                 runState.ArtworkStatus,
                 runState.LyricsStatus);
+        }
+    }
+
+    private static async Task PersistPrefetchProgressAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRunState runState,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await execution.Request.QueueRepository.UpdatePrefetchProgressAsync(
+                execution.Paths.QueueUuid,
+                runState.ArtworkStatus,
+                runState.LyricsStatus,
+                runState.LyricsType,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (execution.Request.Logger.IsEnabled(LogLevel.Debug))
+            {
+                execution.Request.Logger.LogDebug(
+                    ex,
+                    "{Engine} failed to persist prefetch progress for {QueueUuid}",
+                    execution.Request.Engine,
+                    execution.Paths.QueueUuid);
+            }
         }
     }
 
@@ -1957,7 +2023,7 @@ public static partial class EngineAudioPostDownloadHelper
     {
         try
         {
-            runState.LyricsType = await RunLyricsPrefetchAsync(execution, token);
+            runState.LyricsType = await RunLyricsPrefetchAsync(execution, runState, token);
             runState.LyricsStatus = string.IsNullOrWhiteSpace(runState.LyricsType) ? NoLyricsStatus : CompletedStatus;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2315,6 +2381,7 @@ public static partial class EngineAudioPostDownloadHelper
 
     private static async Task<string> RunLyricsPrefetchAsync(
         PrefetchExecutionContext execution,
+        PrefetchRunState runState,
         CancellationToken token)
     {
         Directory.CreateDirectory(execution.Paths.FileDir);
@@ -2329,7 +2396,14 @@ public static partial class EngineAudioPostDownloadHelper
         var lyricsType = LyricsPrefetchTypeHelper.ResolveFromLyrics(lyrics);
         if (!string.IsNullOrWhiteSpace(lyricsType))
         {
-            QueuePrefetchStatusHelper.Send(execution.Request.Listener, execution.Paths.QueueUuid, FetchingStatus, FetchingStatus, lyricsType);
+            runState.LyricsType = lyricsType;
+            await PersistPrefetchProgressAsync(execution, runState, token);
+            QueuePrefetchStatusHelper.Send(
+                execution.Request.Listener,
+                execution.Paths.QueueUuid,
+                runState.ArtworkStatus,
+                FetchingStatus,
+                lyricsType);
         }
         if (lyrics != null && lyrics.IsLoaded())
         {

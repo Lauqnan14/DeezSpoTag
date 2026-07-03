@@ -225,7 +225,7 @@ public sealed class LyricsServicePrivateHelpersTests
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
-        AssertRequirement(requirements, "WantsTimedLyrics", expected: true);
+        AssertRequirement(requirements, "WantsLrcLyrics", expected: true);
         AssertRequirement(requirements, "WantsTtmlLyrics", expected: false);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: false);
     }
@@ -243,7 +243,7 @@ public sealed class LyricsServicePrivateHelpersTests
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
-        AssertRequirement(requirements, "WantsTimedLyrics", expected: false);
+        AssertRequirement(requirements, "WantsLrcLyrics", expected: false);
         AssertRequirement(requirements, "WantsTtmlLyrics", expected: false);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
     }
@@ -261,7 +261,7 @@ public sealed class LyricsServicePrivateHelpersTests
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
-        AssertRequirement(requirements, "WantsTimedLyrics", expected: true);
+        AssertRequirement(requirements, "WantsLrcLyrics", expected: true);
         AssertRequirement(requirements, "WantsTtmlLyrics", expected: true);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
     }
@@ -322,6 +322,98 @@ public sealed class LyricsServicePrivateHelpersTests
             var ttmlPath = Path.Combine(directory, "apple-ttml-test.ttml");
             Assert.True(File.Exists(ttmlPath));
             Assert.Contains("Apple line", await File.ReadAllTextAsync(ttmlPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_TtmlOnly_DoesNotCreateLrcOrTxt()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "ttml"
+            };
+            var lyrics = new LyricsSource
+            {
+                TtmlLyrics = "<tt><body><div><p begin=\"00:00:01.000\">Timed</p></div></body></tt>",
+                UnsyncedLyrics = "Plain"
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.True(File.Exists(Path.Join(directory, "track.ttml")));
+            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_LrcOnly_DoesNotCreateTtmlOrTxt()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc"
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Timed", "[00:01.00]", 1000)],
+                UnsyncedLyrics = "Plain"
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
+            Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_WritesTxtOnlyWhenEnabledRichLyricsAreUnavailable()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "both"
+            };
+            var lyrics = new LyricsSource { UnsyncedLyrics = "Plain fallback" };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.True(File.Exists(Path.Join(directory, "track.txt")));
+            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
         }
         finally
         {
@@ -426,5 +518,37 @@ public sealed class LyricsServicePrivateHelpersTests
         var actual = (bool)(property.GetValue(requirements)
             ?? throw new InvalidOperationException($"Requirement property {propertyName} returned null."));
         Assert.Equal(expected, actual);
+    }
+
+    private static LyricsService CreateUninitializedLyricsService()
+    {
+        var service = (LyricsService)RuntimeHelpers.GetUninitializedObject(typeof(LyricsService));
+        typeof(LyricsService)
+            .GetField("_logger", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(service, NullLogger<LyricsService>.Instance);
+        return service;
+    }
+
+    private static string CreateLyricsTestDirectory()
+    {
+        var directory = Path.Join(Path.GetTempPath(), $"deezspotag-lyrics-policy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    private static Track CreateLyricsTestTrack()
+    {
+        return new Track
+        {
+            Id = "lyrics-policy-track",
+            Title = "Track",
+            ArtistString = "Artist"
+        };
+    }
+
+    private static (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath)
+        BuildLyricsPaths(string directory)
+    {
+        return (directory, "track", directory, directory, directory);
     }
 }

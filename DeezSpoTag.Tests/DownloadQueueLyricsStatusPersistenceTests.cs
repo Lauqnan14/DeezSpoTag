@@ -142,6 +142,63 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
         Assert.Equal("time-synced,synced", lyricsStatus);
     }
 
+    [Fact]
+    public async Task UpdatePrefetchProgressAsync_PersistsActiveLyricsStateWithoutFinalizingLyricsStatus()
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = "lyrics-prefetch-active-1";
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
+
+        await context.QueueRepository.UpdatePrefetchProgressAsync(
+            queueUuid,
+            "fetching",
+            "fetching",
+            "time-synced",
+            CancellationToken.None);
+
+        var payload = await context.GetPayloadAsync(queueUuid);
+        using var document = JsonDocument.Parse(payload!);
+        Assert.Equal("fetching", document.RootElement.GetProperty("PrefetchArtworkStatus").GetString());
+        Assert.Equal("fetching", document.RootElement.GetProperty("PrefetchLyricsStatus").GetString());
+        Assert.Equal("time-synced", document.RootElement.GetProperty("PrefetchLyricsType").GetString());
+        Assert.Null(await context.GetLyricsStatusAsync(queueUuid));
+    }
+
+    [Fact]
+    public async Task UpdatePayloadAsync_PreservesPrefetchStateUnlessRetryExplicitlyClearsIt()
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = "lyrics-prefetch-retry-1";
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
+        await context.QueueRepository.UpdatePrefetchProgressAsync(
+            queueUuid,
+            "completed",
+            "completed",
+            "synced",
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdatePayloadAsync(queueUuid, """{"Title":"Track"}""", CancellationToken.None);
+        using (var preserved = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!))
+        {
+            Assert.Equal("completed", preserved.RootElement.GetProperty("PrefetchLyricsStatus").GetString());
+            Assert.Equal("synced", preserved.RootElement.GetProperty("PrefetchLyricsType").GetString());
+        }
+
+        await context.QueueRepository.UpdatePayloadAsync(
+            queueUuid,
+            """
+            {
+              "PrefetchArtworkStatus": "",
+              "PrefetchLyricsStatus": "",
+              "PrefetchLyricsType": ""
+            }
+            """,
+            CancellationToken.None);
+        using var cleared = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
+        Assert.Equal(string.Empty, cleared.RootElement.GetProperty("PrefetchLyricsStatus").GetString());
+        Assert.Equal(string.Empty, cleared.RootElement.GetProperty("PrefetchLyricsType").GetString());
+    }
+
     private static Task<TestContext> CreateContextAsync()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-queue-lyrics-status-tests-" + Path.GetRandomFileName());
@@ -184,7 +241,7 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
             QueueOrder: null,
             ContentType: "stereo",
             Status: "queued",
-            PayloadJson: null,
+            PayloadJson: "{}",
             Progress: 0,
             Downloaded: 0,
             Failed: 0,
@@ -218,6 +275,17 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = "SELECT lyrics_status FROM download_task WHERE queue_uuid = $queueUuid LIMIT 1;";
+            command.Parameters.AddWithValue("$queueUuid", queueUuid);
+            var result = await command.ExecuteScalarAsync();
+            return result is null or DBNull ? null : Convert.ToString(result);
+        }
+
+        public async Task<string?> GetPayloadAsync(string queueUuid)
+        {
+            await using var connection = new SqliteConnection($"Data Source={QueueDbPath}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT payload FROM download_task WHERE queue_uuid = $queueUuid LIMIT 1;";
             command.Parameters.AddWithValue("$queueUuid", queueUuid);
             var result = await command.ExecuteScalarAsync();
             return result is null or DBNull ? null : Convert.ToString(result);

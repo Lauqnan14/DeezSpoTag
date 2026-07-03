@@ -860,6 +860,9 @@ public class ActivitiesController : Controller
         EnsurePayloadField(payload, "videoHdr", "VideoHdr");
         EnsurePayloadField(payload, "videoAudioProfile", "VideoAudioProfile");
         EnsurePayloadField(payload, "lyricsStatus", "LyricsStatus", "lyrics_status", "lyricsStatus");
+        EnsurePayloadField(payload, "prefetchArtworkStatus", "PrefetchArtworkStatus", "prefetch_artwork_status");
+        EnsurePayloadField(payload, "prefetchLyricsStatus", "PrefetchLyricsStatus", "prefetch_lyrics_status");
+        EnsurePayloadField(payload, "prefetchLyricsType", "PrefetchLyricsType", "prefetch_lyrics_type");
         EnsurePayloadField(payload, "filePath", "FilePath", "path", "Path");
         EnsurePayloadField(payload, "extrasPath", "ExtrasPath", "extras_path", "Extras_Path");
         if (!payload.ContainsKey(FilesField) && payload.TryGetValue("Files", out var files))

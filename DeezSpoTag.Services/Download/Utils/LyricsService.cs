@@ -225,7 +225,13 @@ public class LyricsService
         }
     }
 
-    private readonly record struct LyricsOutputRequirements(bool WantsTimedLyrics, bool WantsTtmlLyrics, bool WantsPlainLyrics);
+    private readonly record struct LyricsOutputRequirements(
+        bool WantsLrcLyrics,
+        bool WantsTtmlLyrics,
+        bool WantsPlainLyrics)
+    {
+        public bool WantsRichLyrics => WantsLrcLyrics || WantsTtmlLyrics;
+    }
 
     private static bool ShouldReturnResolvedLyrics(
         LyricsResolutionState state,
@@ -237,21 +243,24 @@ public class LyricsService
             return false;
         }
 
-        if (requirements.WantsTtmlLyrics
-            && string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        var hasTtml = !string.IsNullOrWhiteSpace(lyrics.TtmlLyrics);
+        var hasTimedLyrics = HasLyricsLines(lyrics.SyncedLyrics);
+        if (requirements.WantsTtmlLyrics && !hasTtml)
         {
             return false;
         }
 
-        if (requirements.WantsTimedLyrics
-            && !HasLyricsLines(lyrics.SyncedLyrics)
-            && string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        if (requirements.WantsLrcLyrics && !hasTimedLyrics && !hasTtml)
         {
             return false;
         }
 
-        if (requirements.WantsPlainLyrics
-            && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
+        if (requirements.WantsRichLyrics)
+        {
+            return true;
+        }
+
+        if (requirements.WantsPlainLyrics && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
         {
             return false;
         }
@@ -366,10 +375,12 @@ public class LyricsService
         var selectedTypes = ParseSelectedLyricsTypes(settings);
         var wantsTimedLyrics = settings.SyncedLyrics
             && (selectedTypes.Contains(LyricsType) || selectedTypes.Contains(SyllableLyricsType));
-        var wantsTtmlLyrics = wantsTimedLyrics && ShouldOutputTtmlBySettings(settings);
+        var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
+        var wantsLrcLyrics = wantsTimedLyrics && outputFormat is "lrc" or "both";
+        var wantsTtmlLyrics = wantsTimedLyrics && outputFormat is "ttml" or "both";
         var wantsPlainLyrics = settings.SaveLyrics
             && selectedTypes.Contains(UnsyncedLyricsType);
-        return new LyricsOutputRequirements(wantsTimedLyrics, wantsTtmlLyrics, wantsPlainLyrics);
+        return new LyricsOutputRequirements(wantsLrcLyrics, wantsTtmlLyrics, wantsPlainLyrics);
     }
 
     private static LrclibLyricsService.LrclibRequestOptions? BuildLrclibRequestOptions(
@@ -2804,125 +2815,6 @@ public class LyricsService
         return lyrics.GenerateLrcContent(title, artist, album);
     }
 
-    private sealed record LegacyLyricsPaths(string LrcPath, string TtmlPath, string TxtPath);
-
-    private async Task<LyricsBase?> TryResolveCompatibilityLyricsAsync(string trackId, CancellationToken cancellationToken)
-    {
-        var arl = await _authenticatedDeezerService.GetArlAsync();
-        if (string.IsNullOrEmpty(arl))
-        {
-            _logger.LogWarning("No ARL available for lyrics fetching for track {TrackId}", trackId);
-            return null;
-        }
-
-        var sid = await _authenticatedDeezerService.GetSidAsync();
-        var lyrics = await GetLyricsAsync(trackId, arl, sid, cancellationToken);
-        if (lyrics == null || !string.IsNullOrEmpty(lyrics.ErrorMessage))
-        {
-            _logger.LogWarning("Failed to fetch lyrics for track {TrackId}: {Error}", trackId, lyrics?.ErrorMessage ?? "Unknown error");
-            return null;
-        }
-
-        return lyrics;
-    }
-
-    private static LegacyLyricsPaths BuildLegacyLyricsPaths(string filePath, string filename)
-    {
-        return new LegacyLyricsPaths(
-            LrcPath: Path.Join(filePath, $"{filename}.lrc"),
-            TtmlPath: Path.Join(filePath, $"{filename}.ttml"),
-            TxtPath: Path.Join(filePath, $"{filename}.txt"));
-    }
-
-    private async Task<bool> SaveLegacyRichLyricsAsync(
-        LyricsBase lyrics,
-        Track track,
-        LegacyLyricsPaths paths,
-        CancellationToken cancellationToken)
-    {
-        var savedRichLyrics = false;
-        if (lyrics.IsSynced())
-        {
-            var lrcContent = GenerateLrcContent(lyrics, track.Title, track.MainArtist?.Name, track.Album?.Title);
-            if (!string.IsNullOrEmpty(lrcContent))
-            {
-                await System.IO.File.WriteAllTextAsync(paths.LrcPath, lrcContent, cancellationToken);
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Successfully saved synchronized lyrics to {LrcPath}", paths.LrcPath);
-                }
-
-                savedRichLyrics = true;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
-        {
-            await System.IO.File.WriteAllTextAsync(paths.TtmlPath, lyrics.TtmlLyrics, cancellationToken);
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Successfully saved TTML lyrics to {TtmlPath}", paths.TtmlPath);
-            }
-
-            savedRichLyrics = true;
-        }
-
-        return savedRichLyrics;
-    }
-
-    private async Task SaveLegacyUnsyncedLyricsAsync(
-        LyricsBase lyrics,
-        Track track,
-        LegacyLyricsPaths paths,
-        bool hasRichLyrics,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrEmpty(lyrics.UnsyncedLyrics))
-        {
-            return;
-        }
-
-        var hasExistingRichLyrics = System.IO.File.Exists(paths.LrcPath) || System.IO.File.Exists(paths.TtmlPath);
-        if (hasRichLyrics || hasExistingRichLyrics)
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Skipping unsynchronized lyrics for track {TrackId} because LRC or TTML exists.", track.Id);
-            }
-
-            return;
-        }
-
-        await System.IO.File.WriteAllTextAsync(paths.TxtPath, lyrics.UnsyncedLyrics, cancellationToken);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("Successfully saved unsynchronized lyrics to {TxtPath}", paths.TxtPath);
-        }
-    }
-
-    /// <summary>
-    /// Save lyrics to file (Downloader compatibility method)
-    /// </summary>
-    public async Task SaveLyricsAsync(Track track, string filePath, string filename, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var lyrics = await TryResolveCompatibilityLyricsAsync(track.Id, cancellationToken);
-            if (lyrics == null)
-            {
-                return;
-            }
-
-            var paths = BuildLegacyLyricsPaths(filePath, filename);
-            var hasRichLyrics = await SaveLegacyRichLyricsAsync(lyrics, track, paths, cancellationToken);
-            await SaveLegacyUnsyncedLyricsAsync(lyrics, track, paths, hasRichLyrics, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Error saving lyrics for track {TrackId}", track.Id);
-        }
-    }
-
     /// <summary>
     /// Save lyrics to file using priority implementation
     /// Priority: .lrc for synchronized lyrics, .txt for unsynchronized lyrics as fallback
@@ -3000,7 +2892,7 @@ public class LyricsService
         saveState.HadExistingTxt = System.IO.File.Exists(saveState.TxtPath);
 
         await TrySaveSyncedLrcAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
-        await TrySaveLrcFromTtmlAsync(lyrics, overwriteSidecar, saveState, cancellationToken);
+        await TrySaveLrcFromTtmlAsync(lyrics, settings, overwriteSidecar, saveState, cancellationToken);
         EnsureTtmlFromSyncedLyricsWhenRequested(lyrics, track, settings);
         await TrySaveTtmlAsync(lyrics, settings, overwriteSidecar, saveState, cancellationToken);
         await TrySaveUnsyncedTxtAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
@@ -3077,11 +2969,14 @@ public class LyricsService
 
     private async Task TrySaveLrcFromTtmlAsync(
         LyricsBase lyrics,
+        DeezSpoTagSettings settings,
         bool overwriteSidecar,
         LyricsSaveState state,
         CancellationToken cancellationToken)
     {
-        if (state.SavedLrc || !state.RichOutputRequested || string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        if (state.SavedLrc
+            || !ShouldSaveSyncedLrc(settings)
+            || string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
         {
             return;
         }
@@ -3279,7 +3174,8 @@ public class LyricsService
     private static bool ShouldSaveSyncedLrc(DeezSpoTagSettings settings)
     {
         var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
-        return IsLyricsGateEnabled(settings)
+        return settings.SyncedLyrics
+            && IsLyricsGateEnabled(settings)
             && outputFormat is "lrc" or "both"
             && (IsLyricsTypeSelected(settings, LyricsType)
                 || IsLyricsTypeSelected(settings, SyllableLyricsType));
@@ -3297,7 +3193,7 @@ public class LyricsService
 
     private static bool ShouldOutputTtmlBySettings(DeezSpoTagSettings settings)
     {
-        if (!IsLyricsGateEnabled(settings))
+        if (!settings.SyncedLyrics || !IsLyricsGateEnabled(settings))
         {
             return false;
         }

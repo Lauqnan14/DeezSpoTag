@@ -1043,6 +1043,9 @@ WHERE queue_uuid = @queueUuid;";
             PreserveNonEmptyProperty(current, incoming, "LyricsStatus");
             PreserveNonEmptyProperty(current, incoming, "ArtworkStatus");
             PreserveNonEmptyProperty(current, incoming, "ArtworkError");
+            PreserveNonEmptyPropertyUnlessSpecified(current, incoming, "PrefetchArtworkStatus");
+            PreserveNonEmptyPropertyUnlessSpecified(current, incoming, "PrefetchLyricsStatus");
+            PreserveNonEmptyPropertyUnlessSpecified(current, incoming, "PrefetchLyricsType");
             MergeFileArrays(current, incoming);
             return incoming.ToJsonString();
         }
@@ -1061,6 +1064,19 @@ WHERE queue_uuid = @queueUuid;";
         }
 
         incoming[propertyName] = currentValue.DeepClone();
+    }
+
+    private static void PreserveNonEmptyPropertyUnlessSpecified(
+        JsonObject current,
+        JsonObject incoming,
+        string propertyName)
+    {
+        if (incoming.ContainsKey(propertyName))
+        {
+            return;
+        }
+
+        PreserveNonEmptyProperty(current, incoming, propertyName);
     }
 
     private static void MergeFileArrays(JsonObject current, JsonObject incoming)
@@ -1119,6 +1135,35 @@ WHERE queue_uuid = @queueUuid;";
         command.Parameters.AddWithValue("lyricsStatus", lyricsStatus);
         command.Parameters.AddWithValue("artworkStatus", artworkStatus);
         command.Parameters.AddWithValue("artworkError", (object?)artworkError ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdatePrefetchProgressAsync(
+        string queueUuid,
+        string artworkStatus,
+        string lyricsStatus,
+        string? lyricsType,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET payload = CASE
+        WHEN json_valid(payload) THEN json_set(
+            payload,
+            '$.PrefetchArtworkStatus', @artworkStatus,
+            '$.PrefetchLyricsStatus', @lyricsStatus,
+            '$.PrefetchLyricsType', @lyricsType)
+        ELSE payload
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("artworkStatus", artworkStatus);
+        command.Parameters.AddWithValue("lyricsStatus", lyricsStatus);
+        command.Parameters.AddWithValue("lyricsType", lyricsType ?? string.Empty);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

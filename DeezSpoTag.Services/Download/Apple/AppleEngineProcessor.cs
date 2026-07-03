@@ -1173,6 +1173,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 expectedOutputPath,
                 _postDownloadTaskScheduler,
                 _lyricsService,
+                _queueRepository,
                 _deezspotagListener,
                 _activityLog,
                 _logger,

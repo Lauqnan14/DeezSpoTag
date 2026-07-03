@@ -57,7 +57,13 @@ public sealed class ActivitiesControllerContractTests
             QualityRank: null,
             QueueOrder: null,
             Status: "failed",
-            PayloadJson: "{}",
+            PayloadJson: """
+                {
+                  "PrefetchArtworkStatus": "fetching",
+                  "PrefetchLyricsStatus": "fetching",
+                  "PrefetchLyricsType": "time-synced"
+                }
+                """,
             Progress: null,
             Downloaded: null,
             Failed: null,
@@ -71,6 +77,9 @@ public sealed class ActivitiesControllerContractTests
 
         Assert.True(payload.TryGetValue("error", out var error));
         Assert.Equal("Network timeout", error);
+        Assert.Equal("fetching", payload["prefetchArtworkStatus"]);
+        Assert.Equal("fetching", payload["prefetchLyricsStatus"]);
+        Assert.Equal("time-synced", payload["prefetchLyricsType"]);
     }
 
     [Fact]
