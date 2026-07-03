@@ -170,8 +170,8 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(new { watching });
     }
 
-    [HttpGet("snapshot/{source}/{sourceId}")]
-    public async Task<IActionResult> GetSnapshotTracklist(string source, string sourceId, CancellationToken cancellationToken)
+    [HttpGet("tracklist/{source}/{sourceId}")]
+    public async Task<IActionResult> GetTracklist(string source, string sourceId, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -204,6 +204,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 static group => group.Key,
                 static group => group.OrderByDescending(item => item.UpdatedAt).First(),
                 StringComparer.OrdinalIgnoreCase);
+
         var tracklist = new
         {
             id = playlist.SourceId,
@@ -1393,6 +1394,23 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
     }
 
+    private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(string? status)
+    {
+        var normalized = NormalizeStatusText(status);
+        if (normalized is "completed" or "complete")
+        {
+            return new PlaylistTrackLocationStatus("library", "Library", "Downloaded and synced by the monitored playlist state.");
+        }
+
+        var queueState = ResolveQueueLocationStatus(normalized);
+        if (queueState != null)
+        {
+            return queueState;
+        }
+
+        return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
+    }
+
     private static object MapCachedPlaylistTrack(
         string source,
         PlaylistWatchService.PlaylistTrackCandidate candidate,
@@ -1436,23 +1454,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             },
             watchStatus = watchStatus?.Status ?? string.Empty
         };
-    }
-
-    private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(string? status)
-    {
-        var normalized = NormalizeStatusText(status);
-        if (normalized is "completed" or "complete")
-        {
-            return new PlaylistTrackLocationStatus("library", "Library", "Downloaded and synced by the monitored playlist state.");
-        }
-
-        var queueState = ResolveQueueLocationStatus(normalized);
-        if (queueState != null)
-        {
-            return queueState;
-        }
-
-        return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
     }
 
     private static string BuildSourceTrackUrl(string source, string trackSourceId)

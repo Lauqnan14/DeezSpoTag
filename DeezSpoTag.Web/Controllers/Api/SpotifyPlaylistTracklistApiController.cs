@@ -44,27 +44,39 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
             return Ok(new { available = false });
         }
 
+        var settings = _settingsService.LoadSettings();
+        var normalizedTrackSource = NormalizeTrackSource(settings.SpotifyPlaylistTrackSource);
         var metadata = await _metadataService.FetchPlaylistMetadataAsync(playlistId, cancellationToken);
+        SpotifyPlaylistPage? firstPage = null;
         if (metadata == null)
         {
-            return Ok(new { available = false });
+            firstPage = await _metadataService.FetchPlaylistTrackPageAsync(
+                playlistId,
+                offset: 0,
+                limit: 50,
+                normalizedTrackSource,
+                hydrate: false,
+                cancellationToken);
+            if (firstPage == null)
+            {
+                return Ok(new { available = false });
+            }
         }
 
-        var settings = _settingsService.LoadSettings();
         var tracklist = new SpotifyTracklistResult
         {
-            Id = metadata.Id,
-            Title = metadata.Name,
-            Description = metadata.Subtitle ?? string.Empty,
+            Id = metadata?.Id ?? playlistId,
+            Title = metadata?.Name ?? firstPage?.Name ?? "Spotify Playlist",
+            Description = metadata?.Subtitle ?? firstPage?.Description ?? string.Empty,
             Creator = new SpotifyTracklistCreator
             {
-                Name = metadata.OwnerName ?? "Spotify",
-                Avatar = metadata.OwnerImageUrl ?? string.Empty
+                Name = metadata?.OwnerName ?? "Spotify",
+                Avatar = metadata?.OwnerImageUrl ?? string.Empty
             },
-            Followers = metadata.Followers,
-            PictureXl = metadata.ImageUrl ?? string.Empty,
-            PictureBig = metadata.ImageUrl ?? string.Empty,
-            NbTracks = metadata.TotalTracks ?? 0,
+            Followers = metadata?.Followers,
+            PictureXl = metadata?.ImageUrl ?? firstPage?.ImageUrl ?? string.Empty,
+            PictureBig = metadata?.ImageUrl ?? firstPage?.ImageUrl ?? string.Empty,
+            NbTracks = metadata?.TotalTracks ?? firstPage?.TotalTracks ?? 0,
             Tracks = new List<SpotifyTracklistTrack>()
         };
 
@@ -72,7 +84,7 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
         {
             available = true,
             tracklist,
-            trackSource = NormalizeTrackSource(settings.SpotifyPlaylistTrackSource)
+            trackSource = normalizedTrackSource
         });
     }
 

@@ -1545,7 +1545,7 @@ const externalMatchInitialBatchSize = 24;
 let monitorStatusRequestSeq = 0;
 let monitorMutationInFlight = false;
 let monitoredPlaylistTrackStatuses = new Map();
-let monitoredSnapshotTracklistActive = false;
+let monitoredPlaylistTracklistActive = false;
 
 function getDeezerTracklistUrl() {
     const normalizedType = String(tracklistType || '').trim().toLowerCase();
@@ -2225,8 +2225,8 @@ function scheduleTracklistNoticeAutoHide(messageKey) {
 async function loadTracklist() {
     try {
         console.log('Loading tracklist:', tracklistType, tracklistId);
-
-        if (await loadMonitoredPlaylistSnapshotTracklist()) {
+        await preloadMonitoredPlaylistTrackStatuses();
+        if (await loadMonitoredPlaylistGlobalTracklist()) {
             return;
         }
 
@@ -2312,29 +2312,26 @@ async function loadTracklist() {
     }
 }
 
-async function loadMonitoredPlaylistSnapshotTracklist() {
-    monitoredSnapshotTracklistActive = false;
-    const source = normalizeWatchlistSource(requestSource || tracklistSource, tracklistType);
-    const sourceId = getWatchlistSourceId();
-    if (!isMonitoredPlaylistSnapshotEligible(source, sourceId)) {
+async function loadMonitoredPlaylistGlobalTracklist() {
+    if (!monitoredPlaylistTracklistActive) {
         return false;
     }
 
-    const response = await fetch(`/api/library/playlists/snapshot/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`);
-    if (!response.ok) {
-        if (response.status === 404) {
-            return false;
-        }
-        throw new Error(`Failed to load monitored playlist snapshot (HTTP ${response.status})`);
+    const source = normalizeWatchlistSource(requestSource || tracklistSource, tracklistType);
+    const sourceId = getWatchlistSourceId();
+    if (!isMonitoredPlaylistTracklistEligible(source, sourceId)) {
+        return false;
     }
 
-    const payload = await response.json();
+    const payload = await fetchJson(`/api/library/playlists/tracklist/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`);
     if (payload?.available !== true || !payload.tracklist) {
+        return false;
+    }
+    if (!Array.isArray(payload.tracklist.tracks) || payload.tracklist.tracks.length === 0) {
         return false;
     }
 
     resetSpotifyState();
-    monitoredSnapshotTracklistActive = true;
     renderTracklist(payload.tracklist, { allowEmptyTracks: true });
     void loadIgnoredTracks()
         .catch(() => {
@@ -2347,7 +2344,44 @@ async function loadMonitoredPlaylistSnapshotTracklist() {
     return true;
 }
 
-function isMonitoredPlaylistSnapshotEligible(source, sourceId) {
+async function preloadMonitoredPlaylistTrackStatuses() {
+    monitoredPlaylistTracklistActive = false;
+    monitoredPlaylistTrackStatuses = new Map();
+    const source = normalizeWatchlistSource(requestSource || tracklistSource, tracklistType);
+    const sourceId = getWatchlistSourceId();
+    if (!isMonitoredPlaylistTracklistEligible(source, sourceId)) {
+        return;
+    }
+
+    try {
+        const status = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`);
+        if (status?.watching !== true) {
+            return;
+        }
+
+        monitoredPlaylistTracklistActive = true;
+        const tracks = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`);
+        if (!Array.isArray(tracks)) {
+            return;
+        }
+
+        tracks.forEach(track => {
+            const id = String(track?.trackSourceId || '').trim();
+            if (!id) {
+                return;
+            }
+            monitoredPlaylistTrackStatuses.set(id, {
+                status: normalizeTrackLocationStatus(track.locationStatus),
+                label: String(track.locationStatusLabel || '').trim() || resolveTrackLocationStatusLabel(track.locationStatus),
+                detail: String(track.locationStatusDetail || '').trim()
+            });
+        });
+    } catch (error) {
+        console.warn('Failed to preload monitored playlist track statuses.', error);
+    }
+}
+
+function isMonitoredPlaylistTracklistEligible(source, sourceId) {
     if (!source || !sourceId) {
         return false;
     }
@@ -3285,20 +3319,15 @@ function renderTracklist(data, options = {}) {
     applyIgnoredTrackState();
     bindIgnoreButtons();
     bindRecommendationRejectButtons();
-    if (!monitoredSnapshotTracklistActive) {
-        scheduleAvailabilityChecks(tracks, isLocalSource);
-        refreshMonitoredPlaylistTrackLocationStatuses(isLocalSource);
-    }
+    scheduleAvailabilityChecks(tracks, isLocalSource);
 
     const externalSource = (tracklistSource || '').toLowerCase();
-    if (!monitoredSnapshotTracklistActive && externalSource && externalSource !== 'deezer') {
+    if (externalSource && externalSource !== 'deezer') {
         scheduleExternalTracklistMatches(tracks, externalSource);
     }
 
     preloadDeezerPlaybackContextsForVisibleRows();
-    if (!monitoredSnapshotTracklistActive) {
-        void loadTracklistRecommendations();
-    }
+    void loadTracklistRecommendations();
 }
 
 async function loadTracklistRecommendations() {
@@ -4600,7 +4629,7 @@ async function updateMonitorButtonState() {
             if (headerActions) {
                 headerActions.style.display = '';
             }
-            setIgnoreVisibility(true);
+            setIgnoreVisibility(false);
         } else {
             applyDefaultMonitorState(false);
         }
@@ -4834,7 +4863,7 @@ if (monitorButton) {
             if (headerActions) {
                 headerActions.style.display = '';
             }
-            setIgnoreVisibility(true);
+            setIgnoreVisibility(false);
         } catch (error) {
             monitorMutationInFlight = false;
             await updateMonitorButtonState();
@@ -4859,7 +4888,7 @@ function getTracklistColumnCount(isPlaylistLike, isLocalSource) {
 }
 
 function shouldShowMonitoredStateColumn(isLocalSource) {
-    return monitoredSnapshotTracklistActive && !isLocalSource && tracklistLayoutIsPlaylistLike;
+    return monitoredPlaylistTracklistActive && !isLocalSource && tracklistLayoutIsPlaylistLike;
 }
 
 function shouldShowAvailabilityColumn(isLocalSource) {
@@ -4886,110 +4915,6 @@ function isAtmosTrackRow(track) {
         || (tracklistRequestsTidalAtmos && (tracklistSource || '').toLowerCase() === 'tidal');
 }
 
-async function refreshMonitoredPlaylistTrackLocationStatuses(isLocalSource) {
-    monitoredPlaylistTrackStatuses = new Map();
-    removeTrackLocationStatusColumn();
-    if (monitoredSnapshotTracklistActive) {
-        return;
-    }
-    if (isLocalSource || !currentTracklistMeta?.source || !currentTracklistMeta?.sourceId || !tracklistLayoutIsPlaylistLike) {
-        return;
-    }
-
-    try {
-        const status = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}`);
-        if (status?.watching !== true) {
-            return;
-        }
-
-        const tracks = await fetchJson(`/api/library/playlists/${encodeURIComponent(currentTracklistMeta.source)}/${encodeURIComponent(currentTracklistMeta.sourceId)}/tracks`);
-        if (!Array.isArray(tracks) || tracks.length === 0) {
-            return;
-        }
-
-        tracks.forEach(track => {
-            const id = String(track?.trackSourceId || '').trim();
-            if (!id) {
-                return;
-            }
-            monitoredPlaylistTrackStatuses.set(id, {
-                status: normalizeTrackLocationStatus(track.locationStatus),
-                label: String(track.locationStatusLabel || '').trim() || resolveTrackLocationStatusLabel(track.locationStatus),
-                detail: String(track.locationStatusDetail || '').trim()
-            });
-        });
-
-        if (monitoredPlaylistTrackStatuses.size === 0) {
-            return;
-        }
-
-        ensureTrackLocationStatusColumn();
-        applyTrackLocationStatusesToRows();
-    } catch (error) {
-        console.warn('Failed to load monitored playlist track statuses.', error);
-    }
-}
-
-function ensureTrackLocationStatusColumn() {
-    const table = document.querySelector('.tracks-table');
-    if (!table || table.classList.contains('tracks-table--with-location-status')) {
-        return;
-    }
-
-    table.classList.add('tracks-table--with-location-status');
-    const colgroup = table.querySelector('colgroup');
-    const durationCol = colgroup?.querySelector('col.col-duration');
-    if (colgroup && durationCol) {
-        const col = document.createElement('col');
-        col.className = 'col-location-status';
-        durationCol.after(col);
-    }
-
-    const durationHeader = table.querySelector('thead th.track-duration');
-    if (durationHeader) {
-        const header = document.createElement('th');
-        header.className = 'track-location-status';
-        header.textContent = 'State';
-        durationHeader.after(header);
-    }
-
-    document.querySelectorAll('#tracks-table-body tr[data-track-index]').forEach(row => {
-        const durationCell = row.querySelector('td.track-duration');
-        if (!durationCell || row.querySelector('td.track-location-status')) {
-            return;
-        }
-        const cell = document.createElement('td');
-        cell.className = 'track-location-status';
-        cell.innerHTML = renderTrackLocationStatusCell(null);
-        durationCell.after(cell);
-    });
-}
-
-function removeTrackLocationStatusColumn() {
-    const table = document.querySelector('.tracks-table');
-    if (table) {
-        table.classList.remove('tracks-table--with-location-status');
-    }
-    document.querySelectorAll('col.col-location-status, th.track-location-status, td.track-location-status').forEach(element => {
-        element.remove();
-    });
-}
-
-function applyTrackLocationStatusesToRows() {
-    document.querySelectorAll('#tracks-table-body tr[data-track-index]').forEach(row => {
-        const trackId = String(row.querySelector('.track-ignore-btn')?.getAttribute('data-ignore-track-id')
-            || row.querySelector('.track-checkbox')?.dataset.trackId
-            || row.dataset.availabilityDeezerId
-            || row.dataset.spotifyId
-            || '').trim();
-        const status = trackId ? monitoredPlaylistTrackStatuses.get(trackId) : null;
-        const cell = row.querySelector('td.track-location-status');
-        if (cell) {
-            cell.innerHTML = renderTrackLocationStatusCell(status);
-        }
-    });
-}
-
 function renderTrackLocationStatusCell(status) {
     const normalizedStatus = normalizeTrackLocationStatus(status?.status);
     if (normalizedStatus === 'missing') {
@@ -4998,6 +4923,41 @@ function renderTrackLocationStatusCell(status) {
     const label = String(status?.label || '').trim() || resolveTrackLocationStatusLabel(normalizedStatus);
     const detail = String(status?.detail || '').trim();
     return `<span class="track-location-status-pill track-location-status-pill--${escapeHtml(normalizedStatus)}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
+}
+
+function resolveMonitoredTrackLocationStatus(track, source) {
+    if (!monitoredPlaylistTracklistActive || !track) {
+        return null;
+    }
+
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    let sourceTrackId = '';
+    switch (normalizedSource) {
+        case 'spotify':
+            sourceTrackId = String(track.spotifyId || track.spotify_id || track.sourceTrackId || track.id || '').trim();
+            break;
+        case 'apple':
+            sourceTrackId = String(track.appleId || track.apple_id || track.sourceTrackId || track.id || '').trim();
+            break;
+        case 'tidal':
+            sourceTrackId = String(track.tidalId || track.tidal_id || track.sourceTrackId || track.id || '').trim();
+            break;
+        case 'qobuz':
+            sourceTrackId = String(track.qobuzId || track.qobuz_id || track.sourceTrackId || track.id || '').trim();
+            break;
+        case 'amazon':
+        case 'amazonmusic':
+            sourceTrackId = String(track.amazonId || track.amazon_id || track.sourceTrackId || track.id || '').trim();
+            break;
+        case 'deezer':
+            sourceTrackId = String(track.deezerId || track.deezer_id || track.sourceTrackId || track.id || '').trim();
+            break;
+        default:
+            sourceTrackId = String(track.sourceTrackId || track.id || '').trim();
+            break;
+    }
+
+    return sourceTrackId ? monitoredPlaylistTrackStatuses.get(sourceTrackId) || null : null;
 }
 
 function normalizeTrackLocationStatus(status) {
@@ -5812,7 +5772,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         }
 
         const candidate = playbackSource === 'spotify'
-            ? String(track.deezerId || track.deezer_id || (monitoredSnapshotTracklistActive ? '' : track.id) || '').trim()
+            ? String(track.deezerId || track.deezer_id || track.id || '').trim()
             : String(track.deezerId || track.deezer_id || '').trim();
         return /^\d+$/.test(candidate) ? candidate : '';
     };
@@ -5970,7 +5930,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             ${collectionCell}
             ${shouldShowQualityColumn() ? `<td class="track-quality">${renderQualityCell(track)}</td>` : ''}
             <td class="track-duration">${formatTrackDurationSeconds(durationSeconds)}</td>
-            ${shouldShowMonitoredStateColumn(isLocalSource) ? `<td class="track-location-status">${renderTrackLocationStatusCell(track.locationStatus)}</td>` : ''}
+            ${shouldShowMonitoredStateColumn(isLocalSource) ? `<td class="track-location-status">${renderTrackLocationStatusCell(resolveMonitoredTrackLocationStatus(track, playbackSource))}</td>` : ''}
             ${shouldShowAvailabilityColumn(isLocalSource) ? `<td class="track-availability">${renderAvailabilityCell()}</td>` : ''}
             <td class="track-actions">
                 <div class="track-actions-row">
