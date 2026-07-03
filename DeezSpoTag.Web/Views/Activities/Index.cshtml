@@ -4685,6 +4685,18 @@ async function clearCanceledTasks() {
 	    }
 
 	    const upper = quality.toUpperCase();
+	    if (engine === 'amazon') {
+	        const amazonQualityLabels = {
+	            ULTRA_HD_FLAC: 'Ultra HD FLAC',
+	            HD_FLAC: 'HD FLAC',
+	            FLAC: 'Ultra HD FLAC',
+	            OPUS: 'Opus'
+	        };
+	        if (amazonQualityLabels[upper]) {
+	            return amazonQualityLabels[upper];
+	        }
+	    }
+
 	    const qualityLabels = {
 	        '27': 'Max Hi-Res (24-bit/192kHz)',
 	        'HI_RES_LOSSLESS': 'Max Hi-Res (24-bit/192kHz)',
@@ -4745,6 +4757,40 @@ async function clearCanceledTasks() {
 	    }
 
 	    return `<span class="badge badge-quality">${escapeHtml(quality)}</span>`;
+	}
+
+	function normalizeTaskQualityLabel(task) {
+	    const engine = String(task?.engine || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+	    const rawQuality = String(task?.quality || '').trim();
+	    if (!rawQuality) {
+	        return '';
+	    }
+
+	    const displayQuality = mapBitrate(rawQuality);
+	    if (engine !== 'amazon') {
+	        return displayQuality;
+	    }
+
+	    const normalized = displayQuality.replace(/_/g, ' ');
+	    const upper = rawQuality.toUpperCase();
+	    if (upper === 'ULTRA_HD_FLAC' || upper === 'FLAC') {
+	        return 'Ultra HD FLAC';
+	    }
+
+	    if (upper === 'HD_FLAC') {
+	        return 'HD FLAC';
+	    }
+
+	    const exactMatch = normalized.match(/\(([^)]+)\)/);
+	    if (normalized.toLowerCase().startsWith('hi-res')) {
+	        return exactMatch ? `Ultra HD FLAC (${exactMatch[1]})` : 'Ultra HD FLAC';
+	    }
+
+	    if (normalized.toLowerCase().startsWith('cd lossless')) {
+	        return exactMatch ? `HD FLAC (${exactMatch[1]})` : 'HD FLAC';
+	    }
+
+	    return normalized;
 	}
 
 		let renderTasksScheduled = false;
@@ -4860,7 +4906,7 @@ async function clearCanceledTasks() {
             ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${deleteFailedButton}${deleteCanceledButton}${cancelButton}</div>`
             : '';
 
-        const displayQuality = task.quality ? task.quality.replace(/_/g, ' ') : '';
+        const displayQuality = normalizeTaskQualityLabel(task);
         const qualityBadge = renderQualityBadge(task, displayQuality);
         const safeTitle = escapeHtml(task.title || 'Unknown');
         const safeArtist = escapeHtml(task.artist || 'Unknown');
@@ -6432,7 +6478,13 @@ function mapBitrate(bitrate) {
     }
 
     if (typeof bitrate === 'string') {
-        return bitrate.replace(/_/g, ' ');
+        const upper = bitrate.toUpperCase();
+        const qualityMap = {
+            ULTRA_HD_FLAC: 'Ultra HD FLAC',
+            HD_FLAC: 'HD FLAC',
+            OPUS: 'Opus'
+        };
+        return qualityMap[upper] || bitrate.replace(/_/g, ' ');
     }
 
     return '';

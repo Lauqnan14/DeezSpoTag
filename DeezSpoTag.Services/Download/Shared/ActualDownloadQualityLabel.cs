@@ -1,4 +1,5 @@
 using TagLib;
+using DeezSpoTag.Services.Download.Amazon;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
@@ -6,7 +7,9 @@ internal static class ActualDownloadQualityLabel
 {
     public static void ApplyTo(EngineQueueItemBase payload, string filePath)
     {
-        var label = TryBuild(filePath);
+        var label = payload is AmazonQueueItem
+            ? TryBuildAmazon(filePath)
+            : TryBuild(filePath);
         if (!string.IsNullOrWhiteSpace(label))
         {
             payload.Quality = label;
@@ -14,6 +17,14 @@ internal static class ActualDownloadQualityLabel
     }
 
     public static string? TryBuild(string filePath)
+        => TryBuildCore(filePath, TryBuildLosslessLabel);
+
+    private static string? TryBuildAmazon(string filePath)
+        => TryBuildCore(filePath, TryBuildAmazonLosslessLabel);
+
+    private static string? TryBuildCore(
+        string filePath,
+        Func<int, int, string, string, string?> losslessLabelBuilder)
     {
         var ioPath = DeezSpoTag.Services.Download.Utils.DownloadPathResolver.ResolveIoPath(filePath);
         if (string.IsNullOrWhiteSpace(ioPath) || !System.IO.File.Exists(ioPath))
@@ -44,7 +55,7 @@ internal static class ActualDownloadQualityLabel
                 return TryBuildLossyLabel(bitrate, extension, codec);
             }
 
-            return TryBuildLosslessLabel(bitsPerSample, sampleRate, extension, codec)
+            return losslessLabelBuilder(bitsPerSample, sampleRate, extension, codec)
                    ?? TryBuildLossyLabel(bitrate, extension, codec);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -146,6 +157,23 @@ internal static class ActualDownloadQualityLabel
         }
 
         return $"CD Lossless ({exact})";
+    }
+
+    private static string? TryBuildAmazonLosslessLabel(
+        int bitsPerSample,
+        int sampleRate,
+        string extension,
+        string codec)
+    {
+        if (bitsPerSample <= 0 || sampleRate <= 0 || !IsFlac(extension, codec))
+        {
+            return TryBuildLosslessLabel(bitsPerSample, sampleRate, extension, codec);
+        }
+
+        var exact = $"{bitsPerSample}-bit/{FormatSampleRate(sampleRate)}";
+        return bitsPerSample >= 24
+            ? $"Ultra HD FLAC ({exact})"
+            : $"HD FLAC ({exact})";
     }
 
     private static string? TryBuildLossyLabel(int bitrate, string extension, string codec)
