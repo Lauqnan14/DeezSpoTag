@@ -89,9 +89,27 @@ public sealed class AmazonMusicApiController : ControllerBase
         [FromQuery] string id,
         [FromQuery] string type = "playlist",
         [FromQuery] string? url = null,
+        [FromQuery] string? title = null,
+        [FromQuery] string? artist = null,
+        [FromQuery] string? album = null,
+        [FromQuery] string? cover = null,
+        [FromQuery] int? durationMs = null,
+        [FromQuery] string? isrc = null,
+        [FromQuery] bool? hasAtmos = null,
         CancellationToken cancellationToken = default)
     {
-        var payload = await _amazonMusicMetadataService.GetTracklistAsync(id, type, url, cancellationToken);
+        var payload = BuildSingleTrackPayloadFromQuery(
+            id,
+            type,
+            url,
+            title,
+            artist,
+            album,
+            cover,
+            durationMs,
+            isrc,
+            hasAtmos)
+            ?? await _amazonMusicMetadataService.GetTracklistAsync(id, type, url, cancellationToken);
         if (payload is null)
         {
             return NotFound(new { available = false, error = "Amazon Music tracklist unavailable." });
@@ -155,6 +173,62 @@ public sealed class AmazonMusicApiController : ControllerBase
                 })
             }
         });
+    }
+
+    private static AmazonTracklistPayload? BuildSingleTrackPayloadFromQuery(
+        string id,
+        string type,
+        string? url,
+        string? title,
+        string? artist,
+        string? album,
+        string? cover,
+        int? durationMs,
+        string? isrc,
+        bool? hasAtmos)
+    {
+        if (!string.Equals(type?.Trim(), "track", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var amazonId = id?.Trim() ?? string.Empty;
+        var trackTitle = title?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(amazonId) || string.IsNullOrWhiteSpace(trackTitle))
+        {
+            return null;
+        }
+
+        var trackArtist = artist?.Trim() ?? string.Empty;
+        var trackAlbum = string.IsNullOrWhiteSpace(album) ? trackTitle : album.Trim();
+        var sourceUrl = string.IsNullOrWhiteSpace(url)
+            ? $"https://music.amazon.com/tracks/{amazonId}"
+            : url.Trim();
+        var coverUrl = cover?.Trim() ?? string.Empty;
+        var normalizedDurationMs = Math.Max(0, durationMs ?? 0);
+
+        var collection = new AmazonCollection(
+            amazonId,
+            "track",
+            trackAlbum,
+            trackArtist,
+            sourceUrl,
+            coverUrl);
+
+        var track = new AmazonTrack(
+            amazonId,
+            trackTitle,
+            trackArtist,
+            trackAlbum,
+            sourceUrl,
+            coverUrl,
+            normalizedDurationMs,
+            1,
+            isrc?.Trim() ?? string.Empty,
+            amazonId,
+            hasAtmos == true);
+
+        return new AmazonTracklistPayload(collection, [track]);
     }
 
     private static object ToSearchResult(AmazonCatalogItem item) => new

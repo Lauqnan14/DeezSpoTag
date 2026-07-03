@@ -1071,13 +1071,7 @@ public sealed class DownloadIntentService
     {
         var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
             ?? EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout);
-        AmazonCatalogItem? resolved = null;
-        if (!string.IsNullOrWhiteSpace(amazonId))
-        {
-            resolved = await _amazonMusicMetadataService.GetTrackAsync(amazonId, cancellationToken);
-        }
-
-        resolved ??= await _amazonMusicMetadataService.ResolveTrackAsync(
+        var resolved = await _amazonMusicMetadataService.ResolveTrackAsync(
             intent.Title,
             intent.Artist,
             intent.Album,
@@ -2866,22 +2860,6 @@ public sealed class DownloadIntentService
         }
 
         intent.AmazonId = amazonId;
-        if (string.IsNullOrWhiteSpace(intent.Title)
-            || string.IsNullOrWhiteSpace(intent.Artist)
-            || string.IsNullOrWhiteSpace(intent.Album)
-            || intent.DurationMs <= 0)
-        {
-            var amazonTrack = await _amazonMusicMetadataService.GetTrackAsync(amazonId, cancellationToken);
-            if (amazonTrack is not null)
-            {
-                ApplyIntentStringValue(false, intent.Title, amazonTrack.Title, value => intent.Title = value);
-                ApplyIntentStringValue(false, intent.Artist, amazonTrack.Artist, value => intent.Artist = value);
-                ApplyIntentStringValue(false, intent.Album, amazonTrack.Album, value => intent.Album = value);
-                ApplyIntentStringValue(false, intent.Cover, amazonTrack.CoverUrl, value => intent.Cover = value);
-                ApplyIntentIntValue(false, intent.DurationMs, amazonTrack.DurationMs ?? 0, value => intent.DurationMs = value);
-                ApplyIntentStringValue(false, intent.SourceUrl, amazonTrack.Url, value => intent.SourceUrl = value);
-            }
-        }
 
         if (string.IsNullOrWhiteSpace(intent.DeezerId))
         {

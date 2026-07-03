@@ -2465,6 +2465,7 @@ async function loadAmazonTracklist() {
     if (sourceUrl) {
         qs.set('url', sourceUrl);
     }
+    appendAmazonTrackMetadataToQuery(qs);
 
     const response = await fetch(`/api/amazon/tracklist?${qs.toString()}`);
     if (!response.ok) {
@@ -2478,6 +2479,19 @@ async function loadAmazonTracklist() {
 
     await loadIgnoredTracks();
     renderTracklist(payload.tracklist, { allowEmptyTracks: true });
+}
+
+function appendAmazonTrackMetadataToQuery(qs) {
+    if (String(tracklistType || '').trim().toLowerCase() !== 'track') {
+        return;
+    }
+
+    for (const key of ['title', 'artist', 'album', 'cover', 'durationMs', 'isrc', 'hasAtmos']) {
+        const value = String(tracklistQuery.get(key) || '').trim();
+        if (value) {
+            qs.set(key, value);
+        }
+    }
 }
 
 async function loadBoomplayPlaylistTracklist() {

@@ -850,6 +850,9 @@ function restoreSearchPageState() {
             Object.assign(cachedSearchTerms, state.cachedSearchTerms);
         }
         restoreMap(libraryExistenceCache, state.libraryExistenceEntries);
+        if (cachedResults) {
+            Object.values(cachedResults).forEach(applyCachedLibraryStateToSourceResults);
+        }
 
         selectedVideoKeys.clear();
         if (Array.isArray(state.selectedVideoKeys)) {
@@ -1145,6 +1148,15 @@ function navigateToTracklist(id, type, source, options = {}) {
     const appleUrl = String(options.appleUrl || '').trim();
     if (appleUrl) {
         query.set('appleUrl', appleUrl);
+    }
+    const amazonTrack = options.amazonTrack && typeof options.amazonTrack === 'object' ? options.amazonTrack : null;
+    if (amazonTrack) {
+        for (const [key, value] of Object.entries(amazonTrack)) {
+            const normalizedValue = String(value ?? '').trim();
+            if (normalizedValue) {
+                query.set(key, normalizedValue);
+            }
+        }
     }
     appendSoundtrackContextToParams(query);
     window.location.href = `/Tracklist?${query.toString()}`;
@@ -1505,6 +1517,7 @@ function updateActiveFilter(type) {
         document.getElementById('search-count').textContent =
             items.length > 0 ? ` - ${items.length} results` : ' - No results';
         displayResults(items, type);
+        ensureLibraryStatusForCurrentView();
         if (type !== 'video') {
             selectedVideoKeys.clear();
         }
@@ -1812,7 +1825,7 @@ function mapTypeToSourceResultField(type) {
 
 function mergeSourceResults(existingData, incomingData, source, type, typedOnly) {
     if (!typedOnly) {
-        return markBroadSourceResultsLoaded(incomingData, source);
+        return applyCachedLibraryStateToSourceResults(markBroadSourceResultsLoaded(incomingData, source));
     }
 
     const merged = {
@@ -1824,7 +1837,7 @@ function mergeSourceResults(existingData, incomingData, source, type, typedOnly)
         merged.tracks = incomingData.tracks || [];
         merged.albums = incomingData.albums || [];
         markSourceTypesLoaded(merged, source, ['atmos']);
-        return merged;
+        return applyCachedLibraryStateToSourceResults(merged);
     }
 
     const field = mapTypeToSourceResultField(normalizedType);
@@ -1836,7 +1849,7 @@ function mergeSourceResults(existingData, incomingData, source, type, typedOnly)
     }
     markSourceTypesLoaded(merged, source, [normalizedType]);
     merged.error = incomingData.error || '';
-    return merged;
+    return applyCachedLibraryStateToSourceResults(merged);
 }
 
 async function fetchSourceResults(source, term, type, options = {}) {
@@ -2307,6 +2320,7 @@ function updateActiveSource(source) {
         document.getElementById('search-count').textContent =
             items.length > 0 ? ` - ${items.length} results` : ' - No results';
         displayResults(items, currentSearchType);
+        ensureLibraryStatusForCurrentView();
     }
     saveSearchPageState();
 }
@@ -2370,6 +2384,9 @@ function renderResultCard(item, type) {
     let videoKey = '';
     let qobuzQualityHtml = '';
     let effectiveType = type;
+    const itemTitle = getSearchItemTitle(item);
+    const itemArtist = getSearchItemArtist(item);
+    const itemAlbum = getSearchItemAlbum(item);
     
     switch (resolvedType) {
         case 'track':
@@ -2377,15 +2394,15 @@ function renderResultCard(item, type) {
             effectiveType = item.__kind || (type === 'atmos' ? 'track' : type);
             if (effectiveType === 'album') {
                 imageUrl = resolveResultImageUrl(item);
-                title = item.name || '';
-                artist = item.artist || '';
+                title = itemTitle;
+                artist = itemArtist;
                 meta = item.release_date || '';
                 clickAction = buildUnifiedClick(item, 'album');
             } else {
                 imageUrl = resolveResultImageUrl(item);
-                title = item.name || '';
-                artist = item.artist || '';
-                meta = item.album || '';
+                title = itemTitle;
+                artist = itemArtist;
+                meta = itemAlbum;
                 clickAction = buildUnifiedClick(item, 'track');
                 if (currentSearchSource === 'apple' || currentSearchSource === 'tidal') {
                     previewUrl = item.previewUrl || '';
@@ -2399,8 +2416,8 @@ function renderResultCard(item, type) {
             
         case 'album':
             imageUrl = resolveResultImageUrl(item);
-            title = item.name || '';
-            artist = item.artist || '';
+            title = itemTitle;
+            artist = itemArtist;
             meta = item.release_date || '';
             clickAction = buildUnifiedClick(item, 'album');
             if (currentSearchSource === 'qobuz') {
@@ -2410,7 +2427,7 @@ function renderResultCard(item, type) {
             
         case 'artist':
             imageUrl = resolveResultImageUrl(item);
-            title = item.name || '';
+            title = itemTitle;
             artist = '';
             if (item.followers) {
                 meta = `${item.followers} followers`;
@@ -2420,7 +2437,7 @@ function renderResultCard(item, type) {
                 meta = '';
             }
             if (currentSearchSource === 'qobuz' && item.qobuzId) {
-                clickAction = `loadQobuzArtistDiscography('${escapeJsString(item.qobuzId)}', '${escapeJsString(item.name || '')}')`;
+                clickAction = `loadQobuzArtistDiscography('${escapeJsString(item.qobuzId)}', '${escapeJsString(itemTitle)}')`;
             } else {
                 clickAction = buildUnifiedClick(item, 'artist');
             }
@@ -2428,7 +2445,7 @@ function renderResultCard(item, type) {
             
         case 'playlist':
             imageUrl = resolveResultImageUrl(item);
-            title = item.name || '';
+            title = itemTitle;
             artist = item.owner || '';
             const playlistTracks = item.nb_tracks ?? item.trackCount ?? item.track_count;
             const playlistFans = item.fans ?? item.followers;
@@ -2449,7 +2466,7 @@ function renderResultCard(item, type) {
 
         case 'station':
             imageUrl = resolveResultImageUrl(item);
-            title = item.name || '';
+            title = itemTitle;
             artist = '';
             meta = 'Apple Music Station';
             clickAction = buildUnifiedClick(item, 'station');
@@ -2457,8 +2474,8 @@ function renderResultCard(item, type) {
 
         case 'video':
             imageUrl = resolveResultImageUrl(item);
-            title = item.name || '';
-            artist = item.artist || '';
+            title = itemTitle;
+            artist = itemArtist;
             videoKey = getVideoKey(item);
             clickAction = videoKey ? `toggleVideoSelection('${escapeJsString(videoKey)}')` : '';
             previewUrl = item.previewUrl || '';
@@ -2498,7 +2515,8 @@ function renderResultCard(item, type) {
     const libKeyAttr = libKeyRaw ? ` data-lib-key="${escapeHtml(libKeyRaw).replace(/"/g, '&quot;')}"` : '';
 
     const isVideoCard = resolvedType === 'video';
-    const showLibraryBadge = isVideoCard && item?.inLibrary && (effectiveType === 'track' || type === 'track' || type === 'atmos');
+    const showLibraryBadge = item?.inLibrary === true
+        && (effectiveType === 'track' || resolvedType === 'track' || type === 'track' || type === 'atmos');
     const libraryBadge = showLibraryBadge
         ? `<div class="result-badge">In Library</div>`
         : '';
@@ -2544,13 +2562,15 @@ function renderResultCard(item, type) {
                 </div>
                 <div class="apple-title">${escapeHtml(title)}</div>
                 ${subText ? `<div class="apple-sub">${escapeHtml(subText)}</div>` : ''}
+                ${libraryBadge}
                 ${capabilityBadge}
             </div>
         `;
     }
 
+    const cardClickAttr = clickAction ? ` onclick="${clickAction}"` : '';
     return `
-        <div class="result-card${extraClass}${selectedClass}${(isAppleAudioTrackCard || isTidalAudioTrackCard) ? ' result-card--apple-audio' : ''}"${libKeyAttr} onclick="${clickAction}">
+        <div class="result-card${extraClass}${selectedClass}${(isAppleAudioTrackCard || isTidalAudioTrackCard) ? ' result-card--apple-audio' : ''}"${libKeyAttr}${cardClickAttr}>
             <div class="result-image ${imageUrl ? '' : 'no-img'}">
                 ${imgHtml}
                 <span class="result-image-placeholder">${defaultIcon}</span>
@@ -2732,6 +2752,17 @@ async function loadQobuzArtistDiscography(artistId, artistName) {
 }
 
 function buildUnifiedClick(item, type) {
+    const source = String(item?.source || currentSearchSource || '').trim().toLowerCase();
+    if (source === 'apple') {
+        return buildAppleResultClick(item, type);
+    }
+    if (source === 'amazon' || source === 'amazonmusic') {
+        return buildAmazonResultClick(item, type);
+    }
+    if (source === 'tidal') {
+        return buildTidalResultClick(item, type);
+    }
+
     const deezerId = item.deezerId || '';
     if (deezerId) {
         if (type === 'artist') {
@@ -2746,29 +2777,53 @@ function buildUnifiedClick(item, type) {
         }
         return `openUnifiedTracklist('${spotifyId}', '${type}', 'spotify')`;
     }
-    const appleId = item.appleId || '';
-    const appleUrl = item.appleUrl || '';
-    if (appleId) {
-        return `openUnifiedTracklist('${escapeJsString(appleId)}', '${type}', 'apple')`;
-    }
-    if (appleUrl) {
-        return `openUnifiedTracklist('${escapeJsString(appleUrl)}', '${type}', 'apple')`;
-    }
-    const tidalId = item.tidalId || '';
-    const tidalUrl = item.tidalUrl || item.externalUrl || '';
-    if (tidalId || tidalUrl) {
-        return `openTidalResult('${escapeJsString(tidalId)}', '${type}', '${escapeJsString(tidalUrl)}', '${escapeJsString(item.name || '')}')`;
-    }
-    const amazonId = item.amazonId || item.id || '';
-    const amazonUrl = item.sourceUrl || item.url || '';
-    if ((item.source === 'amazon' || item.source === 'amazonmusic') && (amazonId || amazonUrl)) {
-        return `openAmazonResult('${escapeJsString(amazonId)}', '${type}', '${escapeJsString(amazonUrl)}')`;
-    }
+    const appleClick = buildAppleResultClick(item, type);
+    if (appleClick) return appleClick;
+    const tidalClick = buildTidalResultClick(item, type);
+    if (tidalClick) return tidalClick;
+    const amazonClick = buildAmazonResultClick(item, type);
+    if (amazonClick) return amazonClick;
     const qobuzUrl = item.qobuzUrl || buildQobuzUrlForItem(item.qobuzId || '', item.qobuzType || type || '');
     if (qobuzUrl) {
         return '';
     }
     return '';
+}
+
+function buildAppleResultClick(item, type) {
+    const normalizedType = String(item?.type || type || '').trim().toLowerCase();
+    const appleId = item?.appleId || item?.id || '';
+    const appleUrl = item?.appleUrl || item?.url || item?.sourceUrl || '';
+    if (normalizedType === 'artist') {
+        return appleId ? `openUnifiedArtist('${escapeJsString(appleId)}', 'apple')` : '';
+    }
+    if (appleId) {
+        return `openAppleResult('${escapeJsString(appleId)}', '${escapeJsString(normalizedType || 'track')}', '${escapeJsString(appleUrl)}')`;
+    }
+    if (appleUrl) {
+        return `openAppleResult('${escapeJsString(appleUrl)}', '${escapeJsString(normalizedType || 'track')}', '${escapeJsString(appleUrl)}')`;
+    }
+    return '';
+}
+
+function buildTidalResultClick(item, type) {
+    const normalizedType = String(item?.type || type || '').trim().toLowerCase();
+    const tidalId = item?.tidalId || item?.id || '';
+    const tidalUrl = item?.tidalUrl || item?.externalUrl || item?.sourceUrl || item?.url || '';
+    if (!tidalId && !tidalUrl) {
+        return '';
+    }
+    return `openTidalResult('${escapeJsString(tidalId)}', '${escapeJsString(normalizedType || 'track')}', '${escapeJsString(tidalUrl)}', '${escapeJsString(getSearchItemTitle(item))}')`;
+}
+
+function buildAmazonResultClick(item, type) {
+    const normalizedType = String(item?.type || type || '').trim().toLowerCase();
+    const amazonId = item?.amazonId || item?.id || '';
+    const amazonUrl = item?.sourceUrl || item?.url || '';
+    if (!amazonId && !amazonUrl) {
+        return '';
+    }
+    return `openAmazonResult('${escapeJsString(amazonId)}', '${escapeJsString(normalizedType || 'track')}', '${escapeJsString(amazonUrl)}', '${escapeJsString(getSearchItemTitle(item))}', '${escapeJsString(getSearchItemArtist(item))}', '${escapeJsString(getSearchItemAlbum(item) || getSearchItemTitle(item))}', '${escapeJsString(resolveResultImageUrl(item))}', '${escapeJsString(String(resolveSearchItemDurationMs(item) || ''))}', '${escapeJsString(String(item?.isrc || ''))}', ${item?.hasAtmos === true ? 'true' : 'false'})`;
 }
 
 function getVideoKey(item) {
@@ -2814,6 +2869,24 @@ function openUnifiedTracklist(id, type, source) {
     navigateToTracklist(id, type, source);
 }
 
+function openAppleResult(appleId, type, appleUrl) {
+    const normalizedType = String(type || '').trim().toLowerCase();
+    const normalizedId = String(appleId || '').trim();
+    const normalizedUrl = String(appleUrl || '').trim();
+    if (normalizedType === 'artist') {
+        if (normalizedId) {
+            openUnifiedArtist(normalizedId, 'apple');
+        }
+        return;
+    }
+
+    const id = normalizedId || normalizedUrl;
+    if (!id) {
+        return;
+    }
+    navigateToTracklist(id, normalizedType || 'track', 'apple', { externalUrl: normalizedUrl, appleUrl: normalizedUrl });
+}
+
 function openTidalResult(tidalId, type, tidalUrl, artistName = '') {
     const normalizedType = String(type || '').trim().toLowerCase();
     const normalizedId = String(tidalId || '').trim();
@@ -2832,7 +2905,7 @@ function openTidalResult(tidalId, type, tidalUrl, artistName = '') {
     navigateToTracklist(id, normalizedType || 'track', 'tidal', { externalUrl: normalizedUrl });
 }
 
-function openAmazonResult(amazonId, type, amazonUrl) {
+function openAmazonResult(amazonId, type, amazonUrl, title = '', artist = '', album = '', cover = '', durationMs = '', isrc = '', hasAtmos = false) {
     const normalizedType = String(type || '').trim().toLowerCase();
     const normalizedId = String(amazonId || '').trim();
     const normalizedUrl = String(amazonUrl || '').trim();
@@ -2847,7 +2920,18 @@ function openAmazonResult(amazonId, type, amazonUrl) {
     if (!id) {
         return;
     }
-    navigateToTracklist(id, normalizedType || 'track', 'amazon', { externalUrl: normalizedUrl });
+    const amazonTrack = normalizedType === 'track'
+        ? {
+            title,
+            artist,
+            album,
+            cover,
+            durationMs,
+            isrc,
+            hasAtmos: hasAtmos === true ? 'true' : ''
+        }
+        : null;
+    navigateToTracklist(id, normalizedType || 'track', 'amazon', { externalUrl: normalizedUrl, amazonTrack });
 }
 
 function buildTidalUrlForItem(id, type) {
@@ -3039,11 +3123,36 @@ function buildLibraryCheckKey(item) {
     const normalizeKeyValue = (value) => String(value ?? '').trim();
     const isrc = normalizeKeyValue(item.isrc);
     if (isrc) return `isrc:${isrc.toLowerCase()}`;
-    const title = normalizeKeyValue(item.name).toLowerCase();
-    const artist = normalizeKeyValue(item.artist).toLowerCase();
+    const title = normalizeKeyValue(getSearchItemTitle(item)).toLowerCase();
+    const artist = normalizeKeyValue(getSearchItemArtist(item)).toLowerCase();
     const duration = resolveSearchItemDurationMs(item);
     if (!title || !artist) return '';
     return `track:${title}|artist:${artist}|dur:${duration || 0}`;
+}
+
+function getSearchItemTitle(item) {
+    if (!item || typeof item !== 'object') return '';
+    return String(item.name || item.title || item.trackTitle || '').trim();
+}
+
+function getSearchItemArtist(item) {
+    if (!item || typeof item !== 'object') return '';
+    const artist = item.artist;
+    if (typeof artist === 'string') return artist.trim();
+    if (artist && typeof artist === 'object') {
+        return String(artist.name || artist.title || '').trim();
+    }
+    return String(item.artistName || item.contributors || '').trim();
+}
+
+function getSearchItemAlbum(item) {
+    if (!item || typeof item !== 'object') return '';
+    const album = item.album || item.albumTitle || item.albumName;
+    if (typeof album === 'string') return album.trim();
+    if (album && typeof album === 'object') {
+        return String(album.title || album.name || '').trim();
+    }
+    return '';
 }
 
 function resolveSearchItemDurationMs(item) {
@@ -3067,31 +3176,46 @@ async function refreshLibraryExistence(sourcesToCheck) {
     const tasks = sources.map(source => updateLibraryStatusForTracks(cachedResults[source]?.tracks || [], source));
     await Promise.all(tasks);
     if (currentSearchType === 'track' || currentSearchType === 'atmos') {
-        const container = getResultsContainer();
-        if (container) {
-            const items = getResultsForType(currentSearchType, currentSearchSource);
-            const itemByKey = new Map(
-                items.map(item => [buildLibraryCheckKey(item), item]).filter(([k]) => k)
-            );
-            container.querySelectorAll('[data-lib-key]').forEach(card => {
-                const key = card.dataset.libKey;
-                const item = itemByKey.get(key);
-                if (!item) return;
-                const badge = card.querySelector('.result-badge');
-                if (item.inLibrary && !badge) {
-                    const newBadge = document.createElement('div');
-                    newBadge.className = 'result-badge';
-                    newBadge.textContent = 'In Library';
-                    const acts = card.querySelector('.card-actions');
-                    if (acts) card.insertBefore(newBadge, acts);
-                    else card.appendChild(newBadge);
-                } else if (!item.inLibrary && badge) {
-                    badge.remove();
-                }
-            });
-        }
+        displayResults(getResultsForType(currentSearchType, currentSearchSource), currentSearchType);
     }
     saveSearchPageState();
+}
+
+function ensureLibraryStatusForCurrentView() {
+    if (!cachedResults || currentSearchType !== 'track') {
+        return;
+    }
+
+    const tracks = cachedResults[currentSearchSource]?.tracks || [];
+    if (!tracks.some(item => {
+        const key = buildLibraryCheckKey(item);
+        return key && !libraryExistenceCache.has(key);
+    })) {
+        return;
+    }
+
+    void refreshLibraryExistence([currentSearchSource]);
+}
+
+function applyCachedLibraryStateToSourceResults(sourceData) {
+    if (!sourceData || typeof sourceData !== 'object') {
+        return sourceData;
+    }
+
+    ['tracks', 'videos'].forEach(field => {
+        if (!Array.isArray(sourceData[field])) {
+            return;
+        }
+
+        sourceData[field].forEach(item => {
+            const key = buildLibraryCheckKey(item);
+            if (key && libraryExistenceCache.has(key)) {
+                item.inLibrary = libraryExistenceCache.get(key) === true;
+            }
+        });
+    });
+
+    return sourceData;
 }
 
 async function updateLibraryStatusForTracks(items, source) {
@@ -3110,9 +3234,9 @@ async function updateLibraryStatusForTracks(items, source) {
             source: normalizedSource,
             sourceId: item.tidalId || item.appleId || item.spotifyId || item.deezerId || item.id || item.sourceId || '',
             isrc: item.isrc || '',
-            trackTitle: item.name || '',
-            artistName: item.artist || '',
-            albumTitle: item.album || item.albumTitle || item.albumName || '',
+            trackTitle: getSearchItemTitle(item),
+            artistName: getSearchItemArtist(item),
+            albumTitle: getSearchItemAlbum(item),
             durationMs: resolveSearchItemDurationMs(item) || null
         };
         requests.push(req);

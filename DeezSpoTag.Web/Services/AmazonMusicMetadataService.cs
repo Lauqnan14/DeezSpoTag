@@ -13,7 +13,6 @@ public sealed class AmazonMusicMetadataService
     private const string DefaultLocale = "en_US";
     private const string SkillApiBaseUrl = "https://na.mesk.skill.music.a2z.com/api";
     private const string SkillArtistApiUrl = "https://na.mesk.skill.music.a2z.com/api/explore/v1/showCatalogArtist";
-    private const string SkillTrackApiUrl = "https://na.mesk.skill.music.a2z.com/api/cosmicTrack/displayCatalogTrack";
     private const string DeviceFamily = "WebPlayer";
     private const string DeviceModel = "WEBPLAYER";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
@@ -61,9 +60,16 @@ public sealed class AmazonMusicMetadataService
         };
 
         using var document = await PostSkillJsonAsync(session, $"{SkillApiBaseUrl}/showSearch", pageUrl, body, cancellationToken);
-        var items = ExtractSearchCatalogItems(document.RootElement, type).ToArray();
+        var items = ExtractSearchCatalogItems(document.RootElement, "all").ToArray();
+        var allAlbums = FilterByType(items, "album", "all", keyword, limit).ToArray();
+        var tracks = FilterByType(items, "track", type, keyword, limit).ToArray();
+        if (NormalizeType(type) == "track" && tracks.Length == 0 && allAlbums.Length > 0)
+        {
+            tracks = await ExpandAlbumTracksForSearchAsync(allAlbums, keyword, limit, cancellationToken);
+        }
+
         return new AmazonSearchPayload(
-            FilterByType(items, "track", type, keyword, limit).ToArray(),
+            tracks,
             FilterByType(items, "album", type, keyword, limit).ToArray(),
             FilterByType(items, "artist", type, keyword, limit).ToArray(),
             FilterByType(items, "playlist", type, keyword, limit).ToArray());
@@ -83,9 +89,7 @@ public sealed class AmazonMusicMetadataService
         }
 
         var session = await CreateSessionAsync(cancellationToken);
-        using var document = normalizedType == "track"
-            ? await FetchTrackDocumentAsync(session, id, targetUrl, cancellationToken)
-            : await FetchHomeDocumentAsync(session, targetUrl, cancellationToken);
+        using var document = await FetchHomeDocumentAsync(session, targetUrl, cancellationToken);
 
         var collectionItems = ExtractCatalogItems(document.RootElement).ToArray();
         IReadOnlyList<AmazonCatalogItem> trackItems = ExtractTracklistTrackItems(document.RootElement).ToArray();
@@ -114,16 +118,16 @@ public sealed class AmazonMusicMetadataService
             .Where(static item => item.Type == "track" && !string.IsNullOrWhiteSpace(item.Id))
             .Select((item, index) => item.ToTrack(index + 1))
             .ToArray();
-        if (normalizedType == "track" && tracks.Length == 0)
+        if (normalizedType == "track")
         {
-            var track = MergeCollectionIntoTracks(
-                    collectionItems.Where(static item => item.Type == "track").ToArray(),
-                    collection)
-                .FirstOrDefault();
-            if (track is not null)
-            {
-                tracks = [track.ToTrack(1)];
-            }
+            tracks = tracks
+                .Where(track => string.Equals(track.AmazonId, ExtractAsin(id), StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(track.AmazonId, ExtractAsin(targetUrl), StringComparison.OrdinalIgnoreCase))
+                .DefaultIfEmpty(tracks.FirstOrDefault())
+                .Where(static track => track is not null)
+                .Cast<AmazonTrack>()
+                .Take(1)
+                .ToArray();
         }
 
         return new AmazonTracklistPayload(collection, tracks);
@@ -179,32 +183,6 @@ public sealed class AmazonMusicMetadataService
             .ToArray();
 
         return new AmazonArtistPagePayload(artist, releases, topTracks, related, appearsOn);
-    }
-
-    public async Task<AmazonCatalogItem?> GetTrackAsync(string amazonId, CancellationToken cancellationToken)
-    {
-        var asin = ExtractAsin(amazonId) ?? amazonId.Trim();
-        if (string.IsNullOrWhiteSpace(asin))
-        {
-            return null;
-        }
-
-        var session = await CreateSessionAsync(cancellationToken);
-        using var document = await FetchTrackDocumentAsync(
-            session,
-            asin,
-            $"https://{session.Host}/tracks/{asin}",
-            cancellationToken);
-        var exact = ExtractCatalogItems(document.RootElement)
-            .Where(static item => item.Type == "track")
-            .FirstOrDefault(item => string.Equals(item.Id, asin, StringComparison.OrdinalIgnoreCase));
-        if (exact is not null)
-        {
-            return exact;
-        }
-
-        return ExtractCatalogItems(document.RootElement)
-            .FirstOrDefault(static item => item.Type == "track" && !string.IsNullOrWhiteSpace(item.Id));
     }
 
     public async Task<AmazonCatalogItem?> ResolveTrackAsync(
@@ -315,6 +293,46 @@ public sealed class AmazonMusicMetadataService
         return validation.Accepted;
     }
 
+    private async Task<AmazonCatalogItem[]> ExpandAlbumTracksForSearchAsync(
+        IReadOnlyList<AmazonCatalogItem> albums,
+        string query,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var selectedAlbums = albums
+            .OrderBy(album => IsExactSearchMatch(album, query) ? 0 : 1)
+            .Take(2)
+            .ToArray();
+        var tracks = new List<AmazonCatalogItem>();
+        foreach (var album in selectedAlbums)
+        {
+            var tracklist = await GetTracklistAsync(album.Id, "album", album.Url, cancellationToken);
+            if (tracklist is null)
+            {
+                continue;
+            }
+
+            tracks.AddRange(tracklist.Tracks.Select(track => new AmazonCatalogItem(
+                Id: track.AmazonId,
+                Type: "track",
+                Title: track.Title,
+                Artist: track.Artist,
+                Album: string.IsNullOrWhiteSpace(track.Album) ? album.Title : track.Album,
+                Url: track.SourceUrl,
+                CoverUrl: string.IsNullOrWhiteSpace(track.Cover) ? album.CoverUrl : track.Cover,
+                DurationMs: track.DurationMs > 0 ? track.DurationMs : null,
+                Isrc: track.Isrc,
+                HasAtmos: track.HasAtmos || album.HasAtmos)));
+        }
+
+        return tracks
+            .Where(IsDownloadableMusicTrackResult)
+            .GroupBy(static track => track.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .Take(Math.Clamp(limit, 1, 50))
+            .ToArray();
+    }
+
     private async Task<AmazonSession> CreateSessionAsync(CancellationToken cancellationToken)
     {
         var auth = (await _platformAuthService.LoadAsync()).AmazonMusic;
@@ -356,28 +374,6 @@ public sealed class AmazonMusicMetadataService
             ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
         };
         return await PostSkillJsonAsync(session, $"{SkillApiBaseUrl}/showHome", pageUrl, payload, cancellationToken);
-    }
-
-    private async Task<JsonDocument> FetchTrackDocumentAsync(
-        AmazonSession session,
-        string id,
-        string url,
-        CancellationToken cancellationToken)
-    {
-        var asin = ExtractAsin(id) ?? ExtractAsin(url);
-        if (string.IsNullOrWhiteSpace(asin))
-        {
-            return await FetchHomeDocumentAsync(session, url, cancellationToken);
-        }
-
-        var pageUrl = $"https://{session.Host}/tracks/{asin}";
-        var payload = new Dictionary<string, string>
-        {
-            ["id"] = asin,
-            ["userHash"] = JsonSerializer.Serialize(new { level = "LIBRARY_MEMBER" }, JsonOptions),
-            ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
-        };
-        return await PostSkillJsonAsync(session, SkillTrackApiUrl, pageUrl, payload, cancellationToken);
     }
 
     private async Task<JsonDocument> FetchArtistDocumentAsync(
@@ -600,7 +596,7 @@ public sealed class AmazonMusicMetadataService
             var item = ReadCatalogItem(element);
             if (item is not null
                 && string.Equals(nextSection, item.Type, StringComparison.OrdinalIgnoreCase)
-                && IsSearchResultCard(element))
+                && IsSearchResultCardForType(element, item.Type))
             {
                 yield return item;
             }
@@ -669,6 +665,32 @@ public sealed class AmazonMusicMetadataService
         }
 
         return false;
+    }
+
+    private static bool IsSearchResultCardForType(JsonElement node, string type)
+    {
+        if (!IsSearchResultCard(node))
+        {
+            return false;
+        }
+
+        var nodeInterface = FirstText(node, "interface");
+        if (string.IsNullOrWhiteSpace(nodeInterface))
+        {
+            return type == "track" && ParseCatalogDeeplink(ReadDeepLink(node)).Type == "track";
+        }
+
+        return type switch
+        {
+            "track" => nodeInterface.Contains("DescriptiveRowItemElement", StringComparison.Ordinal)
+                       || nodeInterface.Contains("SquareHorizontalItemElement", StringComparison.Ordinal),
+            "album" => nodeInterface.Contains("SquareVerticalItemElement", StringComparison.Ordinal)
+                       || nodeInterface.Contains("SquareHorizontalItemElement", StringComparison.Ordinal),
+            "artist" => nodeInterface.Contains("CircleVerticalItemElement", StringComparison.Ordinal)
+                        || nodeInterface.Contains("SquareVerticalItemElement", StringComparison.Ordinal),
+            "playlist" => nodeInterface.Contains("SquareVerticalItemElement", StringComparison.Ordinal),
+            _ => false
+        };
     }
 
     private static bool HasArrayChild(JsonElement node)
@@ -1353,7 +1375,8 @@ public sealed class AmazonMusicMetadataService
         if (lower.Contains("/albums/")) return ("album", id);
         if (lower.Contains("/artists/")) return ("artist", id);
         if (lower.Contains("/playlists/")) return ("playlist", id);
-        return ("track", id);
+        if (lower.Contains("/tracks/")) return ("track", id);
+        return (string.Empty, string.Empty);
     }
 
     private static string? ExtractQueryAsin(string query, string key)
