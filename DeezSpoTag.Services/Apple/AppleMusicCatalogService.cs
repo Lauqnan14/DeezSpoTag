@@ -626,7 +626,6 @@ public sealed class AppleMusicCatalogService
         // Decode only delimiters so already-encoded query values remain untouched.
         return url
             .Replace("%3F", "?", StringComparison.OrdinalIgnoreCase)
-            .Replace("%26", "&", StringComparison.OrdinalIgnoreCase)
             .Replace("%3D", "=", StringComparison.OrdinalIgnoreCase);
     }
 

@@ -207,6 +207,7 @@ namespace DeezSpoTag.Web.Controllers
             if (context.NormalizedSource != AppleSource
                 || context.NormalizedType != "track"
                 || string.IsNullOrWhiteSpace(context.ResolvedId)
+                || !string.IsNullOrWhiteSpace(request.AppleUrl)
                 || !_libraryRepository.IsConfigured)
             {
                 return null;

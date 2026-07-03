@@ -2791,7 +2791,7 @@ function buildUnifiedClick(item, type) {
 }
 
 function buildAppleResultClick(item, type) {
-    const normalizedType = String(item?.type || type || '').trim().toLowerCase();
+    const normalizedType = normalizeAppleCatalogResultType(item?.type || type || '');
     const appleId = item?.appleId || item?.id || '';
     const appleUrl = item?.appleUrl || item?.url || item?.sourceUrl || '';
     if (normalizedType === 'artist') {
@@ -2804,6 +2804,33 @@ function buildAppleResultClick(item, type) {
         return `openAppleResult('${escapeJsString(appleUrl)}', '${escapeJsString(normalizedType || 'track')}', '${escapeJsString(appleUrl)}')`;
     }
     return '';
+}
+
+function normalizeAppleCatalogResultType(type) {
+    switch (String(type || '').trim().toLowerCase()) {
+        case 'songs':
+        case 'song':
+        case 'track':
+            return 'track';
+        case 'albums':
+        case 'album':
+            return 'album';
+        case 'artists':
+        case 'artist':
+            return 'artist';
+        case 'playlists':
+        case 'playlist':
+            return 'playlist';
+        case 'stations':
+        case 'station':
+            return 'station';
+        case 'music-videos':
+        case 'music-video':
+        case 'video':
+            return 'video';
+        default:
+            return String(type || '').trim().toLowerCase();
+    }
 }
 
 function buildTidalResultClick(item, type) {

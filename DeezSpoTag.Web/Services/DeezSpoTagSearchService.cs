@@ -331,7 +331,6 @@ public sealed class DeezSpoTagSearchService
             settings.AppleMusic?.Storefront,
             settings.AppleMusic?.MediaUserToken,
             cancellationToken);
-        var includeRelationships = ShouldIncludeRelationshipsTracks(typesOverride);
         using var doc = await _appleCatalog.SearchAsync(
             term,
             limit,
@@ -341,19 +340,8 @@ public sealed class DeezSpoTagSearchService
             options: new AppleMusicCatalogService.AppleSearchOptions(
                 TypesOverride: typesOverride,
                 Offset: offset,
-                IncludeRelationshipsTracks: includeRelationships));
+                IncludeRelationshipsTracks: false));
         return doc.RootElement.Clone();
-    }
-
-    private static bool ShouldIncludeRelationshipsTracks(string? typesOverride)
-    {
-        if (string.IsNullOrWhiteSpace(typesOverride))
-        {
-            return true;
-        }
-
-        var normalized = typesOverride.Trim().ToLowerInvariant();
-        return normalized != MusicVideosType && normalized != ArtistResultsType;
     }
 
     private static bool CatalogHasNext(JsonElement root, string key)
