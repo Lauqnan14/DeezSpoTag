@@ -599,6 +599,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.Plan.Config.ParseFilename,
             context.Plan.Config.TracknameTemplate,
             context.Plan.Config.TitleRegex);
+        var validationInfo = CloneAudioInfo(info);
         var shazamResult = TryApplyShazam(
             context.File,
             info,
@@ -629,7 +630,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        await ApplyResolvedMatchAsync(context, info, match, usedShazamForStatus);
+        await ApplyResolvedMatchAsync(context, info, validationInfo, match, usedShazamForStatus);
     }
 
     private static bool TryHandlePreSkippedFile(AutoTagFileRunContext context)
@@ -695,12 +696,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private async Task ApplyResolvedMatchAsync(
         AutoTagFileRunContext context,
         AutoTagAudioInfo info,
+        AutoTagAudioInfo validationInfo,
         AutoTagMatchResult match,
         bool usedShazamForStatus)
     {
         if (string.Equals(context.Platform, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
         {
-            var boomplayGuardReason = EvaluateBoomplayReliabilityGuard(info, match, context.Plan.MatchingConfig);
+            var boomplayGuardReason = EvaluateBoomplayReliabilityGuard(validationInfo, match, context.Plan.MatchingConfig);
             if (!string.IsNullOrWhiteSpace(boomplayGuardReason))
             {
                 EmitSkippedStatus(context, boomplayGuardReason, usedShazamForStatus);
@@ -708,7 +710,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        var mismatchReason = EvaluateGlobalMismatchGuard(info, match, context.Plan.MatchingConfig);
+        var mismatchReason = EvaluateGlobalMismatchGuard(validationInfo, match, context.Plan.MatchingConfig);
         if (!string.IsNullOrWhiteSpace(mismatchReason))
         {
             if (string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
@@ -717,7 +719,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context,
                     mismatchReason,
                     usedShazamForStatus,
-                    AutoTagReviewMetadata.FromMatch(info, match.Track));
+                    AutoTagReviewMetadata.FromMatch(validationInfo, match.Track));
                 context.Plan.ReviewedFiles.Add(context.File);
                 return;
             }
@@ -782,6 +784,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
+        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
+        {
+            return null;
+        }
+
         List<string> sourceArtists;
         if (info.Artists.Count > 0)
         {
@@ -805,11 +812,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (!artistCompatible)
         {
             return "match rejected by quality guard (artist mismatch)";
-        }
-
-        if (HasMatchingIsrc(info.Isrc, match.Track.Isrc))
-        {
-            return null;
         }
 
         var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
@@ -2372,7 +2374,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static AutoTagAudioInfo BuildShazamIdFirstInfo(AutoTagAudioInfo source)
     {
-        var cloned = new AutoTagAudioInfo
+        var cloned = CloneAudioInfo(source);
+
+        var spotifyId = ExtractSpotifyTrackIdFromTags(cloned.Tags);
+        if (!string.IsNullOrWhiteSpace(spotifyId))
+        {
+            cloned.Tags[SpotifyTrackIdTag] = new List<string> { spotifyId };
+        }
+
+        return cloned;
+    }
+
+    private static AutoTagAudioInfo CloneAudioInfo(AutoTagAudioInfo source)
+    {
+        return new AutoTagAudioInfo
         {
             Title = source.Title,
             Artist = source.Artist,
@@ -2385,14 +2400,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             HasEmbeddedTitle = source.HasEmbeddedTitle,
             HasEmbeddedArtist = source.HasEmbeddedArtist
         };
-
-        var spotifyId = ExtractSpotifyTrackIdFromTags(cloned.Tags);
-        if (!string.IsNullOrWhiteSpace(spotifyId))
-        {
-            cloned.Tags[SpotifyTrackIdTag] = new List<string> { spotifyId };
-        }
-
-        return cloned;
     }
 
     private static AutoTagMatchResult PrepareShazamIdFirstMatch(

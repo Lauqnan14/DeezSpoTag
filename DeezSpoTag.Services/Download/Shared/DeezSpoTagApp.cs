@@ -344,6 +344,15 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         try
         {
             var effectiveItem = await NormalizeFallbackPayloadAsync(nextItem, cancellationToken);
+            if (string.Equals(effectiveItem.Status, FailedStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                _retryScheduler.ScheduleRetry(
+                    effectiveItem.QueueUuid,
+                    effectiveItem.Engine ?? "unknown",
+                    effectiveItem.Error ?? "Track unavailable in enabled download sources.");
+                return;
+            }
+
             using var scope = _serviceProvider.CreateScope();
             var engineName = NormalizeEngineName(effectiveItem.Engine);
             if (string.Equals(engineName, DeezSpoTagEngineAlias, StringComparison.OrdinalIgnoreCase))
@@ -419,16 +428,46 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return item;
         }
 
+        var resolutionStatus = QueuePreResolutionPayload.ReadStatus(payloadObj);
         var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, Settings, payloadObj);
         var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, state, resetIndexAndHistory: false);
-        if (!changed)
+        var normalizedPayload = changed ? payloadObj.ToJsonString() : item.PayloadJson;
+        var normalizedItem = changed ? item with { PayloadJson = normalizedPayload } : item;
+        if (changed)
         {
-            return item;
+            await _queueRepository.UpdatePayloadAsync(item.QueueUuid, normalizedPayload!, cancellationToken);
         }
 
-        var normalizedPayload = payloadObj.ToJsonString();
-        await _queueRepository.UpdatePayloadAsync(item.QueueUuid, normalizedPayload, cancellationToken);
-        return item with { PayloadJson = normalizedPayload };
+        if (string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved, StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(resolutionStatus))
+        {
+            return normalizedItem;
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        var resolver = scope.ServiceProvider.GetService<IQueuedDownloadPayloadResolver>();
+        if (resolver == null)
+        {
+            return normalizedItem;
+        }
+
+        var resolution = await resolver.ResolveAsync(normalizedItem, cancellationToken);
+        await _queueRepository.UpdatePayloadAndEngineAsync(
+            resolution.Item.QueueUuid,
+            resolution.Item.Engine,
+            resolution.Item.PayloadJson ?? normalizedItem.PayloadJson ?? string.Empty,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resolution.Error))
+        {
+            await _queueRepository.UpdateStatusAsync(
+                resolution.Item.QueueUuid,
+                FailedStatus,
+                resolution.Error,
+                cancellationToken: cancellationToken);
+            return resolution.Item;
+        }
+
+        return resolution.Item with { Status = "running" };
     }
 
     public async Task CancelDownloadAsync(string uuid)

@@ -647,6 +647,7 @@ public sealed class DownloadIntentService
         DownloadQueueItem item,
         CancellationToken cancellationToken)
     {
+        var payload = QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson);
         var intent = BuildIntentFromQueueItem(item);
         if (string.Equals(item.Engine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
             && string.Equals(item.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
@@ -654,12 +655,23 @@ public sealed class DownloadIntentService
             return await ResolveQueuedTidalAtmosPayloadAsync(item, intent, cancellationToken);
         }
 
+        var savedAutoSources = ReadQueuedAutoSources(payload);
+        if (savedAutoSources.Count > 0)
+        {
+            return await ResolveQueuedPayloadFromSavedPlanAsync(
+                item,
+                intent,
+                payload,
+                savedAutoSources,
+                cancellationToken);
+        }
+
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
             preferIsrcOnly: false,
             allowManualQueueDuringEnrichment: false,
             allowAutomaticSecondaryQuality: false,
-            QueueSourceSettingsSnapshot.ReadFromPayload(QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson)),
+            QueueSourceSettingsSnapshot.ReadFromPayload(payload),
             cancellationToken);
         if (resolution.Failure != null)
         {
@@ -758,6 +770,139 @@ public sealed class DownloadIntentService
             DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
             ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+    }
+
+    private async Task<QueuePreResolutionPayload.ResolutionResult> ResolveQueuedPayloadFromSavedPlanAsync(
+        DownloadQueueItem item,
+        DownloadIntent intent,
+        JsonObject payload,
+        List<string> autoSources,
+        CancellationToken cancellationToken)
+    {
+        var settings = _settingsService.LoadSettings();
+        var snapshot = QueueSourceSettingsSnapshot.ReadFromPayload(payload);
+        if (snapshot?.HasValues == true)
+        {
+            settings = snapshot.ApplyTo(settings);
+        }
+
+        NormalizeEnqueueSettings(settings);
+        var fallbackPlan = FallbackPayloadNormalizer.ReadFallbackPlan(payload);
+        if (fallbackPlan.Count == 0)
+        {
+            fallbackPlan = BuildFallbackPlanFromSources(intent, autoSources, settings.FallbackSearch);
+        }
+
+        var engines = autoSources
+            .Select(source => DownloadSourceOrder.DecodeAutoSource(source).Source)
+            .Where(source => !string.IsNullOrWhiteSpace(source))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        await ResolveTrackIdentityMatrixAsync(intent, settings, engines, cancellationToken);
+
+        string? lastSkipReason = null;
+        for (var index = 0; index < autoSources.Count; index++)
+        {
+            var step = DownloadSourceOrder.DecodeAutoSource(autoSources[index]);
+            if (string.IsNullOrWhiteSpace(step.Source))
+            {
+                continue;
+            }
+
+            var candidate = await ResolveIntentAsync(
+                intent,
+                step.Source,
+                preferIsrcOnly: false,
+                preResolved: null,
+                effectiveSettings: settings,
+                cancellationToken);
+            if (!TryAcceptResolvedCandidate(step.Source, candidate, out var skipReason))
+            {
+                lastSkipReason = skipReason;
+                continue;
+            }
+
+            var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, step.Source)
+                ?? candidate.SourceUrl
+                ?? intent.SourceUrl;
+            var qobuzId = FirstNonEmpty(
+                intent.QobuzId,
+                TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
+            var tidalId = FirstNonEmpty(
+                intent.TidalId,
+                TryExtractTidalTrackId(sourceUrl));
+            var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
+                ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout);
+            var identityError = ValidateQueuedResolvedIdentity(
+                step.Source,
+                sourceUrl,
+                intent.DeezerId,
+                intent.AppleId,
+                qobuzId,
+                tidalId,
+                amazonId);
+            if (!string.IsNullOrWhiteSpace(identityError))
+            {
+                lastSkipReason = identityError;
+                continue;
+            }
+
+            return new QueuePreResolutionPayload.ResolutionResult(
+                step.Source,
+                sourceUrl,
+                step.Quality,
+                index,
+                fallbackPlan,
+                null,
+                Isrc: intent.Isrc,
+                DeezerId: intent.DeezerId,
+                DeezerAlbumId: intent.DeezerAlbumId,
+                DeezerArtistId: intent.DeezerArtistId,
+                SpotifyId: intent.SpotifyId,
+                AppleId: intent.AppleId,
+                QobuzId: qobuzId,
+                TidalId: tidalId,
+                AmazonId: amazonId,
+                DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
+                DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
+                ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+        }
+
+        return new QueuePreResolutionPayload.ResolutionResult(
+            item.Engine,
+            null,
+            null,
+            null,
+            fallbackPlan,
+            string.IsNullOrWhiteSpace(lastSkipReason)
+                ? "Track unavailable in enabled download sources."
+                : $"Track unavailable in enabled download sources. Last skip: {lastSkipReason}",
+            Isrc: intent.Isrc,
+            DeezerId: intent.DeezerId,
+            DeezerAlbumId: intent.DeezerAlbumId,
+            DeezerArtistId: intent.DeezerArtistId,
+            SpotifyId: intent.SpotifyId,
+            AppleId: intent.AppleId,
+            QobuzId: intent.QobuzId,
+            TidalId: intent.TidalId,
+            AmazonId: intent.AmazonId,
+            DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
+            DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
+            ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+    }
+
+    private static List<string> ReadQueuedAutoSources(JsonObject payload)
+    {
+        var node = payload["AutoSources"] ?? payload["autoSources"];
+        if (node is not JsonArray array)
+        {
+            return new List<string>();
+        }
+
+        return array
+            .Select(item => item?.ToString())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .ToList();
     }
 
     private static string? ValidateQueuedResolvedIdentity(

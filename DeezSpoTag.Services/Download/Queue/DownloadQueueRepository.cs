@@ -54,7 +54,7 @@ public sealed class DownloadQueueRepository
     private const string CompletedQueueStatusSqlCondition = "lower(status) IN ('completed', 'complete')";
     private const string ResolutionStatusSql = "lower(CASE WHEN json_valid(payload) THEN COALESCE(CAST(json_extract(payload, '$.ResolutionStatus') AS TEXT), CAST(json_extract(payload, '$.resolutionStatus') AS TEXT), '') ELSE '' END)";
     private const string QueuedItemReadyForDownloadSqlCondition =
-        "(" + ResolutionStatusSql + " = '' OR " + ResolutionStatusSql + " = 'resolved')";
+        "(" + ResolutionStatusSql + " = '' OR " + ResolutionStatusSql + " IN ('pending', 'failed', 'resolved'))";
     private const string UpdateDownloadTaskSqlPrefix = "\nUPDATE " + DownloadTaskTable;
     private readonly string _connectionString;
     private readonly DownloadStagingCleanupService? _stagingCleanupService;
@@ -1183,7 +1183,7 @@ SET payload = @payload,
     lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
-  AND status IN ('queued', 'resolving')
+  AND status IN ('queued', 'resolving', 'running')
   AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);

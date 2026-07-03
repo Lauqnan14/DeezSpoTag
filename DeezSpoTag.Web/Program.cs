@@ -1640,11 +1640,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleWrapperDecryptor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.AppleEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Web.Services.IDownloadIntentBackgroundQueue, DeezSpoTag.Web.Services.DownloadIntentBackgroundQueue>();
-        services.AddSingleton<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadQueuePreResolutionService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Download queue pre-resolution after HTTP readiness.");
+        services.AddScoped<DeezSpoTag.Services.Download.Queue.IQueuedDownloadPayloadResolver, DeezSpoTag.Web.Services.DownloadIntentQueuedPayloadResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.DownloadIntentBackgroundService>(
             services,
