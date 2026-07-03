@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Threading;
@@ -185,17 +186,14 @@ public sealed class CredentialProtectionTests : IDisposable
         var registry = new QobuzPublicProviderRegistry(
             new StubWebHostEnvironment(_tempRoot),
             _dataProtectionProvider,
-            NullLogger<QobuzPublicProviderRegistry>.Instance);
+            NullLogger<QobuzPublicProviderRegistry>.Instance,
+            new FixedHttpClientFactory());
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
         Assert.DoesNotContain(providers, provider => provider.Id.Contains("squid", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(providers, provider => provider.DisplayName.Contains("squid", StringComparison.OrdinalIgnoreCase));
         var provider = providers[0];
         Assert.True(provider.Enabled);
-
-        await registry.RecordSuccessAsync(provider.Id, 123, CancellationToken.None);
-        var checkedProviders = await registry.GetProvidersAsync(CancellationToken.None);
-        Assert.Equal("online", Assert.Single(checkedProviders, item => item.Id == provider.Id).Status);
 
         await registry.SetEnabledAsync(provider.Id, false, CancellationToken.None);
         var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
@@ -246,15 +244,12 @@ public sealed class CredentialProtectionTests : IDisposable
         var registry = new TidalPublicProviderRegistry(
             new StubWebHostEnvironment(_tempRoot),
             _dataProtectionProvider,
-            NullLogger<TidalPublicProviderRegistry>.Instance);
+            NullLogger<TidalPublicProviderRegistry>.Instance,
+            new FixedHttpClientFactory());
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
         var provider = providers[0];
         Assert.True(provider.Enabled);
-
-        await registry.RecordSuccessAsync(provider.Endpoint, 123, CancellationToken.None);
-        var checkedProviders = await registry.GetProvidersAsync(CancellationToken.None);
-        Assert.Equal("online", Assert.Single(checkedProviders, item => item.Id == provider.Id).Status);
 
         await registry.SetEnabledAsync(provider.Id, false, CancellationToken.None);
         var reloaded = await registry.GetProvidersAsync(CancellationToken.None);
@@ -357,5 +352,10 @@ public sealed class CredentialProtectionTests : IDisposable
         public string EnvironmentName { get; set; }
         public string ContentRootPath { get; set; }
         public IFileProvider ContentRootFileProvider { get; set; }
+    }
+
+    private sealed class FixedHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
     }
 }

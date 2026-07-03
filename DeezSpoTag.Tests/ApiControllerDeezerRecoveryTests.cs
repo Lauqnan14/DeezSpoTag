@@ -22,7 +22,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             httpClientFactory: httpClientFactory,
             spotifyIdResolver: null!,
             spotifyArtworkResolver: null!,
-            spotifyArtistService: null!);
+            spotifyArtistService: null!,
+            amazonMusicMetadataService: null!);
 
         var controller = new ApiController(new ApiController.ApiControllerDependencies
         {
@@ -70,7 +71,8 @@ public sealed class ApiControllerDeezerRecoveryTests
             httpClientFactory: httpClientFactory,
             spotifyIdResolver: null!,
             spotifyArtworkResolver: null!,
-            spotifyArtistService: null!);
+            spotifyArtistService: null!,
+            amazonMusicMetadataService: null!);
 
         var controller = new ApiController(new ApiController.ApiControllerDependencies
         {

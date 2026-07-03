@@ -100,23 +100,6 @@ public sealed class DownloadIntentService
         long? DestinationFolderId,
         string QualityBucket);
 
-    private sealed record PrimaryPayloadEnqueueContext(
-        DownloadIntent Intent,
-        DeezSpoTagSettings Settings,
-        long? PrimaryDestinationFolderId,
-        long? SecondaryDestinationFolderId,
-        bool AllowQualityUpgrade,
-        int? RequestedQualityRank,
-        bool UseAtmosStereoDual,
-        List<string> Queued,
-        List<string> RelatedQueueUuids,
-        List<string> SkipReasonCodes,
-        List<string> SkipReasons,
-        SongLinkResult? Availability,
-        bool PreferIsrcOnly,
-        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
-        CancellationToken CancellationToken);
-
     private sealed record AtmosSecondaryEnqueueRequest(
         DownloadIntent Intent,
         DeezSpoTagSettings Settings,
@@ -126,27 +109,6 @@ public sealed class DownloadIntentService
         List<string> Queued,
         SongLinkResult? Availability,
         bool PreferIsrcOnly,
-        IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
-        CancellationToken CancellationToken);
-
-    private sealed record EngineEnqueueRequest(
-        DownloadIntent Intent,
-        DeezSpoTagSettings Settings,
-        string Engine,
-        string? SelectedQuality,
-        string? ResolvedSourceUrl,
-        bool UseAtmosStereoDual,
-        long? PrimaryDestinationFolderId,
-        long? SecondaryDestinationFolderId,
-        int DurationSeconds,
-        int? RequestedQualityRank,
-        SongLinkResult? Availability,
-        bool PreferIsrcOnly,
-        List<string> Queued,
-        List<string> RelatedQueueUuids,
-        List<string> SkipReasonCodes,
-        List<string> SkipReasons,
-        (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) FallbackInfo,
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
         CancellationToken CancellationToken);
 
@@ -160,10 +122,6 @@ public sealed class DownloadIntentService
         int RequestedRank,
         int? RequestedLocalQualityRank,
         bool LocalQualityUpgradeRequested);
-
-    private sealed record EngineEnqueueOutcome(
-        DownloadIntentResult? Failure,
-        int Skipped);
 
     private sealed record EnqueueResolutionState(
         DeezSpoTagSettings Settings,
@@ -415,8 +373,6 @@ public sealed class DownloadIntentService
         }
 
         var settings = preparation.Settings;
-        await ResolveTrackIdentityMatrixAsync(intent, settings, AllIdentityEngines, cancellationToken);
-
         var engine = ResolveVisibleQueueEngine(intent, settings, preparation.IsPodcastIntent);
         if (string.IsNullOrWhiteSpace(engine))
         {
@@ -532,16 +488,10 @@ public sealed class DownloadIntentService
         var engine = resolvedTarget.Engine;
         var selectedQuality = ApplyResolvedQuality(intent, settings, engine, resolvedTarget.SelectedQuality);
         selectedQuality = ResolveEnabledDownloadQuality(settings, engine, selectedQuality);
-        LogResolvedIntentMapping(resolvedTarget.Resolution, engine);
         var autoSources = resolvedTarget.AutoSources;
-        var availability = routing.Availability;
         var useAtmosStereoDual = routing.UseAtmosStereoDual;
         var allowCrossEngineFallback = resolvedTarget.AllowCrossEngineFallback;
-        var availabilityWarning = resolvedTarget.AvailabilityWarning;
-        var resolved = resolvedTarget.Resolution;
-        var resolvedSourceUrl = resolved.SourceUrl;
         var isMusicIntent = IsMusicIntent(intent);
-        var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
         var queued = new List<string>();
         var relatedQueueUuids = new List<string>();
         var skipReasonCodes = new List<string>();
@@ -555,7 +505,7 @@ public sealed class DownloadIntentService
             allowCrossEngineFallback,
             useAtmosStereoDual,
             autoSources,
-            availability));
+            routing.Availability));
         var fallbackPlan = primaryFallback.FallbackPlan;
         var selectedAutoIndex = primaryFallback.AutoIndex;
 
@@ -586,33 +536,44 @@ public sealed class DownloadIntentService
             intent.AlbumArtist,
             intent.Artist,
             settings.Tags?.SingleAlbumArtist != false);
-        var request = new EngineEnqueueRequest(
-            intent,
-            settings,
-            engine,
-            selectedQuality,
-            resolvedSourceUrl,
-            useAtmosStereoDual,
-            primaryDestinationFolderId,
-            secondaryDestinationFolderId,
-            durationSeconds,
-            requestedQualityRank,
-            availability,
-            preferIsrcOnly,
-            queued,
-            relatedQueueUuids,
-            skipReasonCodes,
-            skipReasons,
-            primaryFallback,
+        var payload = BuildVisiblePreResolutionPayload(intent, settings, engine, selectedQuality);
+        payload.AutoSources = primaryFallback.AutoSources;
+        payload.AutoIndex = primaryFallback.AutoIndex;
+        payload.FallbackPlan = primaryFallback.FallbackPlan;
+        payload.DestinationFolderId = primaryDestinationFolderId;
+        payload.QualityBucket = useAtmosStereoDual ? StereoType : payload.QualityBucket;
+
+        var enqueueDecision = await EnqueueItemAsync(
+            payload,
             blockRules,
+            intent.AllowQualityUpgrade,
+            requestedQualityRank,
             cancellationToken);
-        var enqueueOutcome = await EnqueueByEngineAsync(request);
-        if (enqueueOutcome.Failure != null)
+        var skipped = 0;
+        if (enqueueDecision.Success)
         {
-            return enqueueOutcome.Failure;
+            var queueUuid = enqueueDecision.QueueUuid ?? payload.Id;
+            queued.Add(queueUuid);
+            NotifyQueueAdded(payload);
+        }
+        else
+        {
+            skipped = 1;
+            RecordSkipReason(skipReasonCodes, skipReasons, relatedQueueUuids, enqueueDecision);
         }
 
-        var skipped = enqueueOutcome.Skipped;
+        if (useAtmosStereoDual
+            && !IsAtmosQuality(selectedQuality)
+            && (enqueueDecision.Success || ShouldContinueWithSecondaryAfterPrimarySkip(enqueueDecision)))
+        {
+            await TryEnqueueVisibleAtmosSecondaryAsync(
+                intent,
+                settings,
+                destinationRouting,
+                blockRules,
+                queued,
+                cancellationToken);
+        }
 
         if (queued.Count > 0)
         {
@@ -624,11 +585,6 @@ public sealed class DownloadIntentService
         }
 
         var message = queued.Count > 0 ? $"Queued {queued.Count} item(s)." : (skipReasons.FirstOrDefault() ?? "Nothing queued.");
-        if (!string.IsNullOrWhiteSpace(availabilityWarning))
-        {
-            message = $"{message} {availabilityWarning}";
-        }
-
         return new DownloadIntentResult
         {
             Success = queued.Count > 0,
@@ -792,12 +748,6 @@ public sealed class DownloadIntentService
         {
             fallbackPlan = BuildFallbackPlanFromSources(intent, autoSources, settings.FallbackSearch);
         }
-
-        var engines = autoSources
-            .Select(source => DownloadSourceOrder.DecodeAutoSource(source).Source)
-            .Where(source => !string.IsNullOrWhiteSpace(source))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-        await ResolveTrackIdentityMatrixAsync(intent, settings, engines, cancellationToken);
 
         string? lastSkipReason = null;
         for (var index = 0; index < autoSources.Count; index++)
@@ -1347,57 +1297,53 @@ public sealed class DownloadIntentService
             await PopulateIntentMetadataAsync(intent, preparation.Settings, profileValidation.ResolvedDownloadTagSource, cancellationToken);
         }
         var settings = preparation.Settings;
-        await ResolveTrackIdentityMatrixAsync(
-            intent,
-            settings,
-            new[] { DeezerPlatform, SpotifyPlatform, ApplePlatform },
-            cancellationToken);
         var routingFailure = TryValidateExplicitEngineRouting(intent, preparation);
         if (routingFailure != null)
         {
             return (routingFailure, null);
         }
 
-        var routing = await PrepareEnqueueRoutingAsync(
+        var routing = PrepareEnqueueRouting(
             intent,
             preparation,
-            allowAutomaticSecondaryQuality,
-            cancellationToken);
+            allowAutomaticSecondaryQuality);
         var noSourcesFailure = TryValidateRoutingSources(routing);
         if (noSourcesFailure != null)
         {
             return (noSourcesFailure, null);
         }
 
-        await ResolveTrackIdentityMatrixAsync(
-            intent,
-            settings,
-            routing.AutoSources.Select(source => DownloadSourceOrder.DecodeAutoSource(source).Source),
-            cancellationToken);
-
-        var resolvedTarget = await ResolvePrimaryEnqueueTargetAsync(intent, routing, settings, preferIsrcOnly, cancellationToken);
-        if (resolvedTarget?.Resolution.Engine == string.Empty
-            && !string.IsNullOrWhiteSpace(resolvedTarget?.Resolution.Message))
-        {
-            return (new DownloadIntentResult
-            {
-                Success = false,
-                Message = resolvedTarget.Resolution.Message,
-                Engine = resolvedTarget.Engine
-            }, null);
-        }
-        if (resolvedTarget == null)
-        {
-            _activityLog.Warn("Auto mapping failed: engine=auto reason=unresolved");
-            return (new DownloadIntentResult
-            {
-                Success = false,
-                Message = "Unable to resolve mapping for any auto source.",
-                Engine = string.Empty
-            }, null);
-        }
+        var resolvedTarget = BuildPendingEnqueueTarget(intent, routing, settings);
 
         return (null, new EnqueueResolutionState(settings, routing, resolvedTarget));
+    }
+
+    private static ResolvedEnqueueTarget BuildPendingEnqueueTarget(
+        DownloadIntent intent,
+        EnqueueRoutingState routing,
+        DeezSpoTagSettings settings)
+    {
+        var isAuto = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty)
+            && (routing.IntentRequestsAuto || string.Equals(settings.Service, AutoService, StringComparison.OrdinalIgnoreCase));
+        var allowCrossEngineFallback = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty) && isAuto;
+        var autoIndex = ResolveAutoStartIndex(intent.PreferredEngine, routing.PreferredEngine, routing.AutoSources);
+        var selectedEngine = routing.AppleOnlyRequired
+            ? ApplePlatform
+            : isAuto
+                ? DownloadSourceOrder.DecodeAutoSource(routing.AutoSources[Math.Clamp(autoIndex, 0, routing.AutoSources.Count - 1)]).Source
+                : routing.PreferredEngine;
+        var selectedQuality = isAuto
+            ? DownloadSourceOrder.DecodeAutoSource(routing.AutoSources[Math.Clamp(autoIndex, 0, routing.AutoSources.Count - 1)]).Quality ?? routing.TargetQuality
+            : routing.TargetQuality;
+
+        return new ResolvedEnqueueTarget(
+            selectedEngine,
+            selectedQuality,
+            autoIndex,
+            allowCrossEngineFallback,
+            string.Empty,
+            (selectedEngine, null, string.Empty, "queue-pending"),
+            routing.AutoSources);
     }
 
     private (List<FallbackPlanStep> FallbackPlan, List<string> AutoSources, int AutoIndex) BuildEnqueueFallbackInfo(
@@ -1499,379 +1445,11 @@ public sealed class DownloadIntentService
                 || string.Equals(decoded.Source, AmazonPlatform, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static PrimaryPayloadEnqueueContext CreatePrimaryEnqueueContext(EngineEnqueueRequest request)
-        => new(
-            request.Intent,
-            request.Settings,
-            request.PrimaryDestinationFolderId,
-            request.SecondaryDestinationFolderId,
-            request.Intent.AllowQualityUpgrade,
-            request.RequestedQualityRank,
-            request.UseAtmosStereoDual,
-            request.Queued,
-            request.RelatedQueueUuids,
-            request.SkipReasonCodes,
-            request.SkipReasons,
-            request.Availability,
-            request.PreferIsrcOnly,
-            request.BlockRules,
-            request.CancellationToken);
-
-    private async Task<EngineEnqueueOutcome> EnqueueByEngineAsync(EngineEnqueueRequest request)
-    {
-        return request.Engine switch
-        {
-            DeezerPlatform => await EnqueueDeezerAsync(request),
-            TidalPlatform => await EnqueueTidalAsync(request),
-            AmazonPlatform => await EnqueueAmazonAsync(request),
-            ApplePlatform => await EnqueueAppleAsync(request),
-            QobuzPlatform => await EnqueueQobuzAsync(request),
-            _ => new EngineEnqueueOutcome(
-                new DownloadIntentResult
-                {
-                    Success = false,
-                    Message = $"Unsupported engine: {request.Engine}",
-                    Engine = request.Engine
-                },
-                0)
-        };
-    }
-
-    private async Task<EngineEnqueueOutcome> EnqueueDeezerAsync(EngineEnqueueRequest request)
-    {
-        if (!_deezerClient.LoggedIn)
-        {
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Deezer login required.", Engine = request.Engine },
-                0);
-        }
-
-        var resolvedSource = request.ResolvedSourceUrl ?? request.Intent.SourceUrl;
-        var isPodcastIntent = string.Equals(
-            NormalizeContentType(request.Intent.ContentType),
-            DownloadContentTypes.Podcast,
-            StringComparison.OrdinalIgnoreCase)
-            || IsPodcastSource(resolvedSource, null);
-        var deezerTrackId = ResolveDeezerTrackIdForEnqueue(request.Intent, request.ResolvedSourceUrl, isPodcastIntent);
-        if (string.IsNullOrWhiteSpace(deezerTrackId))
-        {
-            var recoverySourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
-            await EnsureDeezerIdentityAsync(request.Intent, recoverySourceUrl);
-            deezerTrackId = ResolveDeezerTrackIdForEnqueue(request.Intent, request.ResolvedSourceUrl, isPodcastIntent);
-        }
-        if (string.IsNullOrWhiteSpace(deezerTrackId))
-        {
-            var idType = isPodcastIntent ? EpisodeType : TrackType;
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult
-                {
-                    Success = false,
-                    Message = $"Deezer {idType} ID unavailable for this item.",
-                    Engine = request.Engine
-                },
-                0);
-        }
-
-        var collectionType = ResolveDeezerCollectionType(request.Intent, isPodcastIntent);
-        var requestedBitrate = int.TryParse(request.SelectedQuality, out var parsedBitrate) ? parsedBitrate : 0;
-        var bitrate = isPodcastIntent
-            ? 0
-            : DownloadSourceOrder.ResolveDeezerBitrate(request.Settings, requestedBitrate);
-        var sourceUrl = ResolveDeezerSourceUrl(request.ResolvedSourceUrl, deezerTrackId, isPodcastIntent);
-        if (string.IsNullOrWhiteSpace(sourceUrl))
-        {
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Deezer URL unavailable for this track.", Engine = request.Engine },
-                0);
-        }
-
-        var resolvedQuality = request.SelectedQuality;
-        if (string.IsNullOrWhiteSpace(resolvedQuality))
-        {
-            resolvedQuality = isPodcastIntent ? DownloadContentTypes.Podcast : bitrate.ToString();
-        }
-        var payload = new DeezerQueueItem
-        {
-            CollectionType = collectionType,
-            DeezerId = deezerTrackId,
-            DeezerAlbumId = request.Intent.DeezerAlbumId ?? string.Empty,
-            DeezerArtistId = request.Intent.DeezerArtistId ?? string.Empty,
-            Quality = resolvedQuality,
-            Bitrate = bitrate
-        };
-        PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            sourceUrl,
-            collectionType,
-            ResolveContentType(request.Intent.ContentType, sourceUrl, collectionType, request.Intent.HasAtmos, request.SelectedQuality),
-            request.FallbackInfo.AutoSources,
-            request.FallbackInfo.AutoIndex,
-            request.FallbackInfo.FallbackPlan,
-            request.Intent.ReleaseDate ?? string.Empty,
-            request.DurationSeconds,
-            request.PrimaryDestinationFolderId,
-            request.UseAtmosStereoDual ? StereoType : string.Empty));
-        ApplyIntentMetadata(payload, request.Intent);
-
-        var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
-        return new EngineEnqueueOutcome(null, skipped);
-    }
-
-    private async Task<EngineEnqueueOutcome> EnqueueTidalAsync(EngineEnqueueRequest request)
-    {
-        var sourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
-        var tidalId = FirstNonEmpty(request.Intent.TidalId, TryExtractTidalTrackId(sourceUrl));
-        if (string.IsNullOrWhiteSpace(tidalId))
-        {
-            await ResolveTrackIdentityMatrixAsync(
-                request.Intent,
-                request.Settings,
-                new[] { TidalPlatform },
-                request.CancellationToken);
-            sourceUrl = ResolveSourceUrlFromIntentIdentity(request.Intent, TidalPlatform) ?? string.Empty;
-            tidalId = TryExtractTidalTrackId(sourceUrl);
-        }
-
-        if (string.IsNullOrWhiteSpace(tidalId))
-        {
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Tidal track ID unavailable for this track.", Engine = request.Engine },
-                0);
-        }
-
-        sourceUrl = BuildTidalTrackUrl(tidalId);
-        request.Intent.TidalId = tidalId;
-        var selectedQuality = ResolveTidalQueueQuality(request);
-        var payload = new TidalQueueItem();
-        PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            sourceUrl,
-            string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
-            ResolveContentType(request.Intent.ContentType, sourceUrl, TrackType, request.Intent.HasAtmos, selectedQuality),
-            request.FallbackInfo.AutoSources,
-            request.FallbackInfo.AutoIndex,
-            request.FallbackInfo.FallbackPlan,
-            string.Empty,
-            request.DurationSeconds,
-            request.PrimaryDestinationFolderId,
-            request.UseAtmosStereoDual ? StereoType : string.Empty));
-        payload.Quality = selectedQuality;
-        payload.TidalId = tidalId;
-        ApplyIntentMetadata(payload, request.Intent);
-
-        var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
-        return new EngineEnqueueOutcome(null, skipped);
-    }
-
-    private async Task<EngineEnqueueOutcome> EnqueueAmazonAsync(EngineEnqueueRequest request)
-    {
-        var amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.Intent.AmazonId)
-            ?? EngineLinkParser.TryExtractAmazonTrackId(request.ResolvedSourceUrl, RegexTimeout)
-            ?? EngineLinkParser.TryExtractAmazonTrackId(request.Intent.SourceUrl, RegexTimeout);
-        if (string.IsNullOrWhiteSpace(amazonId))
-        {
-            await ResolveTrackIdentityMatrixAsync(
-                request.Intent,
-                request.Settings,
-                new[] { AmazonPlatform },
-                request.CancellationToken);
-            amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.Intent.AmazonId);
-        }
-        if (string.IsNullOrWhiteSpace(amazonId))
-        {
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Amazon Music identity unavailable for this track.", Engine = request.Engine },
-                0);
-        }
-
-        request.Intent.AmazonId = amazonId;
-        var sourceUrl = $"https://music.amazon.com/tracks/{amazonId}";
-        request.Intent.SourceUrl = sourceUrl;
-        var payload = new AmazonQueueItem();
-        PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            sourceUrl,
-            string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
-            ResolveContentType(request.Intent.ContentType, sourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
-            request.FallbackInfo.AutoSources,
-            request.FallbackInfo.AutoIndex,
-            request.FallbackInfo.FallbackPlan,
-            string.Empty,
-            request.DurationSeconds,
-            request.PrimaryDestinationFolderId,
-            request.UseAtmosStereoDual ? StereoType : string.Empty));
-        payload.Quality = request.SelectedQuality ?? "ULTRA_HD_FLAC";
-        payload.AmazonId = amazonId;
-        ApplyIntentMetadata(payload, request.Intent);
-
-        var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
-        return new EngineEnqueueOutcome(null, skipped);
-    }
-
     private static string BuildTidalTrackUrl(string tidalId)
         => $"https://tidal.com/browse/track/{Uri.EscapeDataString(tidalId)}";
 
-    private static string ResolveTidalQueueQuality(EngineEnqueueRequest request)
-    {
-        if (IsAtmosQuality(request.SelectedQuality)
-            || string.Equals(request.Intent.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase))
-        {
-            return TidalAtmosQuality;
-        }
-
-        return request.SelectedQuality ?? request.Settings.TidalQuality ?? "HI_RES_LOSSLESS";
-    }
-
     private static string BuildQobuzTrackUrl(string qobuzId)
         => $"https://play.qobuz.com/track/{Uri.EscapeDataString(qobuzId)}";
-
-    private async Task<EngineEnqueueOutcome> EnqueueAppleAsync(EngineEnqueueRequest request)
-    {
-        if (string.IsNullOrWhiteSpace(request.ResolvedSourceUrl))
-        {
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Apple Music URL unavailable for this track.", Engine = request.Engine },
-                0);
-        }
-
-        if (RequiresVerifiedAtmosCapability(request.Intent, request.SelectedQuality))
-        {
-            var hasAtmosVariant = await ValidateAppleAtmosCapabilityAsync(
-                request.Intent,
-                request.ResolvedSourceUrl,
-                request.Availability,
-                request.Settings,
-                "primary",
-                request.CancellationToken);
-            if (!hasAtmosVariant)
-            {
-                request.SkipReasonCodes.Add("atmos_variant_unavailable");
-                request.SkipReasons.Add("Skipped Atmos queue: no Atmos variant found for this track.");
-                return new EngineEnqueueOutcome(null, 1);
-            }
-        }
-
-        var selectedAutoIndex = Math.Max(0, request.FallbackInfo.AutoIndex);
-        (AppleQueueItem payload, bool isVideo) = await BuildApplePayloadBaseAsync(
-            request.Intent,
-            request.ResolvedSourceUrl,
-            request.SelectedQuality,
-            request.Settings,
-            request.CancellationToken);
-        payload.AutoSources = request.FallbackInfo.AutoSources;
-        payload.AutoIndex = selectedAutoIndex;
-        payload.FallbackPlan = request.FallbackInfo.FallbackPlan;
-        payload.DestinationFolderId = request.PrimaryDestinationFolderId;
-        var primaryIsAtmos = string.Equals(payload.ContentType, DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase)
-            || IsAtmosQuality(payload.Quality);
-        if (!request.UseAtmosStereoDual)
-        {
-            payload.QualityBucket = string.Empty;
-        }
-        else if (primaryIsAtmos)
-        {
-            payload.QualityBucket = AtmosQuality;
-        }
-        else
-        {
-            payload.QualityBucket = StereoType;
-        }
-
-        var enqueueDecision = await EnqueueItemAsync(
-            payload,
-            request.BlockRules,
-            request.Intent.AllowQualityUpgrade,
-            request.RequestedQualityRank,
-            request.CancellationToken);
-        if (enqueueDecision.Success)
-        {
-            var queueUuid = enqueueDecision.QueueUuid ?? payload.Id;
-            request.Queued.Add(queueUuid);
-            _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
-            if (request.UseAtmosStereoDual
-                && !isVideo
-                && !IsAtmosQuality(request.SelectedQuality))
-            {
-                await TryEnqueueAtmosSecondaryAsync(
-                    new AtmosSecondaryEnqueueRequest(
-                        request.Intent,
-                        request.Settings,
-                        request.PrimaryDestinationFolderId,
-                        request.SecondaryDestinationFolderId,
-                        request.Intent.AllowQualityUpgrade,
-                        request.Queued,
-                        request.Availability,
-                        request.PreferIsrcOnly,
-                        request.BlockRules,
-                        request.CancellationToken));
-            }
-
-            return new EngineEnqueueOutcome(null, 0);
-        }
-
-        RecordSkipReason(request.SkipReasonCodes, request.SkipReasons, request.RelatedQueueUuids, enqueueDecision);
-        if (request.UseAtmosStereoDual
-            && !isVideo
-            && !IsAtmosQuality(request.SelectedQuality)
-            && ShouldContinueWithSecondaryAfterPrimarySkip(enqueueDecision))
-        {
-            await TryEnqueueAtmosSecondaryAsync(
-                new AtmosSecondaryEnqueueRequest(
-                    request.Intent,
-                    request.Settings,
-                    request.PrimaryDestinationFolderId,
-                    request.SecondaryDestinationFolderId,
-                    request.Intent.AllowQualityUpgrade,
-                    request.Queued,
-                    request.Availability,
-                    request.PreferIsrcOnly,
-                    request.BlockRules,
-                    request.CancellationToken));
-        }
-
-        return new EngineEnqueueOutcome(null, 1);
-    }
-
-    private async Task<EngineEnqueueOutcome> EnqueueQobuzAsync(EngineEnqueueRequest request)
-    {
-        var sourceUrl = request.ResolvedSourceUrl ?? request.Intent.SourceUrl ?? string.Empty;
-        var qobuzId = FirstNonEmpty(request.Intent.QobuzId, TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
-        if (string.IsNullOrWhiteSpace(qobuzId))
-        {
-            await ResolveTrackIdentityMatrixAsync(
-                request.Intent,
-                request.Settings,
-                new[] { QobuzPlatform },
-                request.CancellationToken);
-            sourceUrl = ResolveSourceUrlFromIntentIdentity(request.Intent, QobuzPlatform) ?? string.Empty;
-            qobuzId = TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture);
-        }
-
-        if (string.IsNullOrWhiteSpace(qobuzId))
-        {
-            return new EngineEnqueueOutcome(
-                new DownloadIntentResult { Success = false, Message = "Qobuz track ID unavailable for this track.", Engine = request.Engine },
-                0);
-        }
-
-        sourceUrl = BuildQobuzTrackUrl(qobuzId);
-        request.Intent.QobuzId = qobuzId;
-        var payload = new QobuzQueueItem();
-        PopulateStandardQueuePayload(payload, request.Intent, new StandardPayloadContext(
-            sourceUrl,
-            string.IsNullOrWhiteSpace(request.Intent.Album) ? TrackType : AlbumType,
-            ResolveContentType(request.Intent.ContentType, sourceUrl, TrackType, request.Intent.HasAtmos, request.SelectedQuality),
-            request.FallbackInfo.AutoSources,
-            request.FallbackInfo.AutoIndex,
-            request.FallbackInfo.FallbackPlan,
-            string.Empty,
-            request.DurationSeconds,
-            request.PrimaryDestinationFolderId,
-            request.UseAtmosStereoDual ? StereoType : string.Empty));
-        payload.Quality = request.SelectedQuality ?? request.Settings.QobuzQuality ?? "27";
-        payload.QobuzId = qobuzId;
-        ApplyIntentMetadata(payload, request.Intent);
-
-        var skipped = await EnqueuePrimaryPayloadAsync(payload, CreatePrimaryEnqueueContext(request));
-        return new EngineEnqueueOutcome(null, skipped);
-    }
 
     private static string? ResolveDeezerTrackIdForEnqueue(
         DownloadIntent intent,
@@ -2303,11 +1881,10 @@ public sealed class DownloadIntentService
             : null;
     }
 
-    private async Task<EnqueueRoutingState> PrepareEnqueueRoutingAsync(
+    private EnqueueRoutingState PrepareEnqueueRouting(
         DownloadIntent intent,
         EnqueuePreparation preparation,
-        bool allowAutomaticSecondaryQuality,
-        CancellationToken cancellationToken)
+        bool allowAutomaticSecondaryQuality)
     {
         var settings = preparation.Settings;
         var initialRouting = ApplyInitialContentRouting(intent, preparation);
@@ -2315,13 +1892,9 @@ public sealed class DownloadIntentService
         var explicitStereoRequest = initialRouting.ExplicitStereoRequest;
         var targetQuality = initialRouting.TargetQuality;
 
-        var availability = await ResolveAvailabilityAsync(intent, cancellationToken);
+        SongLinkResult? availability = null;
         var multiQuality = settings.MultiQuality;
         var useMultiQuality = allowAutomaticSecondaryQuality && IsMultiQualityDualEnabled(multiQuality);
-        if (useMultiQuality && !explicitAtmosRequest && IsMusicIntent(intent) && !intent.HasAtmos)
-        {
-            await TryHydrateAtmosCapabilityAsync(intent, availability, settings, cancellationToken);
-        }
 
         // Secondary Atmos queueing should not depend solely on pre-hydrated Atmos metadata.
         // In dual-profile mode we always keep a stereo primary + Atmos secondary path for
@@ -2366,17 +1939,7 @@ public sealed class DownloadIntentService
             autoSources = RemoveAtmosAutoSources(autoSources);
         }
 
-        if (string.IsNullOrWhiteSpace(intent.SpotifyId))
-        {
-            intent.SpotifyId = TryExtractSpotifyId(intent.SourceUrl)
-                ?? await _spotifyIdResolver.ResolveTrackIdAsync(
-                    intent.Title ?? string.Empty,
-                    intent.Artist ?? string.Empty,
-                    intent.Album,
-                    intent.Isrc,
-                    cancellationToken)
-                ?? string.Empty;
-        }
+        intent.SpotifyId = FirstNonEmpty(intent.SpotifyId, TryExtractSpotifyId(intent.SourceUrl)) ?? string.Empty;
 
         return new EnqueueRoutingState(normalizedPreferredEngine, intentRequestsAuto, appleOnlyRequired, autoSources, preferredEngine, targetQuality, availability, useAtmosStereoDual);
     }
@@ -2445,115 +2008,6 @@ public sealed class DownloadIntentService
         };
     }
 
-    private async Task<ResolvedEnqueueTarget?> ResolvePrimaryEnqueueTargetAsync(
-        DownloadIntent intent,
-        EnqueueRoutingState routing,
-        DeezSpoTagSettings settings,
-        bool preferIsrcOnly,
-        CancellationToken cancellationToken)
-    {
-        var isAuto = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty)
-            && (routing.IntentRequestsAuto || string.Equals(settings.Service, AutoService, StringComparison.OrdinalIgnoreCase));
-        var allowCrossEngineFallback = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty) && isAuto;
-        if (routing.AppleOnlyRequired)
-        {
-            return await ResolveAppleOnlyEnqueueTargetAsync(intent, routing, settings, preferIsrcOnly, cancellationToken);
-        }
-
-        if (isAuto)
-        {
-            return await ResolveAutoEnqueueTargetAsync(intent, routing, settings, preferIsrcOnly, cancellationToken);
-        }
-
-        var resolved = await ResolveIntentAsync(intent, routing.PreferredEngine, preferIsrcOnly, routing.Availability, settings, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(resolved.Message) && resolved.Engine == string.Empty)
-        {
-            return new ResolvedEnqueueTarget(string.Empty, routing.TargetQuality, 0, allowCrossEngineFallback, string.Empty, resolved, routing.AutoSources);
-        }
-
-        var availabilityWarning = !string.IsNullOrWhiteSpace(intent.PreferredEngine)
-            && routing.Availability != null
-            && string.IsNullOrWhiteSpace(GetAvailabilityUrl(routing.Availability, resolved.Engine))
-                ? $"Availability check indicates {resolved.Engine} is unavailable for this track."
-                : string.Empty;
-        return new ResolvedEnqueueTarget(resolved.Engine, routing.TargetQuality, 0, allowCrossEngineFallback, availabilityWarning, resolved, routing.AutoSources);
-    }
-
-    private async Task<ResolvedEnqueueTarget?> ResolveAppleOnlyEnqueueTargetAsync(
-        DownloadIntent intent,
-        EnqueueRoutingState routing,
-        DeezSpoTagSettings settings,
-        bool preferIsrcOnly,
-        CancellationToken cancellationToken)
-    {
-        var selectedQuality = routing.TargetQuality ?? ResolvePreferredQuality(settings, ApplePlatform);
-        var autoSources = DownloadSourceOrder.ResolveEngineQualitySources(
-            settings,
-            ApplePlatform,
-            selectedQuality,
-            strict: UseStrictQualityFallback(settings, ApplePlatform, selectedQuality));
-        var candidate = await ResolveIntentAsync(intent, ApplePlatform, preferIsrcOnly, routing.Availability, settings, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(candidate.Message) && candidate.Engine == string.Empty)
-        {
-            return string.IsNullOrWhiteSpace(candidate.Message) ? null : new ResolvedEnqueueTarget(
-                string.Empty,
-                selectedQuality,
-                0,
-                false,
-                string.Empty,
-                (string.Empty, null, candidate.Message, string.Empty),
-                autoSources);
-        }
-
-        if (string.IsNullOrWhiteSpace(candidate.SourceUrl))
-        {
-            return new ResolvedEnqueueTarget(
-                ApplePlatform,
-                selectedQuality,
-                0,
-                false,
-                string.Empty,
-                (ApplePlatform, null, "Apple Music URL unavailable for Atmos or video downloads.", string.Empty),
-                autoSources);
-        }
-
-        return new ResolvedEnqueueTarget(ApplePlatform, selectedQuality, 0, false, string.Empty, candidate, autoSources);
-    }
-
-    private async Task<ResolvedEnqueueTarget?> ResolveAutoEnqueueTargetAsync(
-        DownloadIntent intent,
-        EnqueueRoutingState routing,
-        DeezSpoTagSettings settings,
-        bool preferIsrcOnly,
-        CancellationToken cancellationToken)
-    {
-        _activityLog.Info($"Auto mapping start: title='{intent.Title ?? string.Empty}' artist='{intent.Artist ?? string.Empty}' isrc='{intent.Isrc ?? string.Empty}'");
-        var startIndex = ResolveAutoStartIndex(intent.PreferredEngine, routing.PreferredEngine, routing.AutoSources);
-        for (var i = startIndex; i < routing.AutoSources.Count; i++)
-        {
-            var step = DownloadSourceOrder.DecodeAutoSource(routing.AutoSources[i]);
-            if (!TryAcceptAutoResolutionCandidate(intent, step.Source, step.Quality ?? routing.TargetQuality, routing.Availability, out var skipReason))
-            {
-                var attemptedQuality = step.Quality ?? routing.TargetQuality;
-                _activityLog.Warn($"Auto mapping skip: engine={step.Source} quality={attemptedQuality} reason={skipReason}");
-                continue;
-            }
-
-            var candidate = await ResolveIntentAsync(intent, step.Source, preferIsrcOnly, routing.Availability, settings, cancellationToken);
-            if (!TryAcceptResolvedCandidate(step.Source, candidate, out skipReason))
-            {
-                var attemptedQuality = step.Quality ?? routing.TargetQuality;
-                _activityLog.Warn($"Auto mapping skip: engine={step.Source} quality={attemptedQuality} reason={skipReason}");
-                continue;
-            }
-
-            _apiHealthTracker.ReportSuccess(step.Source);
-            return new ResolvedEnqueueTarget(step.Source, step.Quality ?? routing.TargetQuality, i, true, string.Empty, candidate, routing.AutoSources);
-        }
-
-        return null;
-    }
-
     private static int ResolveAutoStartIndex(string? preferredEngine, string resolvedPreferredEngine, List<string> autoSources)
     {
         if (string.IsNullOrWhiteSpace(preferredEngine))
@@ -2571,32 +2025,6 @@ public sealed class DownloadIntentService
         }
 
         return 0;
-    }
-
-    private bool TryAcceptAutoResolutionCandidate(
-        DownloadIntent intent,
-        string candidateEngine,
-        string? candidateQuality,
-        SongLinkResult? availability,
-        out string reason)
-    {
-        reason = string.Empty;
-        if (string.IsNullOrWhiteSpace(candidateEngine))
-        {
-            reason = "missing_engine";
-            return false;
-        }
-
-        _activityLog.Info($"Auto mapping try: engine={candidateEngine} quality={candidateQuality ?? AutoService}");
-        if (string.Equals(candidateEngine, QobuzPlatform, StringComparison.OrdinalIgnoreCase)
-            && string.IsNullOrWhiteSpace(intent.Isrc)
-            && (string.IsNullOrWhiteSpace(intent.Title) || string.IsNullOrWhiteSpace(intent.Artist)))
-        {
-            reason = "missing_isrc_or_metadata";
-            return false;
-        }
-
-        return true;
     }
 
     private static bool TryAcceptResolvedCandidate(
@@ -2757,18 +2185,6 @@ public sealed class DownloadIntentService
         }
 
         return selectedQuality;
-    }
-
-    private void LogResolvedIntentMapping((string Engine, string? SourceUrl, string Message, string MappingSource) resolved, string engine)
-    {
-        if (!string.IsNullOrWhiteSpace(resolved.MappingSource))
-        {
-            _activityLog.Info($"Intent mapping: engine={engine} source={resolved.MappingSource}");
-        }
-        else
-        {
-            _activityLog.Info($"Intent mapping: engine={engine} source=default");
-        }
     }
 
     private async Task<(DownloadIntentResult? Failure, string? ResolvedDownloadTagSource)> TryValidateEnqueueProfileAsync(DownloadIntent intent, EnqueuePreparation preparation, CancellationToken cancellationToken)
@@ -7359,47 +6775,6 @@ public sealed class DownloadIntentService
         payload.DestinationFolderId = context.DestinationFolderId;
         payload.QualityBucket = context.QualityBucket;
         payload.Size = 1;
-    }
-
-    private async Task<int> EnqueuePrimaryPayloadAsync(
-        EngineQueueItemBase payload,
-        PrimaryPayloadEnqueueContext context)
-    {
-        var enqueueDecision = await EnqueueItemAsync(
-            payload,
-            context.BlockRules,
-            context.AllowQualityUpgrade,
-            context.RequestedQualityRank,
-            context.CancellationToken);
-        if (enqueueDecision.Success)
-        {
-            var queueUuid = enqueueDecision.QueueUuid ?? payload.Id;
-            context.Queued.Add(queueUuid);
-            NotifyQueueAdded(payload);
-        }
-        else
-        {
-            RecordSkipReason(context.SkipReasonCodes, context.SkipReasons, context.RelatedQueueUuids, enqueueDecision);
-        }
-
-        if (context.UseAtmosStereoDual
-            && (enqueueDecision.Success || ShouldContinueWithSecondaryAfterPrimarySkip(enqueueDecision)))
-        {
-            await TryEnqueueAtmosSecondaryAsync(
-                new AtmosSecondaryEnqueueRequest(
-                    context.Intent,
-                    context.Settings,
-                    context.PrimaryDestinationFolderId,
-                    context.SecondaryDestinationFolderId,
-                    context.AllowQualityUpgrade,
-                    context.Queued,
-                    context.Availability,
-                    context.PreferIsrcOnly,
-                    context.BlockRules,
-                    context.CancellationToken));
-        }
-
-        return enqueueDecision.Success ? 0 : 1;
     }
 
     private async Task TryEnqueueVisibleAtmosSecondaryAsync(

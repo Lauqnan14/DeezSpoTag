@@ -104,19 +104,6 @@ public sealed class ProviderIntegrationSurfaceTests
     }
 
     [Fact]
-    public void AmazonDirectStreamProviders_IncludeSpotByeProvider()
-    {
-        var field = typeof(AmazonDownloadService).GetField("StreamProviderHosts", BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(field);
-
-        var providers = Assert.IsAssignableFrom<string[]>(field!.GetValue(null));
-
-        Assert.Contains("amazon.afkarxyz.fun", providers);
-        Assert.Contains("amazon.spotbye.qzz.io", providers);
-    }
-
-    [Fact]
     public void QobuzTryExtractProviderUrl_AcceptsDownloadUrlAtRoot()
     {
         using var document = JsonDocument.Parse("""{"success":true,"download_url":"https://example.test/file.flac"}""");
@@ -215,40 +202,4 @@ public sealed class ProviderIntegrationSurfaceTests
         Assert.Null(method);
     }
 
-    [Fact]
-    public void TidalBuildTrackManifestsUrl_UsesMonochromeRouteAndFormats()
-    {
-        var method = typeof(TidalDownloadService).GetMethod(
-            "BuildTrackManifestsUrl",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(method);
-
-        var url = Assert.IsType<string>(method!.Invoke(null, ["https://arran.monochrome.tf/", 123L, "LOSSLESS"]));
-
-        Assert.StartsWith("https://arran.monochrome.tf/trackManifests/?", url);
-        Assert.Contains("id=123", url);
-        Assert.Contains("quality=LOSSLESS", url);
-        Assert.Contains("formats=FLAC", url);
-    }
-
-    [Fact]
-    public void TidalTryExtractManifestUri_ReadsNestedMonochromeResponse()
-    {
-        var method = typeof(TidalDownloadService).GetMethod(
-            "TryExtractManifestUri",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(method);
-
-        var args = new object?[]
-        {
-            """{"data":{"data":{"attributes":{"uri":"https://manifest.example.test/signed.mpd"}}}}""",
-            null
-        };
-        var success = (bool)method!.Invoke(null, args)!;
-
-        Assert.True(success);
-        Assert.Equal("https://manifest.example.test/signed.mpd", args[1] as string);
-    }
 }

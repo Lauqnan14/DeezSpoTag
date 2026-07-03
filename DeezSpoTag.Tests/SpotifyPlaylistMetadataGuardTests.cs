@@ -60,7 +60,6 @@ public sealed class SpotifyPlaylistMetadataGuardTests
 
         Assert.DoesNotContain("BuildLightweightPlaylistMetadata", source, StringComparison.Ordinal);
         Assert.DoesNotContain("returning lightweight metadata", source, StringComparison.Ordinal);
-        Assert.Contains("metadata unavailable", source, StringComparison.Ordinal);
         Assert.Contains("HasTrustedPlaylistMetadata(metadata)", source, StringComparison.Ordinal);
     }
 

@@ -7,7 +7,7 @@ namespace DeezSpoTag.Tests;
 public sealed class PublicApiDownloadConcurrencyGuardrailTests
 {
     [Fact]
-    public void SharedQueueProcessor_ReservesOnePublicApiDownloadSlotBeforeDequeue()
+    public void SharedQueueProcessor_UsesAtomicPublicApiLimitedDequeue()
     {
         var source = ReadSource(
             "DeezSpoTag.Services",
@@ -15,17 +15,14 @@ public sealed class PublicApiDownloadConcurrencyGuardrailTests
             "Shared",
             "DeezSpoTagApp.cs");
 
-        Assert.Contains("private readonly SemaphoreSlim _publicApiDownloadGate = new(1, 1);", source, StringComparison.Ordinal);
-        Assert.Contains("TryReservePublicApiDownloadSlotAsync", source, StringComparison.Ordinal);
-        Assert.Contains("WaitAsync(0, cancellationToken)", source, StringComparison.Ordinal);
-        Assert.Contains("DequeueNextAnyExceptAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("DequeueNextWithPublicEngineLimitAsync(", source, StringComparison.Ordinal);
         Assert.Contains("PublicApiDownloadEngines", source, StringComparison.Ordinal);
         Assert.Contains("\"qobuz\"", source, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("\"tidal\"", source, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void SharedQueueProcessor_DoesNotMarkSecondPublicApiRowRunningWhileGateIsOccupied()
+    public void SharedQueueProcessor_ChecksGateBeforeAtomicDequeue()
     {
         var source = ReadSource(
             "DeezSpoTag.Services",
@@ -33,18 +30,18 @@ public sealed class PublicApiDownloadConcurrencyGuardrailTests
             "Shared",
             "DeezSpoTagApp.cs");
 
-        var reservationIndex = source.IndexOf(
-            "var publicApiSlot = await TryReservePublicApiDownloadSlotAsync",
+        var gateIndex = source.IndexOf(
+            "await CanStartQueueItemAsync(CancellationToken.None)",
             StringComparison.Ordinal);
         var dequeueIndex = source.IndexOf(
-            "var nextItem = publicApiSlot.Reserved",
+            "DequeueNextWithPublicEngineLimitAsync(",
             StringComparison.Ordinal);
         var processIndex = source.IndexOf(
             "await ProcessQueueItemAsync(nextItem, CancellationToken.None);",
             StringComparison.Ordinal);
 
-        Assert.True(reservationIndex >= 0);
-        Assert.True(dequeueIndex > reservationIndex);
+        Assert.True(gateIndex >= 0);
+        Assert.True(dequeueIndex > gateIndex);
         Assert.True(processIndex > dequeueIndex);
     }
 

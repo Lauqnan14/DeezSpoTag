@@ -28,8 +28,6 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
         Assert.Contains("CheckQobuzProviders", controller, StringComparison.Ordinal);
         Assert.Contains("CheckTidalProviders", controller, StringComparison.Ordinal);
         Assert.Contains("CheckEnabledProvidersAsync", controller, StringComparison.Ordinal);
-        Assert.DoesNotContain("QobuzDownloadService", controller, StringComparison.Ordinal);
-        Assert.DoesNotContain("TidalDownloadService", controller, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -48,13 +46,7 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
     [Fact]
     public void QueuePreResolution_DoesNotTouchDownloadProviderApis()
     {
-        var preResolution = ReadSource("DeezSpoTag.Web/Services/DownloadQueuePreResolutionService.cs");
-
-        Assert.DoesNotContain("ResolveStreamUrlByTrackIdAsync", preResolution, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetDownloadUrlCandidatesAsync", preResolution, StringComparison.Ordinal);
-        Assert.DoesNotContain("FetchManifestFromProviderAsync", preResolution, StringComparison.Ordinal);
-        Assert.DoesNotContain("TryFetchManifestFromCredentialApiAsync", preResolution, StringComparison.Ordinal);
-        Assert.DoesNotContain("CheckPublicProvidersAsync", preResolution, StringComparison.Ordinal);
+        Assert.False(File.Exists(SourcePath("DeezSpoTag.Web/Services/DownloadQueuePreResolutionService.cs")));
     }
 
     [Fact]

@@ -13,7 +13,7 @@ namespace DeezSpoTag.Tests;
 public sealed class TidalApiProviderSourceTests
 {
     [Fact]
-    public async Task GetRotatedProvidersAsync_UsesSevenCataloguedNonMonochromeProviders()
+    public async Task GetRotatedProvidersAsync_UsesZarzProvider()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
@@ -21,27 +21,20 @@ public sealed class TidalApiProviderSourceTests
 
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(8, providers.Count);
-        Assert.DoesNotContain(providers, provider => provider.Contains("monochrome", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(providers, provider => provider.Contains("squid", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal("https://api.zarz.moe/v1/dl/tid2", providers[0]);
-        Assert.Contains("https://hifi.geeked.wtf", providers);
-        Assert.Contains("https://hifi-one.spotisaver.net", providers);
-        Assert.Contains("https://hifi-two.spotisaver.net", providers);
+        Assert.Equal(["https://api.zarz.moe/v2/dl/tid"], providers);
     }
 
     [Fact]
-    public async Task RememberSuccessAsync_RotatesLastSuccessfulProviderToTheEnd()
+    public async Task RememberSuccessAsync_KeepsSingleProviderAvailable()
     {
         var rootPath = Path.Combine(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
         using var scope = new TestConfigRootScope(rootPath);
         var service = CreateService();
 
-        await service.RememberSuccessAsync("https://hifi.geeked.wtf", CancellationToken.None);
+        await service.RememberSuccessAsync("https://api.zarz.moe/v2/dl/tid", CancellationToken.None);
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal("https://hifi.p1nkhamster.xyz", providers[0]);
-        Assert.Equal("https://hifi.geeked.wtf", providers[^1]);
+        Assert.Equal(["https://api.zarz.moe/v2/dl/tid"], providers);
     }
 
     [Fact]
@@ -55,8 +48,7 @@ public sealed class TidalApiProviderSourceTests
         _ = await service.GetRotatedProvidersAsync(CancellationToken.None);
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
 
-        string[] expectedNames = ["Zarz", "Geeked", "Pink Hamster", "QQDL Vogel", "SpotiSaver One", "SpotiSaver Two", "KinoPlus", "Binimum"];
-        Assert.Equal(expectedNames, providers.Select(provider => provider.DisplayName).ToArray());
+        Assert.Equal(new[] { "zarz" }, providers.Select(provider => provider.DisplayName).ToArray());
     }
 
     [Fact]
@@ -68,11 +60,10 @@ public sealed class TidalApiProviderSourceTests
         var service = new TidalApiProviderSource(registry);
 
         _ = await service.GetRotatedProvidersAsync(CancellationToken.None);
-        await registry.SetEnabledAsync("geeked", false, CancellationToken.None);
+        await registry.SetEnabledAsync("zarz", false, CancellationToken.None);
         var providers = await service.GetRotatedProvidersAsync(CancellationToken.None);
 
-        Assert.Equal(7, providers.Count);
-        Assert.DoesNotContain("https://hifi.geeked.wtf", providers);
+        Assert.Empty(providers);
     }
 
     private static TidalApiProviderSource CreateService() => new(new InMemoryProviderRegistry());

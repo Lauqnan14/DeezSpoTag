@@ -55,7 +55,7 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
     }
 
     [Fact]
-    public async Task TryUpdateQueuedPayloadIfCurrentAsync_RejectsRunningItem()
+    public async Task TryUpdateQueuedPayloadIfCurrentAsync_UpdatesRunningItemDuringActiveResolution()
     {
         await using var context = CreateContext();
         var item = CreateQueueItem("queue-3", "deezer", "{\"SourceUrl\":\"old\"}");
@@ -70,10 +70,11 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
             cancellationToken: CancellationToken.None);
         var stored = await context.QueueRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
 
-        Assert.False(updated);
+        Assert.True(updated);
         Assert.NotNull(stored);
         Assert.Equal("running", stored!.Status);
-        Assert.Equal("deezer", stored.Engine);
+        Assert.Equal("qobuz", stored.Engine);
+        Assert.Contains("new", stored.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -112,9 +113,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
               "DeezerId":"359542303",
               "SpotifyId":"spotify-track",
               "AppleId":"apple-track",
-              "QobuzId":"qobuz-track",
-              "TidalId":"tidal-track",
-              "AmazonId":"amazon-track",
+              "QobuzId":"123456",
+              "TidalId":"654321",
+              "AmazonId":"B0ABC12345",
               "DurationSeconds":205,
               "DestinationFolderId":1,
               "ContentType":"stereo"
@@ -129,9 +130,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
             DeezerTrackId = "359542303",
             SpotifyTrackId = "spotify-track",
             AppleTrackId = "apple-track",
-            QobuzTrackId = "qobuz-track",
-            TidalTrackId = "tidal-track",
-            AmazonTrackId = "amazon-track",
+            QobuzTrackId = "123456",
+            TidalTrackId = "654321",
+            AmazonTrackId = "B0ABC12345",
             DurationMs = 205000,
             DestinationFolderId = 1,
             ContentType = "stereo",
@@ -152,9 +153,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
         Assert.Equal("359542303", stored.DeezerTrackId);
         Assert.Equal("spotify-track", stored.SpotifyTrackId);
         Assert.Equal("apple-track", stored.AppleTrackId);
-        Assert.Equal("qobuz-track", stored.QobuzTrackId);
-        Assert.Equal("tidal-track", stored.TidalTrackId);
-        Assert.Equal("amazon-track", stored.AmazonTrackId);
+        Assert.Equal("123456", stored.QobuzTrackId);
+        Assert.Equal("654321", stored.TidalTrackId);
+        Assert.Equal("B0ABC12345", stored.AmazonTrackId);
         Assert.Equal(205000, stored.DurationMs);
         Assert.Equal(1, stored.DestinationFolderId);
     }
@@ -171,9 +172,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
               "DeezerId":"359542303",
               "SpotifyId":"spotify-track",
               "AppleId":"apple-track",
-              "QobuzId":"qobuz-track",
-              "TidalId":"tidal-track",
-              "AmazonId":"amazon-track",
+              "QobuzId":"123456",
+              "TidalId":"654321",
+              "AmazonId":"B0ABC12345",
               "DurationSeconds":205,
               "DestinationFolderId":1,
               "ContentType":"stereo"
@@ -197,9 +198,9 @@ public sealed class DownloadQueuePreResolutionRepositoryTests
         Assert.Equal("359542303", stored.DeezerTrackId);
         Assert.Equal("spotify-track", stored.SpotifyTrackId);
         Assert.Equal("apple-track", stored.AppleTrackId);
-        Assert.Equal("qobuz-track", stored.QobuzTrackId);
-        Assert.Equal("tidal-track", stored.TidalTrackId);
-        Assert.Equal("amazon-track", stored.AmazonTrackId);
+        Assert.Equal("123456", stored.QobuzTrackId);
+        Assert.Equal("654321", stored.TidalTrackId);
+        Assert.Equal("B0ABC12345", stored.AmazonTrackId);
         Assert.Equal(205000, stored.DurationMs);
         Assert.Equal(1, stored.DestinationFolderId);
         Assert.Equal("stereo", stored.ContentType);

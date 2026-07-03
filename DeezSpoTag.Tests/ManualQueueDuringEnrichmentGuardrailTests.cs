@@ -69,7 +69,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         Assert.Contains("CanStartQueueItemAsync", appSource, StringComparison.Ordinal);
         Assert.True(
             appSource.IndexOf("CanStartQueueItemAsync(CancellationToken.None)", StringComparison.Ordinal)
-            < appSource.IndexOf("DequeueNextAnyAsync", StringComparison.Ordinal));
+            < appSource.IndexOf("DequeueNextWithPublicEngineLimitAsync", StringComparison.Ordinal));
         Assert.Contains("EvaluateDownloadExecutionAsync(token)", hostedSource, StringComparison.Ordinal);
         Assert.True(
             hostedSource.IndexOf("EvaluateDownloadExecutionAsync(token)", StringComparison.Ordinal)

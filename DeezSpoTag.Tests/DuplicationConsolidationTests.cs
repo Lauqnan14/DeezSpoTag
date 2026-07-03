@@ -66,7 +66,7 @@ public sealed class DuplicationConsolidationTests
             engine => AssertEngine(engine, "qobuz", "27", "7", "6", "5"),
             engine => AssertEngine(engine, "tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW"),
             engine => AssertEngine(engine, "apple", "ALAC", "AAC"),
-            engine => AssertEngine(engine, "amazon", "FLAC"),
+            engine => AssertEngine(engine, "amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS"),
             engine => AssertEngine(engine, "deezer", "9", "3", "1"));
     }
 
