@@ -6215,7 +6215,8 @@ SELECT id,
        pw.sync_priority,
        COALESCE(track_summary.completed_count, 0),
        pws.ignored_blocked_track_count,
-       pws.rerouted_track_count
+       pws.rerouted_track_count,
+       pw.owner_name
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
@@ -6260,7 +6261,8 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                     ? null
                     : Math.Max(0, reader.GetInt32(6) - reader.GetInt32(15)),
                 IgnoredBlockedTrackCount: await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetInt32(16),
-                ReroutedTrackCount: await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetInt32(17)));
+                ReroutedTrackCount: await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetInt32(17),
+                OwnerName: await reader.IsDBNullAsync(18, cancellationToken) ? null : reader.GetString(18)));
         }
 
         return items;
@@ -6295,7 +6297,7 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count, sync_priority)
+INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count, owner_name, sync_priority)
 VALUES (
     @source,
     @sourceId,
@@ -6303,13 +6305,15 @@ VALUES (
     @imageUrl,
     @description,
     @trackCount,
+    @ownerName,
     1
 )
 ON CONFLICT(source, source_id) DO UPDATE SET
     name = CASE WHEN excluded.name IS NULL OR TRIM(excluded.name) = '' THEN playlist_watchlist.name ELSE excluded.name END,
     image_url = COALESCE(excluded.image_url, playlist_watchlist.image_url),
     description = COALESCE(excluded.description, playlist_watchlist.description),
-    track_count = COALESCE(excluded.track_count, playlist_watchlist.track_count);";
+    track_count = COALESCE(excluded.track_count, playlist_watchlist.track_count),
+    owner_name = COALESCE(excluded.owner_name, playlist_watchlist.owner_name);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -6317,6 +6321,7 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("imageUrl", (object?)metadata.ImageUrl ?? DBNull.Value);
         command.Parameters.AddWithValue("description", (object?)metadata.Description ?? DBNull.Value);
         command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
+        command.Parameters.AddWithValue("ownerName", (object?)metadata.OwnerName ?? DBNull.Value);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         command.Transaction = transaction;
         var isNewEntry = !await PlaylistWatchlistEntryExistsAsync(connection, transaction, normalizedSource, normalizedSourceId, cancellationToken);
@@ -6336,7 +6341,8 @@ SELECT id,
        description,
        track_count,
        created_at,
-       sync_priority
+       sync_priority,
+       owner_name
 FROM playlist_watchlist
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -6384,7 +6390,8 @@ LIMIT 1;";
             await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
             await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
             created,
-            SyncPriority: await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8));
+            SyncPriority: await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8),
+            OwnerName: await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9));
     }
 
     private static async Task<bool> PlaylistWatchlistEntryExistsAsync(
@@ -6486,7 +6493,8 @@ UPDATE playlist_watchlist
 SET name = COALESCE(@name, name),
     image_url = CASE WHEN @clearImageUrl = 1 THEN @imageUrl ELSE COALESCE(@imageUrl, image_url) END,
     description = COALESCE(@description, description),
-    track_count = COALESCE(@trackCount, track_count)
+    track_count = COALESCE(@trackCount, track_count),
+    owner_name = COALESCE(@ownerName, owner_name)
 WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
@@ -6496,6 +6504,7 @@ WHERE source = @source AND source_id = @sourceId;";
         command.Parameters.AddWithValue("description", (object?)metadata.Description ?? DBNull.Value);
         command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
         command.Parameters.AddWithValue("clearImageUrl", metadata.ClearImageUrl ? 1 : 0);
+        command.Parameters.AddWithValue("ownerName", (object?)metadata.OwnerName ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

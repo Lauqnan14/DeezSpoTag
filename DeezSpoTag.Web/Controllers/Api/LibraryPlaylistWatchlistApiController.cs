@@ -210,7 +210,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             id = playlist.SourceId,
             title = playlist.Name,
             description = playlist.Description ?? string.Empty,
-            creator = new { name = playlist.Source },
+            creator = new { name = string.IsNullOrWhiteSpace(playlist.OwnerName) ? playlist.Source : playlist.OwnerName },
             picture = playlist.ImageUrl ?? string.Empty,
             picture_big = playlist.ImageUrl ?? string.Empty,
             picture_xl = playlist.ImageUrl ?? string.Empty,

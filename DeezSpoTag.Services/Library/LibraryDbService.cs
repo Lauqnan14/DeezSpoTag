@@ -287,6 +287,7 @@ CREATE TABLE IF NOT EXISTS background_job_state (
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "presentation_updated_at", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "description", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "sync_priority", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchlistTable, "owner_name", TextType, cancellationToken);
         await BackfillPlaylistWatchlistPrioritiesAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "preferred_engine", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "download_engine_order_json", TextType, cancellationToken);

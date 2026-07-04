@@ -251,7 +251,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchlistMetadataAsync", source, StringComparison.Ordinal);
         Assert.Contains("RemovePlaylistWatchTracksNotInAsync", source, StringComparison.Ordinal);
-        Assert.Contains("FetchPlaylistPageAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("FetchPlaylistTrackPageAsync(", source, StringComparison.Ordinal);
         Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("GetBoomplayPlaylistWatchDataAsync", source, StringComparison.Ordinal);
@@ -308,10 +308,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var repoRoot = ResolveRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
 
-        Assert.Contains("cachedCandidatesComplete", source, StringComparison.Ordinal);
-        Assert.Contains("candidates.Count >= liveSnapshot.TrackCount.Value", source, StringComparison.Ordinal);
-        Assert.Contains("IsComplete = cachedCandidatesComplete", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("liveSnapshot = liveSnapshot with { IsComplete = true }", source, StringComparison.Ordinal);
+        Assert.Contains("var cachedCandidatesComplete = cachedCandidates is not null", source, StringComparison.Ordinal);
+        Assert.Contains("cachedCandidates.Count >= liveSnapshot.TrackCount.Value", source, StringComparison.Ordinal);
+        Assert.Contains("if (cachedCandidatesComplete)", source, StringComparison.Ordinal);
+        Assert.Contains("cached candidates are incomplete. Refreshing candidates.", source, StringComparison.Ordinal);
     }
 
     [Fact]

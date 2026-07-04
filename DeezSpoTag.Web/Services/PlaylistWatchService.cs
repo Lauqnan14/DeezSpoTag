@@ -201,7 +201,8 @@ public sealed class PlaylistWatchService
         string? ImageUrl,
         int? TrackCount,
         bool IsComplete,
-        bool CanClearImageUrl);
+        bool CanClearImageUrl,
+        string? OwnerName);
 
     private sealed record LivePlaylistSnapshotMetadata(
         string? SnapshotId = null,
@@ -210,7 +211,8 @@ public sealed class PlaylistWatchService
         string? ImageUrl = null,
         int? TrackCount = null,
         bool IsComplete = true,
-        bool CanClearImageUrl = false);
+        bool CanClearImageUrl = false,
+        string? OwnerName = null);
 
     public sealed record PlaylistReconciliationResult(
         bool Success,
@@ -308,7 +310,8 @@ public sealed class PlaylistWatchService
                 currentPlaylist.ImageUrl,
                 currentPlaylist.Description,
                 liveTrackCount,
-                liveSnapshot.CanClearImageUrl),
+                liveSnapshot.CanClearImageUrl,
+                currentPlaylist.OwnerName),
             cancellationToken);
 
         var existingSnapshotId = NormalizeSnapshotId(existingCandidateCache?.SnapshotId);
@@ -328,17 +331,18 @@ public sealed class PlaylistWatchService
             var cachedCandidates = existingCandidateCache == null
                 ? null
                 : TryDeserializePlaylistTrackCandidates(existingCandidateCache.CandidatesJson);
-            if (cachedCandidates is not null)
-            {
-                candidates = cachedCandidates;
-                var cachedCandidatesComplete = !liveSnapshot.TrackCount.HasValue
+            var cachedCandidatesComplete = cachedCandidates is not null
+                && (!liveSnapshot.TrackCount.HasValue
                     || liveSnapshot.TrackCount.Value <= 0
-                    || candidates.Count >= liveSnapshot.TrackCount.Value;
+                    || cachedCandidates.Count >= liveSnapshot.TrackCount.Value);
+            if (cachedCandidatesComplete)
+            {
+                candidates = cachedCandidates!;
                 liveSnapshot = liveSnapshot with
                 {
                     Candidates = candidates,
                     TrackCount = liveSnapshot.TrackCount ?? candidates.Count,
-                    IsComplete = cachedCandidatesComplete
+                    IsComplete = true
                 };
                 liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
                 await TouchPlaylistWatchStateAsync(
@@ -360,7 +364,7 @@ public sealed class PlaylistWatchService
                     liveTrackCount,
                     liveSnapshot.SnapshotId,
                     "expanding",
-                    "Snapshot unchanged but cache missing. Refreshing candidates.",
+                    "Snapshot unchanged but cached candidates are incomplete. Refreshing candidates.",
                     nextAttemptUtc: null,
                     consecutiveFailures: 0,
                     cancellationToken);
@@ -772,7 +776,8 @@ public sealed class PlaylistWatchService
                 currentPlaylist.ImageUrl,
                 currentPlaylist.Description,
                 liveTrackCount,
-                liveSnapshot.CanClearImageUrl),
+                liveSnapshot.CanClearImageUrl,
+                currentPlaylist.OwnerName),
             cancellationToken);
 
         if (liveSnapshot.Candidates.Count > 0)
@@ -821,7 +826,8 @@ public sealed class PlaylistWatchService
             Name = trustedMetadata && !string.IsNullOrWhiteSpace(liveSnapshot.Name) ? liveSnapshot.Name! : playlist.Name,
             ImageUrl = ResolveCurrentPlaylistImageUrl(playlist, liveSnapshot, trustedMetadata),
             Description = trustedMetadata && !string.IsNullOrWhiteSpace(liveSnapshot.Description) ? liveSnapshot.Description : playlist.Description,
-            TrackCount = liveTrackCount
+            TrackCount = liveTrackCount,
+            OwnerName = trustedMetadata && !string.IsNullOrWhiteSpace(liveSnapshot.OwnerName) ? liveSnapshot.OwnerName : playlist.OwnerName
         };
     }
 
@@ -1554,7 +1560,8 @@ public sealed class PlaylistWatchService
             Description: EmptyToNull(metadata.Subtitle),
             ImageUrl: EmptyToNull(metadata.ImageUrl),
             TrackCount: metadata.TotalTracks,
-            CanClearImageUrl: true);
+            CanClearImageUrl: true,
+            OwnerName: EmptyToNull(metadata.OwnerName));
     }
 
     private async Task<LivePlaylistSnapshotMetadata> GetDeezerSnapshotHeadAsync(
@@ -1687,7 +1694,8 @@ public sealed class PlaylistWatchService
             EmptyToNull(metadata.ImageUrl),
             metadata.TrackCount ?? candidates.Count,
             metadata.IsComplete,
-            metadata.CanClearImageUrl);
+            metadata.CanClearImageUrl,
+            EmptyToNull(metadata.OwnerName));
     }
 
     private static LivePlaylistSnapshot LimitLivePlaylistSnapshot(LivePlaylistSnapshot snapshot, int maxCandidates)
@@ -1769,21 +1777,31 @@ public sealed class PlaylistWatchService
             return virtualSnapshot;
         }
 
-        var metadata = default(SpotifyPlaylistPageMetadata);
+        var sourceMetadata = await _spotifyMetadataService.FetchPlaylistMetadataAsync(sourceId, cancellationToken);
+        var metadata = new SpotifyPlaylistPageMetadata(
+            sourceMetadata?.SnapshotId,
+            sourceMetadata?.Name,
+            sourceMetadata?.Subtitle,
+            sourceMetadata?.ImageUrl,
+            sourceMetadata?.TotalTracks,
+            sourceMetadata?.OwnerName);
         var pageSize = Math.Min(100, maxCandidates);
         var offset = 0;
         var isComplete = true;
         var safeSourceId = LogSanitizer.OneLine(sourceId, maxLength: 128);
+        var spotifyTrackSource = _settingsService.LoadSettings().SpotifyPlaylistTrackSource;
 
         while (candidates.Count < maxCandidates)
         {
             SpotifyPlaylistPage? page;
             try
             {
-                page = await _spotifyMetadataService.FetchPlaylistPageAsync(
+                page = await _spotifyMetadataService.FetchPlaylistTrackPageAsync(
                     sourceId,
                     offset,
                     pageSize,
+                    spotifyTrackSource,
+                    hydrate: false,
                     cancellationToken);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -1854,7 +1872,8 @@ public sealed class PlaylistWatchService
                 ImageUrl: metadata.ImageUrl,
                 TrackCount: metadata.TotalTracks,
                 IsComplete: isComplete,
-                CanClearImageUrl: true));
+                CanClearImageUrl: true,
+                OwnerName: metadata.OwnerName));
     }
 
     private async Task<LivePlaylistSnapshot?> TryGetSpotifyVirtualPlaylistSnapshotAsync(
@@ -1888,7 +1907,8 @@ public sealed class PlaylistWatchService
             PreferSpotifyPlaylistMetadataValue(metadata.Name, page.Name, static value => !SpotifyMetadataService.IsGenericSpotifyPlaylistName(value)),
             PreferSpotifyPlaylistMetadataValue(metadata.Description, page.Description, static value => !string.IsNullOrWhiteSpace(value)),
             PreferSpotifyPlaylistMetadataValue(metadata.ImageUrl, page.ImageUrl, static value => !string.IsNullOrWhiteSpace(value)),
-            metadata.TotalTracks is > 0 ? metadata.TotalTracks : page.TotalTracks);
+            metadata.TotalTracks is > 0 ? metadata.TotalTracks : page.TotalTracks,
+            metadata.OwnerName);
     }
 
     private static string? PreferSpotifyPlaylistMetadataValue(
@@ -1909,7 +1929,8 @@ public sealed class PlaylistWatchService
         string? Name,
         string? Description,
         string? ImageUrl,
-        int? TotalTracks);
+        int? TotalTracks,
+        string? OwnerName);
 
     private static bool AddSpotifyPlaylistPageCandidates(
         SpotifyPlaylistPage page,

@@ -563,14 +563,16 @@ public sealed record PlaylistWatchlistDto(
     int? SyncedTrackCount = null,
     int? IncompleteTrackCount = null,
     int? IgnoredBlockedTrackCount = null,
-    int? ReroutedTrackCount = null);
+    int? ReroutedTrackCount = null,
+    string? OwnerName = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,
     string? ImageUrl,
     string? Description,
     int? TrackCount,
-    bool ClearImageUrl = false);
+    bool ClearImageUrl = false,
+    string? OwnerName = null);
 
 public sealed record PlaylistTrackRoutingRule(
     string ConditionField,

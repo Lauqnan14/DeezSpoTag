@@ -332,10 +332,12 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 "Road Mix",
                 "https://example.com/cover.jpg",
                 "Playlist description",
-                24));
+                24,
+                OwnerName: "Playlist Curator"));
         Assert.NotNull(added);
         Assert.Equal("spotify", added!.Source);
         Assert.Equal("pl-123", added.SourceId);
+        Assert.Equal("Playlist Curator", added.OwnerName);
 
         var renamed = await _repository.AddPlaylistWatchlistAsync(
             source: "spotify",
@@ -362,7 +364,12 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 "Updated description",
                 25));
         var watchlist = await _repository.GetPlaylistWatchlistAsync();
-        Assert.Contains(watchlist, item => item.Source == "spotify" && item.SourceId == "pl-123" && item.Name == "Road Mix Updated");
+        Assert.Contains(
+            watchlist,
+            item => item.Source == "spotify"
+                    && item.SourceId == "pl-123"
+                    && item.Name == "Road Mix Updated"
+                    && item.OwnerName == "Playlist Curator");
 
         var pref = await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
