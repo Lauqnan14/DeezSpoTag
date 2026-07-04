@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 [ApiController]
 [Authorize]
+[AutoValidateAntiforgeryToken]
 [Route("api/amazon")]
 public sealed class AmazonMusicApiController : ControllerBase
 {

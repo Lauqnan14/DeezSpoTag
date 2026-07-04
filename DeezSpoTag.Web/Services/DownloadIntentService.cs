@@ -3349,7 +3349,10 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer GW ISRC lookup failed for {TrackId}", trackId);
+                _logger.LogDebug(
+                    ex,
+                    "Deezer GW ISRC lookup failed for {TrackId}",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
             }
         }
 
@@ -3365,7 +3368,10 @@ public sealed class DownloadIntentService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Deezer API ISRC lookup failed for {TrackId}", trackId);
+                _logger.LogDebug(
+                    ex,
+                    "Deezer API ISRC lookup failed for {TrackId}",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackId));
             }
         }
 
