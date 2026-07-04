@@ -233,6 +233,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 return;
             }
 
+            await RecoverInterruptedPreResolutionAsync(CancellationToken.None);
+
             var newestFirst = string.Equals(Settings.QueueOrder, "recent", StringComparison.OrdinalIgnoreCase);
             var nextItem = await _queueRepository.DequeueNextWithPublicEngineLimitAsync(
                 PublicApiDownloadEngines,
@@ -255,6 +257,17 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             {
                 await HandleUnhandledProcessorFailureAsync(nextItem, ex);
             }
+        }
+    }
+
+    private async Task RecoverInterruptedPreResolutionAsync(CancellationToken cancellationToken)
+    {
+        var recovered = await _queueRepository.RecoverInterruptedPreResolutionAsync(cancellationToken);
+        if (recovered > 0)
+        {
+            _logger.LogWarning(
+                "Recovered {RecoveredCount} interrupted queue pre-resolution item(s) before dequeue.",
+                recovered);
         }
     }
 
