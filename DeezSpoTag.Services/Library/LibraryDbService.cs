@@ -101,6 +101,8 @@ public sealed class LibraryDbService
             ,
             ["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
             ,
+            ["idx_playlist_watch_track_unavailable_retry"] = (PlaylistWatchTrackTable, "source, source_id, status, unavailable_next_retry_utc", false)
+            ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
             ,
             ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)

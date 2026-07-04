@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Threading;
 using DeezSpoTag.Services.Authentication;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Security;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Integrations.Qobuz;
@@ -187,7 +188,8 @@ public sealed class CredentialProtectionTests : IDisposable
             new StubWebHostEnvironment(_tempRoot),
             _dataProtectionProvider,
             NullLogger<QobuzPublicProviderRegistry>.Instance,
-            new FixedHttpClientFactory());
+            new FixedHttpClientFactory(),
+            CreateDownloadQueueRepository());
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
         Assert.DoesNotContain(providers, provider => provider.Id.Contains("squid", StringComparison.OrdinalIgnoreCase));
@@ -245,7 +247,8 @@ public sealed class CredentialProtectionTests : IDisposable
             new StubWebHostEnvironment(_tempRoot),
             _dataProtectionProvider,
             NullLogger<TidalPublicProviderRegistry>.Instance,
-            new FixedHttpClientFactory());
+            new FixedHttpClientFactory(),
+            CreateDownloadQueueRepository());
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
         var provider = providers[0];
@@ -288,6 +291,21 @@ public sealed class CredentialProtectionTests : IDisposable
             new StubWebHostEnvironment(_tempRoot),
             NullLogger<SpotifyBlobService>.Instance,
             _dataProtectionProvider);
+
+    private DownloadQueueRepository CreateDownloadQueueRepository()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Queue"] = $"Data Source={Path.Join(_tempRoot, "queue.db")}",
+                ["DataDirectory"] = _tempRoot
+            })
+            .Build();
+
+        return new DownloadQueueRepository(
+            configuration,
+            NullLogger<DownloadQueueRepository>.Instance);
+    }
 
     private SpotifyUserAuthStore CreateSpotifyUserAuthStore()
     {

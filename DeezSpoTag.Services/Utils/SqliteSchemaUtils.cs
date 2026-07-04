@@ -96,7 +96,7 @@ internal static partial class SqliteSchemaUtils
         TimeSpan.FromMilliseconds(250));
 
     private static readonly Regex s_sqliteTypeClauseRegex = new(
-        "^(TEXT|INTEGER|REAL|BIGINT)(?:\\s+NOT\\s+NULL)?(?:\\s+DEFAULT\\s+(?:-?\\d+|'(?:''|[^'])*'))?$",
+        "^(TEXT|INTEGER|REAL|BIGINT)(?:\\s+NOT\\s+NULL)?(?:\\s+DEFAULT\\s+(?:-?\\d+|'(?:''|[^'])*'|CURRENT_TIMESTAMP))?$",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
         TimeSpan.FromMilliseconds(250));
 
