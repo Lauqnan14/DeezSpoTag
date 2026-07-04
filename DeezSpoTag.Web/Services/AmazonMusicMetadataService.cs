@@ -7,7 +7,7 @@ using DeezSpoTag.Services.Matching;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class AmazonMusicMetadataService
+public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 {
     private const string DefaultHost = "music.amazon.com";
     private const string DefaultLocale = "en_US";
@@ -244,6 +244,20 @@ public sealed class AmazonMusicMetadataService
         }
 
         return null;
+    }
+
+    public async Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        string? isrc,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await ResolveTrackAsync(title, artist, album, durationMs, isrc, cancellationToken);
+        return resolved is null || string.IsNullOrWhiteSpace(resolved.Id)
+            ? null
+            : new AmazonFallbackTrackResolution(resolved.Id, resolved.Url);
     }
 
     private static string BuildTrackSearchQuery(string title, string artist, string? album)

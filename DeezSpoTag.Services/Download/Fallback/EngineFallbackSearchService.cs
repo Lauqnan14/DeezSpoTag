@@ -34,6 +34,21 @@ public sealed record EngineFallbackSearchResult(
     string? ResolvedUrl,
     string ResolutionSource);
 
+public sealed record AmazonFallbackTrackResolution(
+    string Id,
+    string Url);
+
+public interface IAmazonFallbackTrackResolver
+{
+    Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        string? isrc,
+        CancellationToken cancellationToken);
+}
+
 public sealed class EngineFallbackSearchService
 {
     private const string DeezerEngine = "deezer";
@@ -48,18 +63,21 @@ public sealed class EngineFallbackSearchService
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly TidalDownloadService? _tidalDownloadService;
+    private readonly IAmazonFallbackTrackResolver? _amazonFallbackTrackResolver;
     private readonly ILogger<EngineFallbackSearchService> _logger;
 
     public EngineFallbackSearchService(
         AppleMusicCatalogService appleCatalogService,
         ILogger<EngineFallbackSearchService> logger,
         QobuzTrackResolver? qobuzTrackResolver = null,
-        TidalDownloadService? tidalDownloadService = null)
+        TidalDownloadService? tidalDownloadService = null,
+        IAmazonFallbackTrackResolver? amazonFallbackTrackResolver = null)
     {
         _appleCatalogService = appleCatalogService;
         _logger = logger;
         _qobuzTrackResolver = qobuzTrackResolver;
         _tidalDownloadService = tidalDownloadService;
+        _amazonFallbackTrackResolver = amazonFallbackTrackResolver;
     }
 
     public async Task<EngineFallbackSearchResult> ResolveAsync(
@@ -99,6 +117,15 @@ public sealed class EngineFallbackSearchService
             return new EngineFallbackSearchResult($"https://music.amazon.com/tracks/{amazonId}", "amazon-id");
         }
 
+        if (string.Equals(request.Engine, AmazonEngine, StringComparison.OrdinalIgnoreCase))
+        {
+            var amazonUrl = await ResolveAmazonUrlAsync(request, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(amazonUrl))
+            {
+                return new EngineFallbackSearchResult(amazonUrl, "amazon-metadata-search");
+            }
+        }
+
         var appleUrl = await TryBuildAppleFallbackUrlAsync(request, cancellationToken);
         if (!string.IsNullOrWhiteSpace(appleUrl))
         {
@@ -124,6 +151,29 @@ public sealed class EngineFallbackSearchService
         }
 
         return new EngineFallbackSearchResult(null, "unresolved");
+    }
+
+    private async Task<string?> ResolveAmazonUrlAsync(
+        EngineFallbackSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_amazonFallbackTrackResolver == null
+            || string.IsNullOrWhiteSpace(request.Title)
+            || string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        var resolution = await _amazonFallbackTrackResolver.ResolveAmazonFallbackTrackAsync(
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.DurationMs,
+            request.Isrc,
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(resolution?.Id)
+            ? null
+            : $"https://music.amazon.com/tracks/{resolution.Id}";
     }
 
     private async Task<string?> ResolveQobuzUrlAsync(

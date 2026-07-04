@@ -325,6 +325,7 @@ public sealed class EngineFallbackCoordinator
         context.Mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
         TrySetResolvedEngineId(context.PayloadForSerialization, step.Source, resolvedUrl);
         context.Mutators.ApplyStep((step.Source, step.Quality, stepIndex));
+        ClearResolutionError(context.PayloadForSerialization);
         var requeued = await PersistAdvancedFallbackStateAsync(
             request.QueueUuid,
             step.Source,
@@ -421,6 +422,14 @@ public sealed class EngineFallbackCoordinator
         if (payloadForSerialization is EngineQueueItemBase payload)
         {
             payload.ResolutionError = message;
+        }
+    }
+
+    private static void ClearResolutionError(object payloadForSerialization)
+    {
+        if (payloadForSerialization is EngineQueueItemBase payload)
+        {
+            payload.ResolutionError = string.Empty;
         }
     }
 
