@@ -170,67 +170,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(new { watching });
     }
 
-    [HttpGet("tracklist/{source}/{sourceId}")]
-    public async Task<IActionResult> GetTracklist(string source, string sourceId, CancellationToken cancellationToken)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return DatabaseNotConfigured();
-        }
-
-        if (string.IsNullOrWhiteSpace(sourceId))
-        {
-            return BadRequest("Playlist source id is required.");
-        }
-
-        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
-        var normalizedSourceId = sourceId.Trim();
-        var playlist = (await _repository.GetPlaylistWatchlistAsync(cancellationToken))
-            .FirstOrDefault(item =>
-                string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(item.SourceId, normalizedSourceId, StringComparison.Ordinal));
-        if (playlist is null)
-        {
-            return Ok(new { available = false });
-        }
-
-        playlist = HydratePlaylistVisual(playlist);
-        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
-        var candidates = DeserializeCachedPlaylistCandidates(cache?.CandidatesJson);
-        var statusByTrackId = (await _repository.GetPlaylistWatchTrackStatusesAsync(normalizedSource, normalizedSourceId, cancellationToken))
-            .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
-            .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(
-                static group => group.Key,
-                static group => group.OrderByDescending(item => item.UpdatedAt).First(),
-                StringComparer.OrdinalIgnoreCase);
-
-        var tracklist = new
-        {
-            id = playlist.SourceId,
-            title = playlist.Name,
-            description = playlist.Description ?? string.Empty,
-            creator = new { name = string.IsNullOrWhiteSpace(playlist.OwnerName) ? playlist.Source : playlist.OwnerName },
-            picture = playlist.ImageUrl ?? string.Empty,
-            picture_big = playlist.ImageUrl ?? string.Empty,
-            picture_xl = playlist.ImageUrl ?? string.Empty,
-            nb_tracks = playlist.TrackCount ?? candidates.Count,
-            tracks = candidates.Select((candidate, index) =>
-                MapCachedPlaylistTrack(normalizedSource, candidate, index, statusByTrackId)).ToList()
-        };
-
-        return Ok(new
-        {
-            available = true,
-            source = playlist.Source,
-            sourceId = playlist.SourceId,
-            tracklist,
-            lastCheckedUtc = playlist.LastCheckedUtc,
-            lastRunStatus = playlist.LastRunStatus,
-            lastRunMessage = playlist.LastRunMessage
-        });
-    }
-
     public sealed record PlaylistWatchlistRequest(string Source, string SourceId, string Name, string? ImageUrl, string? Description, int? TrackCount);
     public sealed record PlaylistWatchlistPriorityRequest(string Source, string SourceId);
 

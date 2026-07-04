@@ -22,16 +22,43 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
     }
 
     [Fact]
-    public void Monitored_tracklist_uses_persisted_owner_instead_of_source_as_author()
+    public void Monitored_playlist_metadata_persists_owner_without_a_cached_tracklist_author_path()
     {
-        var source = File.ReadAllText(FindSourceFile(
+        var watchServiceSource = File.ReadAllText(FindSourceFile(
+            "DeezSpoTag.Web",
+            "Services",
+            "PlaylistWatchService.cs"));
+        var controllerSource = File.ReadAllText(FindSourceFile(
             "DeezSpoTag.Web",
             "Controllers",
             "Api",
             "LibraryPlaylistWatchlistApiController.cs"));
 
-        Assert.Contains("playlist.OwnerName", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("creator = new { name = playlist.Source },", source, StringComparison.Ordinal);
+        Assert.Contains("OwnerName", watchServiceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("creator = new { name = playlist.Source },", controllerSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Monitored_tracklist_does_not_use_a_separate_cached_tracklist_renderer()
+    {
+        var viewSource = File.ReadAllText(FindSourceFile(
+            "DeezSpoTag.Web",
+            "Views",
+            "Tracklist",
+            "Index.cshtml"));
+
+        Assert.DoesNotContain("loadMonitoredPlaylistGlobalTracklist", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/library/playlists/tracklist/", viewSource, StringComparison.Ordinal);
+        Assert.Contains("preloadMonitoredPlaylistTrackStatuses", viewSource, StringComparison.Ordinal);
+        Assert.Contains("shouldShowMonitoredStateColumn", viewSource, StringComparison.Ordinal);
+
+        var controllerSource = File.ReadAllText(FindSourceFile(
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+
+        Assert.DoesNotContain("[HttpGet(\"tracklist/{source}/{sourceId}\")]", controllerSource, StringComparison.Ordinal);
     }
 
     private static string FindSourceFile(params string[] pathParts)

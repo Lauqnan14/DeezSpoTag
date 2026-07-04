@@ -2231,9 +2231,6 @@ async function loadTracklist() {
     try {
         console.log('Loading tracklist:', tracklistType, tracklistId);
         await preloadMonitoredPlaylistTrackStatuses();
-        if (await loadMonitoredPlaylistGlobalTracklist()) {
-            return;
-        }
 
         if (tracklistSource === 'mix') {
             await loadMixTracklist();
@@ -2315,38 +2312,6 @@ async function loadTracklist() {
         const message = error && error.message ? error.message : 'Failed to load tracklist';
         document.getElementById('tracklist-container').innerHTML = `<div class="error">${message}</div>`;
     }
-}
-
-async function loadMonitoredPlaylistGlobalTracklist() {
-    if (!monitoredPlaylistTracklistActive) {
-        return false;
-    }
-
-    const source = normalizeWatchlistSource(requestSource || tracklistSource, tracklistType);
-    const sourceId = getWatchlistSourceId();
-    if (!isMonitoredPlaylistTracklistEligible(source, sourceId)) {
-        return false;
-    }
-
-    const payload = await fetchJson(`/api/library/playlists/tracklist/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}`);
-    if (payload?.available !== true || !payload.tracklist) {
-        return false;
-    }
-    if (!Array.isArray(payload.tracklist.tracks) || payload.tracklist.tracks.length === 0) {
-        return false;
-    }
-
-    resetSpotifyState();
-    renderTracklist(payload.tracklist, { allowEmptyTracks: true });
-    void loadIgnoredTracks()
-        .catch(() => {
-            ignoredTrackIds = new Set();
-        })
-        .finally(() => {
-            applyIgnoredTrackState();
-            bindIgnoreButtons();
-        });
-    return true;
 }
 
 async function preloadMonitoredPlaylistTrackStatuses() {
