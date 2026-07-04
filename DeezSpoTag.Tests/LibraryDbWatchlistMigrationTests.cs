@@ -126,6 +126,43 @@ SELECT spotify_id, deezer_id FROM artist_watchlist WHERE artist_id=1;";
     }
 
     [Fact]
+    public async Task EnsureSchema_AddsAndBackfillsWatchTrackUpdatedAt_ForLegacyDatabase()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+CREATE TABLE playlist_watch_track (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    PRIMARY KEY (source, source_id, track_source_id)
+);
+INSERT INTO playlist_watch_track (source, source_id, track_source_id, status)
+VALUES ('spotify', 'legacy-playlist', 'legacy-track', 'queued');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verifyCommand = verifyConnection.CreateCommand();
+        verifyCommand.CommandText = @"
+SELECT updated_at
+FROM playlist_watch_track
+WHERE source = 'spotify'
+  AND source_id = 'legacy-playlist'
+  AND track_source_id = 'legacy-track';";
+        var updatedAt = await verifyCommand.ExecuteScalarAsync();
+
+        Assert.False(string.IsNullOrWhiteSpace(Convert.ToString(updatedAt)));
+    }
+
+    [Fact]
     public async Task AddWatchlistHistoryAsync_ReturnsInsertedEntry_And_SinceQueryReturnsNewerRows()
     {
         var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);

@@ -300,7 +300,11 @@ CREATE TABLE IF NOT EXISTS background_job_state (
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "routing_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "status", $"{TextType} DEFAULT 'queued'", cancellationToken);
-        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, UpdatedAtColumn, $"{TextType} DEFAULT CURRENT_TIMESTAMP", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, UpdatedAtColumn, TextType, cancellationToken);
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchTrackTable, @"
+UPDATE playlist_watch_track
+SET updated_at = CURRENT_TIMESTAMP
+WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_reason", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_since_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_last_checked_utc", TextType, cancellationToken);
