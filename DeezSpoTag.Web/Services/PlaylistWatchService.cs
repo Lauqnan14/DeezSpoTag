@@ -3083,7 +3083,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : $"{defaultLabel} {normalizedType}:{normalizedName}";
     }
 
-    private static QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
+    private QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
     {
         var preferredEngine = ResolveAutomaticPreferredEngine(input.PreferredEngine);
         return new QueueWatchOptions(
@@ -3111,7 +3111,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return itemDownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
     }
 
-    private static string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
+    private string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
     {
         var normalizedItemEngine = NormalizePreferredEngine(itemPreferredEngine);
         if (!string.IsNullOrWhiteSpace(normalizedItemEngine))
@@ -3119,7 +3119,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return normalizedItemEngine;
         }
 
-        return "auto";
+        return ManualDownloadPreferenceResolver.ResolvePreferredEngine(_settingsService.LoadSettings());
     }
 
     private static long? ResolveRoutingFolderId(DownloadIntent intent, IReadOnlyList<PlaylistTrackRoutingRule>? rules, long? defaultFolderId)

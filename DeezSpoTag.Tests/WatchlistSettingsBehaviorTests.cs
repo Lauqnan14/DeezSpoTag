@@ -315,6 +315,18 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void PlaylistWatch_FollowGlobalRemainsDistinctFromExplicitAuto()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var uiSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Contains("{ value: '', label: 'Follow global download source' }", uiSource, StringComparison.Ordinal);
+        Assert.Contains("preferredEngine: value?.preferredEngine || null", uiSource, StringComparison.Ordinal);
+        Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(_settingsService.LoadSettings())", serviceSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistWatch_ActivePlaylistRetentionCannotOverridePriorityOrder()
     {
         var repoRoot = ResolveRepoRoot();

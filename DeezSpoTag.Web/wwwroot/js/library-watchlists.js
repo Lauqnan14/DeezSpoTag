@@ -2591,7 +2591,10 @@ function addRoutingValue(routingValueIndex, field, rawValue) {
 async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlistPrefs) {
     await ensurePlaylistSettingsFoldersLoaded();
     const downloadSourceCatalog = await getWatchlistDownloadSourceCatalog();
-    const downloadSourceOptions = downloadSourceCatalog.options;
+    const downloadSourceOptions = [
+        { value: '', label: 'Follow global download source' },
+        ...downloadSourceCatalog.options
+    ];
 
     const enabledFolders = (libraryState.folders || []).filter(isMusicRecommendationEligibleFolder);
 
@@ -2701,7 +2704,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         selectClass: 'ps-engine-select',
         selectId: `ps-engine-${source}-${sourceId}`,
         options: downloadSourceOptions,
-        value: 'auto',
+        value: '',
         helpText: 'Exact-match watchlist mapping pins to Deezer when a Deezer ID/ISRC match is found.'
     });
     const engineSelect = playlistEngine.select;
@@ -3273,7 +3276,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
             const normalizedService = String(stored.service || '').trim().toLowerCase();
             serviceSel.value = normalizedService || 'plex';
         }
-        if (engineSel) engineSel.value = stored.preferredEngine || 'auto';
+        if (engineSel) engineSel.value = stored.preferredEngine || '';
         syncCustomEngineOrderVisibility();
         if (downloadModeSel) downloadModeSel.value = stored.downloadVariantMode || 'standard';
         syncAtmosFolderVisibility();
@@ -3438,7 +3441,7 @@ function collectPlaylistSettingsValues(panel) {
         folderId: folderSel?.value ? Number(folderSel.value) : null,
         atmosFolderId: atmosFolderSel?.value ? Number(atmosFolderSel.value) : null,
         service: serviceSel?.value || 'plex',
-        preferredEngine: engineSel?.value || 'auto',
+        preferredEngine: engineSel?.value || '',
         downloadEngineOrder: String(engineSel?.value || '').trim().toLowerCase() === 'custom'
             ? collectWatchlistDownloadEngineOrder(panel)
             : null,
@@ -3580,7 +3583,7 @@ function normalizePlaylistPreferenceMap(rawPrefs) {
             folderId: item.destinationFolderId == null ? '' : String(item.destinationFolderId),
             atmosFolderId: item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId),
             service: item.service || 'plex',
-            preferredEngine: item.preferredEngine || 'auto',
+            preferredEngine: item.preferredEngine || '',
             downloadEngineOrder: item.downloadEngineOrder || null,
             downloadVariantMode: item.downloadVariantMode || 'standard',
             syncMode: item.syncMode || 'mirror',
@@ -3621,7 +3624,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
     const folderId = folderSelect?.value || null;
     const atmosFolderId = atmosFolderSelect?.value || '';
     const service = serviceSelect?.value || 'plex';
-    const preferredEngine = engineSelect?.value || 'auto';
+    const preferredEngine = engineSelect?.value || '';
     const downloadVariantMode = downloadModeSelect?.value || 'standard';
     const syncMode = container.querySelector(`[data-playlist-sync-mode="${source}"][data-playlist-id="${sourceId}"]`)?.value || 'mirror';
     const normalizedArtwork = normalizePlaylistArtworkPreference(
@@ -3681,7 +3684,7 @@ function savePlaylistWatchlistPreferences() {
         const sourceId = select.dataset.playlistId;
         const key = source && sourceId ? `${source}:${sourceId}` : '';
         if (key) {
-            prefs[key] = { ...prefs[key], preferredEngine: select.value || 'auto' };
+            prefs[key] = { ...prefs[key], preferredEngine: select.value || '' };
         }
     });
     document.querySelectorAll('[data-playlist-update-artwork]').forEach(input => {
@@ -3730,7 +3733,7 @@ async function savePlaylistPreferencesToServer(prefs) {
                 folderId: value?.folderId ? Number(value.folderId) : null,
                 atmosFolderId: value?.atmosFolderId ? Number(value.atmosFolderId) : null,
                 service: value?.service || null,
-                preferredEngine: value?.preferredEngine || 'auto',
+                preferredEngine: value?.preferredEngine || null,
                 updateArtwork: normalizedArtwork.updateArtwork,
                 reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork
             };
