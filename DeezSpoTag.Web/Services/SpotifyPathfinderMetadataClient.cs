@@ -4612,7 +4612,7 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 break;
             }
-            offset += 1000;
+            offset += itemList.Count;
         }
         return (!playlistUnion.HasValue) ? null : new PlaylistUnionResult(playlistUnion.Value.Clone(), allItems);
     }
@@ -4725,7 +4725,12 @@ public sealed class SpotifyPathfinderMetadataClient
             return false;
         }
 
-        return itemCount < (totalCount ?? itemCount) && pageCount >= 1000;
+        if (totalCount.HasValue)
+        {
+            return itemCount < totalCount.Value;
+        }
+
+        return maxItems.HasValue && itemCount < maxItems.Value;
     }
 
     private async Task<JsonElement?> QueryArtistAsync(PathfinderAuthContext context, string artistId, CancellationToken cancellationToken)
