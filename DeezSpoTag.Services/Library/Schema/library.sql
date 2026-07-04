@@ -486,6 +486,12 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
     isrc TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    unavailable_reason TEXT,
+    unavailable_since_utc TEXT,
+    unavailable_last_checked_utc TEXT,
+    unavailable_next_retry_utc TEXT,
+    unavailable_settings_fingerprint TEXT,
     PRIMARY KEY (source, source_id, track_source_id)
 );
 

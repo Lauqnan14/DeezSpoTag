@@ -298,6 +298,12 @@ CREATE TABLE IF NOT EXISTS background_job_state (
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "routing_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "status", $"{TextType} DEFAULT 'queued'", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, UpdatedAtColumn, $"{TextType} DEFAULT CURRENT_TIMESTAMP", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_reason", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_since_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_last_checked_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_next_retry_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_settings_fingerprint", TextType, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     source TEXT NOT NULL,
@@ -398,6 +404,7 @@ CREATE TABLE IF NOT EXISTS song_link_cache (
         await EnsureIndexAsync(connection, "idx_playlist_watch_preferences_updated", PlaylistWatchPreferencesTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_state_updated", PlaylistWatchStateTable, UpdatedAtColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_source_status", PlaylistWatchTrackTable, "source, source_id, status", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_track_unavailable_retry", PlaylistWatchTrackTable, "source, source_id, status, unavailable_next_retry_utc", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_download_claim_queue", PlaylistWatchDownloadClaimTable, "queue_uuid, status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_source_circuit_open", WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_history_source_created", WatchlistHistoryTable, "source, created_at", unique: false, cancellationToken);

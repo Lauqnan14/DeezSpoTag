@@ -1257,7 +1257,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return queueState;
         }
 
-        var persistedState = ResolveCachedTrackLocationStatus(persistedStatus?.Status);
+        var persistedState = ResolveCachedTrackLocationStatus(persistedStatus);
         if (persistedState.Status != "missing")
         {
             return persistedState;
@@ -1394,12 +1394,20 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
     }
 
-    private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(string? status)
+    private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(PlaylistWatchTrackStatusDto? status)
     {
-        var normalized = NormalizeStatusText(status);
+        var normalized = NormalizeStatusText(status?.Status);
         if (normalized is "completed" or "complete")
         {
             return new PlaylistTrackLocationStatus("library", "Library", "Downloaded and synced by the monitored playlist state.");
+        }
+
+        if (normalized == "unavailable")
+        {
+            var detail = status?.UnavailableNextRetryUtc is { } nextRetry
+                ? $"Unavailable from enabled sources. Retry after {nextRetry.ToLocalTime():g}."
+                : "Unavailable from enabled sources. Retry scheduled.";
+            return new PlaylistTrackLocationStatus("unavailable", "Unavailable", detail);
         }
 
         var queueState = ResolveQueueLocationStatus(normalized);
@@ -1419,7 +1427,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     {
         var trackSourceId = candidate.TrackSourceId ?? string.Empty;
         statusByTrackId.TryGetValue(trackSourceId, out var watchStatus);
-        var locationStatus = ResolveCachedTrackLocationStatus(watchStatus?.Status);
+        var locationStatus = ResolveCachedTrackLocationStatus(watchStatus);
         var sourceUrl = BuildSourceTrackUrl(source, trackSourceId);
         return new
         {

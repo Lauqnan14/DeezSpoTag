@@ -7581,8 +7581,14 @@ WHERE source = @source AND source_id = @sourceId;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 SELECT track_source_id,
+       isrc,
        status,
-       COALESCE(created_at, '') AS updated_at
+       COALESCE(updated_at, created_at, '') AS updated_at,
+       unavailable_reason,
+       unavailable_since_utc,
+       unavailable_last_checked_utc,
+       unavailable_next_retry_utc,
+       unavailable_settings_fingerprint
 FROM playlist_watch_track
 WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection);
@@ -7598,15 +7604,148 @@ WHERE source = @source AND source_id = @sourceId;";
                 continue;
             }
 
-            var status = await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1);
-            var updatedAtText = await reader.IsDBNullAsync(2, cancellationToken) ? string.Empty : reader.GetString(2);
+            var isrc = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
+            var status = await reader.IsDBNullAsync(2, cancellationToken) ? string.Empty : reader.GetString(2);
+            var updatedAtText = await reader.IsDBNullAsync(3, cancellationToken) ? string.Empty : reader.GetString(3);
             var updatedAt = string.IsNullOrWhiteSpace(updatedAtText)
                 ? DateTimeOffset.MinValue
                 : ParseDateTimeOffsetInvariant(updatedAtText);
-            statuses.Add(new PlaylistWatchTrackStatusDto(trackSourceId, status, updatedAt));
+            var unavailableReason = await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4);
+            var unavailableSince = ReadNullableDateTimeOffset(reader, 5, cancellationToken);
+            var unavailableLastChecked = ReadNullableDateTimeOffset(reader, 6, cancellationToken);
+            var unavailableNextRetry = ReadNullableDateTimeOffset(reader, 7, cancellationToken);
+            var unavailableSettingsFingerprint = await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8);
+            statuses.Add(new PlaylistWatchTrackStatusDto(
+                trackSourceId,
+                isrc,
+                status,
+                updatedAt,
+                unavailableReason,
+                unavailableSince,
+                unavailableLastChecked,
+                unavailableNextRetry,
+                unavailableSettingsFingerprint));
         }
 
         return statuses;
+    }
+
+    public async Task<IReadOnlyList<PlaylistWatchTrackStatusDto>> GetGlobalPlaylistWatchTrackUnavailableStatusesAsync(
+        string source,
+        IReadOnlyCollection<PlaylistWatchTrackInsert> tracks,
+        string settingsFingerprint,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSource = NormalizePlaylistWatchSource(source);
+        var trackSourceIds = tracks
+            .Select(static track => track.TrackSourceId?.Trim())
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var isrcs = tracks
+            .Select(static track => track.Isrc?.Trim())
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (string.IsNullOrWhiteSpace(normalizedSource)
+            || (trackSourceIds.Count == 0 && isrcs.Count == 0)
+            || string.IsNullOrWhiteSpace(settingsFingerprint))
+        {
+            return Array.Empty<PlaylistWatchTrackStatusDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var trackSourceParameters = AddInParameters("trackSourceId", trackSourceIds);
+        var isrcParameters = AddInParameters("isrc", isrcs);
+        var filters = new List<string>();
+        if (trackSourceParameters.Count > 0)
+        {
+            filters.Add($"track_source_id IN ({string.Join(", ", trackSourceParameters)})");
+        }
+        if (isrcParameters.Count > 0)
+        {
+            filters.Add($"isrc IN ({string.Join(", ", isrcParameters)})");
+        }
+
+        var sql = $@"
+SELECT track_source_id,
+       isrc,
+       status,
+       COALESCE(updated_at, created_at, '') AS updated_at,
+       unavailable_reason,
+       unavailable_since_utc,
+       unavailable_last_checked_utc,
+       unavailable_next_retry_utc,
+       unavailable_settings_fingerprint
+FROM playlist_watch_track
+WHERE source = @source
+  AND status = 'unavailable'
+  AND unavailable_settings_fingerprint = @settingsFingerprint
+  AND ({string.Join(" OR ", filters)})
+ORDER BY unavailable_next_retry_utc DESC, updated_at DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
+        AddParameterValues(command, trackSourceParameters, trackSourceIds);
+        AddParameterValues(command, isrcParameters, isrcs);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var statuses = new List<PlaylistWatchTrackStatusDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var matchedTrackSourceId = await reader.IsDBNullAsync(0, cancellationToken) ? string.Empty : reader.GetString(0);
+            if (string.IsNullOrWhiteSpace(matchedTrackSourceId))
+            {
+                continue;
+            }
+
+            var matchedIsrc = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
+            var status = await reader.IsDBNullAsync(2, cancellationToken) ? string.Empty : reader.GetString(2);
+            var updatedAtText = await reader.IsDBNullAsync(3, cancellationToken) ? string.Empty : reader.GetString(3);
+            var updatedAt = string.IsNullOrWhiteSpace(updatedAtText)
+                ? DateTimeOffset.MinValue
+                : ParseDateTimeOffsetInvariant(updatedAtText);
+            var unavailableReason = await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4);
+            var unavailableSince = ReadNullableDateTimeOffset(reader, 5, cancellationToken);
+            var unavailableLastChecked = ReadNullableDateTimeOffset(reader, 6, cancellationToken);
+            var unavailableNextRetry = ReadNullableDateTimeOffset(reader, 7, cancellationToken);
+            var unavailableSettingsFingerprint = await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8);
+            statuses.Add(new PlaylistWatchTrackStatusDto(
+                matchedTrackSourceId,
+                matchedIsrc,
+                status,
+                updatedAt,
+                unavailableReason,
+                unavailableSince,
+                unavailableLastChecked,
+                unavailableNextRetry,
+                unavailableSettingsFingerprint));
+        }
+
+        return statuses;
+    }
+
+    private static List<string> AddInParameters(string prefix, IReadOnlyList<string> values)
+        => values.Select((_, index) => $"@{prefix}{index}").ToList();
+
+    private static void AddParameterValues(SqliteCommand command, IReadOnlyList<string> parameterNames, IReadOnlyList<string> values)
+    {
+        for (var i = 0; i < parameterNames.Count; i++)
+        {
+            command.Parameters.AddWithValue(parameterNames[i].TrimStart('@'), values[i]);
+        }
+    }
+
+    private static DateTimeOffset? ReadNullableDateTimeOffset(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            return null;
+        }
+
+        var value = reader.GetString(ordinal);
+        return string.IsNullOrWhiteSpace(value) ? null : ParseDateTimeOffsetInvariant(value);
     }
 
     public async Task<HashSet<string>> GetPlaylistWatchIgnoredTrackIdsBySourceAsync(
@@ -7868,8 +8007,8 @@ VALUES (@normalizedValue);";
         }
 
         const string sql = @"
-INSERT OR IGNORE INTO playlist_watch_track (source, source_id, track_source_id, isrc, status)
-VALUES (@source, @sourceId, @trackSourceId, @isrc, 'queued');";
+INSERT OR IGNORE INTO playlist_watch_track (source, source_id, track_source_id, isrc, status, updated_at)
+VALUES (@source, @sourceId, @trackSourceId, @isrc, 'queued', CURRENT_TIMESTAMP);";
         await InsertPlaylistWatchRowsAsync(
             sql,
             source,
@@ -7993,8 +8132,8 @@ WHERE source = @source
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string insertSql = @"
-INSERT OR IGNORE INTO playlist_watch_track (source, source_id, track_source_id, status)
-VALUES (@source, @sourceId, @trackSourceId, @status);";
+INSERT OR IGNORE INTO playlist_watch_track (source, source_id, track_source_id, status, updated_at)
+VALUES (@source, @sourceId, @trackSourceId, @status, CURRENT_TIMESTAMP);";
         await using (var insertCommand = new SqliteCommand(insertSql, connection))
         {
             insertCommand.Parameters.AddWithValue(SourceField, normalizedSource);
@@ -8006,7 +8145,13 @@ VALUES (@source, @sourceId, @trackSourceId, @status);";
 
         const string updateSql = @"
 UPDATE playlist_watch_track
-SET status = @status
+SET status = @status,
+    updated_at = CURRENT_TIMESTAMP,
+    unavailable_reason = CASE WHEN @status = 'unavailable' THEN unavailable_reason ELSE NULL END,
+    unavailable_since_utc = CASE WHEN @status = 'unavailable' THEN unavailable_since_utc ELSE NULL END,
+    unavailable_last_checked_utc = CASE WHEN @status = 'unavailable' THEN unavailable_last_checked_utc ELSE NULL END,
+    unavailable_next_retry_utc = CASE WHEN @status = 'unavailable' THEN unavailable_next_retry_utc ELSE NULL END,
+    unavailable_settings_fingerprint = CASE WHEN @status = 'unavailable' THEN unavailable_settings_fingerprint ELSE NULL END
 WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSourceId;";
         await using var updateCommand = new SqliteCommand(updateSql, connection);
         updateCommand.Parameters.AddWithValue("status", status);
@@ -8015,6 +8160,108 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         updateCommand.Parameters.AddWithValue("trackSourceId", trackSourceId);
         var updated = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
         return updated > 0;
+    }
+
+    public async Task<bool> MarkPlaylistWatchTrackUnavailableAsync(
+        string source,
+        string sourceId,
+        string trackSourceId,
+        string? isrc,
+        string reason,
+        string settingsFingerprint,
+        DateTimeOffset nextRetryUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var normalizedIsrc = string.IsNullOrWhiteSpace(isrc) ? string.Empty : isrc.Trim();
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string insertSql = @"
+INSERT OR IGNORE INTO playlist_watch_track (
+    source,
+    source_id,
+    track_source_id,
+    isrc,
+    status,
+    updated_at,
+    unavailable_reason,
+    unavailable_since_utc,
+    unavailable_last_checked_utc,
+    unavailable_next_retry_utc,
+    unavailable_settings_fingerprint)
+VALUES (
+    @source,
+    @sourceId,
+    @trackSourceId,
+    @isrc,
+    'unavailable',
+    @now,
+    @reason,
+    @now,
+    @now,
+    @nextRetryUtc,
+    @settingsFingerprint);";
+        await using (var insertCommand = new SqliteCommand(insertSql, connection))
+        {
+            insertCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            insertCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            insertCommand.Parameters.AddWithValue("trackSourceId", trackSourceId);
+            insertCommand.Parameters.AddWithValue("isrc", (object?)normalizedIsrc ?? DBNull.Value);
+            insertCommand.Parameters.AddWithValue("reason", reason);
+            insertCommand.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
+            insertCommand.Parameters.AddWithValue("now", now.ToString("O", CultureInfo.InvariantCulture));
+            insertCommand.Parameters.AddWithValue("nextRetryUtc", nextRetryUtc.ToString("O", CultureInfo.InvariantCulture));
+            await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string updateSql = @"
+UPDATE playlist_watch_track
+SET status = 'unavailable',
+    updated_at = @now,
+    unavailable_reason = @reason,
+    unavailable_since_utc = COALESCE(unavailable_since_utc, @now),
+    unavailable_last_checked_utc = @now,
+    unavailable_next_retry_utc = @nextRetryUtc,
+    unavailable_settings_fingerprint = @settingsFingerprint
+WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSourceId;";
+        await using var updateCommand = new SqliteCommand(updateSql, connection);
+        updateCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+        updateCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        updateCommand.Parameters.AddWithValue("trackSourceId", trackSourceId);
+        updateCommand.Parameters.AddWithValue("reason", reason);
+        updateCommand.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
+        updateCommand.Parameters.AddWithValue("now", now.ToString("O", CultureInfo.InvariantCulture));
+        updateCommand.Parameters.AddWithValue("nextRetryUtc", nextRetryUtc.ToString("O", CultureInfo.InvariantCulture));
+        var updated = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        const string updateGlobalSql = @"
+UPDATE playlist_watch_track
+SET status = 'unavailable',
+    updated_at = @now,
+    unavailable_reason = @reason,
+    unavailable_since_utc = COALESCE(unavailable_since_utc, @now),
+    unavailable_last_checked_utc = @now,
+    unavailable_next_retry_utc = @nextRetryUtc,
+    unavailable_settings_fingerprint = @settingsFingerprint
+WHERE source = @source
+  AND (
+      track_source_id = @trackSourceId
+      OR (@isrc <> '' AND isrc = @isrc)
+  );";
+        await using var updateGlobalCommand = new SqliteCommand(updateGlobalSql, connection);
+        updateGlobalCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+        updateGlobalCommand.Parameters.AddWithValue("trackSourceId", trackSourceId);
+        updateGlobalCommand.Parameters.AddWithValue("isrc", normalizedIsrc);
+        updateGlobalCommand.Parameters.AddWithValue("reason", reason);
+        updateGlobalCommand.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
+        updateGlobalCommand.Parameters.AddWithValue("now", now.ToString("O", CultureInfo.InvariantCulture));
+        updateGlobalCommand.Parameters.AddWithValue("nextRetryUtc", nextRetryUtc.ToString("O", CultureInfo.InvariantCulture));
+        var updatedGlobal = await updateGlobalCommand.ExecuteNonQueryAsync(cancellationToken);
+        return updated > 0 || updatedGlobal > 0;
     }
 
     public async Task UpsertPlaylistWatchDownloadClaimsAsync(

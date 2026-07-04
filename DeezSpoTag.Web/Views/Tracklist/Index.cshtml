@@ -720,6 +720,11 @@
     color: #f5b84b;
 }
 
+.track-location-status-pill--unavailable {
+    border-color: color-mix(in srgb, #8b96a8 46%, transparent);
+    color: #aab4c4;
+}
+
 .availability-icons {
     display: inline-flex;
     gap: 8px;
@@ -4962,7 +4967,7 @@ function resolveMonitoredTrackLocationStatus(track, source) {
 
 function normalizeTrackLocationStatus(status) {
     const normalized = String(status || '').trim().toLowerCase();
-    return ['target', 'library', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'missing'].includes(normalized)
+    return ['target', 'library', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'unavailable', 'missing'].includes(normalized)
         ? normalized
         : 'missing';
 }
@@ -4987,6 +4992,8 @@ function resolveTrackLocationStatusLabel(status) {
             return 'Cancelled';
         case 'blocked':
             return 'Blocked';
+        case 'unavailable':
+            return 'Unavailable';
         default:
             return 'Missing';
     }

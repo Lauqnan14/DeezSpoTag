@@ -653,8 +653,14 @@ public sealed record PlaylistTrackCandidateCacheDto(
 
 public sealed record PlaylistWatchTrackStatusDto(
     string TrackSourceId,
+    string? Isrc,
     string Status,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? UnavailableReason,
+    DateTimeOffset? UnavailableSinceUtc,
+    DateTimeOffset? UnavailableLastCheckedUtc,
+    DateTimeOffset? UnavailableNextRetryUtc,
+    string? UnavailableSettingsFingerprint);
 
 public sealed record PlaylistWatchTrackInsert(string TrackSourceId, string? Isrc);
 
