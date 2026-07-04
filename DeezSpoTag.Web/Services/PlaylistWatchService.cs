@@ -3251,6 +3251,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             WatchlistPlaylistId = sourceIntent.WatchlistPlaylistId,
             WatchlistTrackId = sourceIntent.WatchlistTrackId,
             WatchlistOrigin = sourceIntent.WatchlistOrigin,
+            WatchlistUnavailableSettingsFingerprint = sourceIntent.WatchlistUnavailableSettingsFingerprint,
             HasAtmos = sourceIntent.HasAtmos,
             HasAppleDigitalMaster = sourceIntent.HasAppleDigitalMaster,
             Danceability = sourceIntent.Danceability,
@@ -3692,6 +3693,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             intent.WatchlistSource = options.WatchlistSource!;
             intent.WatchlistPlaylistId = options.WatchlistPlaylistId!;
             intent.WatchlistTrackId = trackId;
+            intent.WatchlistUnavailableSettingsFingerprint = BuildUnavailableSettingsFingerprint(options);
         }
 
         intent.WatchlistOrigin = options.WatchlistOrigin ?? string.Empty;
@@ -3747,6 +3749,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             WatchlistPlaylistId = intent.WatchlistPlaylistId,
             WatchlistTrackId = intent.WatchlistTrackId,
             WatchlistOrigin = intent.WatchlistOrigin,
+            WatchlistUnavailableSettingsFingerprint = intent.WatchlistUnavailableSettingsFingerprint,
             HasAtmos = intent.HasAtmos,
             HasAppleDigitalMaster = intent.HasAppleDigitalMaster,
             AllowQualityUpgrade = intent.AllowQualityUpgrade,

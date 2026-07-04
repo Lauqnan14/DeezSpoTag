@@ -981,7 +981,11 @@ public sealed class DownloadIntentService
             WatchlistSource = ReadPayloadString(payload, "WatchlistSource", "watchlistSource") ?? string.Empty,
             WatchlistPlaylistId = ReadPayloadString(payload, "WatchlistPlaylistId", "watchlistPlaylistId") ?? string.Empty,
             WatchlistTrackId = ReadPayloadString(payload, "WatchlistTrackId", "watchlistTrackId") ?? string.Empty,
-            WatchlistOrigin = ReadPayloadString(payload, "WatchlistOrigin", "watchlistOrigin") ?? string.Empty
+            WatchlistOrigin = ReadPayloadString(payload, "WatchlistOrigin", "watchlistOrigin") ?? string.Empty,
+            WatchlistUnavailableSettingsFingerprint = ReadPayloadString(
+                payload,
+                "WatchlistUnavailableSettingsFingerprint",
+                "watchlistUnavailableSettingsFingerprint") ?? string.Empty
         };
     }
 
@@ -6187,6 +6191,7 @@ public sealed class DownloadIntentService
             WatchlistPlaylistId = intent.WatchlistPlaylistId ?? string.Empty,
             WatchlistTrackId = intent.WatchlistTrackId ?? string.Empty,
             WatchlistOrigin = intent.WatchlistOrigin ?? string.Empty,
+            WatchlistUnavailableSettingsFingerprint = intent.WatchlistUnavailableSettingsFingerprint ?? string.Empty,
             CollectionName = resolvedAlbum,
             CollectionType = collectionType,
             ContentType = contentType,
@@ -6428,6 +6433,9 @@ public sealed class DownloadIntentService
         p.WatchlistPlaylistId = ResolveIntentString(intent.WatchlistPlaylistId, p.WatchlistPlaylistId);
         p.WatchlistTrackId = ResolveIntentString(intent.WatchlistTrackId, p.WatchlistTrackId);
         p.WatchlistOrigin = ResolveIntentString(intent.WatchlistOrigin, p.WatchlistOrigin);
+        p.WatchlistUnavailableSettingsFingerprint = ResolveIntentString(
+            intent.WatchlistUnavailableSettingsFingerprint,
+            p.WatchlistUnavailableSettingsFingerprint);
     }
 
     private static int ResolveIntentTrackNumber(DownloadIntent intent, int existingTrackNumber, int fallbackPosition)

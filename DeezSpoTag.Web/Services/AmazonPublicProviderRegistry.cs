@@ -76,13 +76,18 @@ public sealed class AmazonPublicProviderRegistry : IAmazonPublicProviderRegistry
 
         await Task.WhenAll(providers.Select(provider => CheckProviderAsync(provider, cancellationToken)));
         var updatedProviders = await GetProvidersAsync(cancellationToken);
-        if (updatedProviders.Any(static provider => provider.Enabled && string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)))
+        if (updatedProviders.Any(IsDownloadAvailable))
         {
             await _queueRepository.RequeueProviderWaitingAsync(["amazon"], cancellationToken);
         }
 
         return updatedProviders;
     }
+
+    private static bool IsDownloadAvailable(AmazonPublicProvider provider)
+        => provider.Enabled
+           && string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)
+           && (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow);
 
     public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken)
         => UpdateDownloadOutcomeAsync(providerId, null, null, cancellationToken);

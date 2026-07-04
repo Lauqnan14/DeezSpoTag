@@ -906,11 +906,9 @@ public class PlatformAuthApiController : ControllerBase
     {
         var providers = (await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
-        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
+        var onlineCount = enabledProviders.Count(IsDownloadAvailable);
         var sessionValid = await _qobuzDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
-        var online = enabledProviders.Length > 0
-            && onlineCount == enabledProviders.Length
-            && sessionValid;
+        var online = onlineCount > 0 && sessionValid;
         return new QobuzProviderSummary(
             online,
             online ? onlineCount : 0,
@@ -930,11 +928,9 @@ public class PlatformAuthApiController : ControllerBase
     {
         var providers = (await _tidalPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicTidalProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
-        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
+        var onlineCount = enabledProviders.Count(IsDownloadAvailable);
         var sessionValid = await _tidalDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
-        var online = enabledProviders.Length > 0
-            && onlineCount == enabledProviders.Length
-            && sessionValid;
+        var online = onlineCount > 0 && sessionValid;
         return new TidalProviderSummary(
             online,
             online ? onlineCount : 0,
@@ -955,6 +951,14 @@ public class PlatformAuthApiController : ControllerBase
 
     private static bool IsChecked(TidalProviderView provider)
         => provider.LastCheckedAt.HasValue && provider.Status != "unknown";
+
+    private static bool IsDownloadAvailable(QobuzProviderView provider)
+        => provider.Status == "online"
+           && (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow);
+
+    private static bool IsDownloadAvailable(TidalProviderView provider)
+        => provider.Status == "online"
+           && (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow);
 
     private static string ResolvePublicApiStatus(int enabledProviderCount, bool online, bool allChecked, bool sessionValid)
     {
@@ -1144,11 +1148,9 @@ public class PlatformAuthApiController : ControllerBase
     {
         var providers = (await _amazonPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicAmazonProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
-        var onlineCount = enabledProviders.Count(static provider => provider.Status == "online");
+        var onlineCount = enabledProviders.Count(IsDownloadAvailable);
         var sessionValid = await _amazonDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
-        var online = enabledProviders.Length > 0
-            && onlineCount == enabledProviders.Length
-            && sessionValid;
+        var online = onlineCount > 0 && sessionValid;
         return new AmazonProviderSummary(
             online,
             online ? onlineCount : 0,
@@ -1159,6 +1161,10 @@ public class PlatformAuthApiController : ControllerBase
 
     private static AmazonProviderView ToPublicAmazonProvider(AmazonPublicProvider provider)
         => new(provider.Id, provider.DisplayName, provider.Enabled, provider.Status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
+
+    private static bool IsDownloadAvailable(AmazonProviderView provider)
+        => provider.Status == "online"
+           && (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow);
 
     public sealed record AmazonProviderEnabledRequest(bool? Enabled);
     private sealed record AmazonProviderSummary(bool Online, int OnlineCount, string Status, bool SessionValid, AmazonProviderView[] Providers);

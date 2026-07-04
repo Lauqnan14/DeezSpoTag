@@ -47,6 +47,7 @@ public static partial class EngineAudioPostDownloadHelper
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
     private const string DeezerTrackIdKey = "deezer_track_id";
+    private const int WatchlistUnavailableRetryDays = 7;
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
     private static readonly Regex LrcTimestampRegex = LrcTimestampPatternRegex();
 
@@ -2570,12 +2571,30 @@ public static partial class EngineAudioPostDownloadHelper
             return;
         }
 
-        await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
-            payload.WatchlistSource,
-            payload.WatchlistPlaylistId,
-            payload.WatchlistTrackId,
-            status,
-            cancellationToken);
+        if (string.Equals(status, "unavailable", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(payload.WatchlistUnavailableSettingsFingerprint))
+        {
+            await libraryRepository.MarkPlaylistWatchTrackUnavailableAsync(
+                payload.WatchlistSource,
+                payload.WatchlistPlaylistId,
+                payload.WatchlistTrackId,
+                payload.Isrc,
+                string.IsNullOrWhiteSpace(payload.ErrorMessage)
+                    ? "Track unavailable from enabled sources."
+                    : payload.ErrorMessage,
+                payload.WatchlistUnavailableSettingsFingerprint,
+                DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRetryDays),
+                cancellationToken);
+        }
+        else
+        {
+            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                payload.WatchlistSource,
+                payload.WatchlistPlaylistId,
+                payload.WatchlistTrackId,
+                status,
+                cancellationToken);
+        }
 
         var resolvedQueueUuid = ResolveQueueUuid(queueUuid, payload);
         if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
@@ -2592,6 +2611,19 @@ public static partial class EngineAudioPostDownloadHelper
                 cancellationToken);
         }
         else if (IsFailedOrCanceledWatchStatus(status))
+        {
+            await UpdateSharedWatchDownloadClaimsStatusAsync(
+                libraryRepository,
+                resolvedQueueUuid,
+                payload,
+                status,
+                cancellationToken);
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                resolvedQueueUuid,
+                status,
+                cancellationToken);
+        }
+        else if (string.Equals(status, "unavailable", StringComparison.OrdinalIgnoreCase))
         {
             await UpdateSharedWatchDownloadClaimsStatusAsync(
                 libraryRepository,
@@ -2660,12 +2692,30 @@ public static partial class EngineAudioPostDownloadHelper
                 continue;
             }
 
-            await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
-                claim.Source,
-                claim.SourceId,
-                claim.TrackSourceId,
-                status,
-                cancellationToken);
+            if (string.Equals(status, "unavailable", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(payload.WatchlistUnavailableSettingsFingerprint))
+            {
+                await libraryRepository.MarkPlaylistWatchTrackUnavailableAsync(
+                    claim.Source,
+                    claim.SourceId,
+                    claim.TrackSourceId,
+                    payload.Isrc,
+                    string.IsNullOrWhiteSpace(payload.ErrorMessage)
+                        ? "Track unavailable from enabled sources."
+                        : payload.ErrorMessage,
+                    payload.WatchlistUnavailableSettingsFingerprint,
+                    DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRetryDays),
+                    cancellationToken);
+            }
+            else
+            {
+                await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
+                    claim.Source,
+                    claim.SourceId,
+                    claim.TrackSourceId,
+                    status,
+                    cancellationToken);
+            }
         }
     }
 
@@ -2860,7 +2910,11 @@ public static partial class EngineAudioPostDownloadHelper
         await context.QueueRepository.UpdateStatusAsync(queueUuid, FailedStatus, failureMessage, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
-            await UpdateWatchlistTrackStatusAsync(payload, FailedStatus, context.ServiceProvider, CancellationToken.None);
+            payload.ErrorMessage = failureMessage;
+            var watchlistStatus = IsTrackUnavailableFailure(failureMessage)
+                ? "unavailable"
+                : FailedStatus;
+            await UpdateWatchlistTrackStatusAsync(payload, watchlistStatus, context.ServiceProvider, CancellationToken.None);
         }
 
         context.ActivityLog.Error($"Download failed (engine={context.EngineName}): {queueUuid} {failureMessage}");
@@ -2875,6 +2929,41 @@ public static partial class EngineAudioPostDownloadHelper
            || exception.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
            || exception.Message.Contains("rate-limit", StringComparison.OrdinalIgnoreCase)
            || exception.Message.Contains("throttl", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTrackUnavailableFailure(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var normalized = message.Trim().ToLowerInvariant();
+        if (normalized.Contains("credentials", StringComparison.Ordinal)
+            || normalized.Contains("login required", StringComparison.Ordinal)
+            || normalized.Contains("unauthorized", StringComparison.Ordinal)
+            || normalized.Contains("forbidden", StringComparison.Ordinal)
+            || normalized.Contains("rate limit", StringComparison.Ordinal)
+            || normalized.Contains("too many requests", StringComparison.Ordinal)
+            || normalized.Contains("timed out", StringComparison.Ordinal)
+            || normalized.Contains("timeout", StringComparison.Ordinal)
+            || normalized.Contains("provider", StringComparison.Ordinal)
+                && normalized.Contains("unavailable", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return normalized.Contains("track not found", StringComparison.Ordinal)
+            || normalized.Contains("track not available", StringComparison.Ordinal)
+            || normalized.Contains("track unavailable", StringComparison.Ordinal)
+            || normalized.Contains("track id unavailable", StringComparison.Ordinal)
+            || normalized.Contains("identity unavailable", StringComparison.Ordinal)
+            || normalized.Contains("download url not available", StringComparison.Ordinal)
+            || normalized.Contains("download url unavailable", StringComparison.Ordinal)
+            || normalized.Contains("not available from enabled", StringComparison.Ordinal)
+            || normalized.Contains("not found for isrc or metadata", StringComparison.Ordinal)
+            || normalized.Contains("could not resolve this track", StringComparison.Ordinal)
+            || normalized.Contains("could not be resolved for this download", StringComparison.Ordinal);
+    }
 
     private static bool IsProviderUnavailableFailure(Exception exception)
     {

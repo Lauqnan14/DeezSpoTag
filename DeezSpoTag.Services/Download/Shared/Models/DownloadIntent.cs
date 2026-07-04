@@ -47,6 +47,7 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public string WatchlistPlaylistId { get; set; } = "";
     public string WatchlistTrackId { get; set; } = "";
     public string WatchlistOrigin { get; set; } = "";
+    public string WatchlistUnavailableSettingsFingerprint { get; set; } = "";
     public bool HasAtmos { get; set; }
     public bool HasAppleDigitalMaster { get; set; }
     public bool AllowQualityUpgrade { get; set; }

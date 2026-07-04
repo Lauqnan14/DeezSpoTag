@@ -100,6 +100,34 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("WatchQueueStopReason.PreviousWatchlistRunActive", watchSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TerminalTrackUnavailableFailure_PersistsWatchlistCooldown()
+    {
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var downloadSource = ReadSource("DeezSpoTag.Services/Download/Shared/EngineAudioPostDownloadHelper.cs");
+
+        Assert.Contains("WatchlistUnavailableSettingsFingerprint = BuildUnavailableSettingsFingerprint(options)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("IsTrackUnavailableFailure(failureMessage)", downloadSource, StringComparison.Ordinal);
+        Assert.Contains("MarkPlaylistWatchTrackUnavailableAsync(", downloadSource, StringComparison.Ordinal);
+        Assert.Contains("DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRetryDays)", downloadSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Qobuz track not found for ISRC or metadata.", true)]
+    [InlineData("Enabled fallback sources could not resolve this track after tidal failed.", true)]
+    [InlineData("Amazon download API failed with HTTP 404: Track not available", true)]
+    [InlineData("Tidal operation timed out or was canceled by an external provider.", false)]
+    [InlineData("No Tidal download provider is currently available.", false)]
+    [InlineData("Qobuz official credentials are missing.", false)]
+    public void TerminalTrackUnavailableFailure_OnlyClassifiesCatalogueMisses(string message, bool expected)
+    {
+        var method = typeof(DeezSpoTag.Services.Download.Shared.EngineAudioPostDownloadHelper)
+            .GetMethod("IsTrackUnavailableFailure", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.Equal(expected, method.Invoke(null, [message]));
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

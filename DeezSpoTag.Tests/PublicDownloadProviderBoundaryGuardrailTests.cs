@@ -66,6 +66,28 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
         Assert.True(providerIndex > credentialIndex);
     }
 
+    [Fact]
+    public void PublicProviderHealthAndWaitingQueue_RespectDownloadCooldowns()
+    {
+        var controller = ReadSource("DeezSpoTag.Web/Controllers/Api/PlatformAuthApiController.cs");
+        var registries = new[]
+        {
+            ReadSource("DeezSpoTag.Web/Services/QobuzPublicProviderRegistry.cs"),
+            ReadSource("DeezSpoTag.Web/Services/TidalPublicProviderRegistry.cs"),
+            ReadSource("DeezSpoTag.Web/Services/AmazonPublicProviderRegistry.cs")
+        };
+
+        Assert.Contains("var online = onlineCount > 0 && sessionValid;", controller, StringComparison.Ordinal);
+        Assert.Contains("provider.CooldownUntil.Value <= DateTimeOffset.UtcNow", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("onlineCount == enabledProviders.Length", controller, StringComparison.Ordinal);
+
+        foreach (var registry in registries)
+        {
+            Assert.Contains("updatedProviders.Any(IsDownloadAvailable)", registry, StringComparison.Ordinal);
+            Assert.Contains("provider.CooldownUntil.Value <= DateTimeOffset.UtcNow", registry, StringComparison.Ordinal);
+        }
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(SourcePath(relativePath));
 
