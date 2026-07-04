@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Diagnostics;
 using System.Net;
 using DeezSpoTag.Integrations.Amazon;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Security;
 using Microsoft.AspNetCore.DataProtection;
 
@@ -18,16 +19,19 @@ public sealed class AmazonPublicProviderRegistry : IAmazonPublicProviderRegistry
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILogger<AmazonPublicProviderRegistry> _logger;
+    private readonly DownloadQueueRepository _queueRepository;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public AmazonPublicProviderRegistry(
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
         ILogger<AmazonPublicProviderRegistry> logger,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        DownloadQueueRepository queueRepository)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _queueRepository = queueRepository;
         _store = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
         _path = Path.Join(AppDataPaths.GetDataRoot(environment), "autotag", FileName);
     }
@@ -71,7 +75,13 @@ public sealed class AmazonPublicProviderRegistry : IAmazonPublicProviderRegistry
             .ToArray();
 
         await Task.WhenAll(providers.Select(provider => CheckProviderAsync(provider, cancellationToken)));
-        return await GetProvidersAsync(cancellationToken);
+        var updatedProviders = await GetProvidersAsync(cancellationToken);
+        if (updatedProviders.Any(static provider => provider.Enabled && string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)))
+        {
+            await _queueRepository.RequeueProviderWaitingAsync(["amazon"], cancellationToken);
+        }
+
+        return updatedProviders;
     }
 
     public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken)

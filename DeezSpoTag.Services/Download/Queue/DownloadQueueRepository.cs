@@ -41,6 +41,7 @@ public sealed class DownloadQueueRepository
     private const string MoveStatusMoved = "moved";
     private const string MoveStatusBlocked = "blocked";
     private const string StatusFailed = "failed";
+    private const string StatusWaiting = "waiting";
     private const string MoveStatusFailed = StatusFailed;
     private const string StereoContentType = "stereo";
     private const string MoveStatusNotRequired = "not_required";
@@ -402,6 +403,81 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         }
 
         return items;
+    }
+
+    public async Task MarkProviderWaitingAsync(
+        string queueUuid,
+        string engine,
+        string error,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = '" + StatusWaiting + @"',
+    engine = CASE WHEN @engine = '' THEN engine ELSE @engine END,
+    error = @error,
+    progress = 0,
+    downloaded = 0,
+    failed = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("engine", NormalizeEngine(engine));
+        command.Parameters.AddWithValue("error", string.IsNullOrWhiteSpace(error) ? "Download provider unavailable." : error);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        PublishQueueStateChanged(queueUuid, StatusWaiting);
+        _queueWakeSignal?.Pulse();
+    }
+
+    public async Task<int> RequeueProviderWaitingAsync(
+        IReadOnlyCollection<string> engines,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedEngines = engines
+            .Where(static engine => !string.IsNullOrWhiteSpace(engine))
+            .Select(static engine => engine.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedEngines.Length == 0)
+        {
+            return 0;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var placeholders = string.Join(", ", normalizedEngines.Select((_, index) => $"@engine{index}"));
+        var sql = @"
+UPDATE download_task
+SET status = 'queued',
+    error = NULL,
+    progress = 0,
+    downloaded = 0,
+    failed = 0,
+    updated_at = CURRENT_TIMESTAMP
+WHERE lower(status) = '" + StatusWaiting + @"'
+  AND lower(engine) IN (" + placeholders + @");";
+        await using var command = new SqliteCommand(sql, connection);
+        for (var index = 0; index < normalizedEngines.Length; index++)
+        {
+            command.Parameters.AddWithValue($"engine{index}", normalizedEngines[index]);
+        }
+
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (affected > 0)
+        {
+            PublishQueueStateChanged(string.Empty, "queued");
+            _queueWakeSignal?.Pulse();
+        }
+
+        return affected;
     }
 
     public async Task<IReadOnlyList<DownloadQueueItem>> GetPreResolutionWindowAsync(
@@ -906,6 +982,9 @@ LIMIT 1;";
             command.Parameters.AddWithValue($"publicEngine{index}", publicEngines[index]);
         }
     }
+
+    private static string NormalizeEngine(string? engine)
+        => string.IsNullOrWhiteSpace(engine) ? string.Empty : engine.Trim().ToLowerInvariant();
 
     private static string BuildDequeueSelectSql(bool newestFirst, string extraWhereClause)
     {

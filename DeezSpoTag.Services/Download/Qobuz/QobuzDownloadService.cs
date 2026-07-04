@@ -235,6 +235,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             }
 
             var providers = await BuildPublicProvidersAsync(trackId, qualityCode, cancellationToken);
+            if (providers.Length == 0)
+            {
+                lastFailure = new InvalidOperationException("No Qobuz public download provider is currently available.");
+                continue;
+            }
+
             foreach (var provider in providers)
             {
                 var attempt = await TryDownloadWithProviderAsync(

@@ -911,6 +911,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             return;
         }
 
+        if (IsProviderUnavailableFailure(ex))
+        {
+            await MarkProviderWaitingAsync(next.QueueUuid, ex);
+            return;
+        }
+
         await MarkFinalFailureAsync(next.QueueUuid, payload, ex);
     }
 
@@ -973,6 +979,30 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
     }
 
+    private async Task MarkProviderWaitingAsync(string queueUuid, Exception ex)
+    {
+        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
+            queueUuid,
+            PrefetchCancelDrainTimeout,
+            CancellationToken.None);
+        var message = BuildProviderWaitingMessage();
+        await _queueRepository.MarkProviderWaitingAsync(
+            queueUuid,
+            EngineName,
+            message,
+            CancellationToken.None);
+        _activityLog.Warn($"Download waiting (engine={EngineName}): {queueUuid} {ex.Message}");
+        _deezspotagListener.Send(UpdateQueueEvent, new
+        {
+            uuid = queueUuid,
+            status = "waiting",
+            progress = 0,
+            downloaded = 0,
+            failed = 0,
+            error = message
+        });
+    }
+
     private async Task MarkFinalFailureAsync(string queueUuid, QobuzQueueItem? payload, Exception ex)
     {
         await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
@@ -1005,6 +1035,17 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private static bool IsRateLimitFailure(Exception exception)
         => exception is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests };
+
+    private static bool IsProviderUnavailableFailure(Exception exception)
+    {
+        var message = exception.Message;
+        return message.Contains("No Qobuz public download provider is currently available", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("Qobuz provider", StringComparison.OrdinalIgnoreCase)
+               && message.Contains("cooling down", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildProviderWaitingMessage()
+        => "Qobuz public download provider is unavailable. Waiting for provider health to recover.";
 
     private readonly record struct QobuzSourceSelection(string TrackUrl, bool HasTrackUrl);
 

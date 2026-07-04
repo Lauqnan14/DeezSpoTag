@@ -2824,6 +2824,28 @@ public static partial class EngineAudioPostDownloadHelper
             }
         }
 
+        if (IsProviderUnavailableFailure(exception))
+        {
+            await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
+            var waitingMessage = BuildProviderWaitingMessage(context.EngineName);
+            await context.QueueRepository.MarkProviderWaitingAsync(
+                queueUuid,
+                context.EngineName,
+                waitingMessage,
+                CancellationToken.None);
+            context.ActivityLog.Warn($"Download waiting (engine={context.EngineName}): {queueUuid} {waitingMessage}");
+            context.Listener.Send(UpdateQueueEvent, new
+            {
+                uuid = queueUuid,
+                status = "waiting",
+                progress = 0,
+                downloaded = 0,
+                failed = 0,
+                error = waitingMessage
+            });
+            return;
+        }
+
         await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
         await context.QueueRepository.UpdatePrefetchStateAsync(
             queueUuid,
@@ -2853,6 +2875,19 @@ public static partial class EngineAudioPostDownloadHelper
            || exception.Message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
            || exception.Message.Contains("rate-limit", StringComparison.OrdinalIgnoreCase)
            || exception.Message.Contains("throttl", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsProviderUnavailableFailure(Exception exception)
+    {
+        var message = exception.Message;
+        return message.Contains("No Tidal download provider is currently available", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("No Qobuz public download provider is currently available", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("No enabled Amazon public download API provider", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("provider is cooling down", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("no public download provider", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildProviderWaitingMessage(string engineName)
+        => $"{engineName} public download provider is unavailable. Waiting for provider health to recover.";
 
     private static PrefetchRequirements BuildPrefetchRequirements(PrefetchRequest request)
     {

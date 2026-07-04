@@ -3645,7 +3645,7 @@ function isCanceledQueueTask(task) {
 
 function isActiveQueueTask(task) {
     const status = mapStatus(task?.status);
-    return status === 'queued' || status === 'running' || status === 'paused' || status === 'retrying';
+    return status === 'queued' || status === 'running' || status === 'paused' || status === 'retrying' || status === 'waiting';
 }
 
 function activityActionIconSvg(name) {
@@ -4558,6 +4558,7 @@ function getStatusIcon(status) {
         retrying: '⟳',
         running: '⟳',
         queued: '⏱',
+        waiting: '⏱',
         paused: '⏸',
         failed: '✕',
         canceled: '○'
@@ -4629,6 +4630,7 @@ async function clearCanceledTasks() {
 	        complete: 'badge-complete',
 	        retrying: 'badge-status',
 	        running: 'badge-status',
+	        waiting: 'badge-status',
 	        paused: 'badge-status',
 	        failed: 'badge-failed',
 	        canceled: 'badge-status'
@@ -4869,6 +4871,7 @@ async function clearCanceledTasks() {
 	        const canDelete = task.canDelete === true || (task.canDelete === undefined && (statusForUi === 'failed' || statusForUi === 'canceled'));
 	        const canCancel = task.canCancel === true || (task.canCancel === undefined && (
 	            statusForUi === 'queued'
+	            || statusForUi === 'waiting'
 	            || statusForUi === 'running'
 	            || statusForUi === 'paused'
 	            || statusForUi === 'retrying'));
@@ -5411,7 +5414,7 @@ function isQueueTerminalStatus(status) {
 }
 
 function isQueueResetStatus(status) {
-    return status === 'queued' || status === 'retrying';
+    return status === 'queued' || status === 'retrying' || status === 'waiting';
 }
 
 function resolveQueueTaskText(currentValue, incomingValue) {
@@ -5724,6 +5727,7 @@ function mapStatus(status) {
 	    const map = {
 	        inqueue: 'queued',
 	        queued: 'queued',
+	        waiting: 'waiting',
 	        downloading: 'running',
         running: 'running',
         completed: 'complete',
