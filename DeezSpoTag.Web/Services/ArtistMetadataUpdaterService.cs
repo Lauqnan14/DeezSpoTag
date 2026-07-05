@@ -47,6 +47,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private readonly AppleArtistBiographyService _appleArtistBiographyService;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly QobuzArtistService _qobuzArtistService;
+    private readonly ArtistPopularSongsSyncService _artistPopularSongsSyncService;
     private readonly LastFmArtistImageService _lastFmArtistImageService;
     private readonly LibraryConfigStore _configStore;
     private readonly IWebHostEnvironment _environment;
@@ -79,6 +80,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         _appleArtistBiographyService = serviceProvider.GetRequiredService<AppleArtistBiographyService>();
         _tidalAccessTokenProvider = serviceProvider.GetRequiredService<ITidalAccessTokenProvider>();
         _qobuzArtistService = serviceProvider.GetRequiredService<QobuzArtistService>();
+        _artistPopularSongsSyncService = serviceProvider.GetRequiredService<ArtistPopularSongsSyncService>();
         _lastFmArtistImageService = serviceProvider.GetRequiredService<LastFmArtistImageService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _environment = environment;
@@ -134,6 +136,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         tracked.IncludeAvatar = request.IncludeAvatar;
         tracked.IncludeBackground = request.IncludeBackground;
         tracked.IncludeBio = request.IncludeBio;
+        tracked.IncludePopularSongs = request.IncludePopularSongs;
         tracked.IntervalDays = normalizedInterval;
         if (!string.IsNullOrWhiteSpace(request.Source))
         {
@@ -502,6 +505,11 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         {
             tracked.IncludeBio = request.IncludeBio.Value;
         }
+
+        if (request.IncludePopularSongs.HasValue)
+        {
+            tracked.IncludePopularSongs = request.IncludePopularSongs.Value;
+        }
     }
 
     private async Task<bool> PushTrackedArtistMetadataAsync(
@@ -520,6 +528,11 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         }
 
         tracked.ArtistName = artist.Name;
+        var popularSongsSynced = await SyncPopularSongsIfRequestedAsync(
+            tracked,
+            artist.Id,
+            artist.Name,
+            cancellationToken);
         var source = NormalizeMetadataSource(tracked.Source);
         var resolved = await ResolveArtistMetadataAsync(
             artist.Id,
@@ -532,7 +545,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 DateTimeOffset.UtcNow,
                 "warn",
                 $"Metadata updater failed for {artist.Name}: {source} metadata unavailable."));
-            return false;
+            return popularSongsSynced;
         }
 
         var prepared = await PrepareVisualsAsync(tracked, resolved.Candidates, cancellationToken);
@@ -552,7 +565,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 biography),
             cancellationToken);
 
-        if (!pushed.Updated)
+        if (!pushed.Updated && !popularSongsSynced)
         {
             var warningText = pushed.Warnings.Count == 0
                 ? "No server metadata was updated."
@@ -571,8 +584,37 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Metadata updater pushed {artist.Name} to {tracked.Target}."));
+            popularSongsSynced
+                ? $"Metadata updater pushed {artist.Name} and synced popular songs to {tracked.Target}."
+                : $"Metadata updater pushed {artist.Name} to {tracked.Target}."));
         return true;
+    }
+
+    private async Task<bool> SyncPopularSongsIfRequestedAsync(
+        MetadataUpdaterTrackedArtist tracked,
+        long artistId,
+        string artistName,
+        CancellationToken cancellationToken)
+    {
+        if (!tracked.IncludePopularSongs)
+        {
+            return false;
+        }
+
+        var result = await _artistPopularSongsSyncService.SyncAsync(
+            artistId,
+            artistName,
+            tracked.Target,
+            cancellationToken);
+        if (!result.Success)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "warn",
+                $"Popular songs sync failed for {artistName}: {result.Message}"));
+        }
+
+        return result.Success;
     }
 
     private async Task UpdateManagedArtistVisualsAsync(
@@ -674,6 +716,10 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             }
             tracked.Target = target;
             tracked.IntervalDays = intervalDays;
+            if (request.IncludePopularSongs.HasValue)
+            {
+                tracked.IncludePopularSongs = request.IncludePopularSongs.Value;
+            }
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
         }
     }
@@ -2114,6 +2160,7 @@ public sealed class MetadataUpdaterRunRequest
     public bool? IncludeAvatar { get; set; }
     public bool? IncludeBackground { get; set; }
     public bool? IncludeBio { get; set; }
+    public bool? IncludePopularSongs { get; set; }
     public bool? IncludeAllArtists { get; set; }
     public bool? Force { get; set; }
 }
@@ -2127,6 +2174,7 @@ public sealed class ManualPushRegistrationRequest
     public bool IncludeAvatar { get; set; }
     public bool IncludeBackground { get; set; }
     public bool IncludeBio { get; set; }
+    public bool IncludePopularSongs { get; set; }
     public int? IntervalDays { get; set; }
 }
 
@@ -2145,6 +2193,7 @@ public sealed class MetadataUpdaterTrackedArtist
     public bool IncludeAvatar { get; set; } = true;
     public bool IncludeBackground { get; set; } = true;
     public bool IncludeBio { get; set; }
+    public bool IncludePopularSongs { get; set; }
     public int IntervalDays { get; set; } = 30;
     public DateTimeOffset? LastPushedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;

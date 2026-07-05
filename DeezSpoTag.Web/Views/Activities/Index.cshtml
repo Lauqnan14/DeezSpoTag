@@ -2245,6 +2245,19 @@
     padding: 8px 10px;
 }
 
+.media-operations-tab .metadata-updater-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.media-operations-tab .metadata-updater-option input {
+    width: auto;
+    min-width: 0;
+}
+
 .media-operations-tab .tool-card-progress-section {
     display: grid;
     gap: 8px;
@@ -3977,6 +3990,7 @@ function initMetadataUpdater() {
     const sourceSelect = document.getElementById('metadata-source-platform');
     const intervalSelect = document.getElementById('metadata-refresh-interval');
     const targetSelect = document.getElementById('metadata-target-server');
+    const popularSongsCheckbox = document.getElementById('metadata-include-popular-songs');
     const phaseLabel = document.getElementById('metadata-phase-label');
     const progressLabel = document.getElementById('metadata-progress-label');
     const progressBar = document.getElementById('metadata-progress-bar');
@@ -3987,6 +4001,7 @@ function initMetadataUpdater() {
 
     const targetKey = 'deezspotag-metadata-updater-target';
     const sourceKey = 'deezspotag-metadata-updater-source';
+    const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
 
     const runMetadataUpdater = async () => {
         const source = sourceSelect?.value || 'auto';
@@ -3996,6 +4011,7 @@ function initMetadataUpdater() {
             source,
             intervalDays,
             target,
+            includePopularSongs: popularSongsCheckbox?.checked === true,
             includeAllArtists: true,
             force: intervalDays === 0
         };
@@ -4066,6 +4082,14 @@ function initMetadataUpdater() {
         sourceSelect.addEventListener('change', () => {
             localStorage.setItem(sourceKey, sourceSelect.value);
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterSource', sourceSelect.value);
+        });
+    }
+
+    if (popularSongsCheckbox) {
+        popularSongsCheckbox.checked = localStorage.getItem(popularSongsKey) === 'true';
+        popularSongsCheckbox.addEventListener('change', () => {
+            localStorage.setItem(popularSongsKey, popularSongsCheckbox.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterPopularSongs', popularSongsCheckbox.checked);
         });
     }
 

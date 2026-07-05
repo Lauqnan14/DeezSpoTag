@@ -4644,6 +4644,7 @@ function initSpotifyCacheControls(artistId) {
     const refreshButton = document.getElementById('spotify-cache-refresh-button');
     const resetMatchButton = document.getElementById('spotify-match-reset-button');
     const pushButton = document.getElementById('spotify-cache-push-button');
+    const popularSongsSyncButton = document.getElementById('artist-popular-songs-sync-button');
     const targetSelect = document.getElementById('spotify-cache-push-target');
     const biographySourceSelect = document.getElementById('artist-biography-source');
     const cachePanel = document.getElementById('spotify-cache-panel');
@@ -4658,6 +4659,9 @@ function initSpotifyCacheControls(artistId) {
     refreshButton.dataset.bound = 'true';
     resetMatchButton.dataset.bound = 'true';
     pushButton.dataset.bound = 'true';
+    if (popularSongsSyncButton) {
+        popularSongsSyncButton.dataset.bound = 'true';
+    }
     if (biographySourceSelect && biographySourceSelect.dataset.bound !== 'true') {
         biographySourceSelect.dataset.bound = 'true';
         biographySourceSelect.addEventListener('change', () => {
@@ -4749,6 +4753,22 @@ function initSpotifyCacheControls(artistId) {
         } catch (error) {
             console.error('[push] failed', error);
             showToast(`Push failed: ${error?.message || error}`, true);
+        }
+    });
+
+    popularSongsSyncButton?.addEventListener('click', async () => {
+        popularSongsSyncButton.disabled = true;
+        try {
+            const result = await fetchJson(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/popular-songs/sync`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target: targetSelect.value || 'plex' })
+            });
+            showToast(result?.message || 'Popular songs synced.');
+        } catch (error) {
+            showToast(`Popular songs sync failed: ${error?.message || error}`, true);
+        } finally {
+            popularSongsSyncButton.disabled = false;
         }
     });
 

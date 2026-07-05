@@ -1486,6 +1486,7 @@ public partial class Program
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncService>>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistPopularSongsSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
         services.AddScoped<DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators>(sp =>
             new DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators

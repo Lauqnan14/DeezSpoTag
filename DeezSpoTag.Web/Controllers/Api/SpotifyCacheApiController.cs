@@ -48,6 +48,7 @@ public class SpotifyCacheApiController : ControllerBase
     private PlexApiClient PlexClient => _serviceProvider.GetRequiredService<PlexApiClient>();
     private JellyfinApiClient JellyfinClient => _serviceProvider.GetRequiredService<JellyfinApiClient>();
     private ArtistMetadataUpdaterService MetadataUpdaterService => _serviceProvider.GetRequiredService<ArtistMetadataUpdaterService>();
+    private ArtistPopularSongsSyncService ArtistPopularSongsSyncService => _serviceProvider.GetRequiredService<ArtistPopularSongsSyncService>();
 
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh([FromQuery] long? artistId)
@@ -813,6 +814,29 @@ public class SpotifyCacheApiController : ControllerBase
         });
     }
 
+    [HttpPost("artists/{artistId:long}/popular-songs/sync")]
+    public async Task<IActionResult> SyncArtistPopularSongs(
+        long artistId,
+        [FromBody] ArtistPopularSongsSyncRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var result = await ArtistPopularSongsSyncService.SyncAsync(
+            artistId,
+            request?.Target,
+            cancellationToken);
+        if (!result.Success)
+        {
+            return BadRequest(new
+            {
+                result.Success,
+                result.Message,
+                result.Targets
+            });
+        }
+
+        return Ok(result);
+    }
+
     [HttpPost("visuals")]
     public async Task<IActionResult> SaveVisuals([FromBody] SpotifyCacheVisualRequest request, CancellationToken cancellationToken)
     {
@@ -904,6 +928,11 @@ public sealed class SpotifyCachePushRequest
     public bool? IncludeBio { get; set; }
     public string? Target { get; set; }
     public int? RenewIntervalDays { get; set; }
+}
+
+public sealed class ArtistPopularSongsSyncRequest
+{
+    public string? Target { get; set; }
 }
 
 public sealed class SpotifyCacheVisualRequest
