@@ -262,7 +262,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken,
                 forceMediaServerSync: true);
 
-            if (reconciliationResult.SyncResult?.Success == true)
+            if (reconciliationResult.SyncResult is { Success: true, MissingTracks: 0 })
             {
                 await AddPlaylistSyncHistoryAsync(
                     repository,

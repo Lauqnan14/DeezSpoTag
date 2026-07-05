@@ -1995,6 +1995,62 @@ LIMIT 1;";
         return resolved;
     }
 
+    public async Task<LocalTrackIdentityDto?> GetLocalTrackIdentityAsync(
+        long trackId,
+        CancellationToken cancellationToken = default)
+    {
+        if (trackId <= 0)
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string identitySql = @"
+SELECT COALESCE(NULLIF(TRIM(t.tag_title), ''), t.title),
+       COALESCE(NULLIF(TRIM(t.tag_artist), ''), ar.name, ''),
+       COALESCE(NULLIF(TRIM(t.tag_album), ''), al.title, ''),
+       COALESCE(t.tag_duration_ms, t.duration_ms),
+       COALESCE(
+           (SELECT source_id FROM track_source WHERE track_id = t.id AND lower(source) = 'isrc' LIMIT 1),
+           NULLIF(TRIM(t.tag_isrc), ''))
+FROM track t
+LEFT JOIN album al ON al.id = t.album_id
+LEFT JOIN artist ar ON ar.id = al.artist_id
+WHERE t.id = @trackId
+LIMIT 1;";
+        await using var identityCommand = new SqliteCommand(identitySql, connection);
+        identityCommand.Parameters.AddWithValue(TrackIdField, trackId);
+        await using var reader = await identityCommand.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var title = await reader.IsDBNullAsync(0, cancellationToken) ? string.Empty : reader.GetString(0);
+        var artist = await reader.IsDBNullAsync(1, cancellationToken) ? string.Empty : reader.GetString(1);
+        var album = await reader.IsDBNullAsync(2, cancellationToken) ? string.Empty : reader.GetString(2);
+        int? durationMs = await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetInt32(3);
+        var isrc = await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4);
+        await reader.DisposeAsync();
+
+        const string sourcesSql = @"
+SELECT lower(source), source_id
+FROM track_source
+WHERE track_id = @trackId
+  AND source_id IS NOT NULL
+  AND trim(source_id) <> '';";
+        await using var sourcesCommand = new SqliteCommand(sourcesSql, connection);
+        sourcesCommand.Parameters.AddWithValue(TrackIdField, trackId);
+        await using var sourcesReader = await sourcesCommand.ExecuteReaderAsync(cancellationToken);
+        var sourceIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        while (await sourcesReader.ReadAsync(cancellationToken))
+        {
+            sourceIds[sourcesReader.GetString(0)] = sourcesReader.GetString(1);
+        }
+
+        return new LocalTrackIdentityDto(trackId, title, artist, album, durationMs, isrc, sourceIds);
+    }
+
     public async Task<IReadOnlyDictionary<string, LocalScanFileState>> GetLocalScanFileStatesAsync(
         long folderId,
         CancellationToken cancellationToken = default)
@@ -6213,7 +6269,7 @@ SELECT id,
        pws.next_attempt_utc,
        pws.consecutive_failures,
        pw.sync_priority,
-       COALESCE(track_summary.completed_count, 0),
+       COALESCE(track_summary.verified_sync_count, 0),
        pws.ignored_blocked_track_count,
        pws.rerouted_track_count,
        pw.owner_name
@@ -6224,7 +6280,7 @@ LEFT JOIN playlist_watch_state pws
 LEFT JOIN (
     SELECT source,
            source_id,
-           SUM(CASE WHEN lower(status) IN ('completed', 'complete') THEN 1 ELSE 0 END) AS completed_count
+           SUM(CASE WHEN lower(sync_status) = 'playlist_synced' THEN 1 ELSE 0 END) AS verified_sync_count
     FROM playlist_watch_track
     GROUP BY source, source_id
 ) track_summary
@@ -7597,7 +7653,17 @@ SELECT track_source_id,
        unavailable_since_utc,
        unavailable_last_checked_utc,
        unavailable_next_retry_utc,
-       unavailable_settings_fingerprint
+       unavailable_settings_fingerprint,
+       local_track_id,
+       identity_status,
+       identity_reason,
+       target_service,
+       target_playlist_id,
+       target_item_id,
+       sync_status,
+       redirect_track_source_id,
+       redirect_reason,
+       verified_at_utc
 FROM playlist_watch_track
 WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection);
@@ -7624,6 +7690,16 @@ WHERE source = @source AND source_id = @sourceId;";
             var unavailableLastChecked = ReadNullableDateTimeOffset(reader, 6, cancellationToken);
             var unavailableNextRetry = ReadNullableDateTimeOffset(reader, 7, cancellationToken);
             var unavailableSettingsFingerprint = await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8);
+            long? localTrackId = await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetInt64(9);
+            var identityStatus = await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10);
+            var identityReason = await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11);
+            var targetService = await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12);
+            var targetPlaylistId = await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13);
+            var targetItemId = await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetString(14);
+            var syncStatus = await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15);
+            var redirectTrackSourceId = await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetString(16);
+            var redirectReason = await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetString(17);
+            var verifiedAt = ReadNullableDateTimeOffset(reader, 18, cancellationToken);
             statuses.Add(new PlaylistWatchTrackStatusDto(
                 trackSourceId,
                 isrc,
@@ -7633,10 +7709,143 @@ WHERE source = @source AND source_id = @sourceId;";
                 unavailableSince,
                 unavailableLastChecked,
                 unavailableNextRetry,
-                unavailableSettingsFingerprint));
+                unavailableSettingsFingerprint,
+                localTrackId,
+                identityStatus,
+                identityReason,
+                targetService,
+                targetPlaylistId,
+                targetItemId,
+                syncStatus,
+                redirectTrackSourceId,
+                redirectReason,
+                verifiedAt));
         }
 
         return statuses;
+    }
+
+    public async Task UpdatePlaylistWatchTrackVerificationAsync(
+        string source,
+        string sourceId,
+        PlaylistWatchTrackVerification verification,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(verification.TrackSourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string insertSql = @"
+INSERT OR IGNORE INTO playlist_watch_track (
+    source,
+    source_id,
+    track_source_id,
+    status,
+    created_at,
+    updated_at)
+VALUES (
+    @source,
+    @sourceId,
+    @trackSourceId,
+    'completed',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP);";
+        await using (var insert = new SqliteCommand(insertSql, connection))
+        {
+            insert.Parameters.AddWithValue(SourceField, normalizedSource);
+            insert.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            insert.Parameters.AddWithValue("trackSourceId", verification.TrackSourceId.Trim());
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string sql = @"
+UPDATE playlist_watch_track
+SET local_track_id = @localTrackId,
+    identity_status = @identityStatus,
+    identity_reason = @identityReason,
+    redirect_track_source_id = @redirectTrackSourceId,
+    redirect_reason = @redirectReason,
+    sync_status = CASE WHEN @identityStatus = 'review' THEN 'review' ELSE COALESCE(sync_status, 'downloaded') END,
+    verified_at_utc = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = @source
+  AND source_id = @sourceId
+  AND track_source_id = @trackSourceId
+  AND (identity_status IS NULL OR identity_status <> 'review' OR @identityStatus = 'review');";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("trackSourceId", verification.TrackSourceId.Trim());
+        command.Parameters.AddWithValue("localTrackId", (object?)verification.LocalTrackId ?? DBNull.Value);
+        command.Parameters.AddWithValue("identityStatus", verification.IdentityStatus);
+        command.Parameters.AddWithValue("identityReason", (object?)verification.IdentityReason ?? DBNull.Value);
+        command.Parameters.AddWithValue("redirectTrackSourceId", (object?)verification.RedirectTrackSourceId ?? DBNull.Value);
+        command.Parameters.AddWithValue("redirectReason", (object?)verification.RedirectReason ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task ReplacePlaylistWatchTargetMembershipAsync(
+        string source,
+        string sourceId,
+        string targetService,
+        string targetPlaylistId,
+        IReadOnlyCollection<PlaylistWatchTargetMembership> memberships,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string resetSql = @"
+UPDATE playlist_watch_track
+SET target_service = @targetService,
+    target_playlist_id = @targetPlaylistId,
+    target_item_id = NULL,
+    sync_status = CASE
+        WHEN identity_status = 'review' THEN 'review'
+        WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
+        ELSE COALESCE(sync_status, status)
+    END,
+    verified_at_utc = CURRENT_TIMESTAMP
+WHERE source = @source AND source_id = @sourceId;";
+        await using (var reset = new SqliteCommand(resetSql, connection, transaction))
+        {
+            reset.Parameters.AddWithValue(SourceField, normalizedSource);
+            reset.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            reset.Parameters.AddWithValue("targetService", targetService);
+            reset.Parameters.AddWithValue("targetPlaylistId", targetPlaylistId);
+            await reset.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string updateSql = @"
+UPDATE playlist_watch_track
+SET local_track_id = @localTrackId,
+    target_item_id = @targetItemId,
+    sync_status = 'playlist_synced',
+    verified_at_utc = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = @source
+  AND source_id = @sourceId
+  AND track_source_id = @trackSourceId
+  AND (identity_status IS NULL OR identity_status <> 'review');";
+        foreach (var membership in memberships)
+        {
+            await using var update = new SqliteCommand(updateSql, connection, transaction);
+            update.Parameters.AddWithValue(SourceField, normalizedSource);
+            update.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            update.Parameters.AddWithValue("trackSourceId", membership.TrackSourceId);
+            update.Parameters.AddWithValue("localTrackId", membership.LocalTrackId);
+            update.Parameters.AddWithValue("targetItemId", membership.TargetItemId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<PlaylistWatchTrackStatusDto>> GetGlobalPlaylistWatchTrackUnavailableStatusesAsync(

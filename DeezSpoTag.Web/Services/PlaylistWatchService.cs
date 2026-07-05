@@ -638,19 +638,27 @@ public sealed class PlaylistWatchService
 
         var success = queueResult.FailedCount == 0;
         if (syncResult is { Success: false }
-            && queueResult.QueuedCount == 0
-            && !queueResult.Deferred)
+            || syncResult is { MissingTracks: > 0 })
         {
             success = false;
         }
-        var runStatus = ResolvePlaylistRunStatus(queueResult, success);
+        var syncIncomplete = syncResult is { Success: true, MissingTracks: > 0 };
+        var syncFailed = syncResult is { Success: false };
+        var runStatus = syncIncomplete
+            ? "sync_incomplete"
+            : syncFailed
+                ? "sync_failed"
+                : ResolvePlaylistRunStatus(queueResult, success);
+        var reconciliationMessage = syncIncomplete || syncFailed
+            ? syncResult!.Message
+            : ResolveReconciliationMessage(queueResult, success);
         await TouchPlaylistWatchStateAsync(
             source,
             sourceId,
             liveTrackCount,
             liveSnapshot.SnapshotId,
             runStatus,
-            ResolveReconciliationMessage(queueResult, success),
+            reconciliationMessage,
             nextAttemptUtc: null,
             consecutiveFailures: null,
             cancellationToken);
@@ -662,7 +670,7 @@ public sealed class PlaylistWatchService
             cancellationToken);
         return new PlaylistReconciliationResult(
             success,
-            ResolveReconciliationMessage(queueResult, success),
+            reconciliationMessage,
             liveTrackCount,
             selection.MissingTracks.Count,
             selection.IgnoredCount,

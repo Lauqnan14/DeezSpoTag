@@ -465,6 +465,30 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var completedTrackIds = await _repository.GetPlaylistWatchTrackIdsAsync("spotify", "pl-123");
         Assert.Contains("dz-song-1", completedTrackIds);
         Assert.DoesNotContain("dz-song-2", completedTrackIds);
+        var localTrackId = seeded.TrackIdsByTitle.Values.First();
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "pl-123",
+            new PlaylistWatchTrackVerification(
+                "dz-song-1",
+                localTrackId,
+                "identity_verified",
+                "Test identity verified."));
+        var localOnlySummary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, localOnlySummary.SyncedTrackCount);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "pl-123",
+            "plex",
+            "plex-playlist-1",
+            [
+                new PlaylistWatchTargetMembership(
+                    "dz-song-1",
+                    localTrackId,
+                    "plex-track-1")
+            ]);
         var restartedRepository = new LibraryRepository(
             _configuration,
             NullLogger<LibraryRepository>.Instance);
@@ -475,6 +499,30 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(24, summaryAfterRestart.IncompleteTrackCount);
         Assert.Equal(2, summaryAfterRestart.IgnoredBlockedTrackCount);
         Assert.Equal(3, summaryAfterRestart.ReroutedTrackCount);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "pl-123",
+            new PlaylistWatchTrackVerification(
+                "dz-song-2",
+                localTrackId,
+                "review",
+                "Identity mismatch."));
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "pl-123",
+            "plex",
+            "plex-playlist-1",
+            [
+                new PlaylistWatchTargetMembership("dz-song-2", localTrackId, "plex-track-2")
+            ]);
+        var reviewStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var reviewStatus = Assert.Single(reviewStatuses, status => status.TrackSourceId == "dz-song-2");
+        Assert.Equal("review", reviewStatus.IdentityStatus);
+        Assert.Equal("review", reviewStatus.SyncStatus);
+        var summaryWithReview = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, summaryWithReview.SyncedTrackCount);
 
         await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
             " SPOTIFY ",

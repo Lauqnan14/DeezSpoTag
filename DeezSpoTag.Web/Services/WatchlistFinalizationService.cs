@@ -74,10 +74,21 @@ public sealed class WatchlistFinalizationService
         }
 
         var notifications = await ResolveNotificationsAsync(item, payloadJson, cancellationToken);
-        if (notifications.Count > 0)
-        {
-            await MarkWatchTracksCompletedAsync(notifications, cancellationToken);
-        }
+        var localTrackIds = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+            verifiedAudioPaths,
+            cancellationToken);
+        var localTrackId = localTrackIds.Values.FirstOrDefault();
+        var persistedIdentity = localTrackId > 0
+            ? await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken)
+            : null;
+        var identity = persistedIdentity == null
+            ? BuildFinalizedTrackIdentity(item, payloadJson)
+            : BuildFinalizedTrackIdentity(persistedIdentity);
+        notifications = await VerifyNotificationsAsync(
+            notifications,
+            identity,
+            localTrackId > 0 ? localTrackId : null,
+            cancellationToken);
 
         var sent = 0;
         foreach (var notification in notifications)
@@ -98,6 +109,89 @@ public sealed class WatchlistFinalizationService
         }
 
         return sent;
+    }
+
+    private async Task<List<WatchlistFinalizedNotification>> VerifyNotificationsAsync(
+        IReadOnlyCollection<WatchlistFinalizedNotification> notifications,
+        FinalizedTrackIdentity identity,
+        long? localTrackId,
+        CancellationToken cancellationToken)
+    {
+        var verified = new List<WatchlistFinalizedNotification>(notifications.Count);
+        var playlists = (await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken))
+            .GroupBy(
+                static item => $"{NormalizeSource(item.Source)}|{item.SourceId}",
+                StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.First(),
+                StringComparer.OrdinalIgnoreCase);
+        var candidatesByPlaylist = new Dictionary<string, IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var notification in notifications)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var playlistKey = $"{NormalizeSource(notification.Source)}|{notification.PlaylistId}";
+            playlists.TryGetValue(playlistKey, out var playlist);
+            if (!candidatesByPlaylist.TryGetValue(playlistKey, out var candidates))
+            {
+                candidates = playlist == null
+                    ? []
+                    : await TryGetPlaylistTrackCandidatesAsync(playlist, cancellationToken);
+                candidatesByPlaylist[playlistKey] = candidates;
+            }
+            var candidate = candidates.FirstOrDefault(item =>
+                string.Equals(item.TrackSourceId, notification.TrackId, StringComparison.OrdinalIgnoreCase));
+            if (candidate == null || !IsIdentityMatch(NormalizeSource(notification.Source), candidate, identity))
+            {
+                await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                    notification.Source,
+                    notification.PlaylistId,
+                    new PlaylistWatchTrackVerification(
+                        notification.TrackId,
+                        localTrackId,
+                        "review",
+                        "Finalized audio identity does not match the monitored playlist track."),
+                    cancellationToken);
+                continue;
+            }
+
+            var finalizedSourceTrackId = identity.GetTrackIdForSource(NormalizeSource(notification.Source));
+            var redirected = !string.IsNullOrWhiteSpace(finalizedSourceTrackId)
+                && !string.Equals(finalizedSourceTrackId, notification.TrackId, StringComparison.OrdinalIgnoreCase);
+            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                notification.Source,
+                notification.PlaylistId,
+                new PlaylistWatchTrackVerification(
+                    notification.TrackId,
+                    localTrackId,
+                    redirected ? "redirected" : "identity_verified",
+                    redirected ? "Verified replacement identity." : "Finalized audio identity verified.",
+                    redirected ? finalizedSourceTrackId : null,
+                    redirected ? "The downloaded source track redirected to a verified equivalent." : null),
+                cancellationToken);
+            verified.Add(notification);
+        }
+
+        return verified;
+    }
+
+    private static FinalizedTrackIdentity BuildFinalizedTrackIdentity(LocalTrackIdentityDto identity)
+    {
+        static string? SourceId(LocalTrackIdentityDto value, string source)
+            => value.SourceIds.TryGetValue(source, out var sourceId) ? NormalizeId(sourceId) : null;
+
+        return new FinalizedTrackIdentity(
+            SourceId(identity, "spotify"),
+            SourceId(identity, "deezer"),
+            SourceId(identity, AppleSource) ?? SourceId(identity, "itunes"),
+            SourceId(identity, "boomplay"),
+            SourceId(identity, "qobuz"),
+            SourceId(identity, "tidal"),
+            NormalizeIsrc(identity.Isrc),
+            NormalizeText(identity.Title),
+            NormalizeText(identity.Artist),
+            identity.DurationMs);
     }
 
     private async Task<List<string>> ResolveVerifiedFinalAudioPathsAsync(
@@ -323,22 +417,6 @@ public sealed class WatchlistFinalizationService
             playlist.SourceId,
             cancellationToken);
         return preference?.DestinationFolderId;
-    }
-
-    private async Task MarkWatchTracksCompletedAsync(
-        IReadOnlyCollection<WatchlistFinalizedNotification> notifications,
-        CancellationToken cancellationToken)
-    {
-        foreach (var notification in notifications)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await _libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
-                notification.Source,
-                notification.PlaylistId,
-                notification.TrackId,
-                "completed",
-                cancellationToken);
-        }
     }
 
     private static bool IsCompletedStatus(string? status)

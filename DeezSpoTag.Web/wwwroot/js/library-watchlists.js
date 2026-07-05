@@ -1335,12 +1335,13 @@ function toNonNegativeCount(value) {
 }
 
 function renderPlaylistWatchlistPresentationBadges(item) {
-    const totalTrackCount = toNonNegativeCount(item.trackCount);
+    const sourceTrackCount = toNonNegativeCount(item.trackCount);
     const syncedTrackCount = toNonNegativeCount(item.syncedTrackCount);
-    const incompleteTrackCount = toNonNegativeCount(item.incompleteTrackCount);
     const ignoredBlockedTrackCount = toNonNegativeCount(item.ignoredBlockedTrackCount);
+    const totalTrackCount = Math.max(0, sourceTrackCount - ignoredBlockedTrackCount);
+    const incompleteTrackCount = Math.max(0, totalTrackCount - syncedTrackCount);
     const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
-    const hasIncompleteSync = incompleteTrackCount > 0 && syncedTrackCount > 0 && totalTrackCount > syncedTrackCount;
+    const hasIncompleteSync = incompleteTrackCount > 0 && totalTrackCount > syncedTrackCount;
     const syncBadge = hasIncompleteSync ? renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) : '';
     const stateBadges = [
         renderPlaylistWatchlistStateBadge(ignoredBlockedTrackCount, 'blocked', 'ignored or blocked track', 'fa-ban'),

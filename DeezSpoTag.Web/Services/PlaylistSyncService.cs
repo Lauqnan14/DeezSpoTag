@@ -1,5 +1,6 @@
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using System;
@@ -29,6 +30,7 @@ public sealed class PlaylistSyncService
 
     private sealed record SyncMatchSummary(
         List<string> TargetIds,
+        List<PlaylistWatchTargetMembership> Memberships,
         int SourceTracks,
         int LocalMatches,
         int TargetMatches,
@@ -585,8 +587,7 @@ public sealed class PlaylistSyncService
         PlaylistWatchPreferenceDto? preference,
         IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
         bool force,
-        CancellationToken cancellationToken,
-        IReadOnlySet<string>? liveLookupTrackSourceIds = null)
+        CancellationToken cancellationToken)
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
@@ -629,6 +630,18 @@ public sealed class PlaylistSyncService
             playlist.Source,
             eligibleTracks,
             cancellationToken);
+        foreach (var row in availableTrackRows)
+        {
+            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                playlist.Source,
+                playlist.SourceId,
+                new PlaylistWatchTrackVerification(
+                    row.Track.SourceTrackId,
+                    row.LocalTrackId,
+                    "identity_verified",
+                    "Local library track matched the monitored source identity."),
+                cancellationToken);
+        }
 
         if (availableTrackRows.Count == 0)
         {
@@ -639,15 +652,7 @@ public sealed class PlaylistSyncService
                 MissingTracks: eligibleTracks.Count);
         }
 
-        var availableTracks = service switch
-        {
-            PlexService => await SelectPlexTracksVisibleForAvailableSyncAsync(
-                availableTrackRows,
-                force,
-                liveLookupTrackSourceIds,
-                cancellationToken),
-            _ => availableTrackRows.Select(static row => row.Track).ToList()
-        };
+        var availableTracks = availableTrackRows.Select(static row => row.Track).ToList();
         if (availableTracks.Count == 0)
         {
             return new PlaylistSyncResult(
@@ -791,58 +796,6 @@ public sealed class PlaylistSyncService
         }
 
         return availableTrackRows;
-    }
-
-    private async Task<List<SyncTrackSummary>> SelectPlexTracksVisibleForAvailableSyncAsync(
-        IReadOnlyList<(SyncTrackSummary Track, long LocalTrackId)> availableTrackRows,
-        bool allowLiveLookup,
-        IReadOnlySet<string>? liveLookupTrackSourceIds,
-        CancellationToken cancellationToken)
-    {
-        var mapped = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
-            availableTrackRows
-                .Select(static row => row.LocalTrackId)
-                .Where(static id => id > 0)
-                .Distinct()
-                .ToList(),
-            cancellationToken);
-        var selected = new List<SyncTrackSummary>(availableTrackRows.Count);
-        var selectedSourceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        AddSelectedTracks(
-            selected,
-            selectedSourceIds,
-            availableTrackRows.Where(row => mapped.TryGetValue(row.LocalTrackId, out var ratingKey)
-                && !string.IsNullOrWhiteSpace(ratingKey)));
-
-        if (!allowLiveLookup || liveLookupTrackSourceIds == null || liveLookupTrackSourceIds.Count == 0)
-        {
-            return selected;
-        }
-
-        AddSelectedTracks(
-            selected,
-            selectedSourceIds,
-            availableTrackRows.Where(row => !string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
-                && !selectedSourceIds.Contains(row.Track.SourceTrackId)
-                && liveLookupTrackSourceIds.Contains(row.Track.SourceTrackId)));
-
-        return selected;
-    }
-
-    private static void AddSelectedTracks(
-        ICollection<SyncTrackSummary> selected,
-        HashSet<string> selectedSourceIds,
-        IEnumerable<(SyncTrackSummary Track, long LocalTrackId)> rows)
-    {
-        var trackRows = rows.ToList();
-        foreach (var track in trackRows.Select(row => row.Track))
-        {
-            selected.Add(track);
-            if (!string.IsNullOrWhiteSpace(track.SourceTrackId))
-            {
-                selectedSourceIds.Add(track.SourceTrackId);
-            }
-        }
     }
 
     public async Task<PlaylistSyncResult> SyncPlaylistArtworkOnlyAsync(
@@ -1002,6 +955,16 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            await PersistPlexMembershipAsync(
+                playlist,
+                plex,
+                existingPlaylistId,
+                matchSummary.Memberships,
+                cancellationToken);
+        }
+
         if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
         {
             _logger.LogWarning(
@@ -1045,13 +1008,24 @@ public sealed class PlaylistSyncService
 
         await SyncPlexPlaylistArtworkAsync(plex, playlist, preference, playlistId, cancellationToken);
         await PersistTargetPlaylistBindingAsync(playlist, preference, PlexService, playlistId, cancellationToken);
+        var verifiedMemberships = await PersistPlexMembershipAsync(
+            playlist,
+            plex,
+            playlistId,
+            matchSummary.Memberships,
+            cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
+        var verifiedSummary = matchSummary with
+        {
+            TargetMatches = verifiedMemberships.Count,
+            MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
+        };
         return BuildSuccessResult(
-            BuildSyncMessage($"Playlist synced ({modeLabel}).", matchSummary),
+            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
             playlistId,
-            matchSummary,
-            matchSummary.TargetMatches);
+            verifiedSummary,
+            verifiedMemberships.Count);
     }
 
     private async Task<PlaylistSyncResult> SyncToJellyfinAsync(
@@ -1074,9 +1048,11 @@ public sealed class PlaylistSyncService
 
         var playlistName = ResolvePlaylistName(playlist);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
-        var itemIds = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, cancellationToken);
+        var jellyfinMatches = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, orderedTrackIds, cancellationToken);
+        var itemIds = jellyfinMatches.Select(static item => item.TargetItemId).ToList();
         var matchSummary = new SyncMatchSummary(
             itemIds,
+            jellyfinMatches,
             SourceTracks: tracks.Count,
             LocalMatches: orderedTrackIds.Count(static id => id > 0),
             TargetMatches: itemIds.Count,
@@ -1093,6 +1069,16 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            await PersistJellyfinMembershipAsync(
+                playlist,
+                jellyfin,
+                existingPlaylistId,
+                jellyfinMatches,
+                cancellationToken);
+        }
+
         if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
         {
             _logger.LogWarning(
@@ -1116,7 +1102,6 @@ public sealed class PlaylistSyncService
                 cancellationToken)
             : existingPlaylistId.Trim();
 
-        var syncedTracks = 0;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             var createdPlaylistId = await _jellyfinApiClient.CreatePlaylistAsync(
@@ -1134,7 +1119,6 @@ public sealed class PlaylistSyncService
             }
 
             playlistId = createdPlaylistId;
-            syncedTracks = itemIds.Count;
         }
         else
         {
@@ -1152,8 +1136,6 @@ public sealed class PlaylistSyncService
                     BuildSyncMessage(syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.", matchSummary),
                     matchSummary);
             }
-
-            syncedTracks = syncItemsResult.SyncedTracks;
         }
 
         await _jellyfinApiClient.UpdateItemMetadataAsync(
@@ -1166,13 +1148,81 @@ public sealed class PlaylistSyncService
 
         await SyncJellyfinPlaylistArtworkAsync(jellyfin, playlist, preference, playlistId, cancellationToken);
         await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
+        var verifiedMemberships = await PersistJellyfinMembershipAsync(
+            playlist,
+            jellyfin,
+            playlistId,
+            jellyfinMatches,
+            cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
+        var verifiedSummary = matchSummary with
+        {
+            TargetIds = itemIds,
+            TargetMatches = verifiedMemberships.Count,
+            MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
+        };
         return BuildSuccessResult(
-            BuildSyncMessage($"Playlist synced ({modeLabel}).", matchSummary),
+            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
             playlistId,
-            matchSummary with { TargetIds = itemIds },
-            syncedTracks);
+            verifiedSummary,
+            verifiedMemberships.Count);
+    }
+
+    private async Task<List<PlaylistWatchTargetMembership>> PersistPlexMembershipAsync(
+        PlaylistWatchlistDto playlist,
+        PlexConnection plex,
+        string playlistId,
+        IReadOnlyCollection<PlaylistWatchTargetMembership> expectedMemberships,
+        CancellationToken cancellationToken)
+    {
+        var actualTargetIds = (await _plexApiClient.GetPlaylistItemsAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                cancellationToken))
+            .Select(static item => item.Id)
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var verified = expectedMemberships
+            .Where(item => actualTargetIds.Contains(item.TargetItemId))
+            .ToList();
+        await _libraryRepository.ReplacePlaylistWatchTargetMembershipAsync(
+            playlist.Source,
+            playlist.SourceId,
+            PlexService,
+            playlistId,
+            verified,
+            cancellationToken);
+        return verified;
+    }
+
+    private async Task<List<PlaylistWatchTargetMembership>> PersistJellyfinMembershipAsync(
+        PlaylistWatchlistDto playlist,
+        JellyfinConnection jellyfin,
+        string playlistId,
+        IReadOnlyCollection<PlaylistWatchTargetMembership> expectedMemberships,
+        CancellationToken cancellationToken)
+    {
+        var actualTargetIds = (await _jellyfinApiClient.GetPlaylistEntriesAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                playlistId,
+                cancellationToken))
+            .Select(static item => item.ItemId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var verified = expectedMemberships
+            .Where(item => actualTargetIds.Contains(item.TargetItemId))
+            .ToList();
+        await _libraryRepository.ReplacePlaylistWatchTargetMembershipAsync(
+            playlist.Source,
+            playlist.SourceId,
+            JellyfinService,
+            playlistId,
+            verified,
+            cancellationToken);
+        return verified;
     }
 
     private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> SyncExistingJellyfinPlaylistItemsAsync(
@@ -1976,8 +2026,19 @@ public sealed class PlaylistSyncService
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .Select(static value => value!)
             .ToList();
+        var memberships = ratingKeysByIndex
+            .Select((targetId, index) => new { targetId, index })
+            .Where(item => !string.IsNullOrWhiteSpace(item.targetId)
+                           && orderedTrackIds[item.index] > 0
+                           && !string.IsNullOrWhiteSpace(tracks[item.index].SourceTrackId))
+            .Select(item => new PlaylistWatchTargetMembership(
+                tracks[item.index].SourceTrackId,
+                orderedTrackIds[item.index],
+                item.targetId!))
+            .ToList();
         return new SyncMatchSummary(
             ratingKeys,
+            memberships,
             SourceTracks: tracks.Count,
             LocalMatches: orderedTrackIds.Count(static id => id > 0),
             TargetMatches: ratingKeys.Count,
@@ -2012,29 +2073,30 @@ public sealed class PlaylistSyncService
         var match = results.FirstOrDefault(result =>
             IsTitleArtistMatch(track, result)
             && IsDurationMatch(track.DurationMs, result.DurationMs));
-        if (match == null)
-        {
-            match = results.FirstOrDefault(result => IsTitleLooseMatch(track, result.Title));
-        }
 
         var ratingKey = match?.RatingKey;
         cache[query] = ratingKey;
         return ratingKey;
     }
 
-    private async Task<List<string>> ResolveJellyfinItemIdsAsync(
+    private async Task<List<PlaylistWatchTargetMembership>> ResolveJellyfinItemIdsAsync(
         JellyfinConnection jellyfin,
         IReadOnlyList<SyncTrackSummary> tracks,
+        IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
-        var itemIds = new List<string>(tracks.Count);
+        var itemIds = new List<PlaylistWatchTargetMembership>(tracks.Count);
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var track in tracks)
+        for (var index = 0; index < tracks.Count; index++)
         {
+            var track = tracks[index];
             var resolved = await ResolveJellyfinItemIdAsync(jellyfin, track, searchCache, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(resolved))
+            if (!string.IsNullOrWhiteSpace(resolved) && orderedTrackIds[index] > 0)
             {
-                itemIds.Add(resolved);
+                itemIds.Add(new PlaylistWatchTargetMembership(
+                    track.SourceTrackId,
+                    orderedTrackIds[index],
+                    resolved));
             }
         }
 
@@ -2068,10 +2130,6 @@ public sealed class PlaylistSyncService
         var match = results.FirstOrDefault(result =>
             IsTitleArtistMatch(track, result)
             && IsDurationMatch(track.DurationMs, result.DurationMs));
-        if (match == null)
-        {
-            match = results.FirstOrDefault(result => IsTitleLooseMatch(track, result.Name));
-        }
 
         var itemId = match?.Id;
         cache[query] = itemId;
@@ -2124,45 +2182,12 @@ public sealed class PlaylistSyncService
     }
 
     private static bool IsTitleArtistMatch(SyncTrackSummary track, PlexTrack result)
-    {
-        var leftTitle = Normalize(track.Name);
-        var rightTitle = Normalize(result.Title);
-        var leftArtist = Normalize(track.Artists);
-        var rightArtist = Normalize(result.Artist);
-        return leftTitle == rightTitle && leftArtist == rightArtist;
-    }
+        => TrackTitleMatcher.TitlesMatch(track.Name, result.Title)
+           && TrackTitleMatcher.ArtistsMatch(track.Artists, result.Artist);
 
     private static bool IsTitleArtistMatch(SyncTrackSummary track, JellyfinAudioTrack result)
-    {
-        var leftTitle = Normalize(track.Name);
-        var rightTitle = Normalize(result.Name);
-        if (leftTitle != rightTitle)
-        {
-            return false;
-        }
-
-        var leftArtist = Normalize(track.Artists);
-        var rightArtist = Normalize(result.Artist);
-        if (string.IsNullOrWhiteSpace(leftArtist) || string.IsNullOrWhiteSpace(rightArtist))
-        {
-            return true;
-        }
-
-        return leftArtist == rightArtist
-               || rightArtist.Contains(leftArtist, StringComparison.OrdinalIgnoreCase)
-               || leftArtist.Contains(rightArtist, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsTitleLooseMatch(SyncTrackSummary track, string candidateTitle)
-    {
-        var leftTitle = Normalize(track.Name);
-        var rightTitle = Normalize(candidateTitle);
-        return !string.IsNullOrWhiteSpace(leftTitle)
-               && !string.IsNullOrWhiteSpace(rightTitle)
-               && (leftTitle == rightTitle
-                   || rightTitle.Contains(leftTitle, StringComparison.OrdinalIgnoreCase)
-                   || leftTitle.Contains(rightTitle, StringComparison.OrdinalIgnoreCase));
-    }
+        => TrackTitleMatcher.TitlesMatch(track.Name, result.Name)
+           && TrackTitleMatcher.ArtistsMatch(track.Artists, result.Artist);
 
     private static bool IsDurationMatch(int? durationMs, long durationCandidate)
     {

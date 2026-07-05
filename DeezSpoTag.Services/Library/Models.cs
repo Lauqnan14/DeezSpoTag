@@ -662,7 +662,39 @@ public sealed record PlaylistWatchTrackStatusDto(
     DateTimeOffset? UnavailableSinceUtc,
     DateTimeOffset? UnavailableLastCheckedUtc,
     DateTimeOffset? UnavailableNextRetryUtc,
-    string? UnavailableSettingsFingerprint);
+    string? UnavailableSettingsFingerprint,
+    long? LocalTrackId = null,
+    string? IdentityStatus = null,
+    string? IdentityReason = null,
+    string? TargetService = null,
+    string? TargetPlaylistId = null,
+    string? TargetItemId = null,
+    string? SyncStatus = null,
+    string? RedirectTrackSourceId = null,
+    string? RedirectReason = null,
+    DateTimeOffset? VerifiedAtUtc = null);
+
+public sealed record PlaylistWatchTrackVerification(
+    string TrackSourceId,
+    long? LocalTrackId,
+    string IdentityStatus,
+    string? IdentityReason = null,
+    string? RedirectTrackSourceId = null,
+    string? RedirectReason = null);
+
+public sealed record PlaylistWatchTargetMembership(
+    string TrackSourceId,
+    long LocalTrackId,
+    string TargetItemId);
+
+public sealed record LocalTrackIdentityDto(
+    long TrackId,
+    string Title,
+    string Artist,
+    string Album,
+    int? DurationMs,
+    string? Isrc,
+    IReadOnlyDictionary<string, string> SourceIds);
 
 public sealed record PlaylistWatchTrackInsert(string TrackSourceId, string? Isrc);
 

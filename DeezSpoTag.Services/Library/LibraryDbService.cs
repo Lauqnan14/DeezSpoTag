@@ -311,6 +311,16 @@ WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_last_checked_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_next_retry_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "unavailable_settings_fingerprint", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "local_track_id", BigIntType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "identity_status", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "identity_reason", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "target_service", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "target_playlist_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "target_item_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "sync_status", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_track_source_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_reason", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "verified_at_utc", TextType, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     source TEXT NOT NULL,

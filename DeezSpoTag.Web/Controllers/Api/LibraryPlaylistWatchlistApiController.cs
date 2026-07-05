@@ -654,7 +654,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var reconciliation = await _playlistWatchService.ReconcilePlaylistAsync(
             item,
             CancellationToken.None,
-            forceMediaServerSync: false);
+            forceMediaServerSync: true);
         var result = reconciliation.SyncResult;
         return Ok(new
         {
@@ -1172,9 +1172,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 LocationStatus = locationStatus.Status,
                 LocationStatusLabel = locationStatus.Label,
                 LocationStatusDetail = locationStatus.Detail,
-                InLocalLibrary = locationStatus.Status == "library",
-                InTargetServer = locationStatus.Status == "library",
-                TargetService = string.Empty,
+                InLocalLibrary = persistedStatus?.LocalTrackId.HasValue == true
+                    || NormalizeStatusText(persistedStatus?.Status) is "completed" or "complete",
+                InTargetServer = string.Equals(
+                    persistedStatus?.SyncStatus,
+                    "playlist_synced",
+                    StringComparison.OrdinalIgnoreCase),
+                TargetService = persistedStatus?.TargetService ?? string.Empty,
+                TargetItemId = persistedStatus?.TargetItemId ?? string.Empty,
+                IdentityStatus = persistedStatus?.IdentityStatus ?? string.Empty,
+                RedirectTrackSourceId = persistedStatus?.RedirectTrackSourceId ?? string.Empty,
+                RedirectReason = persistedStatus?.RedirectReason ?? string.Empty,
                 WatchStatus = queueTask?.Status ?? string.Empty
             };
         }).ToList());
@@ -1335,10 +1343,44 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
     private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(PlaylistWatchTrackStatusDto? status)
     {
+        var syncStatus = NormalizeStatusText(status?.SyncStatus);
+        var identityStatus = NormalizeStatusText(status?.IdentityStatus);
+        if (identityStatus == "review" || syncStatus == "review")
+        {
+            return new PlaylistTrackLocationStatus(
+                "review",
+                "Review",
+                status?.IdentityReason ?? "Downloaded audio identity requires review.");
+        }
+
+        if (syncStatus == "playlist_synced")
+        {
+            return identityStatus == "redirected"
+                ? new PlaylistTrackLocationStatus(
+                    "redirected",
+                    "Redirected",
+                    status?.RedirectReason ?? "A verified equivalent track was synced.")
+                : new PlaylistTrackLocationStatus(
+                    "synced",
+                    "Synced",
+                    $"Verified in {status?.TargetService ?? "the target server"} playlist.");
+        }
+
+        if (syncStatus is "target_visible" or "waiting_for_target")
+        {
+            return new PlaylistTrackLocationStatus(
+                "waiting_for_target",
+                $"Waiting for {status?.TargetService ?? "target"}",
+                "Available locally but not verified in the target playlist.");
+        }
+
         var normalized = NormalizeStatusText(status?.Status);
         if (normalized is "completed" or "complete")
         {
-            return new PlaylistTrackLocationStatus("library", "Library", "Downloaded and synced by the monitored playlist state.");
+            return new PlaylistTrackLocationStatus(
+                "library",
+                "In Library",
+                "Available locally but not yet verified in the target playlist.");
         }
 
         if (normalized == "unavailable")

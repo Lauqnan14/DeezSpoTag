@@ -492,6 +492,16 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
     unavailable_last_checked_utc TEXT,
     unavailable_next_retry_utc TEXT,
     unavailable_settings_fingerprint TEXT,
+    local_track_id BIGINT,
+    identity_status TEXT,
+    identity_reason TEXT,
+    target_service TEXT,
+    target_playlist_id TEXT,
+    target_item_id TEXT,
+    sync_status TEXT,
+    redirect_track_source_id TEXT,
+    redirect_reason TEXT,
+    verified_at_utc TEXT,
     PRIMARY KEY (source, source_id, track_source_id)
 );
 
