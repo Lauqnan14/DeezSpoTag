@@ -34,6 +34,7 @@ public sealed class BoomplayMetadataService
     private const int SongCacheSizeLimit = 5000;
     private const int PlaylistCacheSizeLimit = 500;
     private const int SearchCacheSizeLimit = 500;
+    private const int AlbumCacheSizeLimit = 1000;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex SongPathRegex = CreateRegex(@"(?:^|/)songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PlaylistPathRegex = CreateRegex(@"(?:^|/)playlists/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -133,6 +134,7 @@ public sealed class BoomplayMetadataService
     private readonly MemoryCache _songCache = new(new MemoryCacheOptions { SizeLimit = SongCacheSizeLimit });
     private readonly MemoryCache _playlistCache = new(new MemoryCacheOptions { SizeLimit = PlaylistCacheSizeLimit });
     private readonly MemoryCache _searchCache = new(new MemoryCacheOptions { SizeLimit = SearchCacheSizeLimit });
+    private readonly MemoryCache _albumCache = new(new MemoryCacheOptions { SizeLimit = AlbumCacheSizeLimit });
     private static readonly HashSet<string> GenreNoiseValues = new(StringComparer.OrdinalIgnoreCase)
     {
         BoomplaySource,
@@ -610,6 +612,7 @@ public sealed class BoomplayMetadataService
             Url = $"{BoomplayBaseUrl}/songs/{songId.Trim()}",
             Title = title,
             Artist = artist,
+            AlbumId = DecodeAndTrim(hint.AlbumId),
             Album = DecodeAndTrim(hint.Album),
             CoverUrl = DecodeAndTrim(hint.CoverUrl)
         };
@@ -713,8 +716,118 @@ public sealed class BoomplayMetadataService
         CancellationToken cancellationToken)
     {
         var parsed = ParseSongHtml(songId, html, url);
+        var official = await GetOfficialSongMetadataAsync(songId, cancellationToken);
+        if (official != null)
+        {
+            MergeOfficialSongMetadata(parsed, official);
+        }
+
         await ApplyStreamTagsAsync(songId, parsed, streamTagAttempts, cancellationToken);
         return new SongAttemptParseResult(parsed);
+    }
+
+    private async Task<BoomplayTrackMetadata?> GetOfficialSongMetadataAsync(
+        string songId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(songId) || !songId.All(char.IsDigit))
+        {
+            return null;
+        }
+
+        try
+        {
+            var client = CreateClient();
+            var url = $"{BoomplayApiBaseUrl}/music/getMusicInfo?musicID={Uri.EscapeDataString(songId)}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("accept", "application/json");
+            request.Headers.TryAddWithoutValidation("x-boomplay-ref", "Boomplay_ANDROID");
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            var track = ParseOfficialSongMetadata(document.RootElement);
+            return string.IsNullOrWhiteSpace(track.Id) ? null : track;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Boomplay official song metadata failed for SongId");
+            return null;
+        }
+    }
+
+    private static BoomplayTrackMetadata ParseOfficialSongMetadata(JsonElement item)
+    {
+        var album = string.Empty;
+        var albumId = GetJsonText(item, "colID");
+        var albumCover = string.Empty;
+        if (item.TryGetProperty("beAlbum", out var beAlbum) && beAlbum.ValueKind == JsonValueKind.Object)
+        {
+            album = GetJsonText(beAlbum, "name");
+            albumId = FirstNonEmpty(GetJsonText(beAlbum, "colID"), albumId) ?? string.Empty;
+            albumCover = FirstNonEmpty(
+                GetJsonText(beAlbum, "bigIconID"),
+                GetJsonText(beAlbum, "iconMagicUrl"),
+                GetJsonText(beAlbum, "smIconID"),
+                GetJsonText(beAlbum, "lowIconID")) ?? string.Empty;
+        }
+
+        var artist = string.Empty;
+        if (item.TryGetProperty("beArtist", out var beArtist) && beArtist.ValueKind == JsonValueKind.Object)
+        {
+            artist = GetJsonText(beArtist, "name");
+        }
+
+        var track = new BoomplayTrackMetadata
+        {
+            Id = GetJsonText(item, "musicID"),
+            AlbumId = albumId,
+            Url = string.Empty,
+            Title = GetJsonText(item, "name"),
+            Artist = artist,
+            Album = album,
+            CoverUrl = BuildBoomplaySourceUrl(FirstNonEmpty(
+                GetJsonText(item, "cover"),
+                albumCover) ?? string.Empty),
+            DurationMs = ParseDurationMs(GetJsonText(item, "deaution")),
+            TrackNumber = GetJsonInt32(item, "seq"),
+            ReleaseDate = GetJsonText(item, "publicYear"),
+            Publisher = GetJsonText(item, "recordLabel")
+        };
+
+        SanitizeTrackMetadata(track);
+        return track;
+    }
+
+    private static void MergeOfficialSongMetadata(
+        BoomplayTrackMetadata target,
+        BoomplayTrackMetadata official)
+    {
+        target.Title = FirstNonEmpty(target.Title, official.Title) ?? string.Empty;
+        target.Artist = FirstNonEmpty(target.Artist, official.Artist) ?? string.Empty;
+        target.Album = FirstNonEmpty(official.Album, target.Album) ?? string.Empty;
+        target.CoverUrl = FirstNonEmpty(target.CoverUrl, official.CoverUrl) ?? string.Empty;
+        target.Isrc = FirstNonEmpty(target.Isrc, official.Isrc) ?? string.Empty;
+        target.ReleaseDate = FirstNonEmpty(target.ReleaseDate, official.ReleaseDate) ?? string.Empty;
+        target.Publisher = FirstNonEmpty(target.Publisher, official.Publisher) ?? string.Empty;
+        if (target.DurationMs <= 0)
+        {
+            target.DurationMs = official.DurationMs;
+        }
+        if (target.TrackNumber <= 0)
+        {
+            target.TrackNumber = official.TrackNumber;
+        }
+
+        SanitizeTrackMetadata(target);
     }
 
     private async Task<SongAttemptOutcome> EvaluateSongAttemptAsync(
@@ -944,6 +1057,7 @@ public sealed class BoomplayMetadataService
             {
                 Title = track.Title,
                 Artist = track.Artist,
+                AlbumId = track.AlbumId,
                 Album = track.Album,
                 CoverUrl = track.CoverUrl
             },
@@ -980,6 +1094,7 @@ public sealed class BoomplayMetadataService
         {
             Id = id,
             Url = $"{BoomplayBaseUrl}/songs/{id}",
+            AlbumId = FirstNonEmpty(official?.AlbumId, hint?.AlbumId) ?? string.Empty,
             Title = FirstNonEmpty(official?.Title, hint?.Title) ?? string.Empty,
             Artist = FirstNonEmpty(official?.Artist, hint?.Artist) ?? string.Empty,
             Album = FirstNonEmpty(official?.Album, hint?.Album) ?? string.Empty,
@@ -1035,6 +1150,7 @@ public sealed class BoomplayMetadataService
                 ? parsedCount
                 : -1;
             var tracks = ParseOfficialPlaylistTracks(musics);
+            await EnrichOfficialPlaylistAlbumsAsync(tracks, cancellationToken);
             if (declaredCount >= 0 && tracks.Count != declaredCount)
             {
                 _logger.LogWarning(
@@ -1108,6 +1224,7 @@ public sealed class BoomplayMetadataService
             tracks.Add(new BoomplayTrackMetadata
             {
                 Id = id,
+                AlbumId = GetJsonText(item, "colID"),
                 Url = $"{BoomplayBaseUrl}/songs/{id}",
                 Title = GetJsonText(item, "name"),
                 Artist = artist,
@@ -1119,6 +1236,118 @@ public sealed class BoomplayMetadataService
         }
 
         return tracks.OrderBy(static track => track.TrackNumber > 0 ? track.TrackNumber : int.MaxValue).ToList();
+    }
+
+    private async Task EnrichOfficialPlaylistAlbumsAsync(
+        IReadOnlyList<BoomplayTrackMetadata> tracks,
+        CancellationToken cancellationToken)
+    {
+        var albumIds = tracks
+            .Where(static track => string.IsNullOrWhiteSpace(track.Album))
+            .Select(static track => track.AlbumId)
+            .Where(static id => !string.IsNullOrWhiteSpace(id) && id.All(char.IsDigit))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (albumIds.Count == 0)
+        {
+            return;
+        }
+
+        var albumById = new ConcurrentDictionary<string, BoomplayAlbumMetadata>(StringComparer.Ordinal);
+        using var gate = new SemaphoreSlim(PlaylistSongFetchConcurrency);
+        var tasks = albumIds.Select(async albumId =>
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                var album = await GetOfficialAlbumMetadataAsync(albumId, cancellationToken);
+                if (album != null)
+                {
+                    albumById[albumId] = album;
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks);
+
+        foreach (var track in tracks)
+        {
+            if (string.IsNullOrWhiteSpace(track.AlbumId)
+                || !albumById.TryGetValue(track.AlbumId, out var album))
+            {
+                continue;
+            }
+
+            track.Album = FirstNonEmpty(track.Album, album.Title) ?? string.Empty;
+            track.CoverUrl = FirstNonEmpty(track.CoverUrl, album.CoverUrl) ?? string.Empty;
+            track.ReleaseDate = FirstNonEmpty(track.ReleaseDate, album.ReleaseDate) ?? string.Empty;
+            SanitizeTrackMetadata(track);
+        }
+    }
+
+    private async Task<BoomplayAlbumMetadata?> GetOfficialAlbumMetadataAsync(
+        string albumId,
+        CancellationToken cancellationToken)
+    {
+        if (_albumCache.TryGetValue(albumId, out BoomplayAlbumMetadata? cached) && cached != null)
+        {
+            return cached;
+        }
+
+        try
+        {
+            var client = CreateClient();
+            var url = $"{BoomplayApiBaseUrl}/music/getMusicsByColID?colID={Uri.EscapeDataString(albumId)}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.TryAddWithoutValidation("accept", "application/json");
+            request.Headers.TryAddWithoutValidation("x-boomplay-ref", "Boomplay_ANDROID");
+            using var response = await client.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("detailCol", out var detail)
+                || detail.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var album = new BoomplayAlbumMetadata
+            {
+                Id = albumId,
+                Title = GetJsonText(detail, "name"),
+                CoverUrl = BuildBoomplaySourceUrl(FirstNonEmpty(
+                    GetJsonText(detail, "bigIconID"),
+                    GetJsonText(detail, "iconMagicUrl"),
+                    GetJsonText(detail, "smIconID"),
+                    GetJsonText(detail, "lowIconID")) ?? string.Empty),
+                ReleaseDate = GetJsonText(detail, "publicYear")
+            };
+
+            if (string.IsNullOrWhiteSpace(album.Title))
+            {
+                return null;
+            }
+
+            _albumCache.Set(albumId, album, BuildAlbumCacheOptions());
+            return album;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Boomplay album metadata failed for AlbumId");
+            return null;
+        }
     }
 
     private static string GetJsonText(JsonElement element, string propertyName)
@@ -3651,11 +3880,22 @@ public sealed class BoomplayMetadataService
             AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1)
         };
     }
+
+    private static MemoryCacheEntryOptions BuildAlbumCacheOptions()
+    {
+        return new MemoryCacheEntryOptions
+        {
+            Size = 1,
+            SlidingExpiration = TimeSpan.FromHours(1),
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(12)
+        };
+    }
 }
 
 public sealed class BoomplayTrackMetadata
 {
     public string Id { get; set; } = string.Empty;
+    public string AlbumId { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public string Artist { get; set; } = string.Empty;
@@ -3695,8 +3935,17 @@ public sealed class BoomplayTrackHint
 {
     public string Title { get; set; } = string.Empty;
     public string Artist { get; set; } = string.Empty;
+    public string AlbumId { get; set; } = string.Empty;
     public string Album { get; set; } = string.Empty;
     public string CoverUrl { get; set; } = string.Empty;
+}
+
+public sealed class BoomplayAlbumMetadata
+{
+    public string Id { get; set; } = string.Empty;
+    public string Title { get; set; } = string.Empty;
+    public string CoverUrl { get; set; } = string.Empty;
+    public string ReleaseDate { get; set; } = string.Empty;
 }
 
 public sealed class BoomplayRecommendationSection

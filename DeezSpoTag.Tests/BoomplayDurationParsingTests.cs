@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
+using System.Text.Json;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -18,6 +20,18 @@ public sealed class BoomplayDurationParsingTests
             "TryApplySongDetailField",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("BoomplayMetadataService.TryApplySongDetailField not found.");
+
+    private static readonly MethodInfo ParseOfficialSongMetadataMethod =
+        typeof(BoomplayMetadataService).GetMethod(
+            "ParseOfficialSongMetadata",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("BoomplayMetadataService.ParseOfficialSongMetadata not found.");
+
+    private static readonly MethodInfo ParseOfficialPlaylistTracksMethod =
+        typeof(BoomplayMetadataService).GetMethod(
+            "ParseOfficialPlaylistTracks",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("BoomplayMetadataService.ParseOfficialPlaylistTracks not found.");
 
     [Theory]
     [InlineData("3:45", 225000)]
@@ -43,5 +57,64 @@ public sealed class BoomplayDurationParsingTests
         TryApplySongDetailFieldMethod.Invoke(null, new object?[] { track, label, "3:45" });
 
         Assert.Equal(225000, track.DurationMs);
+    }
+
+    [Fact]
+    public void ParseOfficialSongMetadata_UsesBoomplayAlbumObject()
+    {
+        using var document = JsonDocument.Parse("""
+        {
+          "musicID": 256487581,
+          "name": "Take a look at you!",
+          "deaution": "00:02:40",
+          "cover": "group10/M00/06/24/cover.jpeg",
+          "beArtist": { "name": "FUNMY" },
+          "beAlbum": {
+            "colID": 134311842,
+            "name": "TALAY & BEAUTIFUL GIRL",
+            "bigIconID": "group10/M00/06/24/album.jpeg"
+          },
+          "publicYear": 2026,
+          "recordLabel": "DEFABS"
+        }
+        """);
+
+        var track = Assert.IsType<BoomplayTrackMetadata>(
+            ParseOfficialSongMetadataMethod.Invoke(null, new object?[] { document.RootElement }));
+
+        Assert.Equal("256487581", track.Id);
+        Assert.Equal("Take a look at you!", track.Title);
+        Assert.Equal("FUNMY", track.Artist);
+        Assert.Equal("TALAY & BEAUTIFUL GIRL", track.Album);
+        Assert.Equal(160000, track.DurationMs);
+        Assert.Equal("2026", track.ReleaseDate);
+        Assert.Equal("DEFABS", track.Publisher);
+    }
+
+    [Fact]
+    public void ParseOfficialPlaylistTracks_KeepsBoomplayAlbumCollectionId()
+    {
+        using var document = JsonDocument.Parse("""
+        [
+          {
+            "musicID": 256487581,
+            "colID": 134311842,
+            "name": "Take a look at you!",
+            "deaution": "00:02:40",
+            "cover": "group10/M00/06/24/cover.jpeg",
+            "seq": 1,
+            "singers": [{ "name": "FUNMY" }]
+          }
+        ]
+        """);
+
+        var tracks = Assert.IsAssignableFrom<IReadOnlyList<BoomplayTrackMetadata>>(
+            ParseOfficialPlaylistTracksMethod.Invoke(null, new object?[] { document.RootElement }));
+
+        var track = Assert.Single(tracks);
+        Assert.Equal("256487581", track.Id);
+        Assert.Equal("134311842", track.AlbumId);
+        Assert.Equal("Take a look at you!", track.Title);
+        Assert.Equal("FUNMY", track.Artist);
     }
 }

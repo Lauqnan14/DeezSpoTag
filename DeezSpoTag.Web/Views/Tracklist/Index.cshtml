@@ -3725,6 +3725,31 @@ function reconcileExternalMatchesFromCache() {
     return applied;
 }
 
+function markUnresolvedExternalRowsAsUnmatched(indices) {
+    if (!(indices instanceof Set) || indices.size === 0) {
+        return;
+    }
+
+    indices.forEach((index) => {
+        const row = getTracklistRowByIndex(index);
+        if (!row) {
+            return;
+        }
+
+        const source = getRowTrackSource(row);
+        if (!isDeezerMatchedExternalSource(source)) {
+            return;
+        }
+
+        const deezerId = String(row.querySelector('.track-checkbox')?.dataset.trackId || row.dataset.availabilityDeezerId || '').trim();
+        if (/^\d+$/.test(deezerId)) {
+            return;
+        }
+
+        applyUnmatchedRowState(row);
+    });
+}
+
 async function hydrateLibrespotTrackDetails(tracks) {
     if (!tracks || tracks.length === 0) {
         return;
@@ -4049,6 +4074,14 @@ function buildSpotifyTrackResolveRequestFromRow(row) {
 
 function buildExternalMatchRequestFromRow(row) {
     return buildSpotifyTrackResolveRequestFromRow(row);
+}
+
+function getTracklistRowByIndex(index) {
+    if (index === undefined || index === null) {
+        return null;
+    }
+
+    return document.querySelector(`tr[data-track-index="${index}"]`);
 }
 
 function getTracklistPlaybackFacade() {
@@ -4430,9 +4463,13 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
     const finalize = options?.finalize !== false;
 
     const queue = [];
+    const processedIndices = new Set();
     tracks.forEach((track, index) => {
+        const resolvedIndex = track?.index ?? index;
+        processedIndices.add(resolvedIndex);
         const request = buildExternalMatchRequestFromTrack(track, normalizedSource, index);
         if (!request) {
+            applyUnmatchedRowState(getTracklistRowByIndex(resolvedIndex));
             return;
         }
         const deezerHint = String(track.deezerId || track.deezer_id || '').trim();
@@ -4498,6 +4535,9 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
             }
             try {
                 const deezerId = await resolveExternalRequestToDeezer(current, normalizedSource, row, { priority: 'low' });
+                if (!deezerId) {
+                    applyUnmatchedRowState(row);
+                }
                 if (showProgress) {
                     externalMatchState.pending = Math.max(0, externalMatchState.pending - 1);
                     if (deezerId) {
@@ -4509,6 +4549,7 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
                 }
             } catch (error) {
                 console.warn('External Deezer match failed', error);
+                applyUnmatchedRowState(row);
                 if (showProgress) {
                     externalMatchState.pending = Math.max(0, externalMatchState.pending - 1);
                     externalMatchState.failed++;
@@ -4522,6 +4563,7 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
     if (source === 'boomplay') {
         reconcileExternalMatchesFromCache();
     }
+    markUnresolvedExternalRowsAsUnmatched(processedIndices);
 
         if (showProgress) {
             if (externalMatchState) {
@@ -5835,8 +5877,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const isPendingExternalRow = (isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow)
             && supportsOnDemandMatch
             && hasResolvableExternalLink;
-        const isDeadExternalRow = (isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow)
-            && !isPendingExternalRow;
+        const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow;
         const rowSourceAttr = escapeHtml(playbackSource);
         const rowClass = isDeadExternalRow ? ' class="track-row-dead"' : '';
         const checkboxDisabledAttr = isDeadExternalRow ? ' disabled aria-disabled="true" title="Waiting for Deezer match"' : ' title="Select track"';
@@ -6300,6 +6341,23 @@ function setTracklistPreviewControlState(control, state) {
     }
 }
 
+function isPlayableTracklistPreviewControl(control) {
+    if (!control) {
+        return false;
+    }
+
+    const row = control.closest('tr');
+    if (!row || row.classList.contains('track-row-dead')) {
+        return false;
+    }
+
+    if (control.classList.contains('is-disabled') || control.classList.contains('is-pending')) {
+        return false;
+    }
+
+    return !!String(control.getAttribute('data-preview') || '').trim();
+}
+
 function buildTracklistPlaybackRequest(control) {
     if (!control) {
         return null;
@@ -6368,7 +6426,7 @@ function buildTracklistPlaybackRequest(control) {
             }
             for (let i = startIndex + 1; i < rows.length; i += 1) {
                 const nextControl = rows[i].querySelector('.preview-controls');
-                if (!nextControl || nextControl.classList.contains('is-disabled')) {
+                if (!isPlayableTracklistPreviewControl(nextControl)) {
                     continue;
                 }
                 return buildTracklistPlaybackRequest(nextControl);
