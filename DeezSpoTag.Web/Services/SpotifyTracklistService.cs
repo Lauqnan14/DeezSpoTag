@@ -23,11 +23,11 @@ public sealed class SpotifyTracklistService
         Episode
     }
 
-    private static readonly TimeSpan SnapshotCacheTtl = TimeSpan.FromHours(2);
+    private static readonly TimeSpan SnapshotCacheTtl = TimeSpan.FromHours(25);
     private const int SnapshotCacheLimit = 256;
     private const int DeezerSnapshotCacheLimit = 256;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTracklistMatchSnapshot Snapshot)> SnapshotCache = new();
-    private static readonly TimeSpan DeezerSnapshotTtl = TimeSpan.FromHours(2);
+    private static readonly TimeSpan DeezerSnapshotTtl = TimeSpan.FromHours(25);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DeezerSnapshotCacheEntry> DeezerSnapshotCache = new();
     private readonly SpotifyMetadataService _metadataService;
     private readonly DeezerClient _deezerClient;
@@ -133,17 +133,20 @@ public sealed class SpotifyTracklistService
             tracks = await HydrateSpotifyIdentityBatchAsync(tracks, cancellationToken);
         }
 
+        var signature = BuildPlaylistSignature(tracks);
         var conversion = await ConvertTracksAsync(
             tracks,
             allowFallbackSearch,
             immediateResolveLimit,
             cancellationToken);
+
+        conversion = ApplyStoredSnapshot(signature, conversion);
+        _matchStore.Activate(token);
+        _matchStore.Start(token, conversion.Pending.Count, signature);
         conversion = ApplyStoredMatches(token, conversion);
 
         if (conversion.Pending.Count > 0)
         {
-            _matchStore.Activate(token);
-            _matchStore.Start(token, conversion.Pending.Count, signature: null);
             foreach (var pending in conversion.Pending)
             {
                 _matchQueue.Enqueue(token, pending.Index, pending.Track, allowFallbackSearch);

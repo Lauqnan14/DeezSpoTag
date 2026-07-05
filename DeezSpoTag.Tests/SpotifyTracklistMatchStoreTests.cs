@@ -47,4 +47,21 @@ public sealed class SpotifyTracklistMatchStoreTests
         Assert.NotNull(snapshot);
         Assert.Equal(2, snapshot.Pending);
     }
+
+    [Fact]
+    public void Start_ClearsIndexedMatches_WhenSectionContentSignatureChanges()
+    {
+        var store = new SpotifyTracklistMatchStore();
+        const string token = "spotify:section:home-trending-songs";
+
+        store.Start(token, 1, "old-track-list");
+        store.RecordMatch(token, 0, "111111", "old-spotify-id", "matched", "isrc", 1);
+
+        store.Start(token, 1, "new-track-list");
+
+        var snapshot = store.GetSnapshot(token);
+        Assert.NotNull(snapshot);
+        Assert.Equal(1, snapshot.Pending);
+        Assert.Empty(snapshot.Matches);
+    }
 }

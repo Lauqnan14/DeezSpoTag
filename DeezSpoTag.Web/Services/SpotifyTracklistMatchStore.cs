@@ -18,7 +18,7 @@ public interface ISpotifyTracklistMatchStore
 public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(20);
-    private static readonly TimeSpan SignatureCacheTtl = TimeSpan.FromHours(2);
+    private static readonly TimeSpan SignatureCacheTtl = TimeSpan.FromHours(25);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, MatchState> _matches = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SignatureSnapshot> _signatureSnapshots = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> _activeTokens =

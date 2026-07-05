@@ -101,7 +101,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object PopularRadioCacheLock = new();
     private static (DateTimeOffset Stamp, object Section)? PopularRadioSectionCache;
-    private static readonly TimeSpan HomeFeedCacheTtl = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan DefaultHomeFeedCacheTtl = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan PopularRadioCacheTtl = TimeSpan.FromMinutes(20);
     private static readonly string[] PersonalSectionKeywords =
     {
@@ -204,7 +204,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
             if (settings.SpotifyHomeFeedCacheEnabled &&
-                TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
+                TryGetFreshHomeFeedCache(cacheKey, ResolveHomeFeedCacheTtl(settings), out var cachedFeed))
             {
                 var cachedSections = await EnsureTrendingSectionAsync(cacheKey, cachedFeed.Greeting, cachedFeed.Sections, cancellationToken);
                 return Ok(new
@@ -257,7 +257,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var cacheKey = await ResolveHomeFeedCacheKeyAsync();
             var settings = _settingsService.LoadSettings();
             if (settings.SpotifyHomeFeedCacheEnabled &&
-                TryGetFreshHomeFeedCache(cacheKey, out var cachedFeed))
+                TryGetFreshHomeFeedCache(cacheKey, ResolveHomeFeedCacheTtl(settings), out var cachedFeed))
             {
                 var cachedSections = await EnsureTrendingSectionAsync(cacheKey, cachedFeed.Greeting, cachedFeed.Sections, cancellationToken);
                 var mapped = await MapHomeSectionsAsync(cachedSections, cancellationToken);
@@ -667,12 +667,13 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
     private static bool TryGetFreshHomeFeedCache(
         string cacheKey,
+        TimeSpan maxAge,
         out (DateTimeOffset Stamp, string Greeting, List<object> Sections) cache)
     {
         lock (FeedCacheLock)
         {
             if (HomeFeedCache.TryGetValue(cacheKey, out cache) &&
-                DateTimeOffset.UtcNow - cache.Stamp <= HomeFeedCacheTtl)
+                DateTimeOffset.UtcNow - cache.Stamp <= maxAge)
             {
                 return true;
             }
@@ -680,6 +681,17 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
         cache = default;
         return false;
+    }
+
+    private static TimeSpan ResolveHomeFeedCacheTtl(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    {
+        if (!settings.SpotifyHomeFeedAutoRefreshEnabled)
+        {
+            return DefaultHomeFeedCacheTtl;
+        }
+
+        var refreshHours = Math.Clamp(settings.SpotifyHomeFeedAutoRefreshHours, 2, 24);
+        return TimeSpan.FromHours(refreshHours) + TimeSpan.FromMinutes(15);
     }
 
     private static void StoreHomeFeedCache(
@@ -2907,6 +2919,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         var coverUrl = TryGetAnonymousString(item, "coverUrl");
         var albumName = TryGetAnonymousString(item, "albumName") ?? TryGetAnonymousString(item, AlbumKey);
         var durationMs = TryGetAnonymousInt(item, "durationMs");
+        var sourceUrl = TryGetAnonymousString(item, "sourceUrl");
+        var isrc = TryGetAnonymousString(item, "isrc");
+        var deezerId = TryGetAnonymousString(item, "deezerId");
         var trackCount = TryGetAnonymousInt(item, TrackCountKey)
                          ?? TryGetAnonymousInt(item, "nb_tracks")
                          ?? TryGetAnonymousInt(item, "track_count");
@@ -2931,6 +2946,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             coverUrl,
             albumName,
             durationMs,
+            sourceUrl,
+            isrc,
+            deezerId,
             trackCount,
             nb_tracks = trackCount,
             followers,

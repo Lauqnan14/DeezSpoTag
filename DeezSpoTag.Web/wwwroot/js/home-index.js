@@ -2657,6 +2657,11 @@ function resolveHomeTrendingCover(item) {
 }
 
 function resolveHomeTrendingDeezerTrackId(item, itemSource, itemType) {
+    const mappedDeezerId = String(item?.deezerId || '').trim();
+    if (/^\d+$/.test(mappedDeezerId)) {
+        return mappedDeezerId;
+    }
+
     if (itemSource === 'deezer' && itemType === 'track' && item.id) {
         return String(item.id);
     }
