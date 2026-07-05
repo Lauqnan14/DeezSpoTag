@@ -133,13 +133,13 @@ public sealed class TrackAvailabilityService
             appleUnknown = appleSearch.Unknown;
         }
 
-        var tidalId = FirstNonEmpty(input.TidalId, ExtractTidalId(proxy.SongLink.TidalUrl), ExtractTidalId(lookup.TidalUrl));
+        var tidalId = ExtractTidalId(lookup.TidalUrl);
         var qobuzId = FirstNonEmpty(input.QobuzId, ExtractQobuzId(proxy.SongLink.QobuzUrl), ExtractQobuzId(lookup.QobuzUrl));
         var amazonId = input.AmazonId;
 
         var spotifyUrl = FirstNonEmpty(proxy.SongLink.SpotifyUrl, lookup.SpotifyUrl, BuildSpotifyUrl(spotifyId));
         var deezerUrl = FirstNonEmpty(proxy.SongLink.DeezerUrl, lookup.DeezerUrl, BuildDeezerUrl(deezerId));
-        var tidalUrl = FirstNonEmpty(proxy.SongLink.TidalUrl, lookup.TidalUrl, BuildTidalUrl(tidalId));
+        var tidalUrl = FirstNonEmpty(lookup.TidalUrl, BuildTidalUrl(tidalId));
         var amazonUrl = lookup.AmazonUrl;
         var qobuzUrl = FirstNonEmpty(proxy.SongLink.QobuzUrl, lookup.QobuzUrl, BuildQobuzUrl(qobuzId));
         appleUrl = FirstNonEmpty(appleUrl, BuildAppleUrl(appleId));
@@ -205,6 +205,7 @@ public sealed class TrackAvailabilityService
             Album = input.Album ?? string.Empty,
             DurationMs = input.DurationMs ?? 0,
             AppleId = input.AppleId ?? string.Empty,
+            TidalId = input.TidalId ?? string.Empty,
             AmazonId = input.AmazonId ?? string.Empty
         };
     }

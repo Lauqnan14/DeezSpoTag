@@ -61,4 +61,27 @@ public sealed class TrackCandidateValidatorTests
         Assert.False(result.Accepted);
         Assert.Equal("artist_mismatch", result.Reason);
     }
+
+    [Fact]
+    public void Validate_RejectsWrongTidalIdentity_WhenRequestedTrackHasIsrc()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("QZPYN2109553", "Fatuma", "Ethic Entertainment", "Fatuma", 232000),
+            new TrackMatchCandidate(
+                "424139114",
+                null,
+                "Ethical Carbon Neutral",
+                "adatch Entertainment Team",
+                null,
+                null),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: true,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 3_000));
+
+        Assert.False(result.Accepted);
+        Assert.Equal("title_mismatch", result.Reason);
+    }
 }

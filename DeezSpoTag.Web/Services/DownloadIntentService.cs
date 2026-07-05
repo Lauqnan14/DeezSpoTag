@@ -274,10 +274,22 @@ public sealed class DownloadIntentService
                 : $"https://www.deezer.com/track/{normalizedDeezerId}";
         }
 
-        var tidalUrl = ResolveSourceUrlFromIntentIdentity(workingIntent, TidalPlatform);
-        tidalUrl = string.IsNullOrWhiteSpace(tidalUrl) && string.IsNullOrWhiteSpace(availability?.TidalUrl)
-            ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, TidalPlatform, availability, cancellationToken)
-            : tidalUrl ?? availability!.TidalUrl;
+        var tidalUrl = FirstNonEmpty(
+            ResolveSourceUrlFromIntentIdentity(workingIntent, TidalPlatform),
+            availability?.TidalUrl);
+        if (!string.IsNullOrWhiteSpace(tidalUrl)
+            && !await ValidateTidalAvailabilityUrlAsync(workingIntent, tidalUrl, cancellationToken))
+        {
+            tidalUrl = null;
+        }
+        if (string.IsNullOrWhiteSpace(tidalUrl))
+        {
+            tidalUrl = await ResolveAvailabilityUrlForEngineAsync(
+                workingIntent,
+                TidalPlatform,
+                preResolved: null,
+                cancellationToken);
+        }
         var amazonUrl = ResolveSourceUrlFromIntentIdentity(workingIntent, AmazonPlatform);
         amazonUrl = string.IsNullOrWhiteSpace(amazonUrl) && string.IsNullOrWhiteSpace(availability?.AmazonUrl)
             ? await ResolveAvailabilityUrlForEngineAsync(workingIntent, AmazonPlatform, availability, cancellationToken)
@@ -2750,8 +2762,24 @@ public sealed class DownloadIntentService
         var tidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(intent.SourceUrl), TryExtractTidalTrackId(intent.Url));
         if (!string.IsNullOrWhiteSpace(tidalId))
         {
-            intent.TidalId = tidalId;
-            return BuildTidalTrackUrl(tidalId);
+            var persistedUrl = BuildTidalTrackUrl(tidalId);
+            var persistedDurationSeconds = intent.DurationMs > 0
+                ? Math.Max(1, (int)Math.Round(intent.DurationMs / 1000d))
+                : 0;
+            if (await _tidalDownloadService.ValidateTrackUrlAsync(
+                    persistedUrl,
+                    intent.Title ?? string.Empty,
+                    intent.Artist ?? string.Empty,
+                    intent.Album ?? string.Empty,
+                    intent.Isrc ?? string.Empty,
+                    persistedDurationSeconds,
+                    cancellationToken))
+            {
+                intent.TidalId = tidalId;
+                return persistedUrl;
+            }
+
+            intent.TidalId = string.Empty;
         }
 
         if (string.IsNullOrWhiteSpace(intent.Title) || string.IsNullOrWhiteSpace(intent.Artist))
@@ -2765,6 +2793,24 @@ public sealed class DownloadIntentService
         return await _tidalDownloadService.ResolveTrackUrlAsync(
             intent.Title,
             intent.Artist,
+            intent.Isrc ?? string.Empty,
+            durationSeconds,
+            cancellationToken);
+    }
+
+    private Task<bool> ValidateTidalAvailabilityUrlAsync(
+        DownloadIntent intent,
+        string tidalUrl,
+        CancellationToken cancellationToken)
+    {
+        var durationSeconds = intent.DurationMs > 0
+            ? Math.Max(1, (int)Math.Round(intent.DurationMs / 1000d))
+            : 0;
+        return _tidalDownloadService.ValidateTrackUrlAsync(
+            tidalUrl,
+            intent.Title ?? string.Empty,
+            intent.Artist ?? string.Empty,
+            intent.Album ?? string.Empty,
             intent.Isrc ?? string.Empty,
             durationSeconds,
             cancellationToken);

@@ -189,6 +189,38 @@ public sealed class TidalDownloadService
         }
     }
 
+    public async Task<bool> ValidateTrackUrlAsync(
+        string tidalUrl,
+        string trackTitle,
+        string artistName,
+        string albumName,
+        string isrc,
+        int expectedDuration,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trackId = GetTrackIdFromUrl(tidalUrl);
+            var trackInfo = await GetTrackInfoByIdAsync(trackId, cancellationToken);
+            return ValidateResolvedTrack(
+                trackInfo,
+                trackTitle,
+                artistName,
+                albumName,
+                isrc,
+                expectedDuration).Accepted;
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Tidal identity validation failed for {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
+            return false;
+        }
+    }
+
     public async Task<string?> ResolveAtmosTrackUrlAsync(
         string trackTitle,
         string artistName,
@@ -230,14 +262,17 @@ public sealed class TidalDownloadService
     {
         var trackId = GetTrackIdFromUrl(tidalUrl);
         var trackInfo = await GetTrackInfoByIdAsync(trackId, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(request.Isrc)
-            && !string.Equals(trackInfo.Isrc, request.Isrc, StringComparison.OrdinalIgnoreCase)
-            && _logger.IsEnabled(LogLevel.Debug))
+        var validation = ValidateResolvedTrack(
+            trackInfo,
+            request.TrackName,
+            request.ArtistName,
+            request.AlbumName,
+            request.Isrc,
+            request.DurationSeconds);
+        if (!validation.Accepted)
         {
-            _logger.LogDebug(
-                "ISRC mismatch for Tidal URL download: expected {ExpectedIsrc}, got {ActualIsrc}. Proceeding with URL-specified track.",
-                request.Isrc,
-                trackInfo.Isrc);
+            throw new InvalidOperationException(
+                $"Tidal track identity mismatch ({validation.Reason}); download blocked before media retrieval.");
         }
 
         var outputPathContext = new AudioFilePathHelper.AudioPathContext
@@ -270,6 +305,36 @@ public sealed class TidalDownloadService
             progressCallback,
             cancellationToken);
         return outputPath;
+    }
+
+    private static TrackCandidateValidationResult ValidateResolvedTrack(
+        TidalTrack track,
+        string trackTitle,
+        string artistName,
+        string albumName,
+        string isrc,
+        int expectedDuration)
+    {
+        return TrackCandidateValidator.Validate(
+            new TrackMatchSource(
+                isrc,
+                trackTitle,
+                artistName,
+                albumName,
+                expectedDuration > 0 ? expectedDuration * 1000 : null),
+            new TrackMatchCandidate(
+                track.Id.ToString(CultureInfo.InvariantCulture),
+                track.Isrc,
+                track.Title,
+                ResolveTidalArtistName(track),
+                track.Album?.Title,
+                track.Duration > 0 ? track.Duration * 1000 : null),
+            new TrackCandidateValidationOptions(
+                StrictWithoutIsrc: true,
+                AllowMissingCandidateArtist: false,
+                RequireCandidateDurationWhenSourceHasDuration: true,
+                MaxIsrcDurationDifferenceMs: 20_000,
+                MaxMetadataDurationDifferenceMs: 3_000));
     }
 
     private static long GetVideoIdFromUrl(string tidalUrl)
