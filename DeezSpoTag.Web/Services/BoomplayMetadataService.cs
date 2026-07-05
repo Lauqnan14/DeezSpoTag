@@ -1012,7 +1012,7 @@ public sealed class BoomplayMetadataService
 
         var url = $"{BoomplayBaseUrl}/playlists/{playlistId}";
         var htmlTask = GetHtmlAsync(url, session, cancellationToken);
-        var officialTask = GetOfficialPlaylistSnapshotAsync(playlistId, cancellationToken);
+        var officialTask = GetOfficialPlaylistSnapshotAsync(playlistId, session, cancellationToken);
         await Task.WhenAll(htmlTask, officialTask);
 
         var html = await htmlTask;
@@ -1112,6 +1112,7 @@ public sealed class BoomplayMetadataService
 
     private async Task<BoomplayOfficialPlaylistSnapshot?> GetOfficialPlaylistSnapshotAsync(
         string playlistId,
+        BoomplaySessionSnapshot session,
         CancellationToken cancellationToken)
     {
         if (!playlistId.All(char.IsDigit))
@@ -1123,11 +1124,12 @@ public sealed class BoomplayMetadataService
 
         try
         {
-            var client = CreateClient();
+            var client = CreateClient(session);
             var url = $"{BoomplayApiBaseUrl}/music/getMusicsByColID?colID={Uri.EscapeDataString(playlistId)}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("accept", "application/json");
             request.Headers.TryAddWithoutValidation("x-boomplay-ref", "Boomplay_ANDROID");
+            ApplyBoomplaySession(request, session, url);
             using var response = await client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -3823,12 +3825,24 @@ public sealed class BoomplayMetadataService
             return;
         }
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !IsBoomplayHost(uri.Host))
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !IsBoomplayRequestHost(uri.Host))
         {
             return;
         }
 
         request.Headers.Add("Cookie", session.Cookie);
+    }
+
+    private static bool IsBoomplayRequestHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            return false;
+        }
+
+        var normalizedHost = host.Trim().TrimEnd('.');
+        return IsBoomplayHost(normalizedHost)
+               || normalizedHost.Equals("api.boomplaymusic.com", StringComparison.OrdinalIgnoreCase);
     }
 
     private HttpClient CreateClient(BoomplaySessionSnapshot? session = null)

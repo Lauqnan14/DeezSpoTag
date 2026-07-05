@@ -569,12 +569,8 @@
                     <p class="text-muted">Save a logged-in Boomplay browser session for playlist access.</p>
                     <form id="boomplayLoginForm" class="space-y-5">
                         <label class="block mb-4">
-                            <span class="block mb-2">IMEI</span>
-                            <input type="password" id="boomplayImei" placeholder="Boomplay imei cookie" class="w-full" autocomplete="off" />
-                        </label>
-                        <label class="block mb-4">
-                            <span class="block mb-2">Session ID</span>
-                            <input type="password" id="boomplaySessionId" placeholder="Boomplay sessionID cookie" class="w-full" autocomplete="off" />
+                            <span class="block mb-2">Cookie</span>
+                            <input type="password" id="boomplayCookie" placeholder="Boomplay cookie" class="w-full" autocomplete="off" />
                         </label>
                         <button class="btn btn-primary action-btn" type="submit">Save</button>
                         <p class="text-muted" id="boomplayStatus">@(!initialBoomplayConnected ? initialBoomplayStatus : "")</p>
@@ -1941,8 +1937,7 @@ document.addEventListener('DOMContentLoaded', function() {
         boomplayForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             await savePlatformAuth('/api/platform-auth/boomplay', {
-                imei: document.getElementById('boomplayImei').value.trim(),
-                sessionId: document.getElementById('boomplaySessionId').value.trim()
+                cookie: document.getElementById('boomplayCookie').value.trim()
             }, 'boomplayStatus', true);
         });
     }
@@ -2506,12 +2501,9 @@ async function loadPlatformAuthState() {
             togglePlatformLoginState('soulseek', Boolean(data.soulseek.connected));
         }
         if (data.boomplay) {
-            document.getElementById('boomplayImei').placeholder = data.boomplay.imeiSaved
-                ? 'Saved - leave blank to keep current imei'
-                : 'Boomplay imei cookie';
-            document.getElementById('boomplaySessionId').placeholder = data.boomplay.sessionIdSaved
-                ? 'Saved - leave blank to keep current sessionID'
-                : 'Boomplay sessionID cookie';
+            document.getElementById('boomplayCookie').placeholder = data.boomplay.cookieSaved
+                ? 'Saved - leave blank to keep current cookie'
+                : 'Boomplay cookie';
             setBoomplayFormStatus(data.boomplay, 'boomplayStatus');
             renderBoomplayInfo(data.boomplay);
             togglePlatformLoginState('boomplay', Boolean(data.boomplay.connected));

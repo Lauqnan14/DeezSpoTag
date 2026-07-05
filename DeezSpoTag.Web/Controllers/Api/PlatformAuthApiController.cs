@@ -34,8 +34,7 @@ public sealed class PlatformAuthApiDependencies
 
 public sealed class BoomplayLoginRequest
 {
-    public string? Imei { get; set; }
-    public string? SessionId { get; set; }
+    public string? Cookie { get; set; }
 }
 
 public sealed class AmazonMusicLoginRequest
@@ -526,13 +525,11 @@ public class PlatformAuthApiController : ControllerBase
         var currentState = await _authService.LoadAsync();
         var previous = currentState.Boomplay;
         var existingCookie = string.Empty;
-        var keepExisting = string.IsNullOrWhiteSpace(request.Imei)
-                           && string.IsNullOrWhiteSpace(request.SessionId)
+        var keepExisting = string.IsNullOrWhiteSpace(request.Cookie)
                            && BoomplaySessionCookie.TryNormalize(previous?.Cookie, out existingCookie);
-        if (!keepExisting
-            && !BoomplaySessionCookie.TryCreate(request.Imei, request.SessionId, out existingCookie))
+        if (!keepExisting && !BoomplaySessionCookie.TryNormalize(request.Cookie, out existingCookie))
         {
-            return BadRequest("Both Boomplay imei and sessionID cookies are required.");
+            return BadRequest("Boomplay cookie is required.");
         }
 
         var boomplay = await _authService.UpdateAsync(state =>
@@ -893,8 +890,7 @@ public class PlatformAuthApiController : ControllerBase
 
         return new
         {
-            imeiSaved = configured,
-            sessionIdSaved = configured,
+            cookieSaved = configured,
             configured,
             connected = configured && auth?.SessionValid != false,
             status,
