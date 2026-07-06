@@ -312,6 +312,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
+    private bool IsProtectedEnrichmentPipelineRunning()
+        => _postDownloadPipelineInProgress
+           || _taggingInProgress
+           || _autoTagService.TryGetRunningEnrichmentJobId(out _);
+
     public override void Dispose()
     {
         SaveOrchestrationRuntimeState();
@@ -495,9 +500,17 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     public void MarkDownloadQueued()
     {
-        _queueIdleSince = null;
-        SetPhase(OrchestrationPhase.Downloading);
-        SignalWake(resetIdleCountdown: true);
+        if (IsProtectedEnrichmentPipelineRunning())
+        {
+            SignalWake();
+        }
+        else
+        {
+            _queueIdleSince = null;
+            SetPhase(OrchestrationPhase.Downloading);
+            SignalWake(resetIdleCountdown: true);
+        }
+
         if (HasPendingEnhancementResumeFolders())
         {
             _enhancementResumeAwaitingPipelineCompletion = true;
@@ -506,6 +519,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     public void MarkRetryQueued()
     {
+        if (IsProtectedEnrichmentPipelineRunning())
+        {
+            SignalWake();
+            return;
+        }
+
         _queueIdleSince = null;
         SetPhase(OrchestrationPhase.Downloading);
         SignalWake(resetIdleCountdown: true);
@@ -521,8 +540,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var normalizedStatus = stateChanged.Status.Trim().ToLowerInvariant();
         if (normalizedStatus is QueueStatusQueued or QueueStatusInQueue or AutoTagLiterals.RunningStatus or QueueStatusRetrying or QueueStatusDownloading)
         {
-            _queueIdleSince = null;
-            SignalWake(resetIdleCountdown: true);
+            if (IsProtectedEnrichmentPipelineRunning())
+            {
+                SignalWake();
+            }
+            else
+            {
+                _queueIdleSince = null;
+                SignalWake(resetIdleCountdown: true);
+            }
             return;
         }
 
@@ -707,8 +733,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         if (hasActiveDownloads)
         {
             _wasQueueActive = true;
-            _queueIdleSince = null;
-            SetPhase(OrchestrationPhase.Downloading);
+            if (!IsProtectedEnrichmentPipelineRunning())
+            {
+                _queueIdleSince = null;
+                SetPhase(OrchestrationPhase.Downloading);
+            }
             return;
         }
 

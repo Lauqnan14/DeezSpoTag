@@ -183,6 +183,41 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
+    public void IncomingDownloadSignals_DoNotMoveActiveEnrichmentToDownloading()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var markDownloadQueued = ExtractMethodBody(orchestrationSource, "public void MarkDownloadQueued");
+        var markRetryQueued = ExtractMethodBody(orchestrationSource, "public void MarkRetryQueued");
+        var queueStateChanged = ExtractMethodBody(orchestrationSource, "private void OnQueueStateChanged");
+        var updateQueueActivity = ExtractMethodBody(orchestrationSource, "private void UpdateQueueActivityState");
+
+        Assert.Contains("private bool IsProtectedEnrichmentPipelineRunning()", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_postDownloadPipelineInProgress", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_taggingInProgress", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("TryGetRunningEnrichmentJobId", orchestrationSource, StringComparison.Ordinal);
+
+        Assert.Contains("if (IsProtectedEnrichmentPipelineRunning())", markDownloadQueued, StringComparison.Ordinal);
+        Assert.Contains("SignalWake();", markDownloadQueued, StringComparison.Ordinal);
+        Assert.Contains("SetPhase(OrchestrationPhase.Downloading);", markDownloadQueued, StringComparison.Ordinal);
+        Assert.True(
+            markDownloadQueued.IndexOf("if (IsProtectedEnrichmentPipelineRunning())", StringComparison.Ordinal)
+            < markDownloadQueued.IndexOf("SetPhase(OrchestrationPhase.Downloading);", StringComparison.Ordinal));
+
+        Assert.Contains("if (IsProtectedEnrichmentPipelineRunning())", markRetryQueued, StringComparison.Ordinal);
+        Assert.Contains("SignalWake();", markRetryQueued, StringComparison.Ordinal);
+        Assert.True(
+            markRetryQueued.IndexOf("if (IsProtectedEnrichmentPipelineRunning())", StringComparison.Ordinal)
+            < markRetryQueued.IndexOf("SetPhase(OrchestrationPhase.Downloading);", StringComparison.Ordinal));
+
+        Assert.Contains("if (IsProtectedEnrichmentPipelineRunning())", queueStateChanged, StringComparison.Ordinal);
+        Assert.Contains("SignalWake();", queueStateChanged, StringComparison.Ordinal);
+        Assert.Contains("SignalWake(resetIdleCountdown: true);", queueStateChanged, StringComparison.Ordinal);
+
+        Assert.Contains("if (!IsProtectedEnrichmentPipelineRunning())", updateQueueActivity, StringComparison.Ordinal);
+        Assert.Contains("SetPhase(OrchestrationPhase.Downloading);", updateQueueActivity, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ExecutionGate_BlocksDownloadExecutionUntilEnrichmentFinalizationFinishes()
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
