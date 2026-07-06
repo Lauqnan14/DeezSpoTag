@@ -11,6 +11,11 @@ using DeezSpoTag.Core.Models.Download;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Download.Amazon;
+using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Deezer;
+using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Tidal;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
@@ -289,16 +294,6 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
 
     private async Task HandleUnhandledProcessorCancellationAsync(DownloadQueueItem item, OperationCanceledException ex)
     {
-        if (_cancellationRegistry.WasTimedOut(item.QueueUuid))
-        {
-            var stallTimeoutException = new TimeoutException(
-                DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(item.Engine),
-                ex);
-            _logger.LogError(stallTimeoutException, "Queue processor timeout escaped engine for {QueueUuid}", item.QueueUuid);
-            await MarkQueueItemAsFailedAndRetryAsync(item, stallTimeoutException.Message);
-            return;
-        }
-
         if (_cancellationRegistry.WasUserPaused(item.QueueUuid))
         {
             await _queueRepository.UpdateStatusAsync(
@@ -322,12 +317,81 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
-        var timeoutException = new TimeoutException(
-            $"Unhandled queue processor cancellation for {item.QueueUuid}.",
-            ex);
-        _logger.LogError(timeoutException, "Queue processor cancellation escaped engine for {QueueUuid}", item.QueueUuid);
+        var timedOut = _cancellationRegistry.WasTimedOut(item.QueueUuid);
+        var timeoutException = timedOut
+            ? new TimeoutException(DownloadQueueRecoveryPolicy.BuildStallTimeoutMessage(item.Engine), ex)
+            : new TimeoutException($"Unhandled queue processor cancellation for {item.QueueUuid}.", ex);
+        _logger.LogError(
+            timeoutException,
+            timedOut
+                ? "Queue processor timeout escaped engine for {QueueUuid}"
+                : "Queue processor cancellation escaped engine for {QueueUuid}",
+            item.QueueUuid);
+
+        if (await TryAdvanceFallbackAfterEscapedCancellationAsync(item))
+        {
+            return;
+        }
+
         await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException.Message);
     }
+
+    private async Task<bool> TryAdvanceFallbackAfterEscapedCancellationAsync(DownloadQueueItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            return false;
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        var coordinator = scope.ServiceProvider.GetRequiredService<EngineFallbackCoordinator>();
+        var engine = NormalizeEngineName(item.Engine);
+
+        return engine switch
+        {
+            "qobuz" => await TryAdvanceFallbackAsync<QobuzQueueItem>(item, coordinator),
+            "tidal" => await TryAdvanceFallbackAsync<TidalQueueItem>(item, coordinator),
+            "amazon" => await TryAdvanceFallbackAsync<AmazonQueueItem>(item, coordinator),
+            "apple" => await TryAdvanceFallbackAsync<AppleQueueItem>(item, coordinator),
+            DeezerEngine => await TryAdvanceFallbackAsync<DeezerQueueItem>(item, coordinator),
+            _ => false
+        };
+    }
+
+    private async Task<bool> TryAdvanceFallbackAsync<TPayload>(
+        DownloadQueueItem item,
+        EngineFallbackCoordinator coordinator)
+        where TPayload : EngineQueueItemBase
+    {
+        var payload = QueueHelperUtils.DeserializeQueueItem<TPayload>(item.PayloadJson);
+        if (payload == null)
+        {
+            return false;
+        }
+
+        var advanced = await coordinator.TryAdvanceAsync(
+            item.QueueUuid,
+            item.Engine,
+            payload,
+            CancellationToken.None);
+        if (advanced && !payload.FallbackQueuedExternally)
+        {
+            Listener?.SendAddedToQueue(BuildFallbackQueuePayload(payload));
+        }
+
+        return advanced;
+    }
+
+    private static Dictionary<string, object> BuildFallbackQueuePayload(EngineQueueItemBase payload)
+        => payload switch
+        {
+            QobuzQueueItem qobuz => qobuz.ToQueuePayload(),
+            TidalQueueItem tidal => tidal.ToQueuePayload(),
+            AmazonQueueItem amazon => amazon.ToQueuePayload(),
+            AppleQueueItem apple => apple.ToQueuePayload(),
+            DeezerQueueItem deezer => deezer.ToQueuePayload(),
+            _ => throw new InvalidOperationException($"Unsupported fallback payload type '{payload.GetType().Name}'.")
+        };
 
     private async Task HandleUnhandledProcessorFailureAsync(DownloadQueueItem item, Exception ex)
     {
