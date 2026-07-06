@@ -77,6 +77,7 @@ internal static class AutoTagLiterals
     internal const string BpmSupremePlatform = "bpmsupreme";
     internal const string MultiArtistSeparatorKey = "multiArtistSeparator";
     internal const string TargetFilesKey = "targetFiles";
+    internal const string LibraryWideEnhancementBatchSizeKey = "libraryWideEnhancementBatchSize";
     internal const string IncludeSubfoldersKey = "includeSubfolders";
     internal const string ArtistTag = "artist";
     internal const string ReleaseDateTag = "releaseDate";
@@ -399,7 +400,7 @@ public partial class AutoTagService
         [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: true);
-    private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true);
+    private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true, includeLibraryWideEnhancementBatchSize: true);
     private static readonly HashSet<string> EligibleAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -3118,6 +3119,10 @@ public partial class AutoTagService
 
             WriteStringList(stageRoot, AutoTagLiterals.TargetFilesKey, targetFiles);
         }
+        else if (string.Equals(context.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase))
+        {
+            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
+        }
 
         // Enhancement should process on-disk files by default and only skip when
         // an explicit enhancement-level setting is provided.
@@ -3185,7 +3190,11 @@ public partial class AutoTagService
         root[propertyName] = array;
     }
 
-    private static HashSet<string> BuildStageAllowedKeys(bool includeSkipTagged, bool includeConflictResolution, bool includeTargetFiles)
+    private static HashSet<string> BuildStageAllowedKeys(
+        bool includeSkipTagged,
+        bool includeConflictResolution,
+        bool includeTargetFiles,
+        bool includeLibraryWideEnhancementBatchSize = false)
     {
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -3252,6 +3261,11 @@ public partial class AutoTagService
         if (includeTargetFiles)
         {
             keys.Add(AutoTagLiterals.TargetFilesKey);
+        }
+
+        if (includeLibraryWideEnhancementBatchSize)
+        {
+            keys.Add(AutoTagLiterals.LibraryWideEnhancementBatchSizeKey);
         }
 
         return keys;

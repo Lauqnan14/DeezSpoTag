@@ -218,6 +218,37 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
+    public void InterruptedEnhancementResume_UsesPersistedSinglePathWithThirtyMinuteDelay()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+
+        Assert.Contains("private static readonly TimeSpan EnhancementResumeDelay = TimeSpan.FromMinutes(30);", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("PendingEnhancementResumeFolderIds", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("PendingEnhancementResumeRootPaths", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("QueueInterruptedEnhancementResume(job);", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("QueueEnhancementResumeRootPath(job.RootPath);", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("ConsumeEnhancementResumeFoldersAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("QueueResumeFoldersForPausedEnhancementJob(jobId);", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("RestorePendingEnhancementResumeWork", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("IsAutomationPausedEnhancementJob", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueResumeFoldersForPausedEnhancementJobAsync", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueEnhancementResumeFolders(", orchestrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHours(1)", orchestrationSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InterruptedEnhancementResume_ExcludesRecentDownloadEnhancement()
+    {
+        var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var queueInterruptedBody = ExtractMethodBody(orchestrationSource, "private void QueueInterruptedEnhancementResume");
+        var queuePausedBody = ExtractMethodBody(orchestrationSource, "private void QueueResumeFoldersForPausedEnhancementJob");
+
+        Assert.Contains("AutoTagLiterals.RunIntentEnhancementOnly", queueInterruptedBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunIntentEnhancementRecentDownloads", queueInterruptedBody, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.RunIntentEnhancementRecentDownloads", queuePausedBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ExecutionGate_BlocksDownloadExecutionUntilEnrichmentFinalizationFinishes()
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");

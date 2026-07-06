@@ -341,8 +341,54 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.DoesNotContain("EmitReviewStatus(\n                    context,\n                    shazamResult.Error ?? \"shazam identify failed\"", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void LibraryWideEnhancement_UsesFortyFileBatchesWithoutTargetFilePath()
+    {
+        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var autoTagSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var executeBody = ExtractMethodBody(runnerSource, "private async Task ExecutePlatformPassesAsync");
+        var batchBody = ExtractMethodBody(runnerSource, "private async Task ExecuteLibraryWideEnhancementBatchesAsync");
+        var enhancementBody = ExtractMethodBody(autoTagSource, "private bool TryBuildEnhancementStage");
+
+        Assert.Contains("DefaultLibraryWideEnhancementBatchSize = 40", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("LibraryWideEnhancementBatchSize", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("ExecuteLibraryWideEnhancementBatchesAsync", executeBody, StringComparison.Ordinal);
+        Assert.Contains("config.TargetFiles == null", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("plan.Files.Sort(CompareLibraryWideEnhancementFiles);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("batchStart += batchSize", batchBody, StringComparison.Ordinal);
+        Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
+        Assert.Contains("stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;", enhancementBody, StringComparison.Ordinal);
+        Assert.Contains("WriteStringList(stageRoot, AutoTagLiterals.TargetFilesKey, targetFiles);", enhancementBody, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] pathParts)
         => File.ReadAllText(Path.Join([ResolveRepoRoot(), .. pathParts]));
+
+    private static string ExtractMethodBody(string source, string methodSignature)
+    {
+        var start = source.IndexOf(methodSignature, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Could not find method: {methodSignature}");
+        var brace = source.IndexOf('{', start);
+        Assert.True(brace > start, $"Could not find method body: {methodSignature}");
+        var depth = 0;
+        for (var index = brace; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source.Substring(brace, index - brace + 1);
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Could not extract method body: {methodSignature}");
+    }
 
     private static string ResolveRepoRoot()
     {

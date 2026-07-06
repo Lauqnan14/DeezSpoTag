@@ -128,6 +128,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         public bool EnhancementInterruptedByEnrichment { get; set; }
         public DateTimeOffset? LastEnrichmentFinishedUtc { get; set; }
         public DateTimeOffset? EnhancementResumeNotBeforeUtc { get; set; }
+        public List<string> PendingEnhancementResumeFolderIds { get; set; } = new();
+        public List<string> PendingEnhancementResumeRootPaths { get; set; } = new();
     }
 
     private static readonly Regex ScheduleTokenRegex = new(
@@ -174,6 +176,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private const string QueueStatusDownloading = "downloading";
     private const string QueueStatusComplete = "complete";
     private const string QueueStatusCancelled = "cancelled";
+    private static readonly TimeSpan EnhancementResumeDelay = TimeSpan.FromMinutes(30);
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
     private const string FolderContentAtmos = "atmos";
@@ -213,6 +216,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static readonly TimeSpan IdleRecoveryRecheckDelay = TimeSpan.FromMinutes(15);
     private readonly object _enhancementResumeLock = new();
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pendingEnhancementResumeRootPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _processedCompletionStateLock = new();
     private readonly object _phaseLock = new();
@@ -350,6 +354,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             _enhancementInterruptedByEnrichment = state.EnhancementInterruptedByEnrichment;
             _lastEnrichmentFinishedUtc = state.LastEnrichmentFinishedUtc;
             _enhancementResumeNotBeforeUtc = state.EnhancementResumeNotBeforeUtc;
+            RestorePendingEnhancementResumeWork(
+                state.PendingEnhancementResumeFolderIds,
+                state.PendingEnhancementResumeRootPaths);
+            if (HasPendingEnhancementResumeFolders())
+            {
+                _enhancementResumeAwaitingPipelineCompletion = true;
+                _enhancementResumeNotBeforeUtc ??= DateTimeOffset.UtcNow.Add(EnhancementResumeDelay);
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -366,7 +378,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 EnhancementResumeAwaitingPipelineCompletion = _enhancementResumeAwaitingPipelineCompletion,
                 EnhancementInterruptedByEnrichment = _enhancementInterruptedByEnrichment,
                 LastEnrichmentFinishedUtc = _lastEnrichmentFinishedUtc,
-                EnhancementResumeNotBeforeUtc = _enhancementResumeNotBeforeUtc
+                EnhancementResumeNotBeforeUtc = _enhancementResumeNotBeforeUtc,
+                PendingEnhancementResumeFolderIds = _pendingEnhancementResumeFolderIds.ToList(),
+                PendingEnhancementResumeRootPaths = _pendingEnhancementResumeRootPaths.ToList()
             };
 
             var json = JsonSerializer.Serialize(state, ScheduleJsonOptions);
@@ -379,6 +393,35 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
+    private void RestorePendingEnhancementResumeWork(IEnumerable<string>? folderIds, IEnumerable<string>? rootPaths)
+    {
+        lock (_enhancementResumeLock)
+        {
+            if (folderIds != null)
+            {
+                foreach (var folderId in folderIds)
+                {
+                    if (!string.IsNullOrWhiteSpace(folderId))
+                    {
+                        _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
+                    }
+                }
+            }
+
+            if (rootPaths != null)
+            {
+                foreach (var rootPath in rootPaths)
+                {
+                    var normalizedRoot = NormalizePathScope(rootPath);
+                    if (!string.IsNullOrWhiteSpace(normalizedRoot))
+                    {
+                        _pendingEnhancementResumeRootPaths.Add(normalizedRoot);
+                    }
+                }
+            }
+        }
+    }
+
     private void QueueEnhancementResumeFolder(string folderId)
     {
         if (string.IsNullOrWhiteSpace(folderId))
@@ -386,46 +429,90 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
+        var queued = false;
         lock (_enhancementResumeLock)
         {
-            _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
+            queued = _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
+        }
+
+        if (queued)
+        {
+            MarkEnhancementResumeQueued();
         }
     }
 
-    private void QueueEnhancementResumeFolders(IEnumerable<string> folderIds)
+    private void QueueEnhancementResumeRootPath(string rootPath)
     {
-        if (folderIds == null)
+        var normalizedRoot = NormalizePathScope(rootPath);
+        if (string.IsNullOrWhiteSpace(normalizedRoot))
         {
             return;
         }
 
+        var queued = false;
         lock (_enhancementResumeLock)
         {
-            foreach (var folderId in folderIds)
-            {
-                if (string.IsNullOrWhiteSpace(folderId))
-                {
-                    continue;
-                }
+            queued = _pendingEnhancementResumeRootPaths.Add(normalizedRoot);
+        }
 
-                _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
-            }
+        if (queued)
+        {
+            MarkEnhancementResumeQueued();
         }
     }
 
-    private List<string> ConsumeEnhancementResumeFolders()
+    private void MarkEnhancementResumeQueued()
     {
+        _enhancementResumeAwaitingPipelineCompletion = true;
+        _enhancementResumeNotBeforeUtc = DateTimeOffset.UtcNow.Add(EnhancementResumeDelay);
+        SaveOrchestrationRuntimeState();
+    }
+
+    private async Task<List<string>> ConsumeEnhancementResumeFoldersAsync(CancellationToken cancellationToken)
+    {
+        List<string> folderIds;
+        List<string> rootPaths;
+        List<string> originalFolderIds;
         lock (_enhancementResumeLock)
         {
-            if (_pendingEnhancementResumeFolderIds.Count == 0)
+            if (_pendingEnhancementResumeFolderIds.Count == 0
+                && _pendingEnhancementResumeRootPaths.Count == 0)
             {
                 return new List<string>();
             }
 
-            var folders = _pendingEnhancementResumeFolderIds.ToList();
-            _pendingEnhancementResumeFolderIds.Clear();
-            return folders;
+            folderIds = _pendingEnhancementResumeFolderIds.ToList();
+            originalFolderIds = folderIds.ToList();
+            rootPaths = _pendingEnhancementResumeRootPaths.ToList();
         }
+
+        if (rootPaths.Count > 0)
+        {
+            var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
+            folderIds.AddRange(profileContext.FoldersById.Values
+                .Where(IsEnhancementEligibleFolder)
+                .Where(folder => rootPaths.Any(rootPath => PathScopesOverlap(folder.RootPath, rootPath)))
+                .Select(folder => folder.Id.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        lock (_enhancementResumeLock)
+        {
+            foreach (var folderId in originalFolderIds)
+            {
+                _pendingEnhancementResumeFolderIds.Remove(folderId);
+            }
+
+            foreach (var rootPath in rootPaths)
+            {
+                _pendingEnhancementResumeRootPaths.Remove(rootPath);
+            }
+        }
+
+        SaveOrchestrationRuntimeState();
+        return folderIds
+            .Where(folderId => !string.IsNullOrWhiteSpace(folderId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public Task<DownloadQueueExecutionDecision> EvaluateDownloadGateAsync(CancellationToken cancellationToken = default)
@@ -558,11 +645,44 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private void OnAutoTagJobCompleted(AutoTagJob _)
+    private void OnAutoTagJobCompleted(AutoTagJob job)
     {
+        QueueInterruptedEnhancementResume(job);
         SignalWake();
         _queueWakeSignal.Pulse();
     }
+
+    private void QueueInterruptedEnhancementResume(AutoTagJob? job)
+    {
+        if (job == null
+            || !string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(job.RootPath))
+        {
+            return;
+        }
+
+        if (!string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (IsAutomationPausedEnhancementJob(job))
+        {
+            return;
+        }
+
+        QueueEnhancementResumeRootPath(job.RootPath);
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+            DateTimeOffset.UtcNow,
+            "info",
+            $"Automation: enhancement resume queued for {job.RootPath}; resume is delayed for 30 minute(s)."));
+    }
+
+    private static bool IsAutomationPausedEnhancementJob(AutoTagJob job)
+        => string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+           && job.Error?.StartsWith("Paused by automation.", StringComparison.OrdinalIgnoreCase) == true;
 
     private void SignalWake(bool resetIdleCountdown = false)
     {
@@ -857,7 +977,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _lastEnrichmentFinishedUtc = finishedAt;
         if (_enhancementInterruptedByEnrichment)
         {
-            _enhancementResumeNotBeforeUtc = finishedAt.AddHours(1);
+            _enhancementResumeNotBeforeUtc ??= finishedAt.Add(EnhancementResumeDelay);
             _enhancementResumeAwaitingPipelineCompletion = true;
         }
 
@@ -962,7 +1082,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> ResumePausedEnhancementAsync(CancellationToken cancellationToken)
     {
-        var resumeFolderIds = ConsumeEnhancementResumeFolders();
+        var resumeFolderIds = await ConsumeEnhancementResumeFoldersAsync(cancellationToken);
         if (resumeFolderIds.Count == 0)
         {
             return false;
@@ -984,6 +1104,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             _pipelineRequested = true;
             _queueIdleSince = null;
+        }
+        else
+        {
+            _enhancementResumeAwaitingPipelineCompletion = false;
+            _enhancementInterruptedByEnrichment = false;
+            _enhancementResumeNotBeforeUtc = null;
+            SaveOrchestrationRuntimeState();
         }
 
         return pausedAgain;
@@ -2171,7 +2298,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     SaveOrchestrationRuntimeState();
                 }
 
-                await QueueResumeFoldersForPausedEnhancementJobAsync(jobId, cancellationToken);
+                QueueResumeFoldersForPausedEnhancementJob(jobId);
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
                     LogEnhancementPauseSuccess(jobId);
@@ -2232,7 +2359,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     {
         lock (_enhancementResumeLock)
         {
-            return _pendingEnhancementResumeFolderIds.Count > 0;
+            return _pendingEnhancementResumeFolderIds.Count > 0
+                   || _pendingEnhancementResumeRootPaths.Count > 0;
         }
     }
 
@@ -2274,10 +2402,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return true;
         }
 
-        _enhancementResumeAwaitingPipelineCompletion = false;
-        _enhancementInterruptedByEnrichment = false;
-        _enhancementResumeNotBeforeUtc = null;
-        SaveOrchestrationRuntimeState();
+        if (!HasPendingEnhancementResumeFolders())
+        {
+            _enhancementResumeAwaitingPipelineCompletion = false;
+            _enhancementInterruptedByEnrichment = false;
+            _enhancementResumeNotBeforeUtc = null;
+            SaveOrchestrationRuntimeState();
+        }
+
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
@@ -2285,7 +2417,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return false;
     }
 
-    private async Task QueueResumeFoldersForPausedEnhancementJobAsync(string jobId, CancellationToken cancellationToken)
+    private void QueueResumeFoldersForPausedEnhancementJob(string jobId)
     {
         if (string.IsNullOrWhiteSpace(jobId))
         {
@@ -2309,25 +2441,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
-        var normalizedJobRoot = NormalizePathScope(job.RootPath);
-        if (string.IsNullOrWhiteSpace(normalizedJobRoot))
-        {
-            return;
-        }
-
-        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
-        var resumeFolderIds = profileContext.FoldersById.Values
-            .Where(IsEnhancementEligibleFolder)
-            .Where(folder => PathScopesOverlap(folder.RootPath, normalizedJobRoot))
-            .Select(folder => folder.Id.ToString(CultureInfo.InvariantCulture))
-            .ToList();
-
-        if (resumeFolderIds.Count == 0)
-        {
-            return;
-        }
-
-        QueueEnhancementResumeFolders(resumeFolderIds);
+        QueueEnhancementResumeRootPath(job.RootPath);
     }
 
     private static bool PathScopesOverlap(string candidateScope, string comparisonScope)

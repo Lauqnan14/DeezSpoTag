@@ -27,6 +27,7 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class LocalAutoTagRunner : IAutoTagRunner
 {
+    private const int DefaultLibraryWideEnhancementBatchSize = 40;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -460,6 +461,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             plan.PreSkippedFiles.UnionWith(plan.Files.Where(HasExistingTags));
         }
 
+        if (IsLibraryWideEnhancementBatchingEnabled(config))
+        {
+            plan.Files.Sort(CompareLibraryWideEnhancementFiles);
+        }
+
         return (plan, null);
     }
 
@@ -494,6 +500,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             plan,
             resumeCursor,
             preferPathAnchor: !string.IsNullOrWhiteSpace(resumeMismatchReason));
+        if (IsLibraryWideEnhancementBatchingEnabled(plan.Config))
+        {
+            await ExecuteLibraryWideEnhancementBatchesAsync(
+                plan,
+                jobMatchCache,
+                statusCallback,
+                logCallback,
+                startPlatformIndex,
+                startFileIndex,
+                token);
+            return;
+        }
+
         for (var platformIndex = startPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
         {
             token.ThrowIfCancellationRequested();
@@ -518,11 +537,98 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     FileIndex = fileIndex,
                     File = plan.Files[fileIndex],
                     Progress = ComputeOverallProgress(platformIndex, fileIndex, plan.PlatformCount, plan.FileCount),
+                    NextPlatformIndex = ComputeNextPlatformIndex(platformIndex, fileIndex, plan.PlatformCount, plan.FileCount),
+                    NextFileIndex = ComputeNextFileIndex(fileIndex, plan.FileCount),
                     StatusCallback = statusCallback,
                     LogCallback = logCallback,
                     Token = token
                 };
                 await ProcessPlatformFileAsync(context);
+            }
+        }
+    }
+
+    private async Task ExecuteLibraryWideEnhancementBatchesAsync(
+        AutoTagRunPlan plan,
+        JobMatchCacheState jobMatchCache,
+        Action<TaggingStatusWrap> statusCallback,
+        Action<string> logCallback,
+        int startPlatformIndex,
+        int startFileIndex,
+        CancellationToken token)
+    {
+        if (startPlatformIndex >= plan.PlatformCount)
+        {
+            return;
+        }
+
+        var batchSize = Math.Max(1, plan.Config.LibraryWideEnhancementBatchSize ?? DefaultLibraryWideEnhancementBatchSize);
+        var resumeBatchStart = startFileIndex - (startFileIndex % batchSize);
+        var batchStart = resumeBatchStart;
+        for (; batchStart < plan.FileCount; batchStart += batchSize)
+        {
+            var batchEnd = Math.Min(batchStart + batchSize, plan.FileCount);
+            var firstPlatformIndex = batchStart == resumeBatchStart
+                ? startPlatformIndex
+                : 0;
+
+            for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)
+            {
+                token.ThrowIfCancellationRequested();
+                var platform = plan.EffectivePlatforms[platformIndex];
+                logCallback($"onetagger_autotag: starting {platform}");
+
+                var fileStart = batchStart == resumeBatchStart
+                    && platformIndex == startPlatformIndex
+                        ? startFileIndex
+                        : batchStart;
+                for (var fileIndex = fileStart; fileIndex < batchEnd; fileIndex++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (plan.ReviewedFiles.Contains(plan.Files[fileIndex]))
+                    {
+                        continue;
+                    }
+
+                    var nextPlatformIndex = platformIndex;
+                    var nextFileIndex = fileIndex + 1;
+                    if (nextFileIndex >= batchEnd)
+                    {
+                        nextFileIndex = batchStart;
+                        nextPlatformIndex += 1;
+                    }
+
+                    if (nextPlatformIndex >= plan.PlatformCount)
+                    {
+                        if (batchEnd >= plan.FileCount)
+                        {
+                            nextFileIndex = 0;
+                            nextPlatformIndex = plan.PlatformCount;
+                        }
+                        else
+                        {
+                            nextFileIndex = batchEnd;
+                            nextPlatformIndex = 0;
+                        }
+                    }
+
+                    var context = new AutoTagFileRunContext
+                    {
+                        Plan = plan,
+                        JobMatchCache = jobMatchCache,
+                        Platform = platform,
+                        PlatformIndex = platformIndex,
+                        FileIndex = fileIndex,
+                        File = plan.Files[fileIndex],
+                        Progress = ComputeBatchOverallProgress(batchStart, batchEnd, platformIndex, fileIndex, plan.PlatformCount, plan.FileCount),
+                        NextPlatformIndex = nextPlatformIndex,
+                        NextFileIndex = nextFileIndex,
+                        StatusCallback = statusCallback,
+                        LogCallback = logCallback,
+                        Token = token
+                    };
+                    await ProcessPlatformFileAsync(context);
+                }
             }
         }
     }
@@ -562,6 +668,42 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return (platformIndex, fileIndex);
+    }
+
+    private static bool IsLibraryWideEnhancementBatchingEnabled(AutoTagRunnerConfig config)
+        => config.TargetFiles == null
+           && (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
+
+    private static int CompareLibraryWideEnhancementFiles(string? left, string? right)
+    {
+        var leftTimestamp = GetLibraryWideEnhancementSortTimestamp(left);
+        var rightTimestamp = GetLibraryWideEnhancementSortTimestamp(right);
+        var timestampComparison = leftTimestamp.CompareTo(rightTimestamp);
+        return timestampComparison != 0
+            ? timestampComparison
+            : string.Compare(left, right, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static DateTimeOffset GetLibraryWideEnhancementSortTimestamp(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return DateTimeOffset.MaxValue;
+        }
+
+        try
+        {
+            var creationTime = IOFile.GetCreationTimeUtc(path);
+            var writeTime = IOFile.GetLastWriteTimeUtc(path);
+            var timestamp = creationTime <= writeTime ? creationTime : writeTime;
+            return timestamp == DateTime.MinValue
+                ? DateTimeOffset.MaxValue
+                : new DateTimeOffset(timestamp, TimeSpan.Zero);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return DateTimeOffset.MaxValue;
+        }
     }
 
     private static string? GetResumeCheckpointMismatchReason(AutoTagRunPlan plan, AutoTagResumeCursor? resumeCursor)
@@ -1074,14 +1216,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         bool usedShazam,
         AutoTagReviewMetadata? review = null)
     {
-        var nextPlatformIndex = context.PlatformIndex;
-        var nextFileIndex = context.FileIndex + 1;
-        if (nextFileIndex >= context.Plan.FileCount)
-        {
-            nextFileIndex = 0;
-            nextPlatformIndex += 1;
-        }
-
         context.StatusCallback(new TaggingStatusWrap
         {
             Platform = context.Platform,
@@ -1090,8 +1224,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             PlatformCount = context.Plan.PlatformCount,
             FileIndex = context.FileIndex,
             FileCount = context.Plan.FileCount,
-            NextPlatformIndex = nextPlatformIndex,
-            NextFileIndex = nextFileIndex,
+            NextPlatformIndex = context.NextPlatformIndex,
+            NextFileIndex = context.NextFileIndex,
             Status = new TaggingStatus
             {
                 Status = status,
@@ -1138,6 +1272,38 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return platformCount == 0
             ? 1.0
             : (platformIndex / (double)platformCount) + (fileProgress / platformCount);
+    }
+
+    private static double ComputeBatchOverallProgress(
+        int batchStart,
+        int batchEnd,
+        int platformIndex,
+        int fileIndex,
+        int platformCount,
+        int fileCount)
+    {
+        if (platformCount == 0 || fileCount == 0)
+        {
+            return 1.0;
+        }
+
+        var completedFilesBeforeBatch = batchStart;
+        var batchFileCount = Math.Max(1, batchEnd - batchStart);
+        var batchProgress = (platformIndex / (double)platformCount)
+            + (((fileIndex - batchStart) + 1) / (double)batchFileCount / platformCount);
+        return Math.Min(1.0, (completedFilesBeforeBatch + (batchProgress * batchFileCount)) / fileCount);
+    }
+
+    private static int ComputeNextPlatformIndex(int platformIndex, int fileIndex, int platformCount, int fileCount)
+    {
+        var nextFileIndex = fileIndex + 1;
+        return nextFileIndex >= fileCount ? platformIndex + 1 : platformIndex;
+    }
+
+    private static int ComputeNextFileIndex(int fileIndex, int fileCount)
+    {
+        var nextFileIndex = fileIndex + 1;
+        return nextFileIndex >= fileCount ? 0 : nextFileIndex;
     }
 
     private JobMatchCacheState GetOrCreateMatchCache(string jobId)
@@ -2903,7 +3069,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             JpegImageQuality = raw.JpegImageQuality,
             Technical = raw.Technical,
             ProfileId = raw.ProfileId,
-            ProfileName = raw.ProfileName
+            ProfileName = raw.ProfileName,
+            LibraryWideEnhancementBatchSize = raw.LibraryWideEnhancementBatchSize
         };
     }
 
@@ -8152,6 +8319,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required int FileIndex { get; init; }
         public required string File { get; set; }
         public required double Progress { get; init; }
+        public required int NextPlatformIndex { get; init; }
+        public required int NextFileIndex { get; init; }
         public required Action<TaggingStatusWrap> StatusCallback { get; init; }
         public required Action<string> LogCallback { get; init; }
         public required CancellationToken Token { get; init; }
@@ -8249,6 +8418,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public TechnicalTagSettings? Technical { get; set; }
         public string? ProfileId { get; set; }
         public string? ProfileName { get; set; }
+        public int? LibraryWideEnhancementBatchSize { get; set; }
     }
 
     private sealed record ShazamEnrichmentResult(bool UsedShazam, string? Error, bool IsFatal, ShazamFailureKind FailureKind = ShazamFailureKind.None);
