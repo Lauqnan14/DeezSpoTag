@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Services.Apple;
@@ -6,6 +8,7 @@ using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Integrations.Jellyfin;
+using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Metadata.Qobuz;
@@ -33,7 +36,8 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private const string MetadataSourceLastFm = LastFmPlatform;
     private const string PlexTarget = "plex";
     private const string JellyfinTarget = "jellyfin";
-    private const string BothTargets = "both";
+    private const string NavidromeTarget = "navidrome";
+    private const string LegacyBothTargets = "both";
     private const string AvatarSlot = "avatar";
     private const string BackgroundSlot = "background";
 
@@ -42,6 +46,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private readonly PlatformAuthService _platformAuthService;
     private readonly PlexApiClient _plexClient;
     private readonly JellyfinApiClient _jellyfinClient;
+    private readonly NavidromeApiClient _navidromeClient;
     private readonly DeezerClient _deezerClient;
     private readonly AppleMusicCatalogService _appleMusicCatalogService;
     private readonly AppleArtistBiographyService _appleArtistBiographyService;
@@ -75,6 +80,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         _platformAuthService = serviceProvider.GetRequiredService<PlatformAuthService>();
         _plexClient = serviceProvider.GetRequiredService<PlexApiClient>();
         _jellyfinClient = serviceProvider.GetRequiredService<JellyfinApiClient>();
+        _navidromeClient = serviceProvider.GetRequiredService<NavidromeApiClient>();
         _deezerClient = serviceProvider.GetRequiredService<DeezerClient>();
         _appleMusicCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
         _appleArtistBiographyService = serviceProvider.GetRequiredService<AppleArtistBiographyService>();
@@ -119,7 +125,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         }
 
         var state = await LoadStateAsync(cancellationToken);
-        var normalizedTarget = NormalizeTarget(request.Target);
+        var normalizedTargets = NormalizeTargets(request.Targets, request.Target);
         var normalizedInterval = NormalizeIntervalDays(request.IntervalDays ?? 30);
         var tracked = state.Artists.FirstOrDefault(item => item.ArtistId == artistId);
         if (tracked is null)
@@ -132,7 +138,8 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         }
 
         tracked.ArtistName = artistName.Trim();
-        tracked.Target = normalizedTarget;
+        tracked.Target = ToLegacyTarget(normalizedTargets);
+        tracked.Targets = normalizedTargets.ToList();
         tracked.IncludeAvatar = request.IncludeAvatar;
         tracked.IncludeBackground = request.IncludeBackground;
         tracked.IncludeBio = request.IncludeBio;
@@ -409,6 +416,13 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         }
 
         ApplyRequestOverrides(tracked, request, effectiveIntervalDays);
+        if (request.OcrTextArtBlockingEnabled.HasValue)
+        {
+            await _libraryRepository.SetArtistMetadataOcrTextArtBlockingAsync(
+                tracked.ArtistId,
+                request.OcrTextArtBlockingEnabled.Value,
+                cancellationToken);
+        }
         try
         {
             var updated = await PushTrackedArtistMetadataAsync(tracked, auth, cancellationToken);
@@ -487,7 +501,13 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
         if (!string.IsNullOrWhiteSpace(request.Target))
         {
-            tracked.Target = NormalizeTarget(request.Target);
+            tracked.Targets = NormalizeTargets(request.Targets, request.Target).ToList();
+            tracked.Target = ToLegacyTarget(tracked.Targets);
+        }
+        else if (request.Targets is { Count: > 0 })
+        {
+            tracked.Targets = NormalizeTargets(request.Targets, request.Target).ToList();
+            tracked.Target = ToLegacyTarget(tracked.Targets);
         }
 
         tracked.IntervalDays = effectiveIntervalDays;
@@ -510,6 +530,11 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         {
             tracked.IncludePopularSongs = request.IncludePopularSongs.Value;
         }
+
+        if (request.OcrTextArtBlockingEnabled.HasValue)
+        {
+            tracked.OcrTextArtBlockingEnabled = request.OcrTextArtBlockingEnabled.Value;
+        }
     }
 
     private async Task<bool> PushTrackedArtistMetadataAsync(
@@ -528,6 +553,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         }
 
         tracked.ArtistName = artist.Name;
+        var policy = await _libraryRepository.GetArtistMetadataPolicyAsync(artist.Id, cancellationToken);
         var popularSongsSynced = await SyncPopularSongsIfRequestedAsync(
             tracked,
             artist.Id,
@@ -550,6 +576,17 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
         var prepared = await PrepareVisualsAsync(tracked, resolved.Candidates, cancellationToken);
         await UpdateManagedArtistVisualsAsync(artist.Id, prepared, cancellationToken);
+        await PersistCacheRefreshStateAsync(tracked, prepared, resolved.Biography, cancellationToken);
+
+        if (policy.SyncBlocked)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Metadata updater refreshed cache for {artist.Name}; server sync skipped because artist sync is blocked."));
+            tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            return true;
+        }
 
         var biography = tracked.IncludeBio
             ? SanitizeBiography(resolved.Biography)
@@ -559,7 +596,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 artist.Id,
                 auth,
                 artist.Name,
-                tracked.Target,
+                ResolveTrackedTargets(tracked),
                 tracked.IncludeAvatar ? prepared.AvatarPath : null,
                 tracked.IncludeBackground ? prepared.BackgroundPath : null,
                 biography),
@@ -581,12 +618,31 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
         tracked.AvatarRotationIndex = prepared.NextAvatarIndex;
         tracked.BackgroundRotationIndex = prepared.NextBackgroundIndex;
+        foreach (var target in ResolveTrackedTargets(tracked))
+        {
+            await _libraryRepository.UpsertArtistServerSyncStateAsync(
+                new ArtistServerSyncStateUpsertInput(
+                    artist.Id,
+                    target,
+                    DateTimeOffset.UtcNow,
+                    target == NavidromeTarget && pushed.Warnings.Any(warning => warning.Contains("Navidrome artist metadata sync is not supported", StringComparison.OrdinalIgnoreCase))
+                        ? null
+                        : DateTimeOffset.UtcNow,
+                    ComputeFileHashOrNull(prepared.AvatarPath),
+                    ComputeFileHashOrNull(prepared.BackgroundPath),
+                    ComputeTextHashOrNull(biography),
+                    tracked.AvatarRotationIndex,
+                    tracked.BackgroundRotationIndex,
+                    pushed.Updated ? "updated" : "skipped",
+                    pushed.Warnings.Count == 0 ? null : string.Join(" ", pushed.Warnings)),
+                cancellationToken);
+        }
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
             popularSongsSynced
-                ? $"Metadata updater pushed {artist.Name} and synced popular songs to {tracked.Target}."
-                : $"Metadata updater pushed {artist.Name} to {tracked.Target}."));
+                ? $"Metadata updater pushed {artist.Name} and synced popular songs to {string.Join(", ", ResolveTrackedTargets(tracked))}."
+                : $"Metadata updater pushed {artist.Name} to {string.Join(", ", ResolveTrackedTargets(tracked))}."));
         return true;
     }
 
@@ -604,7 +660,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         var result = await _artistPopularSongsSyncService.SyncAsync(
             artistId,
             artistName,
-            tracked.Target,
+            ResolveTrackedTargets(tracked),
             cancellationToken);
         if (!result.Success)
         {
@@ -639,6 +695,72 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             }
         }
     }
+
+    private async Task PersistCacheRefreshStateAsync(
+        MetadataUpdaterTrackedArtist tracked,
+        PreparedVisuals prepared,
+        string? biography,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!string.IsNullOrWhiteSpace(prepared.AvatarPath))
+        {
+            await _libraryRepository.UpsertArtistArtworkCacheAsync(
+                BuildArtworkCacheInput(tracked.ArtistId, AvatarSlot, prepared.AvatarPath),
+                cancellationToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(prepared.BackgroundPath))
+        {
+            await _libraryRepository.UpsertArtistArtworkCacheAsync(
+                BuildArtworkCacheInput(tracked.ArtistId, BackgroundSlot, prepared.BackgroundPath),
+                cancellationToken);
+        }
+
+        if (!string.IsNullOrWhiteSpace(biography))
+        {
+            await _libraryRepository.UpsertArtistBiographyCacheAsync(
+                tracked.ArtistId,
+                NormalizeMetadataSource(tracked.Source),
+                SanitizeBiography(biography),
+                selected: tracked.IncludeBio,
+                cancellationToken);
+        }
+
+        foreach (var target in ResolveTrackedTargets(tracked))
+        {
+            await _libraryRepository.UpsertArtistServerSyncStateAsync(
+                new ArtistServerSyncStateUpsertInput(
+                    tracked.ArtistId,
+                    target,
+                    now,
+                    null,
+                    null,
+                    null,
+                    null,
+                    tracked.AvatarRotationIndex,
+                    tracked.BackgroundRotationIndex,
+                    "cache-refreshed",
+                    null),
+                cancellationToken);
+        }
+    }
+
+    private static ArtistArtworkCacheUpsertInput BuildArtworkCacheInput(long artistId, string role, string path)
+        => new(
+            artistId,
+            role,
+            $"file:{Path.GetFullPath(path)}",
+            "managed",
+            null,
+            Path.GetFullPath(path),
+            ComputeFileHashOrNull(path),
+            null,
+            null,
+            "heuristic",
+            null,
+            false,
+            false);
 
     private async Task<IReadOnlyCollection<long>> ResolveLinkedArtistIdsAsync(long artistId, CancellationToken cancellationToken)
     {
@@ -687,7 +809,8 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         CancellationToken cancellationToken)
     {
         var artists = await _libraryRepository.GetArtistsAsync("all", cancellationToken);
-        var target = NormalizeTarget(request.Target);
+        var targets = NormalizeTargets(request.Targets, request.Target);
+        var target = ToLegacyTarget(targets);
         var hasSourceOverride = !string.IsNullOrWhiteSpace(request.Source);
         var source = NormalizeMetadataSource(request.Source);
         var intervalDays = NormalizeIntervalDays(request.IntervalDays ?? 30);
@@ -715,10 +838,15 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 tracked.Source = source;
             }
             tracked.Target = target;
+            tracked.Targets = targets.ToList();
             tracked.IntervalDays = intervalDays;
             if (request.IncludePopularSongs.HasValue)
             {
                 tracked.IncludePopularSongs = request.IncludePopularSongs.Value;
+            }
+            if (request.OcrTextArtBlockingEnabled.HasValue)
+            {
+                tracked.OcrTextArtBlockingEnabled = request.OcrTextArtBlockingEnabled.Value;
             }
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
         }
@@ -1353,6 +1481,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 managedRoot,
                 AvatarSlot,
                 excludedIdentity: null,
+                textArtBlockingEnabled: tracked.OcrTextArtBlockingEnabled,
                 cancellationToken);
             avatarPath = avatarSelection.Path;
             selectedAvatarCandidate = avatarSelection.Candidate;
@@ -1370,6 +1499,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 managedRoot,
                 BackgroundSlot,
                 selectedAvatarCandidate?.Identity,
+                textArtBlockingEnabled: tracked.OcrTextArtBlockingEnabled,
                 cancellationToken);
             backgroundPath = backgroundSelection.Path;
             if (!string.IsNullOrWhiteSpace(backgroundPath))
@@ -1405,6 +1535,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         string managedRoot,
         string slot,
         string? excludedIdentity,
+        bool textArtBlockingEnabled,
         CancellationToken cancellationToken)
     {
         if (candidates.Count == 0)
@@ -1413,9 +1544,20 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         }
 
         var boundedIndex = Math.Abs(rotationIndex) % candidates.Count;
+        var artistId = long.TryParse(Path.GetFileName(managedRoot), out var parsedArtistId)
+            ? parsedArtistId
+            : 0;
         for (var offset = 0; offset < candidates.Count; offset++)
         {
             var selected = candidates[(boundedIndex + offset) % candidates.Count];
+            if (artistId > 0
+                && _libraryRepository is not null
+                && await _libraryRepository.IsArtistArtworkBlockedAsync(artistId, slot, selected.Identity, cancellationToken))
+            {
+                LogRejectedArtworkCandidate(slot, managedRoot, selected.Source);
+                continue;
+            }
+
             if (!string.IsNullOrWhiteSpace(excludedIdentity)
                 && candidates.Count > 1
                 && string.Equals(selected.Identity, excludedIdentity, StringComparison.OrdinalIgnoreCase))
@@ -1423,7 +1565,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 continue;
             }
 
-            var materialized = await TryMaterializeSlotCandidateAsync(selected, managedRoot, slot, cancellationToken);
+            var materialized = await TryMaterializeSlotCandidateAsync(selected, managedRoot, slot, textArtBlockingEnabled, cancellationToken);
             if (!string.IsNullOrWhiteSpace(materialized.Path))
             {
                 return materialized;
@@ -1437,13 +1579,15 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         ArtworkCandidate selected,
         string managedRoot,
         string slot,
+        bool textArtBlockingEnabled,
         CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(selected.LocalPath) && File.Exists(selected.LocalPath))
         {
-            if (!await IsArtworkCandidateUsableAsync(selected.LocalPath, cancellationToken))
+            if (textArtBlockingEnabled && !await IsArtworkCandidateUsableAsync(selected.LocalPath, cancellationToken))
             {
                 LogRejectedArtworkCandidate(slot, managedRoot, selected.Source);
+                await PersistRejectedArtworkCandidateAsync(managedRoot, slot, selected, selected.LocalPath, cancellationToken);
                 return (null, null);
             }
 
@@ -1461,14 +1605,45 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             return (null, null);
         }
 
-        if (await IsArtworkCandidateUsableAsync(downloaded, cancellationToken))
+        if (!textArtBlockingEnabled || await IsArtworkCandidateUsableAsync(downloaded, cancellationToken))
         {
             return (downloaded, selected);
         }
 
         LogRejectedArtworkCandidate(slot, managedRoot, selected.Source);
+        await PersistRejectedArtworkCandidateAsync(managedRoot, slot, selected, downloaded, cancellationToken);
         TryDeleteBestEffort(downloaded);
         return (null, null);
+    }
+
+    private async Task PersistRejectedArtworkCandidateAsync(
+        string managedRoot,
+        string slot,
+        ArtworkCandidate selected,
+        string? localPath,
+        CancellationToken cancellationToken)
+    {
+        if (!long.TryParse(Path.GetFileName(managedRoot), out var artistId) || artistId <= 0)
+        {
+            return;
+        }
+
+        await _libraryRepository.UpsertArtistArtworkCacheAsync(
+            new ArtistArtworkCacheUpsertInput(
+                artistId,
+                slot,
+                selected.Identity,
+                selected.Source,
+                selected.RemoteUrl,
+                localPath,
+                ComputeFileHashOrNull(localPath),
+                null,
+                null,
+                "heuristic",
+                null,
+                true,
+                false),
+            cancellationToken);
     }
 
     private void LogRejectedArtworkCandidate(string slot, string managedRoot, string source)
@@ -1526,17 +1701,59 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     {
         var warnings = new List<string>();
         var updates = new PushUpdateAccumulator();
-        if (request.Target is PlexTarget or BothTargets)
+        if (request.Targets.Contains(PlexTarget, StringComparer.OrdinalIgnoreCase))
         {
             await PushToPlexAsync(request, updates, warnings, cancellationToken);
         }
 
-        if (request.Target is JellyfinTarget or BothTargets)
+        if (request.Targets.Contains(JellyfinTarget, StringComparer.OrdinalIgnoreCase))
         {
             await PushToJellyfinAsync(request, updates, warnings, cancellationToken);
         }
 
+        if (request.Targets.Contains(NavidromeTarget, StringComparer.OrdinalIgnoreCase))
+        {
+            await PushToNavidromeAsync(request, updates, warnings, cancellationToken);
+        }
+
         return new PushOutcome(updates.HasAnyUpdate, warnings);
+    }
+
+    private async Task PushToNavidromeAsync(
+        PushMetadataRequest request,
+        PushUpdateAccumulator updates,
+        List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        var navidrome = request.Auth.Navidrome;
+        if (navidrome is null
+            || string.IsNullOrWhiteSpace(navidrome.Url)
+            || string.IsNullOrWhiteSpace(navidrome.Username)
+            || string.IsNullOrWhiteSpace(navidrome.Password))
+        {
+            warnings.Add("Navidrome is not configured.");
+            return;
+        }
+
+        try
+        {
+            var scanStarted = await _navidromeClient.StartScanAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                cancellationToken);
+            if (scanStarted)
+            {
+                updates.NavidromeScanTriggered = true;
+            }
+
+            warnings.Add("Navidrome artist metadata sync is not supported by the current Navidrome/Subsonic API integration; library scan was requested instead.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Metadata updater Navidrome scan request failed for {Artist}", request.ArtistName);
+            warnings.Add("Navidrome scan request failed.");
+        }
     }
 
     private async Task PushToPlexAsync(
@@ -1792,7 +2009,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             await sourceStream.CopyToAsync(destinationStream, cancellationToken);
         }
 
-        DeleteSlotVariants(managedRoot, slot, destination);
         return destination;
     }
 
@@ -1933,7 +2149,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             await response.Content.CopyToAsync(destinationStream, cancellationToken);
         }
 
-        DeleteSlotVariants(managedRoot, slot, destination);
         return destination;
     }
 
@@ -2036,15 +2251,78 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
     private static int NormalizeIntervalDays(int value) => Math.Clamp(value, 0, 365);
 
-    private static string NormalizeTarget(string? value)
+    private static IReadOnlyList<string> ResolveTrackedTargets(MetadataUpdaterTrackedArtist tracked)
+        => NormalizeTargets(tracked.Targets, tracked.Target);
+
+    private static IReadOnlyList<string> NormalizeTargets(IReadOnlyList<string>? targets, string? legacyTarget)
     {
-        var normalized = (value ?? PlexTarget).Trim().ToLowerInvariant();
-        return normalized switch
+        var normalized = new List<string>();
+        if (targets is not null)
         {
-            JellyfinTarget => JellyfinTarget,
-            BothTargets => BothTargets,
-            _ => PlexTarget
-        };
+            foreach (var target in targets)
+            {
+                AddNormalizedTarget(normalized, target);
+            }
+        }
+
+        if (normalized.Count == 0)
+        {
+            AddNormalizedTarget(normalized, legacyTarget);
+        }
+
+        return normalized.Count == 0 ? new[] { PlexTarget } : normalized;
+    }
+
+    private static void AddNormalizedTarget(List<string> targets, string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        if (normalized == LegacyBothTargets)
+        {
+            AddTargetIfMissing(targets, PlexTarget);
+            AddTargetIfMissing(targets, JellyfinTarget);
+            return;
+        }
+
+        if (normalized is PlexTarget or JellyfinTarget or NavidromeTarget)
+        {
+            AddTargetIfMissing(targets, normalized);
+        }
+    }
+
+    private static void AddTargetIfMissing(List<string> targets, string target)
+    {
+        if (!targets.Contains(target, StringComparer.OrdinalIgnoreCase))
+        {
+            targets.Add(target);
+        }
+    }
+
+    private static string ToLegacyTarget(IReadOnlyList<string> targets)
+    {
+        var hasPlex = targets.Contains(PlexTarget, StringComparer.OrdinalIgnoreCase);
+        var hasJellyfin = targets.Contains(JellyfinTarget, StringComparer.OrdinalIgnoreCase);
+        var hasNavidrome = targets.Contains(NavidromeTarget, StringComparer.OrdinalIgnoreCase);
+        if (hasPlex && hasJellyfin && !hasNavidrome)
+        {
+            return LegacyBothTargets;
+        }
+
+        if (hasJellyfin && !hasPlex && !hasNavidrome)
+        {
+            return JellyfinTarget;
+        }
+
+        if (hasNavidrome && !hasPlex && !hasJellyfin)
+        {
+            return NavidromeTarget;
+        }
+
+        return PlexTarget;
     }
 
     private static string NormalizeMetadataSource(string? value)
@@ -2073,6 +2351,34 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         text = text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n');
         return text;
+    }
+
+    private static string? ComputeFileHashOrNull(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ComputeTextHashOrNull(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     }
 
     private sealed record PreparedRunState(
@@ -2138,16 +2444,30 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         long LocalArtistId,
         PlatformAuthState Auth,
         string ArtistName,
-        string Target,
+        IReadOnlyList<string> Targets,
         string? AvatarPath,
         string? BackgroundPath,
-        string? Biography);
+        string? Biography)
+    {
+        public PushMetadataRequest(
+            long localArtistId,
+            PlatformAuthState auth,
+            string artistName,
+            string target,
+            string? avatarPath,
+            string? backgroundPath,
+            string? biography)
+            : this(localArtistId, auth, artistName, NormalizeTargets(null, target), avatarPath, backgroundPath, biography)
+        {
+        }
+    }
     private sealed class PushUpdateAccumulator
     {
         public bool AvatarUpdated { get; set; }
         public bool BackgroundUpdated { get; set; }
         public bool BioUpdated { get; set; }
-        public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated || BioUpdated;
+        public bool NavidromeScanTriggered { get; set; }
+        public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated || BioUpdated || NavidromeScanTriggered;
     }
 }
 
@@ -2156,11 +2476,13 @@ public sealed class MetadataUpdaterRunRequest
     public long? ArtistId { get; set; }
     public string? Source { get; set; }
     public string? Target { get; set; }
+    public List<string>? Targets { get; set; }
     public int? IntervalDays { get; set; }
     public bool? IncludeAvatar { get; set; }
     public bool? IncludeBackground { get; set; }
     public bool? IncludeBio { get; set; }
     public bool? IncludePopularSongs { get; set; }
+    public bool? OcrTextArtBlockingEnabled { get; set; }
     public bool? IncludeAllArtists { get; set; }
     public bool? Force { get; set; }
 }
@@ -2171,10 +2493,12 @@ public sealed class ManualPushRegistrationRequest
     public string ArtistName { get; set; } = string.Empty;
     public string? Source { get; set; }
     public string? Target { get; set; }
+    public List<string>? Targets { get; set; }
     public bool IncludeAvatar { get; set; }
     public bool IncludeBackground { get; set; }
     public bool IncludeBio { get; set; }
     public bool IncludePopularSongs { get; set; }
+    public bool OcrTextArtBlockingEnabled { get; set; } = true;
     public int? IntervalDays { get; set; }
 }
 
@@ -2190,10 +2514,12 @@ public sealed class MetadataUpdaterTrackedArtist
     public string ArtistName { get; set; } = string.Empty;
     public string Source { get; set; } = "auto";
     public string Target { get; set; } = "plex";
+    public List<string> Targets { get; set; } = new() { "plex" };
     public bool IncludeAvatar { get; set; } = true;
     public bool IncludeBackground { get; set; } = true;
     public bool IncludeBio { get; set; }
     public bool IncludePopularSongs { get; set; }
+    public bool OcrTextArtBlockingEnabled { get; set; } = true;
     public int IntervalDays { get; set; } = 30;
     public DateTimeOffset? LastPushedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;

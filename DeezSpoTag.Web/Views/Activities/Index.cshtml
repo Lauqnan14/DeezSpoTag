@@ -3707,7 +3707,7 @@ function initMediaOperationsHelp() {
             title: 'Artist Metadata Updater',
             content: `
                 <h4>What does this tool do?</h4>
-                <p>The Artist Metadata Updater refreshes artist metadata from your selected source, rotates available visuals, and pushes avatar/background/bio to Plex, Jellyfin, or both.</p>
+                <p>The Artist Metadata Updater refreshes artist metadata from your selected source, rotates available visuals, and pushes avatar/background/bio to selected target servers.</p>
 
                 <h4>Refresh Interval Options</h4>
                 <ul>
@@ -3983,14 +3983,37 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
     }
 }
 
+function getMetadataUpdaterTargets() {
+    return Array.from(document.querySelectorAll('[data-metadata-target]'))
+        .filter(input => input && input.checked)
+        .map(input => String(input.getAttribute('data-metadata-target') || '').trim().toLowerCase())
+        .filter(Boolean);
+}
+
+function safeParseJsonArray(value) {
+    if (!value) {
+        return [];
+    }
+
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.map(item => String(item || '').trim().toLowerCase()).filter(Boolean) : [];
+    } catch {
+        return String(value || '').trim().toLowerCase() === 'both'
+            ? ['plex', 'jellyfin']
+            : [String(value || '').trim().toLowerCase()].filter(Boolean);
+    }
+}
+
 function initMetadataUpdater() {
     const updateButton = document.getElementById('metadata-update-button');
     const refreshCacheButton = document.getElementById('metadata-refresh-cache-button');
     const cancelButton = document.getElementById('metadata-cancel-button');
     const sourceSelect = document.getElementById('metadata-source-platform');
     const intervalSelect = document.getElementById('metadata-refresh-interval');
-    const targetSelect = document.getElementById('metadata-target-server');
+    const targetContainer = document.getElementById('metadata-target-server');
     const popularSongsCheckbox = document.getElementById('metadata-include-popular-songs');
+    const ocrTextArtBlockingCheckbox = document.getElementById('metadata-ocr-text-art-blocking');
     const phaseLabel = document.getElementById('metadata-phase-label');
     const progressLabel = document.getElementById('metadata-progress-label');
     const progressBar = document.getElementById('metadata-progress-bar');
@@ -3999,19 +4022,25 @@ function initMetadataUpdater() {
         return;
     }
 
-    const targetKey = 'deezspotag-metadata-updater-target';
+    const targetKey = 'deezspotag-metadata-updater-targets';
     const sourceKey = 'deezspotag-metadata-updater-source';
     const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
+    const ocrTextArtBlockingKey = 'deezspotag-metadata-updater-ocr-text-art-blocking';
 
     const runMetadataUpdater = async () => {
         const source = sourceSelect?.value || 'auto';
         const intervalDays = Number(intervalSelect?.value || 30);
-        const target = targetSelect?.value || 'plex';
+        const targets = getMetadataUpdaterTargets();
+        if (targets.length === 0) {
+            notifyActivity('Select at least one target server.', 'error');
+            return;
+        }
         const payload = {
             source,
             intervalDays,
-            target,
+            targets,
             includePopularSongs: popularSongsCheckbox?.checked === true,
+            ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false,
             includeAllArtists: true,
             force: intervalDays === 0
         };
@@ -4063,14 +4092,19 @@ function initMetadataUpdater() {
         cancelButton.disabled = true;
     }
 
-    if (targetSelect) {
-        const savedTarget = localStorage.getItem(targetKey) || 'plex';
-        if (savedTarget) {
-            targetSelect.value = savedTarget;
+    if (targetContainer) {
+        const savedTargets = safeParseJsonArray(localStorage.getItem(targetKey));
+        if (savedTargets.length > 0) {
+            targetContainer.querySelectorAll('[data-metadata-target]').forEach(input => {
+                input.checked = savedTargets.includes(String(input.getAttribute('data-metadata-target') || '').toLowerCase());
+            });
         }
-        targetSelect.addEventListener('change', () => {
-            localStorage.setItem(targetKey, targetSelect.value);
-            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterTarget', targetSelect.value);
+        targetContainer.querySelectorAll('[data-metadata-target]').forEach(input => {
+            input.addEventListener('change', () => {
+                const targets = getMetadataUpdaterTargets();
+                localStorage.setItem(targetKey, JSON.stringify(targets));
+                if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterTargets', targets);
+            });
         });
     }
 
@@ -4090,6 +4124,15 @@ function initMetadataUpdater() {
         popularSongsCheckbox.addEventListener('change', () => {
             localStorage.setItem(popularSongsKey, popularSongsCheckbox.checked ? 'true' : 'false');
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterPopularSongs', popularSongsCheckbox.checked);
+        });
+    }
+
+    if (ocrTextArtBlockingCheckbox) {
+        const savedOcrBlocking = localStorage.getItem(ocrTextArtBlockingKey);
+        ocrTextArtBlockingCheckbox.checked = savedOcrBlocking === null ? true : savedOcrBlocking !== 'false';
+        ocrTextArtBlockingCheckbox.addEventListener('change', () => {
+            localStorage.setItem(ocrTextArtBlockingKey, ocrTextArtBlockingCheckbox.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterOcrTextArtBlocking', ocrTextArtBlockingCheckbox.checked);
         });
     }
 

@@ -4645,11 +4645,12 @@ function initSpotifyCacheControls(artistId) {
     const resetMatchButton = document.getElementById('spotify-match-reset-button');
     const pushButton = document.getElementById('spotify-cache-push-button');
     const popularSongsSyncButton = document.getElementById('artist-popular-songs-sync-button');
-    const targetSelect = document.getElementById('spotify-cache-push-target');
+    const targetContainer = document.getElementById('spotify-cache-push-target');
+    const artistSyncBlockedCheckbox = document.getElementById('artist-sync-blocked');
     const biographySourceSelect = document.getElementById('artist-biography-source');
     const cachePanel = document.getElementById('spotify-cache-panel');
 
-    if (!refreshButton || !resetMatchButton || !pushButton || !targetSelect || !cachePanel) {
+    if (!refreshButton || !resetMatchButton || !pushButton || !targetContainer || !cachePanel) {
         return;
     }
 
@@ -4662,6 +4663,7 @@ function initSpotifyCacheControls(artistId) {
     if (popularSongsSyncButton) {
         popularSongsSyncButton.dataset.bound = 'true';
     }
+    bindArtistMetadataPolicyControls(artistId, artistSyncBlockedCheckbox);
     if (biographySourceSelect && biographySourceSelect.dataset.bound !== 'true') {
         biographySourceSelect.dataset.bound = 'true';
         biographySourceSelect.addEventListener('change', () => {
@@ -4735,9 +4737,13 @@ function initSpotifyCacheControls(artistId) {
 
         const { payload } = buildSpotifySyncPayload(
             artistId,
-            targetSelect.value,
+            getArtistSyncTargets(),
             selection
         );
+        if (!Array.isArray(payload.targets) || payload.targets.length === 0) {
+            showToast('Select at least one target server.', true);
+            return;
+        }
 
         try {
             console.debug('[push] payload', payload);
@@ -4762,7 +4768,7 @@ function initSpotifyCacheControls(artistId) {
             const result = await fetchJson(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/popular-songs/sync`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ target: targetSelect.value || 'plex' })
+                body: JSON.stringify({ targets: getArtistSyncTargets() })
             });
             showToast(result?.message || 'Popular songs synced.');
         } catch (error) {
@@ -4773,6 +4779,44 @@ function initSpotifyCacheControls(artistId) {
     });
 
     loadSpotifyCacheImages(artistId);
+}
+
+function getArtistSyncTargets() {
+    return Array.from(document.querySelectorAll('[data-artist-sync-target]'))
+        .filter(input => input && input.checked)
+        .map(input => String(input.getAttribute('data-artist-sync-target') || '').trim().toLowerCase())
+        .filter(Boolean);
+}
+
+function bindArtistMetadataPolicyControls(artistId, syncBlockedCheckbox) {
+    if (!syncBlockedCheckbox || syncBlockedCheckbox.dataset.bound === 'true') {
+        return;
+    }
+
+    syncBlockedCheckbox.dataset.bound = 'true';
+    fetchJsonOptional(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/metadata-policy`)
+        .then(policy => {
+            if (policy && typeof policy.syncBlocked === 'boolean') {
+                syncBlockedCheckbox.checked = policy.syncBlocked;
+            }
+        })
+        .catch(error => console.warn('Failed to load artist metadata policy.', error));
+
+    syncBlockedCheckbox.addEventListener('change', async () => {
+        try {
+            await fetchJson(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/metadata-policy/sync-block`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ blocked: syncBlockedCheckbox.checked })
+            });
+            showToast(syncBlockedCheckbox.checked
+                ? 'Artist blocked from server sync. Cache updates will still run.'
+                : 'Artist server sync unblocked.');
+        } catch (error) {
+            syncBlockedCheckbox.checked = !syncBlockedCheckbox.checked;
+            showToast(`Failed to update artist sync block: ${error?.message || error}`, true);
+        }
+    });
 }
 
 function renderSpotifyRelatedArtists(artists) {
@@ -6627,9 +6671,10 @@ function validateSpotifySyncSelection(selection, missingItems) {
     return true;
 }
 
-function buildSpotifySyncPayload(artistId, target, selection) {
+function buildSpotifySyncPayload(artistId, targets, selection) {
     const includeAvatar = selection.requestedAvatar && (!!selection.avatarImagePath || !!selection.avatarVisualUrl);
     const includeBackground = selection.requestedBackground && (!!selection.backgroundImagePath || !!selection.backgroundVisualUrl);
+    const normalizedTargets = Array.isArray(targets) ? targets.filter(Boolean) : [];
     return {
         includeAvatar,
         includeBackground,
@@ -6644,7 +6689,7 @@ function buildSpotifySyncPayload(artistId, target, selection) {
             backgroundImagePath: selection.backgroundImagePath || null,
             backgroundVisualUrl: includeBackground ? (selection.backgroundVisualUrl || null) : null,
             biography: selection.biography || null,
-            target: target || 'plex'
+            targets: normalizedTargets
         }
     };
 }
@@ -6932,7 +6977,8 @@ function renderArtistVisualPicker(artistId) {
             url: rawUrl,
             label: image.name ? `Spotify cache • ${image.name}` : 'Spotify cache',
             source: 'spotify-cache',
-            path: image.path
+            path: image.path,
+            identity: `file:${image.path}`
         });
     });
     spotifyImages.forEach(item => {
@@ -6942,7 +6988,8 @@ function renderArtistVisualPicker(artistId) {
         items.push({
             url: item.url,
             label: item.label || 'Spotify',
-            source: item.source || 'spotify'
+            source: item.source || 'spotify',
+            identity: `${item.source || 'spotify'}:${item.url}`
         });
     });
     appleImages.forEach(item => {
@@ -6952,7 +6999,8 @@ function renderArtistVisualPicker(artistId) {
         items.push({
             url: item.url,
             label: item.label || 'Apple Music',
-            source: item.source || 'apple'
+            source: item.source || 'apple',
+            identity: `${item.source || 'apple'}:${item.url}`
         });
     });
     deezerImages.forEach(item => {
@@ -6962,7 +7010,8 @@ function renderArtistVisualPicker(artistId) {
         items.push({
             url: item.url,
             label: item.label || 'Deezer',
-            source: item.source || 'deezer'
+            source: item.source || 'deezer',
+            identity: `${item.source || 'deezer'}:${item.url}`
         });
     });
     lastfmImages.forEach(item => {
@@ -6973,7 +7022,8 @@ function renderArtistVisualPicker(artistId) {
             url: item.url,
             label: item.label || 'Last.fm',
             source: item.source || 'lastfm',
-            path: item.path || ''
+            path: item.path || '',
+            identity: `${item.source || 'lastfm'}:${item.url}`
         });
     });
 
@@ -6997,6 +7047,7 @@ function renderArtistVisualPicker(artistId) {
         const safeUrl = escapeHtml(item.url || '');
         const safePath = escapeHtml((item.path || '').toString());
         const safeSource = escapeHtml((item.source || '').toString());
+        const safeIdentity = escapeHtml((item.identity || `${item.source || 'visual'}:${item.url}`).toString());
         const safeLabel = escapeHtml(item.label || 'Artist visual');
         return `
             <div class="visual-tile" title="${safeLabel}">
@@ -7004,10 +7055,34 @@ function renderArtistVisualPicker(artistId) {
                 <div class="visual-tile__actions">
                     <button class="action-btn action-btn-sm" type="button" data-visual-action="avatar" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Set avatar</button>
                     <button class="action-btn action-btn-sm btn-secondary" type="button" data-visual-action="background" data-visual-url="${safeUrl}" data-visual-path="${safePath}" data-visual-source="${safeSource}">Set background</button>
+                    <button class="action-btn action-btn-sm btn-secondary" type="button" data-visual-block="true" data-visual-identity="${safeIdentity}">Block art</button>
                 </div>
             </div>
         `;
     }).join('');
+
+    grid.querySelectorAll('[data-visual-block]').forEach(button => {
+        button.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const identity = (button.dataset.visualIdentity || '').trim();
+            if (!identity) {
+                return;
+            }
+
+            try {
+                await Promise.all(['avatar', 'background'].map(role => fetchJson(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/artwork/block`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ role, identity, blocked: true })
+                })));
+                button.disabled = true;
+                button.textContent = 'Blocked';
+                showToast('Artwork blocked from future server sync.');
+            } catch (error) {
+                showToast(`Failed to block artwork: ${error?.message || error}`, true);
+            }
+        });
+    });
 
     grid.querySelectorAll('[data-visual-action]').forEach(button => {
         button.addEventListener('click', (event) => {

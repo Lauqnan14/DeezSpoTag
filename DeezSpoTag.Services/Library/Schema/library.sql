@@ -76,6 +76,67 @@ CREATE TABLE IF NOT EXISTS artist_source (
     UNIQUE (source, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS artist_metadata_policy (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    sync_blocked INTEGER NOT NULL DEFAULT 0,
+    ocr_text_art_blocking_enabled INTEGER NOT NULL DEFAULT 1,
+    selected_targets_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id)
+);
+
+CREATE TABLE IF NOT EXISTS artist_artwork_cache (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    source TEXT,
+    original_url TEXT,
+    local_path TEXT,
+    content_hash TEXT,
+    width INTEGER,
+    height INTEGER,
+    ocr_status TEXT,
+    detected_text TEXT,
+    text_art_blocked INTEGER NOT NULL DEFAULT 0,
+    user_blocked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, role, identity)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artist_artwork_cache_artist_role
+ON artist_artwork_cache (artist_id, role);
+
+CREATE TABLE IF NOT EXISTS artist_biography_cache (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    biography TEXT,
+    language TEXT,
+    selected INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, source)
+);
+
+CREATE TABLE IF NOT EXISTS artist_server_sync_state (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    server TEXT NOT NULL,
+    last_cache_refresh_utc TEXT,
+    last_sync_utc TEXT,
+    last_avatar_hash TEXT,
+    last_background_hash TEXT,
+    last_biography_hash TEXT,
+    avatar_rotation_index INTEGER NOT NULL DEFAULT 0,
+    background_rotation_index INTEGER NOT NULL DEFAULT 0,
+    last_result TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, server)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artist_server_sync_state_artist
+ON artist_server_sync_state (artist_id);
+
 CREATE TABLE IF NOT EXISTS album_source (
     album_id BIGINT NOT NULL REFERENCES album(id) ON DELETE CASCADE,
     source TEXT NOT NULL,

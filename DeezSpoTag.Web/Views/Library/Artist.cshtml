@@ -98,11 +98,24 @@
                                     <option value="apple">Videos: Apple Music</option>
                                     <option value="tidal">Videos: Tidal</option>
                                 </select>
-                                <select id="spotify-cache-push-target" class="form-select">
-                                    <option value="plex">Plex</option>
-                                    <option value="jellyfin">Jellyfin</option>
-                                    <option value="both">Both</option>
-                                </select>
+                                <div id="spotify-cache-push-target" class="sync-target-checkboxes" role="group" aria-label="Target servers">
+                                    <label class="sync-checkbox-label">
+                                        <input type="checkbox" data-artist-sync-target="plex" checked />
+                                        <span>Plex</span>
+                                    </label>
+                                    <label class="sync-checkbox-label">
+                                        <input type="checkbox" data-artist-sync-target="jellyfin" />
+                                        <span>Jellyfin</span>
+                                    </label>
+                                    <label class="sync-checkbox-label">
+                                        <input type="checkbox" data-artist-sync-target="navidrome" />
+                                        <span>Navidrome</span>
+                                    </label>
+                                </div>
+                                <label class="sync-checkbox-label">
+                                    <input type="checkbox" id="artist-sync-blocked" />
+                                    <span>Block this artist from server sync</span>
+                                </label>
                                 <button id="spotify-cache-push-button" class="btn btn-secondary action-btn" type="button">Push to Server</button>
                                 <button id="artist-popular-songs-sync-button" class="btn btn-secondary action-btn" type="button">Sync Popular Songs</button>
                             </div>

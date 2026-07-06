@@ -12657,5 +12657,265 @@ WHERE t.id = @trackId;";
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<ArtistMetadataPolicyDto> GetArtistMetadataPolicyAsync(
+        long artistId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT sync_blocked, ocr_text_art_blocking_enabled, selected_targets_json
+FROM artist_metadata_policy
+WHERE artist_id = @artistId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new ArtistMetadataPolicyDto(artistId, false, true, Array.Empty<string>());
+        }
+
+        var targetsJson = await ReadNullableStringAsync(reader, 2, cancellationToken);
+        return new ArtistMetadataPolicyDto(
+            artistId,
+            reader.GetInt64(0) != 0,
+            reader.GetInt64(1) != 0,
+            DeserializeArtistMetadataTargetList(targetsJson));
+    }
+
+    public async Task SetArtistMetadataSyncBlockedAsync(
+        long artistId,
+        bool blocked,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_metadata_policy (artist_id, sync_blocked, updated_at)
+VALUES (@artistId, @blocked, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id) DO UPDATE SET
+    sync_blocked = excluded.sync_blocked,
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("blocked", blocked ? 1 : 0);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SetArtistMetadataOcrTextArtBlockingAsync(
+        long artistId,
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_metadata_policy (artist_id, ocr_text_art_blocking_enabled, updated_at)
+VALUES (@artistId, @enabled, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id) DO UPDATE SET
+    ocr_text_art_blocking_enabled = excluded.ocr_text_art_blocking_enabled,
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("enabled", enabled ? 1 : 0);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpsertArtistArtworkCacheAsync(
+        ArtistArtworkCacheUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_artwork_cache (
+    artist_id, role, identity, source, original_url, local_path, content_hash,
+    width, height, ocr_status, detected_text, text_art_blocked, user_blocked, last_seen_at)
+VALUES (
+    @artistId, @role, @identity, @source, @originalUrl, @localPath, @contentHash,
+    @width, @height, @ocrStatus, @detectedText, @textArtBlocked, @userBlocked, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id, role, identity) DO UPDATE SET
+    source = COALESCE(excluded.source, source),
+    original_url = COALESCE(excluded.original_url, original_url),
+    local_path = COALESCE(excluded.local_path, local_path),
+    content_hash = COALESCE(excluded.content_hash, content_hash),
+    width = COALESCE(excluded.width, width),
+    height = COALESCE(excluded.height, height),
+    ocr_status = COALESCE(excluded.ocr_status, ocr_status),
+    detected_text = COALESCE(excluded.detected_text, detected_text),
+    text_art_blocked = excluded.text_art_blocked,
+    user_blocked = CASE WHEN user_blocked = 1 THEN 1 ELSE excluded.user_blocked END,
+    last_seen_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", input.ArtistId);
+        command.Parameters.AddWithValue("role", input.Role);
+        command.Parameters.AddWithValue("identity", input.Identity);
+        command.Parameters.AddWithValue("source", (object?)input.Source ?? DBNull.Value);
+        command.Parameters.AddWithValue("originalUrl", (object?)input.OriginalUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("localPath", (object?)input.LocalPath ?? DBNull.Value);
+        command.Parameters.AddWithValue("contentHash", (object?)input.ContentHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("width", (object?)input.Width ?? DBNull.Value);
+        command.Parameters.AddWithValue("height", (object?)input.Height ?? DBNull.Value);
+        command.Parameters.AddWithValue("ocrStatus", (object?)input.OcrStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue("detectedText", (object?)input.DetectedText ?? DBNull.Value);
+        command.Parameters.AddWithValue("textArtBlocked", input.TextArtBlocked ? 1 : 0);
+        command.Parameters.AddWithValue("userBlocked", input.UserBlocked ? 1 : 0);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task SetArtistArtworkBlockedAsync(
+        long artistId,
+        string role,
+        string identity,
+        bool blocked,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_artwork_cache (artist_id, role, identity, user_blocked, last_seen_at)
+VALUES (@artistId, @role, @identity, @blocked, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id, role, identity) DO UPDATE SET
+    user_blocked = excluded.user_blocked,
+    last_seen_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("role", role);
+        command.Parameters.AddWithValue("identity", identity);
+        command.Parameters.AddWithValue("blocked", blocked ? 1 : 0);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> IsArtistArtworkBlockedAsync(
+        long artistId,
+        string role,
+        string identity,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT user_blocked
+FROM artist_artwork_cache
+WHERE artist_id = @artistId AND role = @role AND identity = @identity;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("role", role);
+        command.Parameters.AddWithValue("identity", identity);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null and not DBNull && Convert.ToInt64(result, CultureInfo.InvariantCulture) != 0;
+    }
+
+    public async Task UpsertArtistBiographyCacheAsync(
+        long artistId,
+        string source,
+        string? biography,
+        bool selected,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_biography_cache (artist_id, source, biography, selected, fetched_at)
+VALUES (@artistId, @source, @biography, @selected, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id, source) DO UPDATE SET
+    biography = excluded.biography,
+    selected = excluded.selected,
+    fetched_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("source", source);
+        command.Parameters.AddWithValue("biography", (object?)biography ?? DBNull.Value);
+        command.Parameters.AddWithValue("selected", selected ? 1 : 0);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpsertArtistServerSyncStateAsync(
+        ArtistServerSyncStateUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO artist_server_sync_state (
+    artist_id, server, last_cache_refresh_utc, last_sync_utc, last_avatar_hash,
+    last_background_hash, last_biography_hash, avatar_rotation_index,
+    background_rotation_index, last_result, last_error, updated_at)
+VALUES (
+    @artistId, @server, @lastCacheRefreshUtc, @lastSyncUtc, @lastAvatarHash,
+    @lastBackgroundHash, @lastBiographyHash, @avatarRotationIndex,
+    @backgroundRotationIndex, @lastResult, @lastError, CURRENT_TIMESTAMP)
+ON CONFLICT(artist_id, server) DO UPDATE SET
+    last_cache_refresh_utc = COALESCE(excluded.last_cache_refresh_utc, last_cache_refresh_utc),
+    last_sync_utc = COALESCE(excluded.last_sync_utc, last_sync_utc),
+    last_avatar_hash = COALESCE(excluded.last_avatar_hash, last_avatar_hash),
+    last_background_hash = COALESCE(excluded.last_background_hash, last_background_hash),
+    last_biography_hash = COALESCE(excluded.last_biography_hash, last_biography_hash),
+    avatar_rotation_index = excluded.avatar_rotation_index,
+    background_rotation_index = excluded.background_rotation_index,
+    last_result = excluded.last_result,
+    last_error = excluded.last_error,
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", input.ArtistId);
+        command.Parameters.AddWithValue("server", input.Server);
+        command.Parameters.AddWithValue("lastCacheRefreshUtc", ToDbDate(input.LastCacheRefreshUtc));
+        command.Parameters.AddWithValue("lastSyncUtc", ToDbDate(input.LastSyncUtc));
+        command.Parameters.AddWithValue("lastAvatarHash", (object?)input.LastAvatarHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("lastBackgroundHash", (object?)input.LastBackgroundHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("lastBiographyHash", (object?)input.LastBiographyHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("avatarRotationIndex", input.AvatarRotationIndex);
+        command.Parameters.AddWithValue("backgroundRotationIndex", input.BackgroundRotationIndex);
+        command.Parameters.AddWithValue("lastResult", (object?)input.LastResult ?? DBNull.Value);
+        command.Parameters.AddWithValue("lastError", (object?)input.LastError ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static object ToDbDate(DateTimeOffset? value)
+        => value.HasValue ? value.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture) : DBNull.Value;
+
+    private static IReadOnlyList<string> DeserializeArtistMetadataTargetList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     private sealed record FolderRoot(long Id, string Root, string RootPath);
 }
+
+public sealed record ArtistMetadataPolicyDto(
+    long ArtistId,
+    bool SyncBlocked,
+    bool OcrTextArtBlockingEnabled,
+    IReadOnlyList<string> SelectedTargets);
+
+public sealed record ArtistArtworkCacheUpsertInput(
+    long ArtistId,
+    string Role,
+    string Identity,
+    string? Source,
+    string? OriginalUrl,
+    string? LocalPath,
+    string? ContentHash,
+    int? Width,
+    int? Height,
+    string? OcrStatus,
+    string? DetectedText,
+    bool TextArtBlocked,
+    bool UserBlocked);
+
+public sealed record ArtistServerSyncStateUpsertInput(
+    long ArtistId,
+    string Server,
+    DateTimeOffset? LastCacheRefreshUtc,
+    DateTimeOffset? LastSyncUtc,
+    string? LastAvatarHash,
+    string? LastBackgroundHash,
+    string? LastBiographyHash,
+    int AvatarRotationIndex,
+    int BackgroundRotationIndex,
+    string? LastResult,
+    string? LastError);

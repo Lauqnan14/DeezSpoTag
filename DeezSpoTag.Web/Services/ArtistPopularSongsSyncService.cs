@@ -7,6 +7,7 @@ public sealed class ArtistPopularSongsSyncService
     private const string SpotifySource = "spotify";
     private const string PlexTarget = "plex";
     private const string JellyfinTarget = "jellyfin";
+    private const string NavidromeTarget = "navidrome";
     private const string BothTargets = "both";
     private const string SyncModeMirror = "mirror";
     private const string ArtistTopSourcePrefix = "artist-top:";
@@ -35,6 +36,12 @@ public sealed class ArtistPopularSongsSyncService
         long artistId,
         string? target,
         CancellationToken cancellationToken)
+        => await SyncAsync(artistId, ResolveTargets(target), cancellationToken);
+
+    public async Task<ArtistPopularSongsSyncResult> SyncAsync(
+        long artistId,
+        IReadOnlyList<string> targets,
+        CancellationToken cancellationToken)
     {
         var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
         if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
@@ -42,13 +49,20 @@ public sealed class ArtistPopularSongsSyncService
             return ArtistPopularSongsSyncResult.Failed("Artist not found.");
         }
 
-        return await SyncAsync(artist.Id, artist.Name, target, cancellationToken);
+        return await SyncAsync(artist.Id, artist.Name, targets, cancellationToken);
     }
 
     public async Task<ArtistPopularSongsSyncResult> SyncAsync(
         long artistId,
         string artistName,
         string? target,
+        CancellationToken cancellationToken)
+        => await SyncAsync(artistId, artistName, ResolveTargets(target), cancellationToken);
+
+    public async Task<ArtistPopularSongsSyncResult> SyncAsync(
+        long artistId,
+        string artistName,
+        IReadOnlyList<string> targets,
         CancellationToken cancellationToken)
     {
         if (artistId <= 0 || string.IsNullOrWhiteSpace(artistName))
@@ -75,7 +89,7 @@ public sealed class ArtistPopularSongsSyncService
         }
 
         var playlist = BuildPlaylist(artistPage, candidates.Count);
-        var targetServices = ResolveTargets(target);
+        var targetServices = NormalizeTargets(targets);
         var results = new List<ArtistPopularSongsTargetResult>(targetServices.Count);
         foreach (var service in targetServices)
         {
@@ -181,8 +195,23 @@ public sealed class ArtistPopularSongsSyncService
         {
             BothTargets => new[] { PlexTarget, JellyfinTarget },
             JellyfinTarget => new[] { JellyfinTarget },
+            NavidromeTarget => new[] { NavidromeTarget },
             _ => new[] { PlexTarget }
         };
+    }
+
+    private static IReadOnlyList<string> NormalizeTargets(IReadOnlyList<string>? targets)
+    {
+        if (targets is null || targets.Count == 0)
+        {
+            return new[] { PlexTarget };
+        }
+
+        var normalized = targets
+            .SelectMany(target => ResolveTargets(target))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return normalized.Count == 0 ? new[] { PlexTarget } : normalized;
     }
 
     private static string ResolveTrackArtist(SpotifyTrack track, string fallbackArtistName)

@@ -1,4 +1,5 @@
 using DeezSpoTag.Integrations.Jellyfin;
+using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
@@ -47,6 +48,7 @@ public class SpotifyCacheApiController : ControllerBase
     private PlatformAuthService PlatformAuthService => _serviceProvider.GetRequiredService<PlatformAuthService>();
     private PlexApiClient PlexClient => _serviceProvider.GetRequiredService<PlexApiClient>();
     private JellyfinApiClient JellyfinClient => _serviceProvider.GetRequiredService<JellyfinApiClient>();
+    private NavidromeApiClient NavidromeClient => _serviceProvider.GetRequiredService<NavidromeApiClient>();
     private ArtistMetadataUpdaterService MetadataUpdaterService => _serviceProvider.GetRequiredService<ArtistMetadataUpdaterService>();
     private ArtistPopularSongsSyncService ArtistPopularSongsSyncService => _serviceProvider.GetRequiredService<ArtistPopularSongsSyncService>();
 
@@ -250,12 +252,13 @@ public class SpotifyCacheApiController : ControllerBase
 
         await PersistArtistVisualPathsAsync(push.ArtistId, visuals, cancellationToken);
         var auth = await PlatformAuthService.LoadAsync();
-        var target = ResolvePushTarget(push.Target);
+        var target = ResolvePushTarget(push.Targets, push.Target);
         var updates = new PushUpdateState();
         var context = new PushExecutionContext(artist.Name, visuals, push.Biography);
 
         await PushToPlexAsync(target.IncludePlex, auth.Plex, context, updates, warnings, cancellationToken);
         await PushToJellyfinAsync(target.IncludeJellyfin, auth.Jellyfin, context, updates, warnings, cancellationToken);
+        await PushToNavidromeAsync(target.IncludeNavidrome, auth.Navidrome, context, updates, warnings, cancellationToken);
         await TryRegisterManualPushAsync(push, artist.Name, warnings, cancellationToken);
 
         return Ok(new
@@ -423,6 +426,7 @@ public class SpotifyCacheApiController : ControllerBase
                 includeBackground,
                 includeBio,
                 request.Target,
+                request.Targets,
                 request.RenewIntervalDays,
                 biography,
                 avatarVisual,
@@ -528,12 +532,57 @@ public class SpotifyCacheApiController : ControllerBase
         return artistIds;
     }
 
-    private static PushTarget ResolvePushTarget(string? target)
+    private static PushTarget ResolvePushTarget(IReadOnlyList<string>? targets, string? target)
     {
-        var value = (target ?? "plex").Trim().ToLowerInvariant();
+        var values = NormalizeTargets(targets, target);
         return new PushTarget(
-            IncludePlex: value is "plex" or "both",
-            IncludeJellyfin: value is "jellyfin" or "both");
+            IncludePlex: values.Contains("plex", StringComparer.OrdinalIgnoreCase),
+            IncludeJellyfin: values.Contains("jellyfin", StringComparer.OrdinalIgnoreCase),
+            IncludeNavidrome: values.Contains("navidrome", StringComparer.OrdinalIgnoreCase),
+            Targets: values);
+    }
+
+    private static IReadOnlyList<string> NormalizeTargets(IReadOnlyList<string>? targets, string? legacyTarget)
+    {
+        var normalized = new List<string>();
+        if (targets is not null)
+        {
+            foreach (var target in targets)
+            {
+                AddNormalizedTarget(normalized, target);
+            }
+        }
+
+        if (normalized.Count == 0)
+        {
+            AddNormalizedTarget(normalized, legacyTarget);
+        }
+
+        return normalized.Count == 0 ? new[] { "plex" } : normalized;
+    }
+
+    private static void AddNormalizedTarget(List<string> targets, string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized == "both")
+        {
+            AddTargetIfMissing(targets, "plex");
+            AddTargetIfMissing(targets, "jellyfin");
+            return;
+        }
+
+        if (normalized is "plex" or "jellyfin" or "navidrome")
+        {
+            AddTargetIfMissing(targets, normalized);
+        }
+    }
+
+    private static void AddTargetIfMissing(List<string> targets, string target)
+    {
+        if (!targets.Contains(target, StringComparer.OrdinalIgnoreCase))
+        {
+            targets.Add(target);
+        }
     }
 
     private async Task PushToPlexAsync(
@@ -769,6 +818,45 @@ public class SpotifyCacheApiController : ControllerBase
                    cancellationToken);
     }
 
+    private async Task PushToNavidromeAsync(
+        bool includeNavidrome,
+        NavidromeAuth? navidrome,
+        PushExecutionContext context,
+        PushUpdateState updates,
+        List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        if (!includeNavidrome)
+        {
+            return;
+        }
+
+        if (navidrome is null
+            || string.IsNullOrWhiteSpace(navidrome.Url)
+            || string.IsNullOrWhiteSpace(navidrome.Username)
+            || string.IsNullOrWhiteSpace(navidrome.Password))
+        {
+            warnings.Add("Navidrome is not configured.");
+            return;
+        }
+
+        try
+        {
+            var scanStarted = await NavidromeClient.StartScanAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                cancellationToken);
+            updates.NavidromeScanTriggered = scanStarted || updates.NavidromeScanTriggered;
+            warnings.Add("Navidrome artist metadata sync is not supported by the current Navidrome/Subsonic API integration; library scan was requested instead.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to request Navidrome scan for {Artist}", context.ArtistName);
+            warnings.Add("Navidrome scan request failed.");
+        }
+    }
+
     private async Task TryRegisterManualPushAsync(
         PreparedPushRequest push,
         string artistName,
@@ -783,6 +871,7 @@ public class SpotifyCacheApiController : ControllerBase
                     ArtistId = push.ArtistId,
                     ArtistName = artistName,
                     Target = push.Target,
+                    Targets = push.Targets?.ToList(),
                     IncludeAvatar = push.IncludeAvatar,
                     IncludeBackground = push.IncludeBackground,
                     IncludeBio = push.IncludeBio,
@@ -814,6 +903,180 @@ public class SpotifyCacheApiController : ControllerBase
         });
     }
 
+    [HttpGet("artist-metadata/capabilities")]
+    public IActionResult ArtistMetadataCapabilities()
+    {
+        return Ok(new[]
+        {
+            new
+            {
+                server = "plex",
+                canAuditArtist = true,
+                canUpdateAvatar = true,
+                canUpdateBiography = true,
+                canUpdateBackground = true,
+                canTriggerLibraryScan = true,
+                limitationReason = (string?)null
+            },
+            new
+            {
+                server = "jellyfin",
+                canAuditArtist = true,
+                canUpdateAvatar = true,
+                canUpdateBiography = true,
+                canUpdateBackground = true,
+                canTriggerLibraryScan = true,
+                limitationReason = (string?)null
+            },
+            new
+            {
+                server = "navidrome",
+                canAuditArtist = false,
+                canUpdateAvatar = false,
+                canUpdateBiography = false,
+                canUpdateBackground = false,
+                canTriggerLibraryScan = true,
+                limitationReason = (string?)"Current Navidrome/Subsonic integration supports scan, search, and playlists, but not direct artist metadata writes."
+            }
+        });
+    }
+
+    [HttpGet("artist-metadata/audit")]
+    public async Task<IActionResult> ArtistMetadataAudit(CancellationToken cancellationToken)
+    {
+        var artists = await _libraryRepository.GetArtistsAsync("all", cancellationToken);
+        var results = artists
+            .Where(static artist => artist.Id > 0)
+            .Select(artist =>
+            {
+                var hasAvatar = HasExistingFile(artist.PreferredImagePath);
+                var hasBackground = HasExistingFile(artist.PreferredBackgroundPath);
+                var hasBiography = !string.IsNullOrWhiteSpace(artist.AppleBiography);
+                return new
+                {
+                    artistId = artist.Id,
+                    artistName = artist.Name,
+                    cacheHasAvatar = hasAvatar,
+                    cacheHasBiography = hasBiography,
+                    cacheHasBackground = hasBackground,
+                    missingAvatar = !hasAvatar,
+                    missingBiography = !hasBiography,
+                    missingBackground = !hasBackground,
+                    servers = new
+                    {
+                        plex = new
+                        {
+                            capabilitySupported = true,
+                            canAuditArtist = true,
+                            hasAvatar = (bool?)null,
+                            hasBiography = (bool?)null,
+                            hasBackground = (bool?)null,
+                            message = "Server field audit requires resolving the artist on Plex during sync."
+                        },
+                        jellyfin = new
+                        {
+                            capabilitySupported = true,
+                            canAuditArtist = true,
+                            hasAvatar = (bool?)null,
+                            hasBiography = (bool?)null,
+                            hasBackground = (bool?)null,
+                            message = "Server field audit requires resolving the artist on Jellyfin during sync."
+                        },
+                        navidrome = new
+                        {
+                            capabilitySupported = false,
+                            canAuditArtist = false,
+                            hasAvatar = (bool?)null,
+                            hasBiography = (bool?)null,
+                            hasBackground = (bool?)null,
+                            message = "Current Navidrome/Subsonic integration does not expose direct artist metadata audit/write support."
+                        }
+                    }
+                };
+            })
+            .ToList();
+
+        return Ok(new
+        {
+            totalArtists = results.Count,
+            missingAvatar = results.Count(result => result.missingAvatar),
+            missingBiography = results.Count(result => result.missingBiography),
+            missingBackground = results.Count(result => result.missingBackground),
+            artists = results
+        });
+    }
+
+    private static bool HasExistingFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            return System.IO.File.Exists(Path.GetFullPath(path));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    [HttpGet("artists/{artistId:long}/metadata-policy")]
+    public async Task<IActionResult> GetArtistMetadataPolicy(long artistId, CancellationToken cancellationToken)
+    {
+        var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound("Artist not found.");
+        }
+
+        return Ok(await _libraryRepository.GetArtistMetadataPolicyAsync(artistId, cancellationToken));
+    }
+
+    [HttpPost("artists/{artistId:long}/metadata-policy/sync-block")]
+    public async Task<IActionResult> SetArtistSyncBlocked(
+        long artistId,
+        [FromBody] ArtistSyncBlockRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound("Artist not found.");
+        }
+
+        await _libraryRepository.SetArtistMetadataSyncBlockedAsync(artistId, request?.Blocked == true, cancellationToken);
+        return Ok(await _libraryRepository.GetArtistMetadataPolicyAsync(artistId, cancellationToken));
+    }
+
+    [HttpPost("artists/{artistId:long}/artwork/block")]
+    public async Task<IActionResult> SetArtistArtworkBlocked(
+        long artistId,
+        [FromBody] ArtistArtworkBlockRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
+        if (artist is null)
+        {
+            return NotFound("Artist not found.");
+        }
+
+        if (request is null || string.IsNullOrWhiteSpace(request.Role) || string.IsNullOrWhiteSpace(request.Identity))
+        {
+            return BadRequest("Role and identity are required.");
+        }
+
+        await _libraryRepository.SetArtistArtworkBlockedAsync(
+            artistId,
+            request.Role.Trim().ToLowerInvariant(),
+            request.Identity.Trim(),
+            request.Blocked,
+            cancellationToken);
+        return Ok(new { artistId, request.Role, request.Identity, request.Blocked });
+    }
+
     [HttpPost("artists/{artistId:long}/popular-songs/sync")]
     public async Task<IActionResult> SyncArtistPopularSongs(
         long artistId,
@@ -822,7 +1085,7 @@ public class SpotifyCacheApiController : ControllerBase
     {
         var result = await ArtistPopularSongsSyncService.SyncAsync(
             artistId,
-            request?.Target,
+            NormalizeTargets(request?.Targets, request?.Target),
             cancellationToken);
         if (!result.Success)
         {
@@ -892,6 +1155,7 @@ public class SpotifyCacheApiController : ControllerBase
         bool IncludeBackground,
         bool IncludeBio,
         string? Target,
+        IReadOnlyList<string>? Targets,
         int? RenewIntervalDays,
         string? Biography,
         ResolvedArtistVisualSelection? AvatarVisual,
@@ -899,7 +1163,7 @@ public class SpotifyCacheApiController : ControllerBase
     private sealed record MaterializedPushVisuals(
         ResolvedArtistVisualSelection? AvatarVisual,
         ResolvedArtistVisualSelection? BackgroundVisual);
-    private sealed record PushTarget(bool IncludePlex, bool IncludeJellyfin);
+    private sealed record PushTarget(bool IncludePlex, bool IncludeJellyfin, bool IncludeNavidrome, IReadOnlyList<string> Targets);
     private sealed record PushExecutionContext(
         string ArtistName,
         MaterializedPushVisuals Visuals,
@@ -910,7 +1174,8 @@ public class SpotifyCacheApiController : ControllerBase
         public bool AvatarUpdated { get; set; }
         public bool BackgroundUpdated { get; set; }
         public bool BioUpdated { get; set; }
-        public bool Updated => AvatarUpdated || BackgroundUpdated || BioUpdated;
+        public bool NavidromeScanTriggered { get; set; }
+        public bool Updated => AvatarUpdated || BackgroundUpdated || BioUpdated || NavidromeScanTriggered;
     }
 }
 
@@ -927,12 +1192,26 @@ public sealed class SpotifyCachePushRequest
     public bool? IncludeBackground { get; set; }
     public bool? IncludeBio { get; set; }
     public string? Target { get; set; }
+    public List<string>? Targets { get; set; }
     public int? RenewIntervalDays { get; set; }
 }
 
 public sealed class ArtistPopularSongsSyncRequest
 {
     public string? Target { get; set; }
+    public List<string>? Targets { get; set; }
+}
+
+public sealed class ArtistSyncBlockRequest
+{
+    public bool Blocked { get; set; }
+}
+
+public sealed class ArtistArtworkBlockRequest
+{
+    public string? Role { get; set; }
+    public string? Identity { get; set; }
+    public bool Blocked { get; set; }
 }
 
 public sealed class SpotifyCacheVisualRequest

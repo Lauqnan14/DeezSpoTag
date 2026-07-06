@@ -66,6 +66,8 @@ public sealed class LibraryDbService
             ["idx_download_task_apple_artist"] = (DownloadTaskTable, "apple_artist_id", false),
             ["idx_download_task_destination_folder"] = (DownloadTaskTable, DestinationFolderIdColumn, false),
             ["idx_folder_library_id"] = (FolderTable, LibraryIdColumn, false),
+            ["idx_artist_artwork_cache_artist_role"] = ("artist_artwork_cache", "artist_id, role", false),
+            ["idx_artist_server_sync_state_artist"] = ("artist_server_sync_state", "artist_id", false),
             ["idx_download_blocklist_field"] = (DownloadBlocklistTable, "field, is_enabled", false),
             ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
@@ -189,6 +191,63 @@ CREATE TABLE IF NOT EXISTS background_job_state (
         await EnsureColumnAsync(connection, ArtistTable, "apple_biography_checked_at", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistTable, "lastfm_images_checked_at", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_name_nocase", ArtistTable, "name COLLATE NOCASE", unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_metadata_policy (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    sync_blocked INTEGER NOT NULL DEFAULT 0,
+    ocr_text_art_blocking_enabled INTEGER NOT NULL DEFAULT 1,
+    selected_targets_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_artwork_cache (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    source TEXT,
+    original_url TEXT,
+    local_path TEXT,
+    content_hash TEXT,
+    width INTEGER,
+    height INTEGER,
+    ocr_status TEXT,
+    detected_text TEXT,
+    text_art_blocked INTEGER NOT NULL DEFAULT 0,
+    user_blocked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, role, identity)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_biography_cache (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    biography TEXT,
+    language TEXT,
+    selected INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, source)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS artist_server_sync_state (
+    artist_id BIGINT NOT NULL REFERENCES artist(id) ON DELETE CASCADE,
+    server TEXT NOT NULL,
+    last_cache_refresh_utc TEXT,
+    last_sync_utc TEXT,
+    last_avatar_hash TEXT,
+    last_background_hash TEXT,
+    last_biography_hash TEXT,
+    avatar_rotation_index INTEGER NOT NULL DEFAULT 0,
+    background_rotation_index INTEGER NOT NULL DEFAULT 0,
+    last_result TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artist_id, server)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_artist_artwork_cache_artist_role", "artist_artwork_cache", "artist_id, role", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_artist_server_sync_state_artist", "artist_server_sync_state", "artist_id", unique: false, cancellationToken);
 
         await EnsureColumnAsync(connection, AlbumTable, DeezerIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, AlbumTable, "metadata_json", TextType, cancellationToken);
