@@ -13,9 +13,9 @@ RUN dotnet publish DeezSpoTag.Web/DeezSpoTag.Web.csproj -c Release -o /app/publi
     && mkdir -p /app/publish/Tools \
     && cp -a Tools/AppleMusicWrapper /app/publish/Tools/AppleMusicWrapper
 
-FROM docker:27-cli AS docker-cli
+FROM docker:cli AS docker-cli
 
-FROM golang:1.25-bookworm AS apple-wrapper-build
+FROM golang:1.26.4-bookworm AS apple-wrapper-build
 WORKDIR /work
 ARG TARGETARCH
 
@@ -40,6 +40,9 @@ LABEL org.opencontainers.image.source="https://github.com/Lauqnan14/DeezSpoTag" 
 COPY scripts/mp4decrypt /usr/local/bin/mp4decrypt
 
 RUN apt-get update -o Acquire::Retries=5 \
+    && apt-get install -y --no-install-recommends \
+       perl-base=5.38.2-3.2ubuntu0.3 \
+       tar=1.35+dfsg-3ubuntu0.1 \
     && apt-get install -y --no-install-recommends \
        openssl \
        ca-certificates \
@@ -126,9 +129,6 @@ RUN apt-get update -o Acquire::Retries=5 \
       > /etc/ssl/openssl-legacy.cnf \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
-
 RUN set -eux; \
     python3 -m venv /opt/venv; \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip; \
@@ -157,6 +157,8 @@ missing = [name for name in required if getattr(es, name, None) is None]
 if missing:
     raise SystemExit(f"Essentia runtime missing required algorithms: {', '.join(missing)}")
 PY
+
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     HOME=/data/home \

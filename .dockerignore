@@ -33,6 +33,12 @@ Downloads
 library
 Library
 node_modules
+**/.venv
+**/.venv/**
+**/.audit-venv
+**/.audit-venv/**
+**/.tmp-pip-audit-venv
+**/.tmp-pip-audit-venv/**
 spotizerr-2.5.0
 deemix
 Tools/AppleMusicWrapper/docker/apple-wrapper.env
