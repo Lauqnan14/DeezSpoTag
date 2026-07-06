@@ -42,7 +42,7 @@ COPY scripts/mp4decrypt /usr/local/bin/mp4decrypt
 RUN apt-get update -o Acquire::Retries=5 \
     && apt-get install -y --no-install-recommends \
        perl-base=5.38.2-3.2ubuntu0.3 \
-       tar=1.35+dfsg-3ubuntu0.1 \
+       tar \
     && apt-get install -y --no-install-recommends \
        openssl \
        ca-certificates \
