@@ -27,6 +27,10 @@ public sealed class TracklistUnmatchedRowsGuardrailTests
         Assert.Contains("function isPlayableTracklistPreviewControl(control)", view, StringComparison.Ordinal);
         Assert.Contains("row.classList.contains('track-row-dead')", view, StringComparison.Ordinal);
         Assert.Contains("!isPlayableTracklistPreviewControl(nextControl)", view, StringComparison.Ordinal);
+        Assert.Contains("function normalizeTrackRowPlaybackSource(source)", view, StringComparison.Ordinal);
+        Assert.Contains("return normalized === 'recommendations' ? 'deezer' : (normalized || 'deezer');", view, StringComparison.Ordinal);
+        Assert.Contains("const playbackSource = normalizeTrackRowPlaybackSource(requestSource || tracklistSource || 'deezer');", view, StringComparison.Ordinal);
+        Assert.Contains("'recommendations'", view, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] relativeParts)

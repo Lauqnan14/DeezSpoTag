@@ -1805,6 +1805,11 @@ function normalizeDownloadSource(source) {
     return normalized;
 }
 
+function normalizeTrackRowPlaybackSource(source) {
+    const normalized = String(source || '').trim().toLowerCase();
+    return normalized === 'recommendations' ? 'deezer' : (normalized || 'deezer');
+}
+
 function normalizeWatchlistSource(source, type) {
     const normalizedSource = String(source || '').trim().toLowerCase();
     const normalizedType = String(type || '').trim().toLowerCase();
@@ -5772,7 +5777,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         return '';
     }
 
-    const playbackSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
+    const playbackSource = normalizeTrackRowPlaybackSource(requestSource || tracklistSource || 'deezer');
     const isPodcastShow = String(tracklistType || '').toLowerCase() === 'show';
     const forceFullStream = playbackSource === 'deezer' || isDeezerSource();
     const resolveExternalDeezerId = (track) => {
