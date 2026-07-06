@@ -213,14 +213,20 @@ public sealed class EngineFallbackSearchService
         var durationSeconds = request.DurationMs.HasValue && request.DurationMs.Value > 0
             ? (int)Math.Round(request.DurationMs.Value / 1000d)
             : 0;
-        return IsAtmosRequest(request)
-            ? await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+        if (IsAtmosRequest(request))
+        {
+            var atmosTrack = await _tidalDownloadService.ResolveAtmosTrackAsync(
                 request.Title,
                 request.Artist,
+                request.Album,
+                request.TidalId,
                 request.Isrc ?? string.Empty,
                 durationSeconds,
-                cancellationToken)
-            : await _tidalDownloadService.ResolveTrackUrlAsync(
+                cancellationToken);
+            return atmosTrack?.Url;
+        }
+
+        return await _tidalDownloadService.ResolveTrackUrlAsync(
                 request.Title,
                 request.Artist,
                 request.Isrc ?? string.Empty,

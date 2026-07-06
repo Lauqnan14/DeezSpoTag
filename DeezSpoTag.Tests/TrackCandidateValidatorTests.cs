@@ -17,6 +17,17 @@ public sealed class TrackCandidateValidatorTests
     }
 
     [Fact]
+    public void Validate_RejectsExactIsrc_WhenAlbumDiffers()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("USAT22102123", "Essence", "Wizkid", "Made In Lagos", 248000),
+            new TrackMatchCandidate("tidal-1", "USAT22102123", "Essence", "Wizkid", "Wrong Album", 249000));
+
+        Assert.False(result.Accepted);
+        Assert.Equal("album_mismatch", result.Reason);
+    }
+
+    [Fact]
     public void Validate_RejectsNoIsrcCandidate_WhenDurationDiffers()
     {
         var result = TrackCandidateValidator.Validate(

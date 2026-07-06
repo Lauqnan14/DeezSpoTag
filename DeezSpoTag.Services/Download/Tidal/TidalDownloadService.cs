@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Utils;
+using DeezSpoTag.Core.Utils;
 using TagLib;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Matching;
@@ -64,6 +65,15 @@ public sealed class TidalDownloadService
     private readonly TidalApiProviderSource _providerSource;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
     private readonly string _zarzSessionPath;
+
+    public sealed record TidalResolvedTrack(
+        string Url,
+        long Id,
+        string Title,
+        string Artist,
+        string Album,
+        string Isrc,
+        int DurationSeconds);
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
@@ -227,12 +237,57 @@ public sealed class TidalDownloadService
         string isrc,
         int expectedDuration,
         CancellationToken cancellationToken)
+        => (await ResolveAtmosTrackAsync(
+            trackTitle,
+            artistName,
+            albumName: string.Empty,
+            tidalId: string.Empty,
+            isrc,
+            expectedDuration,
+            cancellationToken))?.Url;
+
+    public async Task<TidalResolvedTrack?> ResolveAtmosTrackAsync(
+        string trackTitle,
+        string artistName,
+        string albumName,
+        string tidalId,
+        string isrc,
+        int expectedDuration,
+        CancellationToken cancellationToken)
     {
         try
         {
+            if (long.TryParse(EngineLinkParser.NormalizeNumericTrackId(tidalId), out var persistedTrackId))
+            {
+                var persistedTrack = await GetTrackInfoByIdAsync(persistedTrackId, cancellationToken);
+                if (HasTidalAtmosMode(persistedTrack))
+                {
+                    var validation = ValidateResolvedTrack(
+                        persistedTrack,
+                        trackTitle,
+                        artistName,
+                        NormalizeUsableAlbum(albumName) ?? string.Empty,
+                        string.Empty,
+                        expectedDuration);
+                    if (validation.Accepted)
+                    {
+                        return BuildResolvedTrack(persistedTrack);
+                    }
+
+                    _logger.LogWarning(
+                        "Persisted Tidal Atmos identity {TrackId} rejected for {Title} - {Artist}: {Reason}",
+                        persistedTrackId,
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName),
+                        validation.Reason);
+                    return null;
+                }
+            }
+
             var trackInfo = await SearchAtmosTrackByMetadataWithIsrcAsync(
                 trackTitle,
                 artistName,
+                albumName,
                 isrc,
                 expectedDuration,
                 cancellationToken);
@@ -241,7 +296,7 @@ public sealed class TidalDownloadService
                 return null;
             }
 
-            return BuildTidalTrackListenUrl(trackInfo.Id);
+            return BuildResolvedTrack(trackInfo);
         }
         catch (InvalidOperationException ex)
         {
@@ -253,6 +308,16 @@ public sealed class TidalDownloadService
             return null;
         }
     }
+
+    private static TidalResolvedTrack BuildResolvedTrack(TidalTrack track)
+        => new(
+            BuildTidalTrackListenUrl(track.Id),
+            track.Id,
+            track.Title,
+            ResolveTidalArtistName(track),
+            track.Album?.Title ?? string.Empty,
+            track.Isrc,
+            track.Duration);
 
     private async Task<string> DownloadByUrlAsync(
         TidalDownloadRequest request,
@@ -280,7 +345,7 @@ public sealed class TidalDownloadService
             OutputDir = request.OutputDir,
             Title = request.TrackName,
             Artist = request.ArtistName,
-            Album = request.AlbumName,
+            Album = TrackTitleMatcher.RemoveAtmosVersionMarker(request.AlbumName),
             AlbumArtist = request.AlbumArtist,
             ReleaseDate = request.ReleaseDate,
             TrackNumber = request.SpotifyTrackNumber,
@@ -399,7 +464,7 @@ public sealed class TidalDownloadService
             return isrcMatch;
         }
 
-        var validatedMatch = FindValidatedMetadataMatch(allTracks, trackName, artistName, isrc, expectedDuration);
+        var validatedMatch = FindValidatedMetadataMatch(allTracks, trackName, artistName, albumName: null, isrc, expectedDuration);
         if (validatedMatch != null)
         {
             return validatedMatch;
@@ -411,6 +476,7 @@ public sealed class TidalDownloadService
     private async Task<TidalTrack> SearchAtmosTrackByMetadataWithIsrcAsync(
         string trackName,
         string artistName,
+        string albumName,
         string isrc,
         int expectedDuration,
         CancellationToken cancellationToken)
@@ -437,13 +503,14 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("No Tidal Atmos tracks found");
         }
 
-        var isrcMatch = FindIsrcMatch(allTracks, isrc);
+        var sourceAlbum = NormalizeUsableAlbum(albumName);
+        var isrcMatch = FindIsrcMatch(allTracks, isrc, sourceAlbum);
         if (isrcMatch != null)
         {
             return isrcMatch;
         }
 
-        var validatedMatch = FindValidatedMetadataMatch(allTracks, trackName, artistName, isrc, expectedDuration);
+        var validatedMatch = FindValidatedMetadataMatch(allTracks, trackName, artistName, sourceAlbum, isrc, expectedDuration);
         if (validatedMatch != null)
         {
             return validatedMatch;
@@ -479,14 +546,19 @@ public sealed class TidalDownloadService
         return queries;
     }
 
-    private TidalTrack? FindIsrcMatch(List<TidalTrack> allTracks, string isrc)
+    private TidalTrack? FindIsrcMatch(List<TidalTrack> allTracks, string isrc, string? albumName = null)
     {
         if (string.IsNullOrWhiteSpace(isrc))
         {
             return null;
         }
 
-        var match = allTracks.FirstOrDefault(track => string.Equals(track.Isrc, isrc, StringComparison.OrdinalIgnoreCase));
+        var matches = allTracks
+            .Where(track => string.Equals(track.Isrc, isrc, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var match = string.IsNullOrWhiteSpace(albumName)
+            ? matches.FirstOrDefault()
+            : matches.FirstOrDefault(track => AlbumsCompatible(albumName, track.Album?.Title));
         if (match == null && _logger.IsEnabled(LogLevel.Debug))
         {
             _logger.LogDebug("No ISRC match for {Isrc}, falling back to duration/title matching", DeezSpoTag.Core.Security.LogSanitizer.OneLine(isrc));
@@ -499,6 +571,7 @@ public sealed class TidalDownloadService
         List<TidalTrack> allTracks,
         string trackName,
         string artistName,
+        string? albumName,
         string isrc,
         int expectedDuration)
     {
@@ -506,7 +579,7 @@ public sealed class TidalDownloadService
             isrc,
             trackName,
             artistName,
-            Album: null,
+            albumName,
             expectedDuration > 0 ? expectedDuration * 1000 : null);
         var options = new TrackCandidateValidationOptions(
             StrictWithoutIsrc: true,
@@ -549,6 +622,31 @@ public sealed class TidalDownloadService
         }
 
         return bestTrack;
+    }
+
+    private static string? NormalizeUsableAlbum(string? albumName)
+    {
+        if (string.IsNullOrWhiteSpace(albumName))
+        {
+            return null;
+        }
+
+        var normalized = albumName.Trim();
+        return normalized.Equals("Unknown Album", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : normalized;
+    }
+
+    private static bool AlbumsCompatible(string? expectedAlbum, string? candidateAlbum)
+    {
+        var normalizedExpected = NormalizeUsableAlbum(expectedAlbum);
+        if (string.IsNullOrWhiteSpace(normalizedExpected))
+        {
+            return true;
+        }
+
+        return !string.IsNullOrWhiteSpace(candidateAlbum)
+               && TrackTitleMatcher.TitlesMatch(normalizedExpected, candidateAlbum);
     }
 
     private static string ResolveTidalArtistName(TidalTrack track)

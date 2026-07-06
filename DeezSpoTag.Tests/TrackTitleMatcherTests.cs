@@ -6,6 +6,18 @@ namespace DeezSpoTag.Tests;
 public sealed class TrackTitleMatcherTests
 {
     [Theory]
+    [InlineData("i am > i was", "i am > i was (Dolby Atmos Version)")]
+    [InlineData("LOVE? (Deluxe Edition)", "LOVE? (Deluxe Edition) (Atmos Version)")]
+    public void TitlesMatch_IgnoresAtmosEditionMarker(string expected, string actual)
+        => Assert.True(TrackTitleMatcher.TitlesMatch(expected, actual));
+
+    [Fact]
+    public void RemoveAtmosVersionMarker_RemovesOnlyTrailingAtmosEdition()
+        => Assert.Equal(
+            "i am > i was",
+            TrackTitleMatcher.RemoveAtmosVersionMarker("i am > i was (Dolby Atmos Version)"));
+
+    [Theory]
     [InlineData("Je ?", "Je?")]
     [InlineData("Je ?", "Je _")]
     [InlineData("Purple Pills", "Purple_Pills")]

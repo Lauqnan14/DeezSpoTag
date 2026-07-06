@@ -11,7 +11,8 @@ public static class TrackTitleMatcher
     private static readonly string[] RemovableVersionMarkers =
     {
         "remaster", "remastered", "radio edit", "single version", "album version",
-        "original mix", "edit", "mono", "stereo", "clean", "explicit"
+        "original mix", "edit", "mono", "stereo", "clean", "explicit",
+        "dolby atmos version", "atmos version"
     };
 
     private static readonly string[] ToxicVariantMarkers =
@@ -95,6 +96,21 @@ public static class TrackTitleMatcher
         var normalized = value.Trim().ToLowerInvariant();
         normalized = Regex.Replace(normalized, @"\s+", " ", RegexOptions.None, RegexTimeout);
         return normalized;
+    }
+
+    public static string RemoveAtmosVersionMarker(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return Regex.Replace(
+            value.Trim(),
+            @"\s*[\(\[]\s*(?:dolby\s+)?atmos(?:\s+version)?\s*[\)\]]\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase,
+            RegexTimeout).Trim();
     }
 
     private static TrackTitleSignature BuildSignature(string? value)

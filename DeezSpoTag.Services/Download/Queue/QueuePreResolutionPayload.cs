@@ -39,7 +39,9 @@ public static class QueuePreResolutionPayload
         string? AmazonId = null,
         int? DurationMs = null,
         long? DestinationFolderId = null,
-        string? ContentType = null);
+        string? ContentType = null,
+        string? Album = null,
+        string? AlbumArtist = null);
 
     public static JsonObject ParseOrEmpty(string? payloadJson)
     {
@@ -142,6 +144,9 @@ public static class QueuePreResolutionPayload
         SetResolutionPairIfPresent(payload, "TidalId", "tidalId", result.TidalId);
         SetResolutionPairIfPresent(payload, "AmazonId", "amazonId", result.AmazonId);
         SetResolutionPairIfPresent(payload, "ContentType", "contentType", result.ContentType);
+        SetResolutionPairIfPresent(payload, "Album", "album", result.Album);
+        SetResolutionPairIfPresent(payload, "CollectionName", "collectionName", result.Album);
+        SetResolutionPairIfPresent(payload, "AlbumArtist", "albumArtist", result.AlbumArtist);
 
         if (result.DurationMs.HasValue && result.DurationMs.Value > 0)
         {

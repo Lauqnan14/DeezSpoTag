@@ -914,12 +914,15 @@ public sealed class DownloadIntentService
         var durationSeconds = durationMs.HasValue && durationMs.Value > 0
             ? (int)Math.Round(durationMs.Value / 1000d)
             : 0;
-        var sourceUrl = await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+        var resolvedAtmosTrack = await _tidalDownloadService.ResolveAtmosTrackAsync(
             intent.Title ?? string.Empty,
             intent.Artist ?? string.Empty,
+            intent.Album ?? string.Empty,
+            FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(intent.SourceUrl)) ?? string.Empty,
             intent.Isrc ?? string.Empty,
             durationSeconds,
             cancellationToken);
+        var sourceUrl = resolvedAtmosTrack?.Url;
         if (string.IsNullOrWhiteSpace(sourceUrl))
         {
             return new QueuePreResolutionPayload.ResolutionResult(
@@ -938,12 +941,14 @@ public sealed class DownloadIntentService
             0,
             Array.Empty<FallbackPlanStep>(),
             null,
-            Isrc: intent.Isrc,
+            Isrc: FirstNonEmpty(resolvedAtmosTrack?.Isrc, intent.Isrc),
             SpotifyId: intent.SpotifyId,
             TidalId: FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl)),
             DurationMs: durationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
-            ContentType: DownloadContentTypes.Atmos);
+            ContentType: DownloadContentTypes.Atmos,
+            Album: ResolveResolvedAlbumForAtmos(intent.Album, resolvedAtmosTrack?.Album),
+            AlbumArtist: FirstNonEmpty(intent.AlbumArtist, resolvedAtmosTrack?.Artist, intent.Artist));
     }
 
     [ExcludeFromCodeCoverage]
@@ -6002,12 +6007,15 @@ public sealed class DownloadIntentService
     {
         const string secondaryQuality = TidalAtmosQuality;
         var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
-        var tidalAtmosUrl = await _tidalDownloadService.ResolveAtmosTrackUrlAsync(
+        var resolvedAtmosTrack = await _tidalDownloadService.ResolveAtmosTrackAsync(
             request.Intent.Title ?? string.Empty,
             request.Intent.Artist ?? string.Empty,
+            request.Intent.Album ?? string.Empty,
+            FirstNonEmpty(request.Intent.TidalId, TryExtractTidalTrackId(request.Intent.SourceUrl)) ?? string.Empty,
             request.Intent.Isrc ?? string.Empty,
             durationSeconds,
             request.CancellationToken);
+        var tidalAtmosUrl = resolvedAtmosTrack?.Url;
         if (string.IsNullOrWhiteSpace(tidalAtmosUrl))
         {
             _activityLog.Warn("Secondary Atmos mapping skipped: Tidal URL unavailable.");
@@ -6042,6 +6050,12 @@ public sealed class DownloadIntentService
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);
+        payload.Isrc = FirstNonEmpty(resolvedAtmosTrack?.Isrc, request.Intent.Isrc) ?? string.Empty;
+        payload.Album = ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album) ?? string.Empty;
+        payload.AlbumArtist = FirstNonEmpty(
+            request.Intent.AlbumArtist,
+            resolvedAtmosTrack?.Artist,
+            request.Intent.Artist) ?? string.Empty;
 
         var enqueueDecision = await EnqueueItemAsync(
             payload,
@@ -6562,6 +6576,33 @@ public sealed class DownloadIntentService
         return !string.IsNullOrWhiteSpace(intentValue)
             ? intentValue
             : existingValue ?? string.Empty;
+    }
+
+    private static string? ResolveResolvedAlbumForAtmos(string? intentAlbum, string? resolvedAlbum)
+    {
+        string? selectedAlbum;
+        if (!string.IsNullOrWhiteSpace(resolvedAlbum)
+            && IsPlaceholderAlbum(intentAlbum))
+        {
+            selectedAlbum = resolvedAlbum.Trim();
+        }
+        else
+        {
+            selectedAlbum = FirstNonEmpty(intentAlbum, resolvedAlbum);
+        }
+
+        var normalized = TrackTitleMatcher.RemoveAtmosVersionMarker(selectedAlbum);
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static bool IsPlaceholderAlbum(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        return value.Trim().Equals("Unknown Album", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<EnqueueItemDecision> EnqueueItemAsync<TPayload>(

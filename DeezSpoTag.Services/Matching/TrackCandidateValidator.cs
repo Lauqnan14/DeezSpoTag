@@ -103,6 +103,11 @@ public static class TrackCandidateValidator
             return durationResult;
         }
 
+        if (HasAlbum(source) && HasAlbum(candidate) && !TrackTitleMatcher.TitlesMatch(source.Album, candidate.Album))
+        {
+            return Reject("album_mismatch");
+        }
+
         return Accept("isrc", 1.0d);
     }
 

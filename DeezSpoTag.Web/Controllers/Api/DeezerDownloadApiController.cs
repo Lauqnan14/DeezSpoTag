@@ -4,6 +4,7 @@ using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
@@ -1386,15 +1387,19 @@ namespace DeezSpoTag.Web.Controllers.Api
                 }
             }
 
+            var sourceUrl = ReadString(metadata, "sourceUrl") ?? string.Empty;
             return new DownloadIntent
             {
                 SourceService = ReadString(metadata, "sourceService") ?? string.Empty,
-                SourceUrl = ReadString(metadata, "sourceUrl") ?? string.Empty,
+                SourceUrl = sourceUrl,
                 PreferredEngine = ReadString(metadata, "preferredEngine") ?? string.Empty,
                 DeezerId = ReadString(metadata, "deezerId") ?? string.Empty,
                 DeezerAlbumId = ReadString(metadata, "deezerAlbumId") ?? string.Empty,
                 DeezerArtistId = ReadString(metadata, "deezerArtistId") ?? string.Empty,
                 SpotifyId = ReadString(metadata, "spotifyId") ?? string.Empty,
+                TidalId = ReadString(metadata, "tidalId")
+                    ?? EngineLinkParser.TryExtractTidalTrackId(sourceUrl)
+                    ?? string.Empty,
                 Isrc = ReadString(metadata, "isrc") ?? string.Empty,
                 Title = ReadString(metadata, "title") ?? string.Empty,
                 Artist = ReadString(metadata, ArtistType) ?? string.Empty,
@@ -1434,6 +1439,7 @@ namespace DeezSpoTag.Web.Controllers.Api
             SetTextIfEmpty(target.SourceService, metadata.SourceService, value => target.SourceService = value);
             SetTextIfEmpty(target.SourceUrl, metadata.SourceUrl, value => target.SourceUrl = value);
             SetTextIfEmpty(target.SpotifyId, metadata.SpotifyId, value => target.SpotifyId = value);
+            SetTextIfEmpty(target.TidalId, metadata.TidalId, value => target.TidalId = value);
             SetTextIfEmpty(target.Isrc, metadata.Isrc, value => target.Isrc = value);
         }
 
