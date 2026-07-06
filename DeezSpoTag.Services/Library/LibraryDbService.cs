@@ -298,6 +298,7 @@ CREATE TABLE IF NOT EXISTS background_job_state (
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "reuse_saved_artwork", $"{IntegerType} DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "plex_playlist_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "jellyfin_playlist_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "navidrome_playlist_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "routing_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "status", $"{TextType} DEFAULT 'queued'", cancellationToken);

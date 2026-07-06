@@ -690,8 +690,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string? SyncMode,
         bool? SyncToPlex,
         bool? SyncToJellyfin,
+        bool? SyncToNavidrome,
         string? ExistingPlexPlaylistId,
-        string? ExistingJellyfinPlaylistId);
+        string? ExistingJellyfinPlaylistId,
+        string? ExistingNavidromePlaylistId);
 
     [HttpGet("merge-target-playlists")]
     public async Task<IActionResult> GetMergeTargetPlaylists([FromQuery] string? target, CancellationToken cancellationToken)
@@ -705,9 +707,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             ? string.Empty
             : target.Trim().ToLowerInvariant();
         if (!string.Equals(normalizedTarget, "plex", StringComparison.Ordinal)
-            && !string.Equals(normalizedTarget, "jellyfin", StringComparison.Ordinal))
+            && !string.Equals(normalizedTarget, "jellyfin", StringComparison.Ordinal)
+            && !string.Equals(normalizedTarget, "navidrome", StringComparison.Ordinal))
         {
-            return BadRequest("target must be 'plex' or 'jellyfin'.");
+            return BadRequest("target must be 'plex', 'jellyfin', or 'navidrome'.");
         }
 
         var playlists = await _playlistSyncService.GetTargetPlaylistsAsync(normalizedTarget, cancellationToken);
@@ -746,9 +749,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         var syncToPlex = request.SyncToPlex == true;
         var syncToJellyfin = request.SyncToJellyfin == true;
-        if (!syncToPlex && !syncToJellyfin)
+        var syncToNavidrome = request.SyncToNavidrome == true;
+        if (!syncToPlex && !syncToJellyfin && !syncToNavidrome)
         {
-            return BadRequest("Select Plex, Jellyfin, or both as merge targets.");
+            return BadRequest("Select Plex, Jellyfin, or Navidrome as a merge target.");
         }
 
         var allItems = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
@@ -801,8 +805,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 request.SyncMode,
                 syncToPlex,
                 syncToJellyfin,
+                syncToNavidrome,
                 request.ExistingPlexPlaylistId,
-                request.ExistingJellyfinPlaylistId),
+                request.ExistingJellyfinPlaylistId,
+                request.ExistingNavidromePlaylistId),
             cancellationToken);
 
         if (!result.Success)

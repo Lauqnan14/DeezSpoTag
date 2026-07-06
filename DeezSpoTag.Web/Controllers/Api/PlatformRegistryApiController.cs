@@ -18,6 +18,7 @@ public class PlatformRegistryApiController : ControllerBase
     private const string TidalPlatform = "tidal";
     private const string SoulseekPlatform = "soulseek";
     private const string BoomplayPlatform = "boomplay";
+    private const string NavidromePlatform = "navidrome";
 
     private static readonly string[] SidebarOrder =
     [
@@ -34,6 +35,7 @@ public class PlatformRegistryApiController : ControllerBase
         BoomplayPlatform,
         "plex",
         "jellyfin",
+        NavidromePlatform,
         "beatport",
         "traxsource",
         "junodownload",
@@ -57,6 +59,7 @@ public class PlatformRegistryApiController : ControllerBase
         BpmSupremePlatform,
         "plex",
         "jellyfin",
+        NavidromePlatform,
         AppleMusicPlatform,
         AmazonMusicPlatform,
         QobuzPlatform,
@@ -79,7 +82,8 @@ public class PlatformRegistryApiController : ControllerBase
         [BpmSupremePlatform] = "bpmsupreme-login",
         [BoomplayPlatform] = "boomplay-login",
         ["plex"] = "plex-login",
-        ["jellyfin"] = "jellyfin-login"
+        ["jellyfin"] = "jellyfin-login",
+        [NavidromePlatform] = "navidrome-login"
     };
 
     private static readonly Dictionary<string, string> DisplayNameOverrides = new(StringComparer.OrdinalIgnoreCase)
@@ -94,7 +98,8 @@ public class PlatformRegistryApiController : ControllerBase
         [QobuzPlatform] = "Qobuz",
         [TidalPlatform] = "Tidal",
         [SoulseekPlatform] = "Soulseek",
-        [BoomplayPlatform] = "Boomplay"
+        [BoomplayPlatform] = "Boomplay",
+        [NavidromePlatform] = "Navidrome"
     };
 
     private readonly AutoTagMetadataService _metadataService;

@@ -604,7 +604,8 @@ public sealed record PlaylistWatchPreferenceDto(
     IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null,
     long? AtmosDestinationFolderId = null,
     string? PlexPlaylistId = null,
-    string? JellyfinPlaylistId = null);
+    string? JellyfinPlaylistId = null,
+    string? NavidromePlaylistId = null);
 
 public sealed record PlaylistWatchStateDto(
     string Source,

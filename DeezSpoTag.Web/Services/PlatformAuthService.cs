@@ -12,6 +12,7 @@ public class PlatformAuthState
     public BpmSupremeAuth? BpmSupreme { get; set; }
     public PlexAuth? Plex { get; set; }
     public JellyfinAuth? Jellyfin { get; set; }
+    public NavidromeAuth? Navidrome { get; set; }
     public AppleMusicAuth? AppleMusic { get; set; }
     public QobuzAuth? Qobuz { get; set; }
     public TidalAuth? Tidal { get; set; }
@@ -82,6 +83,15 @@ public class JellyfinAuth
     public string? ServerName { get; set; }
     public string? Version { get; set; }
     public string? AvatarUrl { get; set; }
+}
+
+public class NavidromeAuth
+{
+    public string? Url { get; set; }
+    public string? Username { get; set; }
+    public string? Password { get; set; }
+    public string? ServerName { get; set; }
+    public string? Version { get; set; }
 }
 
 public class AppleMusicAuth
@@ -156,12 +166,14 @@ public class PlatformAuthService
     private const string AmazonMusicProtectionPurpose = "DeezSpoTag.PlatformAuth.AmazonMusic";
     private const string SoulseekProtectionPurpose = "DeezSpoTag.PlatformAuth.Soulseek";
     private const string BoomplayProtectionPurpose = "DeezSpoTag.PlatformAuth.Boomplay";
+    private const string NavidromeProtectionPurpose = "DeezSpoTag.PlatformAuth.Navidrome";
     private const string SpotifyFileName = "spotify.json";
     private const string DiscogsFileName = "discogs.json";
     private const string LastFmFileName = "lastfm.json";
     private const string BpmSupremeFileName = "bpmsupreme.json";
     private const string PlexFileName = "plex.json";
     private const string JellyfinFileName = "jellyfin.json";
+    private const string NavidromeFileName = "navidrome.json";
     private const string AppleMusicFileName = "applemusic.json";
     private const string QobuzFileName = "qobuz.json";
     private const string TidalFileName = "tidal.json";
@@ -185,6 +197,7 @@ public class PlatformAuthService
     private readonly ProtectedCredentialFileStore _amazonMusicCredentialStore;
     private readonly ProtectedCredentialFileStore _soulseekCredentialStore;
     private readonly ProtectedCredentialFileStore _boomplayCredentialStore;
+    private readonly ProtectedCredentialFileStore _navidromeCredentialStore;
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly object _statusLock = new();
     private string? _lastStatusSignature;
@@ -197,6 +210,7 @@ public class PlatformAuthService
         bool BpmSupremeConfigured,
         bool PlexConfigured,
         bool JellyfinConfigured,
+        bool NavidromeConfigured,
         bool AppleConfigured,
         bool AmazonMusicConfigured,
         bool BoomplayConfigured);
@@ -208,6 +222,7 @@ public class PlatformAuthService
         string BpmSupreme,
         string Plex,
         string Jellyfin,
+        string Navidrome,
         string AppleMusic,
         string AmazonMusic,
         string Boomplay);
@@ -219,6 +234,7 @@ public class PlatformAuthService
         BpmSupremeFileName,
         PlexFileName,
         JellyfinFileName,
+        NavidromeFileName,
         AppleMusicFileName,
         QobuzFileName,
         TidalFileName,
@@ -260,6 +276,9 @@ public class PlatformAuthService
         _boomplayCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             BoomplayProtectionPurpose);
+        _navidromeCredentialStore = new ProtectedCredentialFileStore(
+            dataProtectionProvider,
+            NavidromeProtectionPurpose);
     }
 
     public async Task<PlatformAuthState> LoadAsync()
@@ -327,6 +346,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(BpmSupremeFileName, state.BpmSupreme);
         await SavePlatformSectionNoLockAsync(PlexFileName, state.Plex);
         await SavePlatformSectionNoLockAsync(JellyfinFileName, state.Jellyfin);
+        await SaveNavidromeNoLockAsync(state.Navidrome);
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
         await SaveQobuzNoLockAsync(state.Qobuz);
         await SaveTidalNoLockAsync(state.Tidal);
@@ -349,6 +369,7 @@ public class PlatformAuthService
             BpmSupreme = await LoadPlatformSectionNoLockAsync<BpmSupremeAuth>(BpmSupremeFileName),
             Plex = await LoadPlatformSectionNoLockAsync<PlexAuth>(PlexFileName),
             Jellyfin = await LoadPlatformSectionNoLockAsync<JellyfinAuth>(JellyfinFileName),
+            Navidrome = await LoadNavidromeNoLockAsync(),
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
             Qobuz = await LoadQobuzNoLockAsync(),
             Tidal = await LoadTidalNoLockAsync(),
@@ -568,6 +589,44 @@ public class PlatformAuthService
 
         await _boomplayCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Boomplay");
+    }
+
+    private async Task<NavidromeAuth?> LoadNavidromeNoLockAsync()
+    {
+        var path = GetPlatformFilePath(NavidromeFileName);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var json = await _navidromeCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "Navidrome");
+            return string.IsNullOrWhiteSpace(json)
+                ? null
+                : JsonSerializer.Deserialize<NavidromeAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            MoveCorruptAuthFileNoLock(path, ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load protected Navidrome auth section from {Path}", path);
+            return null;
+        }
+    }
+
+    private async Task SaveNavidromeNoLockAsync(NavidromeAuth? auth)
+    {
+        var path = GetPlatformFilePath(NavidromeFileName);
+        if (auth is null)
+        {
+            TryDeletePlatformSectionNoLock(path);
+            return;
+        }
+
+        await _navidromeCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "Navidrome");
     }
 
     private void HardenQobuzCredentialFilePermissions(string path)
@@ -802,7 +861,7 @@ public class PlatformAuthService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} AppleMusic={AppleMusic} AmazonMusic={AmazonMusic} Boomplay={Boomplay}",
+                "Auth status: SpotifyAccount={SpotifyAccount} SpotifyBlob={SpotifyBlob} Discogs={Discogs} LastFm={LastFm} BpmSupreme={BpmSupreme} Plex={Plex} Jellyfin={Jellyfin} Navidrome={Navidrome} AppleMusic={AppleMusic} AmazonMusic={AmazonMusic} Boomplay={Boomplay}",
                 logFields.SpotifyAccount,
                 logFields.SpotifyBlob,
                 logFields.Discogs,
@@ -810,6 +869,7 @@ public class PlatformAuthService
                 logFields.BpmSupreme,
                 logFields.Plex,
                 logFields.Jellyfin,
+                logFields.Navidrome,
                 logFields.AppleMusic,
                 logFields.AmazonMusic,
                 logFields.Boomplay);
@@ -832,6 +892,7 @@ public class PlatformAuthService
             IsBpmSupremeConfigured(state.BpmSupreme),
             IsPlexConfigured(state.Plex),
             IsJellyfinConfigured(state.Jellyfin),
+            IsNavidromeConfigured(state.Navidrome),
             state.AppleMusic?.WrapperReady == true,
             IsAmazonMusicConfigured(state.AmazonMusic),
             IsBoomplayConfigured(state.Boomplay));
@@ -848,6 +909,7 @@ public class PlatformAuthService
             $"BpmSupreme:{(snapshot.BpmSupremeConfigured ? PresentStatus : MissingStatus)}|" +
             $"Plex:{(snapshot.PlexConfigured ? PresentStatus : MissingStatus)}|" +
             $"Jellyfin:{(snapshot.JellyfinConfigured ? PresentStatus : MissingStatus)}|" +
+            $"Navidrome:{(snapshot.NavidromeConfigured ? PresentStatus : MissingStatus)}|" +
             $"AppleMusic:{(snapshot.AppleConfigured ? "ready" : MissingStatus)}|" +
             $"AmazonMusic:{(snapshot.AmazonMusicConfigured ? PresentStatus : MissingStatus)}|" +
             $"Boomplay:{(snapshot.BoomplayConfigured ? PresentStatus : MissingStatus)}";
@@ -863,6 +925,7 @@ public class PlatformAuthService
             BpmSupreme: ResolveStatus(snapshot.BpmSupremeConfigured),
             Plex: ResolveStatus(snapshot.PlexConfigured),
             Jellyfin: ResolveStatus(snapshot.JellyfinConfigured),
+            Navidrome: ResolveStatus(snapshot.NavidromeConfigured),
             AppleMusic: snapshot.AppleConfigured ? "ready" : MissingStatus,
             AmazonMusic: ResolveStatus(snapshot.AmazonMusicConfigured),
             Boomplay: ResolveStatus(snapshot.BoomplayConfigured));
@@ -904,6 +967,14 @@ public class PlatformAuthService
         return jellyfin != null
                && !string.IsNullOrWhiteSpace(jellyfin.ApiKey)
                && !string.IsNullOrWhiteSpace(jellyfin.Url);
+    }
+
+    private static bool IsNavidromeConfigured(NavidromeAuth? navidrome)
+    {
+        return navidrome != null
+               && !string.IsNullOrWhiteSpace(navidrome.Url)
+               && !string.IsNullOrWhiteSpace(navidrome.Username)
+               && !string.IsNullOrWhiteSpace(navidrome.Password);
     }
 
     private static bool IsBoomplayConfigured(BoomplayAuth? boomplay)

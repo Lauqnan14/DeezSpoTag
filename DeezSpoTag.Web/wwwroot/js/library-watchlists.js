@@ -671,6 +671,7 @@ function createArtistWatchOptionsSection(currentDiscography, latestOnly, selecte
 const playlistServerOptions = [
     { value: 'plex', label: 'Plex' },
     { value: 'jellyfin', label: 'Jellyfin' },
+    { value: 'navidrome', label: 'Navidrome' },
     { value: 'none', label: 'No media server (download only)' }
 ];
 
@@ -2219,9 +2220,13 @@ function createMergeTargetPlaylistLoader() {
         }
 
         const options = cache.get(normalizedTarget) || [];
-        const defaultLabel = normalizedTarget === 'plex'
-            ? 'Select existing Plex playlist'
-            : 'Select existing Jellyfin playlist';
+        const defaultLabel = `Select existing ${
+            normalizedTarget === 'plex'
+                ? 'Plex'
+                : normalizedTarget === 'jellyfin'
+                    ? 'Jellyfin'
+                    : 'Navidrome'
+        } playlist`;
         selectElement.innerHTML = `<option value="">${defaultLabel}</option>`;
         options.forEach(item => appendMergeTargetPlaylistOption(selectElement, item));
     };
@@ -2243,14 +2248,18 @@ async function refreshExistingTargetPlaylistControls(controls, loadTargetPlaylis
     const useExisting = controls.useExistingCheck.checked;
     const allowPlex = useExisting && controls.plexCheck.checked;
     const allowJellyfin = useExisting && controls.jellyfinCheck.checked;
+    const allowNavidrome = useExisting && controls.navidromeCheck.checked;
 
     controls.plexExistingSelect.hidden = !allowPlex;
     controls.jellyfinExistingSelect.hidden = !allowJellyfin;
+    controls.navidromeExistingSelect.hidden = !allowNavidrome;
     controls.plexExistingSelect.disabled = !allowPlex;
     controls.jellyfinExistingSelect.disabled = !allowJellyfin;
+    controls.navidromeExistingSelect.disabled = !allowNavidrome;
 
     await refreshMergeTargetSelect('plex', allowPlex, controls.plexExistingSelect, loadTargetPlaylistOptions);
     await refreshMergeTargetSelect('jellyfin', allowJellyfin, controls.jellyfinExistingSelect, loadTargetPlaylistOptions);
+    await refreshMergeTargetSelect('navidrome', allowNavidrome, controls.navidromeExistingSelect, loadTargetPlaylistOptions);
 }
 
 async function refreshMergeTargetSelect(target, enabled, selectElement, loadTargetPlaylistOptions) {
@@ -2277,8 +2286,8 @@ function validateMergeSelection(selectedPlaylists, controls, artworkState) {
         return false;
     }
 
-    if (!controls.plexCheck.checked && !controls.jellyfinCheck.checked) {
-        showToast('Select at least one merge target (Plex or Jellyfin).', true);
+    if (!controls.plexCheck.checked && !controls.jellyfinCheck.checked && !controls.navidromeCheck.checked) {
+        showToast('Select at least one merge target (Plex, Jellyfin, or Navidrome).', true);
         return false;
     }
 
@@ -2293,6 +2302,11 @@ function validateMergeSelection(selectedPlaylists, controls, artworkState) {
 
     if (controls.jellyfinCheck.checked && !controls.jellyfinExistingSelect.value) {
         showToast('Select an existing Jellyfin playlist.', true);
+        return false;
+    }
+
+    if (controls.navidromeCheck.checked && !controls.navidromeExistingSelect.value) {
+        showToast('Select an existing Navidrome playlist.', true);
         return false;
     }
 
@@ -2318,11 +2332,15 @@ function buildMergePayload(selectedPlaylists, inputs, controls, artworkState) {
         syncMode: inputs.syncModeSelect.value || 'mirror',
         syncToPlex: controls.plexCheck.checked,
         syncToJellyfin: controls.jellyfinCheck.checked,
+        syncToNavidrome: controls.navidromeCheck.checked,
         existingPlexPlaylistId: controls.useExistingCheck.checked && controls.plexCheck.checked
             ? String(controls.plexExistingSelect.value || '').trim()
             : null,
         existingJellyfinPlaylistId: controls.useExistingCheck.checked && controls.jellyfinCheck.checked
             ? String(controls.jellyfinExistingSelect.value || '').trim()
+            : null,
+        existingNavidromePlaylistId: controls.useExistingCheck.checked && controls.navidromeCheck.checked
+            ? String(controls.navidromeExistingSelect.value || '').trim()
             : null
     };
 }
@@ -2372,8 +2390,10 @@ async function openPlaylistMergePanel(items) {
     targetList.className = 'routing-rules-list merge-target-list';
     const { row: plexRow, checkbox: plexCheck } = buildMergeTargetRow('Plex', true);
     const { row: jellyfinRow, checkbox: jellyfinCheck } = buildMergeTargetRow('Jellyfin', false);
+    const { row: navidromeRow, checkbox: navidromeCheck } = buildMergeTargetRow('Navidrome', false);
     targetList.appendChild(plexRow);
     targetList.appendChild(jellyfinRow);
+    targetList.appendChild(navidromeRow);
     targetSection.appendChild(targetList);
     panel.appendChild(targetSection);
 
@@ -2406,6 +2426,13 @@ async function openPlaylistMergePanel(items) {
     jellyfinExistingSelect.innerHTML = '<option value="">Select existing Jellyfin playlist</option>';
     existingTargetSection.appendChild(jellyfinExistingSelect);
 
+    const navidromeExistingSelect = document.createElement('select');
+    navidromeExistingSelect.className = 'form-select';
+    navidromeExistingSelect.disabled = true;
+    navidromeExistingSelect.hidden = true;
+    navidromeExistingSelect.innerHTML = '<option value="">Select existing Navidrome playlist</option>';
+    existingTargetSection.appendChild(navidromeExistingSelect);
+
     panel.appendChild(existingTargetSection);
 
     const syncModeSection = document.createElement('div');
@@ -2429,8 +2456,10 @@ async function openPlaylistMergePanel(items) {
         useExistingCheck,
         plexCheck,
         jellyfinCheck,
+        navidromeCheck,
         plexExistingSelect,
-        jellyfinExistingSelect
+        jellyfinExistingSelect,
+        navidromeExistingSelect
     };
     const loadTargetPlaylistOptions = createMergeTargetPlaylistLoader();
 
@@ -2447,6 +2476,9 @@ async function openPlaylistMergePanel(items) {
         void refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
     });
     jellyfinCheck.addEventListener('change', () => {
+        void refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
+    });
+    navidromeCheck.addEventListener('change', () => {
         void refreshExistingTargetPlaylistControls(mergeControls, loadTargetPlaylistOptions);
     });
 

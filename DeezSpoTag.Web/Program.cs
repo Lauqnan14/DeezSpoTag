@@ -564,6 +564,7 @@ public partial class Program
             client.Timeout = TimeSpan.FromSeconds(30);
         });
         services.AddHttpClient<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>();
+        services.AddHttpClient<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>();
         services.AddHttpClient<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>();
         services.AddSignalR();
         services.AddDeezSpoTagQueue();
@@ -1393,6 +1394,7 @@ public partial class Program
                 DiscogsApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>(),
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
+                NavidromeApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>(),
                 AppleWrapperService = sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>(),
                 QobuzAccountProfileService = sp.GetRequiredService<DeezSpoTag.Web.Services.QobuzAccountProfileService>(),
                 AmazonPublicProviderRegistry = sp.GetRequiredService<DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry>(),
@@ -1480,6 +1482,7 @@ public partial class Program
                 SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
+                NavidromeApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Navidrome.NavidromeApiClient>(),
                 AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),

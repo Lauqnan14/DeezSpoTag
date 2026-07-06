@@ -4610,7 +4610,8 @@ LIMIT @limit;";
         var ignoreRules = ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson);
         var plexPlaylistId = await ReadNullableStringAsync(reader, 14, cancellationToken);
         var jellyfinPlaylistId = await ReadNullableStringAsync(reader, 15, cancellationToken);
-        var downloadEngineOrderJson = await ReadNullableStringAsync(reader, 16, cancellationToken);
+        var navidromePlaylistId = await ReadNullableStringAsync(reader, 16, cancellationToken);
+        var downloadEngineOrderJson = await ReadNullableStringAsync(reader, 17, cancellationToken);
         var downloadEngineOrder = downloadEngineOrderJson is null
             ? null
             : JsonSerializer.Deserialize<DownloadEngineOrderSettings>(downloadEngineOrderJson);
@@ -4631,7 +4632,8 @@ LIMIT @limit;";
             ignoreRules,
             await ReadNullableInt64Async(reader, 3, cancellationToken),
             plexPlaylistId,
-            jellyfinPlaylistId);
+            jellyfinPlaylistId,
+            navidromePlaylistId);
     }
 
     private static DateTimeOffset ParseDateTimeOffsetOrDefault(string? value, DateTimeOffset defaultValue)
@@ -6608,6 +6610,7 @@ DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;
        ignore_rules_json,
        plex_playlist_id,
        jellyfin_playlist_id,
+       navidrome_playlist_id,
        download_engine_order_json
 FROM playlist_watch_preferences
 ORDER BY updated_at DESC;";
@@ -6644,6 +6647,7 @@ ORDER BY updated_at DESC;";
        ignore_rules_json,
        plex_playlist_id,
        jellyfin_playlist_id,
+       navidrome_playlist_id,
        download_engine_order_json
 FROM playlist_watch_preferences
 WHERE source = @source AND source_id = @sourceId
@@ -6745,6 +6749,11 @@ WHERE source = @source AND source_id = @sourceId;",
             "jellyfin" => @"
 UPDATE playlist_watch_preferences
 SET jellyfin_playlist_id = @playlistId,
+    updated_at = CURRENT_TIMESTAMP
+WHERE source = @source AND source_id = @sourceId;",
+            "navidrome" => @"
+UPDATE playlist_watch_preferences
+SET navidrome_playlist_id = @playlistId,
     updated_at = CURRENT_TIMESTAMP
 WHERE source = @source AND source_id = @sourceId;",
             _ => null

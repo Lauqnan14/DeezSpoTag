@@ -1,5 +1,6 @@
 using DeezSpoTag.Integrations.Discogs;
 using DeezSpoTag.Integrations.Jellyfin;
+using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -19,6 +20,7 @@ public sealed class PlatformAuthApiDependencies
     public required DiscogsApiClient DiscogsApiClient { get; init; }
     public required PlexApiClient PlexApiClient { get; init; }
     public required JellyfinApiClient JellyfinApiClient { get; init; }
+    public required NavidromeApiClient NavidromeApiClient { get; init; }
     public required AppleMusicWrapperService AppleWrapperService { get; init; }
     public required QobuzAccountProfileService QobuzAccountProfileService { get; init; }
     public required IAmazonPublicProviderRegistry AmazonPublicProviderRegistry { get; init; }
@@ -54,6 +56,7 @@ public class PlatformAuthApiController : ControllerBase
     private readonly DiscogsApiClient _discogsApiClient;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
+    private readonly NavidromeApiClient _navidromeApiClient;
     private readonly AppleMusicWrapperService _appleWrapperService;
     private readonly QobuzAccountProfileService _qobuzAccountProfileService;
     private readonly IAmazonPublicProviderRegistry _amazonPublicProviderRegistry;
@@ -71,6 +74,7 @@ public class PlatformAuthApiController : ControllerBase
         _discogsApiClient = dependencies.DiscogsApiClient;
         _plexApiClient = dependencies.PlexApiClient;
         _jellyfinApiClient = dependencies.JellyfinApiClient;
+        _navidromeApiClient = dependencies.NavidromeApiClient;
         _appleWrapperService = dependencies.AppleWrapperService;
         _qobuzAccountProfileService = dependencies.QobuzAccountProfileService;
         _amazonPublicProviderRegistry = dependencies.AmazonPublicProviderRegistry;
@@ -116,6 +120,7 @@ public class PlatformAuthApiController : ControllerBase
             bpmSupreme = state.BpmSupreme,
             plex = state.Plex,
             jellyfin = state.Jellyfin,
+            navidrome = ToPublicNavidrome(state.Navidrome),
             appleMusic = state.AppleMusic,
             qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
             tidal = ToPublicTidal(state.Tidal, tidalProviders),
@@ -760,6 +765,53 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    [HttpPost("navidrome/login")]
+    public async Task<IActionResult> LoginNavidrome([FromBody] NavidromeAuth request, CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null)
+        {
+            return gate;
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Url)
+            || string.IsNullOrWhiteSpace(request.Username)
+            || string.IsNullOrWhiteSpace(request.Password))
+        {
+            return BadRequest("Navidrome URL, username, and password/token are required.");
+        }
+
+        var systemInfo = await _navidromeApiClient.PingAsync(
+            request.Url,
+            request.Username,
+            request.Password,
+            cancellationToken);
+        if (systemInfo is null)
+        {
+            return BadRequest("Unable to connect to Navidrome with the provided URL and credentials.");
+        }
+
+        var navidrome = await _authService.UpdateAsync(state =>
+        {
+            state.Navidrome = new NavidromeAuth
+            {
+                Url = request.Url,
+                Username = request.Username,
+                Password = request.Password,
+                ServerName = systemInfo.ServerName,
+                Version = systemInfo.Version
+            };
+
+            return state.Navidrome;
+        });
+
+        return Ok(new
+        {
+            saved = true,
+            navidrome = ToPublicNavidrome(navidrome)
+        });
+    }
+
     private static string? BuildPlexAvatarUrl(string? rawThumb)
     {
         if (string.IsNullOrWhiteSpace(rawThumb))
@@ -783,6 +835,26 @@ public class PlatformAuthApiController : ControllerBase
         }
 
         return $"{baseUrl.TrimEnd('/')}/Users/{userId}/Images/Primary";
+    }
+
+    private static object? ToPublicNavidrome(NavidromeAuth? auth)
+    {
+        if (auth is null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            url = auth.Url,
+            username = auth.Username,
+            passwordSaved = !string.IsNullOrWhiteSpace(auth.Password),
+            serverName = auth.ServerName,
+            version = auth.Version,
+            connected = !string.IsNullOrWhiteSpace(auth.Url)
+                && !string.IsNullOrWhiteSpace(auth.Username)
+                && !string.IsNullOrWhiteSpace(auth.Password)
+        };
     }
 
     private static object? ToPublicLastFm(LastFmAuth? auth)
@@ -1093,6 +1165,9 @@ public class PlatformAuthApiController : ControllerBase
                 case "jellyfin":
                     state.Jellyfin = null;
                     break;
+                case "navidrome":
+                    state.Navidrome = null;
+                    break;
                 case "applemusic":
                     state.AppleMusic = null;
                     break;
@@ -1132,6 +1207,7 @@ public class PlatformAuthApiController : ControllerBase
             or "bpmsupreme"
             or "plex"
             or "jellyfin"
+            or "navidrome"
             or "applemusic"
             or "qobuz"
             or "tidal"

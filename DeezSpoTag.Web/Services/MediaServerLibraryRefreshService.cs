@@ -1,4 +1,5 @@
 using DeezSpoTag.Integrations.Jellyfin;
+using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
 
@@ -10,12 +11,14 @@ public sealed class MediaServerLibraryRefreshService
     private const int RefreshAttemptCount = 3;
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
+    private const string NavidromeService = "navidrome";
     private const string NoneService = "none";
     private static readonly TimeSpan RefreshRetryDelay = TimeSpan.FromSeconds(1);
 
     private readonly PlatformAuthService _authService;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
+    private readonly NavidromeApiClient _navidromeApiClient;
     private readonly LibraryRepository _libraryRepository;
     private readonly ILogger<MediaServerLibraryRefreshService> _logger;
 
@@ -23,12 +26,14 @@ public sealed class MediaServerLibraryRefreshService
         PlatformAuthService authService,
         PlexApiClient plexApiClient,
         JellyfinApiClient jellyfinApiClient,
+        NavidromeApiClient navidromeApiClient,
         LibraryRepository libraryRepository,
         ILogger<MediaServerLibraryRefreshService> logger)
     {
         _authService = authService;
         _plexApiClient = plexApiClient;
         _jellyfinApiClient = jellyfinApiClient;
+        _navidromeApiClient = navidromeApiClient;
         _libraryRepository = libraryRepository;
         _logger = logger;
     }
@@ -51,6 +56,12 @@ public sealed class MediaServerLibraryRefreshService
         if (normalizedService == PlexService)
         {
             await RefreshPlexAsync(state.Plex, cancellationToken);
+            return;
+        }
+
+        if (normalizedService == NavidromeService)
+        {
+            await RefreshNavidromeAsync(state.Navidrome, cancellationToken);
             return;
         }
 
@@ -96,6 +107,19 @@ public sealed class MediaServerLibraryRefreshService
             else
             {
                 failures.Add(JellyfinService);
+            }
+        }
+
+        if (HasNavidromeConfiguration(state.Navidrome))
+        {
+            configuredServers++;
+            if (await RefreshNavidromeAsync(state.Navidrome, cancellationToken))
+            {
+                refreshedServers++;
+            }
+            else
+            {
+                failures.Add(NavidromeService);
             }
         }
 
@@ -310,6 +334,24 @@ public sealed class MediaServerLibraryRefreshService
         return false;
     }
 
+    private async Task<bool> RefreshNavidromeAsync(NavidromeAuth? navidrome, CancellationToken cancellationToken)
+    {
+        if (!HasNavidromeConfiguration(navidrome))
+        {
+            return false;
+        }
+
+        return await RetryRefreshAsync(
+            () => _navidromeApiClient.StartScanAsync(
+                navidrome!.Url!,
+                navidrome.Username!,
+                navidrome.Password!,
+                cancellationToken),
+            NavidromeService,
+            sectionKey: null,
+            cancellationToken);
+    }
+
     private static bool HasPlexConfiguration(PlexAuth? plex) =>
         plex != null
         && !string.IsNullOrWhiteSpace(plex.Url)
@@ -319,6 +361,12 @@ public sealed class MediaServerLibraryRefreshService
         jellyfin != null
         && !string.IsNullOrWhiteSpace(jellyfin.Url)
         && !string.IsNullOrWhiteSpace(jellyfin.ApiKey);
+
+    private static bool HasNavidromeConfiguration(NavidromeAuth? navidrome) =>
+        navidrome != null
+        && !string.IsNullOrWhiteSpace(navidrome.Url)
+        && !string.IsNullOrWhiteSpace(navidrome.Username)
+        && !string.IsNullOrWhiteSpace(navidrome.Password);
 }
 
 public sealed record MediaServerRefreshSummary(

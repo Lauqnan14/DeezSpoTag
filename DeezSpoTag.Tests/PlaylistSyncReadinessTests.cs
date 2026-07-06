@@ -53,12 +53,15 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             NullLogger<PlexApiClient>.Instance,
             new HttpClient(new StubHttpMessageHandler()));
         var jellyfinClient = new JellyfinApiClient(new HttpClient(new StubHttpMessageHandler()));
+        var navidromeClient = new DeezSpoTag.Integrations.Navidrome.NavidromeApiClient(
+            new HttpClient(new StubHttpMessageHandler()));
         _syncService = new PlaylistSyncService(new PlaylistSyncService.PlaylistSyncDependencies
         {
             LibraryRepository = _repository,
             SpotifyMetadataService = null!,
             PlexApiClient = plexClient,
             JellyfinApiClient = jellyfinClient,
+            NavidromeApiClient = navidromeClient,
             AuthService = authService,
             PlaylistVisualService = null!,
             MediaServerRefreshService = null!,

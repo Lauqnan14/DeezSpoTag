@@ -1941,6 +1941,12 @@ globalThis.DeezSpoTag = {
             'jellyfin',
             'credentials');
         this.applySimpleCredentialState(
+            authData.navidrome?.connected === true,
+            connected,
+            platformStates,
+            'navidrome',
+            'credentials');
+        this.applySimpleCredentialState(
             authData.boomplay?.connected === true || authData.boomplay?.cookieSaved === true,
             connected,
             platformStates,

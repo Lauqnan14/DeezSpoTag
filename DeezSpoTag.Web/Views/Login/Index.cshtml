@@ -158,6 +158,11 @@
                 <img src="/images/icons/jellyfin.png" alt="Jellyfin" class="platform-icon" />Jellyfin
             </button>
         </li>
+        <li class="nav-item">
+            <button class="nav-link" id="navidrome-login-tab" data-login-target="navidrome-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/navidrome.png" alt="Navidrome" class="platform-icon" />Navidrome
+            </button>
+        </li>
     </ul>
 
     <div class="tab-content" id="platformLoginTabsContent" hidden>
@@ -627,6 +632,33 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "jellyfinLoggedInInfo", ImageAlt = "Jellyfin", ImageSrc = "/images/icons/jellyfin.png", ImageCssClass = "h-20 w-20", ButtonId = "jellyfinDisconnectBtn", NameId = "jellyfinLoggedInName", NameFallback = "Jellyfin account" })
+            </div>
+        </div>
+
+        <div class="tab-pane" id="navidrome-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">library_music</i>Navidrome Integration
+                </h3>
+                <div id="navidromeLoginFormSection">
+                    <form id="navidromeLoginForm" class="space-y-5">
+                        <label class="block mb-4">
+                            <span class="block mb-2">Server URL</span>
+                            <input type="text" id="navidromeUrl" placeholder="http://localhost:4533" class="w-full" />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Username</span>
+                            <input type="text" id="navidromeUsername" placeholder="Username" class="w-full" required />
+                        </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Password or token</span>
+                            <input type="password" id="navidromePassword" placeholder="Password or token" class="w-full" />
+                        </label>
+                        <button class="btn btn-primary action-btn" type="submit">Login</button>
+                        <p class="text-muted" id="navidromeStatus"></p>
+                    </form>
+                </div>
+                @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "navidromeLoggedInInfo", ImageAlt = "Navidrome", ImageSrc = "/images/icons/navidrome.png", ImageCssClass = "h-20 w-20", ButtonId = "navidromeDisconnectBtn", NameId = "navidromeLoggedInName", NameFallback = "Navidrome account" })
             </div>
         </div>
     </div>
@@ -1532,7 +1564,8 @@ const LOGIN_TAB_PLATFORM_MAP = {
     'bpmsupreme-login': 'bpmsupreme',
     'boomplay-login': 'boomplay',
     'plex-login': 'plex',
-    'jellyfin-login': 'jellyfin'
+    'jellyfin-login': 'jellyfin',
+    'navidrome-login': 'navidrome'
 };
 let spotifyConfigRequested = false;
 let spotifyConfigLoadSequence = 0;
@@ -1628,6 +1661,11 @@ document.addEventListener('DOMContentLoaded', function() {
             matches: '/jellyfin',
             render: data => renderJellyfinInfo(data || {}),
             clear: () => clearJellyfinInputs()
+        },
+        navidrome: {
+            matches: '/navidrome',
+            render: data => renderNavidromeInfo(data || {}),
+            clear: () => clearNavidromeInputs()
         },
         appleMusic: {
             matches: '/applemusic',
@@ -2004,6 +2042,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
     bindPlatformDisconnect('jellyfinDisconnectBtn', '/api/platform-auth/jellyfin/disconnect', 'jellyfinStatus');
 
+    const navidromeForm = document.getElementById('navidromeLoginForm');
+    if (navidromeForm) {
+        navidromeForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const url = document.getElementById('navidromeUrl').value.trim();
+            const username = document.getElementById('navidromeUsername').value.trim();
+            const password = document.getElementById('navidromePassword').value;
+            await loginNavidrome(url, username, password);
+        });
+    }
+
+    bindPlatformDisconnect('navidromeDisconnectBtn', '/api/platform-auth/navidrome/disconnect', 'navidromeStatus');
+
     const spotifyApiCredentialsForm = document.getElementById('spotifyApiCredentialsForm');
     if (spotifyApiCredentialsForm) {
         spotifyApiCredentialsForm.addEventListener('submit', async function(event) {
@@ -2174,7 +2225,8 @@ function getLoginTabFromLocation() {
             bpmsupreme: 'bpmsupreme-login',
             boomplay: 'boomplay-login',
             plex: 'plex-login',
-            jellyfin: 'jellyfin-login'
+            jellyfin: 'jellyfin-login',
+            navidrome: 'navidrome-login'
         };
         const normalizedPlatform = platformRaw.replace(/[^a-z]/g, '');
         const mapped = platformMap[normalizedPlatform];
@@ -2455,6 +2507,13 @@ async function loadPlatformAuthState() {
             setStatus('jellyfinStatus', data.jellyfin.url && (data.jellyfin.apiKey || data.jellyfin.username));
             renderJellyfinInfo(data.jellyfin);
             togglePlatformLoginState('jellyfin', Boolean(data.jellyfin.url && (data.jellyfin.apiKey || data.jellyfin.username)));
+        }
+        if (data.navidrome) {
+            document.getElementById('navidromeUrl').value = data.navidrome.url || '';
+            document.getElementById('navidromeUsername').value = data.navidrome.username || '';
+            setStatus('navidromeStatus', data.navidrome.connected === true);
+            renderNavidromeInfo(data.navidrome);
+            togglePlatformLoginState('navidrome', data.navidrome.connected === true);
         }
         if (data.appleMusic) {
             document.getElementById('appleMusicEmail').value = data.appleMusic.email || '';
@@ -2854,6 +2913,10 @@ function clearJellyfinInputs() {
     resetFormById('jellyfinLoginForm');
 }
 
+function clearNavidromeInputs() {
+    resetFormById('navidromeLoginForm');
+}
+
 function maskSecret(value) {
     if (!value) return 'Not set';
     const trimmed = value.trim();
@@ -2933,6 +2996,13 @@ function renderJellyfinInfo(auth) {
     const nameLabel = document.getElementById('jellyfinLoggedInName');
     if (nameLabel) {
         nameLabel.textContent = auth?.username || auth?.serverName || auth?.url || 'Jellyfin account';
+    }
+}
+
+function renderNavidromeInfo(auth) {
+    const nameLabel = document.getElementById('navidromeLoggedInName');
+    if (nameLabel) {
+        nameLabel.textContent = auth?.username || auth?.serverName || auth?.url || 'Navidrome account';
     }
 }
 
@@ -4166,6 +4236,36 @@ async function loginJellyfin(url, apiKey, username) {
     }
 }
 
+async function loginNavidrome(url, username, password) {
+    if (!url || !username || !password) {
+        showToast('Navidrome URL, username, and password/token are required', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/platform-auth/navidrome/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, username, password })
+        });
+        if (!response.ok) {
+            const message = await response.text();
+            showToast(message || 'Navidrome login failed', 'error');
+            return;
+        }
+
+        const data = await response.json();
+        const auth = data?.navidrome || { url, username, connected: true };
+        setStatus('navidromeStatus', true);
+        renderNavidromeInfo(auth);
+        togglePlatformLoginState('navidrome', true);
+        showToast('Navidrome connected', 'success');
+    } catch (error) {
+        console.error('Navidrome login error:', error);
+        showToast('Network error while connecting to Navidrome', 'error');
+    }
+}
+
 async function savePlatformAuth(url, payload, statusElementId, isConnected) {
     try {
         const response = await fetch(url, {
@@ -4595,6 +4695,8 @@ function getPlatformIcon(platform) {
         case 'amazonmusic':
         case 'amazon':
             return '/images/icons/amazon-music.png';
+        case 'navidrome':
+            return '/images/icons/navidrome.png';
         default:
             return '/images/icons/deezer.png';
     }
@@ -4692,6 +4794,10 @@ function applyPlatformAuthState(url, data, payload, statusElementId, isConnected
         jellyfin: {
             matches: '/jellyfin',
             render: info => renderJellyfinInfo(info || {})
+        },
+        navidrome: {
+            matches: '/navidrome',
+            render: info => renderNavidromeInfo(info || {})
         },
         appleMusic: {
             matches: '/applemusic',
