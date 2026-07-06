@@ -338,7 +338,6 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             return new PlaylistRunResult(AbortedRun: false);
         }
 
-        var failFastAbort = false;
         var visited = new HashSet<string>(StringComparer.Ordinal);
         var processed = 0;
         var succeeded = 0;
@@ -346,16 +345,9 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         var skippedByBackoff = 0;
         var skippedByDelayWindow = 0;
         var skippedByLockBusy = 0;
-        var resolutionAttempts = 0;
-        var maxResolutionAttemptsPerRun = Math.Max(1, settings.WatchMaxTracksPerPlaylistCheck);
         while (activeItem != null)
         {
             stoppingToken.ThrowIfCancellationRequested();
-            if (resolutionAttempts >= maxResolutionAttemptsPerRun)
-            {
-                failFastAbort = true;
-                break;
-            }
             if (!visited.Add(activeItem.Key))
             {
                 break;
@@ -429,7 +421,6 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
             var remainingBudget = runQueueBudget?.GetRemaining() ?? int.MaxValue;
             var playlistResult = execution.PlaylistResult;
-            resolutionAttempts += Math.Max(1, playlistResult?.AttemptedTracks ?? 0);
             var queuedThisAttempt = playlistResult?.QueuedTracks ?? 0;
             if (playlistResult is { SystemicFailures: > 0 } systemicFailureResult)
             {
@@ -518,21 +509,18 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, attempts={Attempts}/{AttemptLimit}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, abort={Aborted}, elapsedMs={ElapsedMs:0}",
+                "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
                 playlistItems.Count,
                 processed,
                 succeeded,
                 failed,
-                resolutionAttempts,
-                maxResolutionAttemptsPerRun,
                 skippedByBackoff,
                 skippedByDelayWindow,
                 skippedByLockBusy,
-                failFastAbort,
                 elapsedMs);
         }
 
-        return new PlaylistRunResult(failFastAbort);
+        return new PlaylistRunResult(AbortedRun: false);
     }
 
     private static PlaylistAdvanceDecision ResolvePlaylistAdvanceDecision(

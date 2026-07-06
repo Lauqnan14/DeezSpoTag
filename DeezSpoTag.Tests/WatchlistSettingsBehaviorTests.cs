@@ -336,7 +336,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("ShouldKeepPlaylistActive", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("KeepActivePlaylist", serviceSource, StringComparison.Ordinal);
         Assert.Contains("RunBudget", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("ResolutionBudget", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolutionBudget", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.QueuedTracks <= 0)", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.KeepActivePlaylist)", hostedSource, StringComparison.Ordinal);
         Assert.Contains("IsBlockingPlaylistStopReason(result.QueueStopReason)", hostedSource, StringComparison.Ordinal);
@@ -358,9 +358,26 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("ResolveQueueFailureMessage", source, StringComparison.Ordinal);
         Assert.Contains("ResolveQueueStopStatus", source, StringComparison.Ordinal);
         Assert.Contains("queue_budget_reached", source, StringComparison.Ordinal);
-        Assert.Contains("resolution_budget_reached", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("resolution_budget_reached", source, StringComparison.Ordinal);
         Assert.Contains("track_queue_deferred", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Playlist reconciled with queue failures.", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistTrackStatus_UsesLiveQueueForQueueFailureDisplay()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+
+        Assert.Contains("var queueState = ResolveQueueLocationStatus(NormalizeStatusText(queueTask?.Status));", source, StringComparison.Ordinal);
+        Assert.Contains("\"failed\" => new PlaylistTrackLocationStatus(\"failed\", \"Failed\", \"Queued download failed.\")", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("var queueState = ResolveQueueLocationStatus(normalized);", source, StringComparison.Ordinal);
+        Assert.Contains("return new PlaylistTrackLocationStatus(\"missing\", \"Missing\", \"Not downloaded and not currently queued.\");", source, StringComparison.Ordinal);
     }
 
     [Fact]

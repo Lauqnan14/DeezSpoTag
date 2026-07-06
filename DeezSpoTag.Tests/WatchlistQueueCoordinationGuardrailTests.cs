@@ -59,13 +59,15 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void PlaylistWatchQueue_UsesResolutionAttemptBudgetSeparateFromQueueBudget()
+    public void PlaylistWatchQueue_DoesNotUseResolutionAttemptBudgetAsQueueGate()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
 
-        Assert.Contains("watchSettings.WatchMaxTracksPerPlaylistCheck", watchSource, StringComparison.Ordinal);
-        Assert.Contains("attemptedCount >= maxResolutionAttempts", watchSource, StringComparison.Ordinal);
-        Assert.Contains("watch queue reached resolution-attempt budget", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("attemptedCount >= maxResolutionAttempts", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("watch queue reached resolution-attempt budget", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("resolutionAttempts", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("WatchMaxTracksPerPlaylistCheck", hostedSource, StringComparison.Ordinal);
     }
 
     [Fact]

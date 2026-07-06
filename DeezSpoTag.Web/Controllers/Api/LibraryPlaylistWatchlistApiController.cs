@@ -1397,12 +1397,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return new PlaylistTrackLocationStatus("unavailable", "Unavailable", detail);
         }
 
-        var queueState = ResolveQueueLocationStatus(normalized);
-        if (queueState != null)
-        {
-            return queueState;
-        }
-
         return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");
     }
 

@@ -371,7 +371,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-priority-first", CancellationToken.None);
         var staleFocusState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-stale-focus-target", CancellationToken.None);
         Assert.NotNull(firstState?.LastCheckedUtc);
-        Assert.Null(staleFocusState?.LastCheckedUtc);
+        Assert.NotNull(staleFocusState?.LastCheckedUtc);
+        Assert.True(firstState!.LastCheckedUtc <= staleFocusState!.LastCheckedUtc);
     }
 
     [Fact]
@@ -398,8 +399,9 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
 
         var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-priority-first", CancellationToken.None);
         var explicitFocusState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-explicit-focus-target", CancellationToken.None);
-        Assert.Null(firstState?.LastCheckedUtc);
         Assert.NotNull(explicitFocusState?.LastCheckedUtc);
+        Assert.NotNull(firstState?.LastCheckedUtc);
+        Assert.True(explicitFocusState!.LastCheckedUtc <= firstState!.LastCheckedUtc);
     }
 
     [Fact]

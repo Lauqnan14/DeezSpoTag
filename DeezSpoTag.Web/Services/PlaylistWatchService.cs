@@ -240,7 +240,6 @@ public sealed class PlaylistWatchService
         DownloadGate,
         PreviousWatchlistRunActive,
         RunBudget,
-        ResolutionBudget,
         TrackDeferred,
         SystemicFailure,
         Completed,
@@ -1250,9 +1249,13 @@ public sealed class PlaylistWatchService
             return queueResult.StopReason switch
             {
                 WatchQueueStopReason.RunBudget => $"Queued {queueResult.QueuedCount} track(s); run budget reached.",
-                WatchQueueStopReason.ResolutionBudget => $"Queued {queueResult.QueuedCount} track(s); resolution budget reached.",
                 _ => $"Queued {queueResult.QueuedCount} missing track(s)."
             };
+        }
+
+        if (queueResult.FailedCount > 0)
+        {
+            return ResolveQueueFailureMessage(queueResult);
         }
 
         if (queueResult.Deferred)
@@ -1263,7 +1266,6 @@ public sealed class PlaylistWatchService
                 WatchQueueStopReason.DownloadGate => "Waiting for download/enrichment gate to clear.",
                 WatchQueueStopReason.PreviousWatchlistRunActive => "Waiting for downloads from the previous watchlist run to finish.",
                 WatchQueueStopReason.RunBudget => "Watchlist run budget reached.",
-                WatchQueueStopReason.ResolutionBudget => "Resolution budget reached before more tracks could be queued.",
                 WatchQueueStopReason.TrackDeferred => "Track queueing deferred by download gate.",
                 _ => "Playlist queue deferred."
             };
@@ -1402,11 +1404,6 @@ public sealed class PlaylistWatchService
         PlaylistSyncResult? syncResult,
         bool success)
     {
-        if (queueResult.Deferred)
-        {
-            return ResolveQueueStopStatus(queueResult.StopReason);
-        }
-
         if (!success)
         {
             if (IsTerminalPlaylistSyncFailure(syncResult))
@@ -1414,6 +1411,16 @@ public sealed class PlaylistWatchService
                 return "sync_configuration_error";
             }
 
+            if (queueResult.FailedCount > 0)
+            {
+                return FailedStatus;
+            }
+
+            return ResolveQueueStopStatus(queueResult.StopReason);
+        }
+
+        if (queueResult.Deferred)
+        {
             return ResolveQueueStopStatus(queueResult.StopReason);
         }
 
@@ -1461,7 +1468,6 @@ public sealed class PlaylistWatchService
             WatchQueueStopReason.DownloadGate => "media_sync_deferred_queue_active",
             WatchQueueStopReason.PreviousWatchlistRunActive => "queue_deferred_previous_watchlist_active",
             WatchQueueStopReason.RunBudget => "queue_budget_reached",
-            WatchQueueStopReason.ResolutionBudget => "resolution_budget_reached",
             WatchQueueStopReason.TrackDeferred => "track_queue_deferred",
             WatchQueueStopReason.SystemicFailure => "source_failure",
             WatchQueueStopReason.TrackFailures => FailedStatus,
@@ -3414,7 +3420,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var failedCount = 0;
         var unavailableCount = 0;
         var attemptedCount = 0;
-        var maxResolutionAttempts = Math.Max(1, watchSettings.WatchMaxTracksPerPlaylistCheck);
         var systemicFailureCount = 0;
         string? firstSystemicFailureFingerprint = null;
         string? firstFailureMessage = null;
@@ -3427,20 +3432,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var track = trackList[index];
-                if (attemptedCount >= maxResolutionAttempts)
-                {
-                    deferred = true;
-                    stopReason = WatchQueueStopReason.ResolutionBudget;
-                    if (_logger.IsEnabled(LogLevel.Information))
-                    {
-                        _logger.LogInformation(
-                            "{Source} watch queue reached resolution-attempt budget. attempts={Attempts}, limit={Limit}",
-                            options.SourceLabel,
-                            attemptedCount,
-                            maxResolutionAttempts);
-                    }
-                    break;
-                }
                 if (!_watchlistRunQueueBudget.TryReserve(1))
                 {
                     var queueBlockReason = _watchlistRunQueueBudget.GetBlockReason();
