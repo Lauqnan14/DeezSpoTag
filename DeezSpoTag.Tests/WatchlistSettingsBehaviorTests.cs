@@ -364,6 +364,25 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void PlaylistWatch_MirrorSyncDoesNotBlockMissingTrackQueueing()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var watchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
+        var postDownloadSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
+
+        Assert.DoesNotContain("ShouldBlockUnsafeMirrorSync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Mirror sync blocked because", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"sync_incomplete\"", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"sync_failed\"", watchSource, StringComparison.Ordinal);
+        Assert.Contains("\"waiting_for_downloads\"", watchSource, StringComparison.Ordinal);
+        Assert.Contains("\"waiting_for_target_sync\"", watchSource, StringComparison.Ordinal);
+        Assert.Contains("queueResult.FailedCount == 0 && !IsTerminalPlaylistSyncFailure(syncResult)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("IsFinalizedTrackSyncedAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("status.SyncStatus, \"playlist_synced\"", postDownloadSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistSync_AppliesCurrentArtworkAccordingToPreference()
     {
         var repoRoot = ResolveRepoRoot();

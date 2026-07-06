@@ -1019,20 +1019,6 @@ public sealed class PlaylistSyncService
                 cancellationToken);
         }
 
-        if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
-        {
-            _logger.LogWarning(
-                "Blocked unsafe Plex mirror sync for playlist {Source}:{SourceId}. sourceTracks={SourceTracks}, localMatches={LocalMatches}, targetMatches={TargetMatches}",
-                playlist.Source,
-                playlist.SourceId,
-                matchSummary.SourceTracks,
-                matchSummary.LocalMatches,
-                matchSummary.TargetMatches);
-            return BuildFailedResult(
-                BuildSyncMessage("Mirror sync blocked because the target server sees fewer tracks than the local library.", matchSummary),
-                matchSummary);
-        }
-
         var playlistId = await _plexApiClient.CreateOrUpdatePlaylistAsync(
             plex.Url,
             plex.Token,
@@ -1131,20 +1117,6 @@ public sealed class PlaylistSyncService
                 existingPlaylistId,
                 jellyfinMatches,
                 cancellationToken);
-        }
-
-        if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
-        {
-            _logger.LogWarning(
-                "Blocked unsafe Jellyfin mirror sync for playlist {Source}:{SourceId}. sourceTracks={SourceTracks}, localMatches={LocalMatches}, targetMatches={TargetMatches}",
-                playlist.Source,
-                playlist.SourceId,
-                matchSummary.SourceTracks,
-                matchSummary.LocalMatches,
-                matchSummary.TargetMatches);
-            return BuildFailedResult(
-                BuildSyncMessage("Mirror sync blocked because the target server sees fewer tracks than the local library.", matchSummary),
-                matchSummary);
         }
 
         var playlistId = string.IsNullOrWhiteSpace(existingPlaylistId)
@@ -1262,13 +1234,6 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
-        if (!appendMissingOnly && ShouldBlockUnsafeMirrorSync(matchSummary))
-        {
-            return BuildFailedResult(
-                BuildSyncMessage("Mirror sync blocked because Navidrome sees fewer tracks than the local library.", matchSummary),
-                matchSummary);
-        }
-
         var playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
             navidrome.Url,
             navidrome.Username,
@@ -1410,13 +1375,6 @@ public sealed class PlaylistSyncService
         }
 
         return await ReplaceJellyfinPlaylistItemsAsync(url, apiKey, userId, playlistId, itemIds, entries, cancellationToken);
-    }
-
-    private static bool ShouldBlockUnsafeMirrorSync(SyncMatchSummary matchSummary)
-    {
-        return matchSummary.LocalMatches > 0
-               && matchSummary.TargetMatches > 0
-               && matchSummary.TargetMatches < matchSummary.LocalMatches;
     }
 
     private static string? ResolveExistingTargetPlaylistId(PlaylistWatchPreferenceDto? preference, string service)

@@ -90,7 +90,7 @@ public sealed class QobuzResolutionGuardrailTests
     }
 
     [Fact]
-    public void TidalAtmosSecondaryQueue_IsProofOnly()
+    public void TidalAtmosSecondaryQueue_UsesResolvedAtmosTrackOnly()
     {
         var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
         var tidalAtmosMethodStart = downloadIntentService.IndexOf(
@@ -104,8 +104,10 @@ public sealed class QobuzResolutionGuardrailTests
 
         var tidalAtmosMethod = downloadIntentService[tidalAtmosMethodStart..nextMethodStart];
 
-        Assert.Contains("ResolveAtmosTrackUrlAsync", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("ResolveAtmosTrackAsync", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.Contains("if (string.IsNullOrWhiteSpace(tidalAtmosUrl))", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("payload.Isrc = FirstNonEmpty(resolvedAtmosTrack?.Isrc, request.Intent.Isrc)", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album)", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveIntentAsync", tidalAtmosMethod, StringComparison.Ordinal);
     }
 

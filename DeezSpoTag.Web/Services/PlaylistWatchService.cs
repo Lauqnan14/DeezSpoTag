@@ -636,22 +636,9 @@ public sealed class PlaylistWatchService
                 queueResult.Deferred);
         }
 
-        var success = queueResult.FailedCount == 0;
-        if (syncResult is { Success: false }
-            || syncResult is { MissingTracks: > 0 })
-        {
-            success = false;
-        }
-        var syncIncomplete = syncResult is { Success: true, MissingTracks: > 0 };
-        var syncFailed = syncResult is { Success: false };
-        var runStatus = syncIncomplete
-            ? "sync_incomplete"
-            : syncFailed
-                ? "sync_failed"
-                : ResolvePlaylistRunStatus(queueResult, success);
-        var reconciliationMessage = syncIncomplete || syncFailed
-            ? syncResult!.Message
-            : ResolveReconciliationMessage(queueResult, success);
+        var success = queueResult.FailedCount == 0 && !IsTerminalPlaylistSyncFailure(syncResult);
+        var runStatus = ResolvePlaylistRunStatus(queueResult, syncResult, success);
+        var reconciliationMessage = ResolveReconciliationMessage(queueResult, syncResult, success);
         await TouchPlaylistWatchStateAsync(
             source,
             sourceId,
@@ -1253,7 +1240,10 @@ public sealed class PlaylistWatchService
     private static string NormalizeReasonCode(string? reasonCode)
         => string.IsNullOrWhiteSpace(reasonCode) ? string.Empty : reasonCode.Trim().ToLowerInvariant();
 
-    private static string ResolveReconciliationMessage(QueueWatchResult queueResult, bool success)
+    private static string ResolveReconciliationMessage(
+        QueueWatchResult queueResult,
+        PlaylistSyncResult? syncResult,
+        bool success)
     {
         if (queueResult.QueuedCount > 0)
         {
@@ -1287,6 +1277,21 @@ public sealed class PlaylistWatchService
         if (queueResult.UnavailableCount > 0 && queueResult.FailedCount == 0)
         {
             return $"{queueResult.UnavailableCount} track(s) unavailable from enabled sources; retry scheduled.";
+        }
+
+        if (syncResult is { Success: true, MissingTracks: > 0 })
+        {
+            return syncResult.Message;
+        }
+
+        if (IsTerminalPlaylistSyncFailure(syncResult))
+        {
+            return syncResult!.Message;
+        }
+
+        if (syncResult is { Success: false } && queueResult.FailedCount == 0)
+        {
+            return string.Concat("Waiting for playlist sync readiness. ", syncResult.Message);
         }
 
         return success
@@ -1392,14 +1397,61 @@ public sealed class PlaylistWatchService
         return CompletedStatus;
     }
 
-    private static string ResolvePlaylistRunStatus(QueueWatchResult queueResult, bool success)
+    private static string ResolvePlaylistRunStatus(
+        QueueWatchResult queueResult,
+        PlaylistSyncResult? syncResult,
+        bool success)
     {
         if (queueResult.Deferred)
         {
             return ResolveQueueStopStatus(queueResult.StopReason);
         }
 
-        return success ? CompletedStatus : ResolveQueueStopStatus(queueResult.StopReason);
+        if (!success)
+        {
+            if (IsTerminalPlaylistSyncFailure(syncResult))
+            {
+                return "sync_configuration_error";
+            }
+
+            return ResolveQueueStopStatus(queueResult.StopReason);
+        }
+
+        if (queueResult.QueuedCount > 0)
+        {
+            return QueuedStatus;
+        }
+
+        if (queueResult.UnavailableCount > 0)
+        {
+            return UnavailableStatus;
+        }
+
+        if (syncResult is { Success: true, MissingTracks: > 0 })
+        {
+            return "waiting_for_downloads";
+        }
+
+        if (syncResult is { Success: false })
+        {
+            return "waiting_for_target_sync";
+        }
+
+        return CompletedStatus;
+    }
+
+    private static bool IsTerminalPlaylistSyncFailure(PlaylistSyncResult? syncResult)
+    {
+        if (syncResult is null || syncResult.Success)
+        {
+            return false;
+        }
+
+        return string.Equals(syncResult.Message, "Playlist not available.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "No target server selected.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "Playlist sync target is disabled.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "Unsupported playlist sync target.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ResolveQueueStopStatus(WatchQueueStopReason stopReason)

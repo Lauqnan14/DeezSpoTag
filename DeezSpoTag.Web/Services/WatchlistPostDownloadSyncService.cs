@@ -262,14 +262,14 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 cancellationToken,
                 forceMediaServerSync: true);
 
-            if (reconciliationResult.SyncResult is { Success: true, MissingTracks: 0 })
+            if (await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, cancellationToken))
             {
                 await AddPlaylistSyncHistoryAsync(
                     repository,
                     playlist,
                     "media_sync_completed",
                     cancellationToken);
-                LogSyncCompleted(request, attempt, reconciliationResult.SyncResult.SyncedTracks);
+                LogSyncCompleted(request, attempt, reconciliationResult.SyncResult?.SyncedTracks ?? 0);
                 return true;
             }
 
@@ -311,6 +311,21 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             || string.Equals(syncResult.Message, "Playlist sync target is disabled.", StringComparison.OrdinalIgnoreCase)
             || string.Equals(syncResult.Message, "Unsupported playlist sync target.", StringComparison.OrdinalIgnoreCase)
             || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<bool> IsFinalizedTrackSyncedAsync(
+        LibraryRepository repository,
+        PlaylistWatchlistDto playlist,
+        string trackId,
+        CancellationToken cancellationToken)
+    {
+        var statuses = await repository.GetPlaylistWatchTrackStatusesAsync(
+            playlist.Source,
+            playlist.SourceId,
+            cancellationToken);
+        return statuses.Any(status =>
+            string.Equals(status.TrackSourceId, trackId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(status.SyncStatus, "playlist_synced", StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task AddPlaylistSyncHistoryAsync(
