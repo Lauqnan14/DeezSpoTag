@@ -765,7 +765,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 $"onetagger_autotag: shazam could not identify {Path.GetFileName(context.File)}; continuing with {context.Platform}");
         }
 
-        var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);
+        var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
+            ? validationInfo
+            : info;
+        var match = await ResolvePlatformMatchAsync(context, matchInfo, usedShazamForStatus);
         if (match == null)
         {
             EmitSkippedStatus(context, "no match", usedShazamForStatus);

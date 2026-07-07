@@ -86,7 +86,7 @@ public sealed class ShazamMatcher
             Artists = artists,
             Album = ResolveAlbum(recognized, info, resolvedConfig),
             Duration = ResolveDuration(recognized, info),
-            Isrc = FirstNonEmpty(recognized.Isrc, info.Isrc),
+            Isrc = recognized.Isrc,
             Url = recognized.Url,
             TrackId = recognized.TrackId,
             ReleaseId = recognized.TrackId,

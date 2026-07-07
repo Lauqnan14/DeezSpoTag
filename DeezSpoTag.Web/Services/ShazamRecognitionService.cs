@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Web.Services.AutoTag;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -18,7 +20,7 @@ public sealed class ShazamRecognitionService : IDisposable
     private static readonly TimeSpan RuntimeProbeSuccessCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RuntimeProbeFailureRetryTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
-    private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 14, 18];
+    private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 12, 14, 18];
     private const bool UseSearchAssistedFallbackAfterAudioOnlyMiss = true;
     private const string ToolsDirectory = "Tools";
     private const string ShazamPortDirectory = "shazam_port";
@@ -124,6 +126,7 @@ public sealed class ShazamRecognitionService : IDisposable
         }
 
         ShazamRecognitionAttempt? firstRecognizerFailure = null;
+        var audioOnlyMatches = new List<ShazamRecognitionAttempt>();
         foreach (var attempt in AudioOnlySignatureRetryWindowsSeconds.Select(signatureWindowSeconds => RecognizeWithDetails(
                      filePath,
                      signatureWindowSeconds: signatureWindowSeconds,
@@ -132,7 +135,8 @@ public sealed class ShazamRecognitionService : IDisposable
         {
             if (attempt.Matched)
             {
-                return attempt;
+                audioOnlyMatches.Add(attempt);
+                continue;
             }
 
             if (attempt.Outcome == ShazamRecognitionOutcome.RecognizerUnavailable)
@@ -145,6 +149,21 @@ public sealed class ShazamRecognitionService : IDisposable
             {
                 firstRecognizerFailure = attempt;
             }
+        }
+
+        var selectedAudioOnlyMatch = SelectBestAudioOnlyAttempt(audioOnlyMatches);
+        if (selectedAudioOnlyMatch != null)
+        {
+            return selectedAudioOnlyMatch;
+        }
+
+        if (audioOnlyMatches.Count > 0)
+        {
+            return new ShazamRecognitionAttempt
+            {
+                Outcome = ShazamRecognitionOutcome.NoMatch,
+                Error = "Conflicting Shazam fingerprint results."
+            };
         }
 
         if (UseSearchAssistedFallbackAfterAudioOnlyMiss)
@@ -160,6 +179,117 @@ public sealed class ShazamRecognitionService : IDisposable
         {
             Outcome = ShazamRecognitionOutcome.NoMatch
         };
+    }
+
+    private static ShazamRecognitionAttempt? SelectBestAudioOnlyAttempt(IReadOnlyList<ShazamRecognitionAttempt> attempts)
+    {
+        var matches = attempts
+            .Where(attempt => attempt.Matched && attempt.Recognition != null)
+            .Select(attempt => new FingerprintCandidate(attempt, BuildFingerprintIdentity(attempt.Recognition!)))
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.Identity))
+            .ToList();
+        if (matches.Count == 0)
+        {
+            return null;
+        }
+
+        var groups = matches
+            .GroupBy(candidate => candidate.Identity, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new FingerprintCandidateGroup(
+                group.Key,
+                group.Count(),
+                group.Select(candidate => candidate.Attempt).OrderByDescending(ScoreFingerprintAttempt).First()))
+            .OrderByDescending(group => group.Count)
+            .ThenByDescending(group => ScoreFingerprintAttempt(group.BestAttempt))
+            .ToList();
+        if (groups.Count == 1)
+        {
+            AddFingerprintSelectionAudit(groups[0].BestAttempt, groups[0].Count, matches.Count, false);
+            return groups[0].BestAttempt;
+        }
+
+        var best = groups[0];
+        var next = groups[1];
+        if (best.Count > next.Count || HasShazamIsrc(best.BestAttempt) != HasShazamIsrc(next.BestAttempt))
+        {
+            AddFingerprintSelectionAudit(best.BestAttempt, best.Count, matches.Count, true);
+            return best.BestAttempt;
+        }
+
+        return null;
+    }
+
+    private static string BuildFingerprintIdentity(ShazamRecognitionInfo recognition)
+    {
+        var trackId = FirstNonEmpty(recognition.TrackId, ParseTrackId(recognition.Url));
+        if (!string.IsNullOrWhiteSpace(trackId))
+        {
+            return $"id:{trackId}";
+        }
+
+        var artist = FirstNonEmpty(recognition.Artist, recognition.Artists.FirstOrDefault());
+        var title = AutoTagSimilarity.NormalizeText(recognition.Title ?? string.Empty);
+        var normalizedArtist = AutoTagSimilarity.NormalizeText(artist ?? string.Empty);
+        return string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(normalizedArtist)
+            ? string.Empty
+            : $"text:{title}|{normalizedArtist}";
+    }
+
+    private static int ScoreFingerprintAttempt(ShazamRecognitionAttempt attempt)
+    {
+        var recognition = attempt.Recognition;
+        if (recognition == null)
+        {
+            return 0;
+        }
+
+        var score = 0;
+        if (!string.IsNullOrWhiteSpace(recognition.Isrc))
+        {
+            score += 20;
+        }
+
+        if (!string.IsNullOrWhiteSpace(recognition.TrackId))
+        {
+            score += 10;
+        }
+
+        if (!string.IsNullOrWhiteSpace(recognition.Url))
+        {
+            score += 5;
+        }
+
+        if (recognition.Artists.Any(value => !string.IsNullOrWhiteSpace(value)))
+        {
+            score += 3;
+        }
+
+        if (!string.IsNullOrWhiteSpace(recognition.Album))
+        {
+            score += 2;
+        }
+
+        return score;
+    }
+
+    private static bool HasShazamIsrc(ShazamRecognitionAttempt attempt)
+        => !string.IsNullOrWhiteSpace(attempt.Recognition?.Isrc);
+
+    private static void AddFingerprintSelectionAudit(
+        ShazamRecognitionAttempt attempt,
+        int selectedIdentityCount,
+        int totalMatchCount,
+        bool hadConflict)
+    {
+        var recognition = attempt.Recognition;
+        if (recognition == null)
+        {
+            return;
+        }
+
+        recognition.Tags["SHAZAM_FINGERPRINT_SELECTED_COUNT"] = new List<string> { selectedIdentityCount.ToString(CultureInfo.InvariantCulture) };
+        recognition.Tags["SHAZAM_FINGERPRINT_TOTAL_MATCHES"] = new List<string> { totalMatchCount.ToString(CultureInfo.InvariantCulture) };
+        recognition.Tags["SHAZAM_FINGERPRINT_HAD_CONFLICT"] = new List<string> { hadConflict ? "true" : "false" };
     }
 
     private ShazamRecognitionAttempt? RecognizeWithSearchAssistedFallback(string filePath, CancellationToken cancellationToken)
@@ -1589,6 +1719,8 @@ public sealed class ShazamRecognitionService : IDisposable
         Unavailable
     }
 
+    private sealed record FingerprintCandidate(ShazamRecognitionAttempt Attempt, string Identity);
+    private sealed record FingerprintCandidateGroup(string Identity, int Count, ShazamRecognitionAttempt BestAttempt);
     private sealed record ScoredCard(ShazamTrackCard Card, double Score, bool IsIsrcExact);
     private sealed record RecognizerRuntimeProbe(bool IsAvailable, string? Error);
 }

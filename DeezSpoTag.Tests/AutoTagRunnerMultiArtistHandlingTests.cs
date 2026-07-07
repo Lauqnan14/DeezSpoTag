@@ -327,6 +327,51 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
     }
 
     [Fact]
+    public void EvaluateGlobalMismatchGuard_RejectsWrongShazamFingerprintBeforeWrite()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "One Girl",
+            Artist = "Bigpin",
+            Artists = new List<string> { "Bigpin" },
+            Album = "Jatelo's Singles",
+            DurationSeconds = 206,
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Accuracy = 1,
+            Track = new AutoTagTrack
+            {
+                Title = "Paijo",
+                Artists = new List<string> { "Bigpin" },
+                Album = "Jatelo's Singles",
+                Duration = TimeSpan.FromSeconds(206),
+                TrackId = "672163252",
+                ReleaseId = "672163252",
+                Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["SHAZAM_MATCH_STRATEGY"] = new() { "FINGERPRINT" },
+                    ["SHAZAM_TITLE_SIMILARITY"] = new() { "1.000" },
+                    ["SHAZAM_ARTIST_SIMILARITY"] = new() { "1.000" }
+                }
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.StartsWith("match rejected by quality guard (title similarity ", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void NormalizeTrackArtistsForTagging_UsesUnknownArtist_WhenIncomingArtistsAreMissing()
     {
         var track = new AutoTagTrack

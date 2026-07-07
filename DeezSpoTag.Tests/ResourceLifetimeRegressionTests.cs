@@ -84,6 +84,66 @@ public sealed class ResourceLifetimeRegressionTests
     }
 
     [Fact]
+    public void ShazamRecognizer_SelectsRepeatedFingerprintOverFirstConflictingHit()
+    {
+        var attempts = new List<ShazamRecognitionAttempt>
+        {
+            MatchedShazamAttempt("672163252", "Paijo", "Ufuk KAPLAN", null),
+            MatchedShazamAttempt("270857053", "One Girl", "Bigpin", "TCAFP2115582"),
+            MatchedShazamAttempt("270857053", "One Girl", "Bigpin", "TCAFP2115582")
+        };
+        var method = typeof(ShazamRecognitionService).GetMethod(
+            "SelectBestAudioOnlyAttempt",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("SelectBestAudioOnlyAttempt not found.");
+
+        var selected = Assert.IsType<ShazamRecognitionAttempt>(method.Invoke(null, [attempts]));
+
+        Assert.Equal("270857053", selected.Recognition?.TrackId);
+        Assert.Equal("One Girl", selected.Recognition?.Title);
+        Assert.Equal("2", Assert.Single(selected.Recognition!.Tags["SHAZAM_FINGERPRINT_SELECTED_COUNT"]));
+        Assert.Equal("3", Assert.Single(selected.Recognition.Tags["SHAZAM_FINGERPRINT_TOTAL_MATCHES"]));
+        Assert.Equal("true", Assert.Single(selected.Recognition.Tags["SHAZAM_FINGERPRINT_HAD_CONFLICT"]));
+    }
+
+    [Fact]
+    public void ShazamRecognizer_RejectsConflictingSingletonFingerprintsWithoutIndependentIsrc()
+    {
+        var attempts = new List<ShazamRecognitionAttempt>
+        {
+            MatchedShazamAttempt("111", "Wrong One", "Artist A", null),
+            MatchedShazamAttempt("222", "Wrong Two", "Artist B", null)
+        };
+        var method = typeof(ShazamRecognitionService).GetMethod(
+            "SelectBestAudioOnlyAttempt",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("SelectBestAudioOnlyAttempt not found.");
+
+        var selected = method.Invoke(null, [attempts]);
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
+    public void ShazamRecognizer_PrefersIndependentIsrcWhenFingerprintCountsTie()
+    {
+        var attempts = new List<ShazamRecognitionAttempt>
+        {
+            MatchedShazamAttempt("672163252", "Paijo", "Ufuk KAPLAN", null),
+            MatchedShazamAttempt("270857053", "One Girl", "Bigpin", "TCAFP2115582")
+        };
+        var method = typeof(ShazamRecognitionService).GetMethod(
+            "SelectBestAudioOnlyAttempt",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("SelectBestAudioOnlyAttempt not found.");
+
+        var selected = Assert.IsType<ShazamRecognitionAttempt>(method.Invoke(null, [attempts]));
+
+        Assert.Equal("270857053", selected.Recognition?.TrackId);
+        Assert.Equal("TCAFP2115582", selected.Recognition?.Isrc);
+    }
+
+    [Fact]
     public void ActiveStaticCaches_HaveExplicitResourceCaps()
     {
         var repoRoot = FindRepoRoot();
@@ -140,4 +200,19 @@ public sealed class ResourceLifetimeRegressionTests
 
         throw new DirectoryNotFoundException("Repository root not found.");
     }
+
+    private static ShazamRecognitionAttempt MatchedShazamAttempt(string trackId, string title, string artist, string? isrc)
+        => new()
+        {
+            Outcome = ShazamRecognitionOutcome.Matched,
+            Recognition = new ShazamRecognitionInfo
+            {
+                TrackId = trackId,
+                Title = title,
+                Artist = artist,
+                Artists = new List<string> { artist },
+                Isrc = isrc,
+                Url = $"https://www.shazam.com/track/{trackId}/{title.Replace(' ', '-').ToLowerInvariant()}"
+            }
+        };
 }

@@ -342,6 +342,21 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
+    public void ShazamFingerprintMatching_UsesOriginalFileIdentityForValidation()
+    {
+        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var matcherSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "ShazamMatcher.cs");
+
+        Assert.Contains("var validationInfo = CloneAudioInfo(info);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("Isrc = recognized.Isrc,", matcherSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Isrc = FirstNonEmpty(recognized.Isrc, info.Isrc)", matcherSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LibraryWideEnhancement_UsesFortyFileBatchesWithoutTargetFilePath()
     {
         var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
