@@ -31,6 +31,7 @@ public sealed class TracklistUnmatchedRowsGuardrailTests
         Assert.Contains("return normalized === 'recommendations' ? 'deezer' : (normalized || 'deezer');", view, StringComparison.Ordinal);
         Assert.Contains("const playbackSource = normalizeTrackRowPlaybackSource(requestSource || tracklistSource || 'deezer');", view, StringComparison.Ordinal);
         Assert.Contains("'recommendations'", view, StringComparison.Ordinal);
+        Assert.Contains("externalSource !== 'deezer' && !isRecommendationTracklistContext()", view, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] relativeParts)

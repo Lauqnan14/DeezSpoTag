@@ -3297,7 +3297,7 @@ function renderTracklist(data, options = {}) {
     scheduleAvailabilityChecks(tracks, isLocalSource);
 
     const externalSource = (tracklistSource || '').toLowerCase();
-    if (externalSource && externalSource !== 'deezer') {
+    if (externalSource && externalSource !== 'deezer' && !isRecommendationTracklistContext()) {
         scheduleExternalTracklistMatches(tracks, externalSource);
     }
 
