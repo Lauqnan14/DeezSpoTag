@@ -34,6 +34,21 @@ public sealed class TracklistUnmatchedRowsGuardrailTests
         Assert.Contains("externalSource !== 'deezer' && !isRecommendationTracklistContext()", view, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Monitored_playlist_ignore_control_uses_dedicated_column()
+    {
+        var view = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
+
+        Assert.Contains("function shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource)", view, StringComparison.Ordinal);
+        Assert.Contains("+ (shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource) ? 1 : 0)", view, StringComparison.Ordinal);
+        Assert.Contains("${shouldShowIgnore ? '<col class=\"col-ignore\">' : ''}", view, StringComparison.Ordinal);
+        Assert.Contains("${shouldShowIgnore ? `<th class=\"track-ignore\"><span class=\"track-ignore-toggle ${ignoreToggleClass}\" title=\"${ignoreToggleTitle}\">Ignore</span></th>` : ''}", view, StringComparison.Ordinal);
+        Assert.Contains("${shouldShowIgnore ? `<td class=\"track-ignore\">", view, StringComparison.Ordinal);
+        Assert.Contains("setIgnoreVisibility(true);", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("setIgnoreVisibility(false);\n        } else {\n            applyDefaultMonitorState(false);", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("tracks-table--with-ignore col.col-actions { width: 168px; }", view, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] relativeParts)
     {
         var root = AppContext.BaseDirectory;

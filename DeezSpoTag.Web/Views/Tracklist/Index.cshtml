@@ -364,6 +364,7 @@
 .tracks-table col.col-availability { width: 240px; }
 .tracks-table col.col-location-status { width: 150px; }
 .tracks-table col.col-actions { width: 72px; }
+.tracks-table col.col-ignore { width: 92px; }
 .tracks-table col.col-quick-download { width: 64px; }
 .tracks-table.tracks-table--playlistlike col.col-title { width: 360px; }
 .tracks-table.tracks-table--podcast {
@@ -378,8 +379,7 @@
 .tracks-table.tracks-table--with-ignore {
     min-width: 1200px;
 }
-.tracks-table.tracks-table--with-ignore col.col-actions { width: 168px; }
-.tracks-table.tracks-table--podcast.tracks-table--with-ignore col.col-actions { width: 146px; }
+.tracks-table.tracks-table--podcast.tracks-table--with-ignore col.col-ignore { width: 84px; }
 .tracks-table.tracks-table--podcast .track-number {
     width: 26px;
 }
@@ -419,6 +419,13 @@
 .tracks-table td.track-actions {
     padding-left: 8px;
     padding-right: 8px;
+}
+
+.tracks-table th.track-ignore,
+.tracks-table td.track-ignore {
+    padding-left: 8px;
+    padding-right: 8px;
+    text-align: center;
 }
 
 .tracks-table th.track-quick-download,
@@ -1307,8 +1314,11 @@
         display: none;
     }
 
-    /* Hide ignore button on mobile to save space */
-    .track-ignore-btn,
+    .tracks-table col.col-ignore { width: 0; }
+    .tracks-table .track-ignore {
+        display: none;
+    }
+
     .track-recommendation-reject-btn {
         display: none;
     }
@@ -4646,7 +4656,7 @@ async function updateMonitorButtonState() {
             if (headerActions) {
                 headerActions.style.display = '';
             }
-            setIgnoreVisibility(false);
+            setIgnoreVisibility(true);
         } else {
             applyDefaultMonitorState(false);
         }
@@ -4880,7 +4890,7 @@ if (monitorButton) {
             if (headerActions) {
                 headerActions.style.display = '';
             }
-            setIgnoreVisibility(false);
+            setIgnoreVisibility(true);
         } catch (error) {
             monitorMutationInFlight = false;
             await updateMonitorButtonState();
@@ -4901,7 +4911,12 @@ function getTracklistColumnCount(isPlaylistLike, isLocalSource) {
     return base
         + (shouldShowMonitoredStateColumn(isLocalSource) ? 1 : 0)
         + (shouldShowAvailabilityColumn(isLocalSource) ? 1 : 0)
+        + (shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource) ? 1 : 0)
         + (shouldShowQuickDownloadColumn(isLocalSource) ? 1 : 0);
+}
+
+function shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource) {
+    return Boolean(isPlaylistLike && !isLocalSource && currentTracklistMeta?.source && currentTracklistMeta?.sourceId);
 }
 
 function shouldShowMonitoredStateColumn(isLocalSource) {
@@ -5817,8 +5832,8 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         }
     });
 
-    const shouldShowIgnore = isPlaylistLike && !isLocalSource && currentTracklistMeta?.source && watchlistIgnoreEnabled;
-    const ignoreToggleClass = shouldShowIgnore ? '' : 'is-hidden';
+    const shouldShowIgnore = shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource);
+    const ignoreToggleClass = shouldShowIgnore && watchlistIgnoreEnabled ? '' : 'is-hidden';
     const isSpotifyExternalSource = playbackSource === 'spotify';
     const isBoomplayExternalSource = playbackSource === 'boomplay';
     const isRecommendationSource = isRecommendationTracklistContext();
@@ -5977,13 +5992,15 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                            data-track-is-video="${track.isVideo ? 'true' : 'false'}"
                            data-track-duration-ms="${durationSeconds > 0 ? durationSeconds * 1000 : 0}"
                            data-track-position="${track.track_position || index + 1}"${checkboxDisabledAttr}>`}
-                    <button class="track-ignore-btn ${ignoreToggleClass}" type="button"
-                        data-ignore-track-id="${track.id}"
-                        data-ignore-track-isrc="${escapeHtml(track.isrc || '')}"
-                        title="${isPodcastShow ? 'Ignore episode' : 'Ignore track'}">Ignore</button>
                     ${recommendationRejectButton}
                 </div>
             </td>
+            ${shouldShowIgnore ? `<td class="track-ignore">
+                <button class="track-ignore-btn ${ignoreToggleClass}" type="button"
+                    data-ignore-track-id="${track.id}"
+                    data-ignore-track-isrc="${escapeHtml(track.isrc || '')}"
+                    title="${isPodcastShow ? 'Ignore episode' : 'Ignore track'}">Ignore</button>
+            </td>` : ''}
             ${shouldShowQuickDownloadColumn(isLocalSource) ? `<td class="track-quick-download">
                 <button class="track-quick-download-btn" type="button"
                     onclick="downloadSingleTrackFromRow(this)"
@@ -6005,8 +6022,8 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
     }
 
     const columnCount = getTracklistColumnCount(isPlaylistLike, isLocalSource);
-    const shouldShowIgnore = isPlaylistLike && !isLocalSource && currentTracklistMeta?.source && watchlistIgnoreEnabled;
-    const ignoreToggleClass = shouldShowIgnore ? '' : 'is-hidden';
+    const shouldShowIgnore = shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource);
+    const ignoreToggleClass = shouldShowIgnore && watchlistIgnoreEnabled ? '' : 'is-hidden';
     const collectionHeaderLabel = tracklistType === 'show' ? 'Podcast' : 'Album';
     const ignoreToggleTitle = tracklistType === 'show' ? 'Ignore episode' : 'Ignore track';
     const isPodcastTable = tracklistType === 'show' || tracklistType === 'episode';
@@ -6027,6 +6044,7 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
                 ${shouldShowMonitoredStateColumn(isLocalSource) ? '<col class="col-location-status">' : ''}
                 ${shouldShowAvailabilityColumn(isLocalSource) ? '<col class="col-availability">' : ''}
                 <col class="col-actions">
+                ${shouldShowIgnore ? '<col class="col-ignore">' : ''}
                 ${shouldShowQuickDownloadColumn(isLocalSource) ? '<col class="col-quick-download">' : ''}
             </colgroup>
             <thead>
@@ -6044,9 +6062,9 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
                     <th class="track-actions">
                         <div class="track-actions-row">
                             ${isLocalSource ? '' : '<input type="checkbox" class="track-checkbox" onchange="toggleAllTracks(this)" title="Select All">'}
-                            <span class="material-icons track-ignore-toggle ${ignoreToggleClass}" title="${ignoreToggleTitle}">visibility_off</span>
                         </div>
                     </th>
+                    ${shouldShowIgnore ? `<th class="track-ignore"><span class="track-ignore-toggle ${ignoreToggleClass}" title="${ignoreToggleTitle}">Ignore</span></th>` : ''}
                     ${shouldShowQuickDownloadColumn(isLocalSource) ? '<th class="track-quick-download"><span class="material-icons" title="Download">file_download</span></th>' : ''}
                 </tr>
             </thead>
