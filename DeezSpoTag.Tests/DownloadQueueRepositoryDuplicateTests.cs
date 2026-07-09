@@ -121,9 +121,49 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     {
         await using var context = await CreateContextAsync();
         await context.QueueRepository.EnqueueAsync(
-            CreateQueueItem($"watch-terminal-{status}", "Artist", $"Track {status}", 1) with
+            CreateQueueItem($"watch-terminal-{status}", "Artist", $"Track {status}", null) with
             {
                 Status = status,
+                PayloadJson = WatchlistPayloadJson
+            },
+            CancellationToken.None);
+
+        Assert.False(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("pending", "completed")]
+    [InlineData("running", "completed")]
+    [InlineData("moved", "pending")]
+    [InlineData("moved", "running")]
+    public async Task HasActiveWatchlistDownloadsAsync_TreatsCompletedDownloadsWithPendingMoveOrEnrichmentAsActive(
+        string moveStatus,
+        string enrichmentStatus)
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("watch-completed-finalizing", "Artist", "Track", 1) with
+            {
+                Status = "completed",
+                FinalizationStatus = moveStatus,
+                EnrichmentStatus = enrichmentStatus,
+                PayloadJson = WatchlistPayloadJson
+            },
+            CancellationToken.None);
+
+        Assert.True(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task HasActiveWatchlistDownloadsAsync_IgnoresCompletedDownloadsAfterMoveAndEnrichmentSettle()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("watch-completed-settled", "Artist", "Track", 1) with
+            {
+                Status = "completed",
+                FinalizationStatus = "moved",
+                EnrichmentStatus = "completed",
                 PayloadJson = WatchlistPayloadJson
             },
             CancellationToken.None);

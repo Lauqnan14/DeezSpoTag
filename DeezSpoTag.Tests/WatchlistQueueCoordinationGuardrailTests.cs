@@ -93,6 +93,31 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
+    public void HostedCycle_BlocksPlaylistProcessingWhenPreviousBatchWorkIsActive()
+    {
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
+        var batchGateIndex = hostedSource.IndexOf("HasActiveWatchlistBatchWorkAsync", StringComparison.Ordinal);
+        var processPlaylistIndex = hostedSource.IndexOf("var playlistRunResult = await ProcessPlaylistWatchItemsAsync(", StringComparison.Ordinal);
+
+        Assert.True(batchGateIndex >= 0);
+        Assert.True(processPlaylistIndex > batchGateIndex);
+        Assert.Contains("HasPendingPlaylistWatchBatchWorkAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("previous watchlist download, enrichment, finalization, or claim work is still active", hostedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistReconciliation_SupportsSyncOnlyModeWithoutQueuePlanning()
+    {
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
+
+        Assert.Contains("SyncOnly", watchSource, StringComparison.Ordinal);
+        Assert.Contains("var queuePlanningAllowed = mode == PlaylistReconciliationMode.QueuePlanningAllowed", watchSource, StringComparison.Ordinal);
+        Assert.Contains("if (queuePlanningAllowed)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PreviousWatchlistRunBlock_HasSpecificNonFailureStatusAndMessage()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
@@ -103,15 +128,28 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void TerminalTrackUnavailableFailure_PersistsWatchlistCooldown()
+    public void TerminalTrackUnavailableFailure_PersistsWatchlistAvailabilityRecheck()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
         var downloadSource = ReadSource("DeezSpoTag.Services/Download/Shared/EngineAudioPostDownloadHelper.cs");
+        var controllerSource = ReadSource("DeezSpoTag.Web/Controllers/Api/LibraryPlaylistWatchlistApiController.cs");
+        var repositorySource = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
 
         Assert.Contains("WatchlistUnavailableSettingsFingerprint = BuildUnavailableSettingsFingerprint(options)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("UnavailableRecheckDays", watchSource, StringComparison.Ordinal);
+        Assert.Contains("IsAvailabilityRecheckWindowActive", watchSource, StringComparison.Ordinal);
+        Assert.Contains("skipped_unavailable_recheck_window", watchSource, StringComparison.Ordinal);
+        Assert.Contains("availability recheck scheduled", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("skipped_unavailable_cooldown", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("unavailable from enabled sources; retry scheduled", watchSource, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("IsTrackUnavailableFailure(failureMessage)", downloadSource, StringComparison.Ordinal);
         Assert.Contains("MarkPlaylistWatchTrackUnavailableAsync(", downloadSource, StringComparison.Ordinal);
-        Assert.Contains("DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRetryDays)", downloadSource, StringComparison.Ordinal);
+        Assert.Contains("DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRecheckDays)", downloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("WatchlistUnavailableRetryDays", downloadSource, StringComparison.Ordinal);
+        Assert.Contains("Recheck after", controllerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Retry after", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("unavailable_next_retry_utc", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("nextRecheckUtc", repositorySource, StringComparison.Ordinal);
     }
 
     [Theory]

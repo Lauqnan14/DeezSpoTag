@@ -61,6 +61,7 @@ public sealed class PlaylistSyncService
     private readonly PlatformAuthService _authService;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
+    private readonly CrossDeviceSyncService? _crossDeviceSyncService;
     private readonly ILogger<PlaylistSyncService> _logger;
 
     public PlaylistSyncService(PlaylistSyncDependencies dependencies)
@@ -73,6 +74,7 @@ public sealed class PlaylistSyncService
         _authService = dependencies.AuthService;
         _playlistVisualService = dependencies.PlaylistVisualService;
         _mediaServerRefreshService = dependencies.MediaServerRefreshService;
+        _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
         _logger = dependencies.Logger;
     }
 
@@ -86,6 +88,7 @@ public sealed class PlaylistSyncService
         public required PlatformAuthService AuthService { get; init; }
         public required PlaylistVisualService PlaylistVisualService { get; init; }
         public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
+        public CrossDeviceSyncService? CrossDeviceSyncService { get; init; }
         public required ILogger<PlaylistSyncService> Logger { get; init; }
     }
 
@@ -574,6 +577,7 @@ public sealed class PlaylistSyncService
             SourceId: mergedPlaylist.SourceId,
             DestinationFolderId: null,
             Service: service,
+            SyncTargets: [service],
             PreferredEngine: null,
             DownloadEngineOrder: null,
             DownloadVariantMode: null,
@@ -596,15 +600,18 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(PlaylistNotAvailableMessage);
         }
 
-        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
-        if (string.IsNullOrWhiteSpace(service))
+        var services = await ResolveTargetServicesAsync(preference, cancellationToken);
+        if (services.Count == 0)
         {
             return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
         }
 
         if (force)
         {
-            await _mediaServerRefreshService.RefreshAsync(service, cancellationToken);
+            foreach (var service in services)
+            {
+                await _mediaServerRefreshService.RefreshAsync(service, cancellationToken);
+            }
         }
 
         var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates, cancellationToken);
@@ -623,13 +630,15 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
         }
 
-        return service switch
-        {
-            PlexService => await SyncToPlexAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken),
-            JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken),
-            NavidromeService => await SyncToNavidromeAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, NavidromeService), cancellationToken),
-            _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
-        };
+        var result = await SyncPlaylistToTargetsAsync(
+            services,
+            playlist,
+            preference,
+            tracks,
+            cancellationToken);
+
+        await PublishWatchlistSyncUpdatedAsync(playlist, result, cancellationToken);
+        return result;
     }
 
     public async Task<PlaylistSyncResult> SyncAvailablePlaylistTracksAsync(
@@ -644,20 +653,18 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(PlaylistNotAvailableMessage);
         }
 
-        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
-        if (string.IsNullOrWhiteSpace(service))
+        var services = await ResolveTargetServicesAsync(preference, cancellationToken);
+        if (services.Count == 0)
         {
             return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
         }
 
-        if (string.Equals(service, "none", StringComparison.OrdinalIgnoreCase))
-        {
-            return PlaylistSyncResult.Failed("Playlist sync target is disabled.");
-        }
-
         if (force)
         {
-            await _mediaServerRefreshService.RefreshAsync(service, cancellationToken);
+            foreach (var service in services)
+            {
+                await _mediaServerRefreshService.RefreshAsync(service, cancellationToken);
+            }
         }
 
         var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates, cancellationToken);
@@ -713,13 +720,12 @@ public sealed class PlaylistSyncService
                 MissingTracks: eligibleTracks.Count);
         }
 
-        var result = service switch
-        {
-            PlexService => await SyncToPlexAsync(playlist, preference, availableTracks, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken),
-            JellyfinService => await SyncToJellyfinAsync(playlist, preference, availableTracks, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken),
-            NavidromeService => await SyncToNavidromeAsync(playlist, preference, availableTracks, ResolveExistingTargetPlaylistId(preference, NavidromeService), cancellationToken),
-            _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
-        };
+        var result = await SyncPlaylistToTargetsAsync(
+            services,
+            playlist,
+            preference,
+            availableTracks,
+            cancellationToken);
 
         if (!result.Success)
         {
@@ -729,10 +735,11 @@ public sealed class PlaylistSyncService
         var unavailableCount = Math.Max(0, eligibleTracks.Count - availableTracks.Count);
         if (unavailableCount == 0)
         {
+            await PublishWatchlistSyncUpdatedAsync(playlist, result, cancellationToken);
             return result;
         }
 
-        return result with
+        var partialResult = result with
         {
             Message = string.Concat(
                 result.Message,
@@ -742,6 +749,105 @@ public sealed class PlaylistSyncService
             SourceTracks = eligibleTracks.Count,
             MissingTracks = unavailableCount + result.MissingTracks
         };
+        await PublishWatchlistSyncUpdatedAsync(playlist, partialResult, cancellationToken);
+        return partialResult;
+    }
+
+    private async Task<PlaylistSyncResult> SyncPlaylistToTargetsAsync(
+        IReadOnlyList<string> services,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<(string Service, PlaylistSyncResult Result)>(services.Count);
+        foreach (var service in services)
+        {
+            var result = service switch
+            {
+                PlexService => await SyncToPlexAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken),
+                JellyfinService => await SyncToJellyfinAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken),
+                NavidromeService => await SyncToNavidromeAsync(playlist, preference, tracks, ResolveExistingTargetPlaylistId(preference, NavidromeService), cancellationToken),
+                _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
+            };
+            results.Add((service, result));
+        }
+
+        return CombinePlaylistSyncTargetResults(results);
+    }
+
+    private static PlaylistSyncResult CombinePlaylistSyncTargetResults(
+        IReadOnlyList<(string Service, PlaylistSyncResult Result)> results)
+    {
+        if (results.Count == 0)
+        {
+            return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
+        }
+
+        if (results.Count == 1)
+        {
+            return results[0].Result;
+        }
+
+        var successfulResults = results
+            .Where(item => item.Result.Success)
+            .ToList();
+        var failedResults = results
+            .Where(item => !item.Result.Success)
+            .ToList();
+        var message = string.Join(
+            " ",
+            results.Select(item => string.Concat(
+                FormatTargetServiceLabel(item.Service),
+                ": ",
+                item.Result.Message)));
+
+        if (successfulResults.Count == 0)
+        {
+            var first = results[0].Result;
+            return first with
+            {
+                Success = false,
+                Message = message
+            };
+        }
+
+        var aggregate = successfulResults[0].Result;
+        return aggregate with
+        {
+            Success = failedResults.Count == 0,
+            Message = message,
+            SyncedTracks = successfulResults.Sum(item => item.Result.SyncedTracks),
+            TargetMatches = successfulResults.Sum(item => item.Result.TargetMatches),
+            MetadataMatches = successfulResults.Sum(item => item.Result.MetadataMatches),
+            SearchMatches = successfulResults.Sum(item => item.Result.SearchMatches)
+        };
+    }
+
+    private static string FormatTargetServiceLabel(string service)
+        => NormalizeService(service) switch
+        {
+            PlexService => "Plex",
+            JellyfinService => "Jellyfin",
+            NavidromeService => "Navidrome",
+            _ => service
+        };
+
+    private async Task PublishWatchlistSyncUpdatedAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistSyncResult result,
+        CancellationToken cancellationToken)
+    {
+        if (!result.Success || _crossDeviceSyncService is null)
+        {
+            return;
+        }
+
+        await _crossDeviceSyncService.PublishWatchlistUpdatedAsync(
+            playlist.Source,
+            playlist.SourceId,
+            "playlist_sync_completed",
+            cancellationToken);
     }
 
     public async Task<PlaylistAvailabilitySummary> GetPlaylistAvailabilityAsync(
@@ -1821,6 +1927,15 @@ public sealed class PlaylistSyncService
         PlaylistWatchPreferenceDto? preference,
         CancellationToken cancellationToken)
     {
+        if (preference?.SyncTargets is { Count: > 0 })
+        {
+            var configuredTargets = NormalizeTargetServices(preference.SyncTargets);
+            if (configuredTargets.Count > 0)
+            {
+                return configuredTargets[0];
+            }
+        }
+
         var configuredService = NormalizeService(preference?.Service);
         if (string.Equals(configuredService, "none", StringComparison.OrdinalIgnoreCase))
         {
@@ -1858,6 +1973,50 @@ public sealed class PlaylistSyncService
         }
 
         return string.Empty;
+    }
+
+    private async Task<IReadOnlyList<string>> ResolveTargetServicesAsync(
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        if (preference?.SyncTargets is not null)
+        {
+            return NormalizeTargetServices(preference.SyncTargets);
+        }
+
+        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
+        return string.IsNullOrWhiteSpace(service)
+            ? []
+            : [service];
+    }
+
+    private static IReadOnlyList<string> NormalizeTargetServices(IEnumerable<string>? services)
+    {
+        if (services is null)
+        {
+            return [];
+        }
+
+        var normalized = new List<string>();
+        foreach (var serviceValue in services)
+        {
+            var service = NormalizeService(serviceValue);
+            if (string.IsNullOrWhiteSpace(service)
+                || string.Equals(service, "none", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains(service, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(service, PlexService, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(service, JellyfinService, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(service, NavidromeService, StringComparison.OrdinalIgnoreCase))
+            {
+                normalized.Add(service);
+            }
+        }
+
+        return normalized;
     }
 
     private static string NormalizeSource(string? source)

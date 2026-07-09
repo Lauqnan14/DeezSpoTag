@@ -260,7 +260,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             var reconciliationResult = await watcher.ReconcilePlaylistAsync(
                 playlist,
                 cancellationToken,
-                forceMediaServerSync: true);
+                forceMediaServerSync: true,
+                mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly);
 
             if (await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, cancellationToken))
             {

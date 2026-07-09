@@ -71,7 +71,7 @@ public sealed class PlaylistWatchService
     private const string CompletedStatus = "completed";
     private const string FailedStatus = "failed";
     private const string UnavailableStatus = "unavailable";
-    private const int UnavailableRetryDays = 7;
+    private const int UnavailableRecheckDays = 7;
     private const string ArtistWatchOrigin = "artist";
     private const string PlaylistWatchOrigin = "playlist";
     private const string AlbumField = "album";
@@ -246,11 +246,18 @@ public sealed class PlaylistWatchService
         TrackFailures
     }
 
+    public enum PlaylistReconciliationMode
+    {
+        QueuePlanningAllowed,
+        SyncOnly
+    }
+
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
+        bool forceMediaServerSync = false,
+        PlaylistReconciliationMode mode = PlaylistReconciliationMode.QueuePlanningAllowed)
     {
         if (playlist == null)
         {
@@ -475,21 +482,27 @@ public sealed class PlaylistWatchService
             WatchlistOrigin = PlaylistWatchOrigin
         });
 
-        var selection = await SelectMissingPlaylistTracksAsync(
-            source,
-            sourceId,
-            candidates,
-            bypassFolderAndSync ? null : preference?.DestinationFolderId,
-            queueOptions,
-            cancellationToken);
-        await _libraryRepository.AddPlaylistWatchTracksAsync(
-            source,
-            sourceId,
-            selection.MissingTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
-                .ToList(),
-            cancellationToken);
-        if (selection.LocalCount > 0)
+        var queuePlanningAllowed = mode == PlaylistReconciliationMode.QueuePlanningAllowed;
+        var selection = new PlaylistTrackSelection([], 0, 0, 0, 0, 0, 0);
+        if (queuePlanningAllowed)
+        {
+            selection = await SelectMissingPlaylistTracksAsync(
+                source,
+                sourceId,
+                candidates,
+                bypassFolderAndSync ? null : preference?.DestinationFolderId,
+                queueOptions,
+                cancellationToken);
+            await _libraryRepository.AddPlaylistWatchTracksAsync(
+                source,
+                sourceId,
+                selection.MissingTracks
+                    .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
+                    .ToList(),
+                cancellationToken);
+        }
+
+        if (queuePlanningAllowed && selection.LocalCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
                 source,
@@ -499,7 +512,7 @@ public sealed class PlaylistWatchService
                 "skipped_already_available",
                 cancellationToken);
         }
-        if (selection.ClaimedCount > 0)
+        if (queuePlanningAllowed && selection.ClaimedCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
                 source,
@@ -509,7 +522,7 @@ public sealed class PlaylistWatchService
                 "skipped_already_queued",
                 cancellationToken);
         }
-        if (selection.RecoveredClaimCount > 0)
+        if (queuePlanningAllowed && selection.RecoveredClaimCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
                 source,
@@ -519,7 +532,7 @@ public sealed class PlaylistWatchService
                 "stale_claim_recovered",
                 cancellationToken);
         }
-        if (selection.BlockedCount > 0)
+        if (queuePlanningAllowed && selection.BlockedCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
                 source,
@@ -529,14 +542,14 @@ public sealed class PlaylistWatchService
                 "skipped_blocked",
                 cancellationToken);
         }
-        if (selection.UnavailableCount > 0)
+        if (queuePlanningAllowed && selection.UnavailableCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
                 source,
                 sourceId,
                 currentPlaylist.Name,
                 selection.UnavailableCount,
-                "skipped_unavailable_cooldown",
+                "skipped_unavailable_recheck_window",
                 cancellationToken);
         }
 
@@ -588,27 +601,46 @@ public sealed class PlaylistWatchService
                 cancellationToken);
         }
 
-        var queueResult = await QueueWatchIntentTracksAsync(
-            selection.MissingTracks,
-            bypassFolderAndSync ? null : preference?.DestinationFolderId,
-            queueOptions,
-            cancellationToken);
+        var queueResult = queuePlanningAllowed
+            ? await QueueWatchIntentTracksAsync(
+                selection.MissingTracks,
+                bypassFolderAndSync ? null : preference?.DestinationFolderId,
+                queueOptions,
+                cancellationToken)
+            : new QueueWatchResult(
+                0,
+                0,
+                0,
+                Deferred: true,
+                AttemptedCount: 0,
+                SystemicFailureCount: 0,
+                FirstSystemicFailureFingerprint: null,
+                FirstFailureMessage: null,
+                StopReason: WatchQueueStopReason.PreviousWatchlistRunActive,
+                RemainingQueueableCount: 0,
+                UnavailableCount: 0);
         await TouchPlaylistWatchStateAsync(
             source,
             sourceId,
             liveTrackCount,
             liveSnapshot.SnapshotId,
-            "queued",
-            queueResult.QueuedCount > 0
-                ? $"Queued {queueResult.QueuedCount} track(s)."
-                : queueResult.UnavailableCount > 0
-                    ? $"{queueResult.UnavailableCount} track(s) unavailable from enabled sources."
-                    : "No tracks queued.",
+            queuePlanningAllowed ? "queued" : "sync_only",
+            queuePlanningAllowed
+                ? queueResult.QueuedCount > 0
+                    ? $"Queued {queueResult.QueuedCount} track(s)."
+                    : queueResult.UnavailableCount > 0
+                        ? $"{queueResult.UnavailableCount} track(s) unavailable from enabled sources."
+                        : "No tracks queued."
+                : "Skipped queue planning while previous watchlist batch finishes.",
             nextAttemptUtc: null,
             consecutiveFailures: 0,
             cancellationToken);
-        await AddPlaylistWatchHistoryAsync(source, sourceId, currentPlaylist.Name, queueResult, cancellationToken);
-        if (queueResult.QueuedCount > 0)
+        if (queuePlanningAllowed)
+        {
+            await AddPlaylistWatchHistoryAsync(source, sourceId, currentPlaylist.Name, queueResult, cancellationToken);
+        }
+
+        if (queuePlanningAllowed && queueResult.QueuedCount > 0)
         {
             await AddPlaylistWatchHistoryStageAsync(
                 source,
@@ -938,7 +970,7 @@ public sealed class PlaylistWatchService
             }
 
             if (statusByTrackId.TryGetValue(candidate.TrackSourceId, out var persistedStatus)
-                && IsUnavailableCooldownActive(persistedStatus, unavailableSettingsFingerprint, nowUtc))
+                && IsAvailabilityRecheckWindowActive(persistedStatus, unavailableSettingsFingerprint, nowUtc))
             {
                 unavailableCount++;
                 continue;
@@ -948,14 +980,14 @@ public sealed class PlaylistWatchService
             if ((globalUnavailableByTrackId.TryGetValue(candidate.TrackSourceId, out var globalUnavailableStatus)
                     || (!string.IsNullOrWhiteSpace(candidateIsrc)
                         && globalUnavailableByIsrc.TryGetValue(candidateIsrc, out globalUnavailableStatus)))
-                && IsUnavailableCooldownActive(globalUnavailableStatus, unavailableSettingsFingerprint, nowUtc))
+                && IsAvailabilityRecheckWindowActive(globalUnavailableStatus, unavailableSettingsFingerprint, nowUtc))
             {
                 await TryMarkWatchTrackUnavailableAsync(
                     queueOptions,
                     candidate.TrackSourceId,
                     candidate.Isrc,
                     globalUnavailableStatus.UnavailableReason,
-                    globalUnavailableStatus.UnavailableNextRetryUtc,
+                    globalUnavailableStatus.UnavailableNextRecheckUtc,
                     cancellationToken);
                 unavailableCount++;
                 continue;
@@ -1015,7 +1047,7 @@ public sealed class PlaylistWatchService
         int BlockedCount,
         int IgnoredCount);
 
-    private static bool IsUnavailableCooldownActive(
+    private static bool IsAvailabilityRecheckWindowActive(
         PlaylistWatchTrackStatusDto status,
         string currentSettingsFingerprint,
         DateTimeOffset nowUtc)
@@ -1033,8 +1065,8 @@ public sealed class PlaylistWatchService
             return false;
         }
 
-        return status.UnavailableNextRetryUtc.HasValue
-            && status.UnavailableNextRetryUtc.Value > nowUtc;
+        return status.UnavailableNextRecheckUtc.HasValue
+            && status.UnavailableNextRecheckUtc.Value > nowUtc;
     }
 
     private static string BuildUnavailableSettingsFingerprint(QueueWatchOptions options)
@@ -1129,6 +1161,9 @@ public sealed class PlaylistWatchService
 
             await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 claim.QueueUuid,
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
                 FailedStatus,
                 cancellationToken);
             await TryMarkWatchTrackStatusAsync(
@@ -1192,6 +1227,9 @@ public sealed class PlaylistWatchService
                 await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
                 await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                     decision.QueueUuid,
+                    source,
+                    sourceId,
+                    track.TrackId,
                     CompletedStatus,
                     cancellationToken);
                 return new PreQueueDedupeHandledResult(true, 1, 0, 0, 0);
@@ -1200,6 +1238,9 @@ public sealed class PlaylistWatchService
 
         await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
             decision.QueueUuid,
+            source,
+            sourceId,
+            track.TrackId,
             FailedStatus,
             cancellationToken);
         await TryMarkWatchTrackStatusAsync(source, sourceId, track.TrackId, FailedStatus, cancellationToken);
@@ -1226,8 +1267,14 @@ public sealed class PlaylistWatchService
 
         var moveStatus = NormalizeReasonCode(queueItem.FinalizationStatus);
         var enrichmentStatus = NormalizeReasonCode(queueItem.EnrichmentStatus);
-        return moveStatus is "pending" or "running"
-            || enrichmentStatus is "pending" or "running";
+        return !IsTerminalWatchFinalizationFailure(moveStatus)
+            && !IsTerminalWatchFinalizationFailure(enrichmentStatus);
+    }
+
+    private static bool IsTerminalWatchFinalizationFailure(string? status)
+    {
+        var normalized = NormalizeReasonCode(status);
+        return normalized is "failed" or "error" or "canceled" or "cancelled" or "blocked" or "interrupted";
     }
 
     private static bool IsCompletedQueueStatus(string? status)
@@ -1278,7 +1325,7 @@ public sealed class PlaylistWatchService
 
         if (queueResult.UnavailableCount > 0 && queueResult.FailedCount == 0)
         {
-            return $"{queueResult.UnavailableCount} track(s) unavailable from enabled sources; retry scheduled.";
+            return $"{queueResult.UnavailableCount} track(s) unavailable from enabled sources; availability recheck scheduled.";
         }
 
         if (syncResult is { Success: true, MissingTracks: > 0 })
@@ -3722,7 +3769,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 track.TrackId,
                 track.Isrc,
                 result.Message,
-                nextRetryUtcOverride: null,
+                nextRecheckUtcOverride: null,
                 cancellationToken);
             return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: false, Unavailable: true);
         }
@@ -3994,7 +4041,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string trackId,
         string? isrc,
         string? reason,
-        DateTimeOffset? nextRetryUtcOverride,
+        DateTimeOffset? nextRecheckUtcOverride,
         CancellationToken cancellationToken)
     {
         if (!HasWatchlistContext(options.WatchlistSource, options.WatchlistPlaylistId)
@@ -4003,7 +4050,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return;
         }
 
-        var nextRetryUtc = nextRetryUtcOverride ?? DateTimeOffset.UtcNow.AddDays(UnavailableRetryDays);
+        var nextRecheckUtc = nextRecheckUtcOverride ?? DateTimeOffset.UtcNow.AddDays(UnavailableRecheckDays);
         var message = string.IsNullOrWhiteSpace(reason)
             ? "Track unavailable from enabled sources."
             : reason.Trim();
@@ -4016,7 +4063,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 isrc,
                 message,
                 BuildUnavailableSettingsFingerprint(options),
-                nextRetryUtc,
+                nextRecheckUtc,
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

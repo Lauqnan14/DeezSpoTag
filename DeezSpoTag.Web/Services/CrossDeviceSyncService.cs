@@ -70,6 +70,33 @@ public sealed class CrossDeviceSyncService
             _logger.LogDebug(ex, "Failed to broadcast library update.");
         }
     }
+
+    public async Task PublishWatchlistUpdatedAsync(
+        string source,
+        string sourceId,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        var payload = new WatchlistUpdatedEvent(
+            Source: source.Trim(),
+            SourceId: sourceId.Trim(),
+            Reason: string.IsNullOrWhiteSpace(reason) ? "watchlist_updated" : reason.Trim(),
+            UpdatedUtc: DateTimeOffset.UtcNow);
+
+        try
+        {
+            await _hubContext.Clients.All.SendAsync("watchlistUpdated", payload, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to broadcast watchlist update.");
+        }
+    }
 }
 
 public sealed record TracklistUpdatedEvent(
@@ -85,4 +112,10 @@ public sealed record LibraryUpdatedEvent(
     int AlbumCount,
     int TrackCount,
     long? FolderId,
+    DateTimeOffset UpdatedUtc);
+
+public sealed record WatchlistUpdatedEvent(
+    string Source,
+    string SourceId,
+    string Reason,
     DateTimeOffset UpdatedUtc);

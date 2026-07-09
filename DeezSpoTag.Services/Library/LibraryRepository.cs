@@ -112,6 +112,7 @@ public sealed class LibraryRepository
         string SourceId,
         long? DestinationFolderId,
         string? Service,
+        IReadOnlyList<string>? SyncTargets,
         string? PreferredEngine,
         DownloadEngineOrderSettings? DownloadEngineOrder,
         string? DownloadVariantMode,
@@ -1703,6 +1704,7 @@ INSERT INTO quality_scan_action_log (
                     SourceId: preference.SourceId,
                     DestinationFolderId: destinationFolderId,
                     Service: preference.Service,
+                    SyncTargets: preference.SyncTargets,
                     PreferredEngine: preference.PreferredEngine,
                     DownloadEngineOrder: preference.DownloadEngineOrder,
                     DownloadVariantMode: preference.DownloadVariantMode,
@@ -4615,11 +4617,16 @@ LIMIT @limit;";
         var downloadEngineOrder = downloadEngineOrderJson is null
             ? null
             : JsonSerializer.Deserialize<DownloadEngineOrderSettings>(downloadEngineOrderJson);
+        var syncTargetsJson = await ReadNullableStringAsync(reader, 18, cancellationToken);
+        var syncTargets = string.IsNullOrWhiteSpace(syncTargetsJson)
+            ? null
+            : JsonSerializer.Deserialize<List<string>>(syncTargetsJson);
         return new PlaylistWatchPreferenceDto(
             reader.GetString(0),
             reader.GetString(1),
             await ReadNullableInt64Async(reader, 2, cancellationToken),
             await ReadNullableStringAsync(reader, 4, cancellationToken),
+            syncTargets,
             await ReadNullableStringAsync(reader, 5, cancellationToken),
             downloadEngineOrder,
             await ReadNullableStringAsync(reader, 6, cancellationToken),
@@ -6611,7 +6618,8 @@ DELETE FROM playlist_watchlist WHERE source = @source AND source_id = @sourceId;
        plex_playlist_id,
        jellyfin_playlist_id,
        navidrome_playlist_id,
-       download_engine_order_json
+       download_engine_order_json,
+       sync_targets_json
 FROM playlist_watch_preferences
 ORDER BY updated_at DESC;";
         await using var command = new SqliteCommand(sql, connection);
@@ -6648,7 +6656,8 @@ ORDER BY updated_at DESC;";
        plex_playlist_id,
        jellyfin_playlist_id,
        navidrome_playlist_id,
-       download_engine_order_json
+       download_engine_order_json,
+       sync_targets_json
 FROM playlist_watch_preferences
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -6677,12 +6686,13 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-	INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, atmos_destination_folder_id, service, preferred_engine, download_engine_order_json, download_variant_mode, sync_mode, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
-	        VALUES (@source, @sourceId, @destinationFolderId, @atmosDestinationFolderId, @service, @preferredEngine, @downloadEngineOrderJson, @downloadVariantMode, @syncMode, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
+	INSERT INTO playlist_watch_preferences (source, source_id, destination_folder_id, atmos_destination_folder_id, service, sync_targets_json, preferred_engine, download_engine_order_json, download_variant_mode, sync_mode, update_artwork, reuse_saved_artwork, routing_rules_json, ignore_rules_json)
+	        VALUES (@source, @sourceId, @destinationFolderId, @atmosDestinationFolderId, @service, @syncTargetsJson, @preferredEngine, @downloadEngineOrderJson, @downloadVariantMode, @syncMode, @updateArtwork, @reuseSavedArtwork, @routingRulesJson, @ignoreRulesJson)
 	ON CONFLICT(source, source_id) DO UPDATE SET
 	    destination_folder_id = excluded.destination_folder_id,
         atmos_destination_folder_id = excluded.atmos_destination_folder_id,
 	    service = excluded.service,
+	    sync_targets_json = excluded.sync_targets_json,
 	    preferred_engine = excluded.preferred_engine,
 	    download_engine_order_json = excluded.download_engine_order_json,
 	    download_variant_mode = excluded.download_variant_mode,
@@ -6698,6 +6708,8 @@ LIMIT 1;";
         command.Parameters.AddWithValue("destinationFolderId", (object?)input.DestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("atmosDestinationFolderId", (object?)input.AtmosDestinationFolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("service", (object?)input.Service ?? DBNull.Value);
+        var syncTargetsJson = input.SyncTargets is { Count: > 0 } ? JsonSerializer.Serialize(input.SyncTargets) : null;
+        command.Parameters.AddWithValue("syncTargetsJson", (object?)syncTargetsJson ?? DBNull.Value);
         command.Parameters.AddWithValue("preferredEngine", (object?)input.PreferredEngine ?? DBNull.Value);
         var downloadEngineOrderJson = input.DownloadEngineOrder is null ? null : JsonSerializer.Serialize(input.DownloadEngineOrder);
         command.Parameters.AddWithValue("downloadEngineOrderJson", (object?)downloadEngineOrderJson ?? DBNull.Value);
@@ -7772,7 +7784,8 @@ VALUES (
 
         const string sql = @"
 UPDATE playlist_watch_track
-SET local_track_id = @localTrackId,
+SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' END,
+    local_track_id = @localTrackId,
     identity_status = @identityStatus,
     identity_reason = @identityReason,
     redirect_track_source_id = @redirectTrackSourceId,
@@ -8396,7 +8409,7 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         string? isrc,
         string reason,
         string settingsFingerprint,
-        DateTimeOffset nextRetryUtc,
+        DateTimeOffset nextRecheckUtc,
         CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
@@ -8430,7 +8443,7 @@ VALUES (
     @reason,
     @now,
     @now,
-    @nextRetryUtc,
+    @nextRecheckUtc,
     @settingsFingerprint);";
         await using (var insertCommand = new SqliteCommand(insertSql, connection))
         {
@@ -8441,7 +8454,7 @@ VALUES (
             insertCommand.Parameters.AddWithValue("reason", reason);
             insertCommand.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
             insertCommand.Parameters.AddWithValue("now", now.ToString("O", CultureInfo.InvariantCulture));
-            insertCommand.Parameters.AddWithValue("nextRetryUtc", nextRetryUtc.ToString("O", CultureInfo.InvariantCulture));
+            insertCommand.Parameters.AddWithValue("nextRecheckUtc", nextRecheckUtc.ToString("O", CultureInfo.InvariantCulture));
             await insertCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -8452,7 +8465,7 @@ SET status = 'unavailable',
     unavailable_reason = @reason,
     unavailable_since_utc = COALESCE(unavailable_since_utc, @now),
     unavailable_last_checked_utc = @now,
-    unavailable_next_retry_utc = @nextRetryUtc,
+    unavailable_next_retry_utc = @nextRecheckUtc,
     unavailable_settings_fingerprint = @settingsFingerprint
 WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSourceId;";
         await using var updateCommand = new SqliteCommand(updateSql, connection);
@@ -8462,7 +8475,7 @@ WHERE source = @source AND source_id = @sourceId AND track_source_id = @trackSou
         updateCommand.Parameters.AddWithValue("reason", reason);
         updateCommand.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
         updateCommand.Parameters.AddWithValue("now", now.ToString("O", CultureInfo.InvariantCulture));
-        updateCommand.Parameters.AddWithValue("nextRetryUtc", nextRetryUtc.ToString("O", CultureInfo.InvariantCulture));
+        updateCommand.Parameters.AddWithValue("nextRecheckUtc", nextRecheckUtc.ToString("O", CultureInfo.InvariantCulture));
         var updated = await updateCommand.ExecuteNonQueryAsync(cancellationToken);
 
         const string updateGlobalSql = @"
@@ -8472,7 +8485,7 @@ SET status = 'unavailable',
     unavailable_reason = @reason,
     unavailable_since_utc = COALESCE(unavailable_since_utc, @now),
     unavailable_last_checked_utc = @now,
-    unavailable_next_retry_utc = @nextRetryUtc,
+    unavailable_next_retry_utc = @nextRecheckUtc,
     unavailable_settings_fingerprint = @settingsFingerprint
 WHERE source = @source
   AND (
@@ -8486,7 +8499,7 @@ WHERE source = @source
         updateGlobalCommand.Parameters.AddWithValue("reason", reason);
         updateGlobalCommand.Parameters.AddWithValue("settingsFingerprint", settingsFingerprint);
         updateGlobalCommand.Parameters.AddWithValue("now", now.ToString("O", CultureInfo.InvariantCulture));
-        updateGlobalCommand.Parameters.AddWithValue("nextRetryUtc", nextRetryUtc.ToString("O", CultureInfo.InvariantCulture));
+        updateGlobalCommand.Parameters.AddWithValue("nextRecheckUtc", nextRecheckUtc.ToString("O", CultureInfo.InvariantCulture));
         var updatedGlobal = await updateGlobalCommand.ExecuteNonQueryAsync(cancellationToken);
         return updated > 0 || updatedGlobal > 0;
     }
@@ -8643,10 +8656,16 @@ ORDER BY source, source_id, track_source_id, queue_uuid;";
 
     public async Task<int> UpdatePlaylistWatchDownloadClaimStatusAsync(
         string queueUuid,
+        string source,
+        string sourceId,
+        string trackSourceId,
         string status,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(queueUuid) || string.IsNullOrWhiteSpace(status))
+        if (string.IsNullOrWhiteSpace(queueUuid)
+            || string.IsNullOrWhiteSpace(status)
+            || !TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(trackSourceId))
         {
             return 0;
         }
@@ -8656,11 +8675,30 @@ ORDER BY source, source_id, track_source_id, queue_uuid;";
 UPDATE playlist_watch_download_claim
 SET status = @status,
     updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
+WHERE queue_uuid = @queueUuid
+  AND source = @source
+  AND source_id = @sourceId
+  AND track_source_id = @trackSourceId;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid.Trim());
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("trackSourceId", trackSourceId.Trim());
         command.Parameters.AddWithValue("status", status.Trim().ToLowerInvariant());
         return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> HasPendingPlaylistWatchBatchWorkAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT 1
+FROM playlist_watch_download_claim
+WHERE lower(status) = 'pending'
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result is not DBNull;
     }
 
     public async Task<WatchlistHistoryDto?> AddWatchlistHistoryAsync(

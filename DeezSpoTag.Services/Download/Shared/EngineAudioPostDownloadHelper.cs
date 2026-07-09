@@ -37,6 +37,7 @@ public static partial class EngineAudioPostDownloadHelper
     private const string MzStaticHost = "mzstatic.com";
     private const string UnknownArtist = "Unknown Artist";
     private const string CompletedStatus = "completed";
+    private const string DownloadedStatus = "downloaded";
     private const string FailedStatus = "failed";
     private const string FetchingStatus = "fetching";
     private const string SkippedStatus = "skipped";
@@ -47,7 +48,7 @@ public static partial class EngineAudioPostDownloadHelper
     private const string CanceledStatus = "canceled";
     private const string UpdateQueueEvent = "updateQueue";
     private const string DeezerTrackIdKey = "deezer_track_id";
-    private const int WatchlistUnavailableRetryDays = 7;
+    private const int WatchlistUnavailableRecheckDays = 7;
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
     private static readonly Regex LrcTimestampRegex = LrcTimestampPatternRegex();
 
@@ -2583,34 +2584,35 @@ public static partial class EngineAudioPostDownloadHelper
                     ? "Track unavailable from enabled sources."
                     : payload.ErrorMessage,
                 payload.WatchlistUnavailableSettingsFingerprint,
-                DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRetryDays),
+                DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRecheckDays),
                 cancellationToken);
         }
         else
         {
+            var watchlistStatus = string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase)
+                ? DownloadedStatus
+                : status;
+
             await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
                 payload.WatchlistSource,
                 payload.WatchlistPlaylistId,
                 payload.WatchlistTrackId,
-                status,
+                watchlistStatus,
                 cancellationToken);
         }
 
         var resolvedQueueUuid = ResolveQueueUuid(queueUuid, payload);
         if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
-            await NotifySharedWatchDownloadClaimsAsync(
+            await MarkSharedWatchDownloadClaimsDownloadedAsync(
                 libraryRepository,
                 resolvedQueueUuid,
                 payload,
                 cancellationToken);
-
-            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
-                resolvedQueueUuid,
-                CompletedStatus,
-                cancellationToken);
+            return;
         }
-        else if (IsFailedOrCanceledWatchStatus(status))
+
+        if (IsFailedOrCanceledWatchStatus(status))
         {
             await UpdateSharedWatchDownloadClaimsStatusAsync(
                 libraryRepository,
@@ -2620,6 +2622,9 @@ public static partial class EngineAudioPostDownloadHelper
                 cancellationToken);
             await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 resolvedQueueUuid,
+                payload.WatchlistSource,
+                payload.WatchlistPlaylistId,
+                payload.WatchlistTrackId,
                 status,
                 cancellationToken);
         }
@@ -2633,12 +2638,15 @@ public static partial class EngineAudioPostDownloadHelper
                 cancellationToken);
             await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 resolvedQueueUuid,
+                payload.WatchlistSource,
+                payload.WatchlistPlaylistId,
+                payload.WatchlistTrackId,
                 status,
                 cancellationToken);
         }
     }
 
-    private static async Task NotifySharedWatchDownloadClaimsAsync(
+    private static async Task MarkSharedWatchDownloadClaimsDownloadedAsync(
         LibraryRepository libraryRepository,
         string queueUuid,
         EngineQueueItemBase payload,
@@ -2664,7 +2672,7 @@ public static partial class EngineAudioPostDownloadHelper
                 claim.Source,
                 claim.SourceId,
                 claim.TrackSourceId,
-                CompletedStatus,
+                DownloadedStatus,
                 cancellationToken);
         }
     }
@@ -2704,7 +2712,7 @@ public static partial class EngineAudioPostDownloadHelper
                         ? "Track unavailable from enabled sources."
                         : payload.ErrorMessage,
                     payload.WatchlistUnavailableSettingsFingerprint,
-                    DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRetryDays),
+                    DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRecheckDays),
                     cancellationToken);
             }
             else

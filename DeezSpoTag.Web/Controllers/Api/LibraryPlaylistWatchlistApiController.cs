@@ -291,6 +291,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         long? FolderId,
         long? AtmosFolderId,
         string? Service,
+        List<string>? SyncTargets,
         string? PreferredEngine,
         DownloadEngineOrderSettings? DownloadEngineOrder,
         string? DownloadVariantMode,
@@ -383,13 +384,18 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var downloadEngineOrder = string.Equals(preferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal)
             ? NormalizePlaylistDownloadEngineOrder(request.DownloadEngineOrder ?? existing?.DownloadEngineOrder)
             : null;
+        var syncTargets = NormalizePlaylistSyncTargets(request.SyncTargets, request.Service, existing);
+        var legacyService = syncTargets.Count > 0
+            ? syncTargets[0]
+            : "none";
 
         return await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
                 normalizedSource,
                 request.SourceId,
                 request.FolderId,
-                WatchlistPreferenceNormalizer.IncomingText(request.Service),
+                legacyService,
+                syncTargets,
                 preferredEngine,
                 downloadEngineOrder,
                 string.IsNullOrWhiteSpace(request.DownloadVariantMode)
@@ -1008,6 +1014,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 GlobalRoutingTemplateSourceId,
                 DestinationFolderId: null,
                 Service: null,
+                SyncTargets: null,
                 PreferredEngine: null,
                 DownloadEngineOrder: null,
                 DownloadVariantMode: null,
@@ -1178,8 +1185,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 LocationStatus = locationStatus.Status,
                 LocationStatusLabel = locationStatus.Label,
                 LocationStatusDetail = locationStatus.Detail,
-                InLocalLibrary = persistedStatus?.LocalTrackId.HasValue == true
-                    || NormalizeStatusText(persistedStatus?.Status) is "completed" or "complete",
+                InLocalLibrary = persistedStatus?.LocalTrackId.HasValue == true,
                 InTargetServer = string.Equals(
                     persistedStatus?.SyncStatus,
                     "playlist_synced",
@@ -1381,8 +1387,24 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var normalized = NormalizeStatusText(status?.Status);
+        if (normalized == "downloaded")
+        {
+            return new PlaylistTrackLocationStatus(
+                "downloaded",
+                "Downloaded",
+                "Downloaded and waiting for enrichment/final library verification.");
+        }
+
         if (normalized is "completed" or "complete")
         {
+            if (status?.LocalTrackId.HasValue != true)
+            {
+                return new PlaylistTrackLocationStatus(
+                    "downloaded",
+                    "Downloaded",
+                    "Downloaded but not yet verified in the local library.");
+            }
+
             return new PlaylistTrackLocationStatus(
                 "library",
                 "In Library",
@@ -1391,9 +1413,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         if (normalized == "unavailable")
         {
-            var detail = status?.UnavailableNextRetryUtc is { } nextRetry
-                ? $"Unavailable from enabled sources. Retry after {nextRetry.ToLocalTime():g}."
-                : "Unavailable from enabled sources. Retry scheduled.";
+            var detail = status?.UnavailableNextRecheckUtc is { } nextRecheck
+                ? $"Unavailable from enabled sources. Recheck after {nextRecheck.ToLocalTime():g}."
+                : "Unavailable from enabled sources. Availability recheck scheduled.";
             return new PlaylistTrackLocationStatus("unavailable", "Unavailable", detail);
         }
 
@@ -1623,6 +1645,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 sourceId,
                 existing?.DestinationFolderId,
                 existing?.Service,
+                existing?.SyncTargets,
                 existing?.PreferredEngine,
                 existing?.DownloadEngineOrder,
                 existing?.DownloadVariantMode,
@@ -1732,6 +1755,58 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         return null;
+    }
+
+    private static IReadOnlyList<string> NormalizePlaylistSyncTargets(
+        IReadOnlyList<string>? requestedTargets,
+        string? requestedService,
+        PlaylistWatchPreferenceDto? existing)
+    {
+        var candidates = requestedTargets is { Count: > 0 }
+            ? requestedTargets
+            : BuildLegacyPlaylistSyncTargetCandidates(requestedService, existing);
+        var normalized = new List<string>(3);
+        foreach (var candidate in candidates)
+        {
+            var service = WatchlistPreferenceNormalizer.IncomingText(candidate);
+            if (string.IsNullOrWhiteSpace(service)
+                || string.Equals(service, "none", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains(service, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(service, "plex", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(service, "jellyfin", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(service, "navidrome", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized.Add(service);
+            }
+        }
+
+        return normalized;
+    }
+
+    private static IReadOnlyList<string> BuildLegacyPlaylistSyncTargetCandidates(
+        string? requestedService,
+        PlaylistWatchPreferenceDto? existing)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedService))
+        {
+            return [requestedService];
+        }
+
+        if (existing?.SyncTargets is { Count: > 0 })
+        {
+            return existing.SyncTargets;
+        }
+
+        if (!string.IsNullOrWhiteSpace(existing?.Service))
+        {
+            return [existing.Service];
+        }
+
+        return ["plex"];
     }
 
     private async Task SetPlaylistWatchSchedulerFocusAsync(

@@ -256,6 +256,17 @@ public sealed class PlaylistWatchHostedService : BackgroundService
         CleanupStaleState(allItems);
         await SeedPersistedLastRunsAsync(allItems, repository, stoppingToken);
         await RecoverInvalidPendingWatchClaimsAsync(repository, serviceProvider, stoppingToken);
+        if (await HasActiveWatchlistBatchWorkAsync(repository, serviceProvider, stoppingToken))
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Watchlist batch deferred because previous watchlist download, enrichment, finalization, or claim work is still active.");
+            }
+
+            return;
+        }
+
         var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
             playlistItems,
             settings,
@@ -274,6 +285,16 @@ public sealed class PlaylistWatchHostedService : BackgroundService
             serviceProvider,
             runQueueBudget,
             stoppingToken);
+    }
+
+    private static async Task<bool> HasActiveWatchlistBatchWorkAsync(
+        LibraryRepository repository,
+        IServiceProvider serviceProvider,
+        CancellationToken cancellationToken)
+    {
+        var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        return await queueRepository.HasActiveWatchlistDownloadsAsync(cancellationToken)
+            || await repository.HasPendingPlaylistWatchBatchWorkAsync(cancellationToken);
     }
 
     private async Task TryRepairWatchlistDestinationIntegrityAsync(
@@ -834,6 +855,9 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
             await repository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 claim.QueueUuid,
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
                 "failed",
                 cancellationToken);
             await repository.UpdatePlaylistWatchTrackStatusAsync(
@@ -873,8 +897,14 @@ public sealed class PlaylistWatchHostedService : BackgroundService
 
         var moveStatus = NormalizeStatus(queueItem.FinalizationStatus);
         var enrichmentStatus = NormalizeStatus(queueItem.EnrichmentStatus);
-        return moveStatus is "pending" or "running"
-            || enrichmentStatus is "pending" or "running";
+        return !IsTerminalWatchFinalizationFailure(moveStatus)
+            && !IsTerminalWatchFinalizationFailure(enrichmentStatus);
+    }
+
+    private static bool IsTerminalWatchFinalizationFailure(string? status)
+    {
+        var normalized = NormalizeStatus(status);
+        return normalized is "failed" or "error" or "canceled" or "cancelled" or "blocked" or "interrupted";
     }
 
     private static string NormalizeStatus(string? status)

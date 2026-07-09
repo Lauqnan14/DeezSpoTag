@@ -695,9 +695,17 @@
 }
 
 .track-location-status-pill--target,
-.track-location-status-pill--library {
+.track-location-status-pill--library,
+.track-location-status-pill--synced,
+.track-location-status-pill--redirected {
     border-color: color-mix(in srgb, #31d07d 42%, transparent);
     color: #31d07d;
+}
+
+.track-location-status-pill--downloaded,
+.track-location-status-pill--waiting_for_target {
+    border-color: color-mix(in srgb, #00c2ff 42%, transparent);
+    color: #00c2ff;
 }
 
 .track-location-status-pill--queued {
@@ -725,6 +733,11 @@
 .track-location-status-pill--blocked {
     border-color: color-mix(in srgb, #f5b84b 42%, transparent);
     color: #f5b84b;
+}
+
+.track-location-status-pill--review {
+    border-color: color-mix(in srgb, #d887ff 42%, transparent);
+    color: #d887ff;
 }
 
 .track-location-status-pill--unavailable {
@@ -4994,7 +5007,7 @@ function resolveMonitoredTrackLocationStatus(track, source) {
 
 function normalizeTrackLocationStatus(status) {
     const normalized = String(status || '').trim().toLowerCase();
-    return ['target', 'library', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'unavailable', 'missing'].includes(normalized)
+    return ['target', 'library', 'synced', 'redirected', 'waiting_for_target', 'downloaded', 'review', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'unavailable', 'missing'].includes(normalized)
         ? normalized
         : 'missing';
 }
@@ -5004,7 +5017,17 @@ function resolveTrackLocationStatusLabel(status) {
         case 'target':
             return 'Plex library';
         case 'library':
-            return 'Library';
+            return 'In Library';
+        case 'synced':
+            return 'Synced';
+        case 'redirected':
+            return 'Redirected';
+        case 'waiting_for_target':
+            return 'Waiting for target';
+        case 'downloaded':
+            return 'Downloaded';
+        case 'review':
+            return 'Review';
         case 'queued':
             return 'Queued';
         case 'downloading':

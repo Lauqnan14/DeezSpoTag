@@ -148,6 +148,39 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PlaylistWatchPreferences_Save_PersistsMultipleSyncTargets()
+    {
+        var controller = CreatePlaylistWatchlistController();
+        var result = await controller.SavePreferences(
+            new List<LibraryPlaylistWatchlistApiController.PlaylistWatchPreferenceRequest>
+            {
+                new(
+                    Source: "spotify",
+                    SourceId: "pl-sync-targets",
+                    FolderId: null,
+                    AtmosFolderId: null,
+                    Service: "plex",
+                    SyncTargets: new List<string> { "plex", "navidrome" },
+                    PreferredEngine: null,
+                    DownloadEngineOrder: null,
+                    DownloadVariantMode: null,
+                    SyncMode: "mirror",
+                    UpdateArtwork: true,
+                    ReuseSavedArtwork: false)
+            },
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(
+            "spotify",
+            "pl-sync-targets",
+            CancellationToken.None);
+        Assert.NotNull(preference);
+        Assert.Equal("plex", preference!.Service);
+        Assert.Equal(new[] { "plex", "navidrome" }, preference.SyncTargets);
+    }
+
+    [Fact]
     public async Task PlaylistWatchlist_PriorityOrder_RequiresCompleteOrder_And_FocusesFirstPlaylist()
     {
         var controller = CreatePlaylistWatchlistController();
@@ -278,6 +311,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
                 SourceId: "37i9dQZEVXcTTTHAwtPLUs",
                 DestinationFolderId: defaultFolder.Id,
                 Service: null,
+                SyncTargets: null,
                 PreferredEngine: null,
                 DownloadEngineOrder: null,
                 DownloadVariantMode: null,

@@ -1486,6 +1486,7 @@ public partial class Program
                 AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
+                CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncService>>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService>();

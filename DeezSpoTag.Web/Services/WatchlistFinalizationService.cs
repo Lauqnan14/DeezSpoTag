@@ -93,6 +93,13 @@ public sealed class WatchlistFinalizationService
         var sent = 0;
         foreach (var notification in notifications)
         {
+            await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                item.QueueUuid,
+                notification.Source,
+                notification.PlaylistId,
+                notification.TrackId,
+                "completed",
+                cancellationToken);
             await _notifier.NotifyFinalizedAsync(
                 notification.Source,
                 notification.PlaylistId,

@@ -34,6 +34,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     private const string PausedStatus = "paused";
     private const string PendingStatus = "pending";
     private const string CompletedStatus = "completed";
+    private const string DownloadedStatus = "downloaded";
     private const string UpdateQueueEvent = "updateQueue";
     private readonly ILogger<DeezSpoTagApp> _logger;
     private readonly DeezSpoTag.Services.Settings.DeezSpoTagSettingsService _settingsService;
@@ -719,11 +720,15 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return;
         }
 
+        var watchlistStatus = string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase)
+            ? DownloadedStatus
+            : status;
+
         await libraryRepository.UpdatePlaylistWatchTrackStatusAsync(
             source,
             playlistId,
             trackId,
-            status,
+            watchlistStatus,
             cancellationToken);
 
         var queueUuid = ResolveQueueUuid(payloadJson);
@@ -735,16 +740,13 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 source,
                 playlistId,
                 trackId);
-            await NotifySharedWatchDownloadClaimsAsync(
+            await MarkSharedWatchDownloadClaimsDownloadedAsync(
                 notification,
                 cancellationToken);
-
-            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
-                queueUuid,
-                CompletedStatus,
-                cancellationToken);
+            return;
         }
-        else if (IsFailedOrCanceledWatchStatus(status))
+
+        if (IsFailedOrCanceledWatchStatus(status))
         {
             await UpdateSharedWatchDownloadClaimsStatusAsync(
                 libraryRepository,
@@ -756,12 +758,15 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 cancellationToken);
             await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 queueUuid,
+                source,
+                playlistId,
+                trackId,
                 status,
                 cancellationToken);
         }
     }
 
-    private static async Task NotifySharedWatchDownloadClaimsAsync(
+    private static async Task MarkSharedWatchDownloadClaimsDownloadedAsync(
         SharedWatchDownloadNotification notification,
         CancellationToken cancellationToken)
     {
@@ -787,7 +792,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 claim.Source,
                 claim.SourceId,
                 claim.TrackSourceId,
-                CompletedStatus,
+                DownloadedStatus,
                 cancellationToken);
         }
     }

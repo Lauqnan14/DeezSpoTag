@@ -377,6 +377,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 SourceId: " pl-123  ",
                 DestinationFolderId: seeded.Folder.Id,
                 Service: "spotify",
+                SyncTargets: null,
                 PreferredEngine: "native",
                 DownloadEngineOrder: null,
                 DownloadVariantMode: "default",
@@ -545,7 +546,12 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Single(playlistPendingClaims);
         Assert.Equal("queue-shared-1", playlistPendingClaims.Single().QueueUuid);
 
-        var claimUpdates = await _repository.UpdatePlaylistWatchDownloadClaimStatusAsync("queue-shared-1", "completed");
+        var claimUpdates = await _repository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+            "queue-shared-1",
+            "spotify",
+            "pl-123",
+            "dz-song-2",
+            "completed");
         Assert.Equal(1, claimUpdates);
         Assert.Equal("completed", (await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1")).Single().Status);
         Assert.Empty(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));

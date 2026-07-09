@@ -61,6 +61,60 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
         Assert.DoesNotContain("[HttpGet(\"tracklist/{source}/{sourceId}\")]", controllerSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Monitored_playlist_state_column_accepts_every_backend_location_status()
+    {
+        var viewSource = File.ReadAllText(FindSourceFile(
+            "DeezSpoTag.Web",
+            "Views",
+            "Tracklist",
+            "Index.cshtml"));
+        var controllerSource = File.ReadAllText(FindSourceFile(
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+
+        string[] statuses =
+        [
+            "blocked",
+            "queued",
+            "downloading",
+            "paused",
+            "retrying",
+            "failed",
+            "cancelled",
+            "review",
+            "redirected",
+            "synced",
+            "waiting_for_target",
+            "downloaded",
+            "library",
+            "unavailable",
+            "missing"
+        ];
+
+        foreach (var status in statuses)
+        {
+            Assert.Contains($"\"{status}\"", controllerSource, StringComparison.Ordinal);
+            Assert.Contains($"'{status}'", viewSource, StringComparison.Ordinal);
+        }
+
+        string[] styledStatuses =
+        [
+            "synced",
+            "redirected",
+            "waiting_for_target",
+            "downloaded",
+            "review"
+        ];
+
+        foreach (var status in styledStatuses)
+        {
+            Assert.Contains($"track-location-status-pill--{status}", viewSource, StringComparison.Ordinal);
+        }
+    }
+
     private static string FindSourceFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

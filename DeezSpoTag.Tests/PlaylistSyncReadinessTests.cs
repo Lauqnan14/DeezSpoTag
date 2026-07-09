@@ -110,6 +110,7 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
                 SourceId: "playlist-1",
                 DestinationFolderId: 12,
                 Service: "plex",
+                SyncTargets: null,
                 PreferredEngine: null,
                 DownloadEngineOrder: null,
                 DownloadVariantMode: null,

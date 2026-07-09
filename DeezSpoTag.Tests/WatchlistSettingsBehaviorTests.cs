@@ -147,6 +147,21 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void PlaylistSettings_UseIndependentSyncTargetCheckboxes()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Contains("createPlaylistSyncTargetsSection", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("playlistSyncTargetOptions", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("data-playlist-sync-target", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.Contains("syncTargets:", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ps-service-select", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-playlist-service", watchlistScriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("playlistServerOptions", watchlistScriptSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SettingsView_CustomDownloadSourceOrderIsCollapsible()
     {
         var repoRoot = ResolveRepoRoot();
@@ -280,7 +295,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
         var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadDedupeService.cs"));
 
-        Assert.Contains("var selection = await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("selection = await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
         Assert.Contains("queueOptions,", source, StringComparison.Ordinal);
         Assert.Contains("GetRequiredService<DownloadDedupeService>()", source, StringComparison.Ordinal);
         Assert.Contains("DownloadDedupeService.FromDownloadIntent", source, StringComparison.Ordinal);
@@ -381,6 +396,72 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void PlaylistTrackStatus_DoesNotTreatEngineCompletionAsLibraryPresence()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var controllerSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryPlaylistWatchlistApiController.cs"));
+        var appSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "DeezSpoTagApp.cs"));
+        var helperSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "EngineAudioPostDownloadHelper.cs"));
+
+        Assert.Contains("InLocalLibrary = persistedStatus?.LocalTrackId.HasValue == true", controllerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("NormalizeStatusText(persistedStatus?.Status) is \"completed\" or \"complete\"", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("private const string DownloadedStatus = \"downloaded\";", appSource, StringComparison.Ordinal);
+        Assert.Contains("private const string DownloadedStatus = \"downloaded\";", helperSource, StringComparison.Ordinal);
+        Assert.Contains("MarkSharedWatchDownloadClaimsDownloadedAsync", appSource, StringComparison.Ordinal);
+        Assert.Contains("MarkSharedWatchDownloadClaimsDownloadedAsync", helperSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                queueUuid,\n                CompletedStatus", appSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                resolvedQueueUuid,\n                CompletedStatus", helperSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatchClaims_CompleteOnlyAfterFinalizationVerification()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var repositorySource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Library",
+            "LibraryRepository.cs"));
+        var finalizationSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Services",
+            "WatchlistFinalizationService.cs"));
+        var watchSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Services",
+            "PlaylistWatchService.cs"));
+        var hostedSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Services",
+            "PlaylistWatchHostedService.cs"));
+
+        Assert.Contains("SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' END", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                item.QueueUuid,\n                notification.Source,", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsTerminalWatchFinalizationFailure", watchSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsTerminalWatchFinalizationFailure", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("return !IsTerminalWatchFinalizationFailure(moveStatus)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("return !IsTerminalWatchFinalizationFailure(moveStatus)", hostedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistWatch_MirrorSyncDoesNotBlockMissingTrackQueueing()
     {
         var repoRoot = ResolveRepoRoot();
@@ -419,6 +500,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("return remoteUrl;", visualSource, StringComparison.Ordinal);
         Assert.Contains("ResolveActiveFileName", visualSource, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("VerifyAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
@@ -577,6 +659,27 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("[HttpGet(\"presentation-summaries\")]", playlistController, StringComparison.Ordinal);
         Assert.DoesNotContain("fetchJson('/api/library/playlists/presentation-summaries')", watchlistScript, StringComparison.Ordinal);
         Assert.Contains("renderPlaylistWatchlistPresentationBadges(item)", watchlistScript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistSyncCompletion_RefreshesMonitoredPlaylistBadgesWithoutWaitingForTabReload()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
+        var crossDeviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "CrossDeviceSyncService.cs"));
+        var siteScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "site.js"));
+        var watchlistScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Contains("PublishWatchlistSyncUpdatedAsync(playlist, result, cancellationToken)", syncSource, StringComparison.Ordinal);
+        Assert.Contains("PublishWatchlistUpdatedAsync(", syncSource, StringComparison.Ordinal);
+        Assert.Contains("playlist_sync_completed", syncSource, StringComparison.Ordinal);
+        Assert.Contains("SendAsync(\"watchlistUpdated\"", crossDeviceSource, StringComparison.Ordinal);
+        Assert.Contains("connection.on('watchlistUpdated'", siteScript, StringComparison.Ordinal);
+        Assert.Contains("deezspotag:watchlist-updated", siteScript, StringComparison.Ordinal);
+        Assert.Contains("bindPlaylistWatchlistRealtimeRefresh", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("deezspotag:watchlist-updated", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("void loadPlaylistWatchlist();", watchlistScript, StringComparison.Ordinal);
+        Assert.Contains("container.dataset.stale = 'true';", watchlistScript, StringComparison.Ordinal);
     }
 
     public void Dispose()

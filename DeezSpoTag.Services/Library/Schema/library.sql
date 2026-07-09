@@ -439,6 +439,7 @@ CREATE TABLE IF NOT EXISTS playlist_watch_preferences (
     destination_folder_id BIGINT,
     atmos_destination_folder_id BIGINT,
     service TEXT,
+    sync_targets_json TEXT,
     preferred_engine TEXT,
     download_engine_order_json TEXT,
     download_variant_mode TEXT,

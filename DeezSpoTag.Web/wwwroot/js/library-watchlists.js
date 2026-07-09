@@ -668,11 +668,10 @@ function createArtistWatchOptionsSection(currentDiscography, latestOnly, selecte
     return artistOptionsSection;
 }
 
-const playlistServerOptions = [
+const playlistSyncTargetOptions = [
     { value: 'plex', label: 'Plex' },
     { value: 'jellyfin', label: 'Jellyfin' },
-    { value: 'navidrome', label: 'Navidrome' },
-    { value: 'none', label: 'No media server (download only)' }
+    { value: 'navidrome', label: 'Navidrome' }
 ];
 
 let watchlistDownloadSourceCatalogPromise = null;
@@ -952,6 +951,79 @@ function createPlaylistSettingsSelectSection({
     }
 
     return { section, select };
+}
+
+function normalizePlaylistSyncTargets(targets, fallbackService = null) {
+    const values = Array.isArray(targets)
+        ? targets
+        : (fallbackService ? [fallbackService] : ['plex']);
+    const normalized = [];
+    values.forEach(value => {
+        const target = String(value || '').trim().toLowerCase();
+        if (!target || target === 'none' || normalized.includes(target)) {
+            return;
+        }
+
+        if (playlistSyncTargetOptions.some(option => option.value === target)) {
+            normalized.push(target);
+        }
+    });
+    return normalized;
+}
+
+function getPrimaryPlaylistSyncTarget(syncTargets) {
+    const targets = normalizePlaylistSyncTargets(syncTargets);
+    return targets.length ? targets[0] : 'none';
+}
+
+function createPlaylistSyncTargetsSection(source, sourceId, selectedTargets) {
+    const section = document.createElement('div');
+    section.className = 'playlist-settings-section playlist-sync-targets-section';
+    const title = document.createElement('div');
+    title.className = 'playlist-settings-section-title';
+    title.textContent = 'Server';
+    const grid = document.createElement('div');
+    grid.className = 'playlist-sync-target-grid';
+    const selected = new Set(normalizePlaylistSyncTargets(selectedTargets));
+
+    playlistSyncTargetOptions.forEach(option => {
+        const row = document.createElement('label');
+        row.className = 'checkbox-group playlist-sync-target-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.className = 'ps-sync-target-checkbox';
+        input.value = option.value;
+        input.checked = selected.has(option.value);
+        input.dataset.playlistSyncTarget = source;
+        input.dataset.playlistId = sourceId;
+        const label = document.createElement('span');
+        label.textContent = option.label;
+        row.appendChild(input);
+        row.appendChild(label);
+        grid.appendChild(row);
+    });
+
+    const hint = document.createElement('div');
+    hint.className = 'playlist-settings-help';
+    hint.textContent = 'Leave all unchecked to keep downloads without recreating server playlists.';
+    section.appendChild(title);
+    section.appendChild(grid);
+    section.appendChild(hint);
+    return section;
+}
+
+function collectPlaylistSyncTargets(container, source, sourceId) {
+    return Array.from(container.querySelectorAll(`[data-playlist-sync-target="${source}"][data-playlist-id="${sourceId}"]`))
+        .filter(input => input.checked)
+        .map(input => String(input.value || '').trim().toLowerCase())
+        .filter(Boolean);
+}
+
+function collectPlaylistSyncTargetsFromPanel(panel) {
+    return Array.from(panel.querySelectorAll('.ps-sync-target-checkbox'))
+        .filter(input => input.checked)
+        .map(input => String(input.value || '').trim().toLowerCase())
+        .filter(Boolean);
 }
 
 async function openArtistSettingsPanel({
@@ -1373,6 +1445,36 @@ function renderPlaylistWatchlistStateBadge(count, state, label, icon) {
 
 function renderPlaylistWatchlistPriorityBadge(priorityNumber) {
     return `<div class="playlist-watchlist-priority-badge" title="Sync priority ${priorityNumber}">${escapeHtml(String(priorityNumber))}</div>`;
+}
+
+function isPlaylistWatchlistPaneActiveForRefresh() {
+    const watchlistPane = document.getElementById('watchlist-content');
+    const playlistPane = document.getElementById('watchlist-playlists-content');
+    return Boolean(
+        playlistPane
+        && (playlistPane.classList.contains('active') || playlistPane.classList.contains('show'))
+        && (!watchlistPane || watchlistPane.classList.contains('active') || watchlistPane.classList.contains('show')));
+}
+
+function bindPlaylistWatchlistRealtimeRefresh() {
+    if (globalThis.__deezspotagPlaylistWatchlistRealtimeRefreshBound === true) {
+        return;
+    }
+
+    globalThis.__deezspotagPlaylistWatchlistRealtimeRefreshBound = true;
+    globalThis.addEventListener('deezspotag:watchlist-updated', () => {
+        const container = document.getElementById('playlistWatchlistContainer');
+        if (!container) {
+            return;
+        }
+
+        if (isPlaylistWatchlistPaneActiveForRefresh()) {
+            void loadPlaylistWatchlist();
+            return;
+        }
+
+        container.dataset.stale = 'true';
+    });
 }
 
 function refreshPlaylistWatchlistPriorityBadges(container) {
@@ -1909,6 +2011,7 @@ function bindPlaylistWatchlistTabHydration() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    bindPlaylistWatchlistRealtimeRefresh();
     bindPlaylistWatchlistTabHydration();
 });
 
@@ -2722,15 +2825,7 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     atmosFolderSection.appendChild(atmosFolderHint);
     panel.appendChild(atmosFolderSection);
 
-    const playlistServer = createPlaylistSettingsSelectSection({
-        title: 'Server',
-        selectClass: 'ps-service-select',
-        selectId: `ps-service-${source}-${sourceId}`,
-        options: playlistServerOptions,
-        value: 'plex',
-        helpText: 'Choose "No media server" to keep downloads without recreating server playlists.'
-    });
-    panel.appendChild(playlistServer.section);
+    panel.appendChild(createPlaylistSyncTargetsSection(source, sourceId, stored.syncTargets));
 
     const playlistEngine = createPlaylistSettingsSelectSection({
         title: 'Download engine',
@@ -3276,7 +3371,6 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
     setTimeout(() => {
         const folderSel = panel.querySelector('.ps-folder-select');
         const atmosFolderSel = panel.querySelector('.ps-atmos-folder-select');
-        const serviceSel = panel.querySelector('.ps-service-select');
         const engineSel = panel.querySelector('.ps-engine-select');
         const downloadModeSel = panel.querySelector('.ps-download-mode-select');
         const syncModeSel = panel.querySelector('.ps-sync-mode-select');
@@ -3305,10 +3399,6 @@ async function openPlaylistSettingsPanel(source, sourceId, playlistName, playlis
         };
         if (folderSel && stored.folderId) folderSel.value = String(stored.folderId);
         if (atmosFolderSel) atmosFolderSel.value = stored.atmosFolderId ? String(stored.atmosFolderId) : '';
-        if (serviceSel) {
-            const normalizedService = String(stored.service || '').trim().toLowerCase();
-            serviceSel.value = normalizedService || 'plex';
-        }
         if (engineSel) engineSel.value = stored.preferredEngine || '';
         syncCustomEngineOrderVisibility();
         if (downloadModeSel) downloadModeSel.value = stored.downloadVariantMode || 'standard';
@@ -3411,6 +3501,7 @@ async function savePlaylistSettingsFromPanel({
                 folderId: values.folderId,
                 atmosFolderId: values.atmosFolderId,
                 service: values.service,
+                syncTargets: values.syncTargets,
                 preferredEngine: values.preferredEngine,
                 downloadEngineOrder: values.downloadEngineOrder,
                 downloadVariantMode: values.downloadVariantMode,
@@ -3436,6 +3527,7 @@ async function savePlaylistSettingsFromPanel({
             folderId: values.folderId ? String(values.folderId) : '',
             atmosFolderId: values.atmosFolderId ? String(values.atmosFolderId) : '',
             service: values.service,
+            syncTargets: values.syncTargets,
             preferredEngine: values.preferredEngine,
             downloadEngineOrder: values.downloadEngineOrder,
             downloadVariantMode: values.downloadVariantMode,
@@ -3461,7 +3553,7 @@ async function savePlaylistSettingsFromPanel({
 function collectPlaylistSettingsValues(panel) {
     const folderSel = panel.querySelector('.ps-folder-select');
     const atmosFolderSel = panel.querySelector('.ps-atmos-folder-select');
-    const serviceSel = panel.querySelector('.ps-service-select');
+    const syncTargets = collectPlaylistSyncTargetsFromPanel(panel);
     const engineSel = panel.querySelector('.ps-engine-select');
     const downloadModeSel = panel.querySelector('.ps-download-mode-select');
     const syncModeSel = panel.querySelector('.ps-sync-mode-select');
@@ -3473,7 +3565,8 @@ function collectPlaylistSettingsValues(panel) {
     return {
         folderId: folderSel?.value ? Number(folderSel.value) : null,
         atmosFolderId: atmosFolderSel?.value ? Number(atmosFolderSel.value) : null,
-        service: serviceSel?.value || 'plex',
+        service: getPrimaryPlaylistSyncTarget(syncTargets),
+        syncTargets,
         preferredEngine: engineSel?.value || '',
         downloadEngineOrder: String(engineSel?.value || '').trim().toLowerCase() === 'custom'
             ? collectWatchlistDownloadEngineOrder(panel)
@@ -3615,7 +3708,8 @@ function normalizePlaylistPreferenceMap(rawPrefs) {
         mapped[key] = {
             folderId: item.destinationFolderId == null ? '' : String(item.destinationFolderId),
             atmosFolderId: item.atmosDestinationFolderId == null ? '' : String(item.atmosDestinationFolderId),
-            service: item.service || 'plex',
+            syncTargets: normalizePlaylistSyncTargets(item.syncTargets, item.service),
+            service: getPrimaryPlaylistSyncTarget(item.syncTargets || [item.service]),
             preferredEngine: item.preferredEngine || '',
             downloadEngineOrder: item.downloadEngineOrder || null,
             downloadVariantMode: item.downloadVariantMode || 'standard',
@@ -3651,12 +3745,12 @@ function storePlaylistPreference(source, sourceId, updates) {
 async function persistPlaylistPreference(container, source, sourceId) {
     const folderSelect = container.querySelector(`[data-playlist-folder="${source}"][data-playlist-id="${sourceId}"]`);
     const atmosFolderSelect = container.querySelector(`[data-playlist-atmos-folder="${source}"][data-playlist-id="${sourceId}"]`);
-    const serviceSelect = container.querySelector(`[data-playlist-service="${source}"][data-playlist-id="${sourceId}"]`);
+    const syncTargets = collectPlaylistSyncTargets(container, source, sourceId);
     const engineSelect = container.querySelector(`[data-playlist-engine="${source}"][data-playlist-id="${sourceId}"]`);
     const downloadModeSelect = container.querySelector(`[data-playlist-download-mode="${source}"][data-playlist-id="${sourceId}"]`);
     const folderId = folderSelect?.value || null;
     const atmosFolderId = atmosFolderSelect?.value || '';
-    const service = serviceSelect?.value || 'plex';
+    const service = getPrimaryPlaylistSyncTarget(syncTargets);
     const preferredEngine = engineSelect?.value || '';
     const downloadVariantMode = downloadModeSelect?.value || 'standard';
     const syncMode = container.querySelector(`[data-playlist-sync-mode="${source}"][data-playlist-id="${sourceId}"]`)?.value || 'mirror';
@@ -3669,6 +3763,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
         folderId: folderId || '',
         atmosFolderId: atmosFolderId || '',
         service,
+        syncTargets,
         preferredEngine,
         downloadVariantMode,
         syncMode,
@@ -3681,6 +3776,7 @@ async function persistPlaylistPreference(container, source, sourceId) {
         folderId: folderId ? Number(folderId) : null,
         atmosFolderId: atmosFolderId ? Number(atmosFolderId) : null,
         service,
+        syncTargets,
         preferredEngine,
         downloadVariantMode,
         syncMode,
@@ -3704,13 +3800,26 @@ function savePlaylistWatchlistPreferences() {
             prefs[key] = { ...prefs[key], folderId: select.value || '' };
         }
     });
-    document.querySelectorAll('[data-playlist-service]').forEach(select => {
-        const source = select.dataset.playlistService;
-        const sourceId = select.dataset.playlistId;
+    const syncTargetsByKey = {};
+    document.querySelectorAll('[data-playlist-sync-target]').forEach(input => {
+        const source = input.dataset.playlistSyncTarget;
+        const sourceId = input.dataset.playlistId;
         const key = source && sourceId ? `${source}:${sourceId}` : '';
-        if (key) {
-            prefs[key] = { ...prefs[key], service: select.value || 'plex' };
+        if (!key) {
+            return;
         }
+
+        syncTargetsByKey[key] = syncTargetsByKey[key] || [];
+        if (input.checked) {
+            syncTargetsByKey[key].push(String(input.value || '').trim().toLowerCase());
+        }
+    });
+    Object.entries(syncTargetsByKey).forEach(([key, syncTargets]) => {
+        prefs[key] = {
+            ...prefs[key],
+            syncTargets,
+            service: getPrimaryPlaylistSyncTarget(syncTargets)
+        };
     });
     document.querySelectorAll('[data-playlist-engine]').forEach(select => {
         const source = select.dataset.playlistEngine;
@@ -3765,7 +3874,8 @@ async function savePlaylistPreferencesToServer(prefs) {
                 sourceId: parts.slice(1).join(':'),
                 folderId: value?.folderId ? Number(value.folderId) : null,
                 atmosFolderId: value?.atmosFolderId ? Number(value.atmosFolderId) : null,
-                service: value?.service || null,
+                service: value?.service || getPrimaryPlaylistSyncTarget(value?.syncTargets || []),
+                syncTargets: normalizePlaylistSyncTargets(value?.syncTargets, value?.service),
                 preferredEngine: value?.preferredEngine || null,
                 updateArtwork: normalizedArtwork.updateArtwork,
                 reuseSavedArtwork: normalizedArtwork.reuseSavedArtwork

@@ -644,7 +644,17 @@ FROM download_task
         const string sql = @"
 SELECT 1
 FROM download_task
-WHERE lower(status) IN ('queued', 'resolving', 'preparing', 'prepared', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+WHERE (
+      lower(status) IN ('queued', 'resolving', 'preparing', 'prepared', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+      OR (
+          lower(status) IN ('completed', 'complete')
+          AND destination_folder_id IS NOT NULL
+          AND (
+              lower(COALESCE(move_status, '')) IN ('', 'pending', 'running')
+              OR lower(COALESCE(enrichment_status, '')) IN ('', 'pending', 'running')
+          )
+      )
+  )
   AND json_valid(payload)
   AND (
       COALESCE(CAST(json_extract(payload, '$.WatchlistOrigin') AS TEXT), '') <> ''

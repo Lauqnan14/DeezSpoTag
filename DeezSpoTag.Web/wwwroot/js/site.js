@@ -890,6 +890,9 @@ globalThis.DeezSpoTag = {
         connection.on('libraryUpdated', (eventPayload) => {
             this.handleLibraryUpdated(eventPayload);
         });
+        connection.on('watchlistUpdated', (eventPayload) => {
+            this.handleWatchlistUpdated(eventPayload);
+        });
 
         connection.start().catch((error) => {
             console.debug('Cross-device sync unavailable.', error);
@@ -900,6 +903,12 @@ globalThis.DeezSpoTag = {
 
     handleLibraryUpdated(eventPayload) {
         globalThis.dispatchEvent(new CustomEvent('deezspotag:library-updated', {
+            detail: eventPayload || {}
+        }));
+    },
+
+    handleWatchlistUpdated(eventPayload) {
+        globalThis.dispatchEvent(new CustomEvent('deezspotag:watchlist-updated', {
             detail: eventPayload || {}
         }));
     },

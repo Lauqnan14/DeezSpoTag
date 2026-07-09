@@ -150,6 +150,7 @@ public sealed class ArtistPopularSongsSyncService
             SourceId: playlist.SourceId,
             DestinationFolderId: null,
             Service: service,
+            SyncTargets: [service],
             PreferredEngine: null,
             DownloadEngineOrder: null,
             DownloadVariantMode: null,

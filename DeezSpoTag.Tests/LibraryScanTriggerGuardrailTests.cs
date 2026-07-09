@@ -239,6 +239,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -276,7 +277,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         var intentSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentService.cs");
 
         Assert.Contains("GetPlaylistWatchDownloadClaimsAsync", helperSource, StringComparison.Ordinal);
-        Assert.Contains("NotifySharedWatchDownloadClaimsAsync", helperSource, StringComparison.Ordinal);
+        Assert.Contains("MarkSharedWatchDownloadClaimsDownloadedAsync", helperSource, StringComparison.Ordinal);
         Assert.Contains("status: \"pending\"", helperSource, StringComparison.Ordinal);
         Assert.Contains("UpdateSharedWatchDownloadClaimsStatusAsync", helperSource, StringComparison.Ordinal);
         Assert.Contains("GetPlaylistWatchDownloadClaimsAsync", appSource, StringComparison.Ordinal);

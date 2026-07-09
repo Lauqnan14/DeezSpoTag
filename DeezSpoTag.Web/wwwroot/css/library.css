@@ -1351,6 +1351,32 @@
     flex: 0 0 auto;
 }
 
+.watchlist-playlist-settings .playlist-sync-target-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.watchlist-playlist-settings .playlist-sync-target-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 36px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.watchlist-playlist-settings .playlist-sync-target-option span {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .watchlist-playlist-settings .artist-watch-option-discography {
     grid-column: 1 / -1;
 }
