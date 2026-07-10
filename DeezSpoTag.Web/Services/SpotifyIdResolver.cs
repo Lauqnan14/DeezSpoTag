@@ -23,14 +23,22 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
         if (!string.IsNullOrWhiteSpace(isrc))
         {
             var isrcQuery = $"isrc:{isrc.Trim()}";
-            var isrcResponse = await _searchService.SearchByTypeAsync(isrcQuery, "track", 5, 0, cancellationToken);
-            var isrcItem = isrcResponse?.Items?.FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(isrcItem?.Id))
+            var isrcResponse = await _searchService.SearchByTypeAsync(isrcQuery, "track", 10, 0, cancellationToken);
+            var normalizedIsrc = NormalizeIsrc(isrc);
+            var isrcItems = isrcResponse?.Items
+                .Where(item => string.Equals(NormalizeIsrc(item.Isrc), normalizedIsrc, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var isrcCandidate = SelectBestCandidate(
+                isrcItems,
+                title,
+                artist,
+                album,
+                isrc,
+                allowFirstWhenMetadataMissing: true);
+            if (!string.IsNullOrWhiteSpace(isrcCandidate?.Id))
             {
-                return isrcItem.Id;
+                return isrcCandidate.Id;
             }
-
-            return null;
         }
 
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
@@ -55,42 +63,87 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
             return null;
         }
 
-        var best = PickBestMatch(response.Items, title, artist, album);
-        return string.IsNullOrWhiteSpace(best?.Id) ? response.Items[0].Id : best.Id;
+        return SelectBestCandidate(
+            response.Items,
+            title,
+            artist,
+            album,
+            isrc,
+            allowFirstWhenMetadataMissing: false)?.Id;
     }
 
-    private static SpotifySearchItem? PickBestMatch(
-        List<SpotifySearchItem> items,
+    private static SpotifySearchItem? SelectBestCandidate(
+        List<SpotifySearchItem>? items,
         string title,
         string artist,
-        string? album)
+        string? album,
+        string? isrc,
+        bool allowFirstWhenMetadataMissing)
     {
+        if (items == null || items.Count == 0)
+        {
+            return null;
+        }
+
+        var normalizedIsrc = NormalizeIsrc(isrc);
         var targetTitle = SpotifyTextNormalizer.NormalizeToken(title);
         var targetArtist = SpotifyTextNormalizer.NormalizeToken(artist);
         var targetAlbum = SpotifyTextNormalizer.NormalizeToken(album);
+        if (!string.IsNullOrWhiteSpace(normalizedIsrc))
+        {
+            var exactIsrc = items.FirstOrDefault(item =>
+                string.Equals(NormalizeIsrc(item.Isrc), normalizedIsrc, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(item.Id));
+            if (exactIsrc != null)
+            {
+                return exactIsrc;
+            }
+
+            return null;
+        }
+
+        var hasMetadataTarget = !string.IsNullOrWhiteSpace(targetTitle)
+            || !string.IsNullOrWhiteSpace(targetArtist)
+            || !string.IsNullOrWhiteSpace(targetAlbum);
+        if (!hasMetadataTarget)
+        {
+            return allowFirstWhenMetadataMissing
+                ? items.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Id))
+                : null;
+        }
 
         SpotifySearchItem? best = null;
         var bestScore = -1;
+        var bestAcceptable = false;
 
         foreach (var item in items)
         {
-            var score = CalculateMatchScore(item, targetTitle, targetArtist, targetAlbum);
+            if (!string.IsNullOrWhiteSpace(item.Isrc)
+                && !string.IsNullOrWhiteSpace(normalizedIsrc)
+                && !string.Equals(NormalizeIsrc(item.Isrc), normalizedIsrc, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var score = CalculateMatchScore(item, targetTitle, targetArtist, targetAlbum, out var acceptable);
 
             if (score > bestScore)
             {
                 bestScore = score;
                 best = item;
+                bestAcceptable = acceptable;
             }
         }
 
-        return best;
+        return bestAcceptable ? best : null;
     }
 
     private static int CalculateMatchScore(
         SpotifySearchItem item,
         string targetTitle,
         string targetArtist,
-        string targetAlbum)
+        string targetAlbum,
+        out bool acceptable)
     {
         var itemTitle = SpotifyTextNormalizer.NormalizeToken(item.Name);
         var titleScore = CalculateTitleScore(itemTitle, targetTitle);
@@ -98,7 +151,34 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
         var (itemArtists, itemAlbum) = ParseSubtitle(item.Subtitle);
         var artistScore = CalculateArtistScore(SpotifyTextNormalizer.NormalizeToken(itemArtists), targetArtist);
         var albumScore = CalculateAlbumScore(SpotifyTextNormalizer.NormalizeToken(itemAlbum), targetAlbum);
+        acceptable = IsAcceptableMatch(titleScore, artistScore, albumScore, targetTitle, targetArtist, targetAlbum);
         return titleScore + artistScore + albumScore;
+    }
+
+    private static bool IsAcceptableMatch(
+        int titleScore,
+        int artistScore,
+        int albumScore,
+        string targetTitle,
+        string targetArtist,
+        string targetAlbum)
+    {
+        if (!string.IsNullOrWhiteSpace(targetTitle) && !string.IsNullOrWhiteSpace(targetArtist))
+        {
+            return titleScore > 0 && artistScore > 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(targetTitle))
+        {
+            return titleScore > 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(targetArtist))
+        {
+            return artistScore > 0;
+        }
+
+        return !string.IsNullOrWhiteSpace(targetAlbum) && albumScore > 0;
     }
 
     private static int CalculateTitleScore(string itemTitle, string targetTitle)
@@ -142,6 +222,9 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
 
     private static bool ContainsEitherWay(string left, string right)
         => left.Contains(right, StringComparison.Ordinal) || right.Contains(left, StringComparison.Ordinal);
+
+    private static string NormalizeIsrc(string? isrc)
+        => string.IsNullOrWhiteSpace(isrc) ? string.Empty : isrc.Trim().ToUpperInvariant();
 
     private static (string? Artists, string? Album) ParseSubtitle(string? subtitle)
     {

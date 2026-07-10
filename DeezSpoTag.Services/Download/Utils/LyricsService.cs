@@ -42,7 +42,6 @@ public class LyricsService
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly DeezSpoTag.Services.Apple.AppleLyricsService _appleLyricsService;
     private readonly LrclibLyricsService _lrclibLyricsService;
-    private readonly SongLinkResolver? _songLinkResolver;
     private readonly DeezerClient? _deezerClient;
     private readonly ProtectedCredentialFileStore _spotifyWebPlayerCredentialStore;
     private string? _cachedGwToken;
@@ -69,8 +68,6 @@ public class LyricsService
     private const string LyricsType = "lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
-    private const string DeezerUrlKey = "deezer";
-    private const string SpotifyUrlKey = "spotify";
     private const string MessagePropertyName = "message";
     private const string SpotifyDataDir = "spotify";
     private const string BlobsDir = "blobs";
@@ -123,7 +120,6 @@ public class LyricsService
         _authenticatedDeezerService = authenticatedDeezerService;
         _appleLyricsService = appleLyricsService;
         _lrclibLyricsService = lrclibLyricsService;
-        _songLinkResolver = serviceProvider.GetService<SongLinkResolver>();
         _deezerClient = serviceProvider.GetService<DeezerClient>();
         _spotifyWebPlayerCredentialStore = serviceProvider.GetRequiredService<ProtectedCredentialFileStore>();
     }
@@ -180,14 +176,22 @@ public class LyricsService
             if (!string.IsNullOrWhiteSpace(state.TtmlFallback) && string.IsNullOrWhiteSpace(state.ResolvedLyrics.TtmlLyrics))
             {
                 state.ResolvedLyrics.TtmlLyrics = state.TtmlFallback;
+                state.ResolvedLyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
             }
 
-            return state.ResolvedLyrics;
+            if (ShouldReturnResolvedLyrics(state, outputRequirements))
+            {
+                return state.ResolvedLyrics;
+            }
         }
 
-        if (!string.IsNullOrWhiteSpace(state.TtmlFallback))
+        if (!string.IsNullOrWhiteSpace(state.TtmlFallback) && outputRequirements.WantsTtmlLyrics)
         {
-            return new LyricsSource { TtmlLyrics = state.TtmlFallback };
+            return new LyricsSource
+            {
+                TtmlLyrics = state.TtmlFallback,
+                TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+            };
         }
 
         if (state.DeezerAttempted && state.DeezerMissingAuth && string.IsNullOrEmpty(state.Arl))
@@ -244,13 +248,13 @@ public class LyricsService
         }
 
         var hasTtml = !string.IsNullOrWhiteSpace(lyrics.TtmlLyrics);
-        var hasTimedLyrics = HasLyricsLines(lyrics.SyncedLyrics);
+        var hasRealLrc = lyrics.CanSaveLrcSidecar();
         if (requirements.WantsTtmlLyrics && !hasTtml)
         {
             return false;
         }
 
-        if (requirements.WantsLrcLyrics && !hasTimedLyrics && !hasTtml)
+        if (requirements.WantsLrcLyrics && !hasRealLrc)
         {
             return false;
         }
@@ -359,6 +363,7 @@ public class LyricsService
         if (!string.IsNullOrWhiteSpace(state.TtmlFallback) && string.IsNullOrWhiteSpace(providerLyrics.TtmlLyrics))
         {
             providerLyrics.TtmlLyrics = state.TtmlFallback;
+            providerLyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
         }
 
         if (state.ResolvedLyrics == null)
@@ -410,16 +415,19 @@ public class LyricsService
         if (string.IsNullOrWhiteSpace(target.TtmlLyrics) && !string.IsNullOrWhiteSpace(candidate.TtmlLyrics))
         {
             target.TtmlLyrics = candidate.TtmlLyrics;
+            target.TtmlLyricsSourceFormat = candidate.TtmlLyricsSourceFormat;
         }
 
         if (!HasLyricsLines(target.SyncedLyrics) && HasLyricsLines(candidate.SyncedLyrics))
         {
             target.SyncedLyrics = candidate.SyncedLyrics;
+            target.SyncedLyricsSourceFormat = candidate.SyncedLyricsSourceFormat;
         }
 
         if (string.IsNullOrWhiteSpace(target.UnsyncedLyrics) && !string.IsNullOrWhiteSpace(candidate.UnsyncedLyrics))
         {
             target.UnsyncedLyrics = candidate.UnsyncedLyrics;
+            target.UnsyncedLyricsSourceFormat = candidate.UnsyncedLyricsSourceFormat;
         }
 
         if (string.IsNullOrWhiteSpace(target.Writers) && !string.IsNullOrWhiteSpace(candidate.Writers))
@@ -489,40 +497,6 @@ public class LyricsService
         return ResolvePaxsenixAppleLyricsByIdAsync(track, cancellationToken);
     }
 
-    private Task<LyricsBase?> ResolvePaxsenixMusixmatchLyricsFallbackAsync(
-        Track track,
-        CancellationToken cancellationToken)
-    {
-        return ResolvePaxsenixLyricsFallbackAsync(track, MusixmatchProvider, "Musixmatch", cancellationToken);
-    }
-
-    private async Task<LyricsBase?> ResolvePaxsenixLyricsFallbackAsync(
-        Track track,
-        string source,
-        string sourceName,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(track.Title))
-        {
-            return null;
-        }
-
-        var artist = ResolveMusixmatchArtist(track);
-        if (string.IsNullOrWhiteSpace(artist))
-        {
-            return null;
-        }
-
-        using var payload = await FetchPaxsenixLyricsPayloadAsync(track, artist, source, sourceName, cancellationToken);
-        if (payload == null)
-        {
-            return null;
-        }
-
-        var lyrics = ParsePaxsenixLyricsPayload(payload.RootElement);
-        return lyrics.IsLoaded() ? lyrics : null;
-    }
-
     private async Task<LyricsBase?> ResolvePaxsenixAppleLyricsByIdAsync(
         Track track,
         CancellationToken cancellationToken)
@@ -542,7 +516,11 @@ public class LyricsService
 
         if (LooksLikeRawTtml(body))
         {
-            return new LyricsSource { TtmlLyrics = body };
+            return new LyricsSource
+            {
+                TtmlLyrics = body,
+                TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+            };
         }
 
         try
@@ -600,73 +578,6 @@ public class LyricsService
         }
     }
 
-    private async Task<JsonDocument?> FetchPaxsenixLyricsPayloadAsync(
-        Track track,
-        string artist,
-        string source,
-        string sourceName,
-        CancellationToken cancellationToken)
-    {
-        var title = track.Title?.Trim() ?? string.Empty;
-        var query = source.Equals(MusixmatchProvider, StringComparison.OrdinalIgnoreCase)
-            ? new Dictionary<string, string?>
-            {
-                ["q"] = $"{artist} {title}".Trim(),
-                ["t"] = title,
-                ["a"] = artist,
-                ["format"] = "lrc",
-                ["v"] = "2"
-            }
-            : new Dictionary<string, string?>
-            {
-                ["provider"] = source,
-                ["source"] = source,
-                ["title"] = title,
-                ["artist"] = artist,
-                ["track"] = title,
-                ["track_name"] = title,
-                ["artist_name"] = artist,
-                ["q"] = $"{artist} {title}".Trim()
-            };
-        if (!string.IsNullOrWhiteSpace(track.Album?.Title))
-        {
-            query["album"] = track.Album.Title;
-            query["album_name"] = track.Album.Title;
-        }
-        if (track.Duration > 0)
-        {
-            query["duration"] = track.Duration.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (source.Equals(MusixmatchProvider, StringComparison.OrdinalIgnoreCase))
-            {
-                query["d"] = track.Duration.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            }
-        }
-
-        var queryString = string.Join("&", query
-            .Where(static pair => !string.IsNullOrWhiteSpace(pair.Value))
-            .Select(static pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value!)}"));
-        var endpoint = source.Equals(MusixmatchProvider, StringComparison.OrdinalIgnoreCase)
-            ? "musixmatch/lyrics"
-            : "lyrics";
-        var url = $"{PaxsenixBaseUrl}/{endpoint}?{queryString}";
-
-        var body = await FetchPaxsenixLyricsBodyAsync(url, source, sourceName, cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return null;
-        }
-
-        try
-        {
-            return JsonDocument.Parse(body);
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogDebug(ex, "Paxsenix {Source} lyrics fallback returned non-JSON payload.", sourceName);
-            return null;
-        }
-    }
-
     private async Task<string?> FetchPaxsenixLyricsBodyAsync(
         string url,
         string source,
@@ -703,22 +614,29 @@ public class LyricsService
             && LooksLikeTtml(ttml))
         {
             lyrics.TtmlLyrics = ttml;
+            lyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
         }
 
         if (TryFindStringByName(root, IsSyncedLyricsPropertyName, out var syncedText))
         {
             lyrics.SyncedLyrics = ParseLrcLines(syncedText);
+            if (HasLyricsLines(lyrics.SyncedLyrics))
+            {
+                lyrics.SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc;
+            }
         }
 
         if (TryFindStringByName(root, IsPlainLyricsPropertyName, out var plainText))
         {
             lyrics.UnsyncedLyrics = plainText;
+            lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
         }
 
         if (string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics)
             && TryFindStringArrayByName(root, IsPlainLyricsPropertyName, out var plainLines))
         {
             lyrics.UnsyncedLyrics = string.Join('\n', plainLines);
+            lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
         }
 
         return lyrics;
@@ -880,8 +798,7 @@ public class LyricsService
         var body = await FetchMusixmatchLyricsPayloadAsync(track.Title, artist, cancellationToken);
         if (body == null)
         {
-            return await ResolvePaxsenixMusixmatchLyricsFallbackAsync(track, cancellationToken)
-                ?? LyricsNew.CreateError("No Musixmatch lyrics payload");
+            return LyricsNew.CreateError("No Musixmatch lyrics payload");
         }
 
         var validation = ValidateMusixmatchPayload(track, body);
@@ -895,31 +812,32 @@ public class LyricsService
                     validation.Reason);
             }
 
-            return await ResolvePaxsenixMusixmatchLyricsFallbackAsync(track, cancellationToken)
-                ?? LyricsNew.CreateError($"Musixmatch lyrics identity rejected: {validation.Reason}");
+            return LyricsNew.CreateError($"Musixmatch lyrics identity rejected: {validation.Reason}");
         }
 
         var output = new LyricsSource();
         if (TryReadMusixmatchRichsync(body, out var richsyncLines) && richsyncLines.Count > 0)
         {
             output.SyncedLyrics = richsyncLines;
+            output.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
             return output;
         }
 
         if (TryReadMusixmatchSubtitles(body, out var subtitleLines) && subtitleLines.Count > 0)
         {
             output.SyncedLyrics = subtitleLines;
+            output.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
             return output;
         }
 
         if (TryReadMusixmatchUnsynced(body, out var unsyncedLyrics))
         {
             output.UnsyncedLyrics = unsyncedLyrics;
+            output.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
             return output;
         }
 
-        return await ResolvePaxsenixMusixmatchLyricsFallbackAsync(track, cancellationToken)
-            ?? LyricsNew.CreateError("No lyrics available from Musixmatch");
+        return LyricsNew.CreateError("No lyrics available from Musixmatch");
     }
 
     private static string ResolveMusixmatchArtist(Track track)
@@ -1479,12 +1397,6 @@ public class LyricsService
             return deezerTrackId;
         }
 
-        var songLinkTrackId = await TryResolveDeezerTrackIdFromSongLinkAsync(track, settings, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(songLinkTrackId))
-        {
-            return songLinkTrackId;
-        }
-
         var isrcTrackId = await TryResolveDeezerTrackIdByIsrcAsync(track);
         if (!string.IsNullOrWhiteSpace(isrcTrackId))
         {
@@ -1497,73 +1409,6 @@ public class LyricsService
     private static bool TryResolveDeezerTrackIdFromTrack(Track track, out string? deezerTrackId)
     {
         return TrackIdNormalization.TryResolveDeezerTrackId(track, out deezerTrackId, track.LyricsId);
-    }
-
-    private async Task<string?> TryResolveDeezerTrackIdFromSongLinkAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
-    {
-        if (_songLinkResolver == null)
-        {
-            return null;
-        }
-
-        try
-        {
-            var songLink = await ResolveSongLinkForDeezerLyricsAsync(track, settings, cancellationToken);
-
-            if (songLink != null)
-            {
-                if (!IsValidSongLinkLyricsMapping(track, DeezerProvider, songLink))
-                {
-                    return null;
-                }
-
-                return TryReadDeezerTrackId(songLink);
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "SongLink resolution failed for Deezer lyrics track id lookup for track {TrackId}", track.Id);            }
-        }
-
-        return null;
-    }
-
-    private async Task<SongLinkResult?> ResolveSongLinkForDeezerLyricsAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
-    {
-        var userCountry = string.IsNullOrWhiteSpace(settings.DeezerCountry) ? null : settings.DeezerCountry;
-        var songLink = await ResolveSongLinkFromPrimaryUrlAsync(track, userCountry, cancellationToken);
-        if (songLink != null)
-        {
-            return songLink;
-        }
-
-        if (string.Equals(track.Source, SpotifyProvider, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(track.SourceId))
-        {
-            return await _songLinkResolver!.ResolveSpotifyTrackAsync(track.SourceId, cancellationToken);
-        }
-
-        return await ResolveSongLinkFromUrlAliasAsync(track, SpotifyUrlKey, userCountry, cancellationToken);
-    }
-
-    private static string? TryReadDeezerTrackId(SongLinkResult songLink)
-    {
-        if (TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerId, out var deezerTrackId))
-        {
-            return deezerTrackId;
-        }
-
-        return TrackIdNormalization.TryNormalizeDeezerTrackId(songLink.DeezerUrl, out deezerTrackId)
-            ? deezerTrackId
-            : null;
     }
 
     private async Task<string?> TryResolveDeezerTrackIdByIsrcAsync(Track track)
@@ -1596,7 +1441,7 @@ public class LyricsService
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken)
     {
-        var spotifyTrackId = await ResolveSpotifyLyricsTrackIdAsync(track, settings, cancellationToken);
+        var spotifyTrackId = ResolveSpotifyLyricsTrackId(track);
         if (string.IsNullOrWhiteSpace(spotifyTrackId))
         {
             return CreateLyricsError("Unable to resolve Spotify track ID for lyrics.");
@@ -1632,20 +1477,11 @@ public class LyricsService
         return CreateLyricsError($"Spotify lyrics not available for track {spotifyTrackId}.");
     }
 
-    private async Task<string?> ResolveSpotifyLyricsTrackIdAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
+    private static string? ResolveSpotifyLyricsTrackId(Track track)
     {
         if (TryResolveSpotifyTrackIdFromTrack(track, out var spotifyTrackId))
         {
             return spotifyTrackId;
-        }
-
-        var songLinkTrackId = await TryResolveSpotifyTrackIdFromSongLinkAsync(track, settings, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(songLinkTrackId))
-        {
-            return songLinkTrackId;
         }
 
         return null;
@@ -1654,121 +1490,6 @@ public class LyricsService
     private static bool TryResolveSpotifyTrackIdFromTrack(Track track, out string? spotifyTrackId)
     {
         return TrackIdNormalization.TryResolveSpotifyTrackId(track, out spotifyTrackId);
-    }
-
-    private async Task<string?> TryResolveSpotifyTrackIdFromSongLinkAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
-    {
-        if (_songLinkResolver == null)
-        {
-            return null;
-        }
-
-        var songLink = await ResolveSongLinkForSpotifyLyricsAsync(track, settings, cancellationToken);
-
-        if (songLink != null)
-        {
-            if (!IsValidSongLinkLyricsMapping(track, SpotifyProvider, songLink))
-            {
-                return null;
-            }
-
-            return TryReadSpotifyTrackId(songLink);
-        }
-
-        return null;
-    }
-
-    private async Task<SongLinkResult?> ResolveSongLinkForSpotifyLyricsAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
-    {
-        var userCountry = string.IsNullOrWhiteSpace(settings.DeezerCountry) ? null : settings.DeezerCountry;
-        var songLink = await ResolveSongLinkFromPrimaryUrlAsync(track, userCountry, cancellationToken);
-        if (songLink != null)
-        {
-            return songLink;
-        }
-
-        if (TryResolveSourceDeezerTrackId(track, out var deezerTrackId))
-        {
-            return await _songLinkResolver!.ResolveByDeezerTrackIdAsync(deezerTrackId, cancellationToken);
-        }
-
-        return await ResolveSongLinkFromUrlAliasAsync(track, DeezerUrlKey, userCountry, cancellationToken);
-    }
-
-    private static bool TryResolveSourceDeezerTrackId(Track track, out string deezerTrackId)
-    {
-        if (string.Equals(track.Source, DeezerProvider, StringComparison.OrdinalIgnoreCase)
-            && (TrackIdNormalization.TryNormalizeDeezerTrackId(track.SourceId, out var sourceId)
-                || TrackIdNormalization.TryNormalizeDeezerTrackId(track.Id, out sourceId)))
-        {
-            deezerTrackId = sourceId!;
-            return true;
-        }
-
-        deezerTrackId = string.Empty;
-        return false;
-    }
-
-    private static string? TryReadSpotifyTrackId(SongLinkResult songLink)
-    {
-        if (TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyId, out var spotifyTrackId))
-        {
-            return spotifyTrackId;
-        }
-
-        return TrackIdNormalization.TryNormalizeSpotifyTrackId(songLink.SpotifyUrl, out spotifyTrackId)
-            ? spotifyTrackId
-            : null;
-    }
-
-    private async Task<SongLinkResult?> ResolveSongLinkFromPrimaryUrlAsync(
-        Track track,
-        string? userCountry,
-        CancellationToken cancellationToken)
-        => string.IsNullOrWhiteSpace(track.DownloadURL)
-            ? null
-            : await _songLinkResolver!.ResolveByUrlAsync(track.DownloadURL, userCountry, cancellationToken);
-
-    private async Task<SongLinkResult?> ResolveSongLinkFromUrlAliasAsync(
-        Track track,
-        string urlKey,
-        string? userCountry,
-        CancellationToken cancellationToken)
-        => track.Urls != null
-            && track.Urls.TryGetValue(urlKey, out var url)
-            && !string.IsNullOrWhiteSpace(url)
-                ? await _songLinkResolver!.ResolveByUrlAsync(url, userCountry, cancellationToken)
-                : null;
-
-    private bool IsValidSongLinkLyricsMapping(Track track, string targetProvider, SongLinkResult songLink)
-    {
-        var validation = LyricsIdentityValidator.ValidateResolvedMapping(
-            track,
-            targetProvider,
-            songLink.SourceTitle,
-            songLink.SourceArtist,
-            songLink.Isrc);
-        if (validation.IsMatch)
-        {
-            return true;
-        }
-
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Rejected SongLink {Provider} lyrics mapping for track {TrackId}: {Reason}",
-                targetProvider,
-                track.Id,
-                validation.Reason);
-        }
-
-        return false;
     }
 
     private async Task<SpotifyAuthContext?> ResolveSpotifyAuthContextAsync(CancellationToken cancellationToken)
@@ -1848,12 +1569,12 @@ public class LyricsService
             return blobPaths;
         }
 
-        AppendActiveAccountBlobPath(accounts, activeAccount, blobPaths);
+        AppendActiveAccountBlobPaths(accounts, activeAccount, blobPaths);
         AppendRemainingBlobPaths(accounts, blobPaths);
         return blobPaths;
     }
 
-    private static void AppendActiveAccountBlobPath(JsonElement accounts, string? activeAccount, List<string> blobPaths)
+    private static void AppendActiveAccountBlobPaths(JsonElement accounts, string? activeAccount, List<string> blobPaths)
     {
         if (string.IsNullOrWhiteSpace(activeAccount))
         {
@@ -1868,28 +1589,34 @@ public class LyricsService
                 continue;
             }
 
-            var activeBlobPath = TryReadJsonString(account, "blobPath");
-            if (!string.IsNullOrWhiteSpace(activeBlobPath))
-            {
-                blobPaths.Add(activeBlobPath);
-            }
+            AppendSpotifyBlobPath(account, "webPlayerBlobPath", blobPaths);
+            AppendSpotifyBlobPath(account, "blobPath", blobPaths);
         }
     }
 
     private static void AppendRemainingBlobPaths(JsonElement accounts, List<string> blobPaths)
     {
-        foreach (var blobPath in accounts.EnumerateArray()
-                     .Select(account => TryReadJsonString(account, "blobPath"))
-                     .Where(static path => !string.IsNullOrWhiteSpace(path))
-                     .Cast<string>())
+        foreach (var account in accounts.EnumerateArray())
         {
-            if (blobPaths.Any(existing => string.Equals(existing, blobPath, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
-            blobPaths.Add(blobPath);
+            AppendSpotifyBlobPath(account, "webPlayerBlobPath", blobPaths);
+            AppendSpotifyBlobPath(account, "blobPath", blobPaths);
         }
+    }
+
+    private static void AppendSpotifyBlobPath(JsonElement account, string propertyName, List<string> blobPaths)
+    {
+        var blobPath = TryReadJsonString(account, propertyName);
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return;
+        }
+
+        if (blobPaths.Any(existing => string.Equals(existing, blobPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        blobPaths.Add(blobPath);
     }
 
     private async Task<SpotifyAuthContext?> TryExtractSpotifyAuthContextFromBlobAsync(
@@ -2197,7 +1924,13 @@ public class LyricsService
             if (unsyncedLines.Count > 0)
             {
                 lyrics.UnsyncedLyrics = string.Join('\n', unsyncedLines);
+                lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
             }
+        }
+
+        if (lyrics.SyncedLyrics?.Count > 0)
+        {
+            lyrics.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
         }
 
         if (!lyrics.IsLoaded())
@@ -2206,6 +1939,7 @@ public class LyricsService
             if (!string.IsNullOrWhiteSpace(plain))
             {
                 lyrics.UnsyncedLyrics = plain;
+                lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
             }
         }
 
@@ -2780,6 +2514,14 @@ public class LyricsService
             return false;
         }
 
+        if (!lyrics.CanSaveLrcSidecar())
+        {
+            _logger.LogDebug(
+                "Synchronized lyrics source format {SourceFormat} is not a downloaded LRC payload, skipping LRC creation",
+                lyrics.SyncedLyricsSourceFormat);
+            return false;
+        }
+
         if (!HasLyricsLines(lyrics.SyncedLyrics))
         {
             _logger.LogDebug("No synchronized lyrics lines found, skipping LRC creation");
@@ -2892,7 +2634,6 @@ public class LyricsService
         saveState.HadExistingTxt = System.IO.File.Exists(saveState.TxtPath);
 
         await TrySaveSyncedLrcAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
-        await TrySaveLrcFromTtmlAsync(lyrics, settings, overwriteSidecar, saveState, cancellationToken);
         EnsureTtmlFromSyncedLyricsWhenRequested(lyrics, track, settings);
         await TrySaveTtmlAsync(lyrics, settings, overwriteSidecar, saveState, cancellationToken);
         await TrySaveUnsyncedTxtAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
@@ -2967,50 +2708,6 @@ public class LyricsService
         }
     }
 
-    private async Task TrySaveLrcFromTtmlAsync(
-        LyricsBase lyrics,
-        DeezSpoTagSettings settings,
-        bool overwriteSidecar,
-        LyricsSaveState state,
-        CancellationToken cancellationToken)
-    {
-        if (state.SavedLrc
-            || !ShouldSaveSyncedLrc(settings)
-            || string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
-        {
-            return;
-        }
-
-        try
-        {
-            var lrcFromTtml = DeezSpoTag.Services.Apple.AppleLyricsService.ConvertTtmlToLrcPublic(lyrics.TtmlLyrics);
-            if (string.IsNullOrWhiteSpace(lrcFromTtml))
-            {
-                return;
-            }
-
-            if (!overwriteSidecar && state.HadExistingLrc)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Keeping existing LRC sidecar at {LrcPath}", state.LrcPath);                }
-            }
-            else
-            {
-                await System.IO.File.WriteAllTextAsync(state.LrcPath, lrcFromTtml, cancellationToken);
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation("Successfully saved LRC (from TTML) to {LrcPath}", state.LrcPath);                }
-            }
-            state.SavedLyrics = true;
-            state.SavedLrc = true;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Error converting TTML to LRC.");
-        }
-    }
-
     private void EnsureTtmlFromSyncedLyricsWhenRequested(LyricsBase lyrics, Track track, DeezSpoTagSettings settings)
     {
         if (!ShouldSynthesizeTtmlBySettings(settings)
@@ -3027,6 +2724,7 @@ public class LyricsService
         }
 
         lyrics.TtmlLyrics = synthesizedTtml;
+        lyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedTtml;
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation("Synthesized TTML lyrics from synced lines for track {TrackId}", track.Id);        }

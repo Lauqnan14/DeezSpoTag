@@ -2286,6 +2286,19 @@ public sealed class DownloadIntentService
             return BuildStrictSpotifyDeezerFailure(intent.Isrc);
         }
 
+        var nativeResolutionResult = await TryResolveEngineSpecificIntentUrlAsync(intent, engine, cancellationToken);
+        if (nativeResolutionResult.HasValue)
+        {
+            return nativeResolutionResult.Value;
+        }
+
+        if (string.Equals(engine, SpotifyPlatform, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var nativeMismatchResult = BuildMismatchedEngineResolution(engine, sourceUrl, intent.Isrc);
+            return nativeMismatchResult ?? (engine, sourceUrl, string.Empty, string.Empty);
+        }
+
         SongLinkResult? songLink = await ResolveSongLinkForIntentAsync(
             intent,
             sourceUrl,
@@ -2323,12 +2336,6 @@ public sealed class DownloadIntentService
         }
 
         await TryHydrateQobuzIntentIsrcAsync(intent, songLink, engine, settings, cancellationToken);
-
-        var engineSpecificResult = await TryResolveEngineSpecificIntentUrlAsync(intent, engine, cancellationToken);
-        if (engineSpecificResult.HasValue)
-        {
-            return engineSpecificResult.Value;
-        }
 
         var mismatchResult = BuildMismatchedEngineResolution(engine, sourceUrl, intent.Isrc);
         if (mismatchResult.HasValue)
@@ -2624,6 +2631,14 @@ public sealed class DownloadIntentService
         string engine,
         CancellationToken cancellationToken)
     {
+        if (string.Equals(engine, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            await EnsureSpotifyIdentityAsync(intent, intent.SourceUrl ?? string.Empty, cancellationToken);
+            return string.IsNullOrWhiteSpace(intent.SpotifyId)
+                ? null
+                : (engine, $"https://open.spotify.com/track/{Uri.EscapeDataString(intent.SpotifyId)}", string.Empty, "spotify-search");
+        }
+
         if (string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase))
         {
             var durationSeconds = intent.DurationMs > 0 ? (int)Math.Round(intent.DurationMs / 1000d) : 0;
@@ -3234,7 +3249,6 @@ public sealed class DownloadIntentService
         {
             DeezerPlatform => songLink.DeezerUrl,
             ApplePlatform => songLink.AppleMusicUrl,
-            TidalPlatform => songLink.TidalUrl,
             AmazonPlatform => null,
             QobuzPlatform => songLink.QobuzUrl,
             _ => sourceUrl
@@ -3739,6 +3753,8 @@ public sealed class DownloadIntentService
             return;
         }
 
+        await PopulateTidalMetadataWhenNeededAsync(intent, sourceUrl, cancellationToken);
+
         var spotifyId = TryExtractSpotifyId(sourceUrl);
         if (!string.IsNullOrWhiteSpace(spotifyId))
         {
@@ -3746,22 +3762,12 @@ public sealed class DownloadIntentService
             return;
         }
 
-        if (await TryPopulateSpotifyIdentityFromDeezerAsync(intent, cancellationToken))
-        {
-            return;
-        }
-
-        await PopulateSpotifyIdentityFromSourceUrlAsync(intent, sourceUrl, cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(intent.SpotifyId))
-        {
-            intent.SpotifyId = await _spotifyIdResolver.ResolveTrackIdAsync(
-                intent.Title ?? string.Empty,
-                intent.Artist ?? string.Empty,
-                intent.Album,
-                intent.Isrc,
-                cancellationToken) ?? string.Empty;
-        }
+        intent.SpotifyId = await _spotifyIdResolver.ResolveTrackIdAsync(
+            intent.Title ?? string.Empty,
+            intent.Artist ?? string.Empty,
+            intent.Album,
+            intent.Isrc,
+            cancellationToken) ?? string.Empty;
     }
 
     private async Task EnsureDeezerIdentityAsync(DownloadIntent intent, string sourceUrl)
@@ -4124,6 +4130,14 @@ public sealed class DownloadIntentService
         string engine,
         string sourceUrl)
     {
+        if (string.Equals(engine, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            var spotifyId = FirstNonEmpty(intent.SpotifyId, TryExtractSpotifyId(sourceUrl));
+            return string.IsNullOrWhiteSpace(spotifyId)
+                ? null
+                : (engine, $"https://open.spotify.com/track/{Uri.EscapeDataString(spotifyId)}", string.Empty, "spotify-id");
+        }
+
         if (string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase))
         {
             var tidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl));
@@ -4224,7 +4238,7 @@ public sealed class DownloadIntentService
     {
         if (songLink != null
             || !settings.FallbackSearch
-            || (engine != SpotifyPlatform && engine != DeezerPlatform && engine != ApplePlatform))
+            || (engine != DeezerPlatform && engine != ApplePlatform))
         {
             return songLink;
         }
@@ -4963,6 +4977,12 @@ public sealed class DownloadIntentService
         if (sourceUrl.Contains(AppleMusicDomain, StringComparison.OrdinalIgnoreCase))
         {
             await PopulateAppleMetadataAsync(intent, sourceUrl, settings, cancellationToken);
+            return;
+        }
+
+        if (IsTidalSourceUrl(sourceUrl))
+        {
+            await PopulateTidalMetadataAsync(intent, sourceUrl, cancellationToken);
         }
     }
 
@@ -4972,45 +4992,46 @@ public sealed class DownloadIntentService
             || sourceUrl.StartsWith("spotify:", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<bool> TryPopulateSpotifyIdentityFromDeezerAsync(DownloadIntent intent, CancellationToken cancellationToken)
+    private static bool IsTidalSourceUrl(string sourceUrl)
     {
-        if (string.IsNullOrWhiteSpace(intent.DeezerId))
-        {
-            return false;
-        }
-
-        var link = await _songLinkResolver.ResolveByDeezerTrackIdAsync(intent.DeezerId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(link?.SpotifyId))
-        {
-            return false;
-        }
-
-        intent.SpotifyId = link.SpotifyId;
-        if (string.IsNullOrWhiteSpace(intent.DeezerId) && !string.IsNullOrWhiteSpace(link.DeezerId))
-        {
-            intent.DeezerId = link.DeezerId;
-        }
-
-        return true;
+        return sourceUrl.Contains("tidal.com", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task PopulateSpotifyIdentityFromSourceUrlAsync(DownloadIntent intent, string sourceUrl, CancellationToken cancellationToken)
+    private async Task PopulateTidalMetadataWhenNeededAsync(
+        DownloadIntent intent,
+        string sourceUrl,
+        CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(sourceUrl))
+        if (!IsTidalSourceUrl(sourceUrl) && string.IsNullOrWhiteSpace(intent.TidalId))
         {
             return;
         }
 
-        var link = await _songLinkResolver.ResolveByUrlAsync(sourceUrl, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(link?.SpotifyId))
+        await PopulateTidalMetadataAsync(intent, sourceUrl, cancellationToken);
+    }
+
+    private async Task PopulateTidalMetadataAsync(
+        DownloadIntent intent,
+        string sourceUrl,
+        CancellationToken cancellationToken,
+        bool overwriteExisting = false)
+    {
+        var tidalInput = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl), sourceUrl);
+        var track = await _tidalDownloadService.ResolveTrackMetadataAsync(tidalInput, cancellationToken);
+        if (track == null)
         {
-            intent.SpotifyId = link.SpotifyId;
+            return;
         }
 
-        if (string.IsNullOrWhiteSpace(intent.DeezerId) && !string.IsNullOrWhiteSpace(link?.DeezerId))
-        {
-            intent.DeezerId = link.DeezerId;
-        }
+        ApplyIntentStringValue(overwriteExisting, intent.SourceUrl, track.Url, value => intent.SourceUrl = value);
+        ApplyIntentStringValue(overwriteExisting, intent.Url, track.Url, value => intent.Url = value);
+        ApplyIntentStringValue(overwriteExisting, intent.TidalId, track.Id.ToString(CultureInfo.InvariantCulture), value => intent.TidalId = value);
+        ApplyIntentStringValue(overwriteExisting, intent.Title, track.Title, value => intent.Title = value);
+        ApplyIntentStringValue(overwriteExisting, intent.Artist, track.Artist, value => intent.Artist = value);
+        ApplyIntentStringValue(overwriteExisting, intent.Album, track.Album, value => intent.Album = value);
+        ApplyIntentStringValue(overwriteExisting, intent.AlbumArtist, track.Artist, value => intent.AlbumArtist = value);
+        ApplyIntentStringValue(overwriteExisting, intent.Isrc, track.Isrc, value => intent.Isrc = value);
+        ApplyIntentIntValue(overwriteExisting, intent.DurationMs, track.DurationSeconds * 1000, value => intent.DurationMs = value);
     }
 
     private static readonly Dictionary<string, int> CanonicalQualityRanks =

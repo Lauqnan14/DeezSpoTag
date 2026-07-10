@@ -158,6 +158,10 @@ public class LyricsNew : LyricsBase
         if (lyricsElement.TryGetProperty("text", out var textElement))
         {
             UnsyncedLyrics = textElement.GetString();
+            if (!string.IsNullOrWhiteSpace(UnsyncedLyrics))
+            {
+                UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
+            }
         }
 
         if (lyricsElement.TryGetProperty("copyright", out var copyrightElement))
@@ -188,6 +192,11 @@ public class LyricsNew : LyricsBase
                              .Select(static lyric => lyric!))
                 {
                     SyncedLyrics.Add(lyric);
+                }
+
+                if (SyncedLyrics.Count > 0)
+                {
+                    SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
                 }
             }
         }

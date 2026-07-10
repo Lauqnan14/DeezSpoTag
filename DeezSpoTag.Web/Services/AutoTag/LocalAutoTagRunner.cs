@@ -92,6 +92,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string SyncedLyricsTag = "syncedLyrics";
     private const string UnsyncedLyricsTag = "unsyncedLyrics";
     private const string TtmlLyricsTag = "ttmlLyrics";
+    private const string SyncedLyricsSourceFormatTag = "syncedLyricsSourceFormat";
     private const string ItunesPlatform = "itunes";
     private const string AppleProvider = "apple";
     private const string SpotifyPlatform = "spotify";
@@ -2030,6 +2031,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         SetLyrics(track, SyncedLyricsTag, syncedLines);
+        if (lyrics.CanSaveLrcSidecar())
+        {
+            track.Other[SyncedLyricsSourceFormatTag] = new List<string> { LyricsSourceFormat.DownloadedLrc.ToString() };
+        }
     }
 
     private static void ApplyUnsyncedLyrics(AutoTagTrack track, LyricsBase lyrics, LyricsPopulationRequest request)
@@ -5406,7 +5411,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase)
             || key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
             || key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
-            || key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase);
+            || key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase)
+            || key.Equals(SyncedLyricsSourceFormatTag, StringComparison.OrdinalIgnoreCase);
     }
 
     private static (bool HasAny, bool HasLrc, bool HasTtml, bool HasTxt, string TxtPath) GetLyricsSidecarState(string filePath)
@@ -5763,7 +5769,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             if (key.Equals(SyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
                 || key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
                 || key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase)
-                || key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase))
+                || key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase)
+                || key.Equals(SyncedLyricsSourceFormatTag, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -6806,24 +6813,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var syncedPayload = ResolveLyricsPayloadLines(sourceTrack, SyncedLyricsTag);
-        if (syncedPayload.Count > 0)
+        if (syncedPayload.Count > 0 && HasDownloadedLrcSourceFormat(sourceTrack))
         {
             return syncedPayload;
         }
 
-        var genericPayload = ResolveLyricsPayloadLines(sourceTrack, LyricsTag);
-        if (genericPayload.Count > 0)
-        {
-            return genericPayload;
-        }
+        return Array.Empty<string>();
+    }
 
-        var ttmlPayload = ResolveLrcFromTtmlPayload(sourceTrack);
-        if (ttmlPayload.Count > 0)
-        {
-            return ttmlPayload;
-        }
-
-        return ResolveLrcFromExistingTtmlSidecar(filePath);
+    private static bool HasDownloadedLrcSourceFormat(AutoTagTrack sourceTrack)
+    {
+        return sourceTrack.Other.TryGetValue(SyncedLyricsSourceFormatTag, out var values)
+            && values.Any(value => string.Equals(value, LyricsSourceFormat.DownloadedLrc.ToString(), StringComparison.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<string> ResolveExistingLrcSidecar(string filePath)
@@ -6852,59 +6853,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return NormalizeLyricsLines(payload, requireTimestamp: true);
-    }
-
-    private static IReadOnlyList<string> ResolveLrcFromTtmlPayload(AutoTagTrack sourceTrack)
-    {
-        if (!sourceTrack.Other.TryGetValue(TtmlLyricsTag, out var ttmlPayload) || ttmlPayload.Count == 0)
-        {
-            return Array.Empty<string>();
-        }
-
-        return ConvertTtmlToLrcLines(ComposeTtmlPayload(ttmlPayload));
-    }
-
-    private static IReadOnlyList<string> ResolveLrcFromExistingTtmlSidecar(string filePath)
-    {
-        var existingTtmlPath = Path.ChangeExtension(filePath, TtmlExtension);
-        if (!IOFile.Exists(existingTtmlPath))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            return ConvertTtmlToLrcLines(IOFile.ReadAllText(existingTtmlPath));
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return Array.Empty<string>();
-        }
-    }
-
-    private static IReadOnlyList<string> ConvertTtmlToLrcLines(string? ttml)
-    {
-        if (string.IsNullOrWhiteSpace(ttml))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            var lrcFromTtml = AppleLyricsService.ConvertTtmlToLrcPublic(ttml);
-            if (string.IsNullOrWhiteSpace(lrcFromTtml))
-            {
-                return Array.Empty<string>();
-            }
-
-            return NormalizeLyricsLines(
-                lrcFromTtml.Split(LyricsLineSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-                requireTimestamp: true);
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return Array.Empty<string>();
-        }
     }
 
     private static string? ResolveTtmlSidecarPayload(AutoTagTrack sourceTrack, IReadOnlyList<string> sidecarLrcLines, string filePath)

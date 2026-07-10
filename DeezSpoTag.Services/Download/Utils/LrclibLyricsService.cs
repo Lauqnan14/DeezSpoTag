@@ -235,6 +235,7 @@ public sealed class LrclibLyricsService
     private static LyricsSource ConvertToLyrics(LrclibResponse payload)
     {
         var lyrics = new LyricsSource();
+        var hasSyncedPayload = !string.IsNullOrWhiteSpace(payload.SyncedLyrics);
         var text = payload.SyncedLyrics;
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -271,6 +272,12 @@ public sealed class LrclibLyricsService
         if (unsyncedBuilder.Length > 0)
         {
             lyrics.UnsyncedLyrics = unsyncedBuilder.ToString();
+            lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
+        }
+
+        if (lyrics.SyncedLyrics?.Count > 0 && hasSyncedPayload)
+        {
+            lyrics.SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc;
         }
 
         if (lyrics.SyncedLyrics?.Count == 0 && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))

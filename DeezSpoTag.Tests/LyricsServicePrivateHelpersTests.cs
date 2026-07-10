@@ -69,6 +69,103 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void ReadSpotifyBlobPaths_PrefersWebPlayerBlobPathBeforeGenericBlobPath()
+    {
+        using var doc = JsonDocument.Parse(
+            """
+            {
+              "activeAccount": "Edloaqx",
+              "accounts": [
+                {
+                  "name": "Other",
+                  "webPlayerBlobPath": "/data/spotify/other-web.json",
+                  "blobPath": "/data/spotify/other-librespot.json"
+                },
+                {
+                  "name": "Edloaqx",
+                  "webPlayerBlobPath": "/data/spotify/web-player.web.json",
+                  "blobPath": "/data/spotify/Edloaqx.json"
+                }
+              ]
+            }
+            """);
+
+        var paths = InvokeStatic<List<string>>(
+            "ReadSpotifyBlobPaths",
+            doc.RootElement,
+            "Edloaqx");
+
+        Assert.Equal(
+            [
+                "/data/spotify/web-player.web.json",
+                "/data/spotify/Edloaqx.json",
+                "/data/spotify/other-web.json",
+                "/data/spotify/other-librespot.json"
+            ],
+            paths);
+    }
+
+    [Fact]
+    public void ResolveSpotifyLyricsTrackId_UsesTrackUrlMetadataWithoutSongLink()
+    {
+        var track = new Track
+        {
+            Id = "local-track",
+            Source = "deezer",
+            SourceId = "908604612",
+            Urls =
+            {
+                ["spotify_track_id"] = "0VjIjW4GlUZAMYd2vXMi3b"
+            }
+        };
+
+        var resolved = InvokeStatic<string?>("ResolveSpotifyLyricsTrackId", track);
+
+        Assert.Equal("0VjIjW4GlUZAMYd2vXMi3b", resolved);
+    }
+
+    [Fact]
+    public void TryResolveDeezerTrackIdFromTrack_UsesTrackUrlMetadataWithoutSongLink()
+    {
+        var track = new Track
+        {
+            Id = "local-track",
+            Source = "spotify",
+            SourceId = "0VjIjW4GlUZAMYd2vXMi3b",
+            Urls =
+            {
+                ["deezer_track_id"] = "908604612"
+            }
+        };
+
+        object?[] args = [track, null];
+        var resolved = (bool)(GetStaticMethod("TryResolveDeezerTrackIdFromTrack").Invoke(null, args)
+            ?? throw new InvalidOperationException("TryResolveDeezerTrackIdFromTrack returned null."));
+
+        Assert.True(resolved);
+        Assert.Equal("908604612", args[1]);
+    }
+
+    [Fact]
+    public void LyricsService_DoesNotDependOnSongLinkResolver()
+    {
+        var sourcePath = Path.GetFullPath(Path.Join(
+            AppContext.BaseDirectory,
+            "..",
+            "..",
+            "..",
+            "..",
+            "DeezSpoTag.Services",
+            "Download",
+            "Utils",
+            "LyricsService.cs"));
+        var source = File.ReadAllText(sourcePath);
+
+        Assert.DoesNotContain("SongLinkResolver", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveSongLink", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildLrclibRequestOptions_UsesDefaultsWhenPropertiesMissing()
     {
         var providerOptions = new LrclibLyricsProviderOptions();
@@ -378,12 +475,76 @@ public sealed class LyricsServicePrivateHelpersTests
             var lyrics = new LyricsSource
             {
                 SyncedLyrics = [new SynchronizedLyric("Timed", "[00:01.00]", 1000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc,
                 UnsyncedLyrics = "Plain"
             };
 
             await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
             Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
+            Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_LrcOnly_DoesNotCreateLrcFromProviderSyncedJson()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics",
+                LrcFormat = "lrc"
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics = [new SynchronizedLyric("Timed", "[00:01.00]", 1000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
+            Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_LrcOnly_DoesNotCreateLrcFromTtml()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                LrcType = "lyrics",
+                LrcFormat = "lrc"
+            };
+            var lyrics = new LyricsSource
+            {
+                TtmlLyrics = "<tt><body><div><p begin=\"00:00:01.000\">Apple line</p></div></body></tt>",
+                TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
             Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
             Assert.False(File.Exists(Path.Join(directory, "track.txt")));
         }
@@ -434,6 +595,7 @@ public sealed class LyricsServicePrivateHelpersTests
         var lyrics = InvokeStatic<LyricsBase>("ParsePaxsenixLyricsPayload", doc.RootElement);
 
         Assert.NotNull(lyrics.TtmlLyrics);
+        Assert.Equal(LyricsSourceFormat.DownloadedTtml, lyrics.TtmlLyricsSourceFormat);
         Assert.StartsWith("<?xml", lyrics.TtmlLyrics);
         Assert.Contains("Apple public line", lyrics.TtmlLyrics);
         Assert.DoesNotContain("\"type\"", lyrics.TtmlLyrics);

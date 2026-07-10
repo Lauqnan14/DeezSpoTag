@@ -46,6 +46,10 @@ public class LyricsClassic : LyricsBase
             Id = json.LYRICS_ID?.ToString() ?? "0";
             Writers = json.LYRICS_WRITERS?.ToString();
             UnsyncedLyrics = json.LYRICS_TEXT?.ToString();
+            if (!string.IsNullOrWhiteSpace(UnsyncedLyrics))
+            {
+                UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
+            }
             Copyright = json.LYRICS_COPYRIGHTS?.ToString();
 
             // Parse synchronized lyrics from LYRICS_SYNC_JSON
@@ -76,7 +80,13 @@ public class LyricsClassic : LyricsBase
                 Writers = writersElement.GetString();
 
             if (json.TryGetProperty("LYRICS_TEXT", out var textElement))
+            {
                 UnsyncedLyrics = textElement.GetString();
+                if (!string.IsNullOrWhiteSpace(UnsyncedLyrics))
+                {
+                    UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
+                }
+            }
 
             if (json.TryGetProperty("LYRICS_COPYRIGHTS", out var copyrightElement))
                 Copyright = copyrightElement.GetString();
@@ -123,6 +133,11 @@ public class LyricsClassic : LyricsBase
                     SyncedLyrics.Add(lyric);
                 }
             }
+
+            if (SyncedLyrics.Count > 0)
+            {
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -147,6 +162,11 @@ public class LyricsClassic : LyricsBase
                              .Select(static lyric => lyric!))
                 {
                     SyncedLyrics.Add(lyric);
+                }
+
+                if (SyncedLyrics.Count > 0)
+                {
+                    SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
                 }
             }
         }

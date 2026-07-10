@@ -41,7 +41,9 @@ public sealed class LrclibLyricsServiceTests
         Assert.NotNull(lyrics.SyncedLyrics);
         Assert.Single(lyrics.SyncedLyrics!);
         Assert.Equal("Hello", lyrics.SyncedLyrics![0].Text);
+        Assert.Equal(LyricsSourceFormat.DownloadedLrc, lyrics.SyncedLyricsSourceFormat);
         Assert.Equal("This is plain", lyrics.UnsyncedLyrics);
+        Assert.Equal(LyricsSourceFormat.DownloadedPlainText, lyrics.UnsyncedLyricsSourceFormat);
     }
 
     [Fact]
@@ -76,6 +78,7 @@ public sealed class LrclibLyricsServiceTests
         Assert.NotNull(lyrics.SyncedLyrics);
         Assert.Single(lyrics.SyncedLyrics!);
         Assert.Equal("Synced pick", lyrics.SyncedLyrics![0].Text);
+        Assert.Equal(LyricsSourceFormat.DownloadedLrc, lyrics.SyncedLyricsSourceFormat);
     }
 
     [Fact]

@@ -56,8 +56,8 @@ public static class DownloadServiceExtensions
                 sp.GetRequiredService<IDeezSpoTagListener>(),
                 sp.GetRequiredService<ILogger<Queue.DownloadRetryScheduler>>(),
                 sp.GetRequiredService<Queue.DownloadCancellationRegistry>()));
-        services.AddSingleton<ISpotifyIdResolver, SpotifyIdResolver>();
-        // Keep null resolver as a fallback only. Web host may register a real resolver earlier.
+        // Keep null resolver as a fallback only. Web host registers the real resolver.
+        services.TryAddSingleton<ISpotifyIdResolver, NullSpotifyIdResolver>();
         services.TryAddSingleton<ISpotifyArtworkResolver, NullSpotifyArtworkResolver>();
         services.AddSingleton<AppleMusicCatalogService>();
         services.AddSingleton<Download.Apple.IAppleWrapperStatusProvider, Download.Apple.NullAppleWrapperStatusProvider>();

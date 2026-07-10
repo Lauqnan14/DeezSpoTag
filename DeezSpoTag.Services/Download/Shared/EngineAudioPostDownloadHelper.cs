@@ -1577,21 +1577,7 @@ public static partial class EngineAudioPostDownloadHelper
             return new List<string>();
         }
 
-        try
-        {
-            var ttml = File.ReadAllText(ttmlPath);
-            var lrc = AppleLyricsService.ConvertTtmlToLrcPublic(ttml);
-            if (string.IsNullOrWhiteSpace(lrc))
-            {
-                return new List<string>();
-            }
-
-            return NormalizeLrcLines(lrc.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return new List<string>();
-        }
+        return new List<string>();
     }
 
     private static string ResolveUnsyncedTextFromSidecars(string txtPath, string lrcPath, string ttmlPath)

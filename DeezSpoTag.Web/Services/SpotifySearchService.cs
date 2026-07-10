@@ -62,13 +62,120 @@ public sealed class SpotifySearchService
     public async Task<SpotifySearchTypeResponse?> SearchByTypeAsync(string query, string type, int limit, int offset, CancellationToken cancellationToken)
     {
         var pathfinder = await SearchByTypeViaPathfinderAsync(query, type, limit, offset, cancellationToken);
+        if (pathfinder != null && string.Equals(type?.Trim(), "track", StringComparison.OrdinalIgnoreCase))
+        {
+            pathfinder = await HydrateMissingTrackIsrcsAsync(pathfinder, cancellationToken);
+        }
+        if (pathfinder != null && !string.Equals(type?.Trim(), "track", StringComparison.OrdinalIgnoreCase))
+        {
+            return pathfinder;
+        }
+
         if (pathfinder != null)
         {
             return pathfinder;
         }
 
-        _logger.LogDebug("Spotify Pathfinder typed search unavailable; v1 /search fallback skipped to minimize rate limits.");
+        _logger.LogDebug("Spotify typed search unavailable from Pathfinder.");
         return null;
+    }
+
+    private async Task<SpotifySearchTypeResponse> HydrateMissingTrackIsrcsAsync(
+        SpotifySearchTypeResponse response,
+        CancellationToken cancellationToken)
+    {
+        var missing = response.Items
+            .Where(static item => string.Equals(item.Type, "track", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(item.Isrc)
+                && !string.IsNullOrWhiteSpace(item.Id))
+            .Select(static item => item.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (missing.Count == 0)
+        {
+            return response;
+        }
+
+        var isrcs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            isrcs = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(missing, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Pathfinder ISRC hydration failed.");
+        }
+
+        var librespotIsrcs = await FetchLibrespotTrackIsrcsAsync(missing, cancellationToken);
+        foreach (var pair in librespotIsrcs)
+        {
+            isrcs.TryAdd(pair.Key, pair.Value);
+        }
+
+        if (isrcs.Count == 0)
+        {
+            return response;
+        }
+
+        var hydrated = response.Items
+            .Select(item => isrcs.TryGetValue(item.Id, out var isrc) && !string.IsNullOrWhiteSpace(isrc)
+                ? item with { Isrc = isrc }
+                : item)
+            .ToList();
+        return new SpotifySearchTypeResponse(response.Type, hydrated, response.Total);
+    }
+
+    private async Task<Dictionary<string, string>> FetchLibrespotTrackIsrcsAsync(
+        IReadOnlyList<string> trackIds,
+        CancellationToken cancellationToken)
+    {
+        var results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var blobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return results;
+        }
+
+        try
+        {
+            var response = await _blobService.GetLibrespotTracksAsync(blobPath, trackIds, cancellationToken);
+            if (string.IsNullOrWhiteSpace(response.PayloadJson))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify Librespot track ISRC hydration failed: error={Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(response.Error));
+                }
+                return results;
+            }
+
+            using var doc = JsonDocument.Parse(response.PayloadJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return results;
+            }
+
+            foreach (var entry in doc.RootElement.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("track", out var track) || track.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var item = MapWebApiTrack(track);
+                if (item == null || string.IsNullOrWhiteSpace(item.Isrc))
+                {
+                    continue;
+                }
+
+                results[item.Id] = item.Isrc;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Librespot track ISRC hydration failed.");
+        }
+
+        return results;
     }
 
     private async Task<SpotifySearchResponse?> SearchViaPathfinderAsync(string query, int limit, CancellationToken cancellationToken)
@@ -293,6 +400,50 @@ public sealed class SpotifySearchService
             Isrc: track.Isrc);
     }
 
+    private static SpotifySearchItem? MapWebApiTrack(JsonElement track)
+    {
+        if (!track.TryGetProperty("id", out var idElement))
+        {
+            return null;
+        }
+
+        var id = idElement.GetString();
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var name = track.TryGetProperty("name", out var nameElement)
+            ? nameElement.GetString() ?? string.Empty
+            : string.Empty;
+        var artists = ReadWebApiArtists(track);
+        var album = ReadWebApiAlbumName(track);
+        var subtitle = string.IsNullOrWhiteSpace(album)
+            ? artists
+            : string.IsNullOrWhiteSpace(artists)
+                ? album
+                : $"{artists} • {album}";
+        var sourceUrl = ReadWebApiSpotifyUrl(track, "track") ?? $"https://open.spotify.com/track/{id}";
+        var imageUrl = ReadWebApiAlbumImage(track);
+        var durationMs = track.TryGetProperty("duration_ms", out var durationElement) && durationElement.TryGetInt32(out var duration)
+            ? duration
+            : (int?)null;
+        var isrc = track.TryGetProperty("external_ids", out var externalIds)
+            && externalIds.TryGetProperty("isrc", out var isrcElement)
+            ? isrcElement.GetString()
+            : null;
+
+        return new SpotifySearchItem(
+            id,
+            name,
+            "track",
+            sourceUrl,
+            RewriteSpotifyImageUrl(imageUrl),
+            subtitle,
+            durationMs,
+            Isrc: isrc);
+    }
+
     private static SpotifySearchItem MapPathfinderArtist(SpotifyPathfinderMetadataClient.SpotifyArtistSearchCandidate artist)
     {
         return new SpotifySearchItem(
@@ -356,6 +507,49 @@ public sealed class SpotifySearchService
         }
 
         return items;
+    }
+
+    private static string? ReadWebApiArtists(JsonElement track)
+    {
+        if (!track.TryGetProperty("artists", out var artists) || artists.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var names = artists.EnumerateArray()
+            .Select(static artist => artist.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null)
+            .Where(static name => !string.IsNullOrWhiteSpace(name));
+        return string.Join(", ", names);
+    }
+
+    private static string? ReadWebApiAlbumName(JsonElement track)
+    {
+        return track.TryGetProperty("album", out var album)
+            && album.TryGetProperty("name", out var nameElement)
+            ? nameElement.GetString()
+            : null;
+    }
+
+    private static string? ReadWebApiAlbumImage(JsonElement track)
+    {
+        if (!track.TryGetProperty("album", out var album)
+            || !album.TryGetProperty("images", out var images)
+            || images.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        return images.EnumerateArray()
+            .Select(static image => image.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null)
+            .FirstOrDefault(static url => !string.IsNullOrWhiteSpace(url));
+    }
+
+    private static string? ReadWebApiSpotifyUrl(JsonElement item, string type)
+    {
+        return item.TryGetProperty("external_urls", out var urls)
+            && urls.TryGetProperty("spotify", out var urlElement)
+            ? urlElement.GetString()
+            : null;
     }
 
     private async Task<SearchContext?> BuildRequestContextAsync(CancellationToken cancellationToken)
@@ -492,6 +686,31 @@ public sealed class SpotifySearchService
                 fallbackMarket);
         }
         return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", librespotBlobPath, null, null);
+    }
+
+    private async Task<SearchContext?> BuildLibrespotOnlyContextAsync(CancellationToken cancellationToken)
+    {
+        var librespotBlobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(librespotBlobPath))
+        {
+            return null;
+        }
+
+        var tokenResult = await _blobService.GetWebApiAccessTokenAsync(librespotBlobPath, cancellationToken: cancellationToken);
+        if (string.IsNullOrWhiteSpace(tokenResult.AccessToken))
+        {
+            return null;
+        }
+
+        var market = await ResolveMarketAsync();
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug(
+                "Spotify Librespot search auth ready: tokenLen={TokenLen} market={Market}",
+                tokenResult.AccessToken.Length,
+                market);
+        }
+        return new SearchContext(tokenResult.AccessToken, market, "librespot", librespotBlobPath, null, null);
     }
 
     private async Task<string> ResolveMarketAsync()
@@ -726,7 +945,7 @@ public sealed class SpotifySearchService
 
     public async Task<SpotifySearchAuthContext?> TryGetLibrespotAuthContextAsync(CancellationToken cancellationToken)
     {
-        var context = await BuildLibrespotContextAsync(cancellationToken);
+        var context = await BuildLibrespotOnlyContextAsync(cancellationToken);
         if (context == null)
         {
             return null;

@@ -32,11 +32,17 @@ public abstract class LyricsBase
     [JsonPropertyName("unsyncedLyrics")]
     public string? UnsyncedLyrics { get; set; }
 
+    [JsonPropertyName("unsyncedLyricsSourceFormat")]
+    public LyricsSourceFormat UnsyncedLyricsSourceFormat { get; set; } = LyricsSourceFormat.Unknown;
+
     /// <summary>
     /// List of synchronized lyrics lines with timing
     /// </summary>
     [JsonPropertyName("syncedLyrics")]
     public List<SynchronizedLyric>? SyncedLyrics { get; set; }
+
+    [JsonPropertyName("syncedLyricsSourceFormat")]
+    public LyricsSourceFormat SyncedLyricsSourceFormat { get; set; } = LyricsSourceFormat.Unknown;
 
     /// <summary>
     /// Error message if lyrics fetching failed
@@ -49,6 +55,9 @@ public abstract class LyricsBase
     /// </summary>
     [JsonPropertyName("ttmlLyrics")]
     public string? TtmlLyrics { get; set; }
+
+    [JsonPropertyName("ttmlLyricsSourceFormat")]
+    public LyricsSourceFormat TtmlLyricsSourceFormat { get; set; } = LyricsSourceFormat.Unknown;
 
     /// <summary>
     /// Whether the lyrics contain explicit content
@@ -77,6 +86,11 @@ public abstract class LyricsBase
     public virtual bool IsSynced()
     {
         return SyncedLyrics?.Count > 0;
+    }
+
+    public bool CanSaveLrcSidecar()
+    {
+        return IsSynced() && SyncedLyricsSourceFormat == LyricsSourceFormat.DownloadedLrc;
     }
 
     /// <summary>

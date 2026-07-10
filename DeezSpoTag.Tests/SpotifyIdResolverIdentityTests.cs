@@ -1,6 +1,6 @@
+using System;
+using System.IO;
 using System.Reflection;
-using System.Text.Json;
-using DeezSpoTag.Services.Download;
 using DeezSpoTag.Web.Controllers.Api;
 using Xunit;
 
@@ -9,60 +9,14 @@ namespace DeezSpoTag.Tests;
 public sealed class SpotifyIdResolverIdentityTests
 {
     [Fact]
-    public void ResolveTrackIdFromItems_WithIsrcRequiresIsrcMatch()
+    public void SpotifyDownloadResolver_DoesNotUseRemovedSearchEndpoint()
     {
-        using var doc = JsonDocument.Parse("""
-            {
-              "tracks": {
-                "items": [
-                  {
-                    "id": "wrong-spotify-id",
-                    "name": "Nataka",
-                    "external_ids": { "isrc": "QZHZ32654396" },
-                    "artists": [{ "name": "Lilmaina" }]
-                  },
-                  {
-                    "id": "strong-title-artist-but-unverified",
-                    "name": "Nataka",
-                    "artists": [{ "name": "Stereo Singasinga" }]
-                  }
-                ]
-              }
-            }
-            """);
+        var removedResolverPath = ResolveRepoCandidatePath("DeezSpoTag.Services", "Download", "Spotify", "SpotifyIdResolver.cs");
+        var registrationSource = ReadSource("DeezSpoTag.Services", "Download", "DownloadServiceExtensions.cs");
 
-        var items = doc.RootElement.GetProperty("tracks").GetProperty("items");
-        var result = InvokeResolveTrackIdFromItems(items, "nataka", "stereosingasinga", "TZA1X2200742");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public void ResolveTrackIdFromItems_WithoutIsrcAllowsStrongTitleArtistMatch()
-    {
-        using var doc = JsonDocument.Parse("""
-            {
-              "tracks": {
-                "items": [
-                  {
-                    "id": "wrong-artist",
-                    "name": "Nataka",
-                    "artists": [{ "name": "Lilmaina" }]
-                  },
-                  {
-                    "id": "expected-spotify-id",
-                    "name": "Nataka",
-                    "artists": [{ "name": "Stereo Singasinga" }]
-                  }
-                ]
-              }
-            }
-            """);
-
-        var items = doc.RootElement.GetProperty("tracks").GetProperty("items");
-        var result = InvokeResolveTrackIdFromItems(items, "nataka", "stereosingasinga", null);
-
-        Assert.Equal("expected-spotify-id", result);
+        Assert.False(File.Exists(removedResolverPath));
+        Assert.Contains("TryAddSingleton<ISpotifyIdResolver, NullSpotifyIdResolver>", registrationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddSingleton<ISpotifyIdResolver, SpotifyIdResolver>", registrationSource, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -82,14 +36,40 @@ public sealed class SpotifyIdResolverIdentityTests
         Assert.Equal(expected, result);
     }
 
-    private static string? InvokeResolveTrackIdFromItems(JsonElement items, string normalizedTitle, string normalizedArtist, string? isrc)
+    private static string ReadSource(params string[] relativeParts)
+        => File.ReadAllText(ResolveRepoPath(relativeParts));
+
+    private static string ResolveRepoPath(params string[] relativeParts)
     {
-        var method = typeof(SpotifyIdResolver).GetMethod(
-            "ResolveTrackIdFromItems",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var candidate = Path.Combine(dir.FullName, Path.Combine(relativeParts));
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
 
-        Assert.NotNull(method);
+            dir = dir.Parent;
+        }
 
-        return method!.Invoke(null, [items, normalizedTitle, normalizedArtist, isrc]) as string;
+        throw new FileNotFoundException("Could not locate source file.", Path.Combine(relativeParts));
+    }
+
+    private static string ResolveRepoCandidatePath(params string[] relativeParts)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            var marker = Path.Combine(dir.FullName, "DeezSpoTag.Web", "DeezSpoTag.Web.csproj");
+            if (File.Exists(marker))
+            {
+                return Path.Combine(dir.FullName, Path.Combine(relativeParts));
+            }
+
+            dir = dir.Parent;
+        }
+
+        return Path.Combine(relativeParts);
     }
 }

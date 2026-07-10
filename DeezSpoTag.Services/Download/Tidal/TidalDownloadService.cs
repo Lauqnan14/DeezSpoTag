@@ -35,6 +35,7 @@ public sealed class TidalDownloadService
     private const string TidalPublicCountryCode = "US";
     private const string TidalPublicLocale = "en_US";
     private const string TidalPublicDeviceType = "BROWSER";
+    private const string TidalPublicUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
     private const int MaxConcurrentProviderResolutions = 2;
     private const string ZarzSignedBaseUrl = "https://api.zarz.moe/v2";
     private const string ZarzSignedDownloadPath = "/dl/tid";
@@ -228,6 +229,29 @@ public sealed class TidalDownloadService
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
             return false;
+        }
+    }
+
+    public async Task<TidalResolvedTrack?> ResolveTrackMetadataAsync(
+        string? tidalIdOrUrl,
+        CancellationToken cancellationToken)
+    {
+        var normalizedId = EngineLinkParser.NormalizeNumericTrackId(tidalIdOrUrl)
+            ?? EngineLinkParser.TryExtractTidalTrackId(tidalIdOrUrl);
+        if (!long.TryParse(normalizedId, out var trackId) || trackId <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var trackInfo = await GetTrackInfoByIdAsync(trackId, cancellationToken);
+            return BuildResolvedTrack(trackInfo);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Tidal metadata lookup failed for track ID {TrackId}", trackId);
+            return null;
         }
     }
 
@@ -785,6 +809,7 @@ public sealed class TidalDownloadService
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            request.Headers.TryAddWithoutValidation("User-Agent", TidalPublicUserAgent);
 
             using var response = await _client.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)

@@ -84,6 +84,19 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
     }
 
     [Fact]
+    public void ResolveSyncedLinesFromSidecars_DoesNotConvertTtmlToLrc()
+    {
+        using var tmp = new TemporaryDirectory();
+        var lrcPath = Path.Join(tmp.Path, "track.lrc");
+        var ttmlPath = Path.Join(tmp.Path, "track.ttml");
+        File.WriteAllText(ttmlPath, "<tt><body><div><p begin=\"00:00:03.000\">Ignored</p></div></body></tt>");
+
+        var lines = InvokeStatic<List<string>>("ResolveSyncedLinesFromSidecars", lrcPath, ttmlPath);
+
+        Assert.Empty(lines);
+    }
+
+    [Fact]
     public void ResolveUnsyncedTextFromSidecars_PrefersTxtThenFallsBackToSyncedText()
     {
         using var tmp = new TemporaryDirectory();
