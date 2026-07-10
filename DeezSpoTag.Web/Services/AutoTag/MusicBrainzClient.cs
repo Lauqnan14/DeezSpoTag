@@ -36,8 +36,12 @@ public sealed class MusicBrainzClient
     }
 
     public async Task<RecordingSearchResults?> SearchAsync(string query, CancellationToken cancellationToken)
+        => await SearchAsync(query, 100, cancellationToken);
+
+    public async Task<RecordingSearchResults?> SearchAsync(string query, int limit, CancellationToken cancellationToken)
     {
-        var response = await GetAsync($"recording?query={Uri.EscapeDataString(query)}&limit=100&fmt=json", cancellationToken);
+        var resolvedLimit = Math.Clamp(limit, 1, 100);
+        var response = await GetAsync($"recording?query={Uri.EscapeDataString(query)}&limit={resolvedLimit}&fmt=json", cancellationToken);
         if (response == null)
         {
             return null;
@@ -78,7 +82,7 @@ public sealed class MusicBrainzClient
             {
                 response = await _httpClient.GetAsync(path, cancellationToken);
             }
-            catch (Exception ex) when (attempt < 4)
+            catch (Exception ex) when (attempt < 4 && ex is not OperationCanceledException)
             {
                 _logger.LogWarning(ex, "MusicBrainz request failed (attempt {Attempt}): {Detail}", attempt + 1, BuildExceptionDetail(ex));
                 continue;

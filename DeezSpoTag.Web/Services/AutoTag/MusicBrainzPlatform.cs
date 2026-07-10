@@ -40,13 +40,17 @@ public sealed class MusicBrainzPlatform : AutoTagPlatformBase
                 SupportedTag.ReleaseId,
                 SupportedTag.TrackId,
                 SupportedTag.Duration,
+                SupportedTag.ReleaseDate,
+                SupportedTag.AlbumArt,
                 SupportedTag.ISRC,
                 SupportedTag.Label,
                 SupportedTag.CatalogNumber,
                 SupportedTag.TrackNumber,
                 SupportedTag.TrackTotal,
+                SupportedTag.DiscNumber,
                 SupportedTag.ReleaseType,
-                SupportedTag.Genre),
+                SupportedTag.Genre,
+                SupportedTag.OtherTags),
             RequiresAuth = false
         };
 

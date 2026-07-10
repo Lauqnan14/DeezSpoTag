@@ -1,9 +1,26 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class MusicBrainzMatcher
 {
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly Regex VariantSegmentRegex = CreateVariantRegex(@"(?:\(|\[|\{)(?<value>[^)\]\}]+)(?:\)|\]|\})");
+    private static readonly Regex TrailingVariantRegex = CreateVariantRegex(@"\b(?<value>instrumental|radio edit|radio version|club version|club mix|extended mix|extended version|live|acoustic|karaoke|remix|remastered)\b$");
+    private static readonly (string Key, Regex Pattern)[] VariantPatterns =
+    [
+        ("instrumental", CreateVariantRegex(@"\binstrumental\b")),
+        ("radio", CreateVariantRegex(@"\bradio\s+(edit|version|mix)\b")),
+        ("club", CreateVariantRegex(@"\bclub\s+(version|mix|edit)\b")),
+        ("extended", CreateVariantRegex(@"\bextended\s+(mix|version|edit)?\b")),
+        ("live", CreateVariantRegex(@"\blive\b")),
+        ("acoustic", CreateVariantRegex(@"\bacoustic\b")),
+        ("karaoke", CreateVariantRegex(@"\bkaraoke\b")),
+        ("remix", CreateVariantRegex(@"\bremix(ed)?\b")),
+        ("remaster", CreateVariantRegex(@"\bremaster(ed)?\b"))
+    ];
+
     private readonly MusicBrainzClient _client;
     private readonly ILogger<MusicBrainzMatcher> _logger;
 
@@ -24,7 +41,7 @@ public sealed class MusicBrainzMatcher
 
         if (resolvedConfig.MatchById)
         {
-            var byIdResult = await TryMatchRecordingIdAsync(info, preferences, cancellationToken);
+            var byIdResult = await TryMatchRecordingIdAsync(info, matchingConfig, preferences, cancellationToken);
             if (byIdResult != null)
             {
                 return byIdResult;
@@ -43,7 +60,7 @@ public sealed class MusicBrainzMatcher
         var queries = BuildQueries(info).ToList();
         for (var queryIndex = 0; queryIndex < queries.Count; queryIndex++)
         {
-            var results = await _client.SearchAsync(queries[queryIndex], cancellationToken);
+            var results = await _client.SearchAsync(queries[queryIndex], resolvedConfig.SearchLimit, cancellationToken);
             if (results?.Recordings is null || results.Recordings.Count == 0)
             {
                 continue;
@@ -70,6 +87,7 @@ public sealed class MusicBrainzMatcher
 
     private async Task<AutoTagMatchResult?> TryMatchRecordingIdAsync(
         AutoTagAudioInfo info,
+        AutoTagMatchingConfig matchingConfig,
         MusicBrainzPreferences preferences,
         CancellationToken cancellationToken)
     {
@@ -84,7 +102,17 @@ public sealed class MusicBrainzMatcher
                 }
 
                 var track = ToTrack(recording, preferences);
-                await ExtendTrackAsync(track, preferences, cancellationToken);
+                await ExtendTrackAsync(info, track, preferences, cancellationToken);
+                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig))
+                {
+                    _logger.LogDebug(
+                        "MusicBrainz ID candidate rejected by source guard. id={RecordingId}, inputTitle={InputTitle}, candidateTitle={CandidateTitle}",
+                        recordingId,
+                        info.Title,
+                        track.Title);
+                    continue;
+                }
+
                 return new AutoTagMatchResult
                 {
                     Accuracy = 1.0,
@@ -111,7 +139,7 @@ public sealed class MusicBrainzMatcher
         CancellationToken cancellationToken)
     {
         var query = $"isrc:{info.Isrc}";
-        var results = await _client.SearchAsync(query, cancellationToken);
+        var results = await _client.SearchAsync(query, config.SearchLimit, cancellationToken);
         if (results?.Recordings is null)
         {
             return null;
@@ -137,7 +165,12 @@ public sealed class MusicBrainzMatcher
             return null;
         }
 
-        await ExtendTrackAsync(match.Track, preferences, cancellationToken);
+        await ExtendTrackAsync(info, match.Track, preferences, cancellationToken);
+        if (!IsCandidateCompatibleWithSource(info, match.Track, matchingConfig))
+        {
+            return null;
+        }
+
         return new AutoTagMatchResult
         {
             Accuracy = match.Accuracy,
@@ -203,10 +236,20 @@ public sealed class MusicBrainzMatcher
             Isrc = recording.Isrcs?.FirstOrDefault()
         };
 
+        AddOtherValue(track.Other, "MUSICBRAINZ_RECORDINGID", recording.Id);
+        AddOtherValues(track.Other, "MUSICBRAINZ_ARTISTID", recording.ArtistCredit?.Select(credit => credit.Artist.Id));
+        AddOtherValues(track.Other, "MUSICBRAINZ_ALBUMARTISTID", release?.ArtistCredit?.Select(credit => credit.Artist.Id));
+        AddOtherValues(track.Other, "ISRCS", recording.Isrcs);
+        AddOtherValue(track.Other, "ORIGINALDATE", recording.FirstReleaseDate);
+
         return track;
     }
 
-    private async Task ExtendTrackAsync(MusicBrainzTrack track, MusicBrainzPreferences preferences, CancellationToken cancellationToken)
+    private async Task ExtendTrackAsync(
+        AutoTagAudioInfo info,
+        MusicBrainzTrack track,
+        MusicBrainzPreferences preferences,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(track.TrackId))
         {
@@ -221,7 +264,7 @@ public sealed class MusicBrainzMatcher
                 return;
             }
 
-            var release = SelectBestRelease(releases.Releases, track.ReleaseDate, preferences);
+            var release = SelectBestRelease(releases.Releases, track.ReleaseDate, preferences, track.ReleaseId, info.Album);
             if (release == null)
             {
                 return;
@@ -229,6 +272,8 @@ public sealed class MusicBrainzMatcher
 
             track.Album = release.Title;
             track.ReleaseId = release.Id;
+            track.ReleaseDate = ParseDate(release.Date) ?? track.ReleaseDate;
+            track.AlbumArtists = release.ArtistCredit?.Select(a => a.Name).ToList() ?? track.AlbumArtists;
             ApplyCoverArt(track, release);
             ApplyLabelInfo(track, release);
             ApplyTrackPosition(track, release);
@@ -299,14 +344,21 @@ public sealed class MusicBrainzMatcher
         track.Genres = release.Genres.Select(genre => genre.Name).ToList();
         if (release.ReleaseGroup != null)
         {
-            track.Other.Add(("MUSICBRAINZ_RELEASEGROUPID", new List<string> { release.ReleaseGroup.Id }));
+            AddOtherValue(track.Other, "MUSICBRAINZ_RELEASEGROUPID", release.ReleaseGroup.Id);
             track.ReleaseType = AutoTagReleaseCategory.Resolve(release.ReleaseGroup.PrimaryType, track.TrackTotal);
+            AddOtherValue(track.Other, "RELEASETYPE", track.ReleaseType);
         }
 
         if (!string.IsNullOrWhiteSpace(release.Barcode))
         {
-            track.Other.Add(("BARCODE", new List<string> { release.Barcode! }));
+            AddOtherValue(track.Other, "BARCODE", release.Barcode);
         }
+
+        AddOtherValue(track.Other, "MUSICBRAINZ_ALBUMID", release.Id);
+        AddOtherValue(track.Other, "RELEASESTATUS", release.Status);
+        AddOtherValue(track.Other, "RELEASECOUNTRY", release.Country);
+        AddOtherValue(track.Other, "RELEASEDATE", release.Date);
+        AddOtherValues(track.Other, "MEDIA", release.Media.Select(media => media.Format));
     }
 
     private static int? ParseYear(string? date)
@@ -366,17 +418,32 @@ public sealed class MusicBrainzMatcher
             preferences);
     }
 
-    private static Release? SelectBestRelease(List<Release> releases, DateTime? preferredDate, MusicBrainzPreferences preferences)
+    private static Release? SelectBestRelease(
+        List<Release> releases,
+        DateTime? preferredDate,
+        MusicBrainzPreferences preferences,
+        string? preferredReleaseId,
+        string? preferredAlbum)
     {
+        if (!string.IsNullOrWhiteSpace(preferredReleaseId))
+        {
+            var exact = releases.FirstOrDefault(release =>
+                string.Equals(release.Id, preferredReleaseId, StringComparison.OrdinalIgnoreCase));
+            if (exact != null)
+            {
+                return exact;
+            }
+        }
+
         var preferredYear = preferredDate?.Year;
         return releases
-            .OrderByDescending(r => ScoreRelease(r, preferredYear, preferences))
+            .OrderByDescending(r => ScoreRelease(r, preferredYear, preferences, preferredAlbum))
             .ThenBy(r => r.Date ?? "9999-99-99", StringComparer.Ordinal)
             .ThenBy(r => r.Id, StringComparer.Ordinal)
             .FirstOrDefault();
     }
 
-    private static int ScoreRelease(Release release, int? preferredYear, MusicBrainzPreferences preferences)
+    private static int ScoreRelease(Release release, int? preferredYear, MusicBrainzPreferences preferences, string? preferredAlbum)
     {
         var score = ScoreReleaseCommon(
             release.ReleaseGroup?.SecondaryTypes,
@@ -393,6 +460,23 @@ public sealed class MusicBrainzMatcher
         {
             score += 2;
         }
+
+        if (!string.IsNullOrWhiteSpace(preferredAlbum)
+            && !string.IsNullOrWhiteSpace(release.Title))
+        {
+            var albumScore = AutoTagSimilarity.ComputeScore(
+                AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(preferredAlbum)),
+                AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(release.Title)));
+            if (albumScore >= 0.90d)
+            {
+                score += 8;
+            }
+            else if (albumScore < 0.55d)
+            {
+                score -= 6;
+            }
+        }
+
         return score;
     }
 
@@ -508,6 +592,170 @@ public sealed class MusicBrainzMatcher
         return best;
     }
 
+    internal static bool IsVariantCompatible(string? sourceTitle, string? candidateTitle)
+    {
+        var sourceMarkers = ExtractVariantMarkers(sourceTitle);
+        var candidateMarkers = ExtractVariantMarkers(candidateTitle);
+        return sourceMarkers.SetEquals(candidateMarkers);
+    }
+
+    private static bool IsCandidateCompatibleWithSource(
+        AutoTagAudioInfo info,
+        MusicBrainzTrack track,
+        AutoTagMatchingConfig config)
+    {
+        if (!IsVariantCompatible(info.Title, track.Title))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(info.Title) && !string.IsNullOrWhiteSpace(track.Title))
+        {
+            var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
+            var candidateTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(track.Title));
+            if (!string.IsNullOrWhiteSpace(sourceTitle) && !string.IsNullOrWhiteSpace(candidateTitle))
+            {
+                var titleScore = AutoTagSimilarity.ComputeScore(sourceTitle, candidateTitle);
+                var minTitleScore = Math.Clamp(config.Strictness - 0.05d, 0.70d, 0.96d);
+                if (titleScore < minTitleScore)
+                {
+                    return false;
+                }
+            }
+        }
+
+        var sourceArtists = info.Artists.Count > 0
+            ? info.Artists
+            : string.IsNullOrWhiteSpace(info.Artist) ? [] : new List<string> { info.Artist };
+        var candidateArtists = track.Artists.Count > 0 ? track.Artists : track.AlbumArtists;
+        if (sourceArtists.Count > 0
+            && candidateArtists.Count > 0
+            && !OneTaggerMatching.MatchArtist(sourceArtists, candidateArtists, Math.Clamp(config.Strictness, 0.65d, 0.98d)))
+        {
+            return false;
+        }
+
+        if (info.DurationSeconds is > 0
+            && track.Duration > TimeSpan.Zero
+            && Math.Abs(info.DurationSeconds.Value - (int)Math.Round(track.Duration.TotalSeconds)) > Math.Max(config.MaxDurationDifferenceSeconds, 45))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static HashSet<string> ExtractVariantMarkers(string? title)
+    {
+        var markers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return markers;
+        }
+
+        foreach (Match match in VariantSegmentRegex.Matches(title))
+        {
+            AddVariantMarkers(markers, match.Groups["value"].Value);
+        }
+
+        var trailing = TrailingVariantRegex.Match(title);
+        if (trailing.Success)
+        {
+            AddVariantMarkers(markers, trailing.Groups["value"].Value);
+        }
+
+        return markers;
+    }
+
+    private static void AddVariantMarkers(HashSet<string> markers, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        foreach (var (key, pattern) in VariantPatterns)
+        {
+            if (pattern.IsMatch(value))
+            {
+                markers.Add(key);
+            }
+        }
+    }
+
+    private static void AddOtherValue(List<(string Key, List<string> Values)> other, string key, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        AddOtherValues(other, key, [value]);
+    }
+
+    private static void AddOtherValues(List<(string Key, List<string> Values)> other, string key, IEnumerable<string?>? values)
+    {
+        if (values == null)
+        {
+            return;
+        }
+
+        var normalized = values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalized.Count == 0)
+        {
+            return;
+        }
+
+        var index = other.FindIndex(item => string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            other.Add((key, normalized));
+            return;
+        }
+
+        var existing = other[index].Values.ToList();
+        var seen = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+        existing.AddRange(normalized.Where(seen.Add));
+        other[index] = (other[index].Key, existing);
+    }
+
+    private static Dictionary<string, List<string>> BuildOtherDictionary(MusicBrainzTrack track)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in track.Other)
+        {
+            if (string.IsNullOrWhiteSpace(item.Key) || item.Values.Count == 0)
+            {
+                continue;
+            }
+
+            if (!result.TryGetValue(item.Key, out var values))
+            {
+                result[item.Key] = item.Values
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                continue;
+            }
+
+            var seen = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+            values.AddRange(item.Values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Where(seen.Add));
+        }
+
+        return result;
+    }
+
+    private static Regex CreateVariantRegex(string pattern)
+        => new(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, RegexTimeout);
+
     private static List<string> GetRecordingIds(AutoTagAudioInfo info)
     {
         var result = new List<string>();
@@ -587,7 +835,7 @@ public sealed class MusicBrainzMatcher
             Genres = track.Genres.ToList(),
             Art = track.Art,
             ReleaseDate = track.ReleaseDate,
-            Other = track.Other.ToDictionary(k => k.Key, v => v.Values)
+            Other = BuildOtherDictionary(track)
         };
     }
 

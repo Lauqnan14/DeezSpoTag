@@ -491,36 +491,54 @@ namespace DeezSpoTag.Web.Controllers
             var endpoint = string.IsNullOrWhiteSpace(type) ? "search" : $"search/{type.Trim().ToLowerInvariant()}";
             var uri = $"https://api.deezer.com/{endpoint}?q={Uri.EscapeDataString(term)}&limit=128&index=0";
             var client = _httpClientFactory.CreateClient("DeezerClient");
-            using var response = await client.GetAsync(uri, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return new List<JsonElement>();
-            }
-
+            HttpResponseMessage response;
             try
             {
-                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var doc = await ParseJsonDocumentWithGzipFallbackAsync(stream, cancellationToken);
-                if (doc is null)
-                {
-                    return new List<JsonElement>();
-                }
-
-                if (!doc.RootElement.TryGetProperty(DataField, out var dataElement)
-                    || dataElement.ValueKind != JsonValueKind.Array)
-                {
-                    return new List<JsonElement>();
-                }
-
-                return dataElement
-                    .EnumerateArray()
-                    .Select(item => item.Clone())
-                    .ToList();
+                response = await client.GetAsync(uri, cancellationToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning(ex, "Public Deezer search payload parse failed for type {Type} and term {Term}", LogSanitizer.OneLine(type), LogSanitizer.OneLine(term));
+                _logger.LogWarning(ex, "Public Deezer search timed out for type {Type} and term {Term}", LogSanitizer.OneLine(type), LogSanitizer.OneLine(term));
                 return new List<JsonElement>();
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Public Deezer search request failed for type {Type} and term {Term}", LogSanitizer.OneLine(type), LogSanitizer.OneLine(term));
+                return new List<JsonElement>();
+            }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    return new List<JsonElement>();
+                }
+
+                try
+                {
+                    await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    using var doc = await ParseJsonDocumentWithGzipFallbackAsync(stream, cancellationToken);
+                    if (doc is null)
+                    {
+                        return new List<JsonElement>();
+                    }
+
+                    if (!doc.RootElement.TryGetProperty(DataField, out var dataElement)
+                        || dataElement.ValueKind != JsonValueKind.Array)
+                    {
+                        return new List<JsonElement>();
+                    }
+
+                    return dataElement
+                        .EnumerateArray()
+                        .Select(item => item.Clone())
+                        .ToList();
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Public Deezer search payload parse failed for type {Type} and term {Term}", LogSanitizer.OneLine(type), LogSanitizer.OneLine(term));
+                    return new List<JsonElement>();
+                }
             }
         }
 
