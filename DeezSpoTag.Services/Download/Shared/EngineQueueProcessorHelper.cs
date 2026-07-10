@@ -323,7 +323,9 @@ internal static class EngineQueueProcessorHelper
             workContext.Settings,
             scope.ServiceProvider,
             workContext.EngineName,
-            workContext.Deps.Logger);
+            workContext.Deps.Logger,
+            AppleCoverLookupIdOverride: ResolveAppleArtworkOverride(workContext.Payload),
+            AnimatedArtworkAppleIdOverride: ResolveAppleArtworkOverride(workContext.Payload));
         return await ApplyPostDownloadSettingsWithFallbackAsync(
             workContext.EngineName,
             workContext.Item.QueueUuid,
@@ -533,6 +535,11 @@ internal static class EngineQueueProcessorHelper
             context.Listener,
             context.ActivityLog,
             context.Logger,
-            context.EngineName);
+            context.EngineName,
+            AppleCoverLookupIdOverride: ResolveAppleArtworkOverride(context.Payload),
+            AnimatedArtworkAppleIdOverride: ResolveAppleArtworkOverride(context.Payload));
     }
+
+    private static string? ResolveAppleArtworkOverride(EngineQueueItemBase payload)
+        => string.IsNullOrWhiteSpace(payload.AppleId) ? null : payload.AppleId;
 }

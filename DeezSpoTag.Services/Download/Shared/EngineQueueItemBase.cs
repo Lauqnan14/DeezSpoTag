@@ -98,6 +98,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["resolvedQuality"] = ResolvedQuality,
             ["resolvedAutoIndex"] = ResolvedAutoIndex,
             ["resolutionError"] = ResolutionError,
+            ["appleId"] = AppleId,
             ["qobuzId"] = QobuzId,
             ["tidalId"] = TidalId,
             ["amazonId"] = AmazonId,

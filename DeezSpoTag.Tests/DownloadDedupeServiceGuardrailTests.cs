@@ -185,6 +185,25 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
+    public void SharedEngineProcessor_PassesAppleIdentityToAnimatedArtwork()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineQueueProcessorHelper.cs");
+
+        Assert.Contains("AppleCoverLookupIdOverride: ResolveAppleArtworkOverride(workContext.Payload)", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkAppleIdOverride: ResolveAppleArtworkOverride(workContext.Payload)", source, StringComparison.Ordinal);
+        Assert.Contains("AppleCoverLookupIdOverride: ResolveAppleArtworkOverride(context.Payload)", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkAppleIdOverride: ResolveAppleArtworkOverride(context.Payload)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QueuePayload_PreservesAppleIdForPostDownloadArtwork()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineQueueItemBase.cs");
+
+        Assert.Contains("[\"appleId\"] = AppleId", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task FinalDestinationDedupe_AllowsExistingDestinationOnlyForHigherQuality()
     {
         var path = Path.Combine(Path.GetTempPath(), $"deezspotag-dedupe-{Guid.NewGuid():N}.mp3");
