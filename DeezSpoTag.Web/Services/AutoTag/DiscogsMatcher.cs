@@ -7,6 +7,26 @@ public sealed class DiscogsMatcher
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex ArtistCleanupRegex = new(@" \(\d{1,2}\)$", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex VariantSegmentRegex = new(@"(?:\((?<value>[^)]*)\)|\[(?<value>[^\]]*)\])", RegexOptions.Compiled | RegexOptions.CultureInvariant, RegexTimeout);
+    private static readonly Regex TrailingVariantRegex = new(
+        @"(?:\s+[-–—:]\s+|\s+)(?<value>(?:instrumental|a\s*cappella|acapella|acappella|dub|clean|dirty|explicit|radio\s+(?:edit|version)|extended(?:\s+(?:mix|version|edit))?|club\s+(?:mix|version)|remix|live|acoustic|demo)(?:\s+(?:mix|version|edit))?)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
+        RegexTimeout);
+    private static readonly (string Key, Regex Pattern)[] VariantPatterns =
+    [
+        ("instrumental", CreateVariantRegex(@"\binstrumental\b")),
+        ("acapella", CreateVariantRegex(@"\b(?:a\s*cappella|acapella|acappella)\b")),
+        ("dub", CreateVariantRegex(@"\bdub\b")),
+        ("clean", CreateVariantRegex(@"\bclean\b")),
+        ("dirty", CreateVariantRegex(@"\b(?:dirty|explicit)\b")),
+        ("radio", CreateVariantRegex(@"\bradio\s+(?:edit|version)\b")),
+        ("extended", CreateVariantRegex(@"\bextended(?:\s+(?:mix|version|edit))?\b")),
+        ("club", CreateVariantRegex(@"\bclub\s+(?:mix|version)\b")),
+        ("remix", CreateVariantRegex(@"\bremix\b")),
+        ("live", CreateVariantRegex(@"\blive\b")),
+        ("acoustic", CreateVariantRegex(@"\bacoustic\b")),
+        ("demo", CreateVariantRegex(@"\bdemo\b"))
+    ];
     private readonly DiscogsClient _client;
     private readonly ILogger<DiscogsMatcher> _logger;
     private readonly Dictionary<long, DiscogsRelease> _releaseCache = new();
@@ -105,6 +125,11 @@ public sealed class DiscogsMatcher
         if (info.TrackNumber.HasValue && info.TrackNumber.Value > 0 && info.TrackNumber.Value <= release.Tracks.Count)
         {
             var direct = ToTrack(release, info.TrackNumber.Value - 1, discogsConfig);
+            if (!IsVariantCompatible(info, direct))
+            {
+                return null;
+            }
+
             return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(direct) };
         }
 
@@ -207,6 +232,12 @@ public sealed class DiscogsMatcher
 
     private static MatchCandidate? MatchTracks(AutoTagAudioInfo info, List<DiscogsTrackInfo> tracks, AutoTagMatchingConfig config, bool configMatchArtist)
     {
+        tracks = tracks.Where(track => IsVariantCompatible(info, track)).ToList();
+        if (tracks.Count == 0)
+        {
+            return null;
+        }
+
         var match = OneTaggerMatching.MatchTrack(
             info,
             tracks,
@@ -221,6 +252,54 @@ public sealed class DiscogsMatcher
 
         return match == null ? null : new MatchCandidate(match.Accuracy, match.Track);
     }
+
+    internal static bool IsVariantCompatible(AutoTagAudioInfo info, DiscogsTrackInfo track)
+    {
+        var sourceMarkers = ExtractVariantMarkers(info.Title);
+        var candidateMarkers = ExtractVariantMarkers(track.Title);
+        return sourceMarkers.SetEquals(candidateMarkers);
+    }
+
+    private static HashSet<string> ExtractVariantMarkers(string? title)
+    {
+        var markers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return markers;
+        }
+
+        foreach (Match match in VariantSegmentRegex.Matches(title))
+        {
+            AddVariantMarkers(markers, match.Groups["value"].Value);
+        }
+
+        var trailing = TrailingVariantRegex.Match(title);
+        if (trailing.Success)
+        {
+            AddVariantMarkers(markers, trailing.Groups["value"].Value);
+        }
+
+        return markers;
+    }
+
+    private static void AddVariantMarkers(HashSet<string> markers, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        foreach (var (key, pattern) in VariantPatterns)
+        {
+            if (pattern.IsMatch(value))
+            {
+                markers.Add(key);
+            }
+        }
+    }
+
+    private static Regex CreateVariantRegex(string pattern)
+        => new(pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, RegexTimeout);
 
     private static DiscogsTrackInfo ToTrack(DiscogsRelease release, int trackIndex, DiscogsConfig config)
     {
