@@ -50,8 +50,7 @@ public static class ArtworkFallbackHelper
 
     public static IReadOnlyList<string> ResolveOrder(DeezSpoTagSettings settings)
     {
-        var resolved = ResolveOrderInternal(settings.ArtworkFallbackEnabled, settings.ArtworkFallbackOrder);
-        return EnforceSpotifyArtworkLastResortOnly(resolved);
+        return ResolveOrderInternal(settings.ArtworkFallbackEnabled, settings.ArtworkFallbackOrder);
     }
 
     public static IReadOnlyList<string> ResolveArtistOrder(DeezSpoTagSettings settings)
@@ -281,32 +280,6 @@ public static class ArtworkFallbackHelper
         }
 
         return enabled ? filtered : new List<string> { filtered[0] };
-    }
-
-    private static List<string> EnforceSpotifyArtworkLastResortOnly(List<string> providers)
-    {
-        if (providers.Count == 0)
-        {
-            return new List<string>();
-        }
-
-        var hasSpotify = providers.Any(provider =>
-            string.Equals(provider, SpotifyProvider, StringComparison.OrdinalIgnoreCase));
-        if (!hasSpotify)
-        {
-            return providers.ToList();
-        }
-
-        var hasNonSpotify = providers.Any(provider =>
-            !string.Equals(provider, SpotifyProvider, StringComparison.OrdinalIgnoreCase));
-        if (!hasNonSpotify)
-        {
-            return new List<string> { SpotifyProvider };
-        }
-
-        return providers
-            .Where(provider => !string.Equals(provider, SpotifyProvider, StringComparison.OrdinalIgnoreCase))
-            .ToList();
     }
 
     private static string NormalizeArtworkProviderToken(string? value)

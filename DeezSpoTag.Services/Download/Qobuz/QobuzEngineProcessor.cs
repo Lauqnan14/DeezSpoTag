@@ -825,6 +825,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 queueUuid,
                 prefetchFailure);
             _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
+            throw new InvalidOperationException(
+                $"{EngineName} required artwork prefetch failed for {queueUuid}: {prefetchFailure}");
         }
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<QobuzQueueItem>(

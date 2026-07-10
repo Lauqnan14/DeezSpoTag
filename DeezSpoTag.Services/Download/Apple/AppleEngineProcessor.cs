@@ -850,6 +850,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 queueUuid,
                 prefetchFailure);
             _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
+            throw new InvalidOperationException(
+                $"{EngineName} required artwork prefetch failed for {queueUuid}: {prefetchFailure}");
         }
         payload.Progress = 100;
         payload.Downloaded = Math.Max(payload.Size, 1);

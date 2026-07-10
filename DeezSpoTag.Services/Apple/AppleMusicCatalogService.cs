@@ -170,27 +170,6 @@ public sealed class AppleMusicCatalogService
                 request => ApplyMediaUserHeaders(request, mediaUserToken, storefront)));
     }
 
-    public async Task<JsonDocument> GetSongLyricsAsync(
-        string id,
-        string storefront,
-        string language,
-        CancellationToken cancellationToken,
-        string? mediaUserToken = null)
-    {
-        var url =
-            $"{BuildCatalogApiBaseUrl()}/v1/catalog/{Uri.EscapeDataString(storefront)}/songs/{Uri.EscapeDataString(id)}/lyrics" +
-            $"?l={Uri.EscapeDataString(language)}&extend=ttmlLocalizations";
-        var cacheKey = $"apple:lyrics:{storefront}:{id}:{language}";
-        return await GetCachedJsonAsync(
-            cacheKey,
-            TimeSpan.FromMinutes(10),
-            () => SendWithTokenRetryRawAsync(
-                HttpMethod.Get,
-                url,
-                cancellationToken,
-                request => ApplyMediaUserHeaders(request, mediaUserToken, storefront)));
-    }
-
     public async Task<string?> GetAccountStorefrontAsync(string mediaUserToken, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(mediaUserToken))

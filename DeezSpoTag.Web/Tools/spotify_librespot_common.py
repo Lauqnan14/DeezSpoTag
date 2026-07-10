@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
 import pathlib
 import sys
+
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 
 def write_result(ok, payload=None, error=None):

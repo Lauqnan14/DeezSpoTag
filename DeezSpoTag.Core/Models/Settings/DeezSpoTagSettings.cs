@@ -155,6 +155,7 @@ public class DeezSpoTagSettings
     public string LrcType { get; set; } = "lyrics,syllable-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
     public bool SaveAnimatedArtwork { get; set; } = true;
+    public string AnimatedArtworkFormats { get; set; } = "mp4";
     public int LimitMax { get; set; } = 200;
     public bool DlAlbumcoverForPlaylist { get; set; } = true;
     public bool GetM3u8FromDevice { get; set; } = true;

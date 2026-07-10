@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Identity;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -17,16 +18,16 @@ public sealed class DeezerLinkMappingService
     private const string SongSourceType = "song";
     private const string ChannelSourceType = "channel";
 
-    private readonly SongLinkResolver _songLinkResolver;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<DeezerLinkMappingService> _logger;
 
     public DeezerLinkMappingService(
-        SongLinkResolver songLinkResolver,
+        ITrackIdentityResolver trackIdentityResolver,
         IHttpClientFactory httpClientFactory,
         ILogger<DeezerLinkMappingService> logger)
     {
-        _songLinkResolver = songLinkResolver;
+        _trackIdentityResolver = trackIdentityResolver;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
@@ -56,16 +57,16 @@ public sealed class DeezerLinkMappingService
             return DeezerLinkMappingResult.Success(source, directDeezer);
         }
 
-        SongLinkResult? mapped = null;
+        PlatformLinkResult? mapped = null;
         try
         {
-            mapped = await _songLinkResolver.ResolveByUrlAsync(normalizedUrl, cancellationToken);
+            mapped = await ResolveMappedIdentityAsync(normalizedUrl, source, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Song.link mapping failed for url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
+                _logger.LogDebug(ex, "Central Deezer mapping failed for url {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedUrl));
             }
         }
 
@@ -83,10 +84,59 @@ public sealed class DeezerLinkMappingService
         return DeezerLinkMappingResult.Unavailable(source, "No Deezer mapping found.");
     }
 
+    private async Task<PlatformLinkResult?> ResolveMappedIdentityAsync(
+        string normalizedUrl,
+        ExternalLinkSource source,
+        CancellationToken cancellationToken)
+    {
+        var resolution = await _trackIdentityResolver.ResolveAsync(
+            new TrackIdentityResolutionRequest(
+                SourcePlatform: SourceToPlatform(source),
+                SourceUrl: normalizedUrl,
+                Title: null,
+                Artist: null,
+                Album: null,
+                Isrc: null,
+                DurationMs: null,
+                TargetPlatforms: new[] { "deezer", "spotify", "apple", "qobuz", "tidal", "amazon" }),
+            cancellationToken);
+
+        var mapped = new PlatformLinkResult
+        {
+            DeezerId = resolution.DeezerId,
+            DeezerUrl = resolution.DeezerUrl,
+            SpotifyId = resolution.SpotifyId,
+            SpotifyUrl = resolution.SpotifyUrl,
+            AppleMusicUrl = resolution.AppleUrl,
+            QobuzUrl = resolution.QobuzUrl,
+            TidalUrl = resolution.TidalUrl,
+            AmazonUrl = resolution.AmazonUrl,
+            Isrc = resolution.Isrc,
+            SourceTitle = resolution.Title,
+            SourceArtist = resolution.Artist,
+            SourceType = SongSourceType
+        };
+
+        return mapped.HasAnyResolvedLink() || !string.IsNullOrWhiteSpace(mapped.Isrc)
+            ? mapped
+            : null;
+    }
+
+    private static string? SourceToPlatform(ExternalLinkSource source)
+        => source switch
+        {
+            ExternalLinkSource.Deezer => "deezer",
+            ExternalLinkSource.Spotify => "spotify",
+            ExternalLinkSource.AppleMusic => "apple",
+            ExternalLinkSource.Qobuz => "qobuz",
+            ExternalLinkSource.Tidal => "tidal",
+            _ => null
+        };
+
     private async Task<DeezerLinkDescriptor?> TryMapByMetadataSearchAsync(
         string normalizedUrl,
         ExternalLinkSource source,
-        SongLinkResult? mapped,
+        PlatformLinkResult? mapped,
         CancellationToken cancellationToken)
     {
         if (mapped == null
@@ -119,7 +169,7 @@ public sealed class DeezerLinkMappingService
 
     private static bool TryBuildMetadataSearchRequest(
         string normalizedUrl,
-        SongLinkResult mapped,
+        PlatformLinkResult mapped,
         out string searchType,
         out string query)
     {

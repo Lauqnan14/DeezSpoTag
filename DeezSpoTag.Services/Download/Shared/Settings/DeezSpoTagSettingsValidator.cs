@@ -111,6 +111,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.SaveArtworkArtist, (v) => settings.SaveArtworkArtist = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveAnimatedArtwork),
                 () => settings.SaveAnimatedArtwork, (v) => settings.SaveAnimatedArtwork = v);
+            changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkFormats),
+                () => settings.AnimatedArtworkFormats, (v) => settings.AnimatedArtworkFormats = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.AlbumVariousArtists),
                 () => settings.AlbumVariousArtists, (v) => settings.AlbumVariousArtists = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveAlbumVersion),
@@ -531,6 +533,7 @@ public class DeezSpoTagSettingsValidator
             LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
             LrcFormat = "both",
             SaveAnimatedArtwork = true,
+            AnimatedArtworkFormats = "mp4",
             LimitMax = 200,
             DlAlbumcoverForPlaylist = true,
             GetM3u8FromDevice = true,

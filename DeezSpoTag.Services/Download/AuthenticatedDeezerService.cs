@@ -1,5 +1,6 @@
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Authentication;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
 using System.Text.Json.Serialization;
 
@@ -12,9 +13,11 @@ namespace DeezSpoTag.Services.Download;
 /// </summary>
 public class AuthenticatedDeezerService
 {
+    private static readonly TimeSpan SavedArlLoginTimeout = TimeSpan.FromSeconds(8);
     private readonly ILogger<AuthenticatedDeezerService> _logger;
     private readonly DeezerClient _deezerClient;
     private readonly ILoginStorageService _loginStorage;
+    private readonly SemaphoreSlim _authGate = new(1, 1);
 
     public AuthenticatedDeezerService(
         ILogger<AuthenticatedDeezerService> logger,
@@ -29,29 +32,67 @@ public class AuthenticatedDeezerService
     /// <summary>
     /// Ensure the client is authenticated - EXACT PORT: Uses singleton DeezerClient
     /// </summary>
-    public Task<bool> EnsureAuthenticatedAsync()
+    public async Task<bool> EnsureAuthenticatedAsync()
     {
         if (_deezerClient.LoggedIn)
         {
-            return Task.FromResult(true);
+            return true;
         }
 
-        _logger.LogWarning("DeezerClient is not authenticated - user needs to login through the web interface");
-        return Task.FromResult(false);
+        await _authGate.WaitAsync();
+        try
+        {
+            if (_deezerClient.LoggedIn)
+            {
+                return true;
+            }
+
+            var loginData = await _loginStorage.LoadLoginCredentialsAsync();
+            var arl = DeezerAuthUtils.NormalizeArl(loginData?.Arl);
+            if (string.IsNullOrWhiteSpace(arl) || !DeezerAuthUtils.IsValidArlLength(arl))
+            {
+                _logger.LogWarning("DeezerClient is not authenticated and no valid saved ARL is available.");
+                return false;
+            }
+
+            var loggedIn = await _deezerClient.LoginWithArlAsync(arl).WaitAsync(SavedArlLoginTimeout);
+            if (!loggedIn)
+            {
+                _logger.LogWarning("Saved Deezer ARL could not authenticate the Deezer client.");
+                return false;
+            }
+
+            _logger.LogInformation("Authenticated Deezer client from saved ARL.");
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to authenticate Deezer client from saved login credentials.");
+            return false;
+        }
+        catch (TimeoutException ex)
+        {
+            _logger.LogWarning(ex, "Timed out authenticating Deezer client from saved login credentials.");
+            return false;
+        }
+        finally
+        {
+            _authGate.Release();
+        }
     }
 
     /// <summary>
     /// Get the authenticated Deezer client - EXACT PORT: Returns singleton instance
     /// </summary>
-    public Task<DeezerClient?> GetAuthenticatedClientAsync()
+    public async Task<DeezerClient?> GetAuthenticatedClientAsync()
     {
-        if (_deezerClient.LoggedIn)
+        if (await EnsureAuthenticatedAsync())
         {
-            return Task.FromResult<DeezerClient?>(_deezerClient);
+            return _deezerClient;
         }
 
         _logger.LogWarning("DeezerClient is not authenticated - user needs to login through the web interface");
-        return Task.FromResult<DeezerClient?>(null);
+        return null;
     }
 
     /// <summary>

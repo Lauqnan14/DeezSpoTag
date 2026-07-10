@@ -5660,6 +5660,7 @@
             }
             const data = await response.json();
             state.settingsCache = data?.settings || null;
+            setAnimatedArtworkFormatControls(state.settingsCache?.animatedArtworkFormats || "mp4");
             refreshDownloadTagsForSource();
             // Manual external intake path input is intentionally disabled.
             // const intakeInput = el("autotag-custom-path");
@@ -5685,6 +5686,7 @@
 
         settings.saveArtwork = getChecked("saveArtwork", settings.saveArtwork ?? false);
         settings.saveAnimatedArtwork = getChecked("saveAnimatedArtwork", settings.saveAnimatedArtwork ?? false);
+        settings.animatedArtworkFormats = collectAnimatedArtworkFormats(settings.animatedArtworkFormats);
         settings.dlAlbumcoverForPlaylist = getChecked("dlAlbumcoverForPlaylist", settings.dlAlbumcoverForPlaylist ?? true);
         settings.saveArtworkArtist = getChecked("saveArtworkArtist", settings.saveArtworkArtist ?? false);
         settings.coverImageTemplate = getValue("coverImageTemplate", settings.coverImageTemplate ?? "cover");
@@ -5823,6 +5825,7 @@
                 getBaseBool("renameSpotifyArtistFolders", DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS)
             ),
             saveArtwork: getInputChecked("saveArtwork", getBaseBool("saveArtwork", false)),
+            animatedArtworkFormats: collectAnimatedArtworkFormats(getBaseString("animatedArtworkFormats", "mp4")),
             dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
             saveArtworkArtist: getInputChecked("saveArtworkArtist", getBaseBool("saveArtworkArtist", false)),
             coverImageTemplate: getInputValue("coverImageTemplate", getBaseString("coverImageTemplate", "cover")),
@@ -5856,6 +5859,7 @@
         applyFieldCheckedWhenBoolean("enhancementRenameSpotifyArtistFolders", source.renameSpotifyArtistFolders);
 
         applyFieldCheckedWhenBoolean("saveArtwork", source.saveArtwork);
+        setAnimatedArtworkFormatControls(source.animatedArtworkFormats || "mp4");
         applyFieldCheckedWhenBoolean("dlAlbumcoverForPlaylist", source.dlAlbumcoverForPlaylist);
         applyFieldCheckedWhenBoolean("saveArtworkArtist", source.saveArtworkArtist);
         applyFieldValueIfPresent("coverImageTemplate", source.coverImageTemplate);
@@ -5930,6 +5934,46 @@
             return fallback === true;
         }
         return controls[0].checked;
+    }
+
+    function normalizeAnimatedArtworkFormats(value) {
+        const raw = Array.isArray(value)
+            ? value
+            : String(value || "mp4").split(",");
+        const allowed = ["mp4", "webp", "gif"];
+        const selected = raw
+            .map((entry) => String(entry || "").trim().replace(/^\./, "").toLowerCase())
+            .filter((entry, index, list) => allowed.includes(entry) && list.indexOf(entry) === index);
+        return selected.length ? selected : ["mp4"];
+    }
+
+    function setAnimatedArtworkFormatControls(value) {
+        const formats = new Set(normalizeAnimatedArtworkFormats(value));
+        [
+            ["animatedArtworkFormatMp4", "mp4"],
+            ["animatedArtworkFormatWebp", "webp"],
+            ["animatedArtworkFormatGif", "gif"]
+        ].forEach(([id, format]) => {
+            const field = el(id);
+            if (field instanceof HTMLInputElement) {
+                field.checked = formats.has(format);
+            }
+        });
+    }
+
+    function collectAnimatedArtworkFormats(fallback = "mp4") {
+        const pairs = [
+            ["animatedArtworkFormatMp4", "mp4"],
+            ["animatedArtworkFormatWebp", "webp"],
+            ["animatedArtworkFormatGif", "gif"]
+        ];
+        const selected = pairs
+            .filter(([id]) => {
+                const field = el(id);
+                return field instanceof HTMLInputElement && field.checked;
+            })
+            .map(([, format]) => format);
+        return (selected.length ? selected : normalizeAnimatedArtworkFormats(fallback)).join(",");
     }
 
     async function startAutoTag() {
@@ -6904,14 +6948,21 @@
         scheduleProfileAutoSave();
     });
     [
-        "saveAnimatedArtwork"
+        "saveAnimatedArtwork",
+        "animatedArtworkFormatMp4",
+        "animatedArtworkFormatWebp",
+        "animatedArtworkFormatGif"
     ].forEach((id) => {
         const field = el(id);
         if (field instanceof HTMLInputElement) {
             field.addEventListener("change", () => {
-                setAnimatedArtworkControls(field.checked);
+                if (id === "saveAnimatedArtwork") {
+                    setAnimatedArtworkControls(field.checked);
+                }
                 ensureCustomDefaults();
-                state.config.custom.itunes.animated_artwork = field.checked;
+                state.config.custom.itunes.animated_artwork = getAnimatedArtworkValue();
+                state.autoTagDefaultsDirty = true;
+                scheduleProfileAutoSave();
             });
         }
     });

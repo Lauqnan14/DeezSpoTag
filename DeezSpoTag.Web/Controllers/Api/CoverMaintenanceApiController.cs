@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.CoverPort;
@@ -56,6 +57,7 @@ public sealed class CoverMaintenanceApiController : ControllerBase
             QueueAnimatedArtwork: request.QueueAnimatedArtwork == true,
             AppleStorefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
             AnimatedArtworkMaxResolution: settings.Video?.AppleMusicVideoMaxResolution ?? 2160,
+            AnimatedArtworkFormats: AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
             EnabledSources: enabledSources);
 
         var result = await _maintenanceService.RunAsync(runRequest, cancellationToken);

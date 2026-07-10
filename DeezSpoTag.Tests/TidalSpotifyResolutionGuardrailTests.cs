@@ -33,6 +33,33 @@ public sealed class TidalSpotifyResolutionGuardrailTests
     }
 
     [Fact]
+    public void TrackAvailabilityColumn_UsesCentralResolverNotLegacySongLinkOrDownloadIntentAvailability()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "TrackAvailabilityService.cs");
+
+        Assert.Contains("ITrackIdentityResolver", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveAvailabilityTargets", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SongLink", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveProxy", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DownloadIntentService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LookupAvailabilityAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CentralResolver_UsesAuthenticatedDeezerAndSpotifyLibrespotFallback()
+    {
+        var resolverSource = ReadSource("DeezSpoTag.Web", "Services", "TrackIdentityResolver.cs");
+        var searchSource = ReadSource("DeezSpoTag.Web", "Services", "SpotifySearchService.cs");
+
+        Assert.Contains("AuthenticatedDeezerService", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("DeezSpoTag.Integrations.Deezer", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("deezer-auth-missing", resolverSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PublicDeezerClient", resolverSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Services.AutoTag.DeezerClient", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("SearchTracksViaLibrespotAsync", searchSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SpotifySearch_IsrcHydrationUsesLibrespotTrackMetadataNotBrokenQuerySearch()
     {
         var searchSource = ReadSource("DeezSpoTag.Web", "Services", "SpotifySearchService.cs");
@@ -40,11 +67,11 @@ public sealed class TidalSpotifyResolutionGuardrailTests
 
         Assert.Contains("FetchLibrespotTrackIsrcsAsync", searchSource, StringComparison.Ordinal);
         Assert.Contains("GetLibrespotTracksAsync", searchSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("SearchByTypeViaLibrespotAsync", searchSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("SearchLibrespotTracksAsync", blobSource, StringComparison.Ordinal);
+        Assert.Contains("SearchTracksViaLibrespotAsync", searchSource, StringComparison.Ordinal);
+        Assert.Contains("SearchLibrespotTracksAsync", blobSource, StringComparison.Ordinal);
         Assert.DoesNotContain("api.spotify.com" + "/v1" + "/search", searchSource, StringComparison.Ordinal);
         Assert.False(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Services", "Download", "Spotify", "SpotifyIdResolver.cs")));
-        Assert.False(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Web", "Tools", "spotify_librespot_search.py")));
+        Assert.True(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Web", "Tools", "spotify_librespot_search.py")));
     }
 
     [Fact]

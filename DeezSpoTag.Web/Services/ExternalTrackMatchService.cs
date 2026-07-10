@@ -1,6 +1,5 @@
 using System.Text.Json;
 using DeezSpoTag.Integrations.Deezer;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Settings;
@@ -17,7 +16,6 @@ public sealed class ExternalTrackMatchService
 
     private static readonly ResolvedPlatformLinks EmptyResolvedPlatformLinks = new(null, null, null, null);
     private readonly DeezerClient _deezerClient;
-    private readonly SongLinkResolver _songLinkResolver;
     private readonly QobuzTrackResolver _qobuzTrackResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -26,7 +24,6 @@ public sealed class ExternalTrackMatchService
 
     public ExternalTrackMatchService(
         DeezerClient deezerClient,
-        SongLinkResolver songLinkResolver,
         QobuzTrackResolver qobuzTrackResolver,
         AppleMusicCatalogService appleCatalogService,
         DeezSpoTagSettingsService settingsService,
@@ -34,7 +31,6 @@ public sealed class ExternalTrackMatchService
         ILogger<ExternalTrackMatchService> logger)
     {
         _deezerClient = deezerClient;
-        _songLinkResolver = songLinkResolver;
         _qobuzTrackResolver = qobuzTrackResolver;
         _appleCatalogService = appleCatalogService;
         _settingsService = settingsService;
@@ -106,7 +102,7 @@ public sealed class ExternalTrackMatchService
                 missingSpotify: false,
                 missingDeezer: false,
                 acousticIdScore: null,
-                notes: "Matched by fallback search or SongLink.",
+                notes: "Matched by fallback search.",
                 links: links);
         }
 
@@ -339,7 +335,7 @@ public sealed record ExternalMatchRequest(
     string? DeezerPreviewUrl = null,
     string? SpotifyPreviewUrl = null,
     bool AllowFallbackSearch = true,
-    bool AllowSongLink = true,
+    bool AllowPlatformLink = true,
     bool PreferIsrcOnly = false,
     bool AllowAcousticId = true,
     bool AllowQobuzIsrcLookup = true,

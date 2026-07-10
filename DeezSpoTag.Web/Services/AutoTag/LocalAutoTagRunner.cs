@@ -14,11 +14,13 @@ using DeezSpoTag.Core.Security;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
+using Microsoft.Extensions.DependencyInjection;
 using TagLib;
 using IOFile = System.IO.File;
 using DownloadLyricsService = DeezSpoTag.Services.Download.Utils.LyricsService;
@@ -328,6 +330,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly DownloadLyricsService _downloadLyricsService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly PlatformCapabilitiesStore _capabilitiesStore;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -362,6 +366,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _downloadLyricsService = collaborators.DownloadLyricsService;
         _settingsService = collaborators.SettingsService;
         _capabilitiesStore = collaborators.CapabilitiesStore;
+        _serviceScopeFactory = collaborators.ServiceScopeFactory;
+        _trackIdentityResolver = collaborators.TrackIdentityResolver;
     }
 
     public async Task<AutoTagRunResult> RunAsync(
@@ -1561,7 +1567,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             : settings.AppleMusic.Storefront;
         var maxResolution = settings.Video?.AppleMusicVideoMaxResolution ?? 2160;
         var baseFileName = BuildAlbumArtworkBaseFileName(track, settings);
-        var appleCatalogTrackId = await ResolveAppleCatalogTrackIdForExtrasAsync(track, storefront, token);
+        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token);
 
         await TryPopulateAppleAnimatedArtworkAsync(
             track,
@@ -1569,7 +1575,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             storefront,
             maxResolution,
             baseFileName,
-            appleCatalogTrackId,
+            appleIdentity,
+            settings,
             token);
     }
 
@@ -1579,10 +1586,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string storefront,
         int maxResolution,
         string baseFileName,
-        string? appleCatalogTrackId,
+        TrackIdentityResolution? appleIdentity,
+        DeezSpoTagSettings settings,
         CancellationToken token)
     {
         var artist = track.Artists.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(appleIdentity?.AppleId))
+        {
+            return;
+        }
 
         try
         {
@@ -1591,36 +1603,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 _httpClientFactory,
                 new AppleQueueHelpers.AnimatedArtworkSaveRequest
                 {
-                    AppleId = appleCatalogTrackId,
-                    Title = track.Title,
-                    Artist = artist,
-                    Album = track.Album,
+                    AppleId = appleIdentity?.AppleId,
+                    Artist = appleIdentity?.AppleArtistName ?? artist,
+                    Album = appleIdentity?.AppleAlbumName ?? track.Album,
                     BaseFileName = baseFileName,
                     Storefront = storefront,
                     MaxResolution = maxResolution,
                     OutputDir = outputDir,
-                    Logger = _logger
+                    Logger = _logger,
+                    CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AppleAlbumId) ? null : "album",
+                    CollectionId = appleIdentity?.AppleAlbumId,
+                    OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
                 },
                 token);
-
-            if (!savedAnimated)
-            {
-                savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
-                    _appleMusicCatalogService,
-                    _httpClientFactory,
-                    new AppleQueueHelpers.AnimatedArtworkSaveRequest
-                    {
-                        Title = track.Title,
-                        Artist = artist,
-                        Album = track.Album,
-                        BaseFileName = baseFileName,
-                        Storefront = storefront,
-                        MaxResolution = maxResolution,
-                        OutputDir = outputDir,
-                        Logger = _logger
-                    },
-                    token);
-            }
 
             if (savedAnimated)
             {
@@ -1706,48 +1701,39 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         ApplyResolvedLyrics(track, lyrics, request);
     }
 
-    private async Task<string?> ResolveAppleCatalogTrackIdForExtrasAsync(
+    private async Task<TrackIdentityResolution?> ResolveAppleIdentityForExtrasAsync(
         AutoTagTrack track,
         string storefront,
+        DeezSpoTagSettings settings,
         CancellationToken token)
     {
-        if (string.IsNullOrWhiteSpace(track.Isrc))
-        {
-            return null;
-        }
-
         try
         {
-            using var doc = await _appleMusicCatalogService.GetSongByIsrcAsync(track.Isrc, storefront, "en-US", token);
-            return TryExtractFirstAppleCatalogId(doc.RootElement);
+            var artist = track.Artists.FirstOrDefault();
+            var identity = await _trackIdentityResolver.ResolveAsync(
+                new TrackIdentityResolutionRequest(
+                    SourcePlatform: null,
+                    SourceUrl: track.Url,
+                    Title: track.Title,
+                    Artist: artist,
+                    Album: track.Album,
+                    Isrc: track.Isrc,
+                    DurationMs: track.Duration.HasValue ? (int)Math.Round(track.Duration.Value.TotalMilliseconds) : null,
+                    TargetPlatforms: new[] { "apple" },
+                    Storefront: storefront,
+                    Language: "en-US",
+                    MediaUserToken: settings.AppleMusic?.MediaUserToken),
+                token);
+            return string.IsNullOrWhiteSpace(identity.AppleId) ? null : identity;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Apple catalog ISRC lookup failed for animated artwork {Isrc}.", SanitizeLogValue(track.Isrc));
+                _logger.LogDebug(ex, "Central Apple identity lookup failed for animated artwork {Isrc}.", SanitizeLogValue(track.Isrc));
             }
             return null;
         }
-    }
-
-    private static string? TryExtractFirstAppleCatalogId(JsonElement root)
-    {
-        if (!root.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array ||
-            data.GetArrayLength() == 0)
-        {
-            return null;
-        }
-
-        var first = data[0];
-        if (!first.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
-        {
-            return null;
-        }
-
-        var id = idEl.GetString();
-        return string.IsNullOrWhiteSpace(id) ? null : id;
     }
 
     private static string BuildAlbumArtworkBaseFileName(AutoTagTrack track, DeezSpoTagSettings settings)
@@ -2033,7 +2019,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         SetLyrics(track, SyncedLyricsTag, syncedLines);
         if (lyrics.CanSaveLrcSidecar())
         {
-            track.Other[SyncedLyricsSourceFormatTag] = new List<string> { LyricsSourceFormat.DownloadedLrc.ToString() };
+            track.Other[SyncedLyricsSourceFormatTag] = new List<string> { lyrics.SyncedLyricsSourceFormat.ToString() };
         }
     }
 
@@ -2058,12 +2044,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void ApplyTtmlLyrics(AutoTagTrack track, LyricsBase lyrics, LyricsPopulationRequest request)
     {
-        if (!request.WantsTtml || request.HasTtml || string.IsNullOrWhiteSpace(lyrics.TtmlLyrics))
+        if (!request.WantsTtml
+            || request.HasTtml
+            || !AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics))
         {
             return;
         }
 
-        track.Other[TtmlLyricsTag] = new List<string> { lyrics.TtmlLyrics };
+        track.Other[TtmlLyricsTag] = new List<string> { lyrics.TtmlLyrics! };
     }
 
     private static void SetLyrics(AutoTagTrack track, string tag, List<string> lines)
@@ -5317,7 +5305,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (context.EnabledTags.Contains(TtmlLyricsTag)
             && context.AllowsLyricsBySettings
             && context.AllowsTtmlByFormat
-            && !string.IsNullOrWhiteSpace(sidecarTtml))
+            && AppleLyricsService.IsTimedTtml(sidecarTtml))
         {
             var ttmlPath = BuildLyricsSidecarPath(context, TtmlExtension);
             if (!IOFile.Exists(ttmlPath))
@@ -5421,9 +5409,26 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var ttmlPath = Path.ChangeExtension(filePath, TtmlExtension);
         var txtPath = Path.ChangeExtension(filePath, ".txt");
         var hasLrc = IOFile.Exists(lrcPath);
-        var hasTtml = IOFile.Exists(ttmlPath);
+        var hasTtml = HasTimedTtmlSidecar(ttmlPath);
         var hasTxt = IOFile.Exists(txtPath);
         return (hasLrc || hasTtml || hasTxt, hasLrc, hasTtml, hasTxt, txtPath);
+    }
+
+    private static bool HasTimedTtmlSidecar(string path)
+    {
+        if (!IOFile.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            return AppleLyricsService.IsTimedTtml(IOFile.ReadAllText(path));
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
     }
 
     private static bool TrackHasEmbeddedArtwork(string filePath, AutoTagRunnerConfig config, string platformId)
@@ -5468,18 +5473,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         try
         {
-            var client = _httpClientFactory.CreateClient();
-            var response = await client.GetAsync(url, token);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
             var tempPath = Path.Join(Path.GetTempPath(), $"autotag-cover-{Guid.NewGuid():N}.jpg");
-            await using var stream = await response.Content.ReadAsStreamAsync(token);
-            await using var fileStream = IOFile.Create(tempPath);
-            await stream.CopyToAsync(fileStream, token);
-            return tempPath;
+            using var scope = _serviceScopeFactory.CreateScope();
+            var imageDownloader = scope.ServiceProvider.GetRequiredService<ImageDownloader>();
+            return await imageDownloader.DownloadImageAsync(
+                url,
+                tempPath,
+                overwrite: "y",
+                preferMaxQuality: true,
+                cancellationToken: token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -6244,6 +6246,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required DownloadLyricsService DownloadLyricsService { get; init; }
         public required DeezSpoTagSettingsService SettingsService { get; init; }
         public required PlatformCapabilitiesStore CapabilitiesStore { get; init; }
+        public required IServiceScopeFactory ServiceScopeFactory { get; init; }
+        public required ITrackIdentityResolver TrackIdentityResolver { get; init; }
     }
 
     private readonly record struct TagWriteContext(
@@ -6813,7 +6817,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var syncedPayload = ResolveLyricsPayloadLines(sourceTrack, SyncedLyricsTag);
-        if (syncedPayload.Count > 0 && HasDownloadedLrcSourceFormat(sourceTrack))
+        if (syncedPayload.Count > 0 && HasLrcSidecarSourceFormat(sourceTrack))
         {
             return syncedPayload;
         }
@@ -6821,10 +6825,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return Array.Empty<string>();
     }
 
-    private static bool HasDownloadedLrcSourceFormat(AutoTagTrack sourceTrack)
+    private static bool HasLrcSidecarSourceFormat(AutoTagTrack sourceTrack)
     {
         return sourceTrack.Other.TryGetValue(SyncedLyricsSourceFormatTag, out var values)
-            && values.Any(value => string.Equals(value, LyricsSourceFormat.DownloadedLrc.ToString(), StringComparison.OrdinalIgnoreCase));
+            && values.Any(value =>
+                string.Equals(value, LyricsSourceFormat.DownloadedLrc.ToString(), StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, LyricsSourceFormat.ProviderSyncedJson.ToString(), StringComparison.OrdinalIgnoreCase));
     }
 
     private static IReadOnlyList<string> ResolveExistingLrcSidecar(string filePath)

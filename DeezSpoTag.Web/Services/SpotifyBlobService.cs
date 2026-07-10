@@ -37,6 +37,7 @@ public sealed class SpotifyBlobService
     private const string LibrespotTokenScript = "spotify_librespot_token.py";
     private const string LibrespotPlaylistScript = "spotify_librespot_playlist.py";
     private const string LibrespotTracksScript = "spotify_librespot_tracks.py";
+    private const string LibrespotSearchScript = "spotify_librespot_search.py";
     private const string LibrespotAlbumScript = "spotify_librespot_album.py";
     private const string LibrespotArtistScript = "spotify_librespot_artist.py";
     private const string LibrespotPodcastScript = "spotify_librespot_podcast.py";
@@ -479,6 +480,47 @@ public sealed class SpotifyBlobService
             CredentialsArg, blobPath,
             "--track-ids", ids);
         return new SpotifyLibrespotTracksResult(result.PayloadJson, result.Error);
+    }
+
+    public async Task<SpotifyLibrespotSearchResult> SearchLibrespotTracksAsync(
+        string blobPath,
+        string query,
+        int limit,
+        string? country,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
+        {
+            return new SpotifyLibrespotSearchResult(null, MissingBlobError);
+        }
+
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return new SpotifyLibrespotSearchResult(null, "missing_query");
+        }
+
+        var resolvedLimit = Math.Clamp(limit <= 0 ? 10 : limit, 1, 50);
+        var arguments = new List<string>
+        {
+            CredentialsArg,
+            blobPath,
+            "--query",
+            query.Trim(),
+            "--limit",
+            resolvedLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        if (!string.IsNullOrWhiteSpace(country))
+        {
+            arguments.Add("--country");
+            arguments.Add(country.Trim());
+        }
+
+        var result = await RequestLibrespotPayloadAsync(
+            "search",
+            ResolveLibrespotSearchScriptPath,
+            cancellationToken,
+            arguments.ToArray());
+        return new SpotifyLibrespotSearchResult(result.PayloadJson, result.Error);
     }
 
     public async Task<SpotifyLibrespotAlbumResult> GetLibrespotAlbumAsync(
@@ -1329,6 +1371,9 @@ public sealed class SpotifyBlobService
     private string? ResolveLibrespotTracksScriptPath(string repoRoot)
         => ResolveToolFilePath(repoRoot, LibrespotTracksScript);
 
+    private string? ResolveLibrespotSearchScriptPath(string repoRoot)
+        => ResolveToolFilePath(repoRoot, LibrespotSearchScript);
+
     private string? ResolveLibrespotAlbumScriptPath(string repoRoot)
         => ResolveToolFilePath(repoRoot, LibrespotAlbumScript);
 
@@ -1835,6 +1880,7 @@ public sealed class SpotifyBlobService
         string? Error);
     public sealed record SpotifyLibrespotPlaylistResult(string? PayloadJson, string? Error);
     public sealed record SpotifyLibrespotTracksResult(string? PayloadJson, string? Error);
+    public sealed record SpotifyLibrespotSearchResult(string? PayloadJson, string? Error);
     public sealed record SpotifyLibrespotAlbumResult(string? PayloadJson, string? Error);
     public sealed record SpotifyLibrespotArtistResult(string? PayloadJson, string? Error);
     public sealed record SpotifyLibrespotPodcastResult(string? PayloadJson, string? Error);

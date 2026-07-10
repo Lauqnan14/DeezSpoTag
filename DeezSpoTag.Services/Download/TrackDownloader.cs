@@ -5,6 +5,7 @@ using DeezSpoTag.Core.Exceptions;
 using DeezSpoTag.Services.Crypto;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
@@ -31,6 +32,8 @@ public class TrackDownloader
     private const string ArtistType = "artist";
     private const string UnknownArtist = "Unknown Artist";
     private const string DeezerSource = "deezer";
+    private const string AppleSource = "apple";
+    private const string AlbumType = "album";
     private static readonly string[] BlockedGenres = ["other", "others"];
     private readonly ILogger<TrackDownloader> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -43,7 +46,7 @@ public class TrackDownloader
     private readonly SearchFallbackService _searchFallbackService;
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly Utils.LyricsService _lyricsService;
-    private readonly ISpotifyIdResolver _spotifyIdResolver;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
     private readonly ILastFmArtistImageResolver? _lastFmArtistImageResolver;
     private readonly AppleMusicCatalogService _appleCatalogService;
@@ -226,7 +229,7 @@ public class TrackDownloader
         _searchFallbackService = serviceProvider.GetRequiredService<SearchFallbackService>();
         _authenticatedDeezerService = serviceProvider.GetRequiredService<AuthenticatedDeezerService>();
         _lyricsService = serviceProvider.GetRequiredService<Utils.LyricsService>();
-        _spotifyIdResolver = serviceProvider.GetRequiredService<ISpotifyIdResolver>();
+        _trackIdentityResolver = serviceProvider.GetRequiredService<ITrackIdentityResolver>();
         _spotifyArtworkResolver = serviceProvider.GetRequiredService<ISpotifyArtworkResolver>();
         _lastFmArtistImageResolver = serviceProvider.GetService<ILastFmArtistImageResolver>();
         _appleCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
@@ -578,7 +581,7 @@ public class TrackDownloader
         context.Listener?.OnDownloadInfo(context.DownloadObject, "Tagging track", "tagging");
         try
         {
-            EnsureTrackEmbeddedCoverPathForTagging(context.Track, context.Album);
+            EnsureRequiredEmbeddedCoverForTagging(context);
             await EnsureLyricsForTaggingAsync(
                 context.Track,
                 context.Settings,
@@ -603,6 +606,24 @@ public class TrackDownloader
                 "taggingFailed",
                 context.Track);
         }
+    }
+
+    private static void EnsureRequiredEmbeddedCoverForTagging(TrackDownloadExecutionContext context)
+    {
+        EnsureTrackEmbeddedCoverPathForTagging(context.Track, context.Album);
+        if (!context.TagSettings.Cover)
+        {
+            return;
+        }
+
+        var embeddedCoverPath = context.Track.Album?.EmbeddedCoverPath;
+        if (!string.IsNullOrWhiteSpace(embeddedCoverPath) && System.IO.File.Exists(embeddedCoverPath))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Required cover artwork was not resolved for '{context.Track.Title}'.");
     }
 
     private static void FinalizeTrackDownloadResult(TrackDownloadExecutionContext context)
@@ -912,7 +933,7 @@ public class TrackDownloader
         var albumConstraint = ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(coverAlbum.Title);
         var hasDeezerCover = coverAlbum.Pic != null && !string.IsNullOrEmpty(coverAlbum.Pic.Md5);
         var hasDeezerArtist = coverAlbum.MainArtist?.Pic != null && !string.IsNullOrEmpty(coverAlbum.MainArtist.Pic.Md5);
-        var appleTrackId = ArtworkFallbackHelper.TryExtractAppleTrackId(track);
+        var appleTrackId = await ResolveAppleArtworkTrackIdAsync(track, coverAlbum, settings, cancellationToken);
         var deezerTrackId = ArtworkFallbackHelper.TryExtractDeezerTrackId(track);
 
         var deezerClient = await TryGetDeezerArtworkClientAsync(fallbackOrder, artistFallbackOrder);
@@ -1006,6 +1027,35 @@ public class TrackDownloader
         }
 
         ApplyEmbeddedCoverPathForTagging(track, contextAlbum, contextAlbum.EmbeddedCoverPath);
+    }
+
+    private async Task<string?> ResolveAppleArtworkTrackIdAsync(
+        Track track,
+        Album coverAlbum,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
+            ? "us"
+            : settings.AppleMusic.Storefront;
+        var identity = await _trackIdentityResolver.ResolveAsync(
+            new TrackIdentityResolutionRequest(
+                SourcePlatform: track.Source,
+                SourceUrl: track.DownloadURL,
+                Title: track.Title,
+                Artist: track.MainArtist?.Name ?? track.ArtistString,
+                Album: coverAlbum.Title,
+                Isrc: track.ISRC,
+                DurationMs: track.Duration > 0 ? track.Duration * 1000 : null,
+                AppleId: ArtworkFallbackHelper.TryExtractAppleTrackId(track),
+                TargetPlatforms: new[] { AppleSource },
+                Storefront: storefront,
+                Language: "en-US",
+                MediaUserToken: settings.AppleMusic?.MediaUserToken),
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(identity.AppleId)
+            ? ArtworkFallbackHelper.TryExtractAppleTrackId(track)
+            : identity.AppleId;
     }
 
     private static void ApplyEmbeddedCoverPathForTagging(Track track, Album? coverAlbum, string? embeddedPath)
@@ -1146,12 +1196,21 @@ public class TrackDownloader
             return false;
         }
 
-        state.SpotifyId ??= await _spotifyIdResolver.ResolveTrackIdAsync(
-            request.Track.Title ?? string.Empty,
-            request.Track.MainArtist?.Name ?? string.Empty,
-            request.AlbumConstraint,
-            request.Track.ISRC,
-            cancellationToken);
+        if (string.IsNullOrWhiteSpace(state.SpotifyId))
+        {
+            var identity = await _trackIdentityResolver.ResolveAsync(
+                new TrackIdentityResolutionRequest(
+                    SourcePlatform: request.Track.Source,
+                    SourceUrl: request.Track.DownloadURL,
+                    Title: request.Track.Title,
+                    Artist: request.Track.MainArtist?.Name ?? request.Track.ArtistString,
+                    Album: request.AlbumConstraint,
+                    Isrc: request.Track.ISRC,
+                    DurationMs: request.Track.Duration > 0 ? request.Track.Duration * 1000 : null,
+                    TargetPlatforms: new[] { "spotify" }),
+                cancellationToken);
+            state.SpotifyId = identity.SpotifyId;
+        }
         if (string.IsNullOrWhiteSpace(state.SpotifyId))
         {
             return false;
@@ -2141,21 +2200,42 @@ public class TrackDownloader
         }
 
         var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront;
-        var appleId = ArtworkFallbackHelper.TryExtractAppleTrackId(track);
+        var identity = await _trackIdentityResolver.ResolveAsync(
+            new TrackIdentityResolutionRequest(
+                SourcePlatform: track.Source,
+                SourceUrl: track.DownloadURL,
+                Title: track.Title,
+                Artist: track.MainArtist?.Name ?? track.ArtistString,
+                Album: track.Album?.Title,
+                Isrc: track.ISRC,
+                DurationMs: track.Duration > 0 ? track.Duration * 1000 : null,
+                AppleId: ArtworkFallbackHelper.TryExtractAppleTrackId(track),
+                TargetPlatforms: new[] { AppleSource },
+                Storefront: storefront,
+                Language: "en-US",
+                MediaUserToken: settings.AppleMusic?.MediaUserToken),
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(identity.AppleId))
+        {
+            return;
+        }
+
         await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             _appleCatalogService,
             _httpClientFactory,
             new AppleQueueHelpers.AnimatedArtworkSaveRequest
             {
-                AppleId = appleId,
-                Title = track.Title,
-                Artist = track.MainArtist?.Name,
-                Album = track.Album?.Title,
+                AppleId = identity.AppleId,
+                Artist = identity.AppleArtistName ?? track.MainArtist?.Name,
+                Album = identity.AppleAlbumName ?? track.Album?.Title,
                 BaseFileName = baseFileName,
                 Storefront = storefront,
                 MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
                 OutputDir = outputDir,
-                Logger = _logger
+                Logger = _logger,
+                CollectionType = string.IsNullOrWhiteSpace(identity.AppleAlbumId) ? null : AlbumType,
+                CollectionId = identity.AppleAlbumId,
+                OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
             },
             cancellationToken);
     }

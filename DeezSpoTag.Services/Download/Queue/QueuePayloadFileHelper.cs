@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Apple;
 
 namespace DeezSpoTag.Services.Download.Queue;
 
@@ -68,7 +69,7 @@ public static class QueuePayloadFileHelper
                 switch (ext)
                 {
                     case ".ttml":
-                        hasTtml = true;
+                        hasTtml = IsTimedTtmlFile(lyricIo);
                         break;
                     case ".lrc":
                         hasLrc = true;
@@ -98,4 +99,17 @@ public static class QueuePayloadFileHelper
 
         return (files, string.Join(",", status));
     }
+
+    private static bool IsTimedTtmlFile(string path)
+    {
+        try
+        {
+            return AppleLyricsService.IsTimedTtml(File.ReadAllText(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
 }

@@ -185,7 +185,8 @@ public class LyricsClassic : LyricsBase
         {
             var text = HttpUtility.HtmlDecode(lineJson.line?.ToString() ?? "");
             var lrcTimestamp = lineJson.lrc_timestamp?.ToString() ?? "";
-            var milliseconds = lineJson.milliseconds != null ? (int)lineJson.milliseconds : 0;
+            var hasMilliseconds = lineJson.milliseconds != null;
+            var milliseconds = hasMilliseconds ? (int)lineJson.milliseconds : 0;
 
             // Skip empty lines but keep the timing for proper synchronization
             if (string.IsNullOrWhiteSpace(text))
@@ -195,6 +196,11 @@ public class LyricsClassic : LyricsBase
 
             if (string.IsNullOrWhiteSpace(lrcTimestamp))
             {
+                if (!hasMilliseconds || milliseconds < 0)
+                {
+                    return null;
+                }
+
                 lrcTimestamp = SynchronizedLyric.BuildLrcTimestamp(milliseconds);
             }
 
@@ -223,8 +229,8 @@ public class LyricsClassic : LyricsBase
             if (lineElement.TryGetProperty("lrc_timestamp", out var timestampProperty))
                 lrcTimestamp = timestampProperty.GetString() ?? "";
 
-            if (lineElement.TryGetProperty("milliseconds", out var millisecondsProperty))
-                milliseconds = millisecondsProperty.GetInt32();
+            var hasMilliseconds = lineElement.TryGetProperty("milliseconds", out var millisecondsProperty)
+                && millisecondsProperty.TryGetInt32(out milliseconds);
 
             // Skip empty lines but keep the timing for proper synchronization
             if (string.IsNullOrWhiteSpace(text))
@@ -234,6 +240,11 @@ public class LyricsClassic : LyricsBase
 
             if (string.IsNullOrWhiteSpace(lrcTimestamp))
             {
+                if (!hasMilliseconds || milliseconds < 0)
+                {
+                    return null;
+                }
+
                 lrcTimestamp = SynchronizedLyric.BuildLrcTimestamp(milliseconds);
             }
 

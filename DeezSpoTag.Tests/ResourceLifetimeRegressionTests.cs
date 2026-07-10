@@ -150,7 +150,6 @@ public sealed class ResourceLifetimeRegressionTests
         var shazamDiscovery = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "ShazamDiscoveryService.cs"));
         var lastFmTags = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "LastFmTagService.cs"));
         var spotifyPathfinder = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs"));
-        var trackAvailability = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAvailabilityService.cs"));
         var localAutoTagRunner = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
         var spotifyMetadata = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs"));
         var spotifyArtwork = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyArtworkResolver.cs"));
@@ -166,7 +165,6 @@ public sealed class ResourceLifetimeRegressionTests
         Assert.Contains("MaxArtistSearchEnrichmentCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxShowCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxShowEpisodeCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
-        Assert.Contains("MaxAppleSearchCacheEntries", trackAvailability, StringComparison.Ordinal);
         Assert.Contains("_jobMatchCaches.TryRemove(jobId, out _);", localAutoTagRunner, StringComparison.Ordinal);
         Assert.Contains("AudioFeatureCacheLimit", spotifyMetadata, StringComparison.Ordinal);
         Assert.Contains("PlaylistTrackCacheLimit", spotifyMetadata, StringComparison.Ordinal);

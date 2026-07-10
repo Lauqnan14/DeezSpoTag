@@ -1,40 +1,16 @@
 using DeezSpoTag.Services.Download.Shared.Models;
-using DeezSpoTag.Services.Download.Utils;
-using DeezSpoTag.Services.Download;
-using System.Collections.Concurrent;
-using System.Net;
-using System.Text.Json;
+using DeezSpoTag.Services.Download.Identity;
 
 namespace DeezSpoTag.Web.Services;
 
 public sealed class TrackAvailabilityService
 {
-    private static readonly TimeSpan AppleSearchSuccessTtl = TimeSpan.FromHours(12);
-    private static readonly TimeSpan AppleSearchMissTtl = TimeSpan.FromMinutes(30);
-    private static readonly TimeSpan AppleSearchRateLimitTtl = TimeSpan.FromMinutes(2);
-    private const int MaxAppleSearchCacheEntries = 5000;
-    private static readonly SemaphoreSlim AppleSearchGate = new(1, 1);
-    private static readonly ConcurrentDictionary<string, AppleSearchCacheEntry> AppleSearchCache = new(StringComparer.Ordinal);
-    private static long _appleSearchPausedUntilUtcTicks;
+    private static readonly TimeSpan CentralResolverTimeout = TimeSpan.FromSeconds(6);
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
 
-    private readonly DownloadIntentService _downloadIntentService;
-    private readonly ResolveProxyClient _resolveProxyClient;
-    private readonly ISpotifyIdResolver _spotifyIdResolver;
-    private readonly SpotifySearchService _spotifySearchService;
-    private readonly DeezSpoTagSearchService _searchService;
-
-    public TrackAvailabilityService(
-        DownloadIntentService downloadIntentService,
-        ResolveProxyClient resolveProxyClient,
-        ISpotifyIdResolver spotifyIdResolver,
-        SpotifySearchService spotifySearchService,
-        DeezSpoTagSearchService searchService)
+    public TrackAvailabilityService(ITrackIdentityResolver trackIdentityResolver)
     {
-        _downloadIntentService = downloadIntentService;
-        _resolveProxyClient = resolveProxyClient;
-        _spotifyIdResolver = spotifyIdResolver;
-        _spotifySearchService = spotifySearchService;
-        _searchService = searchService;
+        _trackIdentityResolver = trackIdentityResolver;
     }
 
     public async Task<TrackAvailabilityResult> ResolveAsync(
@@ -47,101 +23,54 @@ public sealed class TrackAvailabilityService
             return TrackAvailabilityResult.Failed("spotifyId, url, isrc, deezerId, appleId, tidalId, qobuzId, or amazonId is required.");
         }
 
-        var proxy = await ResolveProxyAvailabilityAsync(input, cancellationToken);
-        var lookup = await _downloadIntentService.LookupAvailabilityAsync(BuildLookupIntent(input), cancellationToken);
-        return await BuildResultAsync(input, proxy, lookup, cancellationToken);
-    }
-
-    private async Task<ProxyAvailabilityResult> ResolveProxyAvailabilityAsync(
-        AvailabilityInput input,
-        CancellationToken cancellationToken)
-    {
-        var combined = new SongLinkResult
-        {
-            SpotifyId = input.SpotifyId,
-            SpotifyUrl = BuildSpotifyUrl(input.SpotifyId),
-            DeezerId = input.NormalizedDeezerId,
-            DeezerUrl = BuildDeezerUrl(input.NormalizedDeezerId),
-            TidalUrl = BuildTidalUrl(input.TidalId),
-            QobuzUrl = BuildQobuzUrl(input.QobuzId),
-            AppleMusicUrl = BuildAppleUrl(input.AppleId),
-            Isrc = input.Isrc
-        };
-        var attempted = false;
-        var completed = false;
-        string? error = null;
-
-        if (!string.IsNullOrWhiteSpace(input.Url))
-        {
-            var result = await _resolveProxyClient.ResolveUrlWithStatusAsync(input.Url, cancellationToken);
-            attempted = attempted || result.Attempted;
-            completed = completed || result.Completed;
-            error ??= result.Error;
-            MergeSongLink(combined, ExtractSongLink(result));
-        }
-
-        foreach (var lookup in BuildPlatformLookups(input))
-        {
-            var result = await _resolveProxyClient.ResolvePlatformIdWithStatusAsync(
-                lookup.Platform,
-                "song",
-                lookup.Id,
-                cancellationToken);
-            attempted = attempted || result.Attempted;
-            completed = completed || result.Completed;
-            error ??= result.Error;
-            MergeSongLink(combined, ExtractSongLink(result));
-        }
-
-        return new ProxyAvailabilityResult(combined, attempted, completed, error);
+        return await BuildResultAsync(input, cancellationToken);
     }
 
     private async Task<TrackAvailabilityResult> BuildResultAsync(
         AvailabilityInput input,
-        ProxyAvailabilityResult proxy,
-        DownloadIntentService.AvailabilityLookupResult lookup,
         CancellationToken cancellationToken)
     {
-        var spotifyId = LooksLikeSpotifyId(proxy.SongLink.SpotifyId) ? proxy.SongLink.SpotifyId : lookup.SpotifyId;
-        spotifyId = LooksLikeSpotifyId(spotifyId) ? spotifyId : input.SpotifyId;
-        if (!LooksLikeSpotifyId(spotifyId))
-        {
-            spotifyId = await ResolveSpotifyIdByMetadataAsync(input, lookup, cancellationToken);
-        }
-        if (!LooksLikeSpotifyId(spotifyId))
-        {
-            spotifyId = await ResolveSpotifyIdBySearchAsync(input, cancellationToken);
-        }
+        var request = new TrackIdentityResolutionRequest(
+            SourcePlatform: InferPlatformFromUrl(input.Url),
+            SourceUrl: input.Url,
+            Title: input.Title,
+            Artist: input.Artist,
+            Album: input.Album,
+            Isrc: input.Isrc,
+            DurationMs: input.DurationMs,
+            SpotifyId: input.SpotifyId,
+            DeezerId: input.NormalizedDeezerId,
+            AppleId: input.AppleId,
+            QobuzId: input.QobuzId,
+            TidalId: input.TidalId,
+            AmazonId: input.AmazonId,
+            TargetPlatforms: ResolveAvailabilityTargets(input));
+        var central = await ResolveCentralAvailabilityAsync(request, cancellationToken);
+
+        var spotifyId = FirstNonEmpty(input.SpotifyId, central.SpotifyId);
+        spotifyId = LooksLikeSpotifyId(spotifyId) ? spotifyId : null;
 
         var deezerId = FirstNonEmpty(
-            proxy.SongLink.DeezerId,
             input.NormalizedDeezerId,
-            ExtractDeezerId(lookup.DeezerUrl));
-        var appleUrl = FirstNonEmpty(proxy.SongLink.AppleMusicUrl, lookup.AppleMusicUrl);
-        var appleId = FirstNonEmpty(input.AppleId, ExtractAppleId(proxy.SongLink.AppleMusicUrl), ExtractAppleId(appleUrl));
+            central.DeezerId);
+        var appleUrl = central.AppleUrl;
+        var appleId = FirstNonEmpty(input.AppleId, ExtractAppleId(appleUrl), central.AppleId);
         var appleUnknown = false;
         if (IsFabricatedAppleIdentity(deezerId, appleId, appleUrl))
         {
             appleId = null;
             appleUrl = null;
         }
-        if (string.IsNullOrWhiteSpace(appleId) && string.IsNullOrWhiteSpace(appleUrl))
-        {
-            var appleSearch = await ResolveAppleBySearchAsync(input, cancellationToken);
-            appleId = appleSearch.Candidate?.Id;
-            appleUrl = appleSearch.Candidate?.Url;
-            appleUnknown = appleSearch.Unknown;
-        }
 
-        var tidalId = ExtractTidalId(lookup.TidalUrl);
-        var qobuzId = FirstNonEmpty(input.QobuzId, ExtractQobuzId(proxy.SongLink.QobuzUrl), ExtractQobuzId(lookup.QobuzUrl));
-        var amazonId = input.AmazonId;
+        var tidalId = FirstNonEmpty(input.TidalId, central.TidalId);
+        var qobuzId = FirstNonEmpty(input.QobuzId, central.QobuzId);
+        var amazonId = FirstNonEmpty(input.AmazonId, central.AmazonId);
 
-        var spotifyUrl = FirstNonEmpty(proxy.SongLink.SpotifyUrl, lookup.SpotifyUrl, BuildSpotifyUrl(spotifyId));
-        var deezerUrl = FirstNonEmpty(proxy.SongLink.DeezerUrl, lookup.DeezerUrl, BuildDeezerUrl(deezerId));
-        var tidalUrl = FirstNonEmpty(lookup.TidalUrl, BuildTidalUrl(tidalId));
-        var amazonUrl = lookup.AmazonUrl;
-        var qobuzUrl = FirstNonEmpty(proxy.SongLink.QobuzUrl, lookup.QobuzUrl, BuildQobuzUrl(qobuzId));
+        var spotifyUrl = FirstNonEmpty(central.SpotifyUrl, BuildSpotifyUrl(spotifyId));
+        var deezerUrl = FirstNonEmpty(central.DeezerUrl, BuildDeezerUrl(deezerId));
+        var tidalUrl = FirstNonEmpty(central.TidalUrl, BuildTidalUrl(tidalId));
+        var amazonUrl = central.AmazonUrl;
+        var qobuzUrl = FirstNonEmpty(central.QobuzUrl, BuildQobuzUrl(qobuzId));
         appleUrl = FirstNonEmpty(appleUrl, BuildAppleUrl(appleId));
         if (IsFabricatedAppleIdentity(deezerId, appleId, appleUrl))
         {
@@ -161,13 +90,12 @@ public sealed class TrackAvailabilityService
         {
             Available = spotify || deezer || tidal || amazon || qobuz || apple == true,
             Resolved = true,
-            ResolverAttempted = proxy.Attempted,
-            ResolverResolved = proxy.Completed,
-            ResolverError = proxy.Error,
+            ResolverAttempted = central.Candidates.Count > 0,
+            ResolverResolved = central.Candidates.Any(static candidate => candidate.Accepted),
             Spotify = spotify,
             SpotifyId = spotifyId,
             SpotifyUrl = spotifyUrl,
-            Isrc = FirstNonEmpty(proxy.SongLink.Isrc, lookup.Isrc, input.Isrc),
+            Isrc = FirstNonEmpty(input.Isrc, central.Isrc),
             Deezer = deezer,
             DeezerId = deezerId,
             DeezerUrl = deezerUrl,
@@ -186,278 +114,39 @@ public sealed class TrackAvailabilityService
         };
     }
 
-    private static DownloadIntent BuildLookupIntent(AvailabilityInput input)
-    {
-        var sourceUrl = input.Url;
-        if (string.IsNullOrWhiteSpace(sourceUrl) && !string.IsNullOrWhiteSpace(input.NormalizedDeezerId))
-        {
-            sourceUrl = BuildDeezerUrl(input.NormalizedDeezerId);
-        }
-
-        return new DownloadIntent
-        {
-            SourceUrl = sourceUrl ?? string.Empty,
-            SpotifyId = input.SpotifyId ?? string.Empty,
-            DeezerId = input.NormalizedDeezerId ?? string.Empty,
-            Isrc = input.Isrc ?? string.Empty,
-            Title = input.Title ?? string.Empty,
-            Artist = input.Artist ?? string.Empty,
-            Album = input.Album ?? string.Empty,
-            DurationMs = input.DurationMs ?? 0,
-            AppleId = input.AppleId ?? string.Empty,
-            TidalId = input.TidalId ?? string.Empty,
-            AmazonId = input.AmazonId ?? string.Empty
-        };
-    }
-
-    private async Task<string?> ResolveSpotifyIdByMetadataAsync(
-        AvailabilityInput input,
-        DownloadIntentService.AvailabilityLookupResult lookup,
+    private async Task<TrackIdentityResolution> ResolveCentralAvailabilityAsync(
+        TrackIdentityResolutionRequest request,
         CancellationToken cancellationToken)
     {
-        var title = input.Title?.Trim();
-        var artist = input.Artist?.Trim();
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
-        {
-            return null;
-        }
-
-        var spotifyId = await _spotifyIdResolver.ResolveTrackIdAsync(
-            title,
-            artist,
-            input.Album,
-            FirstNonEmpty(input.Isrc, lookup.Isrc),
-            cancellationToken);
-        return LooksLikeSpotifyId(spotifyId) ? spotifyId : null;
-    }
-
-    private async Task<string?> ResolveSpotifyIdBySearchAsync(
-        AvailabilityInput input,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(input.Title) || string.IsNullOrWhiteSpace(input.Artist))
-        {
-            return null;
-        }
-
-        var query = $"{input.Title} {input.Artist}";
-        if (!string.IsNullOrWhiteSpace(input.Album)
-            && !input.Album.Equals(input.Title, StringComparison.OrdinalIgnoreCase))
-        {
-            query = $"{query} {input.Album}";
-        }
-
-        var response = await _spotifySearchService.SearchByTypeAsync(query, "track", 10, 0, cancellationToken);
-        if (response?.Items == null || response.Items.Count == 0)
-        {
-            return null;
-        }
-
-        var targetTitle = NormalizeForMatch(input.Title);
-        var targetArtist = NormalizeForMatch(input.Artist);
-        var targetAlbum = NormalizeForMatch(input.Album);
-
-        var best = response.Items
-            .Select(item => new
-            {
-                Item = item,
-                Score = ScoreSpotifyCandidate(item, targetTitle, targetArtist, targetAlbum)
-            })
-            .OrderByDescending(candidate => candidate.Score)
-            .FirstOrDefault();
-
-        return best is { Score: >= 6 } && LooksLikeSpotifyId(best.Item.Id)
-            ? best.Item.Id
-            : null;
-    }
-
-    private async Task<AppleSearchOutcome> ResolveAppleBySearchAsync(
-        AvailabilityInput input,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(input.Title) || string.IsNullOrWhiteSpace(input.Artist))
-        {
-            return AppleSearchOutcome.Miss;
-        }
-
-        var query = $"{input.Title} {input.Artist}";
-        if (!string.IsNullOrWhiteSpace(input.Album)
-            && !input.Album.Equals(input.Title, StringComparison.OrdinalIgnoreCase))
-        {
-            query = $"{query} {input.Album}";
-        }
-
-        var cacheKey = NormalizeForMatch(query);
-        if (TryGetCachedAppleSearch(cacheKey, out var cached))
-        {
-            return cached;
-        }
-
-        var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
-        if (IsAppleSearchPaused(nowTicks))
-        {
-            return AppleSearchOutcome.RateLimited;
-        }
-
-        await AppleSearchGate.WaitAsync(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(CentralResolverTimeout);
         try
         {
-            if (TryGetCachedAppleSearch(cacheKey, out cached))
-            {
-                return cached;
-            }
-
-            nowTicks = DateTimeOffset.UtcNow.UtcTicks;
-            if (IsAppleSearchPaused(nowTicks))
-            {
-                return AppleSearchOutcome.RateLimited;
-            }
-
-            var response = await _searchService.SearchByTypeAsync("apple", query, "track", 5, 0, cancellationToken);
-            var outcome = SelectAppleCandidate(input, response);
-            CacheAppleSearch(cacheKey, outcome);
-            return outcome;
+            return await _trackIdentityResolver.ResolveAsync(request, timeout.Token);
         }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            var outcome = AppleSearchOutcome.RateLimited;
-            PauseAppleSearchUntil(DateTimeOffset.UtcNow.Add(AppleSearchRateLimitTtl));
-            CacheAppleSearch(cacheKey, outcome);
-            return outcome;
-        }
-        finally
-        {
-            AppleSearchGate.Release();
+            return TrackIdentityResolution.Empty(request);
         }
     }
 
-    private static bool IsAppleSearchPaused(long nowUtcTicks)
-        => Volatile.Read(ref _appleSearchPausedUntilUtcTicks) > nowUtcTicks;
-
-    private static void PauseAppleSearchUntil(DateTimeOffset pausedUntilUtc)
-        => Volatile.Write(ref _appleSearchPausedUntilUtcTicks, pausedUntilUtc.UtcTicks);
-
-    private static AppleSearchOutcome SelectAppleCandidate(
-        AvailabilityInput input,
-        DeezSpoTagSearchTypeResponse? response)
+    private static IReadOnlyCollection<string> ResolveAvailabilityTargets(AvailabilityInput input)
     {
-        if (response?.Items == null || response.Items.Count == 0)
+        var targets = new List<string>(capacity: 3);
+        if (string.IsNullOrWhiteSpace(input.SpotifyId))
         {
-            return AppleSearchOutcome.Miss;
+            targets.Add("spotify");
+        }
+        if (string.IsNullOrWhiteSpace(input.NormalizedDeezerId))
+        {
+            targets.Add("deezer");
+        }
+        if (string.IsNullOrWhiteSpace(input.TidalId))
+        {
+            targets.Add("tidal");
         }
 
-        var targetTitle = NormalizeForMatch(input.Title);
-        var targetArtist = NormalizeForMatch(input.Artist);
-        var targetAlbum = NormalizeForMatch(input.Album);
-
-        AppleCandidate? best = null;
-        var bestScore = -1;
-        foreach (var candidate in response.Items
-            .Select(TryReadAppleCandidate)
-            .Where(candidate => candidate is not null))
-        {
-            var score = ScoreAppleCandidate(candidate!, targetTitle, targetArtist, targetAlbum);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = candidate;
-            }
-        }
-
-        return bestScore >= 6 && best != null
-            ? AppleSearchOutcome.Hit(best)
-            : AppleSearchOutcome.Miss;
-    }
-
-    private static bool TryGetCachedAppleSearch(string cacheKey, out AppleSearchOutcome outcome)
-    {
-        if (AppleSearchCache.TryGetValue(cacheKey, out var entry)
-            && entry.ExpiresAtUtc > DateTimeOffset.UtcNow)
-        {
-            outcome = entry.Outcome;
-            return true;
-        }
-
-        AppleSearchCache.TryRemove(cacheKey, out _);
-        outcome = AppleSearchOutcome.Miss;
-        return false;
-    }
-
-    private static void CacheAppleSearch(string cacheKey, AppleSearchOutcome outcome)
-    {
-        var ttl = outcome switch
-        {
-            { Unknown: true } => AppleSearchRateLimitTtl,
-            { Candidate: not null } => AppleSearchSuccessTtl,
-            _ => AppleSearchMissTtl
-        };
-
-        AppleSearchCache[cacheKey] = new AppleSearchCacheEntry(outcome, DateTimeOffset.UtcNow.Add(ttl));
-        TrimAppleSearchCacheIfNeeded();
-    }
-
-    private static void TrimAppleSearchCacheIfNeeded()
-    {
-        if (AppleSearchCache.Count <= MaxAppleSearchCacheEntries)
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        foreach (var pair in AppleSearchCache)
-        {
-            if (pair.Value.ExpiresAtUtc <= now)
-            {
-                AppleSearchCache.TryRemove(pair.Key, out _);
-            }
-        }
-
-        var overflow = AppleSearchCache.Count - MaxAppleSearchCacheEntries;
-        if (overflow <= 0)
-        {
-            return;
-        }
-
-        foreach (var key in AppleSearchCache
-                     .OrderBy(static pair => pair.Value.ExpiresAtUtc)
-                     .Take(overflow)
-                     .Select(static pair => pair.Key)
-                     .ToList())
-        {
-            AppleSearchCache.TryRemove(key, out _);
-        }
-    }
-
-    private static AppleCandidate? TryReadAppleCandidate(object item)
-    {
-        var element = JsonSerializer.SerializeToElement(item);
-        var id = ReadJsonString(element, "appleId");
-        var url = ReadJsonString(element, "appleUrl");
-        if (string.IsNullOrWhiteSpace(id) && string.IsNullOrWhiteSpace(url))
-        {
-            return null;
-        }
-
-        return new AppleCandidate(
-            id,
-            url,
-            ReadJsonString(element, "name"),
-            ReadJsonString(element, "artist"),
-            ReadJsonString(element, "album"));
-    }
-
-    private static string? ReadJsonString(JsonElement element, string propertyName)
-        => element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static int ScoreAppleCandidate(
-        AppleCandidate item,
-        string targetTitle,
-        string targetArtist,
-        string targetAlbum)
-    {
-        return ScoreCandidateParts(item.Title, item.Artist, item.Album, targetTitle, targetArtist, targetAlbum);
+        return targets;
     }
 
     private static bool IsFabricatedAppleIdentity(
@@ -470,141 +159,6 @@ public sealed class TrackAvailabilityService
             && string.Equals(appleId, deezerId, StringComparison.Ordinal)
             && (string.IsNullOrWhiteSpace(appleUrl)
                 || appleUrl.Contains("/song/", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static int ScoreSpotifyCandidate(
-        SpotifySearchItem item,
-        string targetTitle,
-        string targetArtist,
-        string targetAlbum)
-    {
-        var title = NormalizeForMatch(item.Name);
-        var subtitle = item.Subtitle ?? string.Empty;
-        var subtitleParts = subtitle
-            .Split('•', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        var artist = NormalizeForMatch(subtitleParts.ElementAtOrDefault(0));
-        var album = NormalizeForMatch(subtitleParts.ElementAtOrDefault(1));
-
-        return ScoreNormalizedCandidateParts(title, artist, album, targetTitle, targetArtist, targetAlbum);
-    }
-
-    private static int ScoreCandidateParts(
-        string? title,
-        string? artist,
-        string? album,
-        string targetTitle,
-        string targetArtist,
-        string targetAlbum)
-    {
-        return ScoreNormalizedCandidateParts(
-            NormalizeForMatch(title),
-            NormalizeForMatch(artist),
-            NormalizeForMatch(album),
-            targetTitle,
-            targetArtist,
-            targetAlbum);
-    }
-
-    private static int ScoreNormalizedCandidateParts(
-        string title,
-        string artist,
-        string album,
-        string targetTitle,
-        string targetArtist,
-        string targetAlbum)
-    {
-        var score = 0;
-        if (!string.IsNullOrWhiteSpace(targetTitle) && title == targetTitle)
-        {
-            score += 5;
-        }
-        else if (!string.IsNullOrWhiteSpace(targetTitle) && ContainsEitherWay(title, targetTitle))
-        {
-            score += 2;
-        }
-
-        if (!string.IsNullOrWhiteSpace(targetArtist) && artist == targetArtist)
-        {
-            score += 4;
-        }
-        else if (!string.IsNullOrWhiteSpace(targetArtist) && ContainsEitherWay(artist, targetArtist))
-        {
-            score += 2;
-        }
-
-        if (!string.IsNullOrWhiteSpace(targetAlbum) && album == targetAlbum)
-        {
-            score += 2;
-        }
-
-        return score;
-    }
-
-    private static bool ContainsEitherWay(string value, string target)
-        => !string.IsNullOrWhiteSpace(value)
-           && !string.IsNullOrWhiteSpace(target)
-           && (value.Contains(target, StringComparison.Ordinal)
-               || target.Contains(value, StringComparison.Ordinal));
-
-    private static string NormalizeForMatch(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var chars = value
-            .Trim()
-            .ToLowerInvariant()
-            .Where(ch => char.IsLetterOrDigit(ch) || char.IsWhiteSpace(ch))
-            .ToArray();
-        return string.Join(' ', new string(chars).Split(' ', StringSplitOptions.RemoveEmptyEntries));
-    }
-
-    private static IEnumerable<PlatformIdLookup> BuildPlatformLookups(AvailabilityInput input)
-    {
-        if (!string.IsNullOrWhiteSpace(input.SpotifyId))
-        {
-            yield return new PlatformIdLookup("spotify", input.SpotifyId);
-        }
-        if (!string.IsNullOrWhiteSpace(input.NormalizedDeezerId))
-        {
-            yield return new PlatformIdLookup("deezer", input.NormalizedDeezerId);
-        }
-        if (!string.IsNullOrWhiteSpace(input.TidalId))
-        {
-            yield return new PlatformIdLookup("tidal", input.TidalId);
-        }
-        if (!string.IsNullOrWhiteSpace(input.QobuzId))
-        {
-            yield return new PlatformIdLookup("qobuz", input.QobuzId);
-        }
-        if (!string.IsNullOrWhiteSpace(input.AppleId))
-        {
-            yield return new PlatformIdLookup("appleMusic", input.AppleId);
-        }
-        if (!string.IsNullOrWhiteSpace(input.AmazonId))
-        {
-            yield return new PlatformIdLookup("amazonMusic", input.AmazonId);
-        }
-    }
-
-    private static void MergeSongLink(SongLinkResult target, SongLinkResult? source)
-    {
-        if (source == null)
-        {
-            return;
-        }
-
-        target.SpotifyId ??= source.SpotifyId;
-        target.SpotifyUrl ??= source.SpotifyUrl;
-        target.DeezerId ??= source.DeezerId;
-        target.DeezerUrl ??= source.DeezerUrl;
-        target.TidalUrl ??= source.TidalUrl;
-        target.AmazonUrl ??= source.AmazonUrl;
-        target.QobuzUrl ??= source.QobuzUrl;
-        target.AppleMusicUrl ??= source.AppleMusicUrl;
-        target.Isrc ??= source.Isrc;
     }
 
     private static AvailabilityInput BuildInput(TrackAvailabilityRequest request)
@@ -642,6 +196,49 @@ public sealed class TrackAvailabilityService
 
     private static string? FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+    private static string? InferPlatformFromUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        if (host.Contains("spotify.com", StringComparison.Ordinal))
+        {
+            return "spotify";
+        }
+
+        if (host.Contains("deezer.com", StringComparison.Ordinal))
+        {
+            return "deezer";
+        }
+
+        if (host.Contains("music.apple.", StringComparison.Ordinal)
+            || host.Contains("itunes.apple.", StringComparison.Ordinal))
+        {
+            return "apple";
+        }
+
+        if (host.Contains("tidal.com", StringComparison.Ordinal))
+        {
+            return "tidal";
+        }
+
+        if (host.Contains("qobuz.com", StringComparison.Ordinal))
+        {
+            return "qobuz";
+        }
+
+        if (host.Contains("amazon.", StringComparison.Ordinal))
+        {
+            return "amazon";
+        }
+
+        return null;
+    }
 
     private static string? BuildSpotifyUrl(string? spotifyId)
         => LooksLikeSpotifyId(spotifyId) ? $"https://open.spotify.com/track/{spotifyId}" : null;
@@ -756,25 +353,6 @@ public sealed class TrackAvailabilityService
     private static string? NormalizeDeezerId(string? value)
         => !string.IsNullOrWhiteSpace(value) && long.TryParse(value, out _) ? value : null;
 
-    private sealed record PlatformIdLookup(string Platform, string Id);
-    private sealed record AppleCandidate(string? Id, string? Url, string? Title, string? Artist, string? Album);
-    private sealed record AppleSearchCacheEntry(AppleSearchOutcome Outcome, DateTimeOffset ExpiresAtUtc);
-
-    private sealed record AppleSearchOutcome(AppleCandidate? Candidate, bool Unknown)
-    {
-        public static AppleSearchOutcome Miss { get; } = new(null, false);
-        public static AppleSearchOutcome RateLimited { get; } = new(null, true);
-
-        public static AppleSearchOutcome Hit(AppleCandidate candidate)
-            => new(candidate, false);
-    }
-
-    private sealed record ProxyAvailabilityResult(
-        SongLinkResult SongLink,
-        bool Attempted,
-        bool Completed,
-        string? Error);
-
     private sealed class AvailabilityInput
     {
         public string? SpotifyId { get; init; }
@@ -801,13 +379,6 @@ public sealed class TrackAvailabilityService
             || !string.IsNullOrWhiteSpace(AmazonId);
     }
 
-    private static SongLinkResult ExtractSongLink(ResolveProxyLookupResult lookupResult)
-    {
-        return lookupResult.GetType()
-            .GetProperty("Result")
-            ?.GetValue(lookupResult) as SongLinkResult
-            ?? new SongLinkResult();
-    }
 }
 
 public sealed class TrackAvailabilityRequest

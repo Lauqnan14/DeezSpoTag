@@ -8,8 +8,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Identity;
 using System.Linq;
-using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Apple;
@@ -42,7 +42,7 @@ public class LyricsService
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly DeezSpoTag.Services.Apple.AppleLyricsService _appleLyricsService;
     private readonly LrclibLyricsService _lrclibLyricsService;
-    private readonly DeezerClient? _deezerClient;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly ProtectedCredentialFileStore _spotifyWebPlayerCredentialStore;
     private string? _cachedGwToken;
     private DateTime _cachedGwTokenExpiry = DateTime.MinValue;
@@ -120,7 +120,7 @@ public class LyricsService
         _authenticatedDeezerService = authenticatedDeezerService;
         _appleLyricsService = appleLyricsService;
         _lrclibLyricsService = lrclibLyricsService;
-        _deezerClient = serviceProvider.GetService<DeezerClient>();
+        _trackIdentityResolver = serviceProvider.GetRequiredService<ITrackIdentityResolver>();
         _spotifyWebPlayerCredentialStore = serviceProvider.GetRequiredService<ProtectedCredentialFileStore>();
     }
 
@@ -218,6 +218,15 @@ public class LyricsService
         {
             throw;
         }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Lyrics provider {Provider} timed out for track {TrackId}, advancing to next provider",
+                provider,
+                track.Id);
+            return null;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
@@ -247,7 +256,7 @@ public class LyricsService
             return false;
         }
 
-        var hasTtml = !string.IsNullOrWhiteSpace(lyrics.TtmlLyrics);
+        var hasTtml = DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics);
         var hasRealLrc = lyrics.CanSaveLrcSidecar();
         if (requirements.WantsTtmlLyrics && !hasTtml)
         {
@@ -355,7 +364,7 @@ public class LyricsService
 
     private static void MergeProviderLyrics(LyricsResolutionState state, LyricsBase providerLyrics)
     {
-        if (!string.IsNullOrWhiteSpace(providerLyrics.TtmlLyrics))
+        if (DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(providerLyrics.TtmlLyrics))
         {
             state.TtmlFallback = providerLyrics.TtmlLyrics;
         }
@@ -480,21 +489,36 @@ public class LyricsService
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken)
     {
-        var appleLyrics = await ResolveLoadedLyricsOrNullAsync(
-            () => _appleLyricsService.ResolveLyricsForTrackAsync(track, settings, cancellationToken));
-        if (appleLyrics != null)
+        LyricsBase? appleLyrics = null;
+        try
+        {
+            appleLyrics = await ResolveLoadedLyricsOrNullAsync(
+                () => _appleLyricsService.ResolveLyricsForTrackAsync(track, settings, cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Authenticated Apple lyrics lookup failed for track {TrackId}, trying public fallback",
+                track.Id);
+        }
+
+        if (DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(appleLyrics?.TtmlLyrics))
         {
             return appleLyrics;
         }
 
-        return await ResolvePaxsenixAppleLyricsFallbackAsync(track, cancellationToken);
-    }
+        var fallbackLyrics = await ResolvePaxsenixAppleLyricsByIdAsync(track, cancellationToken);
+        if (fallbackLyrics?.IsLoaded() == true)
+        {
+            return fallbackLyrics;
+        }
 
-    private Task<LyricsBase?> ResolvePaxsenixAppleLyricsFallbackAsync(
-        Track track,
-        CancellationToken cancellationToken)
-    {
-        return ResolvePaxsenixAppleLyricsByIdAsync(track, cancellationToken);
+        return appleLyrics;
     }
 
     private async Task<LyricsBase?> ResolvePaxsenixAppleLyricsByIdAsync(
@@ -520,6 +544,15 @@ public class LyricsService
             {
                 TtmlLyrics = body,
                 TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+            };
+        }
+
+        if (DeezSpoTag.Services.Apple.AppleLyricsService.TryExtractPlainLyrics(body, out var plainBody))
+        {
+            return new LyricsSource
+            {
+                UnsyncedLyrics = plainBody,
+                UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText
             };
         }
 
@@ -615,6 +648,12 @@ public class LyricsService
         {
             lyrics.TtmlLyrics = ttml;
             lyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
+        }
+        else if (!string.IsNullOrWhiteSpace(ttml)
+                 && DeezSpoTag.Services.Apple.AppleLyricsService.TryExtractPlainLyrics(ttml, out var plainTtml))
+        {
+            lyrics.UnsyncedLyrics = plainTtml;
+            lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
         }
 
         if (TryFindStringByName(root, IsSyncedLyricsPropertyName, out var syncedText))
@@ -738,8 +777,7 @@ public class LyricsService
         => new(name.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 
     private static bool LooksLikeTtml(string value)
-        => value.Contains("<tt", StringComparison.OrdinalIgnoreCase)
-           && value.Contains("</tt>", StringComparison.OrdinalIgnoreCase);
+        => DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(value);
 
     private static bool LooksLikeRawTtml(string value)
     {
@@ -1397,43 +1435,13 @@ public class LyricsService
             return deezerTrackId;
         }
 
-        var isrcTrackId = await TryResolveDeezerTrackIdByIsrcAsync(track);
-        if (!string.IsNullOrWhiteSpace(isrcTrackId))
-        {
-            return isrcTrackId;
-        }
-
-        return null;
+        var identity = await ResolveLyricsIdentityAsync(track, DeezerProvider, cancellationToken);
+        return TrackIdNormalization.NormalizeDeezerTrackIdOrNull(identity.DeezerId);
     }
 
     private static bool TryResolveDeezerTrackIdFromTrack(Track track, out string? deezerTrackId)
     {
         return TrackIdNormalization.TryResolveDeezerTrackId(track, out deezerTrackId, track.LyricsId);
-    }
-
-    private async Task<string?> TryResolveDeezerTrackIdByIsrcAsync(Track track)
-    {
-        if (_deezerClient == null || string.IsNullOrWhiteSpace(track.ISRC))
-        {
-            return null;
-        }
-
-        try
-        {
-            var deezerTrack = await _deezerClient.GetTrackByIsrcAsync(track.ISRC);
-            if (TrackIdNormalization.TryNormalizeDeezerTrackId(deezerTrack?.Id, out var deezerTrackId))
-            {
-                return deezerTrackId;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Unable to resolve Deezer track id via ISRC {Isrc}", track.ISRC);            }
-        }
-
-        return null;
     }
 
     private async Task<LyricsBase> ResolveSpotifyLyricsAsync(
@@ -1442,6 +1450,11 @@ public class LyricsService
         CancellationToken cancellationToken)
     {
         var spotifyTrackId = ResolveSpotifyLyricsTrackId(track);
+        if (string.IsNullOrWhiteSpace(spotifyTrackId))
+        {
+            var identity = await ResolveLyricsIdentityAsync(track, SpotifyProvider, cancellationToken);
+            spotifyTrackId = identity.SpotifyId;
+        }
         if (string.IsNullOrWhiteSpace(spotifyTrackId))
         {
             return CreateLyricsError("Unable to resolve Spotify track ID for lyrics.");
@@ -1490,6 +1503,40 @@ public class LyricsService
     private static bool TryResolveSpotifyTrackIdFromTrack(Track track, out string? spotifyTrackId)
     {
         return TrackIdNormalization.TryResolveSpotifyTrackId(track, out spotifyTrackId);
+    }
+
+    private Task<TrackIdentityResolution> ResolveLyricsIdentityAsync(
+        Track track,
+        string targetPlatform,
+        CancellationToken cancellationToken)
+    {
+        return _trackIdentityResolver.ResolveAsync(
+            new TrackIdentityResolutionRequest(
+                SourcePlatform: track.Source,
+                SourceUrl: FirstNonEmpty(track.DownloadURL, TryGetTrackUrl(track, track.Source)),
+                Title: track.Title,
+                Artist: track.MainArtist?.Name ?? track.ArtistString,
+                Album: track.Album?.Title,
+                Isrc: track.ISRC,
+                DurationMs: track.Duration > 0 ? track.Duration * 1000 : null,
+                SpotifyId: TryResolveSpotifyTrackIdFromTrack(track, out var spotifyId) ? spotifyId : null,
+                DeezerId: TryResolveDeezerTrackIdFromTrack(track, out var deezerId) ? deezerId : null,
+                AppleId: TryGetTrackUrl(track, "apple_track_id") ?? TryGetTrackUrl(track, "apple_id"),
+                TargetPlatforms: new[] { targetPlatform }),
+            cancellationToken);
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
+    private static string? TryGetTrackUrl(Track track, string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key) || track.Urls == null)
+        {
+            return null;
+        }
+
+        return track.Urls.TryGetValue(key, out var value) ? value : null;
     }
 
     private async Task<SpotifyAuthContext?> ResolveSpotifyAuthContextAsync(CancellationToken cancellationToken)
@@ -2130,7 +2177,25 @@ public class LyricsService
             _logger.LogDebug("Fetching lyrics for track {TrackId}", trackId);        }
 
         // Primary: Try Pipe API with GraphQL
-        var lyricsFromPipe = await GetLyricsFromPipeApiAsync(trackId, arl, sid, cancellationToken);
+        LyricsBase lyricsFromPipe;
+        try
+        {
+            lyricsFromPipe = await GetLyricsFromPipeApiAsync(trackId, arl, sid, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Pipe API failed for track {TrackId}; falling back to GW API", trackId);
+            lyricsFromPipe = LyricsNew.CreateError($"Pipe API failed: {ex.Message}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Pipe API timed out for track {TrackId}; falling back to GW API", trackId);
+            lyricsFromPipe = LyricsNew.CreateError("Pipe API timed out.");
+        }
 
         if (lyricsFromPipe.IsLoaded())
         {
@@ -2517,7 +2582,7 @@ public class LyricsService
         if (!lyrics.CanSaveLrcSidecar())
         {
             _logger.LogDebug(
-                "Synchronized lyrics source format {SourceFormat} is not a downloaded LRC payload, skipping LRC creation",
+                "Synchronized lyrics source format {SourceFormat} cannot be saved as LRC, skipping LRC creation",
                 lyrics.SyncedLyricsSourceFormat);
             return false;
         }
@@ -2886,7 +2951,7 @@ public class LyricsService
             return false;
         }
 
-        return !string.IsNullOrWhiteSpace(lyrics?.TtmlLyrics);
+        return DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(lyrics?.TtmlLyrics);
     }
 
     private static bool ShouldOutputTtmlBySettings(DeezSpoTagSettings settings)

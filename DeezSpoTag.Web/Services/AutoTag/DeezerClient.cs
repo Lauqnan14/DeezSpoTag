@@ -80,6 +80,19 @@ public sealed class DeezerClient
         return await GetAsync<DeezerTrackFull>($"/track/{id}", new Dictionary<string, string>(), cancellationToken);
     }
 
+    public async Task<DeezerTrackFull?> GetTrackByIsrcAsync(string isrc, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(isrc))
+        {
+            return null;
+        }
+
+        var normalized = new string(isrc.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : await GetAsync<DeezerTrackFull>($"/track/isrc:{normalized}", new Dictionary<string, string>(), cancellationToken);
+    }
+
     public async Task<DeezerAlbumFull?> GetAlbumAsync(long id, CancellationToken cancellationToken)
     {
         return await GetAsync<DeezerAlbumFull>($"/album/{id}", new Dictionary<string, string>(), cancellationToken);
@@ -572,10 +585,8 @@ public sealed class DeezerClient
             text = WebUtility.HtmlDecode(lineText.GetString() ?? string.Empty);
         }
 
-        if (TryGetPropertyIgnoreCase(line, "milliseconds", out var msElement) && msElement.TryGetInt32(out var parsedMs))
-        {
-            ms = parsedMs;
-        }
+        var hasMilliseconds = TryGetPropertyIgnoreCase(line, "milliseconds", out var msElement)
+            && msElement.TryGetInt32(out ms);
 
         if (TryGetPropertyIgnoreCase(line, "lrc_timestamp", out var tsElement) && tsElement.ValueKind == JsonValueKind.String)
         {
@@ -589,6 +600,11 @@ public sealed class DeezerClient
 
         if (string.IsNullOrWhiteSpace(timestamp))
         {
+            if (!hasMilliseconds || ms < 0)
+            {
+                return false;
+            }
+
             timestamp = BuildLrcTimestamp(ms);
         }
         else if (!timestamp.StartsWith('['))

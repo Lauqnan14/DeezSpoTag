@@ -215,11 +215,18 @@ public class LyricsNew : LyricsBase
         {
             var text = lineElement.TryGetProperty("line", out var lineProperty) ? lineProperty.GetString() : "";
             var lrcTimestamp = lineElement.TryGetProperty("lrcTimestamp", out var timestampProperty) ? timestampProperty.GetString() : "";
-            var milliseconds = lineElement.TryGetProperty("milliseconds", out var millisecondsProperty) ? millisecondsProperty.GetInt32() : 0;
+            var milliseconds = 0;
+            var hasMilliseconds = lineElement.TryGetProperty("milliseconds", out var millisecondsProperty)
+                && millisecondsProperty.TryGetInt32(out milliseconds);
             var duration = lineElement.TryGetProperty("duration", out var durationProperty) ? durationProperty.GetInt32() : 0;
 
             if (string.IsNullOrWhiteSpace(lrcTimestamp))
             {
+                if (!hasMilliseconds || milliseconds < 0)
+                {
+                    return null;
+                }
+
                 lrcTimestamp = SynchronizedLyric.BuildLrcTimestamp(milliseconds);
             }
 

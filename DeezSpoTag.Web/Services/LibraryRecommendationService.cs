@@ -1,6 +1,7 @@
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
@@ -28,7 +29,7 @@ public sealed class LibraryRecommendationService
         public ShazamDiscoveryService ShazamDiscoveryService { get; init; } = null!;
         public DeezerClient DeezerClient { get; init; } = null!;
         public DeezerGatewayService DeezerGatewayService { get; init; } = null!;
-        public SongLinkResolver SongLinkResolver { get; init; } = null!;
+        public ITrackIdentityResolver TrackIdentityResolver { get; init; } = null!;
         public DownloadDedupeService DedupeService { get; init; } = null!;
     }
 
@@ -77,7 +78,7 @@ public sealed class LibraryRecommendationService
     private readonly ShazamDiscoveryService _shazamDiscoveryService;
     private readonly DeezerClient _deezerClient;
     private readonly DeezerGatewayService _deezerGatewayService;
-    private readonly SongLinkResolver _songLinkResolver;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly DownloadDedupeService _dedupeService;
     private readonly string _recommendationArtworkRootPath;
     private readonly ILogger<LibraryRecommendationService> _logger;
@@ -97,7 +98,7 @@ public sealed class LibraryRecommendationService
         _shazamDiscoveryService = collaborators.ShazamDiscoveryService;
         _deezerClient = collaborators.DeezerClient;
         _deezerGatewayService = collaborators.DeezerGatewayService;
-        _songLinkResolver = collaborators.SongLinkResolver;
+        _trackIdentityResolver = collaborators.TrackIdentityResolver;
         _dedupeService = collaborators.DedupeService;
         _recommendationArtworkRootPath = string.IsNullOrWhiteSpace(webHostEnvironment.WebRootPath)
             ? string.Empty
@@ -3319,7 +3320,7 @@ public sealed class LibraryRecommendationService
             TryExtractAppleTrackId,
             cancellationToken);
 
-        var deezerLink = await TryResolveAndPersistSongLinkSourcesAsync(
+        var deezerLink = await TryResolveAndPersistPlatformSourcesAsync(
             trackId,
             spotifyUrl,
             appleUrl,
@@ -3380,7 +3381,7 @@ public sealed class LibraryRecommendationService
             cancellationToken: cancellationToken);
     }
 
-    private async Task<(string DeezerId, string DeezerUrl)> TryResolveAndPersistSongLinkSourcesAsync(
+    private async Task<(string DeezerId, string DeezerUrl)> TryResolveAndPersistPlatformSourcesAsync(
         long trackId,
         string? spotifyUrl,
         string? appleUrl,
@@ -3394,13 +3395,23 @@ public sealed class LibraryRecommendationService
         var preferredUrl = !string.IsNullOrWhiteSpace(spotifyUrl) ? spotifyUrl : appleUrl!;
         try
         {
-            var linked = await _songLinkResolver.ResolveByUrlAsync(preferredUrl, cancellationToken);
+            var linked = await _trackIdentityResolver.ResolveAsync(
+                new TrackIdentityResolutionRequest(
+                    SourcePlatform: !string.IsNullOrWhiteSpace(spotifyUrl) ? "spotify" : "apple",
+                    SourceUrl: preferredUrl,
+                    Title: null,
+                    Artist: null,
+                    Album: null,
+                    Isrc: null,
+                    DurationMs: null,
+                    TargetPlatforms: new[] { "deezer", "spotify", "apple" }),
+                cancellationToken);
             if (string.IsNullOrWhiteSpace(appleUrl))
             {
                 await TryPersistPlatformSourceLinkAsync(
                     trackId,
                     "apple",
-                    linked?.AppleMusicUrl,
+                    linked.AppleUrl,
                     TryExtractAppleTrackId,
                     cancellationToken);
             }
@@ -3410,14 +3421,14 @@ public sealed class LibraryRecommendationService
                 await TryPersistPlatformSourceLinkAsync(
                     trackId,
                     "spotify",
-                    linked?.SpotifyUrl,
+                    linked.SpotifyUrl,
                     TryExtractSpotifyTrackId,
                     cancellationToken);
             }
 
             return (
-                NormalizeId(linked?.DeezerId),
-                NormalizeOptionalText(linked?.DeezerUrl) ?? string.Empty);
+                NormalizeId(linked.DeezerId),
+                NormalizeOptionalText(linked.DeezerUrl) ?? string.Empty);
         }
         catch (OperationCanceledException)
         {
@@ -3427,7 +3438,7 @@ public sealed class LibraryRecommendationService
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "SongLink source-link persistence failed for library track {TrackId}.", trackId);
+                _logger.LogDebug(ex, "platform source-link persistence failed for library track {TrackId}.", trackId);
             }
             return (string.Empty, string.Empty);
         }

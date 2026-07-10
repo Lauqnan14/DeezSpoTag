@@ -27,6 +27,9 @@ public sealed class SpotifySearchService
     private readonly object _userAgentLock = new();
     private readonly Random _userAgentRandom = new();
     private readonly string _userAgent;
+    private static readonly TimeSpan PathfinderTrackSearchTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan PathfinderIsrcHydrationTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan LibrespotSearchTimeout = TimeSpan.FromSeconds(3);
 
     public SpotifySearchService(
         PlatformAuthService platformAuthService,
@@ -59,10 +62,41 @@ public sealed class SpotifySearchService
         return null;
     }
 
-    public async Task<SpotifySearchTypeResponse?> SearchByTypeAsync(string query, string type, int limit, int offset, CancellationToken cancellationToken)
+    public async Task<SpotifySearchTypeResponse?> SearchByTypeAsync(
+        string query,
+        string type,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken,
+        bool hydrateTrackIsrcs = true,
+        bool allowTrackFallbacks = true)
     {
-        var pathfinder = await SearchByTypeViaPathfinderAsync(query, type, limit, offset, cancellationToken);
-        if (pathfinder != null && string.Equals(type?.Trim(), "track", StringComparison.OrdinalIgnoreCase))
+        var normalizedType = string.IsNullOrWhiteSpace(type) ? string.Empty : type.Trim();
+        var isTrackSearch = string.Equals(normalizedType, "track", StringComparison.OrdinalIgnoreCase);
+        SpotifySearchTypeResponse? pathfinder = null;
+        if (isTrackSearch)
+        {
+            try
+            {
+                using var pathfinderTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                pathfinderTimeout.CancelAfter(PathfinderTrackSearchTimeout);
+                pathfinder = await SearchByTypeViaPathfinderAsync(query, normalizedType, limit, offset, pathfinderTimeout.Token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogDebug(ex, "Spotify Pathfinder typed search timed out; trying Librespot fallback.");
+            }
+        }
+        else
+        {
+            pathfinder = await SearchByTypeViaPathfinderAsync(query, normalizedType, limit, offset, cancellationToken);
+        }
+
+        if (hydrateTrackIsrcs && pathfinder != null && string.Equals(type?.Trim(), "track", StringComparison.OrdinalIgnoreCase))
         {
             pathfinder = await HydrateMissingTrackIsrcsAsync(pathfinder, cancellationToken);
         }
@@ -71,12 +105,21 @@ public sealed class SpotifySearchService
             return pathfinder;
         }
 
-        if (pathfinder != null)
+        if (pathfinder != null && pathfinder.Items.Count > 0)
         {
             return pathfinder;
         }
 
-        _logger.LogDebug("Spotify typed search unavailable from Pathfinder.");
+        if (allowTrackFallbacks && isTrackSearch)
+        {
+            var librespot = await SearchTracksViaLibrespotAsync(query, limit, offset, cancellationToken);
+            if (librespot != null)
+            {
+                return librespot;
+            }
+        }
+
+        _logger.LogDebug("Spotify typed search unavailable from Pathfinder and Librespot.");
         return null;
     }
 
@@ -99,7 +142,17 @@ public sealed class SpotifySearchService
         var isrcs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            isrcs = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(missing, cancellationToken);
+            using var pathfinderTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            pathfinderTimeout.CancelAfter(PathfinderIsrcHydrationTimeout);
+            isrcs = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(missing, pathfinderTimeout.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogDebug(ex, "Spotify Pathfinder ISRC hydration timed out.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -138,7 +191,9 @@ public sealed class SpotifySearchService
 
         try
         {
-            var response = await _blobService.GetLibrespotTracksAsync(blobPath, trackIds, cancellationToken);
+            using var librespotTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            librespotTimeout.CancelAfter(LibrespotSearchTimeout);
+            var response = await _blobService.GetLibrespotTracksAsync(blobPath, trackIds, librespotTimeout.Token);
             if (string.IsNullOrWhiteSpace(response.PayloadJson))
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
@@ -169,6 +224,14 @@ public sealed class SpotifySearchService
 
                 results[item.Id] = item.Isrc;
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogDebug(ex, "Spotify Librespot track ISRC hydration timed out.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -290,6 +353,90 @@ public sealed class SpotifySearchService
             }
             return null;
         }
+    }
+
+    private async Task<SpotifySearchTypeResponse?> SearchTracksViaLibrespotAsync(
+        string query,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        var blobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return null;
+        }
+
+        var resolvedLimit = Math.Clamp(limit <= 0 ? 4 : limit, 1, 4);
+        var resolvedOffset = Math.Max(0, offset);
+        var requested = Math.Clamp(resolvedLimit + resolvedOffset, 1, 4);
+        try
+        {
+            var market = await ResolveMarketAsync();
+            using var librespotTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            librespotTimeout.CancelAfter(LibrespotSearchTimeout);
+            var response = await _blobService.SearchLibrespotTracksAsync(
+                blobPath,
+                query,
+                requested,
+                market,
+                librespotTimeout.Token);
+            if (string.IsNullOrWhiteSpace(response.PayloadJson))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(
+                        "Spotify Librespot search failed: error={Error}",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(response.Error));
+                }
+
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(response.PayloadJson);
+            var items = ExtractLibrespotSearchTracks(doc.RootElement)
+                .Skip(resolvedOffset)
+                .Take(resolvedLimit)
+                .ToList();
+            return new SpotifySearchTypeResponse("track", items, items.Count);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogDebug(ex, "Spotify Librespot typed search timed out.");
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Librespot typed search failed.");
+            return null;
+        }
+    }
+
+    private static List<SpotifySearchItem> ExtractLibrespotSearchTracks(JsonElement root)
+    {
+        if (!root.TryGetProperty("tracks", out var tracks)
+            || tracks.ValueKind != JsonValueKind.Object
+            || !tracks.TryGetProperty("items", out var items)
+            || items.ValueKind != JsonValueKind.Array)
+        {
+            return new List<SpotifySearchItem>();
+        }
+
+        var mapped = new List<SpotifySearchItem>();
+        foreach (var item in items.EnumerateArray())
+        {
+            var track = MapWebApiTrack(item);
+            if (track != null)
+            {
+                mapped.Add(track);
+            }
+        }
+
+        return mapped;
     }
 
     private async Task<SpotifySearchTypeResponse?> SearchArtistsViaPathfinderAsync(
@@ -821,6 +968,12 @@ public sealed class SpotifySearchService
                     return platformCandidate;
                 }
             }
+
+            var newestFallback = await TryResolveNewestLibrespotBlobPathAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(newestFallback))
+            {
+                return newestFallback;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -828,6 +981,52 @@ public sealed class SpotifySearchService
         }
 
         return null;
+    }
+
+    private async Task<string?> TryResolveNewestLibrespotBlobPathAsync(CancellationToken cancellationToken)
+    {
+        var dataRoot = ResolveConfiguredDataRoot();
+        if (string.IsNullOrWhiteSpace(dataRoot))
+        {
+            return null;
+        }
+
+        var blobDirectory = Path.Join(dataRoot, "spotify", "users", "default", "blobs");
+        if (!Directory.Exists(blobDirectory))
+        {
+            return null;
+        }
+
+        foreach (var candidate in Directory.EnumerateFiles(blobDirectory, "*.json", SearchOption.TopDirectoryOnly)
+                     .Select(path => new FileInfo(path))
+                     .OrderByDescending(file => file.LastWriteTimeUtc)
+                     .Select(file => file.FullName))
+        {
+            if (_blobService.BlobExists(candidate)
+                && await _blobService.IsLibrespotBlobAsync(candidate, cancellationToken))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify Librespot fallback selected newest blob at {BlobPath}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate));
+                }
+
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ResolveConfiguredDataRoot()
+    {
+        var configDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
+        if (!string.IsNullOrWhiteSpace(configDir))
+        {
+            return configDir.Trim();
+        }
+
+        var dataDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_DATA_DIR");
+        return string.IsNullOrWhiteSpace(dataDir) ? null : dataDir.Trim();
     }
 
     private async Task<SpotifyUserAuthState?> TryLoadUserSpotifyStateAsync()

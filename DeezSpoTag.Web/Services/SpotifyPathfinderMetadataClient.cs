@@ -46,6 +46,10 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private sealed record WebPlayerConfig(string? ClientVersion, string? ClientId);
 
+    private sealed record AnonymousWebPlayerToken(string AccessToken, DateTimeOffset ExpiresAt);
+
+    private sealed record SpotifyAnonymousTokenResponse(string? AccessToken, long? AccessTokenExpirationTimestampMs, bool? IsAnonymous);
+
     private sealed record WebPlayerSessionInfo(string? ClientVersion, string? ClientId, string? DeviceId);
 
     private sealed record ClientTokenRequestContext(string ClientId, string ClientVersion, string DeviceId);
@@ -75,6 +79,8 @@ public sealed class SpotifyPathfinderMetadataClient
     private const string SpotifyClientTokenHost = "clienttoken.spotify.com";
 
     private const string SpotifyPathfinderPath = "/pathfinder/v2/query";
+
+    private const string SpotifyPathfinderV1Path = "/pathfinder/v1/query";
 
     private const string SpotifyClientTokenPath = "/v1/clienttoken";
 
@@ -114,6 +120,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static readonly string PathfinderUrl = BuildUrl(SpotifyPartnerHost, SpotifyPathfinderPath);
 
+    private static readonly string PathfinderV1QueryUrl = BuildUrl(SpotifyPartnerHost, SpotifyPathfinderV1Path);
+
     private static readonly string WebPlayerRootUrl = BuildUrl(SpotifyOpenHost, string.Empty);
 
     private static readonly string ClientTokenUrl = BuildUrl(SpotifyClientTokenHost, SpotifyClientTokenPath);
@@ -123,6 +131,8 @@ public sealed class SpotifyPathfinderMetadataClient
     private const string WebPlayerAppPlatform = "WebPlayer";
 
     private const string SearchSuggestionsOperationName = "searchSuggestions";
+
+    private const string SearchDesktopOperationName = "searchDesktop";
 
     private const string MoreLikeThisPlaylistOperationName = "moreLikeThisPlaylist";
 
@@ -147,6 +157,8 @@ public sealed class SpotifyPathfinderMetadataClient
     private const string WebPlayerClientIdFallback = "d8a5ed958d274c2e8ee717e6a4b0971d";
 
     private const string SearchSuggestionsHashFallback = "a2a6e5d400e2a8331128edb2d45f9eeb2c9445ca95b4859ae7da977815928ddf";
+
+    private const string SearchDesktopHash = "75bbf6bfcfdf85b8fc828417bfad92b7cd66bf7f556d85670f4da8292373ebec";
 
     private const string ProfileKey = "profile";
 
@@ -246,6 +258,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static readonly TimeSpan TokenRefreshWindow = TimeSpan.FromMinutes(5.0);
     private static readonly TimeSpan AuthContextBuildTimeout = TimeSpan.FromSeconds(6.0);
+    private static readonly TimeSpan AnonymousTokenFetchTimeout = TimeSpan.FromSeconds(3.0);
 
     private static readonly JsonSerializerOptions ClientTokenJsonOptions = new JsonSerializerOptions
     {
@@ -311,6 +324,10 @@ public sealed class SpotifyPathfinderMetadataClient
     private DateTimeOffset _blobContextAccessTokenExpiresAt;
 
     private DateTimeOffset _blobContextClientTokenExpiresAt;
+
+    private AnonymousWebPlayerToken? _anonymousWebPlayerToken;
+
+    private readonly SemaphoreSlim _anonymousTokenGate = new SemaphoreSlim(1, 1);
 
     private readonly SemaphoreSlim _backgroundUserBlobResolutionGate = new SemaphoreSlim(1, 1);
 
@@ -1486,7 +1503,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return backgroundBlob;
         }
 
-        return null;
+        return await TryResolveNewestWebPlayerBlobPathAsync(cancellationToken);
     }
 
     private async Task<string?> TryResolveBackgroundUserWebPlayerBlobPathAsync(CancellationToken cancellationToken)
@@ -1571,6 +1588,40 @@ public sealed class SpotifyPathfinderMetadataClient
         _backgroundUserBlobCachedPath = path;
         _backgroundUserBlobCheckedAt = checkedAt;
         return path;
+    }
+
+    private async Task<string?> TryResolveNewestWebPlayerBlobPathAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            string root = AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
+            string usersRoot = Path.Join(root, SpotifyDirectoryName, "users");
+            if (!Directory.Exists(usersRoot))
+            {
+                return null;
+            }
+
+            foreach (var candidate in Directory.EnumerateFiles(usersRoot, "*.json", SearchOption.AllDirectories)
+                         .Select(path => new FileInfo(path))
+                         .OrderByDescending(file => file.LastWriteTimeUtc)
+                         .Select(file => file.FullName))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await _blobService.IsWebPlayerBlobAsync(candidate, cancellationToken))
+                {
+                    _logger.LogDebug(
+                        "Spotify Pathfinder fallback selected newest web-player blob at {BlobPath}.",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(candidate));
+                    return candidate;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to resolve newest Spotify web-player blob for Pathfinder.");
+        }
+
+        return null;
     }
 
     private static List<string> EnumerateSpotifyUserIds(string usersRoot) => Directory.EnumerateDirectories(usersRoot)
@@ -1926,6 +1977,105 @@ public sealed class SpotifyPathfinderMetadataClient
         }
     }
 
+    private async Task<AnonymousWebPlayerToken?> GetAnonymousWebPlayerTokenAsync(CancellationToken cancellationToken)
+    {
+        AnonymousWebPlayerToken? cached = _anonymousWebPlayerToken;
+        if (cached is not null && DateTimeOffset.UtcNow < cached.ExpiresAt - TokenRefreshWindow)
+        {
+            return cached;
+        }
+
+        await _anonymousTokenGate.WaitAsync(cancellationToken);
+        try
+        {
+            cached = _anonymousWebPlayerToken;
+            if (cached is not null && DateTimeOffset.UtcNow < cached.ExpiresAt - TokenRefreshWindow)
+            {
+                return cached;
+            }
+
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(AnonymousTokenFetchTimeout);
+            AnonymousWebPlayerToken? token = await FetchAnonymousWebPlayerTokenAsync(timeoutSource.Token);
+            if (token is not null)
+            {
+                _anonymousWebPlayerToken = token;
+            }
+
+            return token;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug("Spotify anonymous web-player token fetch exceeded {TimeoutSeconds}s.", AnonymousTokenFetchTimeout.TotalSeconds);
+            return null;
+        }
+        finally
+        {
+            _anonymousTokenGate.Release();
+        }
+    }
+
+    private async Task<AnonymousWebPlayerToken?> FetchAnonymousWebPlayerTokenAsync(CancellationToken cancellationToken)
+    {
+        var (totp, version) = SpotifyWebPlayerTotp.Generate();
+        if (string.IsNullOrWhiteSpace(totp))
+        {
+            return null;
+        }
+
+        HttpClient client = _httpClientFactory.CreateClient();
+        string tokenUrl = BuildSpotifyAnonymousTokenUrl(totp, version);
+        using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, tokenUrl);
+        request.Headers.Accept.ParseAdd("application/json");
+        request.Headers.Referrer = new Uri(WebPlayerRootUrl + "/");
+        request.Headers.TryAddWithoutValidation("Origin", WebPlayerRootUrl);
+        request.Headers.UserAgent.ParseAdd(WebPlayerUserAgent);
+        using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
+        string json = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(json))
+        {
+            _logger.LogDebug(
+                "Spotify anonymous web-player token request failed: status={Status}",
+                (int)response.StatusCode);
+            return null;
+        }
+
+        SpotifyAnonymousTokenResponse? token = JsonSerializer.Deserialize<SpotifyAnonymousTokenResponse>(json, _jsonOptions);
+        if (string.IsNullOrWhiteSpace(token?.AccessToken))
+        {
+            return null;
+        }
+
+        DateTimeOffset expiresAt = token.AccessTokenExpirationTimestampMs is > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds(token.AccessTokenExpirationTimestampMs.Value)
+            : DateTimeOffset.UtcNow.AddHours(1);
+        return new AnonymousWebPlayerToken(token.AccessToken, expiresAt);
+    }
+
+    private static string BuildSpotifyAnonymousTokenUrl(string totp, int version)
+    {
+        return WebPlayerRootUrl
+            + "/api/token?reason=init&productType=web-player&totp="
+            + Uri.EscapeDataString(totp)
+            + "&totpVer="
+            + version.ToString(CultureInfo.InvariantCulture)
+            + "&totpServer="
+            + Uri.EscapeDataString(totp);
+    }
+
+    private string BuildSearchDesktopUrl(Dictionary<string, object?> variables, object extensions)
+    {
+        string variablesJson = JsonSerializer.Serialize(variables, _jsonOptions);
+        string extensionsJson = JsonSerializer.Serialize(extensions, _jsonOptions);
+        return PathfinderV1QueryUrl
+            + "?operationName="
+            + Uri.EscapeDataString(SearchDesktopOperationName)
+            + "&variables="
+            + Uri.EscapeDataString(variablesJson)
+            + "&extensions="
+            + Uri.EscapeDataString(extensionsJson);
+    }
+
     private static string? TryExtractCookieValue(HttpResponseMessage response, string cookieName)
     {
         if (response.Headers.TryGetValues("Set-Cookie", out IEnumerable<string>? values))
@@ -2273,12 +2423,18 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyTrackSummary>();
         }
+        string trimmedQuery = query.Trim();
+        List<SpotifyTrackSummary> anonymousTracks = await SearchTracksWithAnonymousWebPlayerAsync(trimmedQuery, limit, cancellationToken);
+        if (anonymousTracks.Count > 0)
+        {
+            return anonymousTracks;
+        }
+
         PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
         if (context is null)
         {
             return new List<SpotifyTrackSummary>();
         }
-        string trimmedQuery = query.Trim();
         int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);
         PersistedQueryOverride persisted = GetPersistedQuery(SearchSuggestionsOperationName, 1, SearchSuggestionsHashFallback);
         IReadOnlyList<Dictionary<string, object?>> candidates = BuildSearchSuggestionVariableCandidates(trimmedQuery, resolvedLimit, context, persisted.VariablesJson);
@@ -2307,6 +2463,69 @@ public sealed class SpotifyPathfinderMetadataClient
             }
         }
         return new List<SpotifyTrackSummary>();
+    }
+
+    private async Task<List<SpotifyTrackSummary>> SearchTracksWithAnonymousWebPlayerAsync(string query, int limit, CancellationToken cancellationToken)
+    {
+        try
+        {
+            AnonymousWebPlayerToken? token = await GetAnonymousWebPlayerTokenAsync(cancellationToken);
+            if (token is null || string.IsNullOrWhiteSpace(token.AccessToken))
+            {
+                return new List<SpotifyTrackSummary>();
+            }
+
+            int resolvedLimit = Math.Clamp((limit <= 0) ? 4 : limit, 1, 4);
+            var variables = new Dictionary<string, object?>
+            {
+                ["searchTerm"] = query,
+                [OffsetKey] = 0,
+                ["limit"] = resolvedLimit,
+                ["numberOfTopResults"] = 5
+            };
+            var extensions = new
+            {
+                persistedQuery = new
+                {
+                    version = 1,
+                    sha256Hash = SearchDesktopHash
+                }
+            };
+
+            string url = BuildSearchDesktopUrl(variables, extensions);
+            HttpClient client = _httpClientFactory.CreateClient();
+            using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
+            request.Headers.Add("App-Platform", WebPlayerAppPlatform);
+            request.Headers.Accept.ParseAdd("application/json");
+            request.Headers.UserAgent.ParseAdd(WebPlayerUserAgent);
+            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
+            string json = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(json))
+            {
+                _logger.LogDebug(
+                    "Spotify anonymous searchDesktop failed: status={Status}",
+                    (int)response.StatusCode);
+                return new List<SpotifyTrackSummary>();
+            }
+
+            using JsonDocument doc = JsonDocument.Parse(json);
+            return ParseSearchSuggestionTracks(doc.RootElement, resolvedLimit);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogDebug(ex, "Spotify anonymous searchDesktop timed out.");
+            return new List<SpotifyTrackSummary>();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify anonymous searchDesktop failed.");
+            return new List<SpotifyTrackSummary>();
+        }
     }
 
     public async Task<List<SpotifyArtistSearchCandidate>> SearchArtistsAsync(string query, int limit, CancellationToken cancellationToken)

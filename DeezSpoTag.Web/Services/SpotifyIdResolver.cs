@@ -20,25 +20,55 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
         string? isrc,
         CancellationToken cancellationToken)
     {
+        var searchedMetadataForIsrc = false;
         if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var isrcQuery = $"isrc:{isrc.Trim()}";
-            var isrcResponse = await _searchService.SearchByTypeAsync(isrcQuery, "track", 10, 0, cancellationToken);
-            var normalizedIsrc = NormalizeIsrc(isrc);
-            var isrcItems = isrcResponse?.Items
-                .Where(item => string.Equals(NormalizeIsrc(item.Isrc), normalizedIsrc, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            var isrcCandidate = SelectBestCandidate(
-                isrcItems,
-                title,
-                artist,
-                album,
-                isrc,
-                allowFirstWhenMetadataMissing: true);
-            if (!string.IsNullOrWhiteSpace(isrcCandidate?.Id))
+            var metadataQueryForIsrc = BuildPlainQuery(title, artist, album);
+            if (!string.IsNullOrWhiteSpace(metadataQueryForIsrc))
             {
-                return isrcCandidate.Id;
+                searchedMetadataForIsrc = true;
+                var metadataResponse = await _searchService.SearchByTypeAsync(
+                    metadataQueryForIsrc,
+                    "track",
+                    10,
+                    0,
+                    cancellationToken,
+                    hydrateTrackIsrcs: false,
+                    allowTrackFallbacks: false);
+                var metadataItems = metadataResponse?.Items;
+                var metadataCandidate = SelectBestCandidate(
+                    metadataItems,
+                    title,
+                    artist,
+                    album,
+                    isrc,
+                    allowFirstWhenMetadataMissing: false);
+                if (!string.IsNullOrWhiteSpace(metadataCandidate?.Id))
+                {
+                    return metadataCandidate.Id;
+                }
+
+                if (metadataItems is { Count: > 0 }
+                    && metadataItems.All(static item => string.IsNullOrWhiteSpace(item.Isrc)))
+                {
+                    var metadataOnlyCandidate = SelectBestCandidate(
+                        metadataItems,
+                        title,
+                        artist,
+                        album,
+                        isrc: null,
+                        allowFirstWhenMetadataMissing: false);
+                    if (!string.IsNullOrWhiteSpace(metadataOnlyCandidate?.Id))
+                    {
+                        return metadataOnlyCandidate.Id;
+                    }
+                }
             }
+        }
+
+        if (searchedMetadataForIsrc)
+        {
+            return null;
         }
 
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
@@ -46,18 +76,15 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
             return null;
         }
 
-        var parts = new List<string>
-        {
-            $"track:{title}",
-            $"artist:{artist}"
-        };
-        if (!string.IsNullOrWhiteSpace(album))
-        {
-            parts.Add($"album:{album}");
-        }
-
-        var query = string.Join(" ", parts);
-        var response = await _searchService.SearchByTypeAsync(query, "track", 8, 0, cancellationToken);
+        var query = BuildPlainQuery(title, artist, album);
+        var response = await _searchService.SearchByTypeAsync(
+            query,
+            "track",
+            8,
+            0,
+            cancellationToken,
+            hydrateTrackIsrcs: false,
+            allowTrackFallbacks: false);
         if (response?.Items == null || response.Items.Count == 0)
         {
             return null;
@@ -70,6 +97,27 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
             album,
             isrc,
             allowFirstWhenMetadataMissing: false)?.Id;
+    }
+
+    private static string BuildPlainQuery(string title, string artist, string? album)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            parts.Add(title.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(artist))
+        {
+            parts.Add(artist.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(album))
+        {
+            parts.Add(album.Trim());
+        }
+
+        return string.Join(" ", parts);
     }
 
     private static SpotifySearchItem? SelectBestCandidate(

@@ -2,6 +2,7 @@ using DeezSpoTag.Services.Crypto;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Conversion;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Metadata;
@@ -28,7 +29,6 @@ public static class DownloadServiceExtensions
 {
     private const string DesktopChromeUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36";
     private static readonly TimeSpan LongDownloadTimeout = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan ResolveProxyTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>
     /// Register all download engine services
@@ -58,6 +58,7 @@ public static class DownloadServiceExtensions
                 sp.GetRequiredService<Queue.DownloadCancellationRegistry>()));
         // Keep null resolver as a fallback only. Web host registers the real resolver.
         services.TryAddSingleton<ISpotifyIdResolver, NullSpotifyIdResolver>();
+        services.TryAddSingleton<ITrackIdentityResolver, NullTrackIdentityResolver>();
         services.TryAddSingleton<ISpotifyArtworkResolver, NullSpotifyArtworkResolver>();
         services.AddSingleton<AppleMusicCatalogService>();
         services.AddSingleton<Download.Apple.IAppleWrapperStatusProvider, Download.Apple.NullAppleWrapperStatusProvider>();
@@ -75,22 +76,7 @@ public static class DownloadServiceExtensions
         services.AddSingleton<DownloadMoveService>();
         services.AddScoped<Download.Utils.TrackEnrichmentService>();
         services.AddScoped<SearchFallbackService>();
-        services.AddSingleton<SongLinkPersistentCacheStore>();
         services.AddSingleton<SpotifyTrackMetadataResolver>();
-        services.AddSingleton(sp => new SongLinkResolver.Dependencies
-        {
-            HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
-            QobuzMetadataService = sp.GetService<IQobuzMetadataService>(),
-            QobuzTrackResolver = sp.GetService<QobuzTrackResolver>(),
-            Logger = sp.GetRequiredService<ILogger<SongLinkResolver>>(),
-            PersistentCacheStore = sp.GetService<SongLinkPersistentCacheStore>(),
-            SpotifyTrackMetadataResolver = sp.GetService<SpotifyTrackMetadataResolver>(),
-            SpotifyIdResolver = sp.GetService<ISpotifyIdResolver>(),
-            TidalDownloadService = sp.GetService<Download.Tidal.TidalDownloadService>(),
-            ResolveProxyClient = sp.GetService<ResolveProxyClient>()
-        });
-        services.AddSingleton<ResolveProxyClient>();
-        services.AddSingleton<SongLinkResolver>();
         services.AddSingleton<IDownloadApiHealthTracker, DownloadApiHealthTracker>();
         services.AddSingleton<EngineFallbackSearchService>();
         services.AddSingleton<EngineFallbackCoordinator>();
@@ -120,12 +106,6 @@ public static class DownloadServiceExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
             client.Timeout = TimeSpan.FromMinutes(5);
         }).ConfigurePrimaryHttpMessageHandler(CreatePermissiveHandler);
-
-        services.AddHttpClient("ResolveProxy", client =>
-        {
-            client.Timeout = ResolveProxyTimeout;
-            client.DefaultRequestHeaders.UserAgent.ParseAdd(DesktopChromeUserAgent);
-        });
 
         services.AddHttpClient("SpotifyPublic", client =>
         {

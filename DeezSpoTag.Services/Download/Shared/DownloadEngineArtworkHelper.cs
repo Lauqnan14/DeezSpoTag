@@ -3,6 +3,7 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -13,6 +14,10 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public static class DownloadEngineArtworkHelper
 {
+    private const string AppleProvider = "apple";
+    private const string DeezerProvider = "deezer";
+    private const string SpotifyProvider = "spotify";
+
     public sealed record StandardAudioCoverResolveRequest(
         DeezSpoTagSettings Settings,
         AppleMusicCatalogService? AppleCatalog,
@@ -28,7 +33,10 @@ public static class DownloadEngineArtworkHelper
         string? DeezerId,
         string? PayloadCover,
         string? Isrc,
-        ILogger Logger);
+        ILogger Logger)
+    {
+        public ITrackIdentityResolver? TrackIdentityResolver { get; init; }
+    }
 
     public sealed record AudioTagWithCoverRequest(
         string OutputPath,
@@ -63,15 +71,16 @@ public static class DownloadEngineArtworkHelper
         ILogger Logger,
         bool SingleJpegForNonApple = false);
 
+    public sealed record ArtworkCandidate(string Provider, string Url);
+
     public static async Task<IReadOnlyList<string>> ResolveStandardAudioCoverUrlsAsync(
         StandardAudioCoverResolveRequest request,
         CancellationToken cancellationToken)
     {
         var fallbackOrder = ArtworkFallbackHelper.ResolveOrder(request.Settings);
         var coverUrls = new List<string>();
+        var payloadCandidate = TryCreatePayloadCoverCandidate(request.PayloadCover);
         var rejectCompilationAlbumCandidate = ShouldRejectCompilationArtworkForRequest(request);
-
-        AddCoverUrl(coverUrls, request.PayloadCover);
 
         foreach (var fallback in fallbackOrder)
         {
@@ -104,23 +113,143 @@ public static class DownloadEngineArtworkHelper
                     break;
 
                 case "spotify":
-                    coverUrl = await ArtworkFallbackHelper.TryResolveSpotifyCoverAsync(
-                        request.SpotifyIdResolver,
-                        request.SpotifyArtworkResolver,
-                        new ArtworkFallbackHelper.SpotifyCoverLookupRequest(
-                            request.Title,
-                            request.Artist,
-                            request.Album,
-                            request.Isrc,
-                            rejectCompilationAlbumCandidate),
+                    coverUrl = await TryResolveSpotifyCoverAsync(
+                        request,
+                        rejectCompilationAlbumCandidate,
                         cancellationToken);
                     break;
             }
 
             AddCoverUrl(coverUrls, coverUrl);
+            if (payloadCandidate != null
+                && string.Equals(payloadCandidate.Provider, fallback, StringComparison.OrdinalIgnoreCase))
+            {
+                AddCoverUrl(coverUrls, payloadCandidate.Url);
+            }
         }
 
+        AddUnidentifiedPayloadCoverAsLastFallback(coverUrls, payloadCandidate);
+
         return coverUrls;
+    }
+
+    private static ArtworkCandidate? TryCreatePayloadCoverCandidate(string? payloadCover)
+    {
+        if (string.IsNullOrWhiteSpace(payloadCover))
+        {
+            return null;
+        }
+
+        var normalizedUrl = payloadCover.Trim();
+        var provider = TryIdentifyArtworkProvider(normalizedUrl);
+        return string.IsNullOrWhiteSpace(provider)
+            ? new ArtworkCandidate(string.Empty, normalizedUrl)
+            : new ArtworkCandidate(provider, normalizedUrl);
+    }
+
+    private static void AddUnidentifiedPayloadCoverAsLastFallback(
+        List<string> coverUrls,
+        ArtworkCandidate? payloadCandidate)
+    {
+        if (payloadCandidate == null || !string.IsNullOrWhiteSpace(payloadCandidate.Provider))
+        {
+            return;
+        }
+
+        AddCoverUrl(coverUrls, payloadCandidate.Url);
+    }
+
+    private static async Task<string?> TryResolveSpotifyCoverAsync(
+        StandardAudioCoverResolveRequest request,
+        bool rejectCompilationAlbumCandidate,
+        CancellationToken cancellationToken)
+    {
+        if (request.SpotifyArtworkResolver == null)
+        {
+            return null;
+        }
+
+        var spotifyId = await TryResolveSpotifyIdForArtworkAsync(request, cancellationToken);
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return null;
+        }
+
+        var album = ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(request.Album);
+        return await request.SpotifyArtworkResolver.ResolveAlbumCoverUrlAsync(
+            spotifyId,
+            cancellationToken,
+            album,
+            rejectCompilationAlbumCandidate);
+    }
+
+    private static async Task<string?> TryResolveSpotifyIdForArtworkAsync(
+        StandardAudioCoverResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.TrackIdentityResolver != null)
+        {
+            var identity = await request.TrackIdentityResolver.ResolveAsync(
+                new TrackIdentityResolutionRequest(
+                    SourcePlatform: null,
+                    SourceUrl: null,
+                    Title: request.Title,
+                    Artist: request.Artist,
+                    Album: ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(request.Album),
+                    Isrc: request.Isrc,
+                    DurationMs: null,
+                    DeezerId: request.DeezerId,
+                    AppleId: request.AppleId,
+                    TargetPlatforms: new[] { SpotifyProvider }),
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(identity.SpotifyId))
+            {
+                return identity.SpotifyId;
+            }
+        }
+
+        if (request.SpotifyIdResolver == null
+            || string.IsNullOrWhiteSpace(request.Title)
+            || string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        return await request.SpotifyIdResolver.ResolveTrackIdAsync(
+            request.Title,
+            request.Artist,
+            ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(request.Album),
+            request.Isrc,
+            cancellationToken);
+    }
+
+    private static string? TryIdentifyArtworkProvider(string coverUrl)
+    {
+        if (!Uri.TryCreate(coverUrl, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        var host = uri.Host;
+        if (host.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase)
+            || host.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return AppleProvider;
+        }
+
+        if (host.Contains("dzcdn.net", StringComparison.OrdinalIgnoreCase)
+            || host.Contains("deezer.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return DeezerProvider;
+        }
+
+        if (host.Contains("scdn.co", StringComparison.OrdinalIgnoreCase)
+            || host.Contains("spotify.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return SpotifyProvider;
+        }
+
+        return null;
     }
 
     private static void AddCoverUrl(List<string> coverUrls, string? coverUrl)

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services.CoverPort;
@@ -385,6 +386,7 @@ public partial class AutoTagService
             QueueAnimatedArtwork: queueAnimatedArtwork,
             AppleStorefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
             AnimatedArtworkMaxResolution: settings.Video?.AppleMusicVideoMaxResolution ?? 2160,
+            AnimatedArtworkFormats: AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
             EnabledSources: null,
             CoverImageTemplate: settings.CoverImageTemplate);
 

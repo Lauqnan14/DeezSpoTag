@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
@@ -239,7 +240,7 @@ public sealed class LibraryRecommendationServiceTests
                 ShazamDiscoveryService = null!,
                 DeezerClient = null!,
                 DeezerGatewayService = null!,
-                SongLinkResolver = null!,
+                TrackIdentityResolver = new NullTrackIdentityResolver(),
                 DedupeService = null!
             },
             new TestWebHostEnvironment(webRootPath),

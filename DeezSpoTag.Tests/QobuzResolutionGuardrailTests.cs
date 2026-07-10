@@ -56,17 +56,12 @@ public sealed class QobuzResolutionGuardrailTests
     [Fact]
     public void QobuzResolution_UsesSingleAuthoritativeResolverPath()
     {
-        var songLinkResolver = ReadSource("DeezSpoTag.Services/Download/Utils/SongLinkResolver.cs");
         var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
 
-        Assert.DoesNotContain("TryResolveQobuzUrlViaPublicSearchAsync", songLinkResolver, StringComparison.Ordinal);
-        Assert.DoesNotContain("PickBestQobuzCandidate", songLinkResolver, StringComparison.Ordinal);
-        Assert.DoesNotContain("SearchQobuzCandidatesByQueriesAsync", songLinkResolver, StringComparison.Ordinal);
-        Assert.Contains("return await TryResolveQobuzUrlViaMetadataServiceAsync(normalizedIsrc, cancellationToken);", songLinkResolver, StringComparison.Ordinal);
-        Assert.Contains("var resolverResult = await TryResolveQobuzUrlViaResolverAsync", songLinkResolver, StringComparison.Ordinal);
-
+        Assert.Contains("ResolveQobuzUrlFromCentralIdentityAsync", downloadIntentService, StringComparison.Ordinal);
         Assert.Contains("var validated = await _qobuzTrackResolver.ValidateTrackIdAsync", downloadIntentService, StringComparison.Ordinal);
         Assert.Contains("Rejected Qobuz mapped URL that did not match requested track", downloadIntentService, StringComparison.Ordinal);
+        Assert.DoesNotContain("SongLinkResolver", downloadIntentService, StringComparison.Ordinal);
     }
 
     [Fact]

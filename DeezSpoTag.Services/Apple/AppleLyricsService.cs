@@ -2,6 +2,9 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Linq;
+using System.Globalization;
+using System.Xml;
+using System.Xml.Linq;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
@@ -378,17 +381,6 @@ public sealed class AppleLyricsService
 
         var languageCandidates = BuildLanguageCandidates(language);
         var typeCandidates = BuildLyricsTypeCandidates(lrcType);
-        var catalogTtml = await TryFetchLyricsFromCatalogApiAsync(
-            appleId,
-            storefront,
-            mediaUserToken,
-            languageCandidates,
-            cancellationToken);
-        if (!string.IsNullOrWhiteSpace(catalogTtml))
-        {
-            return catalogTtml;
-        }
-
         if (string.IsNullOrWhiteSpace(mediaUserToken))
         {
             return null;
@@ -401,41 +393,6 @@ public sealed class AppleLyricsService
             typeCandidates,
             languageCandidates,
             cancellationToken);
-    }
-
-    private async Task<string?> TryFetchLyricsFromCatalogApiAsync(
-        string appleId,
-        string storefront,
-        string mediaUserToken,
-        IEnumerable<string> languageCandidates,
-        CancellationToken cancellationToken)
-    {
-        foreach (var lang in languageCandidates)
-        {
-            try
-            {
-                using var doc = await _catalogService.GetSongLyricsAsync(
-                    appleId,
-                    storefront,
-                    lang,
-                    cancellationToken,
-                    mediaUserToken);
-                var ttml = TryExtractLyricsTtml(doc.RootElement, lang);
-                if (!string.IsNullOrWhiteSpace(ttml))
-                {
-                    return ttml;
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Apple lyrics endpoint request failed for song {AppleId} lang={Lang}", appleId, lang);
-                }
-            }
-        }
-
-        return null;
     }
 
     private static string NormalizeMediaUserToken(string? mediaUserToken)
@@ -451,6 +408,7 @@ public sealed class AppleLyricsService
         IEnumerable<string> languageCandidates,
         CancellationToken cancellationToken)
     {
+        string? plainTextTtml = null;
         foreach (var type in typeCandidates)
         {
             foreach (var lang in languageCandidates)
@@ -479,14 +437,19 @@ public sealed class AppleLyricsService
                 await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
                 using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
                 var ttml = TryExtractLyricsTtml(doc.RootElement, lang);
-                if (!string.IsNullOrWhiteSpace(ttml))
+                if (IsTimedTtml(ttml))
                 {
                     return ttml;
+                }
+
+                if (plainTextTtml == null && TryExtractPlainLyrics(ttml, out _))
+                {
+                    plainTextTtml = ttml;
                 }
             }
         }
 
-        return null;
+        return plainTextTtml;
     }
 
     private static IEnumerable<string> BuildLyricsTypeCandidates(string lrcType)
@@ -616,12 +579,123 @@ public sealed class AppleLyricsService
         }
 
         var directTtml = TryReadDirectTtml(attrs);
-        if (!string.IsNullOrWhiteSpace(directTtml))
+        if (IsUsableAppleLyricsTtml(directTtml))
         {
             return directTtml;
         }
 
-        return TryReadLocalizedTtml(attrs, preferredLanguage);
+        var localizedTtml = TryReadLocalizedTtml(attrs, preferredLanguage);
+        return IsUsableAppleLyricsTtml(localizedTtml) ? localizedTtml : null;
+    }
+
+    private static bool IsUsableAppleLyricsTtml(string? ttml)
+        => IsTimedTtml(ttml) || TryExtractPlainLyrics(ttml, out _);
+
+    public static bool IsTimedTtml(string? ttml)
+    {
+        if (!TryReadTtmlDocument(ttml, out var document))
+        {
+            return false;
+        }
+
+        var root = document.Root!;
+        var timing = root.Attributes()
+            .FirstOrDefault(attribute => attribute.Name.LocalName.Equals("timing", StringComparison.OrdinalIgnoreCase))?
+            .Value.Trim();
+        if (string.Equals(timing, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.Equals(timing, "Word", StringComparison.OrdinalIgnoreCase))
+        {
+            return document.Descendants().Any(element =>
+                element.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)
+                && HasAppleTimestamp(element, "begin")
+                && HasAppleTimestamp(element, "end")
+                && !string.IsNullOrWhiteSpace(element.Value));
+        }
+
+        return document.Descendants().Any(element =>
+            element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase)
+            && HasAppleTimestamp(element, "begin")
+            && !string.IsNullOrWhiteSpace(element.Value));
+    }
+
+    public static bool TryExtractPlainLyrics(string? ttml, out string plainLyrics)
+    {
+        plainLyrics = string.Empty;
+        if (!TryReadTtmlDocument(ttml, out var document))
+        {
+            return false;
+        }
+
+        var timing = document.Root!.Attributes()
+            .FirstOrDefault(attribute => attribute.Name.LocalName.Equals("timing", StringComparison.OrdinalIgnoreCase))?
+            .Value.Trim();
+        if (!string.Equals(timing, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var lines = document.Descendants()
+            .Where(element => element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase))
+            .Select(element => element.Value.Trim())
+            .Where(static line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return false;
+        }
+
+        plainLyrics = string.Join('\n', lines);
+        return true;
+    }
+
+    private static bool TryReadTtmlDocument(string? ttml, out XDocument document)
+    {
+        document = null!;
+        if (string.IsNullOrWhiteSpace(ttml))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var reader = XmlReader.Create(
+                new StringReader(ttml),
+                new XmlReaderSettings
+                {
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null,
+                    MaxCharactersInDocument = 4 * 1024 * 1024
+                });
+            document = XDocument.Load(reader, LoadOptions.None);
+            return document.Root?.Name.LocalName.Equals("tt", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch (Exception ex) when (ex is XmlException or InvalidOperationException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasAppleTimestamp(XElement element, string attributeName)
+    {
+        var value = element.Attributes()
+            .FirstOrDefault(attribute => attribute.Name.LocalName.Equals(attributeName, StringComparison.OrdinalIgnoreCase))?
+            .Value.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var seconds))
+        {
+            return seconds >= 0;
+        }
+
+        return TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var timestamp)
+               && timestamp >= TimeSpan.Zero;
     }
 
     private static bool TryGetLyricsAttributes(JsonElement root, out JsonElement attrs)
@@ -908,10 +982,25 @@ public sealed class AppleLyricsService
 
         public static AppleLyrics FromTtml(string ttml)
         {
-            var lyrics = new AppleLyrics();
-            lyrics.TtmlLyrics = ttml;
-            lyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
-            return lyrics;
+            if (IsTimedTtml(ttml))
+            {
+                return new AppleLyrics
+                {
+                    TtmlLyrics = ttml,
+                    TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+                };
+            }
+
+            if (TryExtractPlainLyrics(ttml, out var plainLyrics))
+            {
+                return new AppleLyrics
+                {
+                    UnsyncedLyrics = plainLyrics,
+                    UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText
+                };
+            }
+
+            return CreateError("Apple Music returned unusable lyrics timing.");
         }
     }
 }

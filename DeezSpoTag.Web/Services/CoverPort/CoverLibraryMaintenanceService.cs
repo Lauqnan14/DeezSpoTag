@@ -3,6 +3,7 @@ using System.Threading;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Settings;
 using SixLabors.ImageSharp;
@@ -49,17 +50,20 @@ public sealed class CoverLibraryMaintenanceService
 
     private readonly CoverSearchAndDownloadService _coverSearchService;
     private readonly AppleMusicCatalogService _appleMusicCatalogService;
+    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<CoverLibraryMaintenanceService> _logger;
 
     public CoverLibraryMaintenanceService(
         CoverSearchAndDownloadService coverSearchService,
         AppleMusicCatalogService appleMusicCatalogService,
+        ITrackIdentityResolver trackIdentityResolver,
         IHttpClientFactory httpClientFactory,
         ILogger<CoverLibraryMaintenanceService> logger)
     {
         _coverSearchService = coverSearchService;
         _appleMusicCatalogService = appleMusicCatalogService;
+        _trackIdentityResolver = trackIdentityResolver;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
@@ -250,19 +254,29 @@ public sealed class CoverLibraryMaintenanceService
         CancellationToken cancellationToken)
     {
         var baseFileName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
+        var identity = await ResolveAppleIdentityAsync(metadata, request, cancellationToken);
+        if (string.IsNullOrWhiteSpace(identity?.AppleId))
+        {
+            logs.Enqueue($"[skip] {albumDir}: animated artwork unavailable.");
+            return false;
+        }
+
         var savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             _appleMusicCatalogService,
             _httpClientFactory,
             new AppleQueueHelpers.AnimatedArtworkSaveRequest
             {
-                Title = metadata.Title,
-                Artist = metadata.Artist,
-                Album = metadata.Album,
+                AppleId = identity?.AppleId,
+                Artist = identity?.AppleArtistName ?? metadata.Artist,
+                Album = identity?.AppleAlbumName ?? metadata.Album,
                 BaseFileName = baseFileName,
                 Storefront = request.AppleStorefront,
                 MaxResolution = request.AnimatedArtworkMaxResolution,
                 OutputDir = albumDir,
-                Logger = _logger
+                Logger = _logger,
+                CollectionType = string.IsNullOrWhiteSpace(identity?.AppleAlbumId) ? null : "album",
+                CollectionId = identity?.AppleAlbumId,
+                OutputFormats = request.AnimatedArtworkFormats
             },
             cancellationToken);
         if (savedAnimated)
@@ -273,6 +287,35 @@ public sealed class CoverLibraryMaintenanceService
 
         logs.Enqueue($"[skip] {albumDir}: animated artwork unavailable.");
         return false;
+    }
+
+    private async Task<TrackIdentityResolution?> ResolveAppleIdentityAsync(
+        AlbumMetadata metadata,
+        CoverLibraryMaintenanceRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var identity = await _trackIdentityResolver.ResolveAsync(
+                new TrackIdentityResolutionRequest(
+                    SourcePlatform: null,
+                    SourceUrl: null,
+                    Title: metadata.Title,
+                    Artist: metadata.Artist,
+                    Album: metadata.Album,
+                    Isrc: null,
+                    DurationMs: null,
+                    TargetPlatforms: new[] { "apple" },
+                    Storefront: request.AppleStorefront,
+                    Language: "en-US"),
+                cancellationToken);
+            return string.IsNullOrWhiteSpace(identity.AppleId) ? null : identity;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Central Apple identity lookup failed for cover maintenance animated artwork.");
+            return null;
+        }
     }
 
     private static string BuildAlbumArtworkBaseFileName(AlbumMetadata metadata, string? coverImageTemplate)
@@ -654,6 +697,7 @@ public sealed record CoverLibraryMaintenanceRequest(
     bool QueueAnimatedArtwork = false,
     string AppleStorefront = "us",
     int AnimatedArtworkMaxResolution = 2160,
+    IReadOnlyCollection<string>? AnimatedArtworkFormats = null,
     IReadOnlyCollection<CoverSourceName>? EnabledSources = null,
     string CoverImageTemplate = "cover");
 

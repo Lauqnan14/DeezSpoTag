@@ -375,6 +375,8 @@ internal static class EngineQueueProcessorHelper
                 prefetchFailure);
             workContext.Deps.ActivityLog.Warn(
                 $"Sidecar prefetch failed (engine={workContext.EngineName}): {workContext.Item.QueueUuid} {prefetchFailure}");
+            throw new InvalidOperationException(
+                $"{workContext.EngineName} required artwork prefetch failed for {workContext.Item.QueueUuid}: {prefetchFailure}");
         }
 
         ActualDownloadQualityLabel.ApplyTo(workContext.Payload, outputPath);

@@ -58,6 +58,20 @@ public sealed class ArtworkFallbackHelperTests
     }
 
     [Fact]
+    public void AlbumArtworkOrder_PreservesConfiguredSpotifyFallback()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtworkFallbackEnabled = true,
+            ArtworkFallbackOrder = "apple,deezer,spotify"
+        };
+
+        var order = ArtworkFallbackHelper.ResolveOrder(settings);
+
+        Assert.Equal(["apple", "deezer", "spotify"], order);
+    }
+
+    [Fact]
     public void ArtistArtworkOrder_AllowsLastFm()
     {
         var settings = new DeezSpoTagSettings

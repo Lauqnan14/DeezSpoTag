@@ -1303,7 +1303,9 @@ public partial class Program
                 AppleMusicCatalogService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 DownloadLyricsService = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.LyricsService>(),
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
-                CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>()
+                CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>(),
+                ServiceScopeFactory = sp.GetRequiredService<IServiceScopeFactory>(),
+                TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagRunIndexWarmupHostedService>();
@@ -1656,6 +1658,7 @@ public partial class Program
         services.AddScoped<DeezSpoTag.Web.Services.DownloadIntentService>();
         services.AddScoped<DeezSpoTag.Web.Services.TrackAvailabilityService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyIdResolver, DeezSpoTag.Web.Services.SpotifyIdResolver>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver, DeezSpoTag.Web.Services.TrackIdentityResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.SpotifyAuthWarmupService>(
             services,
@@ -1729,7 +1732,7 @@ public partial class Program
                 ShazamDiscoveryService = sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamDiscoveryService>(),
                 DeezerClient = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
-                SongLinkResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.SongLinkResolver>(),
+                TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>(),
                 DedupeService = sp.GetRequiredService<DeezSpoTag.Services.Download.DownloadDedupeService>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService>();

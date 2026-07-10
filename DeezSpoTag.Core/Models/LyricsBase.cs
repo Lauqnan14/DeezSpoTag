@@ -90,7 +90,9 @@ public abstract class LyricsBase
 
     public bool CanSaveLrcSidecar()
     {
-        return IsSynced() && SyncedLyricsSourceFormat == LyricsSourceFormat.DownloadedLrc;
+        return IsSynced()
+            && (SyncedLyricsSourceFormat == LyricsSourceFormat.DownloadedLrc
+                || SyncedLyricsSourceFormat == LyricsSourceFormat.ProviderSyncedJson);
     }
 
     /// <summary>

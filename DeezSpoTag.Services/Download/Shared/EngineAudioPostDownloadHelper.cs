@@ -5,6 +5,7 @@ using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
@@ -160,7 +161,8 @@ public static partial class EngineAudioPostDownloadHelper
         bool ShouldFetchPrimaryArtwork,
         bool ShouldFetchAnimatedArtwork,
         bool ShouldFetchArtistArtwork,
-        bool ShouldFetchLyrics)
+        bool ShouldFetchLyrics,
+        bool ShouldRequireEmbeddedArtwork)
     {
         public bool ShouldFetchArtwork => ShouldFetchPrimaryArtwork || ShouldFetchAnimatedArtwork || ShouldFetchArtistArtwork;
         public bool ShouldQueueWork => ShouldFetchArtwork || ShouldFetchLyrics;
@@ -211,9 +213,18 @@ public static partial class EngineAudioPostDownloadHelper
         ISpotifyArtworkResolver? SpotifyArtworkResolver,
         ILastFmArtistImageResolver? LastFmArtistImageResolver,
         ISpotifyIdResolver? SpotifyIdResolver,
+        ITrackIdentityResolver? TrackIdentityResolver,
         IHttpClientFactory? HttpClientFactory,
         AppleMusicCatalogService? AppleCatalog,
         DeezerClient? DeezerApiClient);
+
+    private sealed record AppleArtworkIdentity(
+        string? AppleId,
+        string? AlbumId,
+        string? AlbumName,
+        string? ArtistName,
+        string? Isrc,
+        int? DurationMs);
 
     private static readonly ConcurrentDictionary<string, PrefetchGateState> PrefetchGates =
         new(StringComparer.OrdinalIgnoreCase);
@@ -1816,6 +1827,7 @@ public static partial class EngineAudioPostDownloadHelper
             var settings = execution.Request.Settings;
             var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
             var preferMaxQualityCover = settings.EmbedMaxQualityCover;
+            var appleIdentity = await ResolveAppleArtworkIdentityAsync(execution, runtime, token);
             var coverUrls = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
                 new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
                     settings,
@@ -1824,7 +1836,7 @@ public static partial class EngineAudioPostDownloadHelper
                     runtime.SpotifyArtworkResolver,
                     runtime.SpotifyIdResolver,
                     runtime.DeezerApiClient,
-                    execution.Request.AppleCoverLookupIdOverride ?? execution.Request.Payload.AppleId,
+                    appleIdentity?.AppleId ?? execution.Request.AppleCoverLookupIdOverride ?? execution.Request.Payload.AppleId,
                     execution.Request.Payload.Title,
                     execution.Request.Payload.Artist,
                     execution.Request.Payload.Album,
@@ -1832,12 +1844,16 @@ public static partial class EngineAudioPostDownloadHelper
                     execution.Request.Payload.DeezerId,
                     execution.Request.Payload.Cover,
                     execution.Request.Payload.Isrc,
-                    execution.Request.Logger),
+                    execution.Request.Logger)
+                    {
+                        TrackIdentityResolver = runtime.TrackIdentityResolver
+                    },
                 token);
             var artworkTask = BuildArtworkPrefetchTask(
                 execution,
                 runtime,
                 coverUrls,
+                appleIdentity,
                 appleArtworkSize,
                 preferMaxQualityCover,
                 runState,
@@ -1850,7 +1866,7 @@ public static partial class EngineAudioPostDownloadHelper
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             completionResult = new PrefetchCompletionResult(
-                execution.Requirements.ShouldFetchArtwork,
+                execution.Requirements.ShouldRequireEmbeddedArtwork,
                 false,
                 "Artwork prefetch canceled.");
             throw;
@@ -1858,7 +1874,7 @@ public static partial class EngineAudioPostDownloadHelper
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             completionResult = new PrefetchCompletionResult(
-                execution.Requirements.ShouldFetchArtwork,
+                execution.Requirements.ShouldRequireEmbeddedArtwork,
                 false,
                 ex.Message);
             execution.Request.Logger.LogWarning(
@@ -1876,7 +1892,7 @@ public static partial class EngineAudioPostDownloadHelper
     private static PrefetchCompletionResult BuildDefaultPrefetchCompletionResult(PrefetchRequirements requirements)
     {
         return new PrefetchCompletionResult(
-            requirements.ShouldFetchArtwork,
+            requirements.ShouldRequireEmbeddedArtwork,
             !requirements.ShouldFetchArtwork,
             requirements.ShouldFetchArtwork ? "Artwork prefetch did not complete." : null);
     }
@@ -1886,7 +1902,7 @@ public static partial class EngineAudioPostDownloadHelper
         PrefetchRunState runState)
     {
         return new PrefetchCompletionResult(
-            requirements.ShouldFetchArtwork,
+            requirements.ShouldRequireEmbeddedArtwork,
             runState.ArtworkResult.Success,
             runState.ArtworkResult.FailureReason);
     }
@@ -1895,6 +1911,7 @@ public static partial class EngineAudioPostDownloadHelper
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         IReadOnlyList<string> coverUrls,
+        AppleArtworkIdentity? appleIdentity,
         int appleArtworkSize,
         bool preferMaxQualityCover,
         PrefetchRunState runState,
@@ -1909,6 +1926,7 @@ public static partial class EngineAudioPostDownloadHelper
             execution,
             runtime,
             coverUrls,
+            appleIdentity,
             appleArtworkSize,
             preferMaxQualityCover,
             runState,
@@ -1932,6 +1950,7 @@ public static partial class EngineAudioPostDownloadHelper
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         IReadOnlyList<string> coverUrls,
+        AppleArtworkIdentity? appleIdentity,
         int appleArtworkSize,
         bool preferMaxQualityCover,
         PrefetchRunState runState,
@@ -1943,6 +1962,7 @@ public static partial class EngineAudioPostDownloadHelper
                 execution,
                 runtime,
                 coverUrls,
+                appleIdentity,
                 appleArtworkSize,
                 preferMaxQualityCover,
                 token);
@@ -2112,6 +2132,7 @@ public static partial class EngineAudioPostDownloadHelper
         var spotifyArtworkResolver = provider.GetService<ISpotifyArtworkResolver>();
         var lastFmArtistImageResolver = provider.GetService<ILastFmArtistImageResolver>();
         var spotifyIdResolver = provider.GetService<ISpotifyIdResolver>();
+        var trackIdentityResolver = provider.GetService<ITrackIdentityResolver>();
         var httpClientFactory = provider.GetService<IHttpClientFactory>();
         var appleCatalog = provider.GetService<AppleMusicCatalogService>();
         var deezerClient = provider.GetService<DeezerClient>();
@@ -2121,6 +2142,7 @@ public static partial class EngineAudioPostDownloadHelper
             spotifyArtworkResolver,
             lastFmArtistImageResolver,
             spotifyIdResolver,
+            trackIdentityResolver,
             httpClientFactory,
             appleCatalog,
             deezerClient);
@@ -2130,6 +2152,7 @@ public static partial class EngineAudioPostDownloadHelper
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         IReadOnlyList<string> coverUrls,
+        AppleArtworkIdentity? appleIdentity,
         int appleArtworkSize,
         bool preferMaxQualityCover,
         CancellationToken token)
@@ -2151,7 +2174,7 @@ public static partial class EngineAudioPostDownloadHelper
 
         if (execution.Requirements.ShouldFetchAnimatedArtwork && runtime.AppleCatalog != null && runtime.HttpClientFactory != null)
         {
-            await LogMissingAnimatedArtworkAsync(execution, runtime, token);
+            await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
         }
 
         if (execution.Requirements.ShouldFetchArtistArtwork)
@@ -2164,6 +2187,58 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         return new PrefetchArtworkResult(true);
+    }
+
+    private static async Task<AppleArtworkIdentity?> ResolveAppleArtworkIdentityAsync(
+        PrefetchExecutionContext execution,
+        PrefetchRuntimeServices runtime,
+        CancellationToken token)
+    {
+        if (runtime.TrackIdentityResolver == null)
+        {
+            return null;
+        }
+
+        var settings = execution.Request.Settings;
+        var payload = execution.Request.Payload;
+        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
+            ? "us"
+            : settings.AppleMusic.Storefront;
+        var identity = await runtime.TrackIdentityResolver.ResolveAsync(
+            new TrackIdentityResolutionRequest(
+                SourcePlatform: payload.SourceService,
+                SourceUrl: FirstNonEmpty(payload.SourceUrl, payload.Url, payload.ResolvedSourceUrl),
+                Title: payload.Title,
+                Artist: payload.Artist,
+                Album: payload.Album,
+                Isrc: payload.Isrc,
+                DurationMs: payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
+                SpotifyId: payload.SpotifyId,
+                DeezerId: payload.DeezerId,
+                AppleId: execution.Request.AnimatedArtworkAppleIdOverride
+                    ?? execution.Request.AppleCoverLookupIdOverride
+                    ?? payload.AppleId,
+                QobuzId: payload.QobuzId,
+                TidalId: payload.TidalId,
+                AmazonId: payload.AmazonId,
+                TargetPlatforms: new[] { AppleSource },
+                Storefront: storefront,
+                Language: "en-US",
+                MediaUserToken: settings.AppleMusic?.MediaUserToken),
+            token);
+
+        if (string.IsNullOrWhiteSpace(identity.AppleId))
+        {
+            return null;
+        }
+
+        return new AppleArtworkIdentity(
+            identity.AppleId,
+            identity.AppleAlbumId,
+            identity.AppleAlbumName,
+            identity.AppleArtistName,
+            identity.AppleIsrc,
+            identity.AppleDurationMs);
     }
 
     private static async Task<PrefetchArtworkResult> TrySavePrimaryArtworkAsync(
@@ -2202,9 +2277,10 @@ public static partial class EngineAudioPostDownloadHelper
     private static async Task LogMissingAnimatedArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
+        AppleArtworkIdentity? appleIdentity,
         CancellationToken token)
     {
-        var animatedSaved = await SaveAnimatedArtworkAsync(execution, runtime, token);
+        var animatedSaved = await SaveAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
         if (!animatedSaved && execution.Request.Logger.IsEnabled(LogLevel.Debug))
         {
             execution.Request.Logger.LogDebug(
@@ -2288,8 +2364,15 @@ public static partial class EngineAudioPostDownloadHelper
     private static async Task<bool> SaveAnimatedArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
+        AppleArtworkIdentity? appleIdentity,
         CancellationToken token)
     {
+        var resolvedAppleId = appleIdentity?.AppleId;
+        if (string.IsNullOrWhiteSpace(resolvedAppleId))
+        {
+            return false;
+        }
+
         var settings = execution.Request.Settings;
         var coverName = runtime.PathProcessor.GenerateAlbumName(
             settings.CoverImageTemplate,
@@ -2302,15 +2385,17 @@ public static partial class EngineAudioPostDownloadHelper
             runtime.HttpClientFactory!,
             new AppleQueueHelpers.AnimatedArtworkSaveRequest
             {
-                AppleId = execution.Request.AnimatedArtworkAppleIdOverride ?? execution.Request.Payload.AppleId,
-                Title = execution.Request.Payload.Title,
-                Artist = execution.Request.Payload.Artist,
-                Album = execution.Request.Payload.Album,
+                AppleId = resolvedAppleId,
+                Artist = appleIdentity?.ArtistName ?? execution.Request.Payload.Artist,
+                Album = appleIdentity?.AlbumName ?? execution.Request.Payload.Album,
                 BaseFileName = coverName,
                 Storefront = storefront,
                 MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
                 OutputDir = execution.Paths.CoverPath,
-                Logger = execution.Request.Logger
+                Logger = execution.Request.Logger,
+                CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AlbumId) ? null : AlbumType,
+                CollectionId = appleIdentity?.AlbumId,
+                OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
             },
             token);
         if (savedAnimated)
@@ -2979,7 +3064,8 @@ public static partial class EngineAudioPostDownloadHelper
             allowPlaylistCover && (request.Settings.SaveArtwork || request.Settings.Tags?.Cover == true),
             allowPlaylistCover && request.Settings.SaveAnimatedArtwork,
             request.Settings.SaveArtworkArtist,
-            ShouldSaveLyrics(request.Settings));
+            ShouldSaveLyrics(request.Settings),
+            allowPlaylistCover && request.Settings.Tags?.Cover == true);
     }
 
     private static bool ShouldAllowPlaylistCover(EngineQueueItemBase payload, DeezSpoTagSettings settings)

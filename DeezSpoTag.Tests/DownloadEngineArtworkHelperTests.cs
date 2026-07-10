@@ -46,7 +46,7 @@ public sealed class DownloadEngineArtworkHelperTests
     }
 
     [Fact]
-    public async Task ResolveStandardAudioCoverUrlsAsync_ExcludesPayloadCover_WhenSingleSourcePreferred()
+    public async Task ResolveStandardAudioCoverUrlsAsync_ExcludesKnownProviderPayloadCover_WhenSourceIsNotAllowed()
     {
         var settings = new DeezSpoTagSettings
         {
@@ -73,10 +73,7 @@ public sealed class DownloadEngineArtworkHelperTests
                 Logger: NullLogger.Instance),
             CancellationToken.None);
 
-        Assert.Single(result);
-        Assert.Equal(
-            "https://cdn-images.dzcdn.net/images/cover/example/1000x1000.jpg",
-            result[0]);
+        Assert.Empty(result);
     }
 
     [Fact]

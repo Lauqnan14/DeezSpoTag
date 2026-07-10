@@ -386,6 +386,61 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void AppleTtmlTiming_RejectsReferenceTimingNonePayload()
+    {
+        const string ttml = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"None\"><body><div><p>Plain text</p></div></body></tt>";
+
+        Assert.False(DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(ttml));
+        Assert.True(DeezSpoTag.Services.Apple.AppleLyricsService.TryExtractPlainLyrics(ttml, out var plainLyrics));
+        Assert.Equal("Plain text", plainLyrics);
+    }
+
+    [Fact]
+    public void ParsePaxsenixLyricsPayload_TreatsTimingNoneAsPlainTextOnly()
+    {
+        using var payload = JsonDocument.Parse(
+            """
+            {
+              "type": "TTML",
+              "content": "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"None\"><body><div><p>First line</p><p>Second line</p></div></body></tt>"
+            }
+            """);
+
+        var lyrics = InvokeStatic<LyricsBase>("ParsePaxsenixLyricsPayload", payload.RootElement);
+
+        Assert.Equal("First line\nSecond line", lyrics.UnsyncedLyrics);
+        Assert.Equal(LyricsSourceFormat.DownloadedPlainText, lyrics.UnsyncedLyricsSourceFormat);
+        Assert.Null(lyrics.TtmlLyrics);
+        Assert.False(lyrics.CanSaveLrcSidecar());
+    }
+
+    [Theory]
+    [InlineData("<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"17.235\" end=\"18.958\">Line</p></div></body></tt>")]
+    [InlineData("<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p><span begin=\"00:00:01.250\" end=\"00:00:02.000\">Word</span></p></div></body></tt>")]
+    public void AppleTtmlTiming_AcceptsReferenceLineAndWordPayloads(string ttml)
+    {
+        Assert.True(DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(ttml));
+    }
+
+    [Fact]
+    public void ShouldSaveTtml_RejectsUntimedApplePayload()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "lyrics",
+            LrcFormat = "ttml"
+        };
+        var lyrics = new LyricsSource
+        {
+            TtmlLyrics = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"None\"><body><div><p>Plain text</p></div></body></tt>",
+            TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+        };
+
+        Assert.False(InvokeStatic<bool>("ShouldSaveTtml", settings, lyrics));
+    }
+
+    [Fact]
     public async Task SaveLyricsAsync_WritesTtmlSidecar_FromRawAppleTtml()
     {
         var service = (LyricsService)RuntimeHelpers.GetUninitializedObject(typeof(LyricsService));
@@ -492,7 +547,7 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
-    public async Task SaveLyricsAsync_LrcOnly_DoesNotCreateLrcFromProviderSyncedJson()
+    public async Task SaveLyricsAsync_LrcOnly_CreatesLrcFromProviderSyncedJson()
     {
         var service = CreateUninitializedLyricsService();
         var directory = CreateLyricsTestDirectory();
@@ -513,7 +568,7 @@ public sealed class LyricsServicePrivateHelpersTests
 
             await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
-            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
             Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
             Assert.False(File.Exists(Path.Join(directory, "track.txt")));
         }

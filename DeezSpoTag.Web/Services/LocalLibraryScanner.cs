@@ -2169,9 +2169,11 @@ public sealed class LocalLibraryScanner
             }
 
             types.Add(extension.TrimStart('.').ToLowerInvariant());
-            var isSynced = extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase)
-                || SyncedLyricsRegex.IsMatch(content)
+            var isTtml = extension.Equals(".ttml", StringComparison.OrdinalIgnoreCase)
                 || content.Contains("<tt", StringComparison.OrdinalIgnoreCase);
+            var isSynced = isTtml
+                ? DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(content)
+                : SyncedLyricsRegex.IsMatch(content);
             if (isSynced)
             {
                 hasSynced = true;
