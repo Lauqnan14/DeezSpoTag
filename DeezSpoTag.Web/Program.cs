@@ -1266,7 +1266,6 @@ public partial class Program
                 QuickTagService = sp.GetRequiredService<DeezSpoTag.Web.Services.QuickTagService>(),
                 PlatformAuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
-                SpotifyBlobService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyBlobService>(),
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 KnownFileIngestionService = sp.GetRequiredService<DeezSpoTag.Web.Services.KnownLibraryFileIngestionService>(),
@@ -1277,8 +1276,7 @@ public partial class Program
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
                 UserPreferencesStore = sp.GetRequiredService<DeezSpoTag.Web.Services.UserPreferencesStore>(),
                 ActivitiesRealtime = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>(),
-                DownloadEvents = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>(),
-                DataProtectionProvider = sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>()
+                DownloadEvents = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators>(sp =>
             new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators

@@ -64,6 +64,57 @@ public sealed class ResourceLifetimeRegressionTests
     }
 
     [Fact]
+    public void SpotifyLibrespotTokenHelper_HasAnEnforcedTimeout()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyBlobService.cs"));
+
+        Assert.Contains(
+            "WaitForProcessExitAsync(process, LibrespotMetadataRequestTimeout, cancellationToken)",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTag_UsesPathfinderMatcherWithoutEagerLibrespotTokenSeeding()
+    {
+        var repoRoot = FindRepoRoot();
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var matcher = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "SpotifyMatcher.cs"));
+
+        Assert.DoesNotContain("TrySeedSpotifyTokenCacheAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotify_token_cache.json", service, StringComparison.Ordinal);
+        Assert.Contains("EnrichTrackWithPathfinderAsync", matcher, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTag_OptionalPostMatchStepsAreIndependentlyBounded()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+
+        Assert.Contains("RunBoundedOptionalStepAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ArtworkFallbackTimeout", source, StringComparison.Ordinal);
+        Assert.Contains("LyricsResolutionTimeout", source, StringComparison.Ordinal);
+        Assert.Contains("AppleExtrasTimeout", source, StringComparison.Ordinal);
+        Assert.Contains("timeoutSource.CancelAfter(timeout)", source, StringComparison.Ordinal);
+        Assert.Contains("timed out after", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStartup_DoesNotLeaveCheckpointedOrphansRunning()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var normalizeStart = source.IndexOf("private void NormalizeLoadedJobState", StringComparison.Ordinal);
+        var normalizeEnd = source.IndexOf("private static DateTimeOffset ResolveLastActivityTimestamp", normalizeStart, StringComparison.Ordinal);
+        var normalize = source[normalizeStart..normalizeEnd];
+
+        Assert.Contains("job.Status = AutoTagLiterals.InterruptedStatus", normalize, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (job.ResumeCheckpoint != null)", normalize, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ShazamRecognizer_TerminationWaitsUntilOwnedProcessExits()
     {
         using var process = Process.Start(new ProcessStartInfo

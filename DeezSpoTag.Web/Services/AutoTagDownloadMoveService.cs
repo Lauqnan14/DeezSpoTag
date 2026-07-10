@@ -279,7 +279,7 @@ public sealed class AutoTagDownloadMoveService
                 failedFiles),
             summary,
             cancellationToken);
-        await PersistFinalDestinationsByPayloadLookupAsync(items, residualTransitions, cancellationToken);
+        await PersistFinalDestinationsByPayloadLookupAsync(items, rootPath, residualTransitions, cancellationToken);
 
         if (options.RemoveEmptyFolders)
         {
@@ -389,7 +389,7 @@ public sealed class AutoTagDownloadMoveService
             await MoveDestinationRootsAsync(destinationContext, payloadSourceMaps, summary);
         }
 
-        await PersistFinalDestinationsAsync(items, transitionsByQueue, cancellationToken);
+        await PersistFinalDestinationsAsync(items, rootPath, transitionsByQueue, cancellationToken);
     }
 
     private async Task<IReadOnlyList<DownloadQueueItem>> ReconcileMonitoredRoutingDestinationsAsync(
@@ -3132,6 +3132,7 @@ public sealed class AutoTagDownloadMoveService
 
     private async Task PersistFinalDestinationsAsync(
         IReadOnlyList<DownloadQueueItem> items,
+        string stagingRoot,
         Dictionary<string, Dictionary<string, string>> transitionsByQueue,
         CancellationToken cancellationToken)
     {
@@ -3153,6 +3154,7 @@ public sealed class AutoTagDownloadMoveService
             if (!TryApplyFinalDestinationTransitions(
                     item.PayloadJson,
                     item.FinalDestinationsJson,
+                    stagingRoot,
                     transitions,
                     out var payloadJson,
                     out var finalDestinationsJson))
@@ -3171,6 +3173,7 @@ public sealed class AutoTagDownloadMoveService
 
     private async Task PersistFinalDestinationsByPayloadLookupAsync(
         IReadOnlyList<DownloadQueueItem> items,
+        string stagingRoot,
         IReadOnlyDictionary<string, string> transitions,
         CancellationToken cancellationToken)
     {
@@ -3207,7 +3210,7 @@ public sealed class AutoTagDownloadMoveService
             }
         }
 
-        await PersistFinalDestinationsAsync(items, transitionsByQueue, cancellationToken);
+        await PersistFinalDestinationsAsync(items, stagingRoot, transitionsByQueue, cancellationToken);
     }
 
     private static bool IsTrackedTransitionMatch(
@@ -3290,6 +3293,7 @@ public sealed class AutoTagDownloadMoveService
     private static bool TryApplyFinalDestinationTransitions(
         string payloadJson,
         string? existingFinalDestinationsJson,
+        string stagingRoot,
         Dictionary<string, string> transitions,
         out string updatedPayloadJson,
         out string? finalDestinationsJson)
@@ -3316,16 +3320,23 @@ public sealed class AutoTagDownloadMoveService
             return false;
         }
 
-        var finalMap = ReadFinalDestinations(existingFinalDestinationsJson);
-        SeedFinalDestinationsFromPayload(root, finalMap);
+        var verifiedTransitions = transitions
+            .Where(pair => IsVerifiedFinalTransition(stagingRoot, pair.Key, pair.Value))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        if (verifiedTransitions.Count == 0)
+        {
+            return false;
+        }
 
-        foreach (var transition in transitions)
+        var finalMap = ReadFinalDestinations(existingFinalDestinationsJson);
+
+        foreach (var transition in verifiedTransitions)
         {
             FinalDestinationTracker.RecordPathTransition(finalMap, transition.Key, transition.Value);
         }
 
         var changed = false;
-        if (TryRewriteStringProperty(root, FilePathProperty, transitions))
+        if (TryRewriteStringProperty(root, FilePathProperty, verifiedTransitions))
         {
             changed = true;
         }
@@ -3334,7 +3345,7 @@ public sealed class AutoTagDownloadMoveService
         {
             foreach (var node in files.OfType<JsonObject>())
             {
-                changed |= TryRewriteStringProperty(node, "path", transitions);
+                changed |= TryRewriteStringProperty(node, "path", verifiedTransitions);
             }
         }
 
@@ -3342,7 +3353,24 @@ public sealed class AutoTagDownloadMoveService
         root.Remove("FinalDestinations");
         root["finalDestinations"] = BuildFinalDestinationsNode(finalMap);
         updatedPayloadJson = root.ToJsonString();
-        return changed || !string.IsNullOrWhiteSpace(finalDestinationsJson);
+        return changed;
+    }
+
+    private static bool IsVerifiedFinalTransition(string stagingRoot, string sourcePath, string destinationPath)
+    {
+        var source = DownloadPathResolver.NormalizeDisplayPath(sourcePath);
+        var destination = DownloadPathResolver.NormalizeDisplayPath(destinationPath);
+        if (string.IsNullOrWhiteSpace(source)
+            || string.IsNullOrWhiteSpace(destination)
+            || string.Equals(source, destination, StringComparison.OrdinalIgnoreCase)
+            || !IOFile.Exists(destination))
+        {
+            return false;
+        }
+
+        var normalizedRoot = DownloadPathResolver.NormalizeDisplayPath(stagingRoot).TrimEnd(Path.DirectorySeparatorChar);
+        return !destination.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+            && !destination.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private static Dictionary<string, string> ReadFinalDestinations(string? finalDestinationsJson)
@@ -3383,31 +3411,6 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return map;
-    }
-
-    private static void SeedFinalDestinationsFromPayload(JsonObject root, Dictionary<string, string> finalMap)
-    {
-        if (root.TryGetPropertyValue(FilePathProperty, out var filePathNode))
-        {
-            var filePath = TryReadJsonString(filePathNode);
-            FinalDestinationTracker.RecordPathTransition(finalMap, filePath, filePath);
-        }
-
-        if (root[FilesProperty] is not JsonArray files)
-        {
-            return;
-        }
-
-        foreach (var node in files.OfType<JsonObject>())
-        {
-            if (!node.TryGetPropertyValue("path", out var pathNode))
-            {
-                continue;
-            }
-
-            var path = TryReadJsonString(pathNode);
-            FinalDestinationTracker.RecordPathTransition(finalMap, path, path);
-        }
     }
 
     private static JsonObject BuildFinalDestinationsNode(IReadOnlyDictionary<string, string> map)

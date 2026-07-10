@@ -1278,7 +1278,7 @@ public sealed class SpotifyBlobService
 
                 using var process = new Process { StartInfo = startInfo };
                 process.Start();
-                var processOutput = await WaitForProcessExitAsync(process, timeout: null, cancellationToken);
+                var processOutput = await WaitForProcessExitAsync(process, LibrespotMetadataRequestTimeout, cancellationToken);
                 stdout = processOutput.StandardOutput;
                 stderr = processOutput.StandardError;
             }

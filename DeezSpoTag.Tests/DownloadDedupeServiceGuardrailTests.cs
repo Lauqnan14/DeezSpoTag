@@ -150,11 +150,38 @@ public sealed class DownloadDedupeServiceGuardrailTests
 
             Assert.False(decision.Allowed);
             Assert.Equal("final_destination_quality_not_higher", decision.ReasonCode);
+            Assert.Contains(path, decision.Message, StringComparison.Ordinal);
+            Assert.StartsWith("Skipped before download:", decision.Message, StringComparison.Ordinal);
         }
         finally
         {
             File.Delete(path);
         }
+    }
+
+    [Fact]
+    public void PostDownloadFailure_DoesNotMarkArtworkFailedForFinalDestinationDedupe()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+
+        Assert.Contains("if (!IsFinalDestinationDedupeBlock(failureMessage))", source, StringComparison.Ordinal);
+        Assert.Contains("Skipped before download: final destination already contains", source, StringComparison.Ordinal);
+
+        var qobuz = ReadSource("DeezSpoTag.Services", "Download", "Qobuz", "QobuzEngineProcessor.cs");
+        var apple = ReadSource("DeezSpoTag.Services", "Download", "Apple", "AppleEngineProcessor.cs");
+        Assert.Contains("!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error)", qobuz, StringComparison.Ordinal);
+        Assert.Contains("!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(reason)", apple, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtworkPrefetch_PersistsResolvedAppleIdentityBeforeArtworkWork()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+
+        var resolveIndex = source.IndexOf("var appleIdentity = await ResolveAppleArtworkIdentityAsync", StringComparison.Ordinal);
+        var persistIndex = source.IndexOf("execution.Request.QueueRepository.UpdatePayloadAsync", resolveIndex, StringComparison.Ordinal);
+        var artworkIndex = source.IndexOf("ResolveStandardAudioCoverUrlsAsync", resolveIndex, StringComparison.Ordinal);
+        Assert.True(resolveIndex >= 0 && persistIndex > resolveIndex && artworkIndex > persistIndex);
     }
 
     [Fact]

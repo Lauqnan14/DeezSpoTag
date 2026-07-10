@@ -668,18 +668,24 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             next.QueueUuid,
             TimeSpan.FromSeconds(15),
             itemToken);
-        await _queueRepository.UpdatePrefetchStateAsync(
-            next.QueueUuid,
-            "[]",
-            string.Empty,
-            FailedStatus,
-            "Audio download failed before prefetched assets could be finalized.",
-            itemToken);
+        if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(reason))
+        {
+            await _queueRepository.UpdatePrefetchStateAsync(
+                next.QueueUuid,
+                "[]",
+                string.Empty,
+                FailedStatus,
+                "Audio download failed before prefetched assets could be finalized.",
+                itemToken);
+        }
         payload.ErrorMessage = reason;
         payload.Status = AppleDownloadStatus.Failed;
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, reason, cancellationToken: itemToken);
         _deezspotagListener.Send(UpdateQueueEvent, payload.ToQueuePayload());
-        ScheduleRetryIfEligible(next.QueueUuid, reason);
+        if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(reason))
+        {
+            ScheduleRetryIfEligible(next.QueueUuid, reason);
+        }
     }
 
     private async Task<bool> TryAdvanceFallbackAsync(

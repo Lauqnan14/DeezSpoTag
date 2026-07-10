@@ -14,6 +14,64 @@ namespace DeezSpoTag.Tests;
 public sealed class AutoTagDownloadMoveServicePayloadPathTests
 {
     [Fact]
+    public void TryApplyFinalDestinationTransitions_RejectsIdentityAndMissingDestinations()
+    {
+        var method = GetPrivateStaticMethod("TryApplyFinalDestinationTransitions");
+        var stagingRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-finalize-{Guid.NewGuid():N}");
+        var sourcePath = Path.Combine(stagingRoot, "Artist", "track.flac");
+        var missingDestination = Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}.flac");
+        var payload = JsonSerializer.Serialize(new { filePath = sourcePath, files = new[] { new { path = sourcePath } } });
+
+        var identityArgs = new object?[]
+        {
+            payload, null, stagingRoot,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [sourcePath] = sourcePath },
+            null, null
+        };
+        var missingArgs = new object?[]
+        {
+            payload, null, stagingRoot,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [sourcePath] = missingDestination },
+            null, null
+        };
+
+        Assert.False((bool)method.Invoke(null, identityArgs)!);
+        Assert.False((bool)method.Invoke(null, missingArgs)!);
+    }
+
+    [Fact]
+    public void TryApplyFinalDestinationTransitions_AcceptsExistingDestinationOutsideStagingRoot()
+    {
+        var method = GetPrivateStaticMethod("TryApplyFinalDestinationTransitions");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-finalize-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var sourcePath = Path.Combine(stagingRoot, "Artist", "track.flac");
+        var destinationPath = Path.Combine(tempRoot, "Library", "Artist", "track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.WriteAllText(destinationPath, "audio");
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { filePath = sourcePath, files = new[] { new { path = sourcePath } } });
+            var args = new object?[]
+            {
+                payload, null, stagingRoot,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [sourcePath] = destinationPath },
+                null, null
+            };
+
+            Assert.True((bool)method.Invoke(null, args)!);
+            var updatedPayload = Assert.IsType<string>(args[4]);
+            Assert.Contains(destinationPath, updatedPayload, StringComparison.Ordinal);
+            Assert.DoesNotContain($"\"filePath\":{JsonSerializer.Serialize(sourcePath)}", updatedPayload, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
     public void TryGetPropertyIgnoreCase_ReturnsFalse_WhenPropertyIsMissing()
     {
         using var document = JsonDocument.Parse("""{"FilePath":"/tmp/demo.flac"}""");

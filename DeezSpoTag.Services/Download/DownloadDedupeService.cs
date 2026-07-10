@@ -114,7 +114,7 @@ public sealed class DownloadDedupeService
             : "final_destination_duplicate";
         return Task.FromResult(DownloadDedupeDecision.Rejected(
             reasonCode,
-            "Skipped: final destination already contains a file and the requested quality is not proven higher.",
+            $"Skipped before download: final destination already contains '{request.FinalOutputPath}' and the requested quality is not higher.",
             "final-destination"));
     }
 

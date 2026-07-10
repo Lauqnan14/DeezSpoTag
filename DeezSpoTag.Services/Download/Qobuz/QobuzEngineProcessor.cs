@@ -1016,18 +1016,24 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             : ex.Message;
         await MarkQueueFailedAsync(queueUuid, payload, error);
         _activityLog.Error($"Download failed (engine={EngineName}): {queueUuid} {error}");
-        _retryScheduler.ScheduleRetry(queueUuid, EngineName, error);
+        if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
+        {
+            _retryScheduler.ScheduleRetry(queueUuid, EngineName, error);
+        }
     }
 
     private async Task MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
     {
-        await _queueRepository.UpdatePrefetchStateAsync(
-            queueUuid,
-            "[]",
-            string.Empty,
-            FailedStatus,
-            "Audio download failed before prefetched assets could be finalized.",
-            CancellationToken.None);
+        if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
+        {
+            await _queueRepository.UpdatePrefetchStateAsync(
+                queueUuid,
+                "[]",
+                string.Empty,
+                FailedStatus,
+                "Audio download failed before prefetched assets could be finalized.",
+                CancellationToken.None);
+        }
         await _queueRepository.UpdateStatusAsync(queueUuid, FailedStatus, error, cancellationToken: CancellationToken.None);
         if (payload != null)
         {

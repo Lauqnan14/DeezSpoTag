@@ -29,6 +29,9 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class LocalAutoTagRunner : IAutoTagRunner
 {
+    private static readonly TimeSpan ArtworkFallbackTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan LyricsResolutionTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AppleExtrasTimeout = TimeSpan.FromSeconds(30);
     private const int DefaultLibraryWideEnhancementBatchSize = 40;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -893,20 +896,32 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.Settings,
                 context.Plan.TagSettings);
             context.Plan.Files[context.FileIndex] = context.File;
-            await EnsureArtworkFallbackAsync(context, info, match.Track);
-            await PopulatePlatformLyricsAsync(
-                context.Platform,
-                context.File,
-                match.Track,
-                context.Plan.Config,
-                context.Plan.Settings,
-                context.Token);
-            await PopulateAppleExtrasAsync(
-                context.File,
-                match.Track,
-                context.Plan.Config,
-                context.Plan.Settings,
-                context.Token);
+            await RunBoundedOptionalStepAsync(
+                context,
+                "artwork fallback",
+                ArtworkFallbackTimeout,
+                stepToken => EnsureArtworkFallbackAsync(context, info, match.Track, stepToken));
+            await RunBoundedOptionalStepAsync(
+                context,
+                "lyrics",
+                LyricsResolutionTimeout,
+                stepToken => PopulatePlatformLyricsAsync(
+                    context.Platform,
+                    context.File,
+                    match.Track,
+                    context.Plan.Config,
+                    context.Plan.Settings,
+                    stepToken));
+            await RunBoundedOptionalStepAsync(
+                context,
+                "Apple extras",
+                AppleExtrasTimeout,
+                stepToken => PopulateAppleExtrasAsync(
+                    context.File,
+                    match.Track,
+                    context.Plan.Config,
+                    context.Plan.Settings,
+                    stepToken));
             await TagFileAsync(
                 context.File,
                 match.Track,
@@ -923,6 +938,27 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", SanitizeLogValue(context.File), SanitizeLogValue(context.Platform));
             EmitErrorStatus(context, ex.Message, usedShazamForStatus);
+        }
+    }
+
+    private async Task RunBoundedOptionalStepAsync(
+        AutoTagFileRunContext context,
+        string stepName,
+        TimeSpan timeout,
+        Func<CancellationToken, Task> action)
+    {
+        context.LogCallback($"onetagger_autotag: {context.Platform} {stepName} starting");
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
+        timeoutSource.CancelAfter(timeout);
+        try
+        {
+            await action(timeoutSource.Token);
+            context.LogCallback($"onetagger_autotag: {context.Platform} {stepName} completed");
+        }
+        catch (OperationCanceledException) when (!context.Token.IsCancellationRequested && timeoutSource.IsCancellationRequested)
+        {
+            context.LogCallback(
+                $"onetagger_autotag: {context.Platform} {stepName} timed out after {timeout.TotalSeconds:0}s; continuing");
         }
     }
 
@@ -1112,7 +1148,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private async Task EnsureArtworkFallbackAsync(
         AutoTagFileRunContext context,
         AutoTagAudioInfo info,
-        AutoTagTrack track)
+        AutoTagTrack track,
+        CancellationToken token)
     {
         if (!HasAnyTags(context.Plan.Config, AlbumArtTag)
             || !string.IsNullOrWhiteSpace(track.Art))
@@ -1145,7 +1182,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                         MatchingConfig = context.Plan.MatchingConfig,
                         ShazamCache = context.Plan.ShazamCache
                     },
-                    context.Token);
+                    token);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

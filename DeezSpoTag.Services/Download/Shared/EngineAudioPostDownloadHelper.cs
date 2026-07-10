@@ -1828,6 +1828,15 @@ public static partial class EngineAudioPostDownloadHelper
             var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
             var preferMaxQualityCover = settings.EmbedMaxQualityCover;
             var appleIdentity = await ResolveAppleArtworkIdentityAsync(execution, runtime, token);
+            if (!string.IsNullOrWhiteSpace(appleIdentity?.AppleId)
+                && !string.Equals(execution.Request.Payload.AppleId, appleIdentity.AppleId, StringComparison.Ordinal))
+            {
+                execution.Request.Payload.AppleId = appleIdentity.AppleId;
+                await execution.Request.QueueRepository.UpdatePayloadAsync(
+                    execution.Paths.QueueUuid,
+                    System.Text.Json.JsonSerializer.Serialize(execution.Request.Payload),
+                    token);
+            }
             var coverUrls = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
                 new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
                     settings,
@@ -2976,16 +2985,19 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
-        await context.QueueRepository.UpdatePrefetchStateAsync(
-            queueUuid,
-            "[]",
-            string.Empty,
-            FailedStatus,
-            "Audio download failed before prefetched assets could be finalized.",
-            CancellationToken.None);
         var failureMessage = !string.IsNullOrWhiteSpace(payload?.ResolutionError)
             ? payload.ResolutionError
             : exception.Message;
+        if (!IsFinalDestinationDedupeBlock(failureMessage))
+        {
+            await context.QueueRepository.UpdatePrefetchStateAsync(
+                queueUuid,
+                "[]",
+                string.Empty,
+                FailedStatus,
+                "Audio download failed before prefetched assets could be finalized.",
+                CancellationToken.None);
+        }
         await context.QueueRepository.UpdateStatusAsync(queueUuid, FailedStatus, failureMessage, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
@@ -2997,11 +3009,14 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         context.ActivityLog.Error($"Download failed (engine={context.EngineName}): {queueUuid} {failureMessage}");
-        if (!IsRateLimitedFailure(exception))
+        if (!IsRateLimitedFailure(exception) && !IsFinalDestinationDedupeBlock(failureMessage))
         {
             context.RetryScheduler.ScheduleRetry(queueUuid, context.EngineName, failureMessage);
         }
     }
+
+    public static bool IsFinalDestinationDedupeBlock(string? message)
+        => message?.StartsWith("Skipped before download: final destination already contains", StringComparison.OrdinalIgnoreCase) == true;
 
     private static bool IsRateLimitedFailure(Exception exception)
         => exception.Message.Contains("429", StringComparison.OrdinalIgnoreCase)
