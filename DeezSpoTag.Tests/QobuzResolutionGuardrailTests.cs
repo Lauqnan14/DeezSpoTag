@@ -103,7 +103,26 @@ public sealed class QobuzResolutionGuardrailTests
         Assert.Contains("if (string.IsNullOrWhiteSpace(tidalAtmosUrl))", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.Contains("payload.Isrc = FirstNonEmpty(resolvedAtmosTrack?.Isrc, request.Intent.Isrc)", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.Contains("ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album)", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("ResolveAmazonAtmosAvailabilityAsync", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveIntentAsync", tidalAtmosMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AtmosResolution_DoesNotStopOnWeakProviderCandidates()
+    {
+        var tidalSource = ReadSource("DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs");
+        var amazonSource = ReadSource("DeezSpoTag.Web/Services/AmazonMusicMetadataService.cs");
+        var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
+
+        Assert.Contains("SearchTracksFromAllSourcesAsync", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("HydrateTidalAtmosCandidatesAsync", tidalSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("allTracks.AddRange(result.Where(HasTidalAtmosMode))", tidalSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("return null;\n                }\n            }\n\n            var trackInfo = await SearchAtmosTrackByMetadataWithIsrcAsync", tidalSource, StringComparison.Ordinal);
+
+        Assert.Contains("ResolveAtmosTrackAsync", amazonSource, StringComparison.Ordinal);
+        Assert.Contains("candidate.HasAtmos && IsAcceptedResolvedTrack", amazonSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveAtmosTrackAsync(", downloadIntentService, StringComparison.Ordinal);
+        Assert.Contains("amazonId,", downloadIntentService, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

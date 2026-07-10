@@ -974,12 +974,13 @@ public sealed class DownloadIntentService
     {
         var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
             ?? EngineLinkParser.TryExtractAmazonTrackId(intent.SourceUrl, RegexTimeout);
-        var resolved = await _amazonMusicMetadataService.ResolveTrackAsync(
+        var resolved = await _amazonMusicMetadataService.ResolveAtmosTrackAsync(
             intent.Title,
             intent.Artist,
             intent.Album,
             intent.DurationMs > 0 ? intent.DurationMs : null,
             intent.Isrc,
+            amazonId,
             cancellationToken);
         if (resolved is null
             || !resolved.HasAtmos

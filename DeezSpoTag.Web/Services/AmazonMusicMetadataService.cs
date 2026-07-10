@@ -246,6 +246,91 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         return null;
     }
 
+    public async Task<AmazonCatalogItem?> ResolveAtmosTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        string? isrc,
+        string? amazonId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedAmazonId = ExtractAsin(amazonId) ?? amazonId;
+        if (!string.IsNullOrWhiteSpace(normalizedAmazonId))
+        {
+            var direct = await GetTracklistAsync(normalizedAmazonId, "track", BuildCatalogUrl(normalizedAmazonId, "track"), cancellationToken);
+            var directTrack = direct?.Tracks.FirstOrDefault();
+            if (directTrack != null)
+            {
+                var candidate = new AmazonCatalogItem(
+                    directTrack.AmazonId,
+                    "track",
+                    directTrack.Title,
+                    directTrack.Artist,
+                    directTrack.Album,
+                    directTrack.SourceUrl,
+                    directTrack.Cover,
+                    directTrack.DurationMs > 0 ? directTrack.DurationMs : null,
+                    directTrack.Isrc,
+                    directTrack.HasAtmos);
+                if (candidate.HasAtmos && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        var query = BuildTrackSearchQuery(title, artist, album);
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var search = await SearchAsync(query, "track", 25, cancellationToken);
+            foreach (var candidate in search.Tracks.Where(IsDownloadableMusicTrackResult))
+            {
+                if (candidate.HasAtmos && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        var albumQuery = BuildAlbumSearchQuery(title, artist, album);
+        if (string.IsNullOrWhiteSpace(albumQuery))
+        {
+            return null;
+        }
+
+        var albumSearch = await SearchAsync(albumQuery, "album", 8, cancellationToken);
+        foreach (var albumCandidate in albumSearch.Albums.Where(IsResolvableAlbumResult))
+        {
+            var tracklist = await GetTracklistAsync(albumCandidate.Id, "album", albumCandidate.Url, cancellationToken);
+            if (tracklist is null)
+            {
+                continue;
+            }
+
+            foreach (var track in tracklist.Tracks)
+            {
+                var candidate = new AmazonCatalogItem(
+                    track.AmazonId,
+                    "track",
+                    track.Title,
+                    track.Artist,
+                    string.IsNullOrWhiteSpace(track.Album) ? albumCandidate.Title : track.Album,
+                    track.SourceUrl,
+                    string.IsNullOrWhiteSpace(track.Cover) ? albumCandidate.CoverUrl : track.Cover,
+                    track.DurationMs > 0 ? track.DurationMs : null,
+                    track.Isrc,
+                    track.HasAtmos || albumCandidate.HasAtmos);
+                if (candidate.HasAtmos && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
     public async Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
         string title,
         string artist,

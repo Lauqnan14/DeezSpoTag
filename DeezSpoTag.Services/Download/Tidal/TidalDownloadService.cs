@@ -283,8 +283,8 @@ public sealed class TidalDownloadService
         {
             if (long.TryParse(EngineLinkParser.NormalizeNumericTrackId(tidalId), out var persistedTrackId))
             {
-                var persistedTrack = await GetTrackInfoByIdAsync(persistedTrackId, cancellationToken);
-                if (HasTidalAtmosMode(persistedTrack))
+                var persistedTrack = await GetAtmosTrackInfoByIdAsync(persistedTrackId, cancellationToken);
+                if (persistedTrack != null && HasTidalAtmosMode(persistedTrack))
                 {
                     var validation = ValidateResolvedTrack(
                         persistedTrack,
@@ -304,7 +304,6 @@ public sealed class TidalDownloadService
                         DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
                         DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName),
                         validation.Reason);
-                    return null;
                 }
             }
 
@@ -515,12 +514,14 @@ public sealed class TidalDownloadService
                 continue;
             }
 
-            var result = await SearchTracksAsync(query, 100, cancellationToken);
+            var result = await SearchTracksFromAllSourcesAsync(query, 100, cancellationToken);
             if (result.Count > 0)
             {
-                allTracks.AddRange(result.Where(HasTidalAtmosMode));
+                allTracks.AddRange(result);
             }
         }
+
+        allTracks = await HydrateTidalAtmosCandidatesAsync(allTracks, cancellationToken);
 
         if (allTracks.Count == 0)
         {
@@ -547,6 +548,33 @@ public sealed class TidalDownloadService
     {
         return track.AudioModes?.Any(static mode =>
             string.Equals(mode, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)) == true;
+    }
+
+    private async Task<List<TidalTrack>> HydrateTidalAtmosCandidatesAsync(
+        IEnumerable<TidalTrack> tracks,
+        CancellationToken cancellationToken)
+    {
+        var hydrated = new List<TidalTrack>();
+        var seen = new HashSet<long>();
+        foreach (var track in tracks.Where(static track => track.Id > 0))
+        {
+            if (!seen.Add(track.Id))
+            {
+                continue;
+            }
+
+            var detailed = await GetAtmosTrackInfoByIdAsync(track.Id, cancellationToken);
+            if (detailed != null && HasTidalAtmosMode(detailed))
+            {
+                hydrated.Add(detailed);
+            }
+            else if (HasTidalAtmosMode(track))
+            {
+                hydrated.Add(track);
+            }
+        }
+
+        return hydrated;
     }
 
     private static List<string> BuildSearchQueries(string trackName, string artistName)
@@ -701,6 +729,18 @@ public sealed class TidalDownloadService
         return await SearchTracksViaOauthAsync(query, limit, cancellationToken);
     }
 
+    private async Task<List<TidalTrack>> SearchTracksFromAllSourcesAsync(string query, int limit, CancellationToken cancellationToken)
+    {
+        var publicResult = await SearchTracksViaPublicApiAsync(query, limit, cancellationToken);
+        var oauthResult = await SearchTracksViaOauthAsync(query, limit, cancellationToken);
+        return publicResult
+            .Concat(oauthResult)
+            .Where(static track => track.Id > 0)
+            .GroupBy(static track => track.Id)
+            .Select(static group => group.First())
+            .ToList();
+    }
+
     private static long GetTrackIdFromUrl(string tidalUrl)
     {
         var match = MatchWithTimeout(tidalUrl, @"\/track\/(?<id>\d+)", RegexOptions.IgnoreCase);
@@ -732,6 +772,23 @@ public sealed class TidalDownloadService
         }
 
         throw new InvalidOperationException($"Tidal track not found for track ID {trackId}.");
+    }
+
+    private async Task<TidalTrack?> GetAtmosTrackInfoByIdAsync(long trackId, CancellationToken cancellationToken)
+    {
+        var publicTrack = await TryGetTrackInfoByIdViaPublicApiAsync(trackId, cancellationToken);
+        var oauthTrack = await TryGetTrackInfoByIdViaOauthAsync(trackId, cancellationToken);
+        if (oauthTrack != null && HasTidalAtmosMode(oauthTrack))
+        {
+            return oauthTrack;
+        }
+
+        if (publicTrack != null && HasTidalAtmosMode(publicTrack))
+        {
+            return publicTrack;
+        }
+
+        return oauthTrack ?? publicTrack;
     }
 
     private async Task<List<TidalTrack>> SearchTracksViaOauthAsync(string query, int limit, CancellationToken cancellationToken)
