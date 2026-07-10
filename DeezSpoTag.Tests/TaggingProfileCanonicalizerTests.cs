@@ -223,6 +223,24 @@ public sealed class TaggingProfileCanonicalizerTests
         Assert.False(profile.AutoTag.Data.ContainsKey("playlistTracknameTemplate"));
     }
 
+    [Fact]
+    public void Canonicalize_AddsProfileOwnedFileTemplateWhenMissing()
+    {
+        var profile = new TaggingProfile
+        {
+            TagConfig = CreateEmptyTagConfig(),
+            AutoTag = new AutoTagSettings
+            {
+                Data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            }
+        };
+
+        var changed = TaggingProfileCanonicalizer.Canonicalize(profile, seedFromTagConfigWhenMissing: true);
+
+        Assert.True(changed);
+        Assert.Equal("%artist% - %title%", profile.AutoTag.Data["tracknameTemplate"].GetString());
+    }
+
     private static UnifiedTagConfig CreateEmptyTagConfig()
     {
         var config = new UnifiedTagConfig();

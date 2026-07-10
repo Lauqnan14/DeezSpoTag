@@ -142,6 +142,10 @@ public sealed class TaggingProfilesApiController : ControllerBase
     public async Task<IActionResult> Delete(string id, CancellationToken cancellationToken)
     {
         var existing = await _profiles.GetByIdAsync(id);
+        if (existing?.IsDefault == true)
+        {
+            return Conflict(new { error = "Select another default profile before deleting the current default profile." });
+        }
         var removed = await _profiles.DeleteAsync(id);
         if (removed)
         {

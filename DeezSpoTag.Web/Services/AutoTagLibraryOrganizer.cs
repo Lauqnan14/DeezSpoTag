@@ -76,6 +76,36 @@ public class AutoTagLibraryOrganizer
         return OrganizeAsync(rootPath, filePaths, new AutoTagOrganizerOptions(), report: null, log);
     }
 
+    public Task OrganizeFilesAsync(
+        string rootPath,
+        IReadOnlyCollection<string> filePaths,
+        AutoTagOrganizerOptions options,
+        Action<string>? log,
+        CancellationToken cancellationToken)
+    {
+        return OrganizeAsync(rootPath, filePaths, options, report: null, log, cancellationToken);
+    }
+
+    public async Task OrganizePathInBatchesAsync(
+        string rootPath,
+        AutoTagOrganizerOptions options,
+        int batchSize,
+        Action<string>? log,
+        CancellationToken cancellationToken)
+    {
+        var normalizedRoot = Path.GetFullPath(rootPath);
+        var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders).ToList();
+        var effectiveBatchSize = Math.Max(1, batchSize);
+        options.BatchScopedFilesOnly = true;
+        for (var offset = 0; offset < files.Count; offset += effectiveBatchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batch = files.Skip(offset).Take(effectiveBatchSize).ToList();
+            log?.Invoke($"organizer template batch prepared: {offset + 1}-{offset + batch.Count} of {files.Count}");
+            await OrganizeAsync(normalizedRoot, batch, options, report: null, log, cancellationToken);
+        }
+    }
+
     public Task OrganizePathAsync(string rootPath, Action<string>? log = null)
     {
         return OrganizePathAsync(rootPath, new AutoTagOrganizerOptions(), log);
@@ -146,7 +176,7 @@ public class AutoTagLibraryOrganizer
             settings.Tags = new TagSettings();
         }
 
-        ApplySettingsOverrides(settings, options);
+        ApplyOrganizerOverrides(settings, options);
 
         if (!string.IsNullOrWhiteSpace(options.MultiArtistSeparatorOverride))
         {
@@ -167,6 +197,10 @@ public class AutoTagLibraryOrganizer
         cancellationToken.ThrowIfCancellationRequested();
         MoveResidualArtistSidecarsForTransitions(normalizedRoot, artistDirectoryTransitions, options, report, log);
         cancellationToken.ThrowIfCancellationRequested();
+        if (options.BatchScopedFilesOnly)
+        {
+            return Task.CompletedTask;
+        }
         MergeNoAudioArtistDirectoriesIntoMatchingDestinations(normalizedRoot, options, report, log);
         cancellationToken.ThrowIfCancellationRequested();
         MoveExistingNoAudioDirectoriesToQuarantine(normalizedRoot, options, report, log);
@@ -180,7 +214,7 @@ public class AutoTagLibraryOrganizer
         return Task.CompletedTask;
     }
 
-    private static void ApplySettingsOverrides(DeezSpoTagSettings settings, AutoTagOrganizerOptions options)
+    private static void ApplyOrganizerOverrides(DeezSpoTagSettings settings, AutoTagOrganizerOptions options)
     {
         if (options.TechnicalSettingsOverride != null)
         {
@@ -891,7 +925,8 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        if (options.MoveMisplacedFiles
+        if (!options.BatchScopedFilesOnly
+            && options.MoveMisplacedFiles
             && !options.RenameFilesToTemplate
             && destinationDirs.Count == 1
             && TryMoveFolder(rootPath, sourceDir, destinationDirs[0], options, report, log, artistDirectoryTransitions))
@@ -905,7 +940,9 @@ public class AutoTagLibraryOrganizer
         }
 
         var destinationDir = destinationDirs.FirstOrDefault();
-        if (options.MoveMisplacedFiles && !string.IsNullOrWhiteSpace(destinationDir))
+        if (!options.BatchScopedFilesOnly
+            && options.MoveMisplacedFiles
+            && !string.IsNullOrWhiteSpace(destinationDir))
         {
             MoveRemainingFilesIfAlbumDone(rootPath, sourceDir, destinationDir, log, options, report);
         }

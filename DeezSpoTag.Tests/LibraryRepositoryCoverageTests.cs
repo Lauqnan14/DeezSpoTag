@@ -182,7 +182,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 DesiredQuality: "27",
                 ConvertEnabled: true,
                 ConvertFormat: "flac",
-                ConvertBitrate: "320"));
+                ConvertBitrate: "320",
+                AutoTagProfileId: "profile-default"));
 
         Assert.True(added.Id > 0);
         Assert.Equal("Library A", added.DisplayName);
@@ -190,6 +191,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.True(added.ConvertEnabled);
         Assert.Equal("flac", added.ConvertFormat);
         Assert.Equal("320", added.ConvertBitrate);
+        Assert.Equal("profile-default", added.AutoTagProfileId);
+        Assert.True(added.AutoTagEnabled);
 
         var libraries = await _repository.GetLibrariesAsync();
         Assert.Contains(libraries, lib => lib.Name == "Music");
@@ -213,6 +216,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal("atmos", updated.DesiredQuality);
         Assert.Equal("alac", updated.ConvertFormat);
         Assert.Equal("AUTO", updated.ConvertBitrate);
+        Assert.Equal("profile-default", updated.AutoTagProfileId);
 
         var withProfile = await _repository.UpdateFolderProfileAsync(added.Id, "profile-1");
         Assert.NotNull(withProfile);
@@ -748,7 +752,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 DesiredQuality: "flac",
                 ConvertEnabled: false,
                 ConvertFormat: null,
-                ConvertBitrate: null));
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
 
         var artists = new List<LocalArtistScanDto> { new("Artist One", null) };
         var albums = new List<LocalAlbumScanDto>
@@ -804,7 +809,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 DesiredQuality: "flac",
                 ConvertEnabled: false,
                 ConvertFormat: null,
-                ConvertBitrate: null));
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
 
         var allFolders = await _repository.GetFoldersAsync();
         var artists = new List<LocalArtistScanDto>
@@ -861,7 +867,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 DesiredQuality: "flac",
                 ConvertEnabled: false,
                 ConvertFormat: null,
-                ConvertBitrate: null));
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
 
         var allFolders = await _repository.GetFoldersAsync();
         var artists = Enumerable.Range(1, 25)
@@ -1202,7 +1209,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 DesiredQuality: "flac",
                 ConvertEnabled: false,
                 ConvertFormat: null,
-                ConvertBitrate: null));
+                ConvertBitrate: null,
+                AutoTagProfileId: "test-profile"));
 
         var allFolders = await _repository.GetFoldersAsync();
         var artists = new List<LocalArtistScanDto>

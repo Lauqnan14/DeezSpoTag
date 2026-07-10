@@ -21,6 +21,7 @@ public class AutoTagJobsController : ControllerBase
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly LibraryConfigStore _libraryConfigStore;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly AutoTagProfileResolutionService _profileResolutionService;
 
     public AutoTagJobsController(
         AutoTagService autoTagService,
@@ -29,7 +30,8 @@ public class AutoTagJobsController : ControllerBase
         DeezSpoTag.Services.Download.Queue.DownloadQueueRepository queueRepository,
         DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
         LibraryConfigStore libraryConfigStore,
-        DeezSpoTagSettingsService settingsService)
+        DeezSpoTagSettingsService settingsService,
+        AutoTagProfileResolutionService profileResolutionService)
     {
         _autoTagService = autoTagService;
         _autoTagConfigBuilder = autoTagConfigBuilder;
@@ -38,6 +40,7 @@ public class AutoTagJobsController : ControllerBase
         _libraryRepository = libraryRepository;
         _libraryConfigStore = libraryConfigStore;
         _settingsService = settingsService;
+        _profileResolutionService = profileResolutionService;
     }
 
     [HttpPost("start")]
@@ -85,6 +88,166 @@ public class AutoTagJobsController : ControllerBase
                 RunIntent: startRequest.RunIntent,
                 FolderStructureOverride: selectedProfile.FolderStructure));
         return CreateStartJobResponse(job);
+    }
+
+    [HttpPost("enhancement/start")]
+    public async Task<IActionResult> StartEnhancement(
+        [FromBody] AutoTagEnhancementStartRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (request == null)
+        {
+            return BadRequest("Enhancement request is required.");
+        }
+
+        var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
+            _libraryRepository,
+            _libraryConfigStore,
+            cancellationToken);
+        var enabledFolders = folders
+            .Where(folder => folder.Enabled
+                && !string.IsNullOrWhiteSpace(folder.RootPath)
+                && LibraryFolderPathSafety.IsMusicFolder(folder))
+            .ToList();
+        var requestedFolderIds = AutoTagFolderScopeHelper.NormalizeFolderIds(request.FolderIds, enabledFolders);
+        if (request.FolderIds is { Count: > 0 } && requestedFolderIds.Count == 0)
+        {
+            return BadRequest("Selected library folders were not found or are disabled.");
+        }
+        var scopedFolders = requestedFolderIds.Count > 0
+            ? enabledFolders.Where(folder => requestedFolderIds.Contains(folder.Id)).ToList()
+            : enabledFolders;
+        if (scopedFolders.Count == 0)
+        {
+            return BadRequest("No enabled music library folders are available in the selected enhancement scope.");
+        }
+
+        var profileState = await _profileResolutionService.LoadNormalizedStateAsync(
+            includeFolders: true,
+            cancellationToken);
+        var assignedProfiles = scopedFolders
+            .Select(folder => AutoTagProfileResolutionService.ResolveFolderProfile(
+                profileState,
+                folder.Id,
+                folder.AutoTagProfileId))
+            .Where(profile => profile != null)
+            .Cast<DeezSpoTag.Core.Models.Settings.TaggingProfile>()
+            .GroupBy(profile => profile.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        if (assignedProfiles.Count != 1)
+        {
+            return BadRequest(
+                "A central enhancement job can cover only folders assigned to the same profile. Run folders with different profiles as separate enhancement jobs.");
+        }
+
+        var selectedProfile = assignedProfiles[0];
+        if (!TryBuildEffectiveConfigNode(selectedProfile, out var configNode, out var configError))
+        {
+            return configError!;
+        }
+
+        var targetFiles = NormalizeEnhancementTargetFiles(request.TargetFiles, scopedFolders);
+        var runIntent = string.Equals(
+            request.Scope,
+            "recent",
+            StringComparison.OrdinalIgnoreCase)
+                ? AutoTagLiterals.RunIntentEnhancementRecentDownloads
+                : AutoTagLiterals.RunIntentEnhancementOnly;
+        if (string.Equals(runIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase)
+            && targetFiles.Count == 0)
+        {
+            return BadRequest("Recent-files enhancement requires at least one existing audio file in the selected library scope.");
+        }
+
+        ApplyEnhancementRunSelection(configNode, request, requestedFolderIds, targetFiles);
+        var rootPath = targetFiles.Count > 0
+            ? Path.GetDirectoryName(targetFiles[0])!
+            : Path.GetFullPath(scopedFolders[0].RootPath);
+        configNode["path"] = rootPath;
+
+        var job = await _autoTagService.StartJob(
+            rootPath,
+            SerializeConfig(configNode),
+            new AutoTagService.StartJobOptions(
+                ProfileId: selectedProfile.Id,
+                ProfileName: selectedProfile.Name,
+                RunIntent: runIntent,
+                FolderStructureOverride: selectedProfile.FolderStructure));
+        return CreateStartJobResponse(job);
+    }
+
+    private static void ApplyEnhancementRunSelection(
+        JsonObject configNode,
+        AutoTagEnhancementStartRequest request,
+        IReadOnlyList<long> folderIds,
+        IReadOnlyList<string> targetFiles)
+    {
+        var enhancement = configNode[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
+        configNode[AutoTagLiterals.EnhancementStage] = enhancement;
+
+        var selectedFeatures = (request.Features ?? Array.Empty<string>())
+            .Select(value => value?.Trim().ToLowerInvariant())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (selectedFeatures.Count > 0)
+        {
+            SetEnhancementFeatureEnabled(enhancement, "folderUniformity", selectedFeatures.Contains("folder-uniformity"));
+            SetEnhancementFeatureEnabled(enhancement, "coverMaintenance", selectedFeatures.Contains("cover-maintenance"));
+            SetEnhancementFeatureEnabled(enhancement, "qualityChecks", selectedFeatures.Contains("quality-checks"));
+            if (!selectedFeatures.Contains("tag-gap-fill"))
+            {
+                configNode["gapFillTags"] = new JsonArray();
+            }
+        }
+
+        ApplyEnhancementFolderScope(enhancement, "folderUniformity", folderIds);
+        ApplyEnhancementFolderScope(enhancement, "coverMaintenance", folderIds);
+        ApplyEnhancementFolderScope(enhancement, "qualityChecks", folderIds);
+        if (targetFiles.Count > 0)
+        {
+            configNode[AutoTagLiterals.TargetFilesKey] = new JsonArray(
+                targetFiles.Select(value => JsonValue.Create(value)).ToArray());
+        }
+    }
+
+    private static void SetEnhancementFeatureEnabled(JsonObject enhancement, string name, bool enabled)
+    {
+        var feature = enhancement[name] as JsonObject ?? new JsonObject();
+        feature["enabled"] = enabled;
+        enhancement[name] = feature;
+    }
+
+    private static void ApplyEnhancementFolderScope(
+        JsonObject enhancement,
+        string name,
+        IReadOnlyList<long> folderIds)
+    {
+        if (folderIds.Count == 0 || enhancement[name] is not JsonObject feature)
+        {
+            return;
+        }
+        feature["folderIds"] = new JsonArray(
+            folderIds.Select(value => JsonValue.Create(value)).ToArray());
+    }
+
+    private static List<string> NormalizeEnhancementTargetFiles(
+        IReadOnlyList<string>? targetFiles,
+        IReadOnlyList<DeezSpoTag.Services.Library.FolderDto> scopedFolders)
+    {
+        if (targetFiles == null || targetFiles.Count == 0)
+        {
+            return new List<string>();
+        }
+
+        var roots = scopedFolders.Select(folder => Path.GetFullPath(folder.RootPath)).ToList();
+        return targetFiles
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(Path.GetFullPath)
+            .Where(path => System.IO.File.Exists(path)
+                && AutoTagFolderScopeHelper.IsPathInAllowedRoots(path, roots))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static bool TryNormalizeStartRequest(
@@ -439,6 +602,7 @@ public class AutoTagJobsController : ControllerBase
             job.ProfileId,
             job.ProfileName,
             job.AutoMoveSummary,
+            job.EnhancementWorkflows,
             job.CurrentPlatform,
             job.LastStatus,
             logCount,
@@ -557,49 +721,10 @@ public class AutoTagStartRequest
     public string? RunIntent { get; set; }
 }
 
-public sealed class EnhancementFolderUniformityRequest
+public sealed class AutoTagEnhancementStartRequest
 {
-    public bool? Enabled { get; set; }
+    public string Scope { get; set; } = "full";
+    public IReadOnlyList<string>? Features { get; set; }
     public IReadOnlyList<long>? FolderIds { get; set; }
-    public bool? EnforceFolderStructure { get; set; }
-    public bool? MoveMisplacedFiles { get; set; }
-    public bool? RenameFilesToTemplate { get; set; }
-    public bool? RemoveEmptyFolders { get; set; }
-    public bool? MergeIntoExistingDestinationFolders { get; set; }
-    public bool? ResolveSameTrackQualityConflicts { get; set; }
-    public bool? KeepBothOnUnresolvedConflicts { get; set; }
-    public bool? OnlyMoveWhenTagged { get; set; }
-    public bool? OnlyReorganizeAlbumsWithFullTrackSets { get; set; }
-    public bool? SkipCompilationFolders { get; set; }
-    public bool? SkipVariousArtistsFolders { get; set; }
-    public bool? GenerateReconciliationReport { get; set; }
-    public string? DuplicateConflictPolicy { get; set; }
-    public string? ArtworkPolicy { get; set; }
-    public string? LyricsPolicy { get; set; }
-    public bool? RunDedupe { get; set; }
-    public bool? UseShazamForDedupe { get; set; }
-    public bool? UseShazamForUntaggedFiles { get; set; }
-    public string? DuplicatesFolderName { get; set; }
-    public bool? IncludeSubfolders { get; set; }
-}
-
-public sealed class EnhancementQualityChecksRequest
-{
-    public bool? Enabled { get; set; }
-    public IReadOnlyList<long>? FolderIds { get; set; }
-    public string Scope { get; set; } = "all";
-    public bool? FlagDuplicates { get; set; }
-    public bool? FlagMissingTags { get; set; }
-    public bool? FlagMismatchedMetadata { get; set; }
-    public bool? UseDuplicatesFolder { get; set; }
-    public bool? UseShazamForDedupe { get; set; }
-    public string? DuplicatesFolderName { get; set; }
-    public bool? QueueAtmosAlternatives { get; set; }
-    public bool? QueueLyricsRefresh { get; set; }
-    public bool? QueueTechnicalProfileUpgrades { get; set; }
-    public string? MinFormat { get; set; }
-    public int? MinBitDepth { get; set; }
-    public double? MinSampleRateKhz { get; set; }
-    public int? CooldownMinutes { get; set; }
-    public IReadOnlyList<string>? TechnicalProfiles { get; set; }
+    public IReadOnlyList<string>? TargetFiles { get; set; }
 }

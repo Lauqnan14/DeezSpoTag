@@ -84,7 +84,6 @@ public class LibraryFoldersApiController : ControllerBase
 
         var folders = await _repository.GetFoldersAsync(cancellationToken);
         folders = await NormalizeFolderProfileReferencesAsync(folders, cancellationToken);
-        folders = await EnforceAutoTagProfileRequirementsAsync(folders, cancellationToken);
         if (!includeDisabled)
         {
             folders = folders
@@ -163,7 +162,8 @@ public class LibraryFoldersApiController : ControllerBase
         string? DesiredQuality,
         bool? ConvertEnabled,
         string? ConvertFormat,
-        string? ConvertBitrate);
+        string? ConvertBitrate,
+        string? ProfileId = null);
 
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateFolderRequest request, CancellationToken cancellationToken)
@@ -193,6 +193,11 @@ public class LibraryFoldersApiController : ControllerBase
             convertFormat = null;
             convertBitrate = null;
         }
+        var requiredProfile = await ResolveRequiredMusicProfileIdAsync(request.DesiredQuality, request.ProfileId);
+        if (requiredProfile.Error != null)
+        {
+            return requiredProfile.Error;
+        }
         var folder = await _repository.AddFolderAsync(
             new LibraryRepository.FolderUpsertInput(
                 request.RootPath,
@@ -202,9 +207,10 @@ public class LibraryFoldersApiController : ControllerBase
                 desiredQualityValue,
                 convertEnabled,
                 convertFormat,
-                convertBitrate),
+                convertBitrate,
+                requiredProfile.ProfileId,
+                ReplaceAutoTagProfile: true),
             cancellationToken);
-        folder = await EnforceAutoTagProfileRequirementAsync(folder, cancellationToken) ?? folder;
         _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
@@ -220,7 +226,8 @@ public class LibraryFoldersApiController : ControllerBase
         string? DesiredQuality,
         bool? ConvertEnabled,
         string? ConvertFormat,
-        string? ConvertBitrate);
+        string? ConvertBitrate,
+        string? ProfileId = null);
 
     [HttpPatch("{id:long}")]
     public async Task<IActionResult> Update(long id, [FromBody] UpdateFolderRequest request, CancellationToken cancellationToken)
@@ -251,6 +258,12 @@ public class LibraryFoldersApiController : ControllerBase
             convertFormat = null;
             convertBitrate = null;
         }
+        var requestedProfile = request.ProfileId ?? existingFolder.AutoTagProfileId;
+        var requiredProfile = await ResolveRequiredMusicProfileIdAsync(request.DesiredQuality, requestedProfile);
+        if (requiredProfile.Error != null)
+        {
+            return requiredProfile.Error;
+        }
 
         var folder = await _repository.UpdateFolderAsync(
             id,
@@ -262,14 +275,14 @@ public class LibraryFoldersApiController : ControllerBase
                 desiredQualityValue,
                 convertEnabled,
                 convertFormat,
-                convertBitrate),
+                convertBitrate,
+                requiredProfile.ProfileId,
+                ReplaceAutoTagProfile: true),
             cancellationToken);
         if (folder is null)
         {
             return NotFound();
         }
-
-        folder = await EnforceAutoTagProfileRequirementAsync(folder, cancellationToken) ?? folder;
 
         var wasEnabled = existingFolder.Enabled;
         var isEnabled = folder.Enabled;
@@ -363,6 +376,10 @@ public class LibraryFoldersApiController : ControllerBase
         {
             return BadRequest("Selected AutoTag profile does not exist.");
         }
+        if (RequiresAutoTagProfile(existingFolder) && string.IsNullOrWhiteSpace(canonicalProfileId))
+        {
+            return BadRequest("Music folders must always have an AutoTag profile.");
+        }
 
         var updated = await _repository.UpdateFolderProfileAsync(id, canonicalProfileId, cancellationToken);
         if (updated is null)
@@ -370,7 +387,6 @@ public class LibraryFoldersApiController : ControllerBase
             return NotFound();
         }
 
-        updated = await EnforceAutoTagProfileRequirementAsync(updated, cancellationToken) ?? updated;
         return Ok(updated);
     }
 
@@ -568,6 +584,7 @@ public class LibraryFoldersApiController : ControllerBase
         }
 
         var profiles = await _profileService.LoadAsync();
+        var defaultProfile = profiles.FirstOrDefault(profile => profile.IsDefault);
         var normalizedFolders = new List<FolderDto>(folders.Count);
 
         foreach (var folder in folders)
@@ -575,12 +592,22 @@ public class LibraryFoldersApiController : ControllerBase
             var currentReference = folder.AutoTagProfileId?.Trim();
             if (string.IsNullOrWhiteSpace(currentReference))
             {
-                normalizedFolders.Add(folder with { AutoTagProfileId = null });
+                if (RequiresAutoTagProfile(folder) && defaultProfile != null)
+                {
+                    var repaired = await _repository.UpdateFolderProfileAsync(folder.Id, defaultProfile.Id, cancellationToken)
+                        ?? folder with { AutoTagProfileId = defaultProfile.Id };
+                    normalizedFolders.Add(repaired);
+                }
+                else
+                {
+                    normalizedFolders.Add(folder with { AutoTagProfileId = null });
+                }
                 continue;
             }
 
             var profile = TaggingProfileService.FindByIdOrName(profiles, currentReference);
-            var canonicalProfileId = profile?.Id;
+            var canonicalProfileId = profile?.Id
+                ?? (RequiresAutoTagProfile(folder) ? defaultProfile?.Id : null);
 
             if (!string.Equals(currentReference, canonicalProfileId, StringComparison.OrdinalIgnoreCase))
             {
@@ -593,37 +620,6 @@ public class LibraryFoldersApiController : ControllerBase
         return normalizedFolders;
     }
 
-    private async Task<IReadOnlyList<FolderDto>> EnforceAutoTagProfileRequirementsAsync(
-        IReadOnlyList<FolderDto> folders,
-        CancellationToken cancellationToken)
-    {
-        if (folders.Count == 0)
-        {
-            return folders;
-        }
-
-        var guarded = new List<FolderDto>(folders.Count);
-        foreach (var folder in folders)
-        {
-            guarded.Add(await EnforceAutoTagProfileRequirementAsync(folder, cancellationToken) ?? folder);
-        }
-
-        return guarded;
-    }
-
-    private async Task<FolderDto?> EnforceAutoTagProfileRequirementAsync(FolderDto folder, CancellationToken cancellationToken)
-    {
-        if (!RequiresAutoTagProfile(folder)
-            || !folder.AutoTagEnabled
-            || HasAssignedAutoTagProfile(folder.AutoTagProfileId))
-        {
-            return folder;
-        }
-
-        return await _repository.UpdateFolderAutoTagEnabledAsync(folder.Id, false, cancellationToken)
-            ?? folder with { AutoTagEnabled = false };
-    }
-
     private static bool RequiresAutoTagProfile(FolderDto folder)
     {
         var desiredQuality = folder.DesiredQuality?.Trim();
@@ -634,6 +630,39 @@ public class LibraryFoldersApiController : ControllerBase
     private static bool HasAssignedAutoTagProfile(string? profileId)
     {
         return !string.IsNullOrWhiteSpace(profileId);
+    }
+
+    private async Task<(string? ProfileId, IActionResult? Error)> ResolveRequiredMusicProfileIdAsync(
+        string? desiredQuality,
+        string? requestedProfileId)
+    {
+        if (!RequiresAutoTagProfile(desiredQuality))
+        {
+            return (null, null);
+        }
+
+        var profiles = await _profileService.LoadAsync();
+        var requested = TaggingProfileService.FindByIdOrName(profiles, requestedProfileId);
+        if (!string.IsNullOrWhiteSpace(requestedProfileId) && requested == null)
+        {
+            return (null, BadRequest("Selected AutoTag profile does not exist."));
+        }
+
+        var profile = requested
+            ?? profiles.FirstOrDefault(candidate => candidate.IsDefault);
+        if (profile == null)
+        {
+            return (null, BadRequest("A default AutoTag profile is required before a music folder can be configured."));
+        }
+
+        return (profile.Id, null);
+    }
+
+    private static bool RequiresAutoTagProfile(string? desiredQuality)
+    {
+        var normalized = desiredQuality?.Trim();
+        return !string.Equals(normalized, FolderContentVideo, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(normalized, FolderContentPodcast, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsEligibleDownloadDestination(FolderDto folder)

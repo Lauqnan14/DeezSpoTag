@@ -196,7 +196,7 @@ public static class TaggingProfileCanonicalizer
 
     public static bool CanonicalizeTemplateKeys(Dictionary<string, JsonElement>? data)
     {
-        if (data == null || data.Count == 0)
+        if (data == null)
         {
             return false;
         }
@@ -212,6 +212,11 @@ public static class TaggingProfileCanonicalizer
             if (!string.IsNullOrWhiteSpace(legacyTemplate))
             {
                 data[TracknameTemplateKey] = JsonSerializer.SerializeToElement(legacyTemplate.Trim());
+                changed = true;
+            }
+            else
+            {
+                data[TracknameTemplateKey] = JsonSerializer.SerializeToElement("%artist% - %title%");
                 changed = true;
             }
         }

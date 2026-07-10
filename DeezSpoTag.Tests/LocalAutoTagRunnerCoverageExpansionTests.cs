@@ -361,6 +361,8 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     {
         var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var autoTagSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var workflowSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
+        var organizerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs");
         var executeBody = ExtractMethodBody(runnerSource, "private async Task ExecutePlatformPassesAsync");
         var batchBody = ExtractMethodBody(runnerSource, "private async Task ExecuteLibraryWideEnhancementBatchesAsync");
         var enhancementBody = ExtractMethodBody(autoTagSource, "private bool TryBuildEnhancementStage");
@@ -372,6 +374,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("plan.Files.Sort(CompareLibraryWideEnhancementFiles);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("batchStart += batchSize", batchBody, StringComparison.Ordinal);
         Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
+        Assert.Contains("await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);", batchBody, StringComparison.Ordinal);
+        Assert.Contains("ApplyEnhancementBatchTemplatesAsync", autoTagSource, StringComparison.Ordinal);
+        Assert.Contains("OrganizePathInBatchesAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("options.BatchScopedFilesOnly = true;", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("if (options.BatchScopedFilesOnly)", organizerSource, StringComparison.Ordinal);
         Assert.Contains("stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;", enhancementBody, StringComparison.Ordinal);
         Assert.Contains("WriteStringList(stageRoot, AutoTagLiterals.TargetFilesKey, targetFiles);", enhancementBody, StringComparison.Ordinal);
     }

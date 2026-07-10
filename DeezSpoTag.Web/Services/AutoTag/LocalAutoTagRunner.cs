@@ -379,6 +379,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken)
     {
@@ -398,7 +399,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             var plan = runPlan!;
             LogShazamAvailability(plan, logCallback);
-            await ExecutePlatformPassesAsync(plan, jobMatchCache, statusCallback, logCallback, resumeCursor, token);
+            await ExecutePlatformPassesAsync(
+                plan,
+                jobMatchCache,
+                statusCallback,
+                logCallback,
+                batchCompletedCallback,
+                resumeCursor,
+                token);
             await ApplyPostLoopFallbackAsync(plan, token);
 
             return new AutoTagRunResult(true, null);
@@ -497,6 +505,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken token)
     {
@@ -517,6 +526,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 jobMatchCache,
                 statusCallback,
                 logCallback,
+                batchCompletedCallback,
                 startPlatformIndex,
                 startFileIndex,
                 token);
@@ -563,6 +573,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
         int startPlatformIndex,
         int startFileIndex,
         CancellationToken token)
@@ -639,6 +650,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     };
                     await ProcessPlatformFileAsync(context);
                 }
+            }
+
+            if (batchCompletedCallback != null)
+            {
+                await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);
             }
         }
     }

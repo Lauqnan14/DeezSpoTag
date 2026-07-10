@@ -181,9 +181,10 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     [Fact]
     public void EnhancementContracts_UseFolderIdsOnly()
     {
-        Assert.Null(typeof(EnhancementFolderUniformityRequest).GetProperty("FolderId"));
-        Assert.Null(typeof(EnhancementQualityChecksRequest).GetProperty("FolderId"));
-        Assert.NotNull(typeof(EnhancementQualityChecksRequest).GetProperty("QueueTechnicalProfileUpgrades"));
+        Assert.Null(typeof(AutoTagEnhancementStartRequest).GetProperty("FolderId"));
+        Assert.NotNull(typeof(AutoTagEnhancementStartRequest).GetProperty("FolderIds"));
+        Assert.NotNull(typeof(AutoTagEnhancementStartRequest).GetProperty("TargetFiles"));
+        Assert.NotNull(typeof(AutoTagEnhancementStartRequest).GetProperty("Features"));
 
         var endpoint = typeof(AutoTagEnhancementController).GetMethod(nameof(AutoTagEnhancementController.GetEnhancementTechnicalProfiles));
         Assert.NotNull(endpoint);
@@ -197,16 +198,102 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var repoRoot = ResolveRepoRoot();
         var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
         var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
-        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagEnhancementController.cs"));
+        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
 
         Assert.Contains("enhancementQueueTechnicalProfileUpgrades", viewSource, StringComparison.Ordinal);
-        Assert.Contains("queueTechnicalProfileUpgrades: checks.queueTechnicalProfileUpgrades", scriptSource, StringComparison.Ordinal);
-        Assert.Contains("Select at least one technical profile before queueing profile upgrades.", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("BuildTechnicalProfileUpgradePreviewAsync", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("queueTechnicalProfileUpgrades && technicalProfiles.Count > 0", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("startCentralEnhancementFeature(\"quality-checks\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyEnhancementFolderScope(enhancement, \"qualityChecks\"", controllerSource, StringComparison.Ordinal);
         Assert.Contains("queueTechnicalProfileUpgrades && technicalProfiles.Count > 0", workflowSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("|| technicalProfiles.Count > 0;", controllerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartEnhancementQualityScannerAsync", controllerSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementFeatureRuns_UseOnlyTheCentralAutoTagJobPath()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var jobsController = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
+        var enhancementController = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagEnhancementController.cs"));
+        var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+
+        Assert.Contains("[HttpPost(\"enhancement/start\")]", jobsController, StringComparison.Ordinal);
+        Assert.Contains("_autoTagService.StartJob(", jobsController, StringComparison.Ordinal);
+        Assert.Contains("RunIntentEnhancementRecentDownloads", jobsController, StringComparison.Ordinal);
+        Assert.Contains("SetEnhancementFeatureEnabled", jobsController, StringComparison.Ordinal);
+        Assert.Contains("/api/autotag/enhancement/start", scriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement/folder-uniformity/start", scriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement/folder-uniformity/status", scriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("enhancement/quality-checks", scriptSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("[HttpPost", enhancementController, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExecuteFolderUniformityAsync", enhancementController, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartEnhancementQualityScannerAsync", enhancementController, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MusicFolderEnhancement_RequiresAssignedProfilesAndHasNoGlobalTemplateFallback()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var folderController = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryFoldersApiController.cs"));
+        var profileResolution = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagProfileResolutionService.cs"));
+        var organizerOverlay = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagOrganizerProfileOverlay.cs"));
+        var autoTagService = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("ResolveRequiredMusicProfileIdAsync", folderController, StringComparison.Ordinal);
+        Assert.Contains("Music folders must always have an AutoTag profile.", folderController, StringComparison.Ordinal);
+        Assert.Contains("profiles.FirstOrDefault(profile => profile.IsDefault)?.Id", profileResolution, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplySettingsOverrides", organizerOverlay, StringComparison.Ordinal);
+        Assert.DoesNotContain("settings.TracknameTemplate", autoTagService, StringComparison.Ordinal);
+        Assert.Contains("AutoTag organization requires a valid profile.", autoTagService, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProfileDeletion_RequiresUserConfirmationBeforeDeleteRequest()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var deleteStart = scriptSource.IndexOf("async function deleteProfile()", StringComparison.Ordinal);
+        var deleteEnd = scriptSource.IndexOf("function showToast", deleteStart, StringComparison.Ordinal);
+        Assert.True(deleteStart >= 0 && deleteEnd > deleteStart);
+        var deleteBody = scriptSource[deleteStart..deleteEnd];
+
+        var confirmIndex = deleteBody.IndexOf("DeezSpoTag.ui.confirm", StringComparison.Ordinal);
+        var requestIndex = deleteBody.IndexOf("method: \"DELETE\"", StringComparison.Ordinal);
+        Assert.True(confirmIndex >= 0);
+        Assert.True(requestIndex > confirmIndex);
+        Assert.Contains("if (!confirmed)", deleteBody, StringComparison.Ordinal);
+        Assert.Contains("Delete AutoTag Profile", deleteBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementFeatureSelection_DisablesUnselectedWorkflowsAndGapFill()
+    {
+        var method = typeof(AutoTagJobsController).GetMethod(
+            "ApplyEnhancementRunSelection",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Central enhancement selection method was not found.");
+        var config = System.Text.Json.Nodes.JsonNode.Parse("""
+            {
+              "gapFillTags": ["title"],
+              "enhancement": {
+                "folderUniformity": { "enabled": true },
+                "coverMaintenance": { "enabled": true },
+                "qualityChecks": { "enabled": true }
+              }
+            }
+            """)!.AsObject();
+        var request = new AutoTagEnhancementStartRequest
+        {
+            Features = ["quality-checks"]
+        };
+
+        method.Invoke(null, [config, request, new long[] { 7 }, Array.Empty<string>()]);
+
+        var enhancement = config["enhancement"]!.AsObject();
+        Assert.False(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
+        Assert.False(enhancement["coverMaintenance"]!["enabled"]!.GetValue<bool>());
+        Assert.True(enhancement["qualityChecks"]!["enabled"]!.GetValue<bool>());
+        Assert.Equal(7, enhancement["qualityChecks"]!["folderIds"]![0]!.GetValue<long>());
+        Assert.Empty(config["gapFillTags"]!.AsArray());
     }
 
     [Fact]
@@ -236,6 +323,9 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement workflows own folder uniformity", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldRunGenericOrganizer", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyEnhancementBatchTemplatesAsync", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("OrganizeFilesAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("FolderTemplatesAppliedInBatches", workflowSource, StringComparison.Ordinal);
     }
 
     private static long[] ReadLongArray(JsonElement element)

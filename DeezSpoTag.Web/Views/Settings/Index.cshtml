@@ -4037,8 +4037,6 @@ function loadSettings(settings) {
     setFieldValue('reviewFolderPath', settings.reviewFolderPath || '');
     
     setFieldValue('tracknameTemplate', settings.tracknameTemplate);
-    setFieldValue('albumTracknameTemplate', settings.albumTracknameTemplate);
-    setFieldValue('playlistTracknameTemplate', settings.playlistTracknameTemplate);
     
     setCheckboxValue('createPlaylistFolder', settings.createPlaylistFolder);
     setFieldValue('playlistNameTemplate', settings.playlistNameTemplate);
@@ -4386,8 +4384,6 @@ function collectFormData() {
         reviewFolderPath: getValue('reviewFolderPath', baseSettings.reviewFolderPath || ''),
 
         tracknameTemplate: getValue('tracknameTemplate', baseSettings.tracknameTemplate || '%artist% - %title%'),
-        albumTracknameTemplate: getValue('albumTracknameTemplate', baseSettings.albumTracknameTemplate || '%tracknumber% - %title%'),
-        playlistTracknameTemplate: getValue('playlistTracknameTemplate', baseSettings.playlistTracknameTemplate || '%artist% - %title%'),
 
         createPlaylistFolder: getChecked('createPlaylistFolder', baseSettings.createPlaylistFolder ?? false),
         playlistNameTemplate: getValue('playlistNameTemplate', baseSettings.playlistNameTemplate || '%playlist%'),

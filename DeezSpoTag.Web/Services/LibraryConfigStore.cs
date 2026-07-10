@@ -385,48 +385,6 @@ public sealed class LibraryConfigStore
         return await _repository.SearchArtistsAsync(likeQuery, cancellationToken);
     }
 
-    public FolderDto AddFolder(FolderUpsertRequest request)
-    {
-        if (!_repository.IsConfigured)
-        {
-            throw new InvalidOperationException("Library DB not configured.");
-        }
-
-        return _repository
-            .AddFolderAsync(new LibraryRepository.FolderUpsertInput(
-                request.RootPath,
-                request.DisplayName,
-                request.Enabled,
-                request.LibraryName,
-                request.DesiredQuality,
-                request.ConvertEnabled,
-                request.ConvertFormat,
-                request.ConvertBitrate))
-            .GetAwaiter()
-            .GetResult();
-    }
-
-    public FolderDto? UpdateFolder(long id, FolderUpsertRequest request)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return null;
-        }
-
-        return _repository
-            .UpdateFolderAsync(id, new LibraryRepository.FolderUpsertInput(
-                request.RootPath,
-                request.DisplayName,
-                request.Enabled,
-                request.LibraryName,
-                request.DesiredQuality,
-                request.ConvertEnabled,
-                request.ConvertFormat,
-                request.ConvertBitrate))
-            .GetAwaiter()
-            .GetResult();
-    }
-
     public async Task<bool> DeleteFolderAsync(long id)
     {
         if (!_repository.IsConfigured)
@@ -489,16 +447,6 @@ public sealed class LibraryConfigStore
     public sealed record LastScanInfo(DateTimeOffset? LastRunUtc, int ArtistCount, int AlbumCount, int TrackCount);
 
     public sealed record LibraryLogEntry(DateTimeOffset TimestampUtc, string Level, string Message);
-    public sealed record FolderUpsertRequest(
-        string RootPath,
-        string DisplayName,
-        bool Enabled,
-        string? LibraryName,
-        string DesiredQuality,
-        bool ConvertEnabled,
-        string? ConvertFormat,
-        string? ConvertBitrate);
-
     public sealed class LocalLibrarySnapshot
     {
         public List<LibraryArtist> Artists { get; set; } = new();

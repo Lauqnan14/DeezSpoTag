@@ -104,6 +104,7 @@ public abstract class AutoTagRunState
     public string? ProfileName { get; set; }
     public AutoTagMoveSummary? AutoMoveSummary { get; set; }
     public int LastPlexRefreshEnhancedFileCount { get; set; }
+    public bool FolderTemplatesAppliedInBatches { get; set; }
 }
 
 public class AutoTagJob : AutoTagRunState
@@ -2146,6 +2147,7 @@ public partial class AutoTagService
         var snapshot = CreateCompactTerminalJob(source);
         snapshot.EnhancementWorkflows.AddRange(source.EnhancementWorkflows);
         snapshot.EnhancedFilePaths.AddRange(source.EnhancedFilePaths);
+        snapshot.FolderTemplatesAppliedInBatches = source.FolderTemplatesAppliedInBatches;
         snapshot.StartedPlatforms.AddRange(source.StartedPlatforms);
         return snapshot;
     }
@@ -2420,6 +2422,10 @@ public partial class AutoTagService
                 stage.ConfigPath,
                 status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, stageIndex, totalStages, fileOutcomes),
                 line => AppendLog(job, line),
+                string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
+                        ? (files, token) => ApplyEnhancementBatchTemplatesAsync(job, stage.ConfigPath, files, token)
+                        : null,
                 resumeCursor,
                 cancellationToken);
             if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
@@ -3027,8 +3033,7 @@ public partial class AutoTagService
     }
 
     private static AutoTagOrganizerOptions BuildFolderUniformityOptions(
-        JsonObject folderUniformity,
-        DeezSpoTagSettings settings)
+        JsonObject folderUniformity)
     {
         var options = new AutoTagOrganizerOptions
         {
@@ -3050,8 +3055,6 @@ public partial class AutoTagService
             LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge
         };
 
-        // Folder-structure and technical defaults are driven by canonical settings/profile overlays.
-        AutoTagOrganizerProfileOverlay.ApplySettingsOverrides(options, settings);
         return options;
     }
 
@@ -3701,8 +3704,7 @@ public partial class AutoTagService
             AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
             return;
         }
-
-        AutoTagOrganizerProfileOverlay.ApplySettingsOverrides(options, _settingsService.LoadSettings());
+        throw new InvalidOperationException("AutoTag organization requires a valid profile.");
     }
 
     private async Task<TaggingProfile?> ResolveJobProfileAsync(AutoTagJob job, CancellationToken cancellationToken)

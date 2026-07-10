@@ -4301,50 +4301,6 @@
         container.classList.remove("d-none");
     }
 
-    async function pollFolderUniformityStatus(jobId) {
-        const id = String(jobId || "").trim();
-        if (!id) {
-            throw new Error("Folder uniformity job id was not provided by the server.");
-        }
-
-        let transientFailures = 0;
-        let latestStatus = null;
-        while (true) {
-            try {
-                const response = await fetch(`/api/autotag/enhancement/folder-uniformity/status?jobId=${encodeURIComponent(id)}`);
-                if (!response.ok) {
-                    const payload = await response.json().catch(() => null);
-                    const message = payload?.error || payload?.message || `Request failed (${response.status})`;
-                    throw new Error(message);
-                }
-
-                latestStatus = await response.json();
-                transientFailures = 0;
-                saveFolderUniformityStatusSnapshot(latestStatus);
-                clearFolderUniformityLastScanTimer();
-                setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(latestStatus));
-                renderFolderUniformityLiveLog(latestStatus);
-
-                if (Array.isArray(latestStatus?.reconciliationReports)) {
-                    renderFolderUniformityReports(latestStatus.reconciliationReports);
-                }
-
-                const runStatus = String(latestStatus?.status || "").toLowerCase();
-                if (runStatus && runStatus !== "running") {
-                    clearActiveFolderUniformityJob();
-                    return latestStatus;
-                }
-            } catch (error) {
-                transientFailures += 1;
-                if (transientFailures >= 4) {
-                    throw error;
-                }
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-        }
-    }
-
     function rememberActiveFolderUniformityJob(jobId) {
         const id = String(jobId || "").trim();
         if (!id) {
@@ -4376,29 +4332,89 @@
         }
     }
 
-    function applyFolderUniformityCompletion(payload, showNotification = true) {
-        const foldersProcessed = Number(payload?.foldersProcessed ?? 0);
-        const foldersSkipped = Number(payload?.foldersSkipped ?? 0);
-        const dedupe = payload?.dedupe;
-        const dedupeSummary = dedupe
-            ? ` Dedupe: ${Number(dedupe.duplicatesFound ?? 0)} duplicates handled into ${String(dedupe.duplicatesFolderName || "%duplicates%")}.`
-            : "";
-        const reportSummary = Array.isArray(payload?.reconciliationReports) && payload.reconciliationReports.length > 0
-            ? ` Report: ${payload.reconciliationReports.length} folder report(s) generated.`
-            : "";
-        const summary = payload?.skipped
-            ? String(payload?.message || "Folder uniformity skipped.")
-            : String(payload?.message || `Folder uniformity finished: ${foldersProcessed} processed, ${foldersSkipped} skipped.`) + dedupeSummary + reportSummary;
-        clearFolderUniformityStatusSnapshot();
-        persistFolderUniformityLastScan(summary);
-        renderFolderUniformityReports(payload?.reconciliationReports);
-        renderFolderUniformityLiveLog(payload);
-        setEnhancementStatus("folderUniformityStatus", summary);
-        const normalizedStatus = String(payload?.status || "").toLowerCase();
-        const failed = normalizedStatus === "error" || normalizedStatus === "canceled" || payload?.success === false;
-        if (showNotification) {
-            showToast(summary, failed ? "warning" : "success");
+    function findEnhancementWorkflow(job, name) {
+        const workflows = job?.enhancementWorkflows || job?.EnhancementWorkflows;
+        return Array.isArray(workflows)
+            ? workflows.find((item) => String(item?.name || item?.Name || "").toLowerCase() === name)
+            : null;
+    }
+
+    async function pollCentralEnhancementJob(jobId, statusElementId, expectedWorkflowName) {
+        const id = String(jobId || "").trim();
+        if (!id) {
+            throw new Error("Enhancement job did not return a valid id.");
         }
+
+        let completedWithoutWorkflowPolls = 0;
+        while (true) {
+            const response = await fetch(`/api/autotag/jobs/${encodeURIComponent(id)}?includeLogs=false&includeStatusHistory=false`);
+            const job = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw new Error(job?.error || job?.message || `Request failed (${response.status})`);
+            }
+
+            const status = String(job?.status || "").toLowerCase();
+            const workflows = Array.isArray(job?.enhancementWorkflows) ? job.enhancementWorkflows : [];
+            const workflow = workflows
+                ? job.enhancementWorkflows.find((item) => String(item?.status || "").toLowerCase() === "running")
+                : null;
+            setEnhancementStatus(
+                statusElementId,
+                workflow ? `Running ${String(workflow.name || "enhancement")}...` : `Enhancement ${status || "running"}...`);
+            const expectedWorkflow = workflows.find((item) => String(item?.name || "").toLowerCase() === expectedWorkflowName);
+            const expectedStatus = String(expectedWorkflow?.status || "").toLowerCase();
+            if (["failed", "error", "interrupted", "canceled", "blocked", "skipped"].includes(status)
+                && !expectedWorkflow) {
+                return job;
+            }
+            if (!["queued", "running", "tagging"].includes(status)
+                && expectedWorkflow
+                && expectedStatus !== "running") {
+                return job;
+            }
+            completedWithoutWorkflowPolls = status === "completed" && !expectedWorkflow
+                ? completedWithoutWorkflowPolls + 1
+                : 0;
+            if (completedWithoutWorkflowPolls >= 10) {
+                throw new Error(`Enhancement completed without running ${expectedWorkflowName}.`);
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+    }
+
+    async function resolveEnhancementFolderScopes(configuredFolderIds) {
+        const selected = parseFolderIdList(configuredFolderIds);
+        if (selected.length > 0) {
+            return selected.map((folderId) => [folderId]);
+        }
+
+        const response = await fetch("/api/library/folders?includeDisabled=false");
+        const folders = await response.json().catch(() => null);
+        if (!response.ok || !Array.isArray(folders)) {
+            throw new Error(folders?.error || folders?.message || "Unable to resolve music folders for enhancement.");
+        }
+
+        return folders
+            .filter((folder) => {
+                const contentType = String(folder?.desiredQuality || "").trim().toLowerCase();
+                return contentType !== "video" && contentType !== "podcast";
+            })
+            .map((folder) => [Number(folder.id)])
+            .filter(([folderId]) => Number.isFinite(folderId) && folderId > 0);
+    }
+
+    async function startCentralEnhancementFeature(feature, folderIds, statusElementId) {
+        const response = await fetch("/api/autotag/enhancement/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scope: "full", features: [feature], folderIds })
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+            throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
+        }
+        return pollCentralEnhancementJob(payload.jobId, statusElementId, feature);
     }
 
     async function resumeFolderUniformityRunIfNeeded() {
@@ -4414,8 +4430,7 @@
         }
 
         try {
-            restoreFolderUniformityStatusSnapshot();
-            const response = await fetch(`/api/autotag/enhancement/folder-uniformity/status?jobId=${encodeURIComponent(jobId)}`);
+            const response = await fetch(`/api/autotag/jobs/${encodeURIComponent(jobId)}?includeLogs=false&includeStatusHistory=false`);
             if (!response.ok) {
                 if (response.status === 404) {
                     clearActiveFolderUniformityJob();
@@ -4428,26 +4443,27 @@
             }
 
             const status = await response.json();
-            saveFolderUniformityStatusSnapshot(status);
-            renderFolderUniformityLiveLog(status);
-            if (Array.isArray(status?.reconciliationReports)) {
-                renderFolderUniformityReports(status.reconciliationReports);
-            }
-
+            const workflow = findEnhancementWorkflow(status, "folder-uniformity");
             const runStatus = String(status?.status || "").toLowerCase();
-            if (runStatus && runStatus !== "running") {
+            const workflowStatus = String(workflow?.status || "").toLowerCase();
+            if (workflow && workflowStatus !== "running") {
                 clearActiveFolderUniformityJob();
-                applyFolderUniformityCompletion(status, false);
+                const message = workflow?.message || status?.error || "Folder uniformity completed.";
+                setEnhancementStatus("folderUniformityStatus", message);
                 setFolderUniformityRunButtonDisabled(false);
                 return;
             }
 
             rememberActiveFolderUniformityJob(jobId);
             clearFolderUniformityLastScanTimer();
-            setEnhancementStatus("folderUniformityStatus", buildFolderUniformityProgressMessage(status));
+            setEnhancementStatus("folderUniformityStatus", `Enhancement ${runStatus || "running"}...`);
             setFolderUniformityRunButtonDisabled(true);
-            const payload = await pollFolderUniformityStatus(jobId);
-            applyFolderUniformityCompletion(payload, true);
+            const payload = await pollCentralEnhancementJob(jobId, "folderUniformityStatus", "folder-uniformity");
+            const completedWorkflow = findEnhancementWorkflow(payload, "folder-uniformity");
+            setEnhancementStatus(
+                "folderUniformityStatus",
+                completedWorkflow?.message || payload?.error || "Folder uniformity completed.");
+            clearActiveFolderUniformityJob();
         } catch (error) {
             // Keep the active job id so monitoring can resume on next focus/page load.
             console.debug("Folder uniformity monitoring failed.", error);
@@ -4481,63 +4497,26 @@
                 foldersSkipped: 0,
                 totalFolders: 0
             });
-            const startResponse = await fetch("/api/autotag/enhancement/folder-uniformity/start", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    enabled: true,
-                    folderIds: parseFolderIdList(options.folderIds),
-                    enforceFolderStructure: options.enforceFolderStructure,
-                    moveMisplacedFiles: options.moveMisplacedFiles,
-                    mergeIntoExistingDestinationFolders: options.mergeIntoExistingDestinationFolders,
-                    renameFilesToTemplate: options.renameFilesToTemplate,
-                    removeEmptyFolders: options.removeEmptyFolders,
-                    resolveSameTrackQualityConflicts: options.resolveSameTrackQualityConflicts,
-                    keepBothOnUnresolvedConflicts: options.keepBothOnUnresolvedConflicts,
-                    onlyMoveWhenTagged: options.onlyMoveWhenTagged,
-                    onlyReorganizeAlbumsWithFullTrackSets: options.onlyReorganizeAlbumsWithFullTrackSets,
-                    skipCompilationFolders: options.skipCompilationFolders,
-                    skipVariousArtistsFolders: options.skipVariousArtistsFolders,
-                    generateReconciliationReport: options.generateReconciliationReport,
-                    useShazamForUntaggedFiles: options.useShazamForUntaggedFiles,
-                    duplicateConflictPolicy: options.duplicateConflictPolicy,
-                    artworkPolicy: options.artworkPolicy,
-                    lyricsPolicy: options.lyricsPolicy,
-                    runDedupe: options.runDedupe,
-                    useShazamForDedupe: options.useShazamForDedupe,
-                    duplicatesFolderName: options.duplicatesFolderName,
-                    includeSubfolders: options.includeSubfolders !== false
-                })
-            });
-            const startPayload = await startResponse.json().catch(() => null);
-            if (!startResponse.ok) {
-                const message = startPayload?.error || startPayload?.message || `Request failed (${startResponse.status})`;
-                throw new Error(message);
+            const scopes = await resolveEnhancementFolderScopes(options.folderIds);
+            if (scopes.length === 0) {
+                throw new Error("No enabled music folders are available for enhancement.");
             }
-
-            const jobId = String(startPayload?.jobId || startPayload?.state?.jobId || "").trim();
-            if (!jobId) {
-                throw new Error("Folder uniformity job did not return a valid id.");
+            let message = "Folder uniformity completed.";
+            for (let index = 0; index < scopes.length; index += 1) {
+                setEnhancementStatus("folderUniformityStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
+                const payload = await startCentralEnhancementFeature("folder-uniformity", scopes[index], "folderUniformityStatus");
+                const workflow = findEnhancementWorkflow(payload, "folder-uniformity");
+                const failed = ["failed", "error", "interrupted", "canceled"].includes(String(payload?.status || "").toLowerCase())
+                    || String(workflow?.status || "").toLowerCase() === "failed";
+                if (failed) {
+                    throw new Error(workflow?.message || payload?.error || `Folder ${index + 1} failed.`);
+                }
+                message = `Folder uniformity completed for ${index + 1}/${scopes.length} music folders.`;
             }
-            rememberActiveFolderUniformityJob(jobId);
-            saveFolderUniformityStatusSnapshot({
-                jobId,
-                status: "running",
-                phase: "Preparing scope",
-                percentComplete: 0,
-                completedSteps: 0,
-                totalSteps: 0,
-                foldersProcessed: 0,
-                foldersSkipped: 0,
-                totalFolders: 0
-            });
-
-            if (startPayload?.started === false) {
-                setEnhancementStatus("folderUniformityStatus", "Folder uniformity is already running. Monitoring current progress...");
-            }
-
-            const payload = await pollFolderUniformityStatus(jobId);
-            applyFolderUniformityCompletion(payload, true);
+            persistFolderUniformityLastScan(message);
+            setEnhancementStatus("folderUniformityStatus", message);
+            showToast(message, "success");
+            clearActiveFolderUniformityJob();
         } catch (error) {
             const message = `Folder uniformity failed: ${error?.message || error}`;
             setEnhancementStatus("folderUniformityStatus", message);
@@ -4564,55 +4543,23 @@
             const config = readConfigFromUI();
             const checks = config.enhancement.qualityChecks;
             setEnhancementStatus("enhancementQualityChecksStatus", "Running selected quality checks...");
-            const response = await fetch("/api/autotag/enhancement/quality-checks", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    enabled: true,
-                    folderIds: parseFolderIdList(checks.folderIds),
-                    scope: checks.scope,
-                    flagDuplicates: checks.flagDuplicates,
-                    flagMissingTags: checks.flagMissingTags,
-                    flagMismatchedMetadata: checks.flagMismatchedMetadata,
-                    useDuplicatesFolder: checks.useDuplicatesFolder !== false,
-                    useShazamForDedupe: checks.useShazamForDedupe,
-                    duplicatesFolderName: checks.duplicatesFolderName,
-                    queueAtmosAlternatives: checks.queueAtmosAlternatives,
-                    queueLyricsRefresh: checks.queueLyricsRefresh,
-                    queueTechnicalProfileUpgrades: checks.queueTechnicalProfileUpgrades,
-                    cooldownMinutes: checks.cooldownMinutes,
-                    technicalProfiles: normalizeTechnicalProfiles(checks.technicalProfiles)
-                })
-            });
-            const payload = await response.json().catch(() => null);
-            if (!response.ok) {
-                const message = payload?.error || payload?.message || `Request failed (${response.status})`;
-                throw new Error(message);
+            const scopes = await resolveEnhancementFolderScopes(checks.folderIds);
+            if (scopes.length === 0) {
+                throw new Error("No enabled music folders are available for enhancement.");
             }
-
-            let qualityStarted = "Quality Scanner skipped";
-            if (payload?.qualityScanner?.requested) {
-                qualityStarted = payload?.qualityScanner?.started
-                    ? "Quality Scanner started"
-                    : "Quality Scanner already running";
-            }
-            const profileUpgradeSummary = payload?.profileUpgrade?.requested
-                ? String(payload.profileUpgrade.message || `Profile upgrades: ${Number(payload.profileUpgrade.matchingTracks ?? 0)} matching track(s)`)
-                : "Profile upgrades skipped";
-            const duplicateSummary = payload?.duplicateCheck
-                ? `Duplicates: ${Number(payload.duplicateCheck.duplicatesFound ?? 0)} found, ${Number(payload.duplicateCheck.deleted ?? 0)} moved to ${String(payload.duplicateCheck.duplicatesFolderName || "%duplicates%")}`
-                : "Duplicate Cleaner skipped";
-            let lyricsSummary = "Lyrics refresh skipped";
-            if (payload?.lyricsRefresh) {
-                if (payload.lyricsRefresh.disabledByTechnicalPreference) {
-                    lyricsSummary = "Lyrics refresh skipped: enable Download Lyrics in Technical tab";
-                } else {
-                    lyricsSummary = `Lyrics: ${Number(payload.lyricsRefresh.enqueued ?? 0)} enqueued, ${Number(payload.lyricsRefresh.skipped ?? 0)} skipped`;
+            for (let index = 0; index < scopes.length; index += 1) {
+                setEnhancementStatus("enhancementQualityChecksStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
+                const job = await startCentralEnhancementFeature("quality-checks", scopes[index], "enhancementQualityChecksStatus");
+                const workflow = findEnhancementWorkflow(job, "quality-checks");
+                const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
+                    || String(workflow?.status || "").toLowerCase() === "failed";
+                if (failed) {
+                    throw new Error(workflow?.message || job?.error || `Folder ${index + 1} failed.`);
                 }
             }
-            const message = `${qualityStarted}. ${profileUpgradeSummary}. ${duplicateSummary}. ${lyricsSummary}.`;
+            const message = `Enhancement quality checks completed for ${scopes.length} music folders.`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
-            showToast("Enhancement quality checks submitted.", "success");
+            showToast(message, failed ? "error" : "success");
         } catch (error) {
             const message = `Enhancement quality checks failed: ${error?.message || error}`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
@@ -6738,6 +6685,13 @@
         const profile = getSelectedProfile();
         if (!profile) {
             showToast("Select a profile to delete.", "error");
+            return;
+        }
+        const confirmMessage = `Delete profile "${profile.name}"? Music folders assigned to this profile will be reassigned to the default profile.`;
+        const confirmed = globalThis.DeezSpoTag?.ui?.confirm
+            ? await globalThis.DeezSpoTag.ui.confirm(confirmMessage, { title: "Delete AutoTag Profile" })
+            : globalThis.confirm(confirmMessage);
+        if (!confirmed) {
             return;
         }
         const deletedActiveProfile = String(state.activeProfileId || "").toLowerCase() === String(profile.id || "").toLowerCase();

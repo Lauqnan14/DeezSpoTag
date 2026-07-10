@@ -165,6 +165,11 @@ public partial class AutoTagService
             return EnhancementWorkflowOutcome.Skipped("folder uniformity is not configured.");
         }
 
+        if (job.FolderTemplatesAppliedInBatches)
+        {
+            return EnhancementWorkflowOutcome.Completed("file and folder templates were applied to each completed 40-file batch.");
+        }
+
         var scopedFolders = ResolveScopedFolders(rootPath, folderUniformity!, enabledFolders);
         var rootPaths = ResolveFolderUniformityRootPaths(rootPath, folderUniformity!, enabledFolders, scopedFolders);
         if (rootPaths.Count == 0)
@@ -173,18 +178,92 @@ public partial class AutoTagService
             return EnhancementWorkflowOutcome.Skipped("no eligible folders or paths.");
         }
 
-        var settings = _settingsService.LoadSettings();
         var profileState = scopedFolders.Count > 0
             ? await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken)
             : null;
         var scopedFoldersByPath = BuildScopedFoldersByPath(scopedFolders);
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
-        await RunFolderUniformityForPathsAsync(job, folderUniformity!, rootPaths, settings, profileState, scopedFoldersByPath, cancellationToken);
+        await RunFolderUniformityForPathsAsync(job, folderUniformity!, rootPaths, profileState, scopedFoldersByPath, cancellationToken);
         await RunFolderUniformityDedupeAsync(job, folderUniformity!, scopedFolders, rootPaths, enabledFolders, cancellationToken);
 
         AppendLog(job, "enhancement workflow: folder uniformity completed.");
         return EnhancementWorkflowOutcome.Completed($"processed {rootPaths.Count} path(s).");
+    }
+
+    private async Task ApplyEnhancementBatchTemplatesAsync(
+        AutoTagJob job,
+        string configPath,
+        IReadOnlyList<string> batchFiles,
+        CancellationToken cancellationToken)
+    {
+        var root = LoadConfigRoot(configPath);
+        if (root?[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot
+            || !TryGetFolderUniformityConfig(enhancementRoot, out var folderUniformity))
+        {
+            return;
+        }
+
+        var successfulBatchFiles = batchFiles
+            .Select(NormalizePathForJob)
+            .Where(path => job.EnhancedFilePaths.Contains(path, StringComparer.OrdinalIgnoreCase) && File.Exists(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (successfulBatchFiles.Count == 0)
+        {
+            AppendLog(job, "enhancement batch templates skipped: no successfully enhanced files in this batch.");
+            return;
+        }
+
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+        var profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
+        var organizedCount = 0;
+        foreach (var folder in enabledFolders)
+        {
+            var folderRoot = Path.GetFullPath(folder.RootPath);
+            var folderFiles = successfulBatchFiles
+                .Where(path => LibraryFolderPathSafety.IsSameOrDescendantPath(path, folderRoot))
+                .ToList();
+            if (folderFiles.Count == 0)
+            {
+                continue;
+            }
+
+            var profile = AutoTagProfileResolutionService.ResolveFolderProfile(
+                profileState,
+                folder.Id,
+                folder.AutoTagProfileId);
+            if (profile == null)
+            {
+                throw new InvalidOperationException($"Library folder '{folderRoot}' has no valid AutoTag profile for template application.");
+            }
+
+            var options = BuildFolderUniformityOptions(folderUniformity!);
+            options.BatchScopedFilesOnly = true;
+            AutoTagOrganizerProfileOverlay.ApplyTaggingProfileOverrides(options, profile);
+            if (options.RenameFilesToTemplate && string.IsNullOrWhiteSpace(options.TracknameTemplateOverride))
+            {
+                throw new InvalidOperationException($"Library folder '{folderRoot}' has no valid file template.");
+            }
+
+            await _libraryOrganizer.OrganizeFilesAsync(
+                folderRoot,
+                folderFiles,
+                options,
+                line => AppendLog(job, $"enhancement batch templates: {line}"),
+                cancellationToken);
+            organizedCount += folderFiles.Count;
+        }
+
+        if (organizedCount != successfulBatchFiles.Count)
+        {
+            throw new InvalidOperationException(
+                $"Template application resolved {organizedCount} of {successfulBatchFiles.Count} successfully enhanced batch files to enabled library folders.");
+        }
+
+        job.FolderTemplatesAppliedInBatches = true;
+        SaveJob(job);
+        AppendLog(job, $"enhancement batch templates completed: {organizedCount} file(s). Next batch unlocked.");
     }
 
     private static bool TryGetFolderUniformityConfig(JsonObject enhancementRoot, out JsonObject? folderUniformity)
@@ -235,7 +314,6 @@ public partial class AutoTagService
         AutoTagJob job,
         JsonObject folderUniformity,
         IReadOnlyList<string> rootPaths,
-        DeezSpoTagSettings settings,
         AutoTagProfileResolutionService.ResolvedState? profileState,
         Dictionary<string, FolderDto> scopedFoldersByPath,
         CancellationToken cancellationToken)
@@ -248,26 +326,18 @@ public partial class AutoTagService
             }
 
             cancellationToken.ThrowIfCancellationRequested();
-            var options = BuildFolderUniformityOptions(folderUniformity, settings);
+            var options = BuildFolderUniformityOptions(folderUniformity);
             if (!TryApplyFolderUniformityProfile(job, path, options, profileState, scopedFoldersByPath))
             {
                 continue;
             }
 
-            var organizerReport = options.GenerateReconciliationReport
-                ? new AutoTagLibraryOrganizer.AutoTagOrganizerReport()
-                : null;
-            await _libraryOrganizer.OrganizePathAsync(
+            await _libraryOrganizer.OrganizePathInBatchesAsync(
                 path,
                 options,
-                organizerReport,
+                40,
                 line => AppendLog(job, $"folder uniformity: {line}"),
                 cancellationToken);
-            if (organizerReport != null)
-            {
-                AppendLog(job,
-                    $"folder uniformity report: planned={organizerReport.PlannedMoves}, files={organizerReport.MovedFiles}, sidecars={organizerReport.MovedSidecars}, duplicate-replacements={organizerReport.ReplacedDuplicates}, duplicate-quarantine={organizerReport.QuarantinedDuplicates}.");
-            }
         }
     }
 

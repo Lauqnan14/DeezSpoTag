@@ -95,7 +95,9 @@ public sealed class LibraryRepository
         string DesiredQuality,
         bool ConvertEnabled,
         string? ConvertFormat,
-        string? ConvertBitrate);
+        string? ConvertBitrate,
+        string? AutoTagProfileId = null,
+        bool ReplaceAutoTagProfile = false);
 
     public sealed record TrackAnalysisFilter(
         long LibraryId,
@@ -5091,15 +5093,22 @@ ORDER BY mi.position;";
         FolderUpsertInput input,
         CancellationToken cancellationToken = default)
     {
+        if (RequiresAutoTagProfile(input.DesiredQuality)
+            && string.IsNullOrWhiteSpace(input.AutoTagProfileId))
+        {
+            throw new ArgumentException("Music folders require an AutoTag profile.", nameof(input));
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var libraryId = await EnsureLibraryAsync(connection, input.LibraryName, cancellationToken);
         var desiredQualityNumeric = NormalizeDesiredQualityRank(input.DesiredQuality);
-        var autoTagEnabled = !RequiresAutoTagProfile(input.DesiredQuality);
+        var autoTagEnabled = !RequiresAutoTagProfile(input.DesiredQuality)
+            || !string.IsNullOrWhiteSpace(input.AutoTagProfileId);
         var (normalizedConvertEnabled, normalizedConvertFormat, normalizedConvertBitrate) =
             NormalizeFolderConvertSettings(input.ConvertEnabled, input.ConvertFormat, input.ConvertBitrate);
         const string sql = @"
-INSERT INTO folder (root_path, display_name, enabled, library_id, desired_quality, desired_quality_value, auto_tag_enabled, convert_enabled, convert_format, convert_bitrate)
-VALUES (@rootPath, @displayName, @enabled, @libraryId, @desiredQualityNumeric, @desiredQualityValue, @autoTagEnabled, @convertEnabled, @convertFormat, @convertBitrate)
+INSERT INTO folder (root_path, display_name, enabled, library_id, desired_quality, desired_quality_value, auto_tag_enabled, auto_tag_profile_id, convert_enabled, convert_format, convert_bitrate)
+VALUES (@rootPath, @displayName, @enabled, @libraryId, @desiredQualityNumeric, @desiredQualityValue, @autoTagEnabled, @autoTagProfileId, @convertEnabled, @convertFormat, @convertBitrate)
 RETURNING id;";
         await using var command = new SqliteCommand(sql, connection);
         AddFolderCommonParameters(
@@ -5115,6 +5124,7 @@ RETURNING id;";
                 normalizedConvertFormat,
                 normalizedConvertBitrate));
         command.Parameters.AddWithValue("autoTagEnabled", autoTagEnabled);
+        command.Parameters.AddWithValue("autoTagProfileId", (object?)input.AutoTagProfileId ?? DBNull.Value);
         var insertedId = await command.ExecuteScalarAsync(cancellationToken);
         return (await GetFoldersAsync(cancellationToken)).First(folder => folder.Id == Convert.ToInt64(insertedId));
     }
@@ -5137,6 +5147,7 @@ SET root_path = @rootPath,
     library_id = @libraryId,
     desired_quality = @desiredQualityNumeric,
     desired_quality_value = @desiredQualityValue,
+    auto_tag_profile_id = CASE WHEN @replaceAutoTagProfile = 1 THEN @autoTagProfileId ELSE auto_tag_profile_id END,
     convert_enabled = @convertEnabled,
     convert_format = @convertFormat,
     convert_bitrate = @convertBitrate,
@@ -5156,6 +5167,8 @@ WHERE id = @id;";
                 normalizedConvertFormat,
                 normalizedConvertBitrate));
         command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("autoTagProfileId", (object?)input.AutoTagProfileId ?? DBNull.Value);
+        command.Parameters.AddWithValue("replaceAutoTagProfile", input.ReplaceAutoTagProfile ? 1 : 0);
         var rows = await command.ExecuteNonQueryAsync(cancellationToken);
         if (rows == 0)
         {

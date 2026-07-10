@@ -421,10 +421,10 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
                 DesiredQuality: "flac",
                 ConvertEnabled: false,
                 ConvertFormat: null,
-                ConvertBitrate: null));
+                ConvertBitrate: null,
+                AutoTagProfileId: profileId));
 
-        var activated = await _repository.UpdateFolderProfileAsync(folder.Id, profileId);
-        Assert.NotNull(activated);
+        var activated = folder;
         var enabled = await _repository.UpdateFolderAutoTagEnabledAsync(folder.Id, true);
         Assert.NotNull(enabled);
         return enabled!;

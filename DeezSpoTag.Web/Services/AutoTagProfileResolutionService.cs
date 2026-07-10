@@ -65,6 +65,8 @@ public sealed class AutoTagProfileResolutionService
 
         if (_libraryRepository.IsConfigured)
         {
+            var profiles = await _profileService.LoadAsync();
+            var defaultProfile = profiles.FirstOrDefault(profile => profile.IsDefault);
             var folders = await _libraryRepository.GetFoldersAsync(cancellationToken);
             foreach (var folder in folders)
             {
@@ -74,10 +76,18 @@ public sealed class AutoTagProfileResolutionService
                     continue;
                 }
 
-                await _libraryRepository.UpdateFolderProfileAsync(folder.Id, null, cancellationToken);
                 if (RequiresAutoTagProfile(folder))
                 {
-                    await _libraryRepository.UpdateFolderAutoTagEnabledAsync(folder.Id, false, cancellationToken);
+                    if (defaultProfile == null)
+                    {
+                        throw new InvalidOperationException("A default AutoTag profile is required to repair music-folder profile references.");
+                    }
+
+                    await _libraryRepository.UpdateFolderProfileAsync(folder.Id, defaultProfile.Id, cancellationToken);
+                }
+                else
+                {
+                    await _libraryRepository.UpdateFolderProfileAsync(folder.Id, null, cancellationToken);
                 }
             }
         }
@@ -304,6 +314,11 @@ public sealed class AutoTagProfileResolutionService
         var folder = originalFolder;
         var folderIdKey = folder.Id.ToString(CultureInfo.InvariantCulture);
         var effectiveProfileId = NormalizeProfileReference(profiles, folder.AutoTagProfileId, out _);
+        if (RequiresAutoTagProfile(folder) && string.IsNullOrWhiteSpace(effectiveProfileId))
+        {
+            effectiveProfileId = profiles.FirstOrDefault(profile => profile.IsDefault)?.Id
+                ?? throw new InvalidOperationException("A default AutoTag profile is required for every music folder.");
+        }
 
         if (!string.Equals(folder.AutoTagProfileId?.Trim(), effectiveProfileId, StringComparison.OrdinalIgnoreCase))
         {
@@ -313,12 +328,6 @@ public sealed class AutoTagProfileResolutionService
 
         var defaultsChanged = !RequiresAutoTagProfile(folder)
             && RemoveOptionalFolderDefaults(folderIdKey, mergedSchedules);
-
-        if (folder.AutoTagEnabled && string.IsNullOrWhiteSpace(effectiveProfileId) && RequiresAutoTagProfile(folder))
-        {
-            folder = await _libraryRepository.UpdateFolderAutoTagEnabledAsync(folder.Id, false, cancellationToken)
-                ?? folder with { AutoTagEnabled = false };
-        }
 
         return new NormalizedFolderResult(folder with { AutoTagProfileId = effectiveProfileId }, defaultsChanged);
     }
