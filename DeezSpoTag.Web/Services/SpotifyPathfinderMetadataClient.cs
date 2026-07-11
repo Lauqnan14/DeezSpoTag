@@ -5714,7 +5714,7 @@ public sealed class SpotifyPathfinderMetadataClient
         string albumGroup = MapReleaseTypeToAlbumGroup(releaseType);
         string? releaseDate = TryGetString(trackUnion, AlbumOfTrackKey, "date", IsoStringKey) ?? TryGetString(trackUnion, AlbumOfTrackKey, ReleaseDateKey) ?? TryGetString(trackUnion, AlbumOfTrackKey, ReleaseDateSnakeKey) ?? ExtractYearFromDate(trackUnion, AlbumOfTrackKey);
         int? durationMs = ResolveTrackDurationMs(trackUnion);
-        string? imageUrl = ExtractCoverUrl(trackUnion, "visualIdentity") ?? ExtractCoverUrl(trackUnion, AlbumOfTrackKey, CoverArtKey);
+        string? imageUrl = ResolveTrackImageUrl(trackUnion);
         string? isrc = ExtractIsrc(trackUnion);
         int? trackNumber = TryGetInt(trackUnion, "trackNumber") ?? TryGetInt(trackUnion, "track_number") ?? TryGetInt(trackUnion, "number");
         int? discNumber = TryGetInt(trackUnion, "discNumber") ?? TryGetInt(trackUnion, "disc_number");
@@ -5733,6 +5733,30 @@ public sealed class SpotifyPathfinderMetadataClient
             AlbumGroup = albumGroup,
             ReleaseType = releaseType
         };
+    }
+
+    private static string? ResolveTrackImageUrl(JsonElement trackUnion)
+    {
+        return FirstNonEmpty(
+            ExtractCoverOrDirectImageUrl(trackUnion, "visualIdentity"),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumOfTrackKey, CoverArtKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumOfTrackKey, ImagesKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumOfTrackKey, ImageKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumOfTrackKey, "image"),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumType, CoverArtKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumType, ImagesKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumType, ImageKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, AlbumType, "image"),
+            ExtractCoverOrDirectImageUrl(trackUnion, CoverArtKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, ImagesKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, ImageKey),
+            ExtractCoverOrDirectImageUrl(trackUnion, "image"),
+            ExtractDirectImageUrl(trackUnion));
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static void CollectPathfinderAudioFeatures(JsonElement element, HashSet<string> requestedTrackIds, Dictionary<string, SpotifyPathfinderAudioFeatures> output)
@@ -6582,6 +6606,19 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static string? ExtractDirectImageUrlFromArray(JsonElement node)
     {
+        var imageSources = node.EnumerateArray()
+            .Select(static item => TryParseImageSource(item, out var source) ? source : null)
+            .Where(static source => source is not null)
+            .Select(static source => source!)
+            .ToList();
+        if (imageSources.Count > 0)
+        {
+            return imageSources
+                .OrderByDescending(static source => Math.Max(source.Width, source.Height))
+                .Select(static source => source.Url)
+                .FirstOrDefault(static image => !string.IsNullOrWhiteSpace(image));
+        }
+
         return node.EnumerateArray()
             .Select(ExtractDirectImageUrl)
             .FirstOrDefault(static image => !string.IsNullOrWhiteSpace(image));
@@ -6626,16 +6663,13 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        foreach (JsonElement source in sources.EnumerateArray())
-        {
-            string? sourceUrl = NormalizeImageUrlCandidate(TryGetString(source, "url"));
-            if (!string.IsNullOrWhiteSpace(sourceUrl))
-            {
-                return sourceUrl;
-            }
-        }
-
-        return null;
+        return sources.EnumerateArray()
+            .Select(static source => TryParseImageSource(source, out var imageSource) ? imageSource : null)
+            .Where(static imageSource => imageSource is not null)
+            .Select(static imageSource => imageSource!)
+            .OrderByDescending(static imageSource => Math.Max(imageSource.Width, imageSource.Height))
+            .Select(static imageSource => imageSource.Url)
+            .FirstOrDefault(static sourceUrl => !string.IsNullOrWhiteSpace(sourceUrl));
     }
 
     private static string? NormalizeImageUrlCandidate(string? value)

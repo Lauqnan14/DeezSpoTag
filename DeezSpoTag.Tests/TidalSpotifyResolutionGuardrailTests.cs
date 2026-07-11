@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Text.Json;
 using DeezSpoTag.Web.Services;
 using Xunit;
 
@@ -72,6 +73,82 @@ public sealed class TidalSpotifyResolutionGuardrailTests
         Assert.DoesNotContain("api.spotify.com" + "/v1" + "/search", searchSource, StringComparison.Ordinal);
         Assert.False(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Services", "Download", "Spotify", "SpotifyIdResolver.cs")));
         Assert.True(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Web", "Tools", "spotify_librespot_search.py")));
+    }
+
+    [Fact]
+    public void SpotifySearchTrackParser_PreservesArtworkFromDirectImagesArray()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "id": "track123",
+          "name": "Track With Artwork",
+          "artists": { "items": [{ "profile": { "name": "Artist One" } }] },
+          "albumOfTrack": { "name": "Album One" },
+          "images": [
+            { "url": "https://i.scdn.co/image/small", "width": 64, "height": 64 },
+            { "url": "https://i.scdn.co/image/large", "width": 640, "height": 640 }
+          ],
+          "duration": { "totalMilliseconds": 180000 }
+        }
+        """);
+
+        var summary = InvokeParseTrackSummary(doc.RootElement);
+
+        Assert.NotNull(summary);
+        Assert.Equal("https://i.scdn.co/image/large", summary!.ImageUrl);
+    }
+
+    [Fact]
+    public void SpotifySearchTrackParser_PreservesArtworkFromNestedAlbumImages()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "data": {
+            "trackUnion": {
+              "uri": "spotify:track:nested123",
+              "name": "Nested Track",
+              "artists": { "items": [{ "profile": { "name": "Artist Two" } }] },
+              "albumOfTrack": {
+                "name": "Nested Album",
+                "images": {
+                  "items": [
+                    { "sources": [
+                      { "url": "https://i.scdn.co/image/album-small", "width": 64, "height": 64 },
+                      { "url": "https://i.scdn.co/image/album-large", "width": 640, "height": 640 }
+                    ] }
+                  ]
+                }
+              }
+            }
+          }
+        }
+        """);
+
+        var tracks = InvokeParseSearchSuggestionTracks(doc.RootElement, 10);
+
+        var track = Assert.Single(tracks);
+        Assert.Equal("https://i.scdn.co/image/album-large", track.ImageUrl);
+    }
+
+    [Fact]
+    public void SpotifySearchApiMapping_ExposesArtworkAliases()
+    {
+        var item = new SpotifySearchItem(
+            "track123",
+            "Track With Artwork",
+            "track",
+            "https://open.spotify.com/track/track123",
+            "https://i.scdn.co/image/track",
+            "Artist One • Album One",
+            180000,
+            Isrc: "USRC17607839");
+
+        var mapped = InvokeMapSpotifyItem(item);
+
+        Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "image"));
+        Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "imageUrl"));
+        Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "coverUrl"));
+        Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "cover"));
     }
 
     [Fact]
@@ -147,6 +224,48 @@ public sealed class TidalSpotifyResolutionGuardrailTests
         Assert.NotNull(method);
 
         return method!.Invoke(null, [items, title, artist, album, isrc, allowFirstWhenMetadataMissing]) as SpotifySearchItem;
+    }
+
+    private static SpotifyTrackSummary? InvokeParseTrackSummary(JsonElement element)
+    {
+        var method = typeof(SpotifyPathfinderMetadataClient).GetMethod(
+            "ParseTrackSummary",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        return method!.Invoke(null, [element]) as SpotifyTrackSummary;
+    }
+
+    private static List<SpotifyTrackSummary> InvokeParseSearchSuggestionTracks(JsonElement element, int limit)
+    {
+        var method = typeof(SpotifyPathfinderMetadataClient).GetMethod(
+            "ParseSearchSuggestionTracks",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        return Assert.IsType<List<SpotifyTrackSummary>>(method!.Invoke(null, [element, limit]));
+    }
+
+    private static object InvokeMapSpotifyItem(SpotifySearchItem item)
+    {
+        var method = typeof(DeezSpoTagSearchService).GetMethod(
+            "MapSpotifyItem",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var mapped = method!.Invoke(null, [item]);
+        Assert.NotNull(mapped);
+        return mapped!;
+    }
+
+    private static T? ReadAnonymousProperty<T>(object value, string propertyName)
+    {
+        var property = value.GetType().GetProperty(propertyName);
+        Assert.NotNull(property);
+        return (T?)property!.GetValue(value);
     }
 
     private static string ReadSource(params string[] relativeParts)

@@ -155,6 +155,7 @@ public sealed class DeezSpoTagSearchService
         var followers = isPlaylist ? item.Followers : ParseSpotifyFollowers(item);
         var owner = isPlaylist ? (item.Owner ?? artist) : string.Empty;
         var trackCount = isPlaylist ? item.TrackCount : null;
+        var imageUrl = item.ImageUrl ?? string.Empty;
 
         return new
         {
@@ -165,7 +166,10 @@ public sealed class DeezSpoTagSearchService
             name = item.Name,
             artist,
             album,
-            image = item.ImageUrl ?? string.Empty,
+            image = imageUrl,
+            imageUrl,
+            coverUrl = imageUrl,
+            cover = imageUrl,
             followers,
             owner,
             nb_tracks = trackCount,
