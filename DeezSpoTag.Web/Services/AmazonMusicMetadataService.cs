@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Matching;
 
@@ -440,7 +441,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Amazon Music typed {Type} search failed for {Keyword}.", normalizedType, keyword);
+            _logger.LogDebug(ex, "Amazon Music typed {Type} search failed for {Keyword}.", LogSanitizer.OneLine(normalizedType), LogSanitizer.OneLine(keyword));
             return [];
         }
     }
@@ -475,7 +476,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Amazon Music community playlist search failed for {Keyword}.", keyword);
+            _logger.LogDebug(ex, "Amazon Music community playlist search failed for {Keyword}.", LogSanitizer.OneLine(keyword));
             return [];
         }
     }
@@ -606,7 +607,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Amazon Music artist top tracks endpoint failed for {ArtistId}.", artistId);
+            _logger.LogDebug(ex, "Amazon Music artist top tracks endpoint failed for {ArtistId}.", LogSanitizer.OneLine(artistId));
             return [];
         }
     }

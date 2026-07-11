@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Linq;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Apple;
@@ -725,7 +726,8 @@ public static class AppleQueueHelpers
         {
             if (logger.IsEnabled(LogLevel.Debug))
             {
-                logger.LogDebug(ex, "Apple artist image lookup via song failed for {AppleSongId}", appleSongId);            }
+                logger.LogDebug(ex, "Apple artist image lookup via song failed for {AppleSongId}", LogSanitizer.OneLine(appleSongId));
+            }
             return null;
         }
     }

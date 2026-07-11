@@ -9,6 +9,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/download/intent")]
 [Authorize]
+[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public sealed class DownloadIntentApiController : ControllerBase
 {
     private static readonly string[] InternalErrorReasonCodes = { "download_enqueue_internal_error" };
