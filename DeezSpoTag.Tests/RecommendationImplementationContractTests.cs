@@ -127,6 +127,32 @@ public sealed class RecommendationImplementationContractTests
         Assert.Contains("RunHeavyWorkAsync", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ShazamRecommendationResolution_UsesCentralResolverWithoutLooseFallbacks()
+    {
+        var source = ReadRecommendationServiceSource();
+        var method = ExtractBetween(
+            source,
+            "private async Task<string> ResolveDeezerIdAsync",
+            "private async Task<string> TryResolveShazamCardThroughCentralResolverAsync");
+
+        var centralIndex = method.IndexOf("TryResolveShazamCardThroughCentralResolverAsync", StringComparison.Ordinal);
+
+        Assert.True(centralIndex >= 0, "Shazam recommendation related cards must use central identity resolution.");
+        Assert.DoesNotContain("TryResolveShazamCardByIsrcAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveShazamCardByMetadataAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecommendationGeneration_RecordsExposureHistoryForRotation()
+    {
+        var source = ReadRecommendationServiceSource();
+
+        Assert.Contains("ExposureHistoryCacheSource", source, StringComparison.Ordinal);
+        Assert.Contains("PreferFreshRecommendationCandidatesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("PersistRecommendationExposureHistoryAsync", source, StringComparison.Ordinal);
+    }
+
     private static string ReadRecommendationServiceSource()
         => File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "LibraryRecommendationService.cs"));
 

@@ -37,6 +37,9 @@ public sealed class LibraryRecommendationServiceTests
     private static readonly MethodInfo CreateUnavailableRecommendationDetailMethod = typeof(LibraryRecommendationService).GetMethod(
         "CreateUnavailableRecommendationDetail",
         BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly MethodInfo FilterDerivativeRecommendationCandidatesMethod = typeof(LibraryRecommendationService).GetMethod(
+        "FilterDerivativeRecommendationCandidates",
+        BindingFlags.NonPublic | BindingFlags.Static)!;
     private static readonly string[] GenerationQueuedReasonCodes = ["generation_queued"];
 
     [Fact]
@@ -132,6 +135,25 @@ public sealed class LibraryRecommendationServiceTests
     }
 
     [Fact]
+    public void FilterDerivativeRecommendationCandidates_RemovesInstrumentalVariants()
+    {
+        var tracks = new List<RecommendationTrackDto>
+        {
+            CreateTrack("1", "Real Song", "Main Artist", "Main Album"),
+            CreateTrack("2", "Real Song - Instrumental", "Main Artist", "Main Album"),
+            CreateTrack("3", "Real Song", "Karaoke Band", "Main Album")
+        };
+
+        var result = (List<RecommendationTrackDto>)FilterDerivativeRecommendationCandidatesMethod.Invoke(
+            null,
+            [tracks])!;
+
+        Assert.Single(result);
+        Assert.Equal("1", result[0].Id);
+        Assert.Equal(1, result[0].TrackPosition);
+    }
+
+    [Fact]
     public void BuildRecommendationArtworkAssignments_IsStableAcrossSameLocalDay()
     {
         var webRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-recommendations-{Guid.NewGuid():N}");
@@ -211,6 +233,18 @@ public sealed class LibraryRecommendationServiceTests
         }
 
         return tracks;
+    }
+
+    private static RecommendationTrackDto CreateTrack(string id, string title, string artist, string album)
+    {
+        return new RecommendationTrackDto(
+            id,
+            title,
+            180,
+            $"ISRC{id.PadLeft(8, '0')}",
+            int.Parse(id),
+            new RecommendationArtistDto(id, artist),
+            new RecommendationAlbumDto(id, album, $"https://example.com/{id}.jpg"));
     }
 
     private static FolderDto CreateFolder(long id, string name)

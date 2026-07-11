@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace DeezSpoTag.Integrations.Deezer;
 
-internal static class DeezerCandidateHeuristics
+public static class DeezerCandidateHeuristics
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly string[] DerivativeMarkers =
