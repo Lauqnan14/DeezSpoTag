@@ -3669,6 +3669,8 @@ function activityActionIconSvg(name) {
             return '<svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>';
         case 'retry':
             return '<svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 6V3L8 7l4 4V8c2.21 0 4 1.79 4 4a4 4 0 0 1-4 4c-1.48 0-2.77-.81-3.46-2h-2.2A6 6 0 1 0 12 6z"/></svg>';
+        case 'watch':
+            return '<svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5c5 0 9 5.5 10 7-1 1.5-5 7-10 7S3 13.5 2 12c1-1.5 5-7 10-7zm0 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0 2.2a1.8 1.8 0 1 1 0 3.6 1.8 1.8 0 0 1 0-3.6z"/></svg>';
         case 'delete':
             return '<svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 9v10H8V9h8zm-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1z"/></svg>';
         case 'cancel':
@@ -4627,6 +4629,7 @@ function getStatusIcon(status) {
         queued: '⏱',
         waiting: '⏱',
         paused: '⏸',
+        unavailable: '!',
         failed: '✕',
         canceled: '○'
     };
@@ -4699,6 +4702,7 @@ async function clearCanceledTasks() {
 	        running: 'badge-status',
 	        waiting: 'badge-status',
 	        paused: 'badge-status',
+	        unavailable: 'badge-failed',
 	        failed: 'badge-failed',
 	        canceled: 'badge-status'
 	    };
@@ -4935,6 +4939,7 @@ async function clearCanceledTasks() {
 	            statusForUi === 'failed'
 	            || statusForUi === 'canceled'
 	            || (statusForUi === 'complete' && task.failed > 0)));
+	        const canMonitorUnavailable = task.canMonitorUnavailable === true && statusForUi === 'unavailable';
 	        const canDelete = task.canDelete === true || (task.canDelete === undefined && (statusForUi === 'failed' || statusForUi === 'canceled'));
 	        const canCancel = task.canCancel === true || (task.canCancel === undefined && (
 	            statusForUi === 'queued'
@@ -4966,14 +4971,17 @@ async function clearCanceledTasks() {
 		        const deleteCanceledButton = canDelete && statusForUi === 'canceled'
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
+		        const monitorUnavailableButton = canMonitorUnavailable
+		            ? `<button type="button" class="action-btn action-btn-sm"${taskActionAttrs} onclick="monitorUnavailableTask('${safeTaskIdArg}')">${activityActionIconSvg('watch')}<span>Monitor</span></button>`
+		            : '';
 
 	        const cancelActionAttrs = (taskActionInFlight && !task._retryInFlight) ? ' disabled aria-disabled="true"' : '';
 		        const cancelButton = canCancel
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${cancelActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
 		            : '';
 
-        const taskActions = (pauseButton || resumeButton || retryButton || deleteFailedButton || deleteCanceledButton || cancelButton)
-            ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${deleteFailedButton}${deleteCanceledButton}${cancelButton}</div>`
+        const taskActions = (pauseButton || resumeButton || retryButton || monitorUnavailableButton || deleteFailedButton || deleteCanceledButton || cancelButton)
+            ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${monitorUnavailableButton}${deleteFailedButton}${deleteCanceledButton}${cancelButton}</div>`
             : '';
 
         const displayQuality = normalizeTaskQualityLabel(task);
@@ -5248,6 +5256,31 @@ async function deleteFailedTask(taskId) {
     }
 }
 
+async function monitorUnavailableTask(taskId) {
+    const target = beginTaskAction(taskId);
+    if (!target) {
+        return;
+    }
+
+    try {
+        const payload = await ensureJsonActionSuccess('/Activities/MonitorUnavailable', { uuid: taskId });
+        target.canMonitorUnavailable = false;
+        scheduleRenderTasks();
+        if (window.DeezSpoTag?.showNotification) {
+            window.DeezSpoTag.showNotification(payload?.message || 'Unavailable track monitored.', 'success');
+        }
+        if (typeof window.loadPlaylistWatchlist === 'function') {
+            await window.loadPlaylistWatchlist();
+        }
+        await loadQueueFromServer({ force: true });
+    } catch (error) {
+        console.error(`Failed to monitor unavailable task ${taskId}:`, error);
+        showDownloadActionError(error?.message, 'Failed to monitor unavailable track.');
+    } finally {
+        endTaskAction(taskId);
+    }
+}
+
 async function pauseTask(taskId) {
     const target = beginTaskAction(taskId);
     if (!target) {
@@ -5441,6 +5474,7 @@ function mapQueueItem(item) {
         canRetry: getQueueBoolFlag(item, 'canRetry', 'CanRetry'),
         canDelete: getQueueBoolFlag(item, 'canDelete', 'CanDelete'),
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
+        canMonitorUnavailable: getQueueBoolFlag(item, 'canMonitorUnavailable', 'CanMonitorUnavailable'),
         lyricsBadges,
         cover: getCoverFromPayload(item)
     };
@@ -5570,6 +5604,7 @@ function mergeQueueTask(existing, incoming) {
         canRetry: incoming.canRetry,
         canDelete: incoming.canDelete,
         canClear: incoming.canClear,
+        canMonitorUnavailable: incoming.canMonitorUnavailable,
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
@@ -5794,6 +5829,7 @@ function mapStatus(status) {
         done: 'complete',
         success: 'complete',
         failed: 'failed',
+        unavailable: 'unavailable',
         error: 'failed',
         cancelled: 'canceled',
         canceled: 'canceled',

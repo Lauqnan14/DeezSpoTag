@@ -6539,6 +6539,10 @@ public sealed class DownloadIntentService
         }
 
         var finalOutputPath = await ResolveExpectedFinalOutputPathAsync(payload, context, cancellationToken);
+        if (payload is EngineQueueItemBase enginePayloadForDestination)
+        {
+            enginePayloadForDestination.ExpectedFinalOutputPath = finalOutputPath ?? string.Empty;
+        }
         var dedupeDecision = await _dedupeService.CheckAsync(BuildDedupeRequest(context, finalOutputPath), cancellationToken);
         if (!dedupeDecision.Allowed)
         {

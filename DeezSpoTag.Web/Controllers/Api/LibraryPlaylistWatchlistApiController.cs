@@ -133,6 +133,37 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         });
     }
 
+    [HttpGet("manual-unavailable")]
+    public async Task<IActionResult> GetManualUnavailable(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var tracks = await _repository.GetManualUnavailableTracksAsync(cancellationToken);
+        return Ok(new
+        {
+            imageUrl = "/images/unavailable/unavailable.jpg",
+            count = tracks.Count,
+            tracks
+        });
+    }
+
+    [HttpDelete("manual-unavailable/{id:long}")]
+    public async Task<IActionResult> DeleteManualUnavailable(long id, CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var deleted = await _repository.DeleteManualUnavailableTrackAsync(id, cancellationToken);
+        return deleted
+            ? Ok(new { success = true, deleted = true })
+            : NotFound("Unavailable track record not found.");
+    }
+
     private PlaylistWatchlistDto HydratePlaylistVisual(PlaylistWatchlistDto item)
     {
         var visual = _playlistVisualService.GetStoredVisual(item.Source, item.SourceId);

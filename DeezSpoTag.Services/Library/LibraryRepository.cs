@@ -12914,8 +12914,223 @@ ON CONFLICT(artist_id, server) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ManualUnavailableTrackDto>> GetManualUnavailableTracksAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured)
+        {
+            return Array.Empty<ManualUnavailableTrackDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id,
+       queue_uuid,
+       title,
+       artist,
+       album,
+       album_artist,
+       isrc,
+       engine,
+       source_service,
+       source_url,
+       deezer_track_id,
+       spotify_track_id,
+       apple_track_id,
+       qobuz_track_id,
+       tidal_track_id,
+       amazon_track_id,
+       destination_folder_id,
+       expected_final_path,
+       quality,
+       content_type,
+       reason,
+       payload_json,
+       first_unavailable_at_utc,
+       added_at_utc,
+       updated_at_utc
+FROM manual_unavailable_track
+ORDER BY added_at_utc DESC, id DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<ManualUnavailableTrackDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(await ReadManualUnavailableTrackAsync(reader, cancellationToken));
+        }
+
+        return results;
+    }
+
+    public async Task<bool> IsManualUnavailableTrackMonitoredAsync(
+        string queueUuid,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid) || !IsConfigured)
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(
+            "SELECT 1 FROM manual_unavailable_track WHERE queue_uuid = @queueUuid LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid.Trim());
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    public async Task<ManualUnavailableTrackDto?> UpsertManualUnavailableTrackAsync(
+        ManualUnavailableTrackUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || string.IsNullOrWhiteSpace(input.QueueUuid))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        const string sql = @"
+INSERT INTO manual_unavailable_track (
+    queue_uuid, title, artist, album, album_artist, isrc, engine, source_service, source_url,
+    deezer_track_id, spotify_track_id, apple_track_id, qobuz_track_id, tidal_track_id, amazon_track_id,
+    destination_folder_id, expected_final_path, quality, content_type, reason, payload_json,
+    first_unavailable_at_utc, added_at_utc, updated_at_utc)
+VALUES (
+    @queueUuid, @title, @artist, @album, @albumArtist, @isrc, @engine, @sourceService, @sourceUrl,
+    @deezerTrackId, @spotifyTrackId, @appleTrackId, @qobuzTrackId, @tidalTrackId, @amazonTrackId,
+    @destinationFolderId, @expectedFinalPath, @quality, @contentType, @reason, @payloadJson,
+    @now, @now, @now)
+ON CONFLICT(queue_uuid) DO UPDATE SET
+    title = excluded.title,
+    artist = excluded.artist,
+    album = excluded.album,
+    album_artist = excluded.album_artist,
+    isrc = excluded.isrc,
+    engine = excluded.engine,
+    source_service = excluded.source_service,
+    source_url = excluded.source_url,
+    deezer_track_id = excluded.deezer_track_id,
+    spotify_track_id = excluded.spotify_track_id,
+    apple_track_id = excluded.apple_track_id,
+    qobuz_track_id = excluded.qobuz_track_id,
+    tidal_track_id = excluded.tidal_track_id,
+    amazon_track_id = excluded.amazon_track_id,
+    destination_folder_id = excluded.destination_folder_id,
+    expected_final_path = excluded.expected_final_path,
+    quality = excluded.quality,
+    content_type = excluded.content_type,
+    reason = excluded.reason,
+    payload_json = excluded.payload_json,
+    updated_at_utc = excluded.updated_at_utc
+RETURNING id,
+          queue_uuid,
+          title,
+          artist,
+          album,
+          album_artist,
+          isrc,
+          engine,
+          source_service,
+          source_url,
+          deezer_track_id,
+          spotify_track_id,
+          apple_track_id,
+          qobuz_track_id,
+          tidal_track_id,
+          amazon_track_id,
+          destination_folder_id,
+          expected_final_path,
+          quality,
+          content_type,
+          reason,
+          payload_json,
+          first_unavailable_at_utc,
+          added_at_utc,
+          updated_at_utc;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", input.QueueUuid.Trim());
+        command.Parameters.AddWithValue("title", NormalizeRequiredText(input.Title, "Unknown Track"));
+        command.Parameters.AddWithValue("artist", NormalizeRequiredText(input.Artist, "Unknown Artist"));
+        command.Parameters.AddWithValue("album", ToDbText(input.Album));
+        command.Parameters.AddWithValue("albumArtist", ToDbText(input.AlbumArtist));
+        command.Parameters.AddWithValue("isrc", ToDbText(input.Isrc));
+        command.Parameters.AddWithValue("engine", ToDbText(input.Engine));
+        command.Parameters.AddWithValue("sourceService", ToDbText(input.SourceService));
+        command.Parameters.AddWithValue("sourceUrl", ToDbText(input.SourceUrl));
+        command.Parameters.AddWithValue("deezerTrackId", ToDbText(input.DeezerId));
+        command.Parameters.AddWithValue("spotifyTrackId", ToDbText(input.SpotifyId));
+        command.Parameters.AddWithValue("appleTrackId", ToDbText(input.AppleId));
+        command.Parameters.AddWithValue("qobuzTrackId", ToDbText(input.QobuzId));
+        command.Parameters.AddWithValue("tidalTrackId", ToDbText(input.TidalId));
+        command.Parameters.AddWithValue("amazonTrackId", ToDbText(input.AmazonId));
+        command.Parameters.AddWithValue("destinationFolderId", input.DestinationFolderId.HasValue ? input.DestinationFolderId.Value : DBNull.Value);
+        command.Parameters.AddWithValue("expectedFinalPath", ToDbText(input.ExpectedFinalPath));
+        command.Parameters.AddWithValue("quality", ToDbText(input.Quality));
+        command.Parameters.AddWithValue("contentType", ToDbText(input.ContentType));
+        command.Parameters.AddWithValue("reason", ToDbText(input.Reason));
+        command.Parameters.AddWithValue("payloadJson", ToDbText(input.PayloadJson));
+        command.Parameters.AddWithValue("now", now);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? await ReadManualUnavailableTrackAsync(reader, cancellationToken)
+            : null;
+    }
+
+    public async Task<bool> DeleteManualUnavailableTrackAsync(
+        long id,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || id <= 0)
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand("DELETE FROM manual_unavailable_track WHERE id = @id;", connection);
+        command.Parameters.AddWithValue("id", id);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    private static async Task<ManualUnavailableTrackDto> ReadManualUnavailableTrackAsync(
+        SqliteDataReader reader,
+        CancellationToken cancellationToken)
+        => new(
+            reader.GetInt64(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
+            await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
+            await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
+            await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
+            await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
+            await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetString(12),
+            await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13),
+            await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetString(14),
+            await reader.IsDBNullAsync(15, cancellationToken) ? null : reader.GetString(15),
+            await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetInt64(16),
+            await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetString(17),
+            await reader.IsDBNullAsync(18, cancellationToken) ? null : reader.GetString(18),
+            await reader.IsDBNullAsync(19, cancellationToken) ? null : reader.GetString(19),
+            await reader.IsDBNullAsync(20, cancellationToken) ? null : reader.GetString(20),
+            await reader.IsDBNullAsync(21, cancellationToken) ? null : reader.GetString(21),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(22)),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(23)),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(24)));
+
     private static object ToDbDate(DateTimeOffset? value)
         => value.HasValue ? value.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture) : DBNull.Value;
+
+    private static object ToDbText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? DBNull.Value : value.Trim();
+
+    private static string NormalizeRequiredText(string? value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
     private static IReadOnlyList<string> DeserializeArtistMetadataTargetList(string? json)
     {

@@ -65,6 +65,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public long EndTime { get; set; }
     public string ErrorMessage { get; set; } = "";
     public string FilePath { get; set; } = "";
+    public string ExpectedFinalOutputPath { get; set; } = "";
     public string Profile { get; set; } = "";
     public string QualityBucket { get; set; } = "";
     [JsonPropertyName("finalDestinations")]
@@ -102,6 +103,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["qobuzId"] = QobuzId,
             ["tidalId"] = TidalId,
             ["amazonId"] = AmazonId,
+            ["expectedFinalOutputPath"] = ExpectedFinalOutputPath,
             ["watchlistUnavailableSettingsFingerprint"] = WatchlistUnavailableSettingsFingerprint
         };
 

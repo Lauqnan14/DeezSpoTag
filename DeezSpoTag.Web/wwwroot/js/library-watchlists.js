@@ -1478,7 +1478,7 @@ function bindPlaylistWatchlistRealtimeRefresh() {
 }
 
 function refreshPlaylistWatchlistPriorityBadges(container) {
-    container.querySelectorAll('.watchlist-playlist-card-v2').forEach((card, index) => {
+    container.querySelectorAll('.watchlist-playlist-card-v2[data-playlist-source][data-playlist-id]').forEach((card, index) => {
         const badge = card.querySelector('.playlist-watchlist-priority-badge');
         const priorityNumber = index + 1;
         if (badge) {
@@ -1489,7 +1489,7 @@ function refreshPlaylistWatchlistPriorityBadges(container) {
 }
 
 function collectPlaylistWatchlistPriorityOrder(container) {
-    return Array.from(container.querySelectorAll('.watchlist-playlist-card-v2'))
+    return Array.from(container.querySelectorAll('.watchlist-playlist-card-v2[data-playlist-source][data-playlist-id]'))
         .map(card => ({
             source: card.dataset.playlistSource || '',
             sourceId: card.dataset.playlistId || ''
@@ -1514,7 +1514,7 @@ function bindPlaylistWatchlistDragOrdering(container) {
     let draggedCard = null;
     let dragMoved = false;
 
-    container.querySelectorAll('.watchlist-playlist-card-v2').forEach(card => {
+    container.querySelectorAll('.watchlist-playlist-card-v2[data-playlist-source][data-playlist-id]').forEach(card => {
         card.addEventListener('dragstart', (event) => {
             draggedCard = card;
             dragMoved = false;
@@ -1550,7 +1550,7 @@ function bindPlaylistWatchlistDragOrdering(container) {
             return;
         }
 
-        const target = event.target.closest('.watchlist-playlist-card-v2');
+        const target = event.target.closest('.watchlist-playlist-card-v2[data-playlist-source][data-playlist-id]');
         if (!target || target === draggedCard || !container.contains(target)) {
             return;
         }
@@ -1592,11 +1592,15 @@ async function loadPlaylistWatchlist() {
                 libraryState.folders = [];
             }
         }
-        const [items, runtime] = await Promise.all([
+        const [itemsRaw, runtime, manualUnavailable] = await Promise.all([
             fetchJson('/api/library/playlists'),
-            fetchJson('/api/library/playlists/watch-runtime').catch(() => null)
+            fetchJson('/api/library/playlists/watch-runtime').catch(() => null),
+            fetchJson('/api/library/playlists/manual-unavailable').catch(() => ({ count: 0, tracks: [] }))
         ]);
-        if (!Array.isArray(items) || items.length === 0) {
+        const items = Array.isArray(itemsRaw) ? itemsRaw : [];
+        const manualUnavailableTracks = Array.isArray(manualUnavailable?.tracks) ? manualUnavailable.tracks : [];
+        const hasManualUnavailable = manualUnavailableTracks.length > 0;
+        if (items.length === 0 && !hasManualUnavailable) {
             container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
             container.dataset.loadState = 'ready';
             return;
@@ -1649,7 +1653,11 @@ async function loadPlaylistWatchlist() {
 
         const playlistPrefsPromise = hydratePlaylistPreferences();
 
-        container.innerHTML = items.map((item, index) => {
+        const manualUnavailableCard = hasManualUnavailable
+            ? renderManualUnavailablePlaylistCard(manualUnavailableTracks, manualUnavailable?.imageUrl)
+            : '';
+
+        container.innerHTML = manualUnavailableCard + items.map((item, index) => {
             const imageUrl = toSafeHttpUrl(item.imageUrl || '');
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
@@ -1732,6 +1740,12 @@ async function loadPlaylistWatchlist() {
             });
         });
 
+        container.querySelectorAll('[data-manual-unavailable-open]').forEach(button => {
+            button.addEventListener('click', () => {
+                openManualUnavailablePlaylistPanel(manualUnavailableTracks);
+            });
+        });
+
         const closePlaylistActionMenus = () => {
             container.querySelectorAll('[data-playlist-menu]').forEach(menu => {
                 menu.hidden = true;
@@ -1781,7 +1795,7 @@ async function loadPlaylistWatchlist() {
                     if (card) {
                         card.remove();
                     }
-                    const remainingCards = container.querySelectorAll('.watchlist-playlist-card-v2').length;
+                    const remainingCards = container.querySelectorAll('.watchlist-playlist-card-v2[data-playlist-source][data-playlist-id]').length;
                     if (remainingCards === 0) {
                         container.innerHTML = '<div class="watchlist-empty-state">No monitored playlists yet.</div>';
                     }
@@ -1936,6 +1950,110 @@ async function loadPlaylistWatchlist() {
         container.dataset.loadState = 'error';
         container.innerHTML = `<div class="watchlist-empty-state">Failed to load playlists: ${escapeHtml(error?.message || 'Unknown error')}</div>`;
     }
+}
+
+globalThis.loadPlaylistWatchlist = loadPlaylistWatchlist;
+
+function renderManualUnavailablePlaylistCard(tracks, imageUrl) {
+    const count = Array.isArray(tracks) ? tracks.length : 0;
+    if (count <= 0) {
+        return '';
+    }
+
+    const safeImageUrl = toSafeHttpUrl(imageUrl || '/images/unavailable/unavailable.jpg') || '/images/unavailable/unavailable.jpg';
+    const trackLabel = `${count} unavailable track${count === 1 ? '' : 's'}`;
+    return `<div class="watchlist-playlist-card-v2 watchlist-playlist-card-v2--manual-unavailable" data-manual-unavailable-card="true">
+        <button class="watchlist-card-art" type="button" data-manual-unavailable-open="true">
+            <img src="${escapeHtml(safeImageUrl)}" alt="Unavailable Tracks" />
+            <div class="playlist-watchlist-presentation-slot">
+                <span class="playlist-watchlist-state-badge playlist-watchlist-state-badge--unavailable" title="${escapeHtml(trackLabel)}"><i class="fa-solid fa-triangle-exclamation"></i></span>
+            </div>
+        </button>
+        <div class="watchlist-card-strip">
+            <div class="watchlist-card-name">Unavailable Tracks</div>
+            <div class="watchlist-card-meta">${escapeHtml(trackLabel)}</div>
+            <div class="watchlist-card-meta">Manual downloads only</div>
+        </div>
+    </div>`;
+}
+
+function openManualUnavailablePlaylistPanel(tracks) {
+    const existing = document.getElementById('manualUnavailablePlaylistPanel');
+    if (existing) {
+        existing.remove();
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'manualUnavailablePlaylistPanel';
+    overlay.className = 'playlist-settings-overlay manual-unavailable-overlay';
+    const rows = Array.isArray(tracks) && tracks.length > 0
+        ? tracks.map(track => renderManualUnavailableTrackRow(track)).join('')
+        : '<div class="watchlist-empty-state">No unavailable tracks.</div>';
+    overlay.innerHTML = `<div class="playlist-settings-panel watchlist-playlist-settings manual-unavailable-panel">
+        <div class="playlist-settings-panel-header">
+            <div>
+                <h3>Unavailable Tracks</h3>
+                <p>Manual downloads that were unavailable from enabled sources.</p>
+            </div>
+            <button type="button" class="playlist-settings-close" data-manual-unavailable-close aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="manual-unavailable-tracklist">${rows}</div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('[data-manual-unavailable-close]')?.addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', event => {
+        if (event.target === overlay) {
+            overlay.remove();
+        }
+    });
+    overlay.querySelectorAll('[data-manual-unavailable-delete]').forEach(button => {
+        button.addEventListener('click', async () => {
+            const id = button.dataset.manualUnavailableDelete;
+            if (!id) {
+                return;
+            }
+            const confirmed = await confirmWithAppUi(
+                'Delete this unavailable track record permanently?',
+                { title: 'Delete Unavailable Record', okText: 'Delete' });
+            if (!confirmed) {
+                return;
+            }
+            button.disabled = true;
+            try {
+                await fetchJson(`/api/library/playlists/manual-unavailable/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                button.closest('.manual-unavailable-row')?.remove();
+                await loadPlaylistWatchlist();
+                if (!overlay.querySelector('.manual-unavailable-row')) {
+                    overlay.remove();
+                }
+            } catch (error) {
+                button.disabled = false;
+                showToast(`Unavailable record delete failed: ${error.message}`, true);
+            }
+        });
+    });
+}
+
+function renderManualUnavailableTrackRow(track) {
+    const title = track?.title || 'Unknown Track';
+    const artist = track?.artist || 'Unknown Artist';
+    const album = track?.album || '';
+    const quality = track?.quality || track?.contentType || '';
+    const destination = track?.expectedFinalPath || (track?.destinationFolderId ? `Destination folder ${track.destinationFolderId}` : '');
+    const reason = track?.reason || 'Unavailable from enabled sources.';
+    return `<div class="manual-unavailable-row">
+        <div class="manual-unavailable-row-main">
+            <div class="manual-unavailable-title">${escapeHtml(title)}</div>
+            <div class="manual-unavailable-meta">${escapeHtml([artist, album].filter(Boolean).join(' • '))}</div>
+            ${quality ? `<div class="manual-unavailable-meta">${escapeHtml(quality)}</div>` : ''}
+            ${destination ? `<div class="manual-unavailable-meta">${escapeHtml(destination)}</div>` : ''}
+            <div class="manual-unavailable-reason">${escapeHtml(reason)}</div>
+        </div>
+        <button type="button" class="dropdown-item danger manual-unavailable-delete" data-manual-unavailable-delete="${escapeHtml(String(track?.id || ''))}">
+            <i class="fa-solid fa-trash"></i>
+            <span>Delete</span>
+        </button>
+    </div>`;
 }
 
 function bindPlaylistWatchlistTabHydration() {

@@ -61,6 +61,7 @@ internal static class DownloadQueueEnqueueHelper
             settingsService,
             serviceProvider,
             cancellationToken);
+        payload.ExpectedFinalOutputPath = finalOutputPath ?? string.Empty;
         var dedupeDecision = await dedupeService.CheckAsync(
             DownloadDedupeService.FromQueuePayload(
                 payload,

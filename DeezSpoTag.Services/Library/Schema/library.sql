@@ -601,6 +601,40 @@ CREATE INDEX IF NOT EXISTS idx_download_blocklist_field
 CREATE INDEX IF NOT EXISTS idx_download_blocklist_normalized
     ON download_blocklist (normalized_value, is_enabled);
 
+CREATE TABLE IF NOT EXISTS manual_unavailable_track (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_uuid TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT,
+    album_artist TEXT,
+    isrc TEXT,
+    engine TEXT,
+    source_service TEXT,
+    source_url TEXT,
+    deezer_track_id TEXT,
+    spotify_track_id TEXT,
+    apple_track_id TEXT,
+    qobuz_track_id TEXT,
+    tidal_track_id TEXT,
+    amazon_track_id TEXT,
+    destination_folder_id INTEGER,
+    expected_final_path TEXT,
+    quality TEXT,
+    content_type TEXT,
+    reason TEXT,
+    payload_json TEXT,
+    first_unavailable_at_utc TEXT NOT NULL,
+    added_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_added
+    ON manual_unavailable_track (added_at_utc DESC);
+
+CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_destination
+    ON manual_unavailable_track (destination_folder_id);
+
 CREATE TABLE IF NOT EXISTS track_shazam_cache (
     track_id BIGINT PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
     shazam_track_id TEXT,

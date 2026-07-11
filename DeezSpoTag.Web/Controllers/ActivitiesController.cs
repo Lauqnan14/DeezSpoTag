@@ -8,6 +8,7 @@ using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Library;
 using System.Linq;
 using System.Text.Json;
 using DeezSpoTag.Core.Security;
@@ -36,6 +37,7 @@ public class ActivitiesController : Controller
     private const string DoneStatus = "done";
     private const string SuccessStatus = "success";
     private const string ErrorStatus = "error";
+    private const string UnavailableStatus = "unavailable";
     private const string UiQueuedStatus = "queued";
     private const string UiCompleteStatus = "complete";
     private const string DownloadNotFoundMessage = "Download not found in queue";
@@ -460,6 +462,67 @@ public class ActivitiesController : Controller
     }
 
     [HttpPost]
+    public async Task<IActionResult> MonitorUnavailable([FromBody] CancelDownloadRequest request)
+    {
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(request.Uuid))
+            {
+                return BadRequest("UUID is required");
+            }
+
+            var item = await _queueRepository.GetByUuidAsync(request.Uuid, HttpContext.RequestAborted);
+            if (item == null)
+            {
+                return NotFound(DownloadNotFoundMessage);
+            }
+
+            if (!IsUnavailableActivityItem(item))
+            {
+                return BadRequest("Only unavailable downloads can be monitored.");
+            }
+
+            var payload = ParsePayload(item.PayloadJson);
+            NormalizePayloadKeys(payload);
+            if (IsWatchlistQueuePayload(payload))
+            {
+                return BadRequest("Monitored playlist unavailable tracks use the existing watchlist unavailable tracking.");
+            }
+
+            var repository = _serviceProvider.GetRequiredService<LibraryRepository>();
+            if (!repository.IsConfigured)
+            {
+                return BadRequest("Library database is not configured.");
+            }
+
+            var saved = await repository.UpsertManualUnavailableTrackAsync(
+                BuildManualUnavailableTrackInput(item, payload),
+                HttpContext.RequestAborted);
+            if (saved is null)
+            {
+                return StatusCode(500, "Failed to monitor unavailable track.");
+            }
+
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Added unavailable manual download {Uuid} to unavailable playlist.", LogSanitizer.OneLine(request.Uuid));
+            }
+
+            return Json(new { success = true, message = "Unavailable track monitored.", track = saved });
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Error monitoring unavailable download {Uuid}", LogSanitizer.OneLine(request.Uuid));
+            return ErrorJson("Failed to monitor unavailable track.");
+        }
+    }
+
+    [HttpPost]
     public async Task<IActionResult> ClearAll()
     {
         try
@@ -519,6 +582,7 @@ public class ActivitiesController : Controller
         var selectedItems = await _queueRepository.GetActivitiesTasksAsync(
             ActivitiesTerminalItemLimit,
             HttpContext.RequestAborted);
+        var monitoredUnavailableQueueUuids = await GetManualUnavailableQueueUuidSetAsync(HttpContext.RequestAborted);
 
         var queue = new Dictionary<string, Dictionary<string, object>>();
         var queueOrder = new List<string>();
@@ -530,7 +594,7 @@ public class ActivitiesController : Controller
                 continue;
             }
 
-            var payload = BuildQueuePayload(item, settings);
+            var payload = BuildQueuePayload(item, settings, monitoredUnavailableQueueUuids);
             queue[item.QueueUuid] = payload;
             queueOrder.Add(item.QueueUuid);
         }
@@ -542,6 +606,21 @@ public class ActivitiesController : Controller
         };
     }
 
+    private async Task<HashSet<string>> GetManualUnavailableQueueUuidSetAsync(CancellationToken cancellationToken)
+    {
+        var repository = _serviceProvider.GetService<LibraryRepository>();
+        if (repository == null || !repository.IsConfigured)
+        {
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var records = await repository.GetManualUnavailableTracksAsync(cancellationToken);
+        return records
+            .Select(record => record.QueueUuid)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     private static bool IsTerminalQueueStatus(string? status)
     {
         return IsTerminalActivityStatus(GetActivityStatus(status));
@@ -550,6 +629,7 @@ public class ActivitiesController : Controller
     private static bool IsTerminalActivityStatus(ActivityStatus status)
     {
         return status is ActivityStatus.Complete
+            or ActivityStatus.Unavailable
             or ActivityStatus.Failed
             or ActivityStatus.Canceled;
     }
@@ -630,10 +710,16 @@ public class ActivitiesController : Controller
         return IsTerminalActivityStatus(GetActivityStatus(item.Status));
     }
 
+    private static bool IsUnavailableActivityItem(DownloadQueueItem item)
+        => string.Equals((item.Status ?? string.Empty).Trim(), UnavailableStatus, StringComparison.OrdinalIgnoreCase);
+
     private DeezSpoTag.Services.Download.Shared.DeezSpoTagApp GetDeezSpoTagApp()
         => _serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.DeezSpoTagApp>();
 
-    private static Dictionary<string, object> BuildQueuePayload(DownloadQueueItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    private static Dictionary<string, object> BuildQueuePayload(
+        DownloadQueueItem item,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        IReadOnlySet<string>? monitoredUnavailableQueueUuids = null)
     {
         var payload = ParsePayload(item.PayloadJson);
         NormalizePayloadKeys(payload);
@@ -650,6 +736,7 @@ public class ActivitiesController : Controller
         payload["canRetry"] = CanRetryActivityItem(item);
         payload["canDelete"] = CanDeleteActivityItem(item);
         payload["canClear"] = CanClearActivityItem(item);
+        payload["canMonitorUnavailable"] = CanMonitorUnavailableItem(item, payload, monitoredUnavailableQueueUuids);
         if (!string.IsNullOrWhiteSpace(item.Error))
         {
             payload["error"] = item.Error;
@@ -670,6 +757,112 @@ public class ActivitiesController : Controller
             CacheQueuePayload(cacheKey, payload);
         }
         return payload;
+    }
+
+    private static bool CanMonitorUnavailableItem(
+        DownloadQueueItem item,
+        IReadOnlyDictionary<string, object> payload,
+        IReadOnlySet<string>? monitoredUnavailableQueueUuids)
+        => IsUnavailableActivityItem(item)
+            && !IsWatchlistQueuePayload(payload)
+            && (monitoredUnavailableQueueUuids == null || !monitoredUnavailableQueueUuids.Contains(item.QueueUuid));
+
+    private static bool IsWatchlistQueuePayload(IReadOnlyDictionary<string, object> payload)
+        => !string.IsNullOrWhiteSpace(GetPayloadString(payload, "watchlistSource", "WatchlistSource"))
+            || !string.IsNullOrWhiteSpace(GetPayloadString(payload, "watchlistPlaylistId", "WatchlistPlaylistId"))
+            || !string.IsNullOrWhiteSpace(GetPayloadString(payload, "watchlistOrigin", "WatchlistOrigin"));
+
+    private static ManualUnavailableTrackUpsertInput BuildManualUnavailableTrackInput(
+        DownloadQueueItem item,
+        IReadOnlyDictionary<string, object> payload)
+        => new(
+            item.QueueUuid,
+            FirstNonEmpty(GetPayloadString(payload, "title", "Title"), item.TrackTitle, "Unknown Track")!,
+            FirstNonEmpty(GetPayloadString(payload, "artist", "Artist"), item.ArtistName, "Unknown Artist")!,
+            GetPayloadString(payload, "album", "Album"),
+            GetPayloadString(payload, "albumArtist", "AlbumArtist", "album_artist"),
+            FirstNonEmpty(GetPayloadString(payload, "isrc", "Isrc"), item.Isrc),
+            FirstNonEmpty(GetPayloadString(payload, "engine", "Engine"), item.Engine),
+            GetPayloadString(payload, "sourceService", "SourceService"),
+            GetPayloadString(payload, "sourceUrl", "SourceUrl", "url", "Url"),
+            FirstNonEmpty(GetPayloadString(payload, "deezerId", "DeezerId", "deezerTrackId"), item.DeezerTrackId),
+            FirstNonEmpty(GetPayloadString(payload, "spotifyId", "SpotifyId", "spotifyTrackId"), item.SpotifyTrackId),
+            FirstNonEmpty(GetPayloadString(payload, "appleId", "AppleId", "appleTrackId"), item.AppleTrackId),
+            FirstNonEmpty(GetPayloadString(payload, "qobuzId", "QobuzId", "qobuzTrackId"), item.QobuzTrackId),
+            FirstNonEmpty(GetPayloadString(payload, "tidalId", "TidalId", "tidalTrackId"), item.TidalTrackId),
+            FirstNonEmpty(GetPayloadString(payload, "amazonId", "AmazonId", "amazonTrackId"), item.AmazonTrackId),
+            item.DestinationFolderId,
+            ResolveExpectedFinalPathForUnavailableRecord(item, payload),
+            GetPayloadString(payload, "quality", "Quality"),
+            FirstNonEmpty(GetPayloadString(payload, "contentType", "ContentType"), item.ContentType),
+            FirstNonEmpty(item.Error, GetPayloadString(payload, "error", "Error", "errorMessage", "ErrorMessage")),
+            item.PayloadJson);
+
+    private static string? ResolveExpectedFinalPathForUnavailableRecord(
+        DownloadQueueItem item,
+        IReadOnlyDictionary<string, object> payload)
+    {
+        var expected = GetPayloadString(payload, "expectedFinalOutputPath", "ExpectedFinalOutputPath");
+        if (!string.IsNullOrWhiteSpace(expected))
+        {
+            return expected;
+        }
+
+        var finalDestination = ReadFirstFinalDestination(item.FinalDestinationsJson);
+        if (!string.IsNullOrWhiteSpace(finalDestination))
+        {
+            return finalDestination;
+        }
+
+        return FirstNonEmpty(GetPayloadString(payload, "filePath", "FilePath"), GetPayloadString(payload, "path", "Path"));
+    }
+
+    private static string? ReadFirstFinalDestination(string? finalDestinationsJson)
+    {
+        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(finalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.String)
+                {
+                    var value = property.Value.GetString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        return value;
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
     }
 
     private static bool ShouldAttachLyricsFiles(string? status)
@@ -944,6 +1137,7 @@ public class ActivitiesController : Controller
             ActivityStatus.Paused => PausedStatus,
             ActivityStatus.Retrying => RetryingStatus,
             ActivityStatus.Complete => UiCompleteStatus,
+            ActivityStatus.Unavailable => UnavailableStatus,
             ActivityStatus.Failed => FailedStatus,
             ActivityStatus.Canceled => CanceledStatus,
             _ => UiQueuedStatus
@@ -960,6 +1154,7 @@ public class ActivitiesController : Controller
             PausedStatus => ActivityStatus.Paused,
             RetryingStatus => ActivityStatus.Retrying,
             CompletedStatus or CompleteStatus or FinishedStatus or DownloadFinishedStatus or DoneStatus or SuccessStatus or SkippedStatus => ActivityStatus.Complete,
+            UnavailableStatus => ActivityStatus.Unavailable,
             FailedStatus or ErrorStatus => ActivityStatus.Failed,
             CanceledStatus or CancelledStatus => ActivityStatus.Canceled,
             _ => ActivityStatus.Queued
@@ -1122,7 +1317,7 @@ public class ActivitiesController : Controller
         public bool HasAny => HasLrc || HasTtml || HasTxt;
     }
 
-    private static string? GetPayloadString(Dictionary<string, object> payload, params string[] keys)
+    private static string? GetPayloadString(IReadOnlyDictionary<string, object> payload, params string[] keys)
     {
         foreach (var key in keys)
         {
@@ -1380,6 +1575,7 @@ internal enum ActivityStatus
     Paused,
     Retrying,
     Complete,
+    Unavailable,
     Failed,
     Canceled
 }

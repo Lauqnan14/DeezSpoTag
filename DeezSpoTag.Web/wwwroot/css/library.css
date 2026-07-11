@@ -741,6 +741,10 @@
     cursor: grabbing;
 }
 
+.watchlist-playlist-card-v2--manual-unavailable {
+    cursor: default;
+}
+
 .watchlist-artist-card .watchlist-card-art,
 .watchlist-playlist-card-v2 .watchlist-card-art {
     border-radius: 12px;
@@ -1064,6 +1068,55 @@
     gap: 20px;
 }
 
+.manual-unavailable-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(2, 8, 23, 0.72);
+}
+
+.manual-unavailable-panel {
+    width: min(820px, 96vw);
+    max-height: 90vh;
+    padding: 18px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+}
+
+.playlist-settings-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.playlist-settings-panel-header h3 {
+    margin: 0;
+}
+
+.playlist-settings-panel-header p {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.playlist-settings-close {
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    width: 34px;
+    height: 34px;
+    display: inline-grid;
+    place-items: center;
+    cursor: pointer;
+}
+
 .app-modal-dialog.playlist-settings-modal {
     width: min(980px, 96vw);
     max-height: 92dvh;
@@ -1087,6 +1140,52 @@
 
 .playlist-settings-section[hidden] {
     display: none;
+}
+
+.manual-unavailable-tracklist {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: min(68vh, 720px);
+    overflow: auto;
+}
+
+.manual-unavailable-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-secondary) 84%, transparent);
+}
+
+.manual-unavailable-row-main {
+    min-width: 0;
+}
+
+.manual-unavailable-title {
+    color: var(--text-primary);
+    font-weight: 700;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.manual-unavailable-meta,
+.manual-unavailable-reason {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.manual-unavailable-reason {
+    color: var(--warning-color);
+}
+
+.manual-unavailable-delete {
+    white-space: nowrap;
 }
 
 .playlist-settings-section-title {
