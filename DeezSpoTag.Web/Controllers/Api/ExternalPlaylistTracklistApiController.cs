@@ -72,9 +72,17 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         }
 
         var playlistUrl = (url ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(playlistUrl))
+        if (!string.Equals(normalizedSource, TidalSource, StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(playlistUrl))
         {
             return BadRequest(new { available = false, error = "External URL is required." });
+        }
+
+        if (string.Equals(normalizedSource, TidalSource, StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(id)
+            && string.IsNullOrWhiteSpace(playlistUrl))
+        {
+            return BadRequest(new { available = false, error = "Tidal ID is required." });
         }
 
         try
@@ -724,7 +732,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
         var titleLink = GetString(trackNode, "title_link");
         var trackUrl = BuildBandcampTrackUrl(albumUrl, titleLink, trackNumber);
-        var isrc = GetString(trackNode, "isrc");
+        var isrc = GetAnyString(trackNode, "isrc", "ISRC");
         track = new
         {
             id = trackId,
@@ -1024,7 +1032,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
         var trackTitle = ComposeTitle(GetString(trackNode, MetadataTitleKey), GetString(trackNode, "version"));
         var duration = GetInt(trackNode, "duration");
-        var isrc = GetString(trackNode, "isrc");
+        var isrc = GetAnyString(trackNode, "isrc", "ISRC");
         var trackUrl = NormalizeTidalTrackUrl(GetString(trackNode, "url"), trackId);
         var artistName = ResolveArtistName(trackNode);
         var albumMetadata = ResolveTidalAlbumMetadata(trackNode);
@@ -1899,6 +1907,20 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             JsonValueKind.Number => prop.TryGetInt64(out var value) ? value.ToString() : string.Empty,
             _ => string.Empty
         };
+    }
+
+    private static string GetAnyString(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            var value = GetAnyString(element, propertyName);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return string.Empty;
     }
 
     private static string GetString(JsonElement element, string propertyName)

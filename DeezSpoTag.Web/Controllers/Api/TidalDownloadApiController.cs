@@ -166,13 +166,13 @@ public sealed class TidalDownloadApiController : ControllerBase
 
     private static string? TryNormalizeTidalUrl(string sourceUrl)
     {
-        var trackId = TryExtractTidalTrackId(sourceUrl);
+        var trackId = TryExtractInternalTidalEntityId(sourceUrl, "track");
         if (string.IsNullOrWhiteSpace(trackId))
         {
             return null;
         }
 
-        return $"https://tidal.com/track/{trackId}";
+        return BuildInternalTidalTrackIdentity(trackId);
     }
 
     private static string? TryNormalizeTidalVideoUrl(string sourceUrl)
@@ -187,20 +187,44 @@ public sealed class TidalDownloadApiController : ControllerBase
     }
 
     private static string? TryExtractTidalTrackId(string sourceUrl)
-        => TryExtractTidalEntityId(sourceUrl, "track");
+        => TryExtractInternalTidalEntityId(sourceUrl, "track");
 
     private static string? TryExtractTidalVideoId(string sourceUrl)
-        => TryExtractTidalEntityId(sourceUrl, "video");
+        => TryExtractPublicTidalEntityId(sourceUrl, "video");
 
-    private static string? TryExtractTidalEntityId(string sourceUrl, string entityType)
+    private static string? TryExtractInternalTidalEntityId(string sourceUrl, string entityType)
     {
         if (string.IsNullOrWhiteSpace(sourceUrl))
         {
             return null;
         }
 
+        var trimmed = sourceUrl.Trim();
+        if (trimmed.All(char.IsDigit))
+        {
+            return trimmed;
+        }
+
+        var internalPrefix = $"tidal:{entityType}:";
+        if (trimmed.StartsWith(internalPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var internalId = trimmed[internalPrefix.Length..].Trim();
+            return internalId.All(char.IsDigit) ? internalId : null;
+        }
+
+        return null;
+    }
+
+    private static string? TryExtractPublicTidalEntityId(string sourceUrl, string entityType)
+    {
+        if (string.IsNullOrWhiteSpace(sourceUrl))
+        {
+            return null;
+        }
+
+        var trimmed = sourceUrl.Trim();
         var pattern = $@"\/{Regex.Escape(entityType)}\/(?<id>\d+)";
-        var match = Regex.Match(sourceUrl, pattern, RegexOptions.IgnoreCase, RegexTimeout);
+        var match = Regex.Match(trimmed, pattern, RegexOptions.IgnoreCase, RegexTimeout);
         if (!match.Success)
         {
             return null;
@@ -208,6 +232,9 @@ public sealed class TidalDownloadApiController : ControllerBase
 
         return match.Groups["id"].Value;
     }
+
+    private static string BuildInternalTidalTrackIdentity(string trackId)
+        => $"tidal:track:{trackId}";
 
 }
 

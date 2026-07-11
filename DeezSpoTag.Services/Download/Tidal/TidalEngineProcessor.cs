@@ -61,48 +61,6 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
     private static string ResolveTidalSourceId(TidalQueueItem payload)
     {
         var persistedId = EngineLinkParser.NormalizeNumericTrackId(payload.TidalId);
-        if (!string.IsNullOrWhiteSpace(persistedId))
-        {
-            return persistedId;
-        }
-
-        var fromSource = TryExtractTrackId(payload.SourceUrl);
-        if (!string.IsNullOrWhiteSpace(fromSource))
-        {
-            return fromSource;
-        }
-
-        return TryExtractTrackId(payload.Url) ?? string.Empty;
-    }
-
-    private static string? TryExtractTrackId(string? url)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return null;
-        }
-
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsed))
-        {
-            return null;
-        }
-
-        var segments = parsed.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        for (var i = 0; i < segments.Length - 1; i++)
-        {
-            if (!segments[i].Equals("track", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var candidate = segments[i + 1];
-            if (candidate.All(char.IsDigit))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
+        return persistedId ?? string.Empty;
     }
 }

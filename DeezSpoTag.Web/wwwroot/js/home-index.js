@@ -1027,7 +1027,15 @@ function buildExternalPlaylistRouteBySource(source, parsedUrl, sourceUrl) {
         return `/Tracklist?id=${encodeURIComponent(playlistId)}&type=playlist&source=boomplay`;
     }
 
-    const genericPlaylistSources = new Set(['soundcloud', 'tidal', 'qobuz', 'bandcamp', 'pandora']);
+    if (source === 'tidal') {
+        const collectionId = extractExternalCollectionId(parsedUrl, source);
+        if (!collectionId) {
+            return '';
+        }
+        return `/Tracklist?id=${encodeURIComponent(collectionId)}&type=playlist&source=tidal`;
+    }
+
+    const genericPlaylistSources = new Set(['soundcloud', 'qobuz', 'bandcamp', 'pandora']);
     if (!genericPlaylistSources.has(source)) {
         return '';
     }

@@ -71,6 +71,83 @@ public sealed class TidalAtmosTracklistGuardrailTests
         Assert.DoesNotContain("const isDeadGenericExternalRow = isGenericExternalSource && !deezerId;", view, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void TidalTracklistQueueing_UsesInternalTidalIdentityInsteadOfPublicUrl()
+    {
+        var view = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
+        var client = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "download-client.js");
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "TidalDownloadApiController.cs");
+        var requestBuilder = ReadSource("DeezSpoTag.Services", "Download", "Tidal", "TidalRequestBuilder.cs");
+        var processor = ReadSource("DeezSpoTag.Services", "Download", "Tidal", "TidalEngineProcessor.cs");
+
+        Assert.Contains("const queueSourceUrl = source === 'tidal' && tidalId", view, StringComparison.Ordinal);
+        Assert.Contains("? `tidal:track:${tidalId}`", view, StringComparison.Ordinal);
+        Assert.Contains("url: queueSourceUrl", view, StringComparison.Ordinal);
+        Assert.Contains("displaySourceUrl: resolvedSourceUrl || undefined", view, StringComparison.Ordinal);
+
+        Assert.Contains("tidalId: ctx.options?.metadata?.tidalId || this.extractInternalTidalTrackId(ctx.url) || undefined", client, StringComparison.Ordinal);
+        Assert.Contains("extractInternalTidalTrackId(url)", client, StringComparison.Ordinal);
+        Assert.Contains("/^tidal:track:(\\d+)$/i", client, StringComparison.Ordinal);
+        Assert.DoesNotContain("const webMatch = /\\/track\\/(\\d+)/i.exec(trimmed);", client, StringComparison.Ordinal);
+        Assert.DoesNotContain("this.hostMatches(parsed.hostname, ['tidal.com'])", client, StringComparison.Ordinal);
+
+        Assert.Contains("return BuildInternalTidalTrackIdentity(trackId);", controller, StringComparison.Ordinal);
+        Assert.Contains("var internalPrefix = $\"tidal:{entityType}:\";", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryExtractTidalEntityId(sourceUrl, \"track\")", controller, StringComparison.Ordinal);
+        Assert.Contains("private static string BuildInternalTidalTrackIdentity(string trackId)", controller, StringComparison.Ordinal);
+
+        Assert.Contains("request.ServiceUrl.StartsWith(\"tidal:track:\", StringComparison.OrdinalIgnoreCase)", requestBuilder, StringComparison.Ordinal);
+        Assert.Contains("request.ServiceUrl = string.Empty;", requestBuilder, StringComparison.Ordinal);
+
+        Assert.Contains("return persistedId ?? string.Empty;", processor, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryExtractTrackId(payload.SourceUrl)", processor, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryExtractTrackId(payload.Url)", processor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalTracklistRouting_UsesNativeIdWithoutExternalUrl()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "ExternalPlaylistTracklistApiController.cs");
+        var tracklistView = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
+        var home = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "home-index.js");
+        var search = ReadSource("DeezSpoTag.Web", "Views", "Search", "Index.cshtml");
+
+        Assert.Contains("&& string.IsNullOrWhiteSpace(playlistUrl))", controller, StringComparison.Ordinal);
+        Assert.Contains("Tidal ID is required.", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (string.IsNullOrWhiteSpace(playlistUrl))\n        {\n            return BadRequest(new { available = false, error = \"External URL is required.\" });\n        }", controller, StringComparison.Ordinal);
+
+        Assert.Contains("if (!sourceUrl && normalizedSource !== 'tidal')", tracklistView, StringComparison.Ordinal);
+        Assert.DoesNotContain("sourceUrl = `https://tidal.com/browse/${encodeURIComponent(normalizedType)}/${encodeURIComponent(tracklistId)}`;", tracklistView, StringComparison.Ordinal);
+
+        Assert.Contains("if (source === 'tidal')", home, StringComparison.Ordinal);
+        Assert.Contains("return `/Tracklist?id=${encodeURIComponent(collectionId)}&type=playlist&source=tidal`;", home, StringComparison.Ordinal);
+        Assert.DoesNotContain("const genericPlaylistSources = new Set(['soundcloud', 'tidal', 'qobuz', 'bandcamp', 'pandora']);", home, StringComparison.Ordinal);
+
+        Assert.Contains("function parseTidalTracklistRoute(url)", search, StringComparison.Ordinal);
+        Assert.Contains("navigateToTracklist(tidalRoute.id, tidalRoute.type || 'playlist', 'tidal');", search, StringComparison.Ordinal);
+        Assert.Contains("navigateToTracklist(id, normalizedType || 'track', 'tidal');", search, StringComparison.Ordinal);
+        Assert.DoesNotContain("navigateToTracklist(id, normalizedType || 'track', 'tidal', { externalUrl: normalizedUrl });", search, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalTracklistDeezerMatching_UsesNativeIdAndIsrc()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "ExternalPlaylistTracklistApiController.cs");
+        var view = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
+
+        Assert.Contains("GetAnyString(trackNode, \"isrc\", \"ISRC\")", controller, StringComparison.Ordinal);
+        Assert.Contains("private static string GetAnyString(JsonElement element, params string[] propertyNames)", controller, StringComparison.Ordinal);
+
+        Assert.Contains("const platformIds = resolveTrackPlatformIds(track);", view, StringComparison.Ordinal);
+        Assert.Contains("link = `tidal:track:${platformIds.tidalId}`;", view, StringComparison.Ordinal);
+        Assert.Contains("link = `tidal:track:${tidalId}`;", view, StringComparison.Ordinal);
+        Assert.Contains("link = `isrc:${isrc}`;", view, StringComparison.Ordinal);
+        Assert.Contains("tidalId: platformIds.tidalId || ''", view, StringComparison.Ordinal);
+        Assert.Contains("tidalId,", view, StringComparison.Ordinal);
+        Assert.Contains("qs.set('tidalId', current.tidalId);", view, StringComparison.Ordinal);
+        Assert.Contains("qs.set('isrc', current.isrc);", view, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] relativeParts)
     {
         var repoRoot = ResolveRepoRoot();

@@ -15,6 +15,10 @@ public static class TidalRequestBuilder
         request.IsVideo = string.Equals(item.ContentType, DeezSpoTag.Services.Download.Shared.Models.DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase);
         request.VideoOutputRoot = settings.Video?.VideoDownloadLocation ?? string.Empty;
         request.VideoMaxResolution = settings.Video?.TidalVideoMaxResolution ?? 1080;
+        if (request.ServiceUrl.StartsWith("tidal:track:", StringComparison.OrdinalIgnoreCase))
+        {
+            request.ServiceUrl = string.Empty;
+        }
         return request;
     }
 }

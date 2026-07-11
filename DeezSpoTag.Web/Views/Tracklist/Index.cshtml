@@ -2524,18 +2524,16 @@ function resolveExternalPlaylistUrl() {
 async function loadExternalPlaylistTracklist() {
     resetSpotifyState();
     const normalizedSource = String(tracklistSource || '').trim().toLowerCase();
-    let sourceUrl = resolveExternalPlaylistUrl();
-    if (!sourceUrl && normalizedSource === 'tidal' && tracklistId) {
-        const normalizedType = String(tracklistType || 'playlist').trim().toLowerCase();
-        sourceUrl = `https://tidal.com/browse/${encodeURIComponent(normalizedType)}/${encodeURIComponent(tracklistId)}`;
-    }
-    if (!sourceUrl) {
+    const sourceUrl = resolveExternalPlaylistUrl();
+    if (!sourceUrl && normalizedSource !== 'tidal') {
         throw new Error(`Missing ${normalizedSource || 'external'} playlist URL.`);
     }
 
     const qs = new URLSearchParams();
     qs.set('source', normalizedSource);
-    qs.set('url', sourceUrl);
+    if (sourceUrl) {
+        qs.set('url', sourceUrl);
+    }
     if (tracklistType) {
         qs.set('type', tracklistType);
     }
@@ -4129,11 +4127,19 @@ function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
     }
 
     let link = track.link || track.sourceUrl || track.appleUrl || '';
+    const platformIds = resolveTrackPlatformIds(track);
     if (!link && source === 'spotify') {
         const spotifyId = getSpotifyTrackId(track);
         if (spotifyId) {
             link = `https://open.spotify.com/track/${spotifyId}`;
         }
+    }
+    if (!link && source === 'tidal' && platformIds.tidalId) {
+        link = `tidal:track:${platformIds.tidalId}`;
+    }
+    const isrc = track.isrc || '';
+    if (!link && isrc) {
+        link = `isrc:${isrc}`;
     }
     if (!link) {
         return null;
@@ -4141,11 +4147,17 @@ function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
 
     return {
         link,
+        source,
+        tidalId: platformIds.tidalId || '',
+        spotifyId: platformIds.spotifyId || '',
+        appleId: platformIds.appleId || '',
+        qobuzId: platformIds.qobuzId || '',
+        amazonId: platformIds.amazonId || '',
         index: track.index ?? fallbackIndex,
         title: track.title || '',
         artist: resolveArtistName(track) || '',
         album: track.album?.title || '',
-        isrc: track.isrc || '',
+        isrc,
         durationMs: resolveTrackDurationMs(track)
     };
 }
@@ -4165,18 +4177,32 @@ function buildSpotifyTrackResolveRequestFromRow(row) {
             link = `https://open.spotify.com/track/${spotifyId}`;
         }
     }
+    const tidalId = String(row.dataset.availabilityTidalId || checkbox?.dataset.tidalId || '').trim();
+    if (!link && source === 'tidal' && tidalId) {
+        link = `tidal:track:${tidalId}`;
+    }
+    const durationMsRaw = Number(row.dataset.availabilityDuration || checkbox?.dataset.trackDurationMs || 0);
+    const isrc = row.dataset.availabilityIsrc || checkbox?.dataset.trackIsrc || '';
+    if (!link && isrc) {
+        link = `isrc:${isrc}`;
+    }
     if (!link) {
         return null;
     }
 
-    const durationMsRaw = Number(row.dataset.availabilityDuration || checkbox?.dataset.trackDurationMs || 0);
     return {
         link,
+        source,
+        tidalId,
+        spotifyId: String(row.dataset.spotifyId || checkbox?.dataset.spotifyId || '').trim(),
+        appleId: String(row.dataset.availabilityAppleId || '').trim(),
+        qobuzId: String(row.dataset.availabilityQobuzId || checkbox?.dataset.qobuzId || '').trim(),
+        amazonId: String(row.dataset.availabilityAmazonId || checkbox?.dataset.amazonId || '').trim(),
         index: parseInt(row.dataset.trackIndex || '-1', 10),
         title: row.dataset.availabilityTitle || checkbox?.dataset.trackTitle || '',
         artist: row.dataset.availabilityArtist || checkbox?.dataset.trackArtist || '',
         album: checkbox?.dataset.trackAlbum || '',
-        isrc: row.dataset.availabilityIsrc || checkbox?.dataset.trackIsrc || '',
+        isrc,
         durationMs: Number.isFinite(durationMsRaw) && durationMsRaw > 0 ? Math.round(durationMsRaw) : 0
     };
 }
@@ -4213,6 +4239,21 @@ function getTracklistPlaybackFacade() {
 function buildExternalDeezerResolveQuery(current, source) {
     const qs = new URLSearchParams();
     qs.set('url', current.link);
+    if (current.tidalId) {
+        qs.set('tidalId', current.tidalId);
+    }
+    if (current.spotifyId) {
+        qs.set('spotifyId', current.spotifyId);
+    }
+    if (current.appleId) {
+        qs.set('appleId', current.appleId);
+    }
+    if (current.qobuzId) {
+        qs.set('qobuzId', current.qobuzId);
+    }
+    if (current.amazonId) {
+        qs.set('amazonId', current.amazonId);
+    }
     if (current.title) {
         qs.set('title', current.title);
     }
@@ -7235,19 +7276,23 @@ async function downloadTracks(trackElements, triggerButton) {
                 }
 
                 if (source === 'tidal' || source === 'amazon' || source === 'deezer') {
-                    if (resolvedSourceUrl) {
+                    const queueSourceUrl = source === 'tidal' && tidalId
+                        ? `tidal:track:${tidalId}`
+                        : resolvedSourceUrl;
+                    if (queueSourceUrl) {
                         const isDirectAtmosTrack = (source === 'tidal' || source === 'amazon')
                             && (trackElement.dataset.trackHasAtmos === 'true' || trackElement.dataset.trackHasAtmos === '1');
                         const useDualRoutingForTrack = useDualAtmosRouting && isDirectAtmosTrack;
                         requests.push({
-                            url: resolvedSourceUrl,
+                            url: queueSourceUrl,
                             destinationFolderId: stereoDestinationFolderId,
                             secondaryDestinationFolderId: useDualRoutingForTrack ? atmosDestinationFolderId : null,
                             metadata: isDirectAtmosTrack
                                 ? {
                                     ...metadata,
                                     sourceService: source,
-                                    sourceUrl: resolvedSourceUrl,
+                                    sourceUrl: queueSourceUrl,
+                                    displaySourceUrl: resolvedSourceUrl || undefined,
                                     contentType: useDualRoutingForTrack ? 'stereo' : 'atmos',
                                     hasAtmos: true,
                                     quality: 'DOLBY_ATMOS'
@@ -7256,12 +7301,13 @@ async function downloadTracks(trackElements, triggerButton) {
                                 ? {
                                     ...metadata,
                                     sourceService: 'deezer',
-                                    sourceUrl: resolvedSourceUrl
+                                    sourceUrl: queueSourceUrl
                                 }
                                 : {
                                     ...metadata,
                                     sourceService: source,
-                                    sourceUrl: resolvedSourceUrl
+                                    sourceUrl: queueSourceUrl,
+                                    displaySourceUrl: resolvedSourceUrl || undefined
                                 }
                         });
                     } else {

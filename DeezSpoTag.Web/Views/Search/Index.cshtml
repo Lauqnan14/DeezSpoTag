@@ -1110,8 +1110,36 @@ function redirectToExternalPlaylistFlow(source, url) {
         return false;
     }
 
+    if (normalizedSource === 'tidal') {
+        const tidalRoute = parseTidalTracklistRoute(normalizedUrl);
+        if (!tidalRoute.id) {
+            return false;
+        }
+        navigateToTracklist(tidalRoute.id, tidalRoute.type || 'playlist', 'tidal');
+        return true;
+    }
+
     navigateToTracklist(normalizedUrl, 'playlist', normalizedSource, { externalUrl: normalizedUrl });
     return true;
+}
+
+function parseTidalTracklistRoute(url) {
+    try {
+        const parsed = new URL(url);
+        const segments = parsed.pathname.split('/').filter(Boolean);
+        const supportedTypes = new Set(['track', 'album', 'playlist', 'mix', 'artist']);
+        for (let i = 0; i < segments.length - 1; i += 1) {
+            const segment = segments[i].toLowerCase();
+            if (supportedTypes.has(segment)) {
+                return {
+                    type: segment,
+                    id: segments[i + 1] || ''
+                };
+            }
+        }
+    } catch {
+    }
+    return { type: '', id: '' };
 }
 
 function hasSoundtrackContext() {
@@ -2929,7 +2957,7 @@ function openTidalResult(tidalId, type, tidalUrl, artistName = '') {
     if (!id) {
         return;
     }
-    navigateToTracklist(id, normalizedType || 'track', 'tidal', { externalUrl: normalizedUrl });
+    navigateToTracklist(id, normalizedType || 'track', 'tidal');
 }
 
 function openAmazonResult(amazonId, type, amazonUrl, title = '', artist = '', album = '', cover = '', durationMs = '', isrc = '', hasAtmos = false) {

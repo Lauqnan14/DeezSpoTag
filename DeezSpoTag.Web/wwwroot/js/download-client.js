@@ -1004,7 +1004,20 @@ DeezSpoTag.DownloadClient = {
             logLabel: 'tidal',
             urlPredicate: this.isTidalUrl,
             buildBody: (ctx) => ({
-                tracks: [{ sourceUrl: ctx.url }],
+                tracks: [{
+                    sourceUrl: ctx.url,
+                    tidalId: ctx.options?.metadata?.tidalId || this.extractInternalTidalTrackId(ctx.url) || undefined,
+                    spotifyId: ctx.options?.metadata?.spotifyId || undefined,
+                    appleId: ctx.options?.metadata?.appleId || undefined,
+                    isrc: ctx.options?.metadata?.isrc || undefined,
+                    title: ctx.options?.metadata?.title || undefined,
+                    artist: ctx.options?.metadata?.artist || undefined,
+                    album: ctx.options?.metadata?.album || undefined,
+                    albumArtist: ctx.options?.metadata?.albumArtist || undefined,
+                    cover: ctx.options?.metadata?.cover || undefined,
+                    durationMs: Number(ctx.options?.metadata?.durationMs || 0) || undefined,
+                    position: Number(ctx.options?.metadata?.position || 0) || undefined
+                }],
                 destinationFolderId: ctx.destinationId
             })
         });
@@ -1936,8 +1949,21 @@ DeezSpoTag.DownloadClient = {
         return isAmazonDomain && path.startsWith('/music');
     },
     isTidalUrl(url) {
-        const parsed = this.tryParseAbsoluteUrl(url);
-        return !!parsed && this.hostMatches(parsed.hostname, ['tidal.com']);
+        return !!this.extractInternalTidalTrackId(url);
+    },
+    extractInternalTidalTrackId(url) {
+        if (typeof url !== 'string') {
+            return '';
+        }
+        const trimmed = url.trim();
+        if (!trimmed) {
+            return '';
+        }
+        if (/^\d+$/.test(trimmed)) {
+            return trimmed;
+        }
+        const internalMatch = /^tidal:track:(\d+)$/i.exec(trimmed);
+        return internalMatch ? (internalMatch[1] || '') : '';
     },
     isAppleUrl(url) {
         const parsed = this.tryParseAbsoluteUrl(url);
