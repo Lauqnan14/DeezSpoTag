@@ -35,7 +35,10 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
                 "source",
                 "url",
                 "trackId",
-                "releaseId"
+                "releaseId",
+                "recordingId",
+                "artistId",
+                "albumId"
             },
             SupportedTags = SharedDownloadParityTags(),
             CustomOptions = new PlatformCustomOptions
@@ -91,6 +94,11 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
             SupportedTag.URL,
             SupportedTag.TrackId,
             SupportedTag.ReleaseId,
+            SupportedTag.RecordingId,
+            SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId,
+            SupportedTag.AlbumId,
+            SupportedTag.Barcode,
             SupportedTag.Duration,
             SupportedTag.TrackNumber,
             SupportedTag.TrackTotal,

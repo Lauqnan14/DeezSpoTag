@@ -62,6 +62,30 @@ public class TagSettings
     [JsonPropertyName("barcode")]
     public bool Barcode { get; set; } = true;
 
+    [JsonPropertyName("recordingId")]
+    public bool RecordingId { get; set; } = false;
+
+    [JsonPropertyName("artistId")]
+    public bool ArtistId { get; set; } = false;
+
+    [JsonPropertyName("albumArtistId")]
+    public bool AlbumArtistId { get; set; } = false;
+
+    [JsonPropertyName("releaseGroupId")]
+    public bool ReleaseGroupId { get; set; } = false;
+
+    [JsonPropertyName("albumId")]
+    public bool AlbumId { get; set; } = false;
+
+    [JsonPropertyName("releaseStatus")]
+    public bool ReleaseStatus { get; set; } = false;
+
+    [JsonPropertyName("releaseCountry")]
+    public bool ReleaseCountry { get; set; } = false;
+
+    [JsonPropertyName("media")]
+    public bool Media { get; set; } = false;
+
     // Technical information
     [JsonPropertyName("length")]
     public bool Length { get; set; } = true;

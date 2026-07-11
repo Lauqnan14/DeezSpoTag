@@ -26,6 +26,79 @@ public sealed class MusicBrainzImplementationTests
         Assert.Contains(SupportedTag.DiscNumber, descriptor.SupportedTags);
         Assert.Contains(SupportedTag.ReleaseDate, descriptor.SupportedTags);
         Assert.Contains(SupportedTag.OtherTags, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.RecordingId, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.ArtistId, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.AlbumArtistId, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.ReleaseGroupId, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.AlbumId, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.ReleaseStatus, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.ReleaseCountry, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.Barcode, descriptor.SupportedTags);
+        Assert.Contains(SupportedTag.Media, descriptor.SupportedTags);
+    }
+
+    [Fact]
+    public void PicardStyleMetadata_IsExposedAsGenericTagTogglesAndWrites()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var autoTagJs = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var runner = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var matcher = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "MusicBrainzMatcher.cs"));
+        var canonicalizer = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "TaggingProfileCanonicalizer.cs"));
+        var downloadConverter = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "DownloadTagSettingsConverter.cs"));
+        var audioTagger = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Services", "Download", "Utils", "AudioTagger.cs"));
+        var deezerPlatform = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "DeezerPlatform.cs"));
+        var spotifyPlatform = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "SpotifyPlatform.cs"));
+        var itunesPlatform = File.ReadAllText(Path.Combine(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "ITunesPlatform.cs"));
+
+        foreach (var tag in new[]
+        {
+            "recordingId",
+            "artistId",
+            "albumArtistId",
+            "releaseGroupId",
+            "albumId",
+            "releaseStatus",
+            "releaseCountry",
+            "barcode",
+            "media"
+        })
+        {
+            Assert.Contains($"tag: \"{tag}\"", autoTagJs, StringComparison.Ordinal);
+            Assert.Contains($"\"{tag}\"", autoTagJs, StringComparison.Ordinal);
+            Assert.Contains($"new(\"{tag}\"", canonicalizer, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("RecordingId = recording.Id", matcher, StringComparison.Ordinal);
+        Assert.Contains("ReleaseGroupId = release.ReleaseGroup.Id", matcher, StringComparison.Ordinal);
+        Assert.Contains("track.ReleaseStatus = release.Status", matcher, StringComparison.Ordinal);
+        Assert.Contains("track.ReleaseCountry = release.Country", matcher, StringComparison.Ordinal);
+        Assert.Contains("track.Media = release.Media", matcher, StringComparison.Ordinal);
+
+        Assert.Contains("private const string RecordingIdRawTag = \"RECORDINGID\";", runner, StringComparison.Ordinal);
+        Assert.Contains("WriteSingleRawTag(tagWriteContext, context, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag", runner, StringComparison.Ordinal);
+        Assert.Contains("WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag", runner, StringComparison.Ordinal);
+        Assert.Contains("SetRaw(tagWriteContext, MediaRawTag, SupportedTag.Media, context.SourceTrack.Media);", runner, StringComparison.Ordinal);
+        Assert.Contains("FirstClassRawOtherTags", runner, StringComparison.Ordinal);
+
+        Assert.Contains("RecordingId = UsesDownload(config.RecordingId)", downloadConverter, StringComparison.Ordinal);
+        Assert.Contains("AlbumId = UsesDownload(config.AlbumId)", downloadConverter, StringComparison.Ordinal);
+        Assert.Contains("SetCustomFrameIfPresent(tag, \"TXXX\", RecordingIdUpperTag", audioTagger, StringComparison.Ordinal);
+        Assert.Contains("SetVorbisCommentIf(tag, save.RecordingId, RecordingIdUpperTag", audioTagger, StringComparison.Ordinal);
+        Assert.Contains("SetAtlAdditionalFieldIf(file, save.RecordingId, RecordingIdUpperTag", audioTagger, StringComparison.Ordinal);
+        Assert.Contains("Add(\"recordingId\", !string.IsNullOrWhiteSpace(ResolveRecordingId(track)))", audioTagger, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveMetadataValue", audioTagger, StringComparison.Ordinal);
+        Assert.Contains("\"recordingId\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.Contains("\"artistId\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.Contains("\"albumArtistId\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"releaseGroupId\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"releaseStatus\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"releaseCountry\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"media\"", deezerPlatform, StringComparison.Ordinal);
+        Assert.Contains("\"recordingId\"", spotifyPlatform, StringComparison.Ordinal);
+        Assert.Contains("\"albumId\"", spotifyPlatform, StringComparison.Ordinal);
+        Assert.Contains("\"recordingId\"", itunesPlatform, StringComparison.Ordinal);
+        Assert.Contains("\"artistId\"", itunesPlatform, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -118,5 +191,18 @@ public sealed class MusicBrainzImplementationTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromException<HttpResponseMessage>(exception);
+    }
+
+    private static string ResolveRepoRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current != null
+            && !(File.Exists(Path.Combine(current.FullName, "Directory.Build.props"))
+                && Directory.Exists(Path.Combine(current.FullName, "DeezSpoTag.Web"))))
+        {
+            current = current.Parent;
+        }
+
+        return current?.FullName ?? throw new InvalidOperationException("Repository root not found.");
     }
 }

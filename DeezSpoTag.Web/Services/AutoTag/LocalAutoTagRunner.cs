@@ -175,6 +175,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string SourceTag = "source";
     private const string SourceRawTag = "SOURCE";
     private const string SourceIdRawTag = "SOURCEID";
+    private const string RecordingIdRawTag = "RECORDINGID";
+    private const string ArtistIdRawTag = "ARTISTID";
+    private const string AlbumArtistIdRawTag = "ALBUMARTISTID";
+    private const string ReleaseGroupIdRawTag = "RELEASEGROUPID";
+    private const string AlbumIdRawTag = "ALBUMID";
+    private const string ReleaseStatusRawTag = "RELEASESTATUS";
+    private const string ReleaseCountryRawTag = "RELEASECOUNTRY";
+    private const string MediaRawTag = "MEDIA";
     private const string RatingTag = "rating";
     private const string RatingRawTag = "RATING";
     private const string LanguageTag = "language";
@@ -182,6 +190,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string StyleTag = "style";
     private const string PublishDateTag = "publishDate";
     private const string TrackIdTag = "trackId";
+    private const string RecordingIdTag = "recordingId";
+    private const string ArtistIdTag = "artistId";
+    private const string AlbumArtistIdTag = "albumArtistId";
+    private const string ReleaseGroupIdTag = "releaseGroupId";
+    private const string AlbumIdTag = "albumId";
+    private const string ReleaseStatusTag = "releaseStatus";
+    private const string ReleaseCountryTag = "releaseCountry";
+    private const string MediaTag = "media";
     private const string ArtistsTag = "artists";
     private const string BpmTag = "bpm";
     private const string IsrcTag = "isrc";
@@ -194,6 +210,24 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string MetaTagsTag = "metaTags";
     private const string StyleUpperTag = "STYLE";
     private const string VorbisFormat = "vorbis";
+    private static readonly HashSet<string> FirstClassRawOtherTags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        RecordingIdRawTag,
+        "MUSICBRAINZ_RECORDINGID",
+        "MUSICBRAINZ_RECORDING_ID",
+        ArtistIdRawTag,
+        "MUSICBRAINZ_ARTISTID",
+        AlbumArtistIdRawTag,
+        "MUSICBRAINZ_ALBUMARTISTID",
+        ReleaseGroupIdRawTag,
+        "MUSICBRAINZ_RELEASEGROUPID",
+        AlbumIdRawTag,
+        "MUSICBRAINZ_ALBUMID",
+        ReleaseStatusRawTag,
+        ReleaseCountryRawTag,
+        BarcodeRawTag,
+        MediaRawTag
+    };
     private static readonly Dictionary<string, Action<TagSettings>> TagSettingsAppliers = new(StringComparer.OrdinalIgnoreCase)
     {
         [TitleTag] = settings => settings.Title = true,
@@ -238,6 +272,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         [UrlTag] = settings => settings.Url = true,
         [TrackIdTag] = settings => settings.TrackId = true,
         [ReleaseIdTag] = settings => settings.ReleaseId = true,
+        [RecordingIdTag] = settings => settings.TrackId = true,
+        [ArtistIdTag] = settings => settings.Source = true,
+        [AlbumArtistIdTag] = settings => settings.Source = true,
+        [ReleaseGroupIdTag] = settings => settings.ReleaseId = true,
+        [AlbumIdTag] = settings => settings.ReleaseId = true,
+        [ReleaseStatusTag] = settings => settings.ReleaseId = true,
+        [ReleaseCountryTag] = settings => settings.ReleaseId = true,
+        [MediaTag] = settings => settings.ReleaseId = true,
         [RatingTag] = settings => settings.Rating = true,
         [UnsyncedLyricsTag] = settings => settings.Lyrics = true,
         [LyricsTag] = settings => settings.Lyrics = true,
@@ -3372,6 +3414,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AddTagIfAny(tags, SpotifyTrackIdTag, ReadRawTagValuesAny(file, extension, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag));
         AddTagIfAny(tags, SpotifyUrlTag, ReadRawTagValuesAny(file, extension, SpotifyUrlTag, "SPOTIFYURI", "SPOTIFY_URI", "URL", WwwAudioFileTag));
         AddTagIfAny(tags, "MUSICBRAINZ_RECORDING_ID", ReadRawTagValuesAny(file, extension, "MUSICBRAINZ_RECORDING_ID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_TRACKID"));
+        AddTagIfAny(tags, RecordingIdRawTag, ReadRawTagValuesAny(file, extension, RecordingIdRawTag));
+        AddTagIfAny(tags, ArtistIdRawTag, ReadRawTagValuesAny(file, extension, ArtistIdRawTag));
+        AddTagIfAny(tags, AlbumArtistIdRawTag, ReadRawTagValuesAny(file, extension, AlbumArtistIdRawTag));
+        AddTagIfAny(tags, ReleaseGroupIdRawTag, ReadRawTagValuesAny(file, extension, ReleaseGroupIdRawTag));
+        AddTagIfAny(tags, AlbumIdRawTag, ReadRawTagValuesAny(file, extension, AlbumIdRawTag));
+        AddTagIfAny(tags, ReleaseStatusRawTag, ReadRawTagValuesAny(file, extension, ReleaseStatusRawTag));
+        AddTagIfAny(tags, ReleaseCountryRawTag, ReadRawTagValuesAny(file, extension, ReleaseCountryRawTag));
+        AddTagIfAny(tags, MediaRawTag, ReadRawTagValuesAny(file, extension, MediaRawTag));
 
         foreach (var shazamTag in ShazamRawTagHints)
         {
@@ -4660,6 +4710,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         WriteUrlTag(tagWriteContext, context);
         WriteTrackIdTag(tagWriteContext, context);
         WriteReleaseIdTag(tagWriteContext, context);
+        WriteSourceIdentityTags(tagWriteContext, context);
         WriteCatalogNumberTag(tagWriteContext, context);
         WriteDurationTag(tagWriteContext, context);
         WriteRemixerTag(tagWriteContext, context);
@@ -4737,6 +4788,38 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             $"{context.PlatformId.ToUpperInvariant()}_RELEASE_ID",
             SupportedTag.ReleaseId,
             new List<string> { context.SourceTrack.ReleaseId });
+    }
+
+    private static void WriteSourceIdentityTags(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        WriteSingleRawTag(tagWriteContext, context, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag, context.SourceTrack.RecordingId);
+        WriteSingleRawTag(tagWriteContext, context, ArtistIdTag, SupportedTag.ArtistId, ArtistIdRawTag, context.SourceTrack.ArtistId);
+        WriteSingleRawTag(tagWriteContext, context, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, context.SourceTrack.AlbumArtistId);
+        WriteSingleRawTag(tagWriteContext, context, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, context.SourceTrack.ReleaseGroupId);
+        WriteSingleRawTag(tagWriteContext, context, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, context.SourceTrack.AlbumId);
+        WriteSingleRawTag(tagWriteContext, context, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, context.SourceTrack.ReleaseStatus);
+        WriteSingleRawTag(tagWriteContext, context, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, context.SourceTrack.ReleaseCountry);
+        WriteSingleRawTag(tagWriteContext, context, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, context.SourceTrack.Barcode);
+        if (context.EnabledTags.Contains(MediaTag) && context.SourceTrack.Media.Count > 0)
+        {
+            SetRaw(tagWriteContext, MediaRawTag, SupportedTag.Media, context.SourceTrack.Media);
+        }
+    }
+
+    private static void WriteSingleRawTag(
+        TagWriteContext tagWriteContext,
+        TagWriteExecutionContext context,
+        string tagKey,
+        SupportedTag supportedTag,
+        string rawTagName,
+        string? value)
+    {
+        if (!context.EnabledTags.Contains(tagKey) || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        SetRaw(tagWriteContext, rawTagName, supportedTag, new List<string> { value });
     }
 
     private static void WriteCatalogNumberTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -5054,6 +5137,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         foreach (var kvp in context.SourceTrack.Other)
         {
+            if (FirstClassRawOtherTags.Contains(kvp.Key))
+            {
+                continue;
+            }
+
             var isReleaseType = kvp.Key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase);
             if (isReleaseType && !HasReleaseTypeTagEnabled(context.EnabledTags))
             {
@@ -5633,7 +5721,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             [StyleTag] = SupportedTag.Style,
             [LabelTag] = SupportedTag.Label,
             [ReleaseIdTag] = SupportedTag.ReleaseId,
-            [TrackIdTag] = SupportedTag.TrackId
+            [TrackIdTag] = SupportedTag.TrackId,
+            [RecordingIdTag] = SupportedTag.RecordingId,
+            [ArtistIdTag] = SupportedTag.ArtistId,
+            [AlbumArtistIdTag] = SupportedTag.AlbumArtistId,
+            [ReleaseGroupIdTag] = SupportedTag.ReleaseGroupId,
+            [AlbumIdTag] = SupportedTag.AlbumId,
+            [ReleaseStatusTag] = SupportedTag.ReleaseStatus,
+            [ReleaseCountryTag] = SupportedTag.ReleaseCountry,
+            [BarcodeTag] = SupportedTag.Barcode,
+            [MediaTag] = SupportedTag.Media
         };
 
         SupportedTagFeatureMappings.AddAudioFeatureTags(map);
@@ -5943,6 +6040,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.URL => TagRawProbe.HasId3Raw(tag, WwwAudioFileTag),
             SupportedTag.TrackId => TagRawProbe.HasId3Raw(tag, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
             SupportedTag.ReleaseId => TagRawProbe.HasId3Raw(tag, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
+            SupportedTag.RecordingId => TagRawProbe.HasId3Raw(tag, RecordingIdRawTag),
+            SupportedTag.ArtistId => TagRawProbe.HasId3Raw(tag, ArtistIdRawTag),
+            SupportedTag.AlbumArtistId => TagRawProbe.HasId3Raw(tag, AlbumArtistIdRawTag),
+            SupportedTag.ReleaseGroupId => TagRawProbe.HasId3Raw(tag, ReleaseGroupIdRawTag),
+            SupportedTag.AlbumId => TagRawProbe.HasId3Raw(tag, AlbumIdRawTag),
+            SupportedTag.ReleaseStatus => TagRawProbe.HasId3Raw(tag, ReleaseStatusRawTag),
+            SupportedTag.ReleaseCountry => TagRawProbe.HasId3Raw(tag, ReleaseCountryRawTag),
+            SupportedTag.Barcode => TagRawProbe.HasId3Raw(tag, BarcodeRawTag),
+            SupportedTag.Media => TagRawProbe.HasId3Raw(tag, MediaRawTag),
             SupportedTag.OtherTags => false,
             SupportedTag.MetaTags => TagRawProbe.HasId3Raw(tag, TaggedDateTag),
             SupportedTag.SyncedLyrics => tag.GetFrames<TagLib.Id3v2.SynchronisedLyricsFrame>("SYLT").Any(),
@@ -5991,6 +6097,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.URL => tag.GetField(WwwAudioFileTag).Length > 0,
             SupportedTag.TrackId => tag.GetField($"{platformId.ToUpperInvariant()}_TRACK_ID").Length > 0,
             SupportedTag.ReleaseId => tag.GetField($"{platformId.ToUpperInvariant()}_RELEASE_ID").Length > 0,
+            SupportedTag.RecordingId => tag.GetField(RecordingIdRawTag).Length > 0,
+            SupportedTag.ArtistId => tag.GetField(ArtistIdRawTag).Length > 0,
+            SupportedTag.AlbumArtistId => tag.GetField(AlbumArtistIdRawTag).Length > 0,
+            SupportedTag.ReleaseGroupId => tag.GetField(ReleaseGroupIdRawTag).Length > 0,
+            SupportedTag.AlbumId => tag.GetField(AlbumIdRawTag).Length > 0,
+            SupportedTag.ReleaseStatus => tag.GetField(ReleaseStatusRawTag).Length > 0,
+            SupportedTag.ReleaseCountry => tag.GetField(ReleaseCountryRawTag).Length > 0,
+            SupportedTag.Barcode => tag.GetField(BarcodeRawTag).Length > 0,
+            SupportedTag.Media => tag.GetField(MediaRawTag).Length > 0,
             SupportedTag.MetaTags => tag.GetField(TaggedDateTag).Length > 0,
             SupportedTag.UnsyncedLyrics => tag.GetField(LyricsUpperTag).Any(value => !string.IsNullOrWhiteSpace(value)),
             SupportedTag.SyncedLyrics =>
@@ -6043,6 +6158,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.URL => Mp4TagHelper.HasRaw(file, WwwAudioFileTag),
             SupportedTag.TrackId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_TRACK_ID"),
             SupportedTag.ReleaseId => Mp4TagHelper.HasRaw(file, $"{platformId.ToUpperInvariant()}_RELEASE_ID"),
+            SupportedTag.RecordingId => Mp4TagHelper.HasRaw(file, RecordingIdRawTag),
+            SupportedTag.ArtistId => Mp4TagHelper.HasRaw(file, ArtistIdRawTag),
+            SupportedTag.AlbumArtistId => Mp4TagHelper.HasRaw(file, AlbumArtistIdRawTag),
+            SupportedTag.ReleaseGroupId => Mp4TagHelper.HasRaw(file, ReleaseGroupIdRawTag),
+            SupportedTag.AlbumId => Mp4TagHelper.HasRaw(file, AlbumIdRawTag),
+            SupportedTag.ReleaseStatus => Mp4TagHelper.HasRaw(file, ReleaseStatusRawTag),
+            SupportedTag.ReleaseCountry => Mp4TagHelper.HasRaw(file, ReleaseCountryRawTag),
+            SupportedTag.Barcode => Mp4TagHelper.HasRaw(file, BarcodeRawTag),
+            SupportedTag.Media => Mp4TagHelper.HasRaw(file, MediaRawTag),
             SupportedTag.MetaTags => Mp4TagHelper.HasRaw(file, TaggedDateTag),
             SupportedTag.UnsyncedLyrics => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.SyncedLyrics =>
@@ -6152,6 +6276,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.ReleaseId,
             $"{platformKey}_RELEASE_ID",
             track.ReleaseId);
+        AddSingleValueCustomTagWrite(writes, RecordingIdTag, SupportedTag.RecordingId, RecordingIdRawTag, track.RecordingId);
+        AddSingleValueCustomTagWrite(writes, ArtistIdTag, SupportedTag.ArtistId, ArtistIdRawTag, track.ArtistId);
+        AddSingleValueCustomTagWrite(writes, AlbumArtistIdTag, SupportedTag.AlbumArtistId, AlbumArtistIdRawTag, track.AlbumArtistId);
+        AddSingleValueCustomTagWrite(writes, ReleaseGroupIdTag, SupportedTag.ReleaseGroupId, ReleaseGroupIdRawTag, track.ReleaseGroupId);
+        AddSingleValueCustomTagWrite(writes, AlbumIdTag, SupportedTag.AlbumId, AlbumIdRawTag, track.AlbumId);
+        AddSingleValueCustomTagWrite(writes, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, track.ReleaseStatus);
+        AddSingleValueCustomTagWrite(writes, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, track.ReleaseCountry);
+        AddSingleValueCustomTagWrite(writes, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, track.Barcode);
+        if (track.Media.Count > 0)
+        {
+            writes.Add(new CustomTagWrite(MediaTag, SupportedTag.Media, MediaRawTag, track.Media.ToList()));
+        }
         AddOtherTagWrites(writes, track.Other);
         AddMetaTagWrite(writes, config);
 
@@ -6175,7 +6311,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void AddOtherTagWrites(List<CustomTagWrite> writes, IReadOnlyDictionary<string, List<string>> otherTags)
     {
-        foreach (var kvp in otherTags.Where(kvp => kvp.Value.Count > 0))
+        foreach (var kvp in otherTags.Where(kvp => kvp.Value.Count > 0 && !FirstClassRawOtherTags.Contains(kvp.Key)))
         {
             var isReleaseType = kvp.Key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase);
             writes.Add(new CustomTagWrite(

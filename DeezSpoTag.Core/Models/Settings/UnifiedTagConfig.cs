@@ -55,6 +55,14 @@ public class UnifiedTagConfig
     public TagSource PublishDate { get; set; } = TagSource.AutoTagPlatform;
     public TagSource ReleaseId { get; set; } = TagSource.AutoTagPlatform;
     public TagSource TrackId { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource RecordingId { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource ArtistId { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource AlbumArtistId { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource ReleaseGroupId { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource AlbumId { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource ReleaseStatus { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource ReleaseCountry { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource Media { get; set; } = TagSource.AutoTagPlatform;
     public TagSource CatalogNumber { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Key { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Remixer { get; set; } = TagSource.AutoTagPlatform;

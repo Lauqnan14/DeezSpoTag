@@ -255,6 +255,8 @@ public sealed class SpotifyMatcher
             Url = normalizedUrl,
             TrackId = normalizedTrackId ?? string.Empty,
             ReleaseId = track.ReleaseId,
+            RecordingId = normalizedTrackId,
+            AlbumId = track.ReleaseId,
             Duration = track.Duration,
             Art = track.Art,
             Isrc = track.Isrc,

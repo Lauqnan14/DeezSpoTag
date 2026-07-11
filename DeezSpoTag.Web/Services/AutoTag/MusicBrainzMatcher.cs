@@ -230,6 +230,10 @@ public sealed class MusicBrainzMatcher
             Url = $"https://musicbrainz.org/recording/{recording.Id}",
             TrackId = recording.Id,
             ReleaseId = release?.Id ?? string.Empty,
+            RecordingId = recording.Id,
+            ArtistId = recording.ArtistCredit?.Select(credit => credit.Artist.Id).FirstOrDefault(id => !string.IsNullOrWhiteSpace(id)),
+            AlbumArtistId = release?.ArtistCredit?.Select(credit => credit.Artist.Id).FirstOrDefault(id => !string.IsNullOrWhiteSpace(id)),
+            AlbumId = release?.Id,
             Duration = recording.Length.HasValue ? TimeSpan.FromMilliseconds(recording.Length.Value) : TimeSpan.Zero,
             ReleaseYear = ParseYear(recording.FirstReleaseDate),
             ReleaseDate = ParseDate(recording.FirstReleaseDate),
@@ -272,8 +276,10 @@ public sealed class MusicBrainzMatcher
 
             track.Album = release.Title;
             track.ReleaseId = release.Id;
+            track.AlbumId = release.Id;
             track.ReleaseDate = ParseDate(release.Date) ?? track.ReleaseDate;
             track.AlbumArtists = release.ArtistCredit?.Select(a => a.Name).ToList() ?? track.AlbumArtists;
+            track.AlbumArtistId = release.ArtistCredit?.Select(credit => credit.Artist.Id).FirstOrDefault(id => !string.IsNullOrWhiteSpace(id)) ?? track.AlbumArtistId;
             ApplyCoverArt(track, release);
             ApplyLabelInfo(track, release);
             ApplyTrackPosition(track, release);
@@ -345,6 +351,7 @@ public sealed class MusicBrainzMatcher
         if (release.ReleaseGroup != null)
         {
             AddOtherValue(track.Other, "MUSICBRAINZ_RELEASEGROUPID", release.ReleaseGroup.Id);
+            track.ReleaseGroupId = release.ReleaseGroup.Id;
             track.ReleaseType = AutoTagReleaseCategory.Resolve(release.ReleaseGroup.PrimaryType, track.TrackTotal);
             AddOtherValue(track.Other, "RELEASETYPE", track.ReleaseType);
         }
@@ -352,6 +359,7 @@ public sealed class MusicBrainzMatcher
         if (!string.IsNullOrWhiteSpace(release.Barcode))
         {
             AddOtherValue(track.Other, "BARCODE", release.Barcode);
+            track.Barcode = release.Barcode;
         }
 
         AddOtherValue(track.Other, "MUSICBRAINZ_ALBUMID", release.Id);
@@ -359,6 +367,15 @@ public sealed class MusicBrainzMatcher
         AddOtherValue(track.Other, "RELEASECOUNTRY", release.Country);
         AddOtherValue(track.Other, "RELEASEDATE", release.Date);
         AddOtherValues(track.Other, "MEDIA", release.Media.Select(media => media.Format));
+        track.AlbumId = release.Id;
+        track.ReleaseStatus = release.Status;
+        track.ReleaseCountry = release.Country;
+        track.Media = release.Media
+            .Select(media => media.Format)
+            .Where(format => !string.IsNullOrWhiteSpace(format))
+            .Select(format => format!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static int? ParseYear(string? date)
@@ -764,7 +781,8 @@ public sealed class MusicBrainzMatcher
             "MUSICBRAINZ_RECORDING_ID",
             "MUSICBRAINZ_RECORDINGID",
             "MUSICBRAINZ_TRACK_ID",
-            "MUSICBRAINZ_TRACKID"
+            "MUSICBRAINZ_TRACKID",
+            "RECORDINGID"
         };
 
         foreach (var key in keys)
@@ -824,6 +842,15 @@ public sealed class MusicBrainzMatcher
             Url = string.IsNullOrWhiteSpace(track.Url) ? null : track.Url,
             TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
+            RecordingId = track.RecordingId,
+            ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
+            ReleaseGroupId = track.ReleaseGroupId,
+            AlbumId = track.AlbumId,
+            ReleaseStatus = track.ReleaseStatus,
+            ReleaseCountry = track.ReleaseCountry,
+            Barcode = track.Barcode,
+            Media = track.Media.ToList(),
             Duration = track.Duration,
             TrackNumber = track.TrackNumber,
             TrackTotal = track.TrackTotal,

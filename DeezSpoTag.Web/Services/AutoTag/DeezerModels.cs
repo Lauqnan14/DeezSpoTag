@@ -81,6 +81,7 @@ public sealed class DeezerTrack
             CatalogNumber = Id.ToString(),
             TrackId = Id.ToString(),
             ReleaseId = Album.Id.ToString(),
+            ArtistId = Artist.Id > 0 ? Artist.Id.ToString() : null,
             Duration = TimeSpan.FromSeconds(Duration),
             Explicit = ExplicitLyrics ?? (ExplicitContentLyrics.HasValue ? ExplicitContentLyrics.Value == 1 : null)
         };
@@ -188,6 +189,8 @@ public sealed class DeezerTrackInfo
     public string? CatalogNumber { get; set; }
     public string TrackId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
+    public string? ArtistId { get; set; }
+    public string? AlbumArtistId { get; set; }
     public TimeSpan Duration { get; set; }
     public List<string> Genres { get; set; } = new();
     public string? Label { get; set; }

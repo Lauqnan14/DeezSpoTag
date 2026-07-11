@@ -217,6 +217,14 @@ public sealed class TaggingProfilesApiController : ControllerBase
             PublishDate = ParseTagSource(tagConfigObject, "publishDate"),
             ReleaseId = ParseTagSource(tagConfigObject, "releaseId"),
             TrackId = ParseTagSource(tagConfigObject, "trackId"),
+            RecordingId = ParseTagSource(tagConfigObject, "recordingId"),
+            ArtistId = ParseTagSource(tagConfigObject, "artistId"),
+            AlbumArtistId = ParseTagSource(tagConfigObject, "albumArtistId"),
+            ReleaseGroupId = ParseTagSource(tagConfigObject, "releaseGroupId"),
+            AlbumId = ParseTagSource(tagConfigObject, "albumId"),
+            ReleaseStatus = ParseTagSource(tagConfigObject, "releaseStatus"),
+            ReleaseCountry = ParseTagSource(tagConfigObject, "releaseCountry"),
+            Media = ParseTagSource(tagConfigObject, "media"),
             CatalogNumber = ParseTagSource(tagConfigObject, "catalogNumber"),
             Key = ParseTagSource(tagConfigObject, "key"),
             Remixer = ParseTagSource(tagConfigObject, "remixer"),
@@ -406,6 +414,14 @@ public sealed class TaggingProfilesApiController : ControllerBase
             PublishDate = TagSource.None,
             ReleaseId = TagSource.None,
             TrackId = TagSource.None,
+            RecordingId = TagSource.None,
+            ArtistId = TagSource.None,
+            AlbumArtistId = TagSource.None,
+            ReleaseGroupId = TagSource.None,
+            AlbumId = TagSource.None,
+            ReleaseStatus = TagSource.None,
+            ReleaseCountry = TagSource.None,
+            Media = TagSource.None,
             CatalogNumber = TagSource.None,
             Key = TagSource.None,
             Remixer = TagSource.None,
@@ -572,6 +588,30 @@ public sealed class TaggingProfilesApiController : ControllerBase
                 break;
             case "trackId":
                 config.TrackId = MergeTagSource(config.TrackId, source);
+                break;
+            case "recordingId":
+                config.RecordingId = MergeTagSource(config.RecordingId, source);
+                break;
+            case "artistId":
+                config.ArtistId = MergeTagSource(config.ArtistId, source);
+                break;
+            case "albumArtistId":
+                config.AlbumArtistId = MergeTagSource(config.AlbumArtistId, source);
+                break;
+            case "releaseGroupId":
+                config.ReleaseGroupId = MergeTagSource(config.ReleaseGroupId, source);
+                break;
+            case "albumId":
+                config.AlbumId = MergeTagSource(config.AlbumId, source);
+                break;
+            case "releaseStatus":
+                config.ReleaseStatus = MergeTagSource(config.ReleaseStatus, source);
+                break;
+            case "releaseCountry":
+                config.ReleaseCountry = MergeTagSource(config.ReleaseCountry, source);
+                break;
+            case "media":
+                config.Media = MergeTagSource(config.Media, source);
                 break;
             case "catalogNumber":
                 config.CatalogNumber = MergeTagSource(config.CatalogNumber, source);

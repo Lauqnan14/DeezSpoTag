@@ -39,6 +39,15 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public string? Url { get; set; }
     public string? TrackId { get; set; }
     public string? ReleaseId { get; set; }
+    public string? RecordingId { get; set; }
+    public string? ArtistId { get; set; }
+    public string? AlbumArtistId { get; set; }
+    public string? ReleaseGroupId { get; set; }
+    public string? AlbumId { get; set; }
+    public string? ReleaseStatus { get; set; }
+    public string? ReleaseCountry { get; set; }
+    public string? Barcode { get; set; }
+    public List<string> Media { get; set; } = new();
     public TimeSpan? Duration { get; set; }
     public int? TrackNumber { get; set; }
     public int? TrackTotal { get; set; }

@@ -496,6 +496,7 @@ public sealed class DeezerMatcher
             track.ReleaseType = AutoTagReleaseCategory.Resolve(album.RecordType, album.NbTracks);
             track.Label = album.Label;
             track.AlbumArtists = album.Contributors.Select(artist => artist.Name).ToList();
+            track.AlbumArtistId ??= album.Artist?.Id > 0 ? album.Artist.Id.ToString(CultureInfo.InvariantCulture) : null;
             track.Barcode ??= Normalize(album.Upc);
             track.Copyright ??= Normalize(album.Copyright);
         }
@@ -543,6 +544,7 @@ public sealed class DeezerMatcher
             CatalogNumber = track.Id.ToString(),
             TrackId = track.Id.ToString(),
             ReleaseId = track.Album?.Id.ToString() ?? string.Empty,
+            ArtistId = track.Artist?.Id > 0 ? track.Artist.Id.ToString(CultureInfo.InvariantCulture) : null,
             Duration = TimeSpan.FromSeconds(track.Duration),
             Isrc = track.Isrc,
             ReleaseDate = TryParseDate(track.ReleaseDate),
@@ -618,6 +620,11 @@ public sealed class DeezerMatcher
             CatalogNumber = track.CatalogNumber,
             TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
+            RecordingId = track.TrackId,
+            ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
+            AlbumId = track.ReleaseId,
+            Barcode = track.Barcode,
             Duration = track.Duration,
             Genres = track.Genres.ToList(),
             Label = track.Label,

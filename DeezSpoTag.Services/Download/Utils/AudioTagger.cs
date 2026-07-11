@@ -52,6 +52,14 @@ public class AudioTagger
     private const string LivenessTag = "LIVENESS";
     private const string TimeSignatureTag = "TIME_SIGNATURE";
     private const string BarcodeUpperTag = "BARCODE";
+    private const string RecordingIdUpperTag = "RECORDINGID";
+    private const string ArtistIdUpperTag = "ARTISTID";
+    private const string AlbumArtistIdUpperTag = "ALBUMARTISTID";
+    private const string ReleaseGroupIdUpperTag = "RELEASEGROUPID";
+    private const string AlbumIdUpperTag = "ALBUMID";
+    private const string ReleaseStatusUpperTag = "RELEASESTATUS";
+    private const string ReleaseCountryUpperTag = "RELEASECOUNTRY";
+    private const string MediaUpperTag = "MEDIA";
     private const string ItunesAdvisoryTag = "ITUNESADVISORY";
     private const string ReplayGainRawTag = "REPLAYGAIN_TRACK_GAIN";
     private const string SourceUpperTag = "SOURCE";
@@ -545,6 +553,15 @@ public class AudioTagger
                 SetCustomFrame(tag, "TXXX", $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", releaseId, save);
             }
         }
+
+        SetCustomFrameIfPresent(tag, "TXXX", RecordingIdUpperTag, save.RecordingId ? ResolveRecordingId(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", ArtistIdUpperTag, save.ArtistId ? ResolveArtistId(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", AlbumArtistIdUpperTag, save.AlbumArtistId ? ResolveAlbumArtistId(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", ReleaseGroupIdUpperTag, save.ReleaseGroupId ? ResolveReleaseGroupId(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", AlbumIdUpperTag, save.AlbumId ? ResolveAlbumId(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", ReleaseStatusUpperTag, save.ReleaseStatus ? ResolveReleaseStatus(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", ReleaseCountryUpperTag, save.ReleaseCountry ? ResolveReleaseCountry(track) : null, save);
+        SetCustomFrameIfPresent(tag, "TXXX", MediaUpperTag, save.Media ? ResolveMedia(track) : null, save);
     }
 
     private void ApplyMp3RatingMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1090,6 +1107,15 @@ public class AudioTagger
                 SetVorbisComment(tag, $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", new[] { releaseId });
             }
         }
+
+        SetVorbisCommentIf(tag, save.RecordingId, RecordingIdUpperTag, ResolveRecordingId(track));
+        SetVorbisCommentIf(tag, save.ArtistId, ArtistIdUpperTag, ResolveArtistId(track));
+        SetVorbisCommentIf(tag, save.AlbumArtistId, AlbumArtistIdUpperTag, ResolveAlbumArtistId(track));
+        SetVorbisCommentIf(tag, save.ReleaseGroupId, ReleaseGroupIdUpperTag, ResolveReleaseGroupId(track));
+        SetVorbisCommentIf(tag, save.AlbumId, AlbumIdUpperTag, ResolveAlbumId(track));
+        SetVorbisCommentIf(tag, save.ReleaseStatus, ReleaseStatusUpperTag, ResolveReleaseStatus(track));
+        SetVorbisCommentIf(tag, save.ReleaseCountry, ReleaseCountryUpperTag, ResolveReleaseCountry(track));
+        SetVorbisCommentIf(tag, save.Media, MediaUpperTag, ResolveMedia(track));
     }
 
     private void ApplyFlacRatingMetadata(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1270,6 +1296,15 @@ public class AudioTagger
                 SetAtlAdditionalField(file, $"{ResolveSourceTagPrefix(track)}_RELEASE_ID", releaseId);
             }
         }
+
+        SetAtlAdditionalFieldIf(file, save.RecordingId, RecordingIdUpperTag, ResolveRecordingId(track));
+        SetAtlAdditionalFieldIf(file, save.ArtistId, ArtistIdUpperTag, ResolveArtistId(track));
+        SetAtlAdditionalFieldIf(file, save.AlbumArtistId, AlbumArtistIdUpperTag, ResolveAlbumArtistId(track));
+        SetAtlAdditionalFieldIf(file, save.ReleaseGroupId, ReleaseGroupIdUpperTag, ResolveReleaseGroupId(track));
+        SetAtlAdditionalFieldIf(file, save.AlbumId, AlbumIdUpperTag, ResolveAlbumId(track));
+        SetAtlAdditionalFieldIf(file, save.ReleaseStatus, ReleaseStatusUpperTag, ResolveReleaseStatus(track));
+        SetAtlAdditionalFieldIf(file, save.ReleaseCountry, ReleaseCountryUpperTag, ResolveReleaseCountry(track));
+        SetAtlAdditionalFieldIf(file, save.Media, MediaUpperTag, ResolveMedia(track));
     }
 
     private static void ApplyAtlMp4RatingMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
@@ -1719,6 +1754,39 @@ public class AudioTagger
 
         return null;
     }
+
+    private static string? ResolveRecordingId(DeezSpoTag.Core.Models.Track track)
+        => NullIfEmpty(ResolveSourceId(track));
+
+    private static string? ResolveAlbumId(DeezSpoTag.Core.Models.Track track)
+        => ResolveReleaseId(track);
+
+    private static string? ResolveArtistId(DeezSpoTag.Core.Models.Track track)
+        => NormalizeEntityId(track.MainArtist?.Id);
+
+    private static string? ResolveAlbumArtistId(DeezSpoTag.Core.Models.Track track)
+        => NormalizeEntityId(track.Album?.MainArtist?.Id);
+
+    private static string? ResolveReleaseGroupId(DeezSpoTag.Core.Models.Track track)
+        => null;
+
+    private static string? ResolveReleaseStatus(DeezSpoTag.Core.Models.Track track)
+        => null;
+
+    private static string? ResolveReleaseCountry(DeezSpoTag.Core.Models.Track track)
+        => null;
+
+    private static string? ResolveMedia(DeezSpoTag.Core.Models.Track track)
+        => null;
+
+    private static string? NormalizeEntityId(string? value)
+    {
+        var normalized = NullIfEmpty(value);
+        return normalized is null || normalized == "0" ? null : normalized;
+    }
+
+    private static string? NullIfEmpty(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static string? ResolveTrackUrl(DeezSpoTag.Core.Models.Track track)
     {
@@ -2382,6 +2450,14 @@ public class AudioTagger
         Add("url", !string.IsNullOrWhiteSpace(track.DownloadURL) || (track.Urls?.Count ?? 0) > 0);
         Add("trackId", !string.IsNullOrWhiteSpace(ResolveSourceId(track)));
         Add("releaseId", !string.IsNullOrWhiteSpace(ResolveReleaseId(track)));
+        Add("recordingId", !string.IsNullOrWhiteSpace(ResolveRecordingId(track)));
+        Add("artistId", !string.IsNullOrWhiteSpace(ResolveArtistId(track)));
+        Add("albumArtistId", !string.IsNullOrWhiteSpace(ResolveAlbumArtistId(track)));
+        Add("releaseGroupId", !string.IsNullOrWhiteSpace(ResolveReleaseGroupId(track)));
+        Add("albumId", !string.IsNullOrWhiteSpace(ResolveAlbumId(track)));
+        Add("releaseStatus", !string.IsNullOrWhiteSpace(ResolveReleaseStatus(track)));
+        Add("releaseCountry", !string.IsNullOrWhiteSpace(ResolveReleaseCountry(track)));
+        Add("media", !string.IsNullOrWhiteSpace(ResolveMedia(track)));
 
         return tags;
     }

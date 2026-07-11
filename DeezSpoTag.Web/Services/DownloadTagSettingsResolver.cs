@@ -289,6 +289,14 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                && !settings.Date
                && !settings.Isrc
                && !settings.Barcode
+               && !settings.RecordingId
+               && !settings.ArtistId
+               && !settings.AlbumArtistId
+               && !settings.ReleaseGroupId
+               && !settings.AlbumId
+               && !settings.ReleaseStatus
+               && !settings.ReleaseCountry
+               && !settings.Media
                && !settings.Bpm
                && !settings.Length
                && !settings.ReplayGain
