@@ -96,6 +96,24 @@
         globalThis.location.href = `/Tracklist?${params.toString()}`;
     };
 
+    const deleteMix = async (playlist) => {
+        if (!playlist?.id || !playlist?.libraryId) {
+            return;
+        }
+
+        if (!confirm(`Delete ${playlist.name || "this Meloday playlist"} from DeezSpoTag?`)) {
+            return;
+        }
+
+        const response = await fetch(`/api/mixes/${encodeURIComponent(playlist.id)}?libraryId=${encodeURIComponent(playlist.libraryId)}`, {
+            method: "DELETE"
+        });
+        if (!response.ok && response.status !== 404) {
+            throw new Error(`Delete failed: HTTP ${response.status}`);
+        }
+        loadMixes();
+    };
+
     const openRecommendationStation = (station, libraryId) => {
         if (!station?.id || !station?.type) {
             return;
@@ -223,7 +241,24 @@
         description.className = "watchlist-card-meta meloday-playlist-description";
         description.textContent = playlist.description || "Generated from listening history.";
 
-        strip.append(title, meta, description);
+        const actions = document.createElement("div");
+        actions.className = "meloday-playlist-actions";
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "meloday-playlist-delete";
+        deleteButton.type = "button";
+        deleteButton.textContent = "Delete";
+        deleteButton.addEventListener("click", async (event) => {
+            event.stopPropagation();
+            deleteButton.disabled = true;
+            try {
+                await deleteMix(playlist);
+            } catch {
+                deleteButton.disabled = false;
+            }
+        });
+        actions.appendChild(deleteButton);
+
+        strip.append(title, meta, description, actions);
         card.append(artButton, strip);
         return card;
     };

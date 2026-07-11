@@ -4943,6 +4943,54 @@ WHERE mix_id = @mixId
         return Convert.ToInt64(result);
     }
 
+    public async Task<bool> DeleteGeneratedMixCacheAsync(string mixId, long plexUserId, long libraryId, CancellationToken cancellationToken = default)
+    {
+        if (IsRemovedHardcodedMixId(mixId))
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        long? mixCacheId;
+        const string selectSql = @"
+SELECT id
+FROM mix_cache
+WHERE mix_id = @mixId
+  AND plex_user_id = @plexUserId
+  AND library_id = @libraryId;";
+        await using (var select = new SqliteCommand(selectSql, connection, transaction))
+        {
+            select.Parameters.AddWithValue("mixId", mixId);
+            select.Parameters.AddWithValue("plexUserId", plexUserId);
+            select.Parameters.AddWithValue(LibraryIdField, libraryId);
+            var result = await select.ExecuteScalarAsync(cancellationToken);
+            mixCacheId = result is null || result == DBNull.Value ? null : Convert.ToInt64(result);
+        }
+
+        if (mixCacheId is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return false;
+        }
+
+        await using (var deleteItems = new SqliteCommand("DELETE FROM mix_item WHERE mix_cache_id = @mixCacheId;", connection, transaction))
+        {
+            deleteItems.Parameters.AddWithValue("mixCacheId", mixCacheId.Value);
+            await deleteItems.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deleteMix = new SqliteCommand("DELETE FROM mix_cache WHERE id = @mixCacheId;", connection, transaction))
+        {
+            deleteMix.Parameters.AddWithValue("mixCacheId", mixCacheId.Value);
+            await deleteMix.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
     private static async Task<MixSummaryDto> ReadMixSummaryAsync(SqliteDataReader reader, long libraryId, CancellationToken cancellationToken)
     {
         var coverJson = await reader.IsDBNullAsync(5, cancellationToken) ? "[]" : reader.GetString(5);

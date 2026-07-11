@@ -1833,6 +1833,14 @@ function normalizeTrackRowPlaybackSource(source) {
     return normalized === 'recommendations' ? 'deezer' : (normalized || 'deezer');
 }
 
+function isLocalTracklistSource(source) {
+    const normalized = String(source || '').trim().toLowerCase();
+    return normalized === 'plex'
+        || normalized === 'mix'
+        || normalized === 'radio'
+        || normalized === 'meloday';
+}
+
 function normalizeWatchlistSource(source, type) {
     const normalizedSource = String(source || '').trim().toLowerCase();
     const normalizedType = String(type || '').trim().toLowerCase();
@@ -2260,7 +2268,7 @@ async function loadTracklist() {
         console.log('Loading tracklist:', tracklistType, tracklistId);
         await preloadMonitoredPlaylistTrackStatuses();
 
-        if (tracklistSource === 'mix') {
+        if (tracklistSource === 'mix' || tracklistSource === 'meloday') {
             await loadMixTracklist();
             return;
         }
@@ -2384,7 +2392,7 @@ function isMonitoredPlaylistTracklistEligible(source, sourceId) {
         return false;
     }
 
-    if (source === 'plex' || source === 'mix' || source === 'radio') {
+    if (isLocalTracklistSource(source)) {
         return false;
     }
 
@@ -2562,7 +2570,11 @@ async function loadMixTracklist() {
 }
 
 function mapMixTracklist(payload) {
-    const tracks = mapLibraryStyleTracks(payload.tracks);
+    const tracks = mapLibraryStyleTracks(payload.tracks).map(track => ({
+        ...track,
+        source: 'meloday',
+        sourceTrackId: track.id
+    }));
     const coverUrl = resolveMelodayMixCoverUrl(payload.summary);
 
     return {
@@ -3198,7 +3210,7 @@ function renderTracklist(data, options = {}) {
     preloadAtmosDestinationForTracklist();
     const monitorSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
     const watchSource = normalizeWatchlistSource(monitorSource, tracklistType);
-    const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
+    const isLocalSource = isLocalTracklistSource(monitorSource);
     currentTracklistMeta = {
         source: watchSource,
         sourceId: getWatchlistSourceId(),
@@ -3656,7 +3668,7 @@ function setTracksEmptyMessage(message) {
     }
     const isPlaylistLike = tracklistLayoutIsPlaylistLike;
     const monitorSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
-    const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
+    const isLocalSource = isLocalTracklistSource(monitorSource);
     const columnCount = getTracklistColumnCount(isPlaylistLike, isLocalSource);
     tableBody.innerHTML = `<tr class="tracks-empty"><td colspan="${columnCount}">${escapeHtml(message)}</td></tr>`;
 }
@@ -3672,7 +3684,7 @@ function appendExternalTrackRows(tracks, options = {}) {
     tableBody.querySelectorAll('.tracks-loading, .tracks-empty').forEach(row => row.remove());
 
     const monitorSource = (requestSource || tracklistSource || 'deezer').toLowerCase();
-    const isLocalSource = monitorSource === 'plex' || monitorSource === 'mix' || monitorSource === 'radio';
+    const isLocalSource = isLocalTracklistSource(monitorSource);
     const isPlaylistLike = tracklistLayoutIsPlaylistLike;
     const base = Number.isFinite(options.baseOffset) ? options.baseOffset : 0;
 

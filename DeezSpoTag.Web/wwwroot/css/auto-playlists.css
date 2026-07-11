@@ -179,6 +179,27 @@
     line-height: 1.35;
 }
 
+.meloday-playlist-actions {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 4px;
+}
+
+.meloday-playlist-delete {
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    border-radius: 8px;
+    background: rgba(127, 29, 29, 0.22);
+    color: #fecaca;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 6px 8px;
+}
+
+.meloday-playlist-delete:disabled {
+    opacity: 0.6;
+}
+
 .auto-tools-grid--recommendations {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 248px), 1fr));

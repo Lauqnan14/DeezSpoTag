@@ -110,10 +110,7 @@ public sealed class MelodaySettingsStore
         UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(stored.UpdateIntervalMinutes, defaults.UpdateIntervalMinutes, 5, 1440),
         Mode = MelodayModes.Normalize(string.IsNullOrWhiteSpace(stored.Mode) ? defaults.Mode : stored.Mode),
         MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath,
-        CoversPath = string.IsNullOrWhiteSpace(stored.CoversPath) ? defaults.CoversPath : stored.CoversPath,
-        FontsPath = string.IsNullOrWhiteSpace(stored.FontsPath) ? defaults.FontsPath : stored.FontsPath,
-        MainFontFile = string.IsNullOrWhiteSpace(stored.MainFontFile) ? defaults.MainFontFile : stored.MainFontFile,
-        BrandFontFile = string.IsNullOrWhiteSpace(stored.BrandFontFile) ? defaults.BrandFontFile : stored.BrandFontFile
+        SyncTargets = NormalizeSyncTargets(stored.SyncTargets, defaults.SyncTargets)
     };
 
     private static MelodayOptions Clone(MelodayOptions source) => new()
@@ -131,9 +128,39 @@ public sealed class MelodaySettingsStore
         UpdateIntervalMinutes = source.UpdateIntervalMinutes,
         Mode = MelodayModes.Normalize(source.Mode),
         MoodMapPath = source.MoodMapPath,
-        CoversPath = source.CoversPath,
-        FontsPath = source.FontsPath,
-        MainFontFile = source.MainFontFile,
-        BrandFontFile = source.BrandFontFile
+        SyncTargets = NormalizeSyncTargets(source.SyncTargets, null)
     };
+
+    private static List<string> NormalizeSyncTargets(IReadOnlyList<string>? targets, IReadOnlyList<string>? fallback)
+    {
+        var normalized = targets?
+            .Select(NormalizeSyncTarget)
+            .Where(static target => !string.IsNullOrWhiteSpace(target))
+            .Select(static target => target!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (normalized is { Count: > 0 })
+        {
+            return normalized;
+        }
+
+        return fallback?
+            .Select(NormalizeSyncTarget)
+            .Where(static target => !string.IsNullOrWhiteSpace(target))
+            .Select(static target => target!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() is { Count: > 0 } fallbackNormalized
+            ? fallbackNormalized
+            : new List<string> { "plex", "jellyfin", "navidrome" };
+    }
+
+    private static string? NormalizeSyncTarget(string? target)
+        => target?.Trim().ToLowerInvariant() switch
+        {
+            "plex" => "plex",
+            "jellyfin" => "jellyfin",
+            "navidrome" => "navidrome",
+            _ => null
+        };
 }

@@ -1746,6 +1746,32 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-color) 60%, transparent);
 }
 
+.media-operations-tab .meloday-target-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.media-operations-tab .meloday-target-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 28%, var(--border-secondary));
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.media-operations-tab .meloday-target-option input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary-color);
+}
+
 .media-operations-tab .vibe-analysis-settings .form-control {
     min-width: 180px;
     background: var(--bg-secondary);
@@ -2878,7 +2904,6 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <div class="section-divider"></div>
                                 </div>
                                 <div class="section-label">Audio features</div>
                                 <div class="analysis-features-grid analysis-features-grid-main">
@@ -3108,6 +3133,24 @@
                                                     <span class="field-unit">0–1</span>
                                                 </div>
                                             </div>
+                                        </div>
+                                    </div>
+                                    <div class="section-divider"></div>
+                                    <div class="settings-section">
+                                        <div class="section-label section-label-sub">Target servers</div>
+                                        <div class="meloday-target-grid" id="meloday-target-servers">
+                                            <label class="meloday-target-option">
+                                                <input type="checkbox" data-meloday-target="plex" />
+                                                <span>Plex</span>
+                                            </label>
+                                            <label class="meloday-target-option">
+                                                <input type="checkbox" data-meloday-target="jellyfin" />
+                                                <span>Jellyfin</span>
+                                            </label>
+                                            <label class="meloday-target-option">
+                                                <input type="checkbox" data-meloday-target="navidrome" />
+                                                <span>Navidrome</span>
+                                            </label>
                                         </div>
                                     </div>
                                     <div class="section-divider"></div>

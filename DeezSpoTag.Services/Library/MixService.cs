@@ -45,4 +45,13 @@ public sealed class MixService
         var tracks = await _repository.GetMixTracksAsync(mixCacheId.Value, cancellationToken);
         return new MixDetailDto(summary, tracks);
     }
+
+    public async Task<bool> DeleteMixAsync(
+        string mixId,
+        long plexUserId,
+        long libraryId,
+        CancellationToken cancellationToken = default)
+    {
+        return await _repository.DeleteGeneratedMixCacheAsync(mixId, plexUserId, libraryId, cancellationToken);
+    }
 }

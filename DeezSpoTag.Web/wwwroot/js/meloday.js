@@ -169,6 +169,24 @@ function melodayGetMode() {
     return melodayNormalizeMode(document.querySelector('input[name="meloday-mode"]:checked')?.value || melodayDefaults.mode);
 }
 
+function melodayGetSyncTargets() {
+    const selected = Array.from(document.querySelectorAll('[data-meloday-target]'))
+        .filter(input => input.checked)
+        .map(input => String(input.getAttribute('data-meloday-target') || '').trim().toLowerCase())
+        .filter(Boolean);
+    return selected.length > 0 ? selected : ['plex', 'jellyfin', 'navidrome'];
+}
+
+function melodaySetSyncTargets(targets) {
+    const selected = Array.isArray(targets) && targets.length > 0
+        ? targets.map(target => String(target || '').trim().toLowerCase())
+        : ['plex', 'jellyfin', 'navidrome'];
+    document.querySelectorAll('[data-meloday-target]').forEach((input) => {
+        const target = String(input.getAttribute('data-meloday-target') || '').trim().toLowerCase();
+        input.checked = selected.includes(target);
+    });
+}
+
 async function loadMelodaySettings() {
     const enabledEl = document.getElementById('meloday-enabled');
     if (!enabledEl) {
@@ -190,6 +208,7 @@ async function loadMelodaySettings() {
         const similarLimit = document.getElementById('meloday-similar-limit');
         const historicalRatio = document.getElementById('meloday-historical-ratio');
         melodaySetMode(settings.mode || melodayDefaults.mode);
+        melodaySetSyncTargets(settings.syncTargets);
 
         if (libraryName) libraryName.value = settings.libraryName || '';
         if (playlistPrefix) playlistPrefix.value = settings.playlistPrefix || '';
@@ -218,7 +237,8 @@ function buildMelodayPayload(enabledOverride) {
         sonicSimilarityDistance: melodayParseNumber(document.getElementById('meloday-similarity-distance')?.value, 0.35),
         sonicSimilarLimit: melodayParseNumber(document.getElementById('meloday-similar-limit')?.value, 8),
         historicalRatio: melodayParseNumber(document.getElementById('meloday-historical-ratio')?.value, 0.3),
-        mode: melodayGetMode()
+        mode: melodayGetMode(),
+        syncTargets: melodayGetSyncTargets()
     };
 }
 
