@@ -75,6 +75,107 @@ public sealed class NavidromeApiClient
             .ToList() ?? new List<NavidromeAudioTrack>();
     }
 
+    public async Task<List<NavidromeArtistSummary>> SearchArtistsAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string searchTerm,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            return new List<NavidromeArtistSummary>();
+        }
+
+        var response = await SendAsync<NavidromeSearchResponse>(
+            serverUrl,
+            username,
+            password,
+            "search3",
+            new[]
+            {
+                new KeyValuePair<string, string?>("query", searchTerm),
+                new KeyValuePair<string, string?>("songCount", "0"),
+                new KeyValuePair<string, string?>("albumCount", "0"),
+                new KeyValuePair<string, string?>("artistCount", "25")
+            },
+            cancellationToken);
+        return response?.SubsonicResponse?.SearchResult?.Artists?
+            .Where(static artist => !string.IsNullOrWhiteSpace(artist.Id))
+            .Select(static artist => new NavidromeArtistSummary(
+                artist.Id!,
+                artist.Name ?? artist.Id!,
+                artist.CoverArt))
+            .ToList() ?? new List<NavidromeArtistSummary>();
+    }
+
+    public async Task<IReadOnlyList<string>> FindArtistIdsAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string artistName,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedArtistName = artistName?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedArtistName))
+        {
+            return Array.Empty<string>();
+        }
+
+        var artists = await SearchArtistsAsync(serverUrl, username, password, normalizedArtistName, cancellationToken);
+        var exactMatches = artists
+            .Where(artist => string.Equals(artist.Name.Trim(), normalizedArtistName, StringComparison.OrdinalIgnoreCase))
+            .Select(artist => artist.Id.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            return exactMatches;
+        }
+
+        return artists
+            .Select(artist => artist.Id.Trim())
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public async Task<NavidromeArtistInfo?> GetArtistInfoAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string artistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(artistId))
+        {
+            return null;
+        }
+
+        var response = await SendAsync<NavidromeArtistInfoResponse>(
+            serverUrl,
+            username,
+            password,
+            "getArtistInfo2",
+            new[]
+            {
+                new KeyValuePair<string, string?>("id", artistId),
+                new KeyValuePair<string, string?>("count", "0"),
+                new KeyValuePair<string, string?>("includeNotPresent", "false")
+            },
+            cancellationToken);
+        var info = response?.SubsonicResponse?.ArtistInfo;
+        return info is null
+            ? null
+            : new NavidromeArtistInfo(
+                info.Biography,
+                info.SmallImageUrl,
+                info.MediumImageUrl,
+                info.LargeImageUrl,
+                info.LastFmUrl,
+                info.MusicBrainzId);
+    }
+
     public async Task<List<NavidromePlaylistSummary>> GetPlaylistsAsync(
         string serverUrl,
         string username,
@@ -232,10 +333,58 @@ public sealed class NavidromeApiClient
         string? contentType = null,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return false;
+        }
+
+        return await UploadNativeImageAsync(
+            serverUrl,
+            username,
+            password,
+            $"/api/playlist/{Uri.EscapeDataString(playlistId)}/image",
+            imagePath,
+            contentType,
+            cancellationToken);
+    }
+
+    public async Task<bool> UpdateArtistImageFromFileAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string artistId,
+        string imagePath,
+        string? contentType = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(artistId))
+        {
+            return false;
+        }
+
+        return await UploadNativeImageAsync(
+            serverUrl,
+            username,
+            password,
+            $"/api/artist/{Uri.EscapeDataString(artistId)}/image",
+            imagePath,
+            contentType,
+            cancellationToken);
+    }
+
+    private async Task<bool> UploadNativeImageAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string path,
+        string imagePath,
+        string? contentType,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
             || string.IsNullOrWhiteSpace(password)
-            || string.IsNullOrWhiteSpace(playlistId)
+            || string.IsNullOrWhiteSpace(path)
             || string.IsNullOrWhiteSpace(imagePath)
             || !File.Exists(imagePath))
         {
@@ -259,7 +408,7 @@ public sealed class NavidromeApiClient
 
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
-                BuildNativeUrl(serverUrl, $"/api/playlist/{Uri.EscapeDataString(playlistId)}/image"))
+                BuildNativeUrl(serverUrl, path))
             {
                 Content = multipart
             };
@@ -489,6 +638,14 @@ public sealed class NavidromeApiClient
 
 public sealed record NavidromeSystemInfo(string? Version, string ServerName);
 public sealed record NavidromeAudioTrack(string Id, string Title, string Artist, int? DurationMs, string? FilePath = null);
+public sealed record NavidromeArtistSummary(string Id, string Name, string? CoverArt = null);
+public sealed record NavidromeArtistInfo(
+    string? Biography,
+    string? SmallImageUrl,
+    string? MediumImageUrl,
+    string? LargeImageUrl,
+    string? LastFmUrl,
+    string? MusicBrainzId);
 public sealed record NavidromePlaylistSummary(string Id, string Name, int? TrackCount, string? Comment = null);
 public sealed record NavidromePlaylistDetails(
     string Id,
@@ -536,6 +693,36 @@ file sealed class NavidromeSearchResult
 {
     [JsonPropertyName("song")]
     public List<NavidromeSong>? Songs { get; set; }
+    [JsonPropertyName("artist")]
+    public List<NavidromeArtist>? Artists { get; set; }
+}
+
+file sealed class NavidromeArtistInfoResponse
+{
+    [JsonPropertyName("subsonic-response")]
+    public NavidromeArtistInfoSubsonicResponse? SubsonicResponse { get; set; }
+}
+
+file sealed class NavidromeArtistInfoSubsonicResponse : NavidromeBaseResponse
+{
+    [JsonPropertyName("artistInfo2")]
+    public NavidromeArtistInfoDto? ArtistInfo { get; set; }
+}
+
+file sealed class NavidromeArtistInfoDto
+{
+    [JsonPropertyName("biography")]
+    public string? Biography { get; set; }
+    [JsonPropertyName("smallImageUrl")]
+    public string? SmallImageUrl { get; set; }
+    [JsonPropertyName("mediumImageUrl")]
+    public string? MediumImageUrl { get; set; }
+    [JsonPropertyName("largeImageUrl")]
+    public string? LargeImageUrl { get; set; }
+    [JsonPropertyName("lastFmUrl")]
+    public string? LastFmUrl { get; set; }
+    [JsonPropertyName("musicBrainzId")]
+    public string? MusicBrainzId { get; set; }
 }
 
 file sealed class NavidromePlaylistsResponse
@@ -600,4 +787,14 @@ file sealed class NavidromeSong
     public int? Duration { get; set; }
     [JsonPropertyName("path")]
     public string? Path { get; set; }
+}
+
+file sealed class NavidromeArtist
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+    [JsonPropertyName("coverArt")]
+    public string? CoverArt { get; set; }
 }

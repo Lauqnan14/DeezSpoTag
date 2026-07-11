@@ -840,6 +840,18 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             tracked.Target = target;
             tracked.Targets = targets.ToList();
             tracked.IntervalDays = intervalDays;
+            if (request.IncludeAvatar.HasValue)
+            {
+                tracked.IncludeAvatar = request.IncludeAvatar.Value;
+            }
+            if (request.IncludeBackground.HasValue)
+            {
+                tracked.IncludeBackground = request.IncludeBackground.Value;
+            }
+            if (request.IncludeBio.HasValue)
+            {
+                tracked.IncludeBio = request.IncludeBio.Value;
+            }
             if (request.IncludePopularSongs.HasValue)
             {
                 tracked.IncludePopularSongs = request.IncludePopularSongs.Value;
@@ -1737,6 +1749,63 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
         try
         {
+            var artistIds = await _navidromeClient.FindArtistIdsAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                request.ArtistName,
+                cancellationToken);
+            if (artistIds.Count == 0)
+            {
+                warnings.Add("Navidrome artist not found.");
+                return;
+            }
+
+            if (request.LocalArtistId > 0)
+            {
+                await _libraryRepository.UpsertArtistSourceIdAsync(request.LocalArtistId, NavidromeTarget, artistIds[0], cancellationToken);
+            }
+
+            var navidromeImagePath = HasLocalFile(request.AvatarPath)
+                ? request.AvatarPath
+                : HasLocalFile(request.BackgroundPath)
+                    ? request.BackgroundPath
+                    : null;
+
+            if (HasLocalFile(navidromeImagePath))
+            {
+                foreach (var artistId in artistIds)
+                {
+                    updates.AvatarUpdated = await _navidromeClient.UpdateArtistImageFromFileAsync(
+                        navidrome.Url,
+                        navidrome.Username,
+                        navidrome.Password,
+                        artistId,
+                        navidromeImagePath!,
+                        null,
+                        cancellationToken) || updates.AvatarUpdated;
+                }
+            }
+
+            var navidromeBiographyAvailable = false;
+            var navidromeBackgroundAvailable = false;
+            foreach (var artistId in artistIds)
+            {
+                var artistInfo = await _navidromeClient.GetArtistInfoAsync(
+                    navidrome.Url,
+                    navidrome.Username,
+                    navidrome.Password,
+                    artistId,
+                    cancellationToken);
+                navidromeBiographyAvailable = navidromeBiographyAvailable
+                    || (!string.IsNullOrWhiteSpace(request.Biography) && !string.IsNullOrWhiteSpace(artistInfo?.Biography));
+                navidromeBackgroundAvailable = navidromeBackgroundAvailable
+                    || (HasLocalFile(request.BackgroundPath) && !string.IsNullOrWhiteSpace(artistInfo?.LargeImageUrl));
+            }
+
+            updates.BioUpdated = navidromeBiographyAvailable || updates.BioUpdated;
+            updates.BackgroundUpdated = navidromeBackgroundAvailable || updates.BackgroundUpdated;
+
             var scanStarted = await _navidromeClient.StartScanAsync(
                 navidrome.Url,
                 navidrome.Username,
@@ -1746,8 +1815,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             {
                 updates.NavidromeScanTriggered = true;
             }
-
-            warnings.Add("Navidrome artist metadata sync is not supported by the current Navidrome/Subsonic API integration; library scan was requested instead.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

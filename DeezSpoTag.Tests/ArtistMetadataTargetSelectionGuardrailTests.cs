@@ -20,6 +20,9 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("data-metadata-target=\"plex\"", controls);
         Assert.Contains("data-metadata-target=\"jellyfin\"", controls);
         Assert.Contains("data-metadata-target=\"navidrome\"", controls);
+        Assert.Contains("id=\"metadata-include-avatar\" checked", controls);
+        Assert.Contains("id=\"metadata-include-background\" checked", controls);
+        Assert.Contains("id=\"metadata-include-bio\"", controls);
         Assert.Contains("id=\"metadata-ocr-text-art-blocking\" checked", controls);
         Assert.DoesNotContain("<option value=\"both\">", controls, StringComparison.OrdinalIgnoreCase);
     }
@@ -61,6 +64,9 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("body: JSON.stringify({ targets: getArtistSyncTargets() })", libraryJs);
         Assert.Contains("const targets = getMetadataUpdaterTargets();", activities);
         Assert.Contains("targets,", activities);
+        Assert.Contains("includeAvatar: includeAvatarCheckbox?.checked !== false", activities);
+        Assert.Contains("includeBackground: includeBackgroundCheckbox?.checked !== false", activities);
+        Assert.Contains("includeBio: includeBioCheckbox?.checked === true", activities);
     }
 
     [Fact]
@@ -81,8 +87,61 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Matches(new Regex("normalized\\s*==\\s*\"both\"", RegexOptions.Multiline), controller);
         Assert.Contains("LegacyBothTargets = \"both\"", updater);
         Assert.Contains("server = \"navidrome\"", controller);
-        Assert.Contains("not direct artist metadata writes", controller);
+        Assert.Contains("Navidrome exposes one artist image slot", controller);
+        Assert.Contains("large artist image is used as the background-equivalent", controller);
+        Assert.Contains("does not expose an HTTP biography write endpoint", controller);
         Assert.Contains("[HttpGet(\"artist-metadata/audit\")]", controller);
+    }
+
+    [Fact]
+    public void ArtistArtworkBlocking_StoresSelectedSlotAliases()
+    {
+        var controller = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "SpotifyCacheApiController.cs"));
+        var libraryScript = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "library.js"));
+
+        Assert.Contains("ResolveArtistArtworkBlockAliases", controller);
+        Assert.Contains("slot:{role}:{localPath}", controller);
+        Assert.Contains("file:{localPath}", controller);
+        Assert.Contains("visualUrl: visualUrl || null", libraryScript);
+        Assert.Contains("localPath: selectedPath || null", libraryScript);
+    }
+
+    [Fact]
+    public void ArtistVisualPicker_CachesProviderImagesInsideApp()
+    {
+        var controller = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "LibraryArtistVisualSelectionApiController.cs"));
+        var cacheService = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "ArtistVisualCacheService.cs"));
+        var libraryScript = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "library.js"));
+
+        Assert.Contains("[HttpPost(\"{id:long}/visuals/cache\")]", controller);
+        Assert.Contains("library-artist-images", cacheService);
+        Assert.Contains("CacheArtistVisualPickerItems", libraryScript, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cachedPickerImages", libraryScript);
+        Assert.Contains("mergeCachedArtistVisuals", libraryScript);
     }
 
     private static string RepositoryRoot()

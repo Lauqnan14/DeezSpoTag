@@ -249,6 +249,44 @@ public sealed class JellyfinApiClientUserResolutionTests
         }
     }
 
+    [Fact]
+    public async Task UpdateArtistImageAsync_UploadsBase64WithImageContentType()
+    {
+        var imagePath = Path.Combine(Path.GetTempPath(), $"jellyfin-artist-{Guid.NewGuid():N}.png");
+        await File.WriteAllBytesAsync(imagePath, new byte[] { 0x89, 0x50, 0x4E, 0x47 });
+        try
+        {
+            using var handler = new StubHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post
+                    && request.RequestUri?.AbsolutePath == "/Items/artist-1/Images/Primary")
+                {
+                    Assert.Equal("image/png", request.Content?.Headers.ContentType?.MediaType);
+                    var body = request.Content?.ReadAsStringAsync(cancellationToken: CancellationToken.None).GetAwaiter().GetResult() ?? string.Empty;
+                    Assert.Equal(Convert.ToBase64String(new byte[] { 0x89, 0x50, 0x4E, 0x47 }), body);
+                    return new HttpResponseMessage(HttpStatusCode.NoContent);
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            var client = CreateClient(handler);
+
+            var updated = await client.UpdateArtistImageAsync(
+                "http://jellyfin.local",
+                "api-key",
+                "artist-1",
+                imagePath,
+                CancellationToken.None);
+
+            Assert.True(updated);
+            Assert.Single(handler.RequestedUris);
+        }
+        finally
+        {
+            File.Delete(imagePath);
+        }
+    }
+
     private static JellyfinApiClient CreateClient(HttpMessageHandler handler)
     {
         return new JellyfinApiClient(new HttpClient(handler));

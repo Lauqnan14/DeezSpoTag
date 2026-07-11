@@ -1716,6 +1716,7 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Artist external metadata backfill after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualCacheService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>(
             services,

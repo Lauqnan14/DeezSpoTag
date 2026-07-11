@@ -393,6 +393,51 @@ public class PlexApiClient
         return matches.Count > 0 ? matches[0] : null;
     }
 
+    public async Task<PlexArtistMetadata?> GetArtistMetadataAsync(
+        string serverUrl,
+        string token,
+        string ratingKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(ratingKey))
+        {
+            return null;
+        }
+
+        var url = $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey)}?X-Plex-Token={Uri.EscapeDataString(token)}";
+        try
+        {
+            using var response = await _httpClient.GetAsync(url, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(content);
+            var artist = doc.Descendants()
+                .FirstOrDefault(element =>
+                    string.Equals(element.Name.LocalName, "Directory", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(element.Name.LocalName, "Artist", StringComparison.OrdinalIgnoreCase));
+            if (artist is null)
+            {
+                return null;
+            }
+
+            return new PlexArtistMetadata(
+                artist.Attribute("ratingKey")?.Value ?? ratingKey,
+                artist.Attribute("title")?.Value,
+                artist.Attribute("thumb")?.Value,
+                artist.Attribute("art")?.Value,
+                artist.Attribute("summary")?.Value);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed to read Plex artist metadata for {RatingKey}", ratingKey);
+            return null;
+        }
+    }
+
     /// <summary>
     /// Upload poster from a local file by sending raw image bytes directly to Plex.
     /// This is more reliable than the URL-based approach because Plex does not need
@@ -2277,6 +2322,7 @@ public class PlexApiClient
 }
 
 public sealed record PlexArtistLocation(string SectionKey, string RatingKey);
+public sealed record PlexArtistMetadata(string RatingKey, string? Title, string? Thumb, string? Art, string? Summary);
 
 /// <summary>
 /// Plex server information

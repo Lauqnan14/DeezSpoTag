@@ -100,6 +100,80 @@ public sealed class NavidromeApiClientPlaylistTests
     }
 
     [Fact]
+    public async Task SearchArtistsAsync_ReturnsArtistResults()
+    {
+        using var handler = new NavidromePlaylistHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var artists = await client.SearchArtistsAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "Alikiba",
+            CancellationToken.None);
+
+        var artist = Assert.Single(artists);
+        Assert.Equal("artist-1", artist.Id);
+        Assert.Equal("Alikiba", artist.Name);
+        Assert.Equal("artist-cover-1", artist.CoverArt);
+    }
+
+    [Fact]
+    public async Task UpdateArtistImageFromFileAsync_LogsInAndUploadsMultipartImage()
+    {
+        var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-artist-{Guid.NewGuid():N}.jpg");
+        await File.WriteAllBytesAsync(imagePath, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+        try
+        {
+            using var handler = new NavidromePlaylistHandler();
+            using var httpClient = new HttpClient(handler);
+            var client = new NavidromeApiClient(httpClient);
+
+            var updated = await client.UpdateArtistImageFromFileAsync(
+                "http://navidrome.local",
+                "user",
+                "pass",
+                "artist-1",
+                imagePath,
+                "image/jpeg",
+                CancellationToken.None);
+
+            Assert.True(updated);
+            Assert.Contains(handler.RequestedUrls, url => url.EndsWith("/auth/login", StringComparison.Ordinal));
+            Assert.Contains(handler.RequestedUrls, url => url.EndsWith("/api/artist/artist-1/image", StringComparison.Ordinal));
+            Assert.Equal("Bearer jwt-token", handler.UploadAuthorization);
+            Assert.Contains("Content-Disposition", handler.UploadBody);
+            Assert.Contains("image", handler.UploadBody);
+        }
+        finally
+        {
+            File.Delete(imagePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetArtistInfoAsync_ReturnsBiographyAndLargeArtistImage()
+    {
+        using var handler = new NavidromePlaylistHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var info = await client.GetArtistInfoAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "artist-1",
+            CancellationToken.None);
+
+        Assert.NotNull(info);
+        Assert.Equal("Artist biography", info.Biography);
+        Assert.Equal("http://navidrome.local/rest/getCoverArt.view?id=artist-1&size=1200", info.LargeImageUrl);
+        Assert.Contains(handler.RequestedUrls, url => url.Contains("/rest/getArtistInfo2.view?", StringComparison.Ordinal)
+            && url.Contains("id=artist-1", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task GetPlaylistAsync_ReturnsDescriptionAndEntries()
     {
         using var handler = new NavidromePlaylistHandler();
@@ -162,17 +236,27 @@ public sealed class NavidromeApiClientPlaylistTests
 
             if (path.EndsWith("/api/playlist/playlist-1/image", StringComparison.Ordinal))
             {
-                UploadAuthorization = request.Headers.Authorization?.ToString() ?? string.Empty;
-                if (request.Headers.TryGetValues("X-ND-Authorization", out var nativeAuth))
-                {
-                    UploadAuthorization = nativeAuth.Single();
-                }
-                UploadBody = request.Content == null
-                    ? string.Empty
-                    : await request.Content.ReadAsStringAsync(cancellationToken);
+                return await CaptureImageUploadAsync(request, cancellationToken);
+            }
+
+            if (path.EndsWith("/api/artist/artist-1/image", StringComparison.Ordinal))
+            {
+                return await CaptureImageUploadAsync(request, cancellationToken);
+            }
+
+            if (path.EndsWith("/search3.view", StringComparison.Ordinal)
+                && url.Contains("artistCount=25", StringComparison.Ordinal))
+            {
                 return await Json("""
                     {
-                      "status": "ok"
+                      "subsonic-response": {
+                        "status": "ok",
+                        "searchResult3": {
+                          "artist": [
+                            { "id": "artist-1", "name": "Alikiba", "coverArt": "artist-cover-1" }
+                          ]
+                        }
+                      }
                     }
                     """);
             }
@@ -219,6 +303,22 @@ public sealed class NavidromeApiClientPlaylistTests
                     """);
             }
 
+            if (path.EndsWith("/getArtistInfo2.view", StringComparison.Ordinal))
+            {
+                return await Json("""
+                    {
+                      "subsonic-response": {
+                        "status": "ok",
+                        "artistInfo2": {
+                          "biography": "Artist biography",
+                          "largeImageUrl": "http://navidrome.local/rest/getCoverArt.view?id=artist-1&size=1200",
+                          "musicBrainzId": "artist-mbid"
+                        }
+                      }
+                    }
+                    """);
+            }
+
             if (path.EndsWith("/createPlaylist.view", StringComparison.Ordinal))
             {
                 _playlistCreated = true;
@@ -258,6 +358,23 @@ public sealed class NavidromeApiClientPlaylistTests
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private async Task<HttpResponseMessage> CaptureImageUploadAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            UploadAuthorization = request.Headers.Authorization?.ToString() ?? string.Empty;
+            if (request.Headers.TryGetValues("X-ND-Authorization", out var nativeAuth))
+            {
+                UploadAuthorization = nativeAuth.Single();
+            }
+            UploadBody = request.Content == null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            return await Json("""
+                {
+                  "status": "ok"
+                }
+                """);
         }
 
         private static Task<HttpResponseMessage> Json(string json)

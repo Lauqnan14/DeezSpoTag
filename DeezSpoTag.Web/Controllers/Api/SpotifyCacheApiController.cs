@@ -842,13 +842,63 @@ public class SpotifyCacheApiController : ControllerBase
 
         try
         {
+            var artistIds = await NavidromeClient.FindArtistIdsAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                context.ArtistName,
+                cancellationToken);
+            if (artistIds.Count == 0)
+            {
+                warnings.Add("Navidrome artist not found.");
+                return;
+            }
+
+            var navidromeImage = context.Visuals.AvatarVisual is { LocalPath: { Length: > 0 } }
+                ? context.Visuals.AvatarVisual
+                : context.Visuals.BackgroundVisual is { LocalPath: { Length: > 0 } }
+                    ? context.Visuals.BackgroundVisual
+                    : null;
+
+            if (navidromeImage is not null)
+            {
+                foreach (var artistId in artistIds)
+                {
+                    updates.AvatarUpdated = await NavidromeClient.UpdateArtistImageFromFileAsync(
+                        navidrome.Url,
+                        navidrome.Username,
+                        navidrome.Password,
+                        artistId,
+                        navidromeImage.LocalPath!,
+                        null,
+                        cancellationToken) || updates.AvatarUpdated;
+                }
+            }
+
+            var navidromeBiographyAvailable = false;
+            var navidromeBackgroundAvailable = false;
+            foreach (var artistId in artistIds)
+            {
+                var artistInfo = await NavidromeClient.GetArtistInfoAsync(
+                    navidrome.Url,
+                    navidrome.Username,
+                    navidrome.Password,
+                    artistId,
+                    cancellationToken);
+                navidromeBiographyAvailable = navidromeBiographyAvailable
+                    || !string.IsNullOrWhiteSpace(artistInfo?.Biography);
+                navidromeBackgroundAvailable = navidromeBackgroundAvailable
+                    || !string.IsNullOrWhiteSpace(artistInfo?.LargeImageUrl);
+            }
+            updates.BioUpdated = navidromeBiographyAvailable || updates.BioUpdated;
+            updates.BackgroundUpdated = navidromeBackgroundAvailable || updates.BackgroundUpdated;
+
             var scanStarted = await NavidromeClient.StartScanAsync(
                 navidrome.Url,
                 navidrome.Username,
                 navidrome.Password,
                 cancellationToken);
             updates.NavidromeScanTriggered = scanStarted || updates.NavidromeScanTriggered;
-            warnings.Add("Navidrome artist metadata sync is not supported by the current Navidrome/Subsonic API integration; library scan was requested instead.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -931,12 +981,12 @@ public class SpotifyCacheApiController : ControllerBase
             new
             {
                 server = "navidrome",
-                canAuditArtist = false,
-                canUpdateAvatar = false,
+                canAuditArtist = true,
+                canUpdateAvatar = true,
                 canUpdateBiography = false,
-                canUpdateBackground = false,
+                canUpdateBackground = true,
                 canTriggerLibraryScan = true,
-                limitationReason = (string?)"Current Navidrome/Subsonic integration supports scan, search, and playlists, but not direct artist metadata writes."
+                limitationReason = (string?)"Navidrome exposes one artist image slot; the large artist image is used as the background-equivalent. Biography can be refreshed/read through getArtistInfo2, but Navidrome does not expose an HTTP biography write endpoint."
             }
         });
     }
@@ -944,66 +994,198 @@ public class SpotifyCacheApiController : ControllerBase
     [HttpGet("artist-metadata/audit")]
     public async Task<IActionResult> ArtistMetadataAudit(CancellationToken cancellationToken)
     {
+        var auth = await PlatformAuthService.LoadAsync();
         var artists = await _libraryRepository.GetArtistsAsync("all", cancellationToken);
-        var results = artists
-            .Where(static artist => artist.Id > 0)
-            .Select(artist =>
+        var results = new List<object>();
+        foreach (var artist in artists.Where(static artist => artist.Id > 0))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var hasAvatar = HasExistingFile(artist.PreferredImagePath);
+            var hasBackground = HasExistingFile(artist.PreferredBackgroundPath);
+            var hasBiography = !string.IsNullOrWhiteSpace(artist.AppleBiography);
+            results.Add(new
             {
-                var hasAvatar = HasExistingFile(artist.PreferredImagePath);
-                var hasBackground = HasExistingFile(artist.PreferredBackgroundPath);
-                var hasBiography = !string.IsNullOrWhiteSpace(artist.AppleBiography);
-                return new
+                artistId = artist.Id,
+                artistName = artist.Name,
+                cacheHasAvatar = hasAvatar,
+                cacheHasBiography = hasBiography,
+                cacheHasBackground = hasBackground,
+                missingAvatar = !hasAvatar,
+                missingBiography = !hasBiography,
+                missingBackground = !hasBackground,
+                servers = new
                 {
-                    artistId = artist.Id,
-                    artistName = artist.Name,
-                    cacheHasAvatar = hasAvatar,
-                    cacheHasBiography = hasBiography,
-                    cacheHasBackground = hasBackground,
-                    missingAvatar = !hasAvatar,
-                    missingBiography = !hasBiography,
-                    missingBackground = !hasBackground,
-                    servers = new
-                    {
-                        plex = new
-                        {
-                            capabilitySupported = true,
-                            canAuditArtist = true,
-                            hasAvatar = (bool?)null,
-                            hasBiography = (bool?)null,
-                            hasBackground = (bool?)null,
-                            message = "Server field audit requires resolving the artist on Plex during sync."
-                        },
-                        jellyfin = new
-                        {
-                            capabilitySupported = true,
-                            canAuditArtist = true,
-                            hasAvatar = (bool?)null,
-                            hasBiography = (bool?)null,
-                            hasBackground = (bool?)null,
-                            message = "Server field audit requires resolving the artist on Jellyfin during sync."
-                        },
-                        navidrome = new
-                        {
-                            capabilitySupported = false,
-                            canAuditArtist = false,
-                            hasAvatar = (bool?)null,
-                            hasBiography = (bool?)null,
-                            hasBackground = (bool?)null,
-                            message = "Current Navidrome/Subsonic integration does not expose direct artist metadata audit/write support."
-                        }
-                    }
-                };
-            })
-            .ToList();
+                    plex = await AuditPlexArtistAsync(auth.Plex, artist.Name, cancellationToken),
+                    jellyfin = await AuditJellyfinArtistAsync(auth.Jellyfin, artist.Name, cancellationToken),
+                    navidrome = await AuditNavidromeArtistAsync(auth.Navidrome, artist.Name, cancellationToken)
+                }
+            });
+        }
 
         return Ok(new
         {
             totalArtists = results.Count,
-            missingAvatar = results.Count(result => result.missingAvatar),
-            missingBiography = results.Count(result => result.missingBiography),
-            missingBackground = results.Count(result => result.missingBackground),
+            missingAvatar = artists.Count(artist => !HasExistingFile(artist.PreferredImagePath)),
+            missingBiography = artists.Count(artist => string.IsNullOrWhiteSpace(artist.AppleBiography)),
+            missingBackground = artists.Count(artist => !HasExistingFile(artist.PreferredBackgroundPath)),
             artists = results
         });
+    }
+
+    private async Task<object> AuditPlexArtistAsync(PlexAuth? plex, string artistName, CancellationToken cancellationToken)
+    {
+        if (plex is null || string.IsNullOrWhiteSpace(plex.Url) || string.IsNullOrWhiteSpace(plex.Token))
+        {
+            return new
+            {
+                capabilitySupported = true,
+                canAuditArtist = false,
+                canUpdateAvatar = true,
+                canUpdateBiography = true,
+                canUpdateBackground = true,
+                hasAvatar = (bool?)null,
+                hasBiography = (bool?)null,
+                hasBackground = (bool?)null,
+                message = "Plex is not configured."
+            };
+        }
+
+        var locations = await PlexClient.FindArtistLocationsAsync(plex.Url, plex.Token, artistName, cancellationToken);
+        if (locations.Count == 0)
+        {
+            return new
+            {
+                capabilitySupported = true,
+                canAuditArtist = true,
+                canUpdateAvatar = true,
+                canUpdateBiography = true,
+                canUpdateBackground = true,
+                hasAvatar = (bool?)false,
+                hasBiography = (bool?)false,
+                hasBackground = (bool?)false,
+                message = "Plex artist not found."
+            };
+        }
+
+        var metadata = await PlexClient.GetArtistMetadataAsync(plex.Url, plex.Token, locations[0].RatingKey, cancellationToken);
+        return new
+        {
+            capabilitySupported = true,
+            canAuditArtist = metadata is not null,
+            canUpdateAvatar = true,
+            canUpdateBiography = true,
+            canUpdateBackground = true,
+            hasAvatar = metadata is null ? (bool?)null : !string.IsNullOrWhiteSpace(metadata.Thumb),
+            hasBiography = metadata is null ? (bool?)null : !string.IsNullOrWhiteSpace(metadata.Summary),
+            hasBackground = metadata is null ? (bool?)null : !string.IsNullOrWhiteSpace(metadata.Art),
+            message = metadata is null ? "Plex artist metadata could not be read." : null
+        };
+    }
+
+    private async Task<object> AuditJellyfinArtistAsync(JellyfinAuth? jellyfin, string artistName, CancellationToken cancellationToken)
+    {
+        if (jellyfin is null
+            || string.IsNullOrWhiteSpace(jellyfin.Url)
+            || string.IsNullOrWhiteSpace(jellyfin.ApiKey)
+            || string.IsNullOrWhiteSpace(jellyfin.UserId))
+        {
+            return new
+            {
+                capabilitySupported = true,
+                canAuditArtist = false,
+                canUpdateAvatar = true,
+                canUpdateBiography = true,
+                canUpdateBackground = true,
+                hasAvatar = (bool?)null,
+                hasBiography = (bool?)null,
+                hasBackground = (bool?)null,
+                message = "Jellyfin is not configured."
+            };
+        }
+
+        var artistIds = await JellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, artistName, cancellationToken);
+        if (artistIds.Count == 0)
+        {
+            return new
+            {
+                capabilitySupported = true,
+                canAuditArtist = true,
+                canUpdateAvatar = true,
+                canUpdateBiography = true,
+                canUpdateBackground = true,
+                hasAvatar = (bool?)false,
+                hasBiography = (bool?)false,
+                hasBackground = (bool?)false,
+                message = "Jellyfin artist not found."
+            };
+        }
+
+        var item = await JellyfinClient.GetItemAsync(jellyfin.Url, jellyfin.ApiKey, jellyfin.UserId, artistIds[0], cancellationToken);
+        return new
+        {
+            capabilitySupported = true,
+            canAuditArtist = item is not null,
+            canUpdateAvatar = true,
+            canUpdateBiography = true,
+            canUpdateBackground = true,
+            hasAvatar = item is null ? (bool?)null : item.ImageTags?.ContainsKey("Primary") == true,
+            hasBiography = item is null ? (bool?)null : !string.IsNullOrWhiteSpace(item.Overview),
+            hasBackground = item is null ? (bool?)null : item.BackdropImageTags?.Count > 0,
+            message = item is null ? "Jellyfin artist metadata could not be read." : null
+        };
+    }
+
+    private async Task<object> AuditNavidromeArtistAsync(NavidromeAuth? navidrome, string artistName, CancellationToken cancellationToken)
+    {
+        if (navidrome is null
+            || string.IsNullOrWhiteSpace(navidrome.Url)
+            || string.IsNullOrWhiteSpace(navidrome.Username)
+            || string.IsNullOrWhiteSpace(navidrome.Password))
+        {
+            return new
+            {
+                capabilitySupported = true,
+                canAuditArtist = false,
+                canUpdateAvatar = true,
+                canUpdateBiography = false,
+                canUpdateBackground = true,
+                hasAvatar = (bool?)null,
+                hasBiography = (bool?)null,
+                hasBackground = (bool?)null,
+                message = "Navidrome is not configured."
+            };
+        }
+
+        var artists = await NavidromeClient.SearchArtistsAsync(
+            navidrome.Url,
+            navidrome.Username,
+            navidrome.Password,
+            artistName,
+            cancellationToken);
+        var match = artists.FirstOrDefault(artist => string.Equals(artist.Name.Trim(), artistName.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? artists.FirstOrDefault();
+        var info = match is null
+            ? null
+            : await NavidromeClient.GetArtistInfoAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                match.Id,
+                cancellationToken);
+        return new
+        {
+            capabilitySupported = true,
+            canAuditArtist = match is not null,
+            canUpdateAvatar = true,
+            canUpdateBiography = false,
+            canUpdateBackground = true,
+            hasAvatar = match is null ? (bool?)false : !string.IsNullOrWhiteSpace(match.CoverArt),
+            hasBiography = match is null ? (bool?)false : !string.IsNullOrWhiteSpace(info?.Biography),
+            hasBackground = match is null ? (bool?)false : !string.IsNullOrWhiteSpace(info?.LargeImageUrl),
+            message = match is null
+                ? "Navidrome artist not found."
+                : "Navidrome uses one artist image for avatar and large/background display; biography is read from getArtistInfo2 and depends on Navidrome artist-info providers."
+        };
     }
 
     private static bool HasExistingFile(string? path)
@@ -1074,8 +1256,51 @@ public class SpotifyCacheApiController : ControllerBase
             request.Identity.Trim(),
             request.Blocked,
             cancellationToken);
+        var normalizedRole = request.Role.Trim().ToLowerInvariant();
+        foreach (var alias in ResolveArtistArtworkBlockAliases(normalizedRole, request))
+        {
+            await _libraryRepository.SetArtistArtworkBlockedAsync(
+                artistId,
+                normalizedRole,
+                alias,
+                request.Blocked,
+                cancellationToken);
+        }
+
         return Ok(new { artistId, request.Role, request.Identity, request.Blocked });
     }
+
+    private static IReadOnlyList<string> ResolveArtistArtworkBlockAliases(
+        string role,
+        ArtistArtworkBlockRequest request)
+    {
+        var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(request.VisualUrl))
+        {
+            aliases.Add($"{ResolveArtistArtworkBlockSourcePrefix(request.VisualSource)}:{request.VisualUrl.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.LocalPath))
+        {
+            try
+            {
+                var localPath = Path.GetFullPath(request.LocalPath);
+                aliases.Add($"file:{localPath}");
+                aliases.Add($"slot:{role}:{localPath}");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Ignore malformed client-side path aliases; the original identity is still persisted.
+            }
+        }
+
+        aliases.RemoveWhere(static alias => string.IsNullOrWhiteSpace(alias));
+        aliases.Remove(request.Identity?.Trim() ?? string.Empty);
+        return aliases.ToList();
+    }
+
+    private static string ResolveArtistArtworkBlockSourcePrefix(string? source)
+        => string.IsNullOrWhiteSpace(source) ? "visual" : source.Trim().ToLowerInvariant();
 
     [HttpPost("artists/{artistId:long}/popular-songs/sync")]
     public async Task<IActionResult> SyncArtistPopularSongs(
@@ -1211,6 +1436,9 @@ public sealed class ArtistArtworkBlockRequest
 {
     public string? Role { get; set; }
     public string? Identity { get; set; }
+    public string? VisualUrl { get; set; }
+    public string? VisualSource { get; set; }
+    public string? LocalPath { get; set; }
     public bool Blocked { get; set; }
 }
 

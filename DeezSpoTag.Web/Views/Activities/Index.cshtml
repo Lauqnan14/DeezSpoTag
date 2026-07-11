@@ -4057,6 +4057,9 @@ function initMetadataUpdater() {
     const sourceSelect = document.getElementById('metadata-source-platform');
     const intervalSelect = document.getElementById('metadata-refresh-interval');
     const targetContainer = document.getElementById('metadata-target-server');
+    const includeAvatarCheckbox = document.getElementById('metadata-include-avatar');
+    const includeBackgroundCheckbox = document.getElementById('metadata-include-background');
+    const includeBioCheckbox = document.getElementById('metadata-include-bio');
     const popularSongsCheckbox = document.getElementById('metadata-include-popular-songs');
     const ocrTextArtBlockingCheckbox = document.getElementById('metadata-ocr-text-art-blocking');
     const phaseLabel = document.getElementById('metadata-phase-label');
@@ -4069,6 +4072,9 @@ function initMetadataUpdater() {
 
     const targetKey = 'deezspotag-metadata-updater-targets';
     const sourceKey = 'deezspotag-metadata-updater-source';
+    const includeAvatarKey = 'deezspotag-metadata-updater-include-avatar';
+    const includeBackgroundKey = 'deezspotag-metadata-updater-include-background';
+    const includeBioKey = 'deezspotag-metadata-updater-include-bio';
     const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
     const ocrTextArtBlockingKey = 'deezspotag-metadata-updater-ocr-text-art-blocking';
 
@@ -4084,6 +4090,9 @@ function initMetadataUpdater() {
             source,
             intervalDays,
             targets,
+            includeAvatar: includeAvatarCheckbox?.checked !== false,
+            includeBackground: includeBackgroundCheckbox?.checked !== false,
+            includeBio: includeBioCheckbox?.checked === true,
             includePopularSongs: popularSongsCheckbox?.checked === true,
             ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false,
             includeAllArtists: true,
@@ -4163,6 +4172,22 @@ function initMetadataUpdater() {
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterSource', sourceSelect.value);
         });
     }
+
+    [
+        [includeAvatarCheckbox, includeAvatarKey, true, 'metadataUpdaterIncludeAvatar'],
+        [includeBackgroundCheckbox, includeBackgroundKey, true, 'metadataUpdaterIncludeBackground'],
+        [includeBioCheckbox, includeBioKey, false, 'metadataUpdaterIncludeBio']
+    ].forEach(([input, key, defaultValue, preferenceKey]) => {
+        if (!input) {
+            return;
+        }
+        const savedValue = localStorage.getItem(key);
+        input.checked = savedValue === null ? defaultValue : savedValue === 'true';
+        input.addEventListener('change', () => {
+            localStorage.setItem(key, input.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set(preferenceKey, input.checked);
+        });
+    });
 
     if (popularSongsCheckbox) {
         popularSongsCheckbox.checked = localStorage.getItem(popularSongsKey) === 'true';

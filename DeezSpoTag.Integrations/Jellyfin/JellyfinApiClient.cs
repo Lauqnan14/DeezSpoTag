@@ -967,9 +967,16 @@ public class JellyfinApiClient
 
     private async Task<bool> UploadImageAsync(string url, string apiKey, string imagePath, CancellationToken cancellationToken)
     {
-        await using var stream = File.OpenRead(imagePath);
-        using var content = new StreamContent(stream);
-        content.Headers.ContentType = new MediaTypeHeaderValue(GetImageContentType(imagePath));
+        var imageBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
+        if (imageBytes.Length == 0)
+        {
+            return false;
+        }
+
+        using var content = new StringContent(
+            Convert.ToBase64String(imageBytes),
+            Encoding.UTF8,
+            GetImageContentType(imagePath));
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
@@ -1157,6 +1164,9 @@ public sealed class JellyfinMediaItem
 
     [JsonPropertyName("ImageTags")]
     public Dictionary<string, string>? ImageTags { get; set; }
+
+    [JsonPropertyName("BackdropImageTags")]
+    public List<string>? BackdropImageTags { get; set; }
 
     [JsonPropertyName("RunTimeTicks")]
     public long? RunTimeTicks { get; set; }

@@ -52,6 +52,8 @@ const libraryState = {
         headerImageUrl: null,
         gallery: [],
         cacheImages: [],
+        cachedPickerImages: [],
+        cacheRequestKey: '',
         spotifyImages: [],
         appleImages: [],
         deezerImages: [],
@@ -6945,6 +6947,73 @@ function loadExternalArtistVisuals(artistName, artistId, storedAppleId) {
     });
 }
 
+async function cacheArtistVisualPickerItems(artistId, items) {
+    if (!artistId || !Array.isArray(items) || items.length === 0) {
+        return [];
+    }
+
+    const candidates = items
+        .map(item => ({
+            source: item.source || '',
+            label: item.label || '',
+            url: item.url || '',
+            path: item.path || '',
+            identity: item.identity || ''
+        }))
+        .filter(item => item.url || item.path);
+    if (candidates.length === 0) {
+        return [];
+    }
+
+    try {
+        const cached = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/visuals/cache`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ candidates })
+        });
+        return Array.isArray(cached) ? cached : [];
+    } catch (error) {
+        console.warn('Failed to cache artist visuals.', error);
+        return [];
+    }
+}
+
+function mergeCachedArtistVisuals(items, cachedItems) {
+    if (!Array.isArray(items) || !Array.isArray(cachedItems) || cachedItems.length === 0) {
+        return items;
+    }
+
+    const byIdentity = new Map();
+    const byUrl = new Map();
+    cachedItems.forEach(item => {
+        const identity = (item?.identity || '').toString();
+        const url = normalizeArtistVisualUrl(item?.url || '');
+        if (identity) {
+            byIdentity.set(identity, item);
+        }
+        if (url) {
+            byUrl.set(url, item);
+        }
+    });
+
+    return items.map(item => {
+        const cached = byIdentity.get(item.identity || '') || byUrl.get(normalizeArtistVisualUrl(item.url || ''));
+        if (!cached?.url || !cached?.path) {
+            return item;
+        }
+
+        return {
+            ...item,
+            remoteUrl: item.remoteUrl || item.url,
+            url: cached.url,
+            path: cached.path,
+            source: cached.source || item.source,
+            label: item.label || cached.label,
+            identity: item.identity || cached.identity
+        };
+    });
+}
+
 function renderArtistVisualPicker(artistId) {
     const grid = document.getElementById('artist-visuals-grid');
     if (!grid || !artistId) {
@@ -6953,6 +7022,9 @@ function renderArtistVisualPicker(artistId) {
 
     const cacheImages = Array.isArray(libraryState.artistVisuals.cacheImages)
         ? libraryState.artistVisuals.cacheImages
+        : [];
+    const cachedPickerImages = Array.isArray(libraryState.artistVisuals.cachedPickerImages)
+        ? libraryState.artistVisuals.cachedPickerImages
         : [];
     const spotifyImages = Array.isArray(libraryState.artistVisuals.spotifyImages)
         ? libraryState.artistVisuals.spotifyImages
@@ -6979,6 +7051,18 @@ function renderArtistVisualPicker(artistId) {
             source: 'spotify-cache',
             path: image.path,
             identity: `file:${image.path}`
+        });
+    });
+    cachedPickerImages.forEach(image => {
+        if (!image?.path || !image?.url) {
+            return;
+        }
+        items.push({
+            url: image.url,
+            label: image.label || `${image.source || 'cached'} cached`,
+            source: image.source || 'cached',
+            path: image.path,
+            identity: image.identity || `file:${image.path}`
         });
     });
     spotifyImages.forEach(item => {
@@ -7029,7 +7113,7 @@ function renderArtistVisualPicker(artistId) {
 
     const seen = new Set();
     const deduped = items.filter(item => {
-        const key = normalizeArtistVisualUrl(item.url);
+        const key = (item.identity || normalizeArtistVisualUrl(item.url) || '').toString().trim();
         if (!key || seen.has(key)) {
             return false;
         }
@@ -7040,6 +7124,23 @@ function renderArtistVisualPicker(artistId) {
     if (deduped.length === 0) {
         grid.innerHTML = '<div class="empty-card">No visuals available yet.</div>';
         return;
+    }
+
+    const cacheKey = JSON.stringify(deduped.map(item => [item.source, item.identity, item.url, item.path]));
+    if (libraryState.artistVisuals.cacheRequestKey !== cacheKey) {
+        libraryState.artistVisuals.cacheRequestKey = cacheKey;
+        cacheArtistVisualPickerItems(artistId, deduped).then(cached => {
+            if (cached.length === 0) {
+                return;
+            }
+            const merged = mergeCachedArtistVisuals(deduped, cached);
+            const changed = JSON.stringify(merged.map(item => [item.source, item.identity, item.url, item.path]))
+                !== JSON.stringify(deduped.map(item => [item.source, item.identity, item.url, item.path]));
+            if (changed) {
+                libraryState.artistVisuals.cachedPickerImages = merged.filter(item => item.path);
+                renderArtistVisualPicker(artistId);
+            }
+        });
     }
 
     grid.innerHTML = deduped.map(item => {
@@ -7065,16 +7166,37 @@ function renderArtistVisualPicker(artistId) {
         button.addEventListener('click', async (event) => {
             event.stopPropagation();
             const identity = (button.dataset.visualIdentity || '').trim();
+            const visualUrl = (button.closest('.visual-tile')?.querySelector('[data-visual-action]')?.dataset.visualUrl || '').trim();
+            const visualSource = (button.closest('.visual-tile')?.querySelector('[data-visual-action]')?.dataset.visualSource || '').trim();
             if (!identity) {
                 return;
             }
 
             try {
-                await Promise.all(['avatar', 'background'].map(role => fetchJson(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/artwork/block`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ role, identity, blocked: true })
-                })));
+                const prefs = loadArtistVisualPrefs(artistId) || {};
+                const normalizedVisualUrl = normalizeArtistVisualUrl(visualUrl);
+                const resolveSelectedPath = (role) => {
+                    const selectedUrl = role === 'avatar' ? prefs.avatarUrl : prefs.backgroundUrl;
+                    const selectedPath = role === 'avatar' ? prefs.avatarPath : prefs.backgroundPath;
+                    return selectedUrl && normalizedVisualUrl && selectedUrl === normalizedVisualUrl
+                        ? (selectedPath || '')
+                        : '';
+                };
+                await Promise.all(['avatar', 'background'].map(role => {
+                    const selectedPath = resolveSelectedPath(role);
+                    return fetchJson(`/api/library/spotify-cache/artists/${encodeURIComponent(artistId)}/artwork/block`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            role,
+                            identity,
+                            visualUrl: visualUrl || null,
+                            visualSource: visualSource || null,
+                            localPath: selectedPath || null,
+                            blocked: true
+                        })
+                    });
+                }));
                 button.disabled = true;
                 button.textContent = 'Blocked';
                 showToast('Artwork blocked from future server sync.');
