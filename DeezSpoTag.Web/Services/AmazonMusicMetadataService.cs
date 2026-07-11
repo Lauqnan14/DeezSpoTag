@@ -11,12 +11,48 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 {
     private const string DefaultHost = "music.amazon.com";
     private const string DefaultLocale = "en_US";
-    private const string SkillApiBaseUrl = "https://na.mesk.skill.music.a2z.com/api";
-    private const string SkillArtistApiUrl = "https://na.mesk.skill.music.a2z.com/api/explore/v1/showCatalogArtist";
     private const string DeviceFamily = "WebPlayer";
     private const string DeviceModel = "WEBPLAYER";
+    private const string SearchAllPath = "/showSearch";
+    private const string SearchTracksPath = "/searchCatalogTracks";
+    private const string SearchAlbumsPath = "/searchCatalogAlbums";
+    private const string SearchArtistsPath = "/searchCatalogArtists";
+    private const string SearchPlaylistsPath = "/searchCatalogPlaylists";
+    private const string SearchCommunityPlaylistsPath = "/searchCommunityPlaylists";
+    private const string TrackInfoPath = "/cosmicTrack/displayCatalogTrack";
+    private const string AlbumInfoPath = "/showCatalogAlbum";
+    private const string PlaylistInfoPath = "/showCatalogPlaylist";
+    private const string CommunityPlaylistInfoPath = "/showLibraryPlaylist";
+    private const string ArtistInfoPath = "/explore/v1/showCatalogArtist";
+    private const string ArtistTopTracksPath = "/showCatalogTracks";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly AmazonRegionConfig DefaultRegionConfig = new(
+        DefaultHost,
+        "https://na.web.skill.music.a2z.com/api",
+        "https://na.mesk.skill.music.a2z.com/api",
+        DefaultLocale,
+        "USD",
+        "hd-supported,uhd-supported");
+
+    private static readonly IReadOnlyDictionary<string, AmazonRegionConfig> RegionConfigs =
+        new Dictionary<string, AmazonRegionConfig>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["music.amazon.com"] = DefaultRegionConfig,
+            ["music.amazon.com.mx"] = new("music.amazon.com.mx", "https://na.web.skill.music.a2z.com/api", "https://na.mesk.skill.music.a2z.com/api", "es_MX", "MXN", string.Empty),
+            ["music.amazon.com.br"] = new("music.amazon.com.br", "https://na.web.skill.music.a2z.com/api", "https://na.mesk.skill.music.a2z.com/api", "pt_BR", "BRL", string.Empty),
+            ["music.amazon.ca"] = new("music.amazon.ca", "https://na.web.skill.music.a2z.com/api", "https://na.mesk.skill.music.a2z.com/api", "en_CA", "CAD", string.Empty),
+            ["music.amazon.co.uk"] = new("music.amazon.co.uk", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "en_GB", "GBP", "hd-supported,uhd-supported"),
+            ["music.amazon.de"] = new("music.amazon.de", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "de_DE", "EUR", "hd-supported,uhd-supported"),
+            ["music.amazon.fr"] = new("music.amazon.fr", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "fr_FR", "EUR", "hd-supported,uhd-supported"),
+            ["music.amazon.it"] = new("music.amazon.it", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "it_IT", "EUR", "hd-supported,uhd-supported"),
+            ["music.amazon.es"] = new("music.amazon.es", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "es_ES", "EUR", "hd-supported,uhd-supported"),
+            ["music.amazon.in"] = new("music.amazon.in", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "en_IN", "INR", "hd-supported,uhd-supported"),
+            ["music.amazon.sa"] = new("music.amazon.sa", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "ar_SA", "SAR", string.Empty),
+            ["music.amazon.ae"] = new("music.amazon.ae", "https://eu.web.skill.music.a2z.com/api", "https://eu.mesk.skill.music.a2z.com/api", "ar_AE", "AED", string.Empty),
+            ["music.amazon.co.jp"] = new("music.amazon.co.jp", "https://fe.web.skill.music.a2z.com/api", "https://fe.mesk.skill.music.a2z.com/api", "ja_JP", "JPY", "hd-supported,uhd-supported"),
+            ["music.amazon.com.au"] = new("music.amazon.com.au", "https://fe.web.skill.music.a2z.com/api", "https://fe.mesk.skill.music.a2z.com/api", "en_AU", "AUD", "hd-supported,uhd-supported")
+        };
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly PlatformAuthService _platformAuthService;
@@ -45,6 +81,17 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
         var session = await CreateSessionAsync(cancellationToken);
         var keyword = query.Trim();
+        var normalizedType = NormalizeType(type);
+        if (normalizedType != "all")
+        {
+            var typedItems = await TrySearchTypedAsync(session, keyword, normalizedType, limit, cancellationToken);
+            return new AmazonSearchPayload(
+                FilterByType(typedItems, "track", type, keyword, limit).ToArray(),
+                FilterByType(typedItems, "album", type, keyword, limit).ToArray(),
+                FilterByType(typedItems, "artist", type, keyword, limit).ToArray(),
+                FilterByType(typedItems, "playlist", type, keyword, limit).ToArray());
+        }
+
         var pageUrl = $"https://{session.Host}/search/{Uri.EscapeDataString(keyword)}";
         var body = new Dictionary<string, string>
         {
@@ -59,20 +106,26 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
         };
 
-        using var document = await PostSkillJsonAsync(session, $"{SkillApiBaseUrl}/showSearch", pageUrl, body, cancellationToken);
+        using var document = await PostSkillJsonAsync(session, SearchAllPath, pageUrl, body, cancellationToken);
         var items = ExtractSearchCatalogItems(document.RootElement, "all").ToArray();
-        var allAlbums = FilterByType(items, "album", "all", keyword, limit).ToArray();
         var tracks = FilterByType(items, "track", type, keyword, limit).ToArray();
-        if (NormalizeType(type) == "track" && tracks.Length == 0 && allAlbums.Length > 0)
+        var playlists = FilterByType(items, "playlist", type, keyword, limit).ToArray();
+        if (playlists.Length < limit)
         {
-            tracks = await ExpandAlbumTracksForSearchAsync(allAlbums, keyword, limit, cancellationToken);
+            var community = await TrySearchCommunityPlaylistsAsync(session, keyword, limit - playlists.Length, cancellationToken);
+            playlists = playlists
+                .Concat(community)
+                .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(static group => group.First())
+                .Take(Math.Clamp(limit, 1, 50))
+                .ToArray();
         }
 
         return new AmazonSearchPayload(
             tracks,
             FilterByType(items, "album", type, keyword, limit).ToArray(),
             FilterByType(items, "artist", type, keyword, limit).ToArray(),
-            FilterByType(items, "playlist", type, keyword, limit).ToArray());
+            playlists);
     }
 
     public async Task<AmazonTracklistPayload?> GetTracklistAsync(
@@ -89,11 +142,15 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
 
         var session = await CreateSessionAsync(cancellationToken);
-        using var document = await FetchHomeDocumentAsync(session, targetUrl, cancellationToken);
+        using var document = await FetchCatalogDocumentAsync(session, ExtractAsin(id) ?? ExtractAsin(targetUrl) ?? id, normalizedType, targetUrl, cancellationToken);
+        return BuildTracklistPayload(document.RootElement, id, normalizedType, targetUrl);
+    }
 
-        var collectionItems = ExtractCatalogItems(document.RootElement).ToArray();
-        IReadOnlyList<AmazonCatalogItem> trackItems = ExtractTracklistTrackItems(document.RootElement).ToArray();
-        var structuredAlbum = ReadStructuredAlbum(document.RootElement, ExtractAsin(id) ?? id);
+    private static AmazonTracklistPayload BuildTracklistPayload(JsonElement root, string id, string normalizedType, string targetUrl)
+    {
+        var collectionItems = ExtractCatalogItems(root).ToArray();
+        IReadOnlyList<AmazonCatalogItem> trackItems = ExtractTracklistTrackItems(root).ToArray();
+        var structuredAlbum = ReadStructuredAlbum(root, ExtractAsin(id) ?? id);
         if (trackItems.Count == 0)
         {
             trackItems = collectionItems
@@ -101,8 +158,13 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
                 .ToArray();
         }
 
-        var collection = ReadCollectionProfile(document.RootElement, id, normalizedType, targetUrl)
+        var collection = ReadCollectionProfile(root, id, normalizedType, targetUrl)
             ?? ResolveCollection(collectionItems, id, normalizedType, targetUrl);
+        if (normalizedType == "community_playlist")
+        {
+            collection = collection with { Type = "playlist" };
+        }
+
         if (structuredAlbum is not null)
         {
             collection = MergeStructuredAlbumCollection(collection, structuredAlbum);
@@ -142,10 +204,10 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
 
         var session = await CreateSessionAsync(cancellationToken);
-        using var document = await FetchArtistDocumentAsync(session, id, targetUrl, cancellationToken);
+        var artistId = ExtractAsin(id) ?? id;
+        using var document = await FetchArtistDocumentAsync(session, artistId, targetUrl, cancellationToken);
         var sectionItems = ExtractArtistSectionItems(document.RootElement).ToArray();
         var items = sectionItems.Select(static item => item.Item).ToArray();
-        var artistId = ExtractAsin(id) ?? id;
         var artist = items.FirstOrDefault(item => item.Type == "artist" && string.Equals(item.Id, artistId, StringComparison.OrdinalIgnoreCase))
             ?? items.FirstOrDefault(item => item.Type == "artist")
             ?? ReadArtistProfile(document.RootElement, artistId, targetUrl);
@@ -166,6 +228,10 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
             .Select(static group => group.First())
             .ToArray();
+        if (topTracks.Length == 0)
+        {
+            topTracks = await FetchArtistTopTracksAsync(session, artistId, cancellationToken);
+        }
         var related = sectionItems
             .Where(item => item.Section == "similar_artists"
                 && item.Item.Type == "artist"
@@ -205,41 +271,6 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             if (IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
             {
                 return candidate;
-            }
-        }
-
-        var albumQuery = BuildAlbumSearchQuery(title, artist, album);
-        if (string.IsNullOrWhiteSpace(albumQuery))
-        {
-            return null;
-        }
-
-        var albumSearch = await SearchAsync(albumQuery, "album", 8, cancellationToken);
-        foreach (var albumCandidate in albumSearch.Albums.Where(IsResolvableAlbumResult))
-        {
-            var tracklist = await GetTracklistAsync(albumCandidate.Id, "album", albumCandidate.Url, cancellationToken);
-            if (tracklist is null)
-            {
-                continue;
-            }
-
-            foreach (var track in tracklist.Tracks)
-            {
-                var candidate = new AmazonCatalogItem(
-                    track.AmazonId,
-                    "track",
-                    track.Title,
-                    track.Artist,
-                    string.IsNullOrWhiteSpace(track.Album) ? albumCandidate.Title : track.Album,
-                    track.SourceUrl,
-                    string.IsNullOrWhiteSpace(track.Cover) ? albumCandidate.CoverUrl : track.Cover,
-                    track.DurationMs > 0 ? track.DurationMs : null,
-                    track.Isrc,
-                    track.HasAtmos || albumCandidate.HasAtmos);
-                if (IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
-                {
-                    return candidate;
-                }
             }
         }
 
@@ -293,41 +324,6 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             }
         }
 
-        var albumQuery = BuildAlbumSearchQuery(title, artist, album);
-        if (string.IsNullOrWhiteSpace(albumQuery))
-        {
-            return null;
-        }
-
-        var albumSearch = await SearchAsync(albumQuery, "album", 8, cancellationToken);
-        foreach (var albumCandidate in albumSearch.Albums.Where(IsResolvableAlbumResult))
-        {
-            var tracklist = await GetTracklistAsync(albumCandidate.Id, "album", albumCandidate.Url, cancellationToken);
-            if (tracklist is null)
-            {
-                continue;
-            }
-
-            foreach (var track in tracklist.Tracks)
-            {
-                var candidate = new AmazonCatalogItem(
-                    track.AmazonId,
-                    "track",
-                    track.Title,
-                    track.Artist,
-                    string.IsNullOrWhiteSpace(track.Album) ? albumCandidate.Title : track.Album,
-                    track.SourceUrl,
-                    string.IsNullOrWhiteSpace(track.Cover) ? albumCandidate.CoverUrl : track.Cover,
-                    track.DurationMs > 0 ? track.DurationMs : null,
-                    track.Isrc,
-                    track.HasAtmos || albumCandidate.HasAtmos);
-                if (candidate.HasAtmos && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
-                {
-                    return candidate;
-                }
-            }
-        }
-
         return null;
     }
 
@@ -348,19 +344,11 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
     private static string BuildTrackSearchQuery(string title, string artist, string? album)
         => string.Join(' ', new[] { title, artist, album }.Where(static value => !string.IsNullOrWhiteSpace(value)));
 
-    private static string BuildAlbumSearchQuery(string title, string artist, string? album)
-        => string.Join(' ', new[] { string.IsNullOrWhiteSpace(album) ? title : album, artist }.Where(static value => !string.IsNullOrWhiteSpace(value)));
-
     private static bool IsDownloadableMusicTrackResult(AmazonCatalogItem item)
         => item.Type == "track"
            && !string.IsNullOrWhiteSpace(item.Id)
            && !string.IsNullOrWhiteSpace(item.Title)
            && !string.IsNullOrWhiteSpace(item.Artist);
-
-    private static bool IsResolvableAlbumResult(AmazonCatalogItem item)
-        => item.Type == "album"
-           && !string.IsNullOrWhiteSpace(item.Id)
-           && !string.IsNullOrWhiteSpace(item.Title);
 
     private static bool IsAcceptedResolvedTrack(
         AmazonCatalogItem candidate,
@@ -392,51 +380,112 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         return validation.Accepted;
     }
 
-    private async Task<AmazonCatalogItem[]> ExpandAlbumTracksForSearchAsync(
-        IReadOnlyList<AmazonCatalogItem> albums,
-        string query,
+    private async Task<IReadOnlyList<AmazonCatalogItem>> TrySearchTypedAsync(
+        AmazonSession session,
+        string keyword,
+        string normalizedType,
         int limit,
         CancellationToken cancellationToken)
     {
-        var selectedAlbums = albums
-            .OrderBy(album => IsExactSearchMatch(album, query) ? 0 : 1)
-            .Take(2)
-            .ToArray();
-        var tracks = new List<AmazonCatalogItem>();
-        foreach (var album in selectedAlbums)
+        var searchPath = normalizedType switch
         {
-            var tracklist = await GetTracklistAsync(album.Id, "album", album.Url, cancellationToken);
-            if (tracklist is null)
-            {
-                continue;
-            }
-
-            tracks.AddRange(tracklist.Tracks.Select(track => new AmazonCatalogItem(
-                Id: track.AmazonId,
-                Type: "track",
-                Title: track.Title,
-                Artist: track.Artist,
-                Album: string.IsNullOrWhiteSpace(track.Album) ? album.Title : track.Album,
-                Url: track.SourceUrl,
-                CoverUrl: string.IsNullOrWhiteSpace(track.Cover) ? album.CoverUrl : track.Cover,
-                DurationMs: track.DurationMs > 0 ? track.DurationMs : null,
-                Isrc: track.Isrc,
-                HasAtmos: track.HasAtmos || album.HasAtmos)));
+            "track" => SearchTracksPath,
+            "album" => SearchAlbumsPath,
+            "artist" => SearchArtistsPath,
+            "playlist" => SearchPlaylistsPath,
+            _ => null
+        };
+        if (string.IsNullOrWhiteSpace(searchPath))
+        {
+            return [];
         }
 
-        return tracks
-            .Where(IsDownloadableMusicTrackResult)
-            .GroupBy(static track => track.Id, StringComparer.OrdinalIgnoreCase)
-            .Select(static group => group.First())
-            .Take(Math.Clamp(limit, 1, 50))
-            .ToArray();
+        var pageSuffix = normalizedType switch
+        {
+            "track" => "songs",
+            "album" => "albums",
+            "artist" => "artists",
+            "playlist" => "playlists",
+            _ => normalizedType
+        };
+        var pageUrl = $"https://{session.Host}/search/{Uri.EscapeDataString(keyword)}/{pageSuffix}";
+        var body = new Dictionary<string, string>
+        {
+            ["keyword"] = keyword,
+            ["userHash"] = JsonSerializer.Serialize(new { level = "LIBRARY_MEMBER" }, JsonOptions),
+            ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
+        };
+
+        try
+        {
+            using var document = await PostSkillJsonAsync(session, searchPath, pageUrl, body, cancellationToken);
+            var items = ExtractSearchCatalogItems(document.RootElement, normalizedType)
+                .Where(item => item.Type == normalizedType)
+                .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(static group => group.First())
+                .Take(Math.Clamp(limit, 1, 50))
+                .ToArray();
+            if (normalizedType == "playlist" && items.Length < limit)
+            {
+                var community = await TrySearchCommunityPlaylistsAsync(session, keyword, limit - items.Length, cancellationToken);
+                items = items
+                    .Concat(community)
+                    .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+                    .Select(static group => group.First())
+                    .Take(Math.Clamp(limit, 1, 50))
+                    .ToArray();
+            }
+
+            return items;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Amazon Music typed {Type} search failed for {Keyword}.", normalizedType, keyword);
+            return [];
+        }
+    }
+
+    private async Task<IReadOnlyList<AmazonCatalogItem>> TrySearchCommunityPlaylistsAsync(
+        AmazonSession session,
+        string keyword,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        if (limit <= 0)
+        {
+            return [];
+        }
+
+        var pageUrl = $"https://{session.Host}/search/{Uri.EscapeDataString(keyword)}/communityPlaylists";
+        var body = new Dictionary<string, string>
+        {
+            ["keyword"] = keyword,
+            ["userHash"] = JsonSerializer.Serialize(new { level = "LIBRARY_MEMBER" }, JsonOptions),
+            ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
+        };
+
+        try
+        {
+            using var document = await PostSkillJsonAsync(session, SearchCommunityPlaylistsPath, pageUrl, body, cancellationToken);
+            return ExtractCommunityPlaylistSearchItems(document.RootElement, session.Host)
+                .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(static group => group.First())
+                .Take(Math.Clamp(limit, 1, 50))
+                .ToArray();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Amazon Music community playlist search failed for {Keyword}.", keyword);
+            return [];
+        }
     }
 
     private async Task<AmazonSession> CreateSessionAsync(CancellationToken cancellationToken)
     {
         var auth = (await _platformAuthService.LoadAsync()).AmazonMusic;
         var host = NormalizeHost(auth?.Host);
-        var locale = string.IsNullOrWhiteSpace(auth?.Locale) ? DefaultLocale : auth.Locale.Trim();
+        var region = ResolveRegionConfig(host);
+        var locale = string.IsNullOrWhiteSpace(auth?.Locale) ? region.Language : auth.Locale.Trim();
         var client = _httpClientFactory.CreateClient(nameof(AmazonMusicMetadataService));
         client.Timeout = TimeSpan.FromSeconds(30);
 
@@ -456,23 +505,54 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             throw new InvalidOperationException("Amazon Music metadata session could not be initialized.");
         }
 
-        return new AmazonSession(client, host, locale, sessionId, deviceId, csrf, csrfTimestamp, csrfNonce, version, auth?.Cookie);
+        return new AmazonSession(
+            client,
+            host,
+            locale,
+            region.Currency,
+            region.FeatureFlags,
+            new[] { region.WebSkillApiBaseUrl, region.MeskSkillApiBaseUrl }.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            sessionId,
+            deviceId,
+            csrf,
+            csrfTimestamp,
+            csrfNonce,
+            version,
+            auth?.Cookie);
     }
 
-    private async Task<JsonDocument> FetchHomeDocumentAsync(AmazonSession session, string url, CancellationToken cancellationToken)
+    private async Task<JsonDocument> FetchCatalogDocumentAsync(
+        AmazonSession session,
+        string id,
+        string normalizedType,
+        string url,
+        CancellationToken cancellationToken)
     {
-        var deeplink = ToAmazonDeeplink(url);
-        var pageUrl = $"https://{session.Host}{deeplink}";
+        var isCommunityPlaylist = normalizedType == "community_playlist" || IsCommunityPlaylistUrl(url);
+        var catalogId = ResolveCatalogId(id, url, allowRawId: isCommunityPlaylist);
+        if (string.IsNullOrWhiteSpace(catalogId))
+        {
+            throw new InvalidOperationException("Amazon catalog id is missing.");
+        }
+
+        var (path, pathSegment) = normalizedType switch
+        {
+            "album" => (AlbumInfoPath, "albums"),
+            "playlist" when isCommunityPlaylist => (CommunityPlaylistInfoPath, "user-playlists"),
+            "community_playlist" => (CommunityPlaylistInfoPath, "user-playlists"),
+            "playlist" => (PlaylistInfoPath, "playlists"),
+            "track" => (TrackInfoPath, "tracks"),
+            _ => throw new InvalidOperationException($"Amazon catalog type {normalizedType} is not supported.")
+        };
+        var pageUrl = $"https://{session.Host}/{pathSegment}/{Uri.EscapeDataString(catalogId)}";
         var payload = new Dictionary<string, string>
         {
-            ["deeplink"] = JsonSerializer.Serialize(new Dictionary<string, string>
-            {
-                ["interface"] = "DeeplinkInterface.v1_0.DeeplinkClientInformation",
-                ["deeplink"] = deeplink
-            }, JsonOptions),
+            ["id"] = catalogId,
+            ["userHash"] = JsonSerializer.Serialize(new { level = "LIBRARY_MEMBER" }, JsonOptions),
             ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
         };
-        return await PostSkillJsonAsync(session, $"{SkillApiBaseUrl}/showHome", pageUrl, payload, cancellationToken);
+
+        return await PostSkillJsonAsync(session, path, pageUrl, payload, cancellationToken);
     }
 
     private async Task<JsonDocument> FetchArtistDocumentAsync(
@@ -484,7 +564,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         var asin = ExtractAsin(id) ?? ExtractAsin(url);
         if (string.IsNullOrWhiteSpace(asin))
         {
-            return await FetchHomeDocumentAsync(session, url, cancellationToken);
+            throw new InvalidOperationException("Amazon artist id is missing.");
         }
 
         var pageUrl = $"https://{session.Host}/artists/{asin}";
@@ -494,29 +574,80 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             ["userHash"] = JsonSerializer.Serialize(new { level = "LIBRARY_MEMBER" }, JsonOptions),
             ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
         };
-        return await PostSkillJsonAsync(session, SkillArtistApiUrl, pageUrl, payload, cancellationToken);
+        return await PostSkillJsonAsync(session, ArtistInfoPath, pageUrl, payload, cancellationToken);
+    }
+
+    private async Task<AmazonCatalogItem[]> FetchArtistTopTracksAsync(
+        AmazonSession session,
+        string artistId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistId))
+        {
+            return [];
+        }
+
+        var pageUrl = $"https://{session.Host}/artists/{Uri.EscapeDataString(artistId)}";
+        var payload = new Dictionary<string, string>
+        {
+            ["id"] = artistId,
+            ["userHash"] = JsonSerializer.Serialize(new { level = "LIBRARY_MEMBER" }, JsonOptions),
+            ["headers"] = BuildAmazonSkillHeaders(session, pageUrl)
+        };
+
+        try
+        {
+            using var document = await PostSkillJsonAsync(session, ArtistTopTracksPath, pageUrl, payload, cancellationToken);
+            return ExtractTracklistTrackItems(document.RootElement)
+                .Select(static item => NormalizeAmazonTopSongItem(item))
+                .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(static group => group.First())
+                .ToArray();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Amazon Music artist top tracks endpoint failed for {ArtistId}.", artistId);
+            return [];
+        }
     }
 
     private async Task<JsonDocument> PostSkillJsonAsync(
         AmazonSession session,
-        string url,
+        string path,
         string pageUrl,
         object payload,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, url);
-        AddAmazonHeaders(request, session.Host, session.Cookie);
-        request.Headers.Referrer = new Uri(pageUrl);
-        request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "text/plain");
-        using var response = await session.Client.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        Exception? lastException = null;
+        foreach (var baseUrl in session.SkillApiBaseUrls)
         {
-            _logger.LogWarning("Amazon Music metadata call {Url} failed with HTTP {Status}: {Body}", url, (int)response.StatusCode, body);
-            response.EnsureSuccessStatusCode();
+            var url = $"{baseUrl.TrimEnd('/')}/{path.TrimStart('/')}";
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, url);
+                AddAmazonHeaders(request, session.Host, session.Cookie);
+                request.Headers.Referrer = new Uri(pageUrl);
+                request.Headers.TryAddWithoutValidation("Origin", $"https://{session.Host}");
+                request.Headers.TryAddWithoutValidation("authority", new Uri(baseUrl).Host);
+                request.Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "text/plain");
+                using var response = await session.Client.SendAsync(request, cancellationToken);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug("Amazon Music metadata call {Url} failed with HTTP {Status}: {Body}", url, (int)response.StatusCode, TruncateForLog(body));
+                    response.EnsureSuccessStatusCode();
+                }
+
+                return JsonDocument.Parse(body);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lastException = ex;
+                _logger.LogDebug(ex, "Amazon Music metadata endpoint {Url} failed.", url);
+            }
         }
 
-        return JsonDocument.Parse(body);
+        throw new HttpRequestException($"Amazon Music metadata call failed for {path}.", lastException);
     }
 
     private static string BuildAmazonSkillHeaders(AmazonSession session, string pageUrl)
@@ -546,7 +677,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             ["x-amzn-device-height"] = "1080",
             ["x-amzn-request-id"] = $"{Guid.NewGuid():N}-{now}",
             ["x-amzn-device-language"] = session.Locale,
-            ["x-amzn-currency-of-preference"] = ResolveCurrency(session.Host),
+            ["x-amzn-currency-of-preference"] = session.Currency,
             ["x-amzn-os-version"] = "1.0",
             ["x-amzn-application-version"] = session.Version ?? string.Empty,
             ["x-amzn-device-time-zone"] = TimeZoneInfo.Local.Id,
@@ -559,7 +690,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             ["x-amzn-page-url"] = pageUrl,
             ["x-amzn-weblab-id-overrides"] = string.Empty,
             ["x-amzn-video-player-token"] = string.Empty,
-            ["x-amzn-feature-flags"] = string.Empty,
+            ["x-amzn-feature-flags"] = session.FeatureFlags,
             ["x-amzn-has-profile-id"] = string.Empty,
             ["x-amzn-age-band"] = string.Empty
         };
@@ -613,6 +744,41 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             {
                 yield return item;
             }
+        }
+    }
+
+    private static IEnumerable<AmazonCatalogItem> ExtractCommunityPlaylistSearchItems(JsonElement root, string host)
+    {
+        foreach (var node in WalkObjects(root))
+        {
+            var id = ReadNestedObserverValue(node, "primaryText", "storageKey");
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                continue;
+            }
+
+            var title = CleanAmazonDisplayText(ReadNestedObserverValue(node, "primaryText", "text"));
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                title = CleanAmazonDisplayText(FirstText(node, "primaryText", "title", "name"));
+            }
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                continue;
+            }
+
+            yield return new AmazonCatalogItem(
+                Id: id,
+                Type: "playlist",
+                Title: title,
+                Artist: CleanAmazonDisplayText(FirstText(node, "secondaryText", "secondaryText1")),
+                Album: string.Empty,
+                Url: $"https://{host}/user-playlists/{Uri.EscapeDataString(id)}",
+                CoverUrl: NormalizeAmazonImageUrl(FirstImage(node)),
+                DurationMs: null,
+                Isrc: string.Empty,
+                HasAtmos: JsonElementContainsAtmos(node));
         }
     }
 
@@ -1394,12 +1560,18 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         return string.IsNullOrWhiteSpace(host) ? DefaultHost : host;
     }
 
+    private static AmazonRegionConfig ResolveRegionConfig(string host)
+        => RegionConfigs.TryGetValue(host, out var config)
+            ? config
+            : DefaultRegionConfig;
+
     private static string NormalizeType(string? value)
         => (value ?? string.Empty).Trim().ToLowerInvariant() switch
         {
             "albums" => "album",
             "artists" => "artist",
             "playlists" => "playlist",
+            "community-playlist" or "community-playlists" or "community_playlist" or "community_playlists" or "user-playlist" or "user-playlists" => "community_playlist",
             "tracks" or "song" or "songs" => "track",
             "" => "track",
             var other => other
@@ -1417,19 +1589,63 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
 
     private static string? BuildCatalogUrl(string? id, string? type)
     {
-        var asin = ExtractAsin(id);
-        if (string.IsNullOrWhiteSpace(asin))
+        var normalizedType = NormalizeType(type);
+        var catalogId = normalizedType == "community_playlist"
+            ? id?.Trim()
+            : ExtractAsin(id);
+        if (string.IsNullOrWhiteSpace(catalogId))
         {
             return null;
         }
 
-        return NormalizeType(type) switch
+        return normalizedType switch
         {
-            "album" => $"https://{DefaultHost}/albums/{asin}",
-            "artist" => $"https://{DefaultHost}/artists/{asin}",
-            "playlist" => $"https://{DefaultHost}/playlists/{asin}",
-            _ => $"https://{DefaultHost}/tracks/{asin}"
+            "album" => $"https://{DefaultHost}/albums/{catalogId}",
+            "artist" => $"https://{DefaultHost}/artists/{catalogId}",
+            "community_playlist" => $"https://{DefaultHost}/user-playlists/{Uri.EscapeDataString(catalogId)}",
+            "playlist" => $"https://{DefaultHost}/playlists/{catalogId}",
+            _ => $"https://{DefaultHost}/tracks/{catalogId}"
         };
+    }
+
+    private static string? ResolveCatalogId(string? id, string? url, bool allowRawId)
+    {
+        var asin = ExtractAsin(id) ?? ExtractAsin(url);
+        if (!string.IsNullOrWhiteSpace(asin))
+        {
+            return asin;
+        }
+
+        return allowRawId ? ExtractLastPathSegment(id) ?? ExtractLastPathSegment(url) : null;
+    }
+
+    private static bool IsCommunityPlaylistUrl(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.Contains("/user-playlists/", StringComparison.OrdinalIgnoreCase);
+
+    private static string? ExtractLastPathSegment(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            trimmed = uri.AbsolutePath;
+        }
+
+        var segment = trimmed
+            .Trim('/')
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .LastOrDefault();
+        if (string.IsNullOrWhiteSpace(segment))
+        {
+            return null;
+        }
+
+        return Uri.UnescapeDataString(segment);
     }
 
     private static string? ExtractAsin(string? value)
@@ -1446,7 +1662,19 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
     private static (string Type, string Id) ParseCatalogDeeplink(string? value)
     {
         var id = ExtractAsin(value);
-        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return (string.Empty, string.Empty);
+        }
+
+        var lower = value.ToLowerInvariant();
+        if (lower.Contains("/user-playlists/"))
+        {
+            var communityId = ExtractLastPathSegment(value);
+            return string.IsNullOrWhiteSpace(communityId) ? (string.Empty, string.Empty) : ("community_playlist", communityId);
+        }
+
+        if (string.IsNullOrWhiteSpace(id))
         {
             return (string.Empty, string.Empty);
         }
@@ -1470,7 +1698,6 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             }
         }
 
-        var lower = value.ToLowerInvariant();
         if (lower.Contains("/albums/")) return ("album", id);
         if (lower.Contains("/artists/")) return ("artist", id);
         if (lower.Contains("/playlists/")) return ("playlist", id);
@@ -1533,6 +1760,29 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             {
                 return text;
             }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ReadNestedObserverValue(JsonElement node, string propertyName, string observerValueName)
+    {
+        if (!node.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.Object
+            || !property.TryGetProperty("observer", out var observer)
+            || observer.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        if (observerValueName == "storageKey")
+        {
+            return FirstText(observer, "storageKey");
+        }
+
+        if (observer.TryGetProperty("defaultValue", out var defaultValue))
+        {
+            return FirstText(defaultValue, observerValueName);
         }
 
         return string.Empty;
@@ -1704,30 +1954,14 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         return nested.GetString();
     }
 
-    private static string ToAmazonDeeplink(string url)
+    private static string TruncateForLog(string? value)
     {
-        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (string.IsNullOrWhiteSpace(value))
         {
-            return string.IsNullOrWhiteSpace(uri.Query) ? uri.AbsolutePath : $"{uri.AbsolutePath}{uri.Query}";
+            return string.Empty;
         }
 
-        return url.StartsWith('/') ? url : $"/{url.TrimStart('/')}";
-    }
-
-    private static string ResolveCurrency(string host)
-    {
-        var normalized = host.ToLowerInvariant();
-        if (normalized.Contains(".co.jp", StringComparison.Ordinal)) return "JPY";
-        if (normalized.Contains(".co.uk", StringComparison.Ordinal)) return "GBP";
-        if (normalized.Contains(".de", StringComparison.Ordinal)
-            || normalized.Contains(".fr", StringComparison.Ordinal)
-            || normalized.Contains(".it", StringComparison.Ordinal)
-            || normalized.Contains(".es", StringComparison.Ordinal)) return "EUR";
-        if (normalized.Contains(".in", StringComparison.Ordinal)) return "INR";
-        if (normalized.Contains(".com.br", StringComparison.Ordinal)) return "BRL";
-        if (normalized.Contains(".com.mx", StringComparison.Ordinal)) return "MXN";
-        if (normalized.Contains(".com.au", StringComparison.Ordinal)) return "AUD";
-        return "USD";
+        return value.Length <= 500 ? value : value[..500];
     }
 
     private static int? ReadInt(JsonElement node, string name)
@@ -1795,6 +2029,9 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         HttpClient Client,
         string Host,
         string Locale,
+        string Currency,
+        string FeatureFlags,
+        IReadOnlyList<string> SkillApiBaseUrls,
         string SessionId,
         string DeviceId,
         string Csrf,
@@ -1802,6 +2039,14 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         string? CsrfNonce,
         string? Version,
         string? Cookie);
+
+    private sealed record AmazonRegionConfig(
+        string Host,
+        string WebSkillApiBaseUrl,
+        string MeskSkillApiBaseUrl,
+        string Language,
+        string Currency,
+        string FeatureFlags);
 
     private sealed record AmazonStructuredAlbum(
         string Id,
