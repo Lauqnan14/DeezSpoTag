@@ -143,6 +143,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("skipped_unavailable_cooldown", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("unavailable from enabled sources; retry scheduled", watchSource, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("IsTrackUnavailableFailure(failureMessage)", downloadSource, StringComparison.Ordinal);
+        Assert.Contains("terminalStatus = IsTrackUnavailableFailure(failureMessage)", downloadSource, StringComparison.Ordinal);
+        Assert.Contains("context.QueueRepository.UpdateStatusAsync(queueUuid, terminalStatus", downloadSource, StringComparison.Ordinal);
         Assert.Contains("MarkPlaylistWatchTrackUnavailableAsync(", downloadSource, StringComparison.Ordinal);
         Assert.Contains("DateTimeOffset.UtcNow.AddDays(WatchlistUnavailableRecheckDays)", downloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("WatchlistUnavailableRetryDays", downloadSource, StringComparison.Ordinal);
@@ -161,11 +163,26 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [InlineData("Qobuz official credentials are missing.", false)]
     public void TerminalTrackUnavailableFailure_OnlyClassifiesCatalogueMisses(string message, bool expected)
     {
-        var method = typeof(DeezSpoTag.Services.Download.Shared.EngineAudioPostDownloadHelper)
-            .GetMethod("IsTrackUnavailableFailure", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.Equal(
+            expected,
+            DeezSpoTag.Services.Download.Shared.EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(message));
+    }
 
-        Assert.NotNull(method);
-        Assert.Equal(expected, method.Invoke(null, [message]));
+    [Fact]
+    public void ManualUnavailableQueueResolution_UsesUnavailableTerminalStatus()
+    {
+        var resolverSource = ReadSource("DeezSpoTag.Web/Services/DownloadIntentQueuedPayloadResolver.cs");
+        var appSource = ReadSource("DeezSpoTag.Services/Download/Shared/DeezSpoTagApp.cs");
+        var activitiesSource = ReadSource("DeezSpoTag.Web/Controllers/ActivitiesController.cs");
+
+        Assert.Contains("private const string UnavailableStatus = \"unavailable\";", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("Status = UnavailableStatus", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(resolution.Error)", appSource, StringComparison.Ordinal);
+        Assert.Contains("terminalStatus", appSource, StringComparison.Ordinal);
+        Assert.Contains("if (string.Equals(effectiveItem.Status, UnavailableStatus", appSource, StringComparison.Ordinal);
+        Assert.Contains("IsMonitorableUnavailableActivityItem(item)", activitiesSource, StringComparison.Ordinal);
+        Assert.Contains("payload[\"status\"] = IsMonitorableUnavailableActivityItem(item)", activitiesSource, StringComparison.Ordinal);
+        Assert.Contains("payload[\"canRetry\"] = IsMonitorableUnavailableActivityItem(item) ? false", activitiesSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

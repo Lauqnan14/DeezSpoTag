@@ -3072,28 +3072,30 @@ public static partial class EngineAudioPostDownloadHelper
         var failureMessage = !string.IsNullOrWhiteSpace(payload?.ResolutionError)
             ? payload.ResolutionError
             : exception.Message;
+        var terminalStatus = IsTrackUnavailableFailure(failureMessage)
+            ? "unavailable"
+            : FailedStatus;
         if (!IsFinalDestinationDedupeBlock(failureMessage))
         {
             await context.QueueRepository.UpdatePrefetchStateAsync(
                 queueUuid,
                 "[]",
                 string.Empty,
-                FailedStatus,
+                terminalStatus,
                 "Audio download failed before prefetched assets could be finalized.",
                 CancellationToken.None);
         }
-        await context.QueueRepository.UpdateStatusAsync(queueUuid, FailedStatus, failureMessage, cancellationToken: CancellationToken.None);
+        await context.QueueRepository.UpdateStatusAsync(queueUuid, terminalStatus, failureMessage, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
             payload.ErrorMessage = failureMessage;
-            var watchlistStatus = IsTrackUnavailableFailure(failureMessage)
-                ? "unavailable"
-                : FailedStatus;
-            await UpdateWatchlistTrackStatusAsync(payload, watchlistStatus, context.ServiceProvider, CancellationToken.None);
+            await UpdateWatchlistTrackStatusAsync(payload, terminalStatus, context.ServiceProvider, CancellationToken.None);
         }
 
         context.ActivityLog.Error($"Download failed (engine={context.EngineName}): {queueUuid} {failureMessage}");
-        if (!IsRateLimitedFailure(exception) && !IsFinalDestinationDedupeBlock(failureMessage))
+        if (!string.Equals(terminalStatus, "unavailable", StringComparison.OrdinalIgnoreCase)
+            && !IsRateLimitedFailure(exception)
+            && !IsFinalDestinationDedupeBlock(failureMessage))
         {
             context.RetryScheduler.ScheduleRetry(queueUuid, context.EngineName, failureMessage);
         }
@@ -3108,7 +3110,7 @@ public static partial class EngineAudioPostDownloadHelper
            || exception.Message.Contains("rate-limit", StringComparison.OrdinalIgnoreCase)
            || exception.Message.Contains("throttl", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsTrackUnavailableFailure(string? message)
+    public static bool IsTrackUnavailableFailure(string? message)
     {
         if (string.IsNullOrWhiteSpace(message))
         {

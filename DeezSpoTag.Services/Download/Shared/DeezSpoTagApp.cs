@@ -30,6 +30,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         "amazon"
     };
     private const string FailedStatus = "failed";
+    private const string UnavailableStatus = "unavailable";
     private const string CanceledStatus = "canceled";
     private const string PausedStatus = "paused";
     private const string PendingStatus = "pending";
@@ -430,6 +431,10 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                     effectiveItem.Error ?? "Track unavailable in enabled download sources.");
                 return;
             }
+            if (string.Equals(effectiveItem.Status, UnavailableStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
 
             using var scope = _serviceProvider.CreateScope();
             var engineName = NormalizeEngineName(effectiveItem.Engine);
@@ -537,9 +542,12 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             cancellationToken);
         if (!string.IsNullOrWhiteSpace(resolution.Error))
         {
+            var terminalStatus = EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(resolution.Error)
+                ? UnavailableStatus
+                : FailedStatus;
             await _queueRepository.UpdateStatusAsync(
                 resolution.Item.QueueUuid,
-                FailedStatus,
+                terminalStatus,
                 resolution.Error,
                 cancellationToken: cancellationToken);
             return resolution.Item;

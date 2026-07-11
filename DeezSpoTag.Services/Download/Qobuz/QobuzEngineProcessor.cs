@@ -23,6 +23,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 {
     private const string EngineName = "qobuz";
     private const string FailedStatus = "failed";
+    private const string UnavailableStatus = "unavailable";
     private const string CompletedStatus = "completed";
     private const string CancelledStatus = "cancelled";
     private const string CanceledStatus = "canceled";
@@ -1017,7 +1018,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             : ex.Message;
         await MarkQueueFailedAsync(queueUuid, payload, error);
         _activityLog.Error($"Download failed (engine={EngineName}): {queueUuid} {error}");
-        if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
+        if (!EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(error)
+            && !EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
         {
             _retryScheduler.ScheduleRetry(queueUuid, EngineName, error);
         }
@@ -1025,20 +1027,23 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private async Task MarkQueueFailedAsync(string queueUuid, QobuzQueueItem? payload, string error)
     {
+        var terminalStatus = EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(error)
+            ? UnavailableStatus
+            : FailedStatus;
         if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
         {
             await _queueRepository.UpdatePrefetchStateAsync(
                 queueUuid,
                 "[]",
                 string.Empty,
-                FailedStatus,
+                terminalStatus,
                 "Audio download failed before prefetched assets could be finalized.",
                 CancellationToken.None);
         }
-        await _queueRepository.UpdateStatusAsync(queueUuid, FailedStatus, error, cancellationToken: CancellationToken.None);
+        await _queueRepository.UpdateStatusAsync(queueUuid, terminalStatus, error, cancellationToken: CancellationToken.None);
         if (payload != null)
         {
-            await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, FailedStatus, _serviceProvider, CancellationToken.None);
+            await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, terminalStatus, _serviceProvider, CancellationToken.None);
         }
     }
 

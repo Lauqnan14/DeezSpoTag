@@ -6,6 +6,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayloadResolver
 {
     private const string FailedMessage = "Track unavailable in enabled download sources.";
+    private const string UnavailableStatus = "unavailable";
     private readonly DownloadIntentService _downloadIntentService;
 
     public DownloadIntentQueuedPayloadResolver(DownloadIntentService downloadIntentService)
@@ -26,7 +27,7 @@ public sealed class DownloadIntentQueuedPayloadResolver : IQueuedDownloadPayload
             return new QueuedDownloadPayloadResolution(
                 BuildIdentityUpdateItem(item, payload.ToJsonString(), result.Engine) with
                 {
-                    Status = "failed",
+                    Status = UnavailableStatus,
                     Error = FailedMessage
                 },
                 FailedMessage);

@@ -482,7 +482,7 @@ public class ActivitiesController : Controller
                 return NotFound(DownloadNotFoundMessage);
             }
 
-            if (!IsUnavailableActivityItem(item))
+            if (!IsMonitorableUnavailableActivityItem(item))
             {
                 return BadRequest("Only unavailable downloads can be monitored.");
             }
@@ -713,6 +713,11 @@ public class ActivitiesController : Controller
     private static bool IsUnavailableActivityItem(DownloadQueueItem item)
         => string.Equals((item.Status ?? string.Empty).Trim(), UnavailableStatus, StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsMonitorableUnavailableActivityItem(DownloadQueueItem item)
+        => IsUnavailableActivityItem(item)
+            || (GetActivityStatus(item.Status) == ActivityStatus.Failed
+                && EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(item.Error));
+
     private DeezSpoTag.Services.Download.Shared.DeezSpoTagApp GetDeezSpoTagApp()
         => _serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.DeezSpoTagApp>();
 
@@ -724,7 +729,9 @@ public class ActivitiesController : Controller
         var payload = ParsePayload(item.PayloadJson);
         NormalizePayloadKeys(payload);
         payload["rawStatus"] = item.Status;
-        payload["status"] = MapStatusForUi(item.Status);
+        payload["status"] = IsMonitorableUnavailableActivityItem(item)
+            ? UnavailableStatus
+            : MapStatusForUi(item.Status);
         payload["progress"] = item.Progress ?? 0;
         payload["downloaded"] = item.Downloaded ?? 0;
         payload["failed"] = item.Failed ?? 0;
@@ -733,7 +740,7 @@ public class ActivitiesController : Controller
         payload["canPause"] = CanPauseActivityItem(item);
         payload["canResume"] = CanResumeActivityItem(item);
         payload["canCancel"] = CanCancelActivityItem(item);
-        payload["canRetry"] = CanRetryActivityItem(item);
+        payload["canRetry"] = IsMonitorableUnavailableActivityItem(item) ? false : CanRetryActivityItem(item);
         payload["canDelete"] = CanDeleteActivityItem(item);
         payload["canClear"] = CanClearActivityItem(item);
         payload["canMonitorUnavailable"] = CanMonitorUnavailableItem(item, payload, monitoredUnavailableQueueUuids);
@@ -763,7 +770,7 @@ public class ActivitiesController : Controller
         DownloadQueueItem item,
         IReadOnlyDictionary<string, object> payload,
         IReadOnlySet<string>? monitoredUnavailableQueueUuids)
-        => IsUnavailableActivityItem(item)
+        => IsMonitorableUnavailableActivityItem(item)
             && !IsWatchlistQueuePayload(payload)
             && (monitoredUnavailableQueueUuids == null || !monitoredUnavailableQueueUuids.Contains(item.QueueUuid));
 
