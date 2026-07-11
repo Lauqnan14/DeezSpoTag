@@ -32,6 +32,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static readonly TimeSpan ArtworkFallbackTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan LyricsResolutionTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan AppleExtrasTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan PlatformMatchTimeout = TimeSpan.FromSeconds(45);
     private const int DefaultLibraryWideEnhancementBatchSize = 40;
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -878,18 +879,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchResult? match;
         try
         {
-                match = await MatchPlatformAsync(
-                    context.Platform,
-                    info,
-                    new PlatformMatchContext
-                    {
-                        FilePath = context.File,
-                        Config = context.Plan.Config,
-                        Settings = context.Plan.Settings,
-                        MatchingConfig = context.Plan.MatchingConfig,
-                        ShazamCache = context.Plan.ShazamCache
-                    },
-                    context.Token);
+            match = await RunPlatformMatchWithTimeoutAsync(
+                context,
+                info,
+                new PlatformMatchContext
+                {
+                    FilePath = context.File,
+                    Config = context.Plan.Config,
+                    Settings = context.Plan.Settings,
+                    MatchingConfig = context.Plan.MatchingConfig,
+                    ShazamCache = context.Plan.ShazamCache
+                });
+            if (match == null)
+            {
+                return null;
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -904,6 +908,35 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return match;
+    }
+
+    private async Task<AutoTagMatchResult?> RunPlatformMatchWithTimeoutAsync(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo info,
+        PlatformMatchContext matchContext)
+    {
+        context.LogCallback($"onetagger_autotag: {context.Platform} match starting");
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
+        var matchTask = MatchPlatformAsync(
+            context.Platform,
+            info,
+            matchContext,
+            timeoutSource.Token);
+
+        try
+        {
+            var match = await matchTask.WaitAsync(PlatformMatchTimeout, context.Token);
+            context.LogCallback($"onetagger_autotag: {context.Platform} match completed");
+            return match;
+        }
+        catch (TimeoutException)
+        {
+            timeoutSource.Cancel();
+            ObserveBackgroundTask(matchTask);
+            context.LogCallback(
+                $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; skipping");
+            return null;
+        }
     }
 
     private async Task ApplyResolvedMatchAsync(
@@ -1007,17 +1040,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         context.LogCallback($"onetagger_autotag: {context.Platform} {stepName} starting");
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(context.Token);
-        timeoutSource.CancelAfter(timeout);
+        var stepTask = action(timeoutSource.Token);
         try
         {
-            await action(timeoutSource.Token);
+            await stepTask.WaitAsync(timeout, context.Token);
             context.LogCallback($"onetagger_autotag: {context.Platform} {stepName} completed");
         }
-        catch (OperationCanceledException) when (!context.Token.IsCancellationRequested && timeoutSource.IsCancellationRequested)
+        catch (TimeoutException)
         {
+            timeoutSource.Cancel();
+            ObserveBackgroundTask(stepTask);
             context.LogCallback(
                 $"onetagger_autotag: {context.Platform} {stepName} timed out after {timeout.TotalSeconds:0}s; continuing");
         }
+    }
+
+    private static void ObserveBackgroundTask(Task task)
+    {
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private static string? EvaluateGlobalMismatchGuard(

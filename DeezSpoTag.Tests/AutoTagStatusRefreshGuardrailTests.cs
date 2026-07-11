@@ -337,6 +337,60 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.Contains("public void WarmRunIndexIfMissing()", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void LocalAutoTagRunner_BoundsProviderMatchingAndOptionalPostProcessing()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var runnerPath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        Assert.True(File.Exists(runnerPath), $"Missing AutoTag runner source: {runnerPath}");
+
+        var source = File.ReadAllText(runnerPath);
+        Assert.Contains("private static readonly TimeSpan PlatformMatchTimeout = TimeSpan.FromSeconds(45)", source, StringComparison.Ordinal);
+        Assert.Contains("RunPlatformMatchWithTimeoutAsync", source, StringComparison.Ordinal);
+        Assert.Contains("matchTask.WaitAsync(PlatformMatchTimeout, context.Token)", source, StringComparison.Ordinal);
+        Assert.Contains("match timed out after", source, StringComparison.Ordinal);
+        Assert.Contains("stepTask.WaitAsync(timeout, context.Token)", source, StringComparison.Ordinal);
+        Assert.Contains("ObserveBackgroundTask(stepTask)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStuckRecovery_IsEnabledByDefaultAndPollsFrequently()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagStuckRecoveryHostedService.cs");
+        var settingsPath = Path.Join(repoRoot, "DeezSpoTag.Web", "appsettings.json");
+        Assert.True(File.Exists(servicePath), $"Missing stuck recovery service source: {servicePath}");
+        Assert.True(File.Exists(settingsPath), $"Missing appsettings source: {settingsPath}");
+
+        var serviceSource = File.ReadAllText(servicePath);
+        var settingsSource = File.ReadAllText(settingsPath);
+        Assert.Contains("PollInterval = TimeSpan.FromMinutes(1)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("DefaultStaleWindow = TimeSpan.FromMinutes(10)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("_configuration.GetValue(\"AutoTag:StuckRecovery:Enabled\", true)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("\"Enabled\": true", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("\"TimeoutMinutes\": 10", settingsSource, StringComparison.Ordinal);
+        Assert.Contains("\"AutoResume\": true", settingsSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStart_ReturnsRunningJobBeforeRuntimeConfigHydration()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        var startMethod = ExtractMethod(source, "public async Task<AutoTagJob?> StartJob");
+        Assert.Contains("_jobs[job.Id] = job;", startMethod, StringComparison.Ordinal);
+        Assert.Contains("_activeJobIds.TryAdd(job.Id, 0);", startMethod, StringComparison.Ordinal);
+        Assert.Contains("InitializeRunArchive(job);", startMethod, StringComparison.Ordinal);
+        Assert.Contains("_ = PrepareRuntimeConfigAndRunJobAsync(job, normalizedPath, configJson, options);", startMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("await InjectPlatformAuthAsync", startMethod, StringComparison.Ordinal);
+        Assert.Contains("runtime config preparing", source, StringComparison.Ordinal);
+        Assert.Contains("runtime config ready", source, StringComparison.Ordinal);
+        Assert.Contains("Runtime config preparation failed", source, StringComparison.Ordinal);
+    }
+
     private static string ExtractFunction(string source, string functionName)
     {
         var index = source.IndexOf(functionName, StringComparison.Ordinal);
@@ -348,6 +402,23 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         var nextFunction = source.IndexOf("\n    function ", index + functionName.Length, StringComparison.Ordinal);
         var nextAsyncFunction = source.IndexOf("\n    async function ", index + functionName.Length, StringComparison.Ordinal);
         var candidates = new[] { nextFunction, nextAsyncFunction }
+            .Where(position => position >= 0)
+            .ToArray();
+        var end = candidates.Length == 0 ? source.Length : candidates.Min();
+        return source[index..end];
+    }
+
+    private static string ExtractMethod(string source, string methodName)
+    {
+        var index = source.IndexOf(methodName, StringComparison.Ordinal);
+        if (index < 0)
+        {
+            return string.Empty;
+        }
+
+        var nextMethod = source.IndexOf("\n    private ", index + methodName.Length, StringComparison.Ordinal);
+        var nextPublicMethod = source.IndexOf("\n    public ", index + methodName.Length, StringComparison.Ordinal);
+        var candidates = new[] { nextMethod, nextPublicMethod }
             .Where(position => position >= 0)
             .ToArray();
         var end = candidates.Length == 0 ? source.Length : candidates.Min();

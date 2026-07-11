@@ -5,8 +5,8 @@ namespace DeezSpoTag.Web.Services;
 public sealed class AutoTagStuckRecoveryHostedService : BackgroundService
 {
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan DefaultStaleWindow = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan DefaultStaleWindow = TimeSpan.FromMinutes(10);
 
     private readonly IServiceProvider _serviceProvider;
     private readonly IConfiguration _configuration;
@@ -54,14 +54,14 @@ public sealed class AutoTagStuckRecoveryHostedService : BackgroundService
 
     private async Task RunRecoveryPassAsync(CancellationToken stoppingToken)
     {
-        if (!_configuration.GetValue("AutoTag:StuckRecovery:Enabled", false))
+        if (!_configuration.GetValue("AutoTag:StuckRecovery:Enabled", true))
         {
             return;
         }
 
         var timeoutMinutes = Math.Clamp(
             _configuration.GetValue("AutoTag:StuckRecovery:TimeoutMinutes", (int)DefaultStaleWindow.TotalMinutes),
-            5,
+            2,
             24 * 60);
         var restart = _configuration.GetValue("AutoTag:StuckRecovery:AutoResume", true);
 

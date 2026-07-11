@@ -704,25 +704,58 @@ public partial class AutoTagService
         }
 
         InitializeRunArchive(job);
-        var runtimeConfigJson = SanitizeConfigJson(configJson);
-        runtimeConfigJson = await InjectDeezerAuthAsync(runtimeConfigJson);
-        runtimeConfigJson = InjectDeezerDownloadOptions(runtimeConfigJson);
-        runtimeConfigJson = await InjectPlatformDefaultsAsync(runtimeConfigJson);
-        runtimeConfigJson = await InjectPlatformAuthAsync(runtimeConfigJson);
-        runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, normalizedTrigger);
-        runtimeConfigJson = InjectProfileRuntimeSettings(
-            runtimeConfigJson,
-            options.TechnicalOverride,
-            options.FolderStructureOverride,
-            job.ProfileId,
-            job.ProfileName);
-        var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
-        var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
-        TrySaveLastConfig(persistedConfigJson);
-
-        _ = RunJobAsync(job, normalizedPath, runtimeConfigPath);
+        _ = PrepareRuntimeConfigAndRunJobAsync(job, normalizedPath, configJson, options);
 
         return job;
+    }
+
+    private async Task PrepareRuntimeConfigAndRunJobAsync(
+        AutoTagJob job,
+        string normalizedPath,
+        string configJson,
+        StartJobOptions options)
+    {
+        try
+        {
+            AppendLog(job, "runtime config preparing");
+            var runtimeConfigJson = SanitizeConfigJson(configJson);
+            runtimeConfigJson = await InjectDeezerAuthAsync(runtimeConfigJson);
+            runtimeConfigJson = InjectDeezerDownloadOptions(runtimeConfigJson);
+            runtimeConfigJson = await InjectPlatformDefaultsAsync(runtimeConfigJson);
+            runtimeConfigJson = await InjectPlatformAuthAsync(runtimeConfigJson);
+            runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, job.Trigger);
+            runtimeConfigJson = InjectProfileRuntimeSettings(
+                runtimeConfigJson,
+                options.TechnicalOverride,
+                options.FolderStructureOverride,
+                job.ProfileId,
+                job.ProfileName);
+            var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
+            var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
+            TrySaveLastConfig(persistedConfigJson);
+            AppendLog(job, "runtime config ready");
+
+            await RunJobAsync(job, normalizedPath, runtimeConfigPath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "AutoTag runtime config preparation failed for job {JobId}.", job.Id);
+            job.Status = AutoTagLiterals.FailedStatus;
+            job.Error = $"Runtime config preparation failed: {ex.Message}";
+            job.ExitCode = 1;
+            job.FinishedAt = DateTimeOffset.UtcNow;
+            AppendLog(job, job.Error);
+            SaveJob(job);
+            AppendActivityLog(job.Id, "autotag failed: runtime config preparation");
+            NotifyCompleted(job);
+            _activeJobStages.TryRemove(job.Id, out _);
+            _activeJobIds.TryRemove(job.Id, out _);
+            Volatile.Write(ref _latestTerminalJob, CreateCompactTerminalJob(job));
+            _jobs.TryRemove(job.Id, out _);
+            _lastActivityLines.TryRemove(job.Id, out _);
+            _archiveLocks.TryRemove(job.Id, out _);
+            _lastRunIndexUpdateUtc.TryRemove(job.Id, out _);
+        }
     }
 
     private AutoTagJob? TryCreateBlockedJobForTriggerPolicy(
