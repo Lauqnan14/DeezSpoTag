@@ -9838,6 +9838,110 @@ ORDER BY br.artist_name, br.track_title;";
         return results;
     }
 
+    public async Task<IReadOnlyList<MissingCoreMetadataFileDto>> GetMissingCoreMetadataFilesAsync(
+        IReadOnlyCollection<long> folderIds,
+        CancellationToken cancellationToken = default)
+    {
+        var scopedFolderIds = folderIds
+            .Where(static id => id > 0)
+            .Distinct()
+            .ToList();
+        if (scopedFolderIds.Count == 0)
+        {
+            return Array.Empty<MissingCoreMetadataFileDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT t.id AS track_id,
+       af.id AS audio_file_id,
+       f.id AS folder_id,
+       af.path,
+       t.title,
+       t.tag_title,
+       ar.name AS artist_name,
+       t.tag_artist,
+       al.title AS album_title,
+       t.tag_album,
+       t.tag_album_artist,
+       t.track_no,
+       t.tag_track_no
+FROM track t
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.id IN (
+    SELECT value
+    FROM json_each(@folderIdsJson)
+)
+  AND LOWER(COALESCE(f.desired_quality_value, '')) NOT IN ('video', 'podcast')
+  AND (
+      TRIM(COALESCE(t.tag_title, '')) = ''
+      OR TRIM(COALESCE(t.tag_artist, '')) = ''
+      OR TRIM(COALESCE(t.tag_album, '')) = ''
+      OR TRIM(COALESCE(t.tag_album_artist, '')) = ''
+      OR COALESCE(t.tag_track_no, 0) <= 0
+  )
+ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), t.title;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("folderIdsJson", SerializeJsonArray(scopedFolderIds));
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<MissingCoreMetadataFileDto>();
+        var seenFiles = new HashSet<long>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var audioFileId = reader.GetInt64(1);
+            if (!seenFiles.Add(audioFileId))
+            {
+                continue;
+            }
+
+            var missing = new List<string>();
+            if (IsMissing(await ReadNullableStringAsync(reader, 5, cancellationToken)))
+            {
+                missing.Add("Title");
+            }
+
+            if (IsMissing(await ReadNullableStringAsync(reader, 7, cancellationToken)))
+            {
+                missing.Add("Artist");
+            }
+
+            if (IsMissing(await ReadNullableStringAsync(reader, 9, cancellationToken)))
+            {
+                missing.Add("Album");
+            }
+
+            if (IsMissing(await ReadNullableStringAsync(reader, 10, cancellationToken)))
+            {
+                missing.Add("Album Artist");
+            }
+
+            var trackNumber = await ReadNullableIntAsync(reader, 12, cancellationToken);
+            if (!trackNumber.HasValue || trackNumber.Value <= 0)
+            {
+                missing.Add("Track number");
+            }
+
+            if (missing.Count == 0)
+            {
+                continue;
+            }
+
+            results.Add(new MissingCoreMetadataFileDto(
+                reader.GetInt64(0),
+                audioFileId,
+                reader.GetInt64(2),
+                reader.GetString(3),
+                missing));
+        }
+
+        return results;
+    }
+
     private static async Task<QualityScanTrackDto> ReadQualityScanTrackDtoAsync(
         SqliteDataReader reader,
         CancellationToken cancellationToken)
@@ -11781,6 +11885,11 @@ RETURNING id;";
     private static async Task<string?> ReadNullableStringAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
     {
         return await reader.IsDBNullAsync(ordinal, cancellationToken) ? null : reader.GetString(ordinal);
+    }
+
+    private static bool IsMissing(params string?[] values)
+    {
+        return values.All(static value => string.IsNullOrWhiteSpace(value));
     }
 
     private static string[] ReadDelimitedValues(string? value)

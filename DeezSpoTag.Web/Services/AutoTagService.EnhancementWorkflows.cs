@@ -18,6 +18,7 @@ public partial class AutoTagService
     }
 
     private sealed record QualityCheckOptions(
+        bool FlagMissingTags,
         bool FlagDuplicates,
         bool UseDuplicatesFolder,
         bool UseShazamForDedupe,
@@ -29,7 +30,7 @@ public partial class AutoTagService
         bool RunQualityScanner,
         IReadOnlyList<string> TechnicalProfiles)
     {
-        public bool ShouldRunAnyWorkflow => RunQualityScanner || FlagDuplicates || QueueLyricsRefresh;
+        public bool ShouldRunAnyWorkflow => FlagMissingTags || RunQualityScanner || FlagDuplicates || QueueLyricsRefresh;
     }
 
     private async Task RunIntegratedEnhancementWorkflowsAsync(
@@ -498,6 +499,7 @@ public partial class AutoTagService
             .Distinct()
             .ToList();
 
+        await ReportMissingCoreMetadataScanIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
         await StartQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken);
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
         await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, enhancementLyricsSettings, cancellationToken);
@@ -516,9 +518,10 @@ public partial class AutoTagService
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var runQualityUpgradeStage = flagMissingTags || flagMismatchedMetadata || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
-        var runQualityScanner = flagMissingTags || flagMismatchedMetadata || queueAtmosAlternatives || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
+        var runQualityUpgradeStage = flagMismatchedMetadata || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
+        var runQualityScanner = flagMismatchedMetadata || queueAtmosAlternatives || (queueTechnicalProfileUpgrades && technicalProfiles.Count > 0);
         return new QualityCheckOptions(
+            FlagMissingTags: flagMissingTags,
             FlagDuplicates: flagDuplicates,
             UseDuplicatesFolder: ReadBool(qualityChecks, "useDuplicatesFolder") != false,
             UseShazamForDedupe: ReadBool(qualityChecks, "useShazamForDedupe") == true,
@@ -529,6 +532,31 @@ public partial class AutoTagService
             RunQualityUpgradeStage: runQualityUpgradeStage,
             RunQualityScanner: runQualityScanner,
             TechnicalProfiles: technicalProfiles);
+    }
+
+    private async Task ReportMissingCoreMetadataScanIfRequestedAsync(
+        AutoTagJob job,
+        QualityCheckOptions options,
+        List<long> scopedFolderIds,
+        CancellationToken cancellationToken)
+    {
+        if (!options.FlagMissingTags)
+        {
+            return;
+        }
+
+        var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(scopedFolderIds, cancellationToken);
+        var missingFieldSummary = missingFiles
+            .SelectMany(file => file.MissingFields)
+            .GroupBy(field => field, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => $"{group.Key}={group.Count()}")
+            .ToList();
+        var summary = missingFieldSummary.Count == 0
+            ? "none"
+            : string.Join(", ", missingFieldSummary);
+        AppendLog(job,
+            $"enhancement workflow: missing core metadata scan finished (files={missingFiles.Count}, fields={summary}).");
     }
 
     private static bool IsCoverMaintenanceWorkflowEnabled(JsonObject enhancementRoot)

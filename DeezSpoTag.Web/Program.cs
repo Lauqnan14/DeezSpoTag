@@ -1274,6 +1274,7 @@ public partial class Program
                 LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),
                 CoverMaintenanceService = sp.GetRequiredService<DeezSpoTag.Web.Services.CoverPort.CoverLibraryMaintenanceService>(),
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
+                MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
                 UserPreferencesStore = sp.GetRequiredService<DeezSpoTag.Web.Services.UserPreferencesStore>(),
                 ActivitiesRealtime = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>(),
                 DownloadEvents = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>()

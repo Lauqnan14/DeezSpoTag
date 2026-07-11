@@ -272,6 +272,7 @@ public partial class AutoTagService
     private readonly LyricsRefreshQueueService _lyricsRefreshQueueService;
     private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
     private readonly UserPreferencesStore _userPreferencesStore;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly IDeezSpoTagListener _downloadEvents;
@@ -483,6 +484,7 @@ public partial class AutoTagService
         public required LyricsRefreshQueueService LyricsRefreshQueueService { get; init; }
         public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
+        public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
         public required UserPreferencesStore UserPreferencesStore { get; init; }
         public required ActivitiesRealtimeService ActivitiesRealtime { get; init; }
         public required IDeezSpoTagListener DownloadEvents { get; init; }
@@ -514,6 +516,7 @@ public partial class AutoTagService
         _lyricsRefreshQueueService = collaborators.LyricsRefreshQueueService;
         _coverMaintenanceService = collaborators.CoverMaintenanceService;
         _profileResolutionService = collaborators.ProfileResolutionService;
+        _mediaServerRefreshService = collaborators.MediaServerRefreshService;
         _userPreferencesStore = collaborators.UserPreferencesStore;
         _activitiesRealtime = collaborators.ActivitiesRealtime;
         _downloadEvents = collaborators.DownloadEvents;
@@ -2563,6 +2566,10 @@ public partial class AutoTagService
             job,
             context.IncludesEnhancementStage,
             cancellationToken);
+        await TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(
+            job,
+            context.IncludesEnhancementStage,
+            cancellationToken);
         if (autoMove.Completed && !plexTriggeredByEnhancement)
         {
             await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
@@ -3877,6 +3884,36 @@ public partial class AutoTagService
         }
 
         return await TriggerPlexScanAsync(job, plex, "after auto-move", cancellationToken);
+    }
+
+    private async Task TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(
+        AutoTagJob job,
+        bool includesEnhancementStage,
+        CancellationToken cancellationToken)
+    {
+        if (!includesEnhancementStage
+            || !ShouldRunEnhancementForIntent(job.RunIntent)
+            || !string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            var refresh = await _mediaServerRefreshService.RefreshConfiguredServersAsync(cancellationToken);
+            AppendLog(
+                job,
+                $"media server metadata refresh requested after enhancement: configured={refresh.ConfiguredServerCount}, refreshed={refresh.RefreshedServerCount}, failed=[{string.Join(", ", refresh.FailedServers)}]");
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog(job, "media server metadata refresh after enhancement was canceled");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "AutoTag job {JobId}: configured media server refresh after enhancement failed.", job.Id);
+            AppendLog(job, $"media server metadata refresh after enhancement failed: {ex.Message}");
+        }
     }
 
     private async Task<bool> TriggerTargetedPlexRefreshAfterEnhancementAsync(

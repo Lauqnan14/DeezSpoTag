@@ -297,6 +297,62 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     }
 
     [Fact]
+    public void MissingMetadataScan_PreservesGapFillOnlyForScannedTargetFiles()
+    {
+        var method = typeof(AutoTagJobsController).GetMethod(
+            "ApplyEnhancementRunSelection",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("Central enhancement selection method was not found.");
+        var config = System.Text.Json.Nodes.JsonNode.Parse("""
+            {
+              "gapFillTags": ["title", "artist", "album", "album_artist", "track_number"],
+              "enhancement": {
+                "folderUniformity": { "enabled": true },
+                "coverMaintenance": { "enabled": true },
+                "qualityChecks": {
+                  "enabled": true,
+                  "flagMissingTags": true
+                }
+              }
+            }
+            """)!.AsObject();
+        var request = new AutoTagEnhancementStartRequest
+        {
+            Features = ["quality-checks"]
+        };
+
+        method.Invoke(null, [config, request, new long[] { 7 }, new[] { "/tmp/music/track.flac" }]);
+
+        var enhancement = config["enhancement"]!.AsObject();
+        Assert.False(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
+        Assert.True(enhancement["qualityChecks"]!["enabled"]!.GetValue<bool>());
+        Assert.NotEmpty(config["gapFillTags"]!.AsArray());
+        Assert.Equal("/tmp/music/track.flac", config["targetFiles"]![0]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void MissingMetadataScan_UsesCoreMetadataTargetFilesAndDoesNotStartQualityScanner()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
+        var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
+        var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var autoTagServiceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("GetMissingCoreMetadataFilesAsync", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveEnhancementTargetRootPath(targetFiles)", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("TRIM(COALESCE(t.tag_title", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("TRIM(COALESCE(t.tag_artist", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("TRIM(COALESCE(t.tag_album", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("TRIM(COALESCE(t.tag_album_artist", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(t.tag_track_no, 0) <= 0", repositorySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("var runQualityUpgradeStage = flagMissingTags", workflowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("var runQualityScanner = flagMissingTags", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReportMissingCoreMetadataScanIfRequestedAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("RefreshConfiguredServersAsync", autoTagServiceSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EnhancementRunWorkflows_AreExplicitlyOptedInAndDecoupledFromGapFillTags()
     {
         var repoRoot = ResolveRepoRoot();

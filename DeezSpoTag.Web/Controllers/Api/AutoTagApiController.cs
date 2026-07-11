@@ -148,6 +148,18 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var targetFiles = NormalizeEnhancementTargetFiles(request.TargetFiles, scopedFolders);
+        if (targetFiles.Count == 0 && ShouldRunMissingCoreMetadataEnhancement(request, configNode))
+        {
+            var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(
+                scopedFolders.Select(folder => folder.Id).ToList(),
+                cancellationToken);
+            targetFiles = missingFiles
+                .Select(file => file.FilePath)
+                .Where(path => !string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
         var runIntent = string.Equals(
             request.Scope,
             "recent",
@@ -162,7 +174,7 @@ public class AutoTagJobsController : ControllerBase
 
         ApplyEnhancementRunSelection(configNode, request, requestedFolderIds, targetFiles);
         var rootPath = targetFiles.Count > 0
-            ? Path.GetDirectoryName(targetFiles[0])!
+            ? ResolveEnhancementTargetRootPath(targetFiles)
             : Path.GetFullPath(scopedFolders[0].RootPath);
         configNode["path"] = rootPath;
 
@@ -195,7 +207,8 @@ public class AutoTagJobsController : ControllerBase
             SetEnhancementFeatureEnabled(enhancement, "folderUniformity", selectedFeatures.Contains("folder-uniformity"));
             SetEnhancementFeatureEnabled(enhancement, "coverMaintenance", selectedFeatures.Contains("cover-maintenance"));
             SetEnhancementFeatureEnabled(enhancement, "qualityChecks", selectedFeatures.Contains("quality-checks"));
-            if (!selectedFeatures.Contains("tag-gap-fill"))
+            if (!selectedFeatures.Contains("tag-gap-fill")
+                && !ShouldKeepGapFillForMissingCoreMetadataScan(configNode, targetFiles))
             {
                 configNode["gapFillTags"] = new JsonArray();
             }
@@ -216,6 +229,102 @@ public class AutoTagJobsController : ControllerBase
         var feature = enhancement[name] as JsonObject ?? new JsonObject();
         feature["enabled"] = enabled;
         enhancement[name] = feature;
+    }
+
+    private static bool ShouldRunMissingCoreMetadataEnhancement(
+        AutoTagEnhancementStartRequest request,
+        JsonObject configNode)
+    {
+        var selectedFeatures = (request.Features ?? Array.Empty<string>())
+            .Select(value => value?.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return selectedFeatures.Contains("quality-checks")
+            && IsMissingCoreMetadataScanEnabled(configNode);
+    }
+
+    private static bool ShouldKeepGapFillForMissingCoreMetadataScan(
+        JsonObject configNode,
+        IReadOnlyList<string> targetFiles)
+    {
+        return targetFiles.Count > 0 && IsMissingCoreMetadataScanEnabled(configNode);
+    }
+
+    private static bool IsMissingCoreMetadataScanEnabled(JsonObject configNode)
+    {
+        return configNode[AutoTagLiterals.EnhancementStage] is JsonObject enhancement
+            && enhancement["qualityChecks"] is JsonObject qualityChecks
+            && ReadBoolean(qualityChecks, "flagMissingTags") == true;
+    }
+
+    private static bool? ReadBoolean(JsonObject node, string propertyName)
+    {
+        if (!node.TryGetPropertyValue(propertyName, out var valueNode) || valueNode is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<bool>(out var boolValue))
+        {
+            return boolValue;
+        }
+
+        return value.TryGetValue<string>(out var raw) && bool.TryParse(raw, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static string ResolveEnhancementTargetRootPath(IReadOnlyList<string> targetFiles)
+    {
+        var directories = targetFiles
+            .Select(Path.GetDirectoryName)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => Path.GetFullPath(path!))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (directories.Count == 0)
+        {
+            return Directory.GetCurrentDirectory();
+        }
+
+        var commonRoot = directories[0].TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        foreach (var directory in directories.Skip(1))
+        {
+            commonRoot = ResolveCommonPathPrefix(commonRoot, directory);
+            if (string.IsNullOrWhiteSpace(commonRoot))
+            {
+                return Path.GetPathRoot(directories[0]) ?? Directory.GetCurrentDirectory();
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(commonRoot)
+            ? Path.GetPathRoot(directories[0]) ?? Directory.GetCurrentDirectory()
+            : commonRoot;
+    }
+
+    private static string ResolveCommonPathPrefix(string left, string right)
+    {
+        var leftParts = left.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        var rightParts = right.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        var count = Math.Min(leftParts.Length, rightParts.Length);
+        var commonParts = new List<string>();
+        for (var i = 0; i < count; i++)
+        {
+            if (!string.Equals(leftParts[i], rightParts[i], StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            commonParts.Add(leftParts[i]);
+        }
+
+        if (commonParts.Count == 0)
+        {
+            return Path.GetPathRoot(left) ?? string.Empty;
+        }
+
+        var root = Path.GetPathRoot(left) ?? string.Empty;
+        return Path.Combine(new[] { root }.Concat(commonParts).ToArray());
     }
 
     private static void ApplyEnhancementFolderScope(

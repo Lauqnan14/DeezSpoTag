@@ -328,6 +328,13 @@ public sealed record QualityScanTrackDto(
     int? BestBitsPerSample,
     int? BestSampleRateHz);
 
+public sealed record MissingCoreMetadataFileDto(
+    long TrackId,
+    long AudioFileId,
+    long FolderId,
+    string FilePath,
+    IReadOnlyList<string> MissingFields);
+
 public sealed record QualityScannerAutomationSettingsDto(
     bool Enabled,
     int IntervalMinutes,
