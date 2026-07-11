@@ -89,6 +89,8 @@ public sealed class TaggingProfileService
 
     public async Task SaveAsync(List<TaggingProfile> profiles)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(_profilesPath)!);
+        SanitizeProfiles(profiles);
         var json = JsonSerializer.Serialize(profiles, _jsonOptions);
         await File.WriteAllTextAsync(_profilesPath, json);
     }

@@ -73,7 +73,7 @@ public sealed class ActivitiesControllerContractTests
 
         var payload = (Dictionary<string, object>)buildQueuePayload!.Invoke(
             null,
-            [queueItem, new DeezSpoTagSettings()])!;
+            [queueItem, new DeezSpoTagSettings(), new HashSet<string>(StringComparer.OrdinalIgnoreCase)])!;
 
         Assert.True(payload.TryGetValue("error", out var error));
         Assert.Equal("Network timeout", error);

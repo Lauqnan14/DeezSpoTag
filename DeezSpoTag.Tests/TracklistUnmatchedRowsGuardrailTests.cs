@@ -22,7 +22,7 @@ public sealed class TracklistUnmatchedRowsGuardrailTests
         Assert.Contains("applyUnmatchedRowState(row);", view, StringComparison.Ordinal);
         Assert.Contains("function markUnresolvedExternalRowsAsUnmatched(indices)", view, StringComparison.Ordinal);
         Assert.Contains("markUnresolvedExternalRowsAsUnmatched(processedIndices);", view, StringComparison.Ordinal);
-        Assert.Contains("const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow;", view, StringComparison.Ordinal);
+        Assert.Contains("const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow || isSourceUnmatchedDownloadableRow;", view, StringComparison.Ordinal);
         Assert.DoesNotContain("const isDeadExternalRow = (isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow)", view, StringComparison.Ordinal);
         Assert.Contains("function isPlayableTracklistPreviewControl(control)", view, StringComparison.Ordinal);
         Assert.Contains("row.classList.contains('track-row-dead')", view, StringComparison.Ordinal);

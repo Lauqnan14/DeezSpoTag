@@ -168,7 +168,7 @@ public sealed class JellyfinApiClientUserResolutionTests
     [Fact]
     public async Task UpdateItemMetadataAsync_UsesUserScopedItemReadBeforePostingUpdate()
     {
-        using var handler = new StubHandler(request =>
+        using var handler = new StubHandler(async (request, cancellationToken) =>
         {
             if (request.Method == HttpMethod.Get
                 && request.RequestUri?.AbsolutePath == "/Users/user-1/Items/playlist-1")
@@ -185,7 +185,9 @@ public sealed class JellyfinApiClientUserResolutionTests
             if (request.Method == HttpMethod.Post
                 && request.RequestUri?.AbsolutePath == "/Items/playlist-1")
             {
-                var body = request.Content?.ReadAsStringAsync(cancellationToken: CancellationToken.None).GetAwaiter().GetResult() ?? string.Empty;
+                var body = request.Content is null
+                    ? string.Empty
+                    : await request.Content.ReadAsStringAsync(cancellationToken);
                 Assert.Contains("\"Name\":\"Bongo Pop\"", body, StringComparison.Ordinal);
                 Assert.Contains("\"Overview\":\"Bongo sounds\"", body, StringComparison.Ordinal);
                 return new HttpResponseMessage(HttpStatusCode.NoContent);
@@ -217,13 +219,15 @@ public sealed class JellyfinApiClientUserResolutionTests
         await File.WriteAllBytesAsync(imagePath, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
         try
         {
-            using var handler = new StubHandler(request =>
+            using var handler = new StubHandler(async (request, cancellationToken) =>
             {
                 if (request.Method == HttpMethod.Post
                     && request.RequestUri?.AbsolutePath == "/Items/playlist-1/Images/Primary")
                 {
                     Assert.Equal("image/jpeg", request.Content?.Headers.ContentType?.MediaType);
-                    var body = request.Content?.ReadAsStringAsync(cancellationToken: CancellationToken.None).GetAwaiter().GetResult() ?? string.Empty;
+                    var body = request.Content is null
+                        ? string.Empty
+                        : await request.Content.ReadAsStringAsync(cancellationToken);
                     Assert.Equal(Convert.ToBase64String(new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 }), body);
                     return new HttpResponseMessage(HttpStatusCode.NoContent);
                 }
@@ -256,13 +260,15 @@ public sealed class JellyfinApiClientUserResolutionTests
         await File.WriteAllBytesAsync(imagePath, new byte[] { 0x89, 0x50, 0x4E, 0x47 });
         try
         {
-            using var handler = new StubHandler(request =>
+            using var handler = new StubHandler(async (request, cancellationToken) =>
             {
                 if (request.Method == HttpMethod.Post
                     && request.RequestUri?.AbsolutePath == "/Items/artist-1/Images/Primary")
                 {
                     Assert.Equal("image/png", request.Content?.Headers.ContentType?.MediaType);
-                    var body = request.Content?.ReadAsStringAsync(cancellationToken: CancellationToken.None).GetAwaiter().GetResult() ?? string.Empty;
+                    var body = request.Content is null
+                        ? string.Empty
+                        : await request.Content.ReadAsStringAsync(cancellationToken);
                     Assert.Equal(Convert.ToBase64String(new byte[] { 0x89, 0x50, 0x4E, 0x47 }), body);
                     return new HttpResponseMessage(HttpStatusCode.NoContent);
                 }
@@ -300,14 +306,26 @@ public sealed class JellyfinApiClientUserResolutionTests
         };
     }
 
-    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+    private sealed class StubHandler : HttpMessageHandler
     {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _responder;
+
+        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        {
+            _responder = (request, _) => Task.FromResult(responder(request));
+        }
+
+        public StubHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
+        {
+            _responder = responder;
+        }
+
         public List<string> RequestedUris { get; } = new();
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestedUris.Add(request.RequestUri?.ToString() ?? string.Empty);
-            return Task.FromResult(responder(request));
+            return _responder(request, cancellationToken);
         }
     }
 }

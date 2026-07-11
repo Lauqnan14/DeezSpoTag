@@ -5910,6 +5910,11 @@ public sealed class DownloadIntentService
     {
         const string secondaryQuality = TidalAtmosQuality;
         var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
+        await ResolveTrackIdentityMatrixAsync(
+            request.Intent,
+            request.Settings,
+            BuildIdentityTargetsForDownload(request.Settings, new[] { TidalPlatform }),
+            request.CancellationToken);
         var resolvedAtmosTrack = await _tidalDownloadService.ResolveAtmosTrackAsync(
             request.Intent.Title ?? string.Empty,
             request.Intent.Artist ?? string.Empty,
