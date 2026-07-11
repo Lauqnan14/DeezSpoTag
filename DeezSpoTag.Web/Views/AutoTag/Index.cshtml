@@ -976,6 +976,17 @@
                                     <label for="enforceFolderStructure">Enforce folder structure on all library files</label>
                                 </div>
                                 <div class="checkbox-group">
+                                    <input type="checkbox" id="folderUniformityIncludeSubfolders" checked />
+                                    <label for="folderUniformityIncludeSubfolders">
+                                        Include artist and album subfolders
+                                        <span class="autotag-tooltip-icon ms-1"
+                                              title="Scans inside artist and album folders under the selected library roots."
+                                              aria-label="Scans inside artist and album folders under the selected library roots.">
+                                            <i class="fas fa-question-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="checkbox-group">
                                     <input type="checkbox" id="moveMisplacedFiles" checked />
                                     <label for="moveMisplacedFiles">Move misplaced files to correct location</label>
                                 </div>
@@ -997,7 +1008,7 @@
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="keepBothOnUnresolvedConflicts" checked />
-                                <label for="keepBothOnUnresolvedConflicts">Keep both on unresolved conflicts</label>
+                                <label for="keepBothOnUnresolvedConflicts">Keep both on unresolved sidecar/path conflicts</label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="runFolderUniformityDedupe" checked />

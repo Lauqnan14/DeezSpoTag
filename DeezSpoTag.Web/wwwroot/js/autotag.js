@@ -74,7 +74,6 @@
                 runDedupe: true,
                 useShazamForDedupe: false,
                 duplicatesFolderName: "%duplicates%",
-                renameSpotifyArtistFolders: DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS,
                 includeSubfolders: true
             },
             coverMaintenance: {
@@ -2057,6 +2056,7 @@
         delete folderUniformity.playlistNameTemplate;
         delete folderUniformity.illegalCharacterReplacer;
         delete folderUniformity.preferredExtensions;
+        delete folderUniformity.renameSpotifyArtistFolders;
 
         const coverMaintenance = enhancement.coverMaintenance;
         const coverMaintenanceHasEnabledFlag = Object.hasOwn(coverMaintenance, "enabled");
@@ -2866,6 +2866,7 @@
         setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
         setChecked("enableFolderUniformityWorkflow", state.config.enhancement.folderUniformity.enabled);
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
+        setChecked("folderUniformityIncludeSubfolders", state.config.enhancement.folderUniformity.includeSubfolders);
         setChecked("moveMisplacedFiles", state.config.enhancement.folderUniformity.moveMisplacedFiles);
         setChecked("mergeIntoExistingDestinationFolders", state.config.enhancement.folderUniformity.mergeIntoExistingDestinationFolders);
         setChecked("renameFilesToTemplate", state.config.enhancement.folderUniformity.renameFilesToTemplate);
@@ -3915,6 +3916,7 @@
         folderUniformity.enabled = getChecked("enableFolderUniformityWorkflow", folderUniformity.enabled);
         folderUniformity.folderIds = parseFolderIdList(getValue("enhancementFolderUniformityFolder", (folderUniformity.folderIds ?? []).join(",")));
         folderUniformity.enforceFolderStructure = getChecked("enforceFolderStructure", folderUniformity.enforceFolderStructure);
+        folderUniformity.includeSubfolders = getChecked("folderUniformityIncludeSubfolders", folderUniformity.includeSubfolders);
         folderUniformity.moveMisplacedFiles = getChecked("moveMisplacedFiles", folderUniformity.moveMisplacedFiles);
         folderUniformity.mergeIntoExistingDestinationFolders = getChecked("mergeIntoExistingDestinationFolders", folderUniformity.mergeIntoExistingDestinationFolders);
         folderUniformity.renameFilesToTemplate = getChecked("renameFilesToTemplate", folderUniformity.renameFilesToTemplate);
@@ -3937,6 +3939,7 @@
             folderUniformity.duplicatesFolderName || "%duplicates%"
         ).trim() || "%duplicates%";
         delete folderUniformity.preferredExtensions;
+        delete folderUniformity.renameSpotifyArtistFolders;
     }
 
     function readCoverAndQualityEnhancementConfig(getChecked, getValue) {

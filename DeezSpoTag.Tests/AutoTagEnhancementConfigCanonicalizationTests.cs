@@ -75,7 +75,8 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
               "albumNameTemplate": "%album%",
               "illegalCharacterReplacer": "_",
               "multiArtistSeparator": "default",
-              "usePrimaryArtistFolders": true
+              "usePrimaryArtistFolders": true,
+              "renameSpotifyArtistFolders": true
             }
           }
         }
@@ -94,6 +95,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.False(folderUniformity.TryGetProperty("illegalCharacterReplacer", out _));
         Assert.False(folderUniformity.TryGetProperty("multiArtistSeparator", out _));
         Assert.False(folderUniformity.TryGetProperty("usePrimaryArtistFolders", out _));
+        Assert.False(folderUniformity.TryGetProperty("renameSpotifyArtistFolders", out _));
         Assert.Equal(new long[] { 1 }, ReadLongArray(folderUniformity.GetProperty("folderIds")));
     }
 
@@ -366,7 +368,11 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("enableFolderUniformityWorkflow", viewSource, StringComparison.Ordinal);
         Assert.Contains("enableQualityChecksWorkflow", viewSource, StringComparison.Ordinal);
         Assert.Contains("enableCoverMaintenanceWorkflow", viewSource, StringComparison.Ordinal);
+        Assert.Contains("folderUniformityIncludeSubfolders", viewSource, StringComparison.Ordinal);
+        Assert.Contains("Keep both on unresolved sidecar/path conflicts", viewSource, StringComparison.Ordinal);
         Assert.Contains("folderUniformity.enabled = getChecked(\"enableFolderUniformityWorkflow\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("folderUniformity.includeSubfolders = getChecked(\"folderUniformityIncludeSubfolders\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("delete folderUniformity.renameSpotifyArtistFolders", scriptSource, StringComparison.Ordinal);
         Assert.Contains("coverMaintenance.enabled = getChecked(\"enableCoverMaintenanceWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("qualityChecks.enabled = getChecked(\"enableQualityChecksWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("TryMarkNoStagesConfigured(job, stages, includesEnhancementWorkflows)", serviceSource, StringComparison.Ordinal);
@@ -381,6 +387,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.DoesNotContain("ShouldRunGenericOrganizer", serviceSource, StringComparison.Ordinal);
         Assert.Contains("ApplyEnhancementBatchTemplatesAsync", serviceSource, StringComparison.Ordinal);
         Assert.Contains("OrganizeFilesAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("folder structure skipped (enforceFolderStructure is disabled)", workflowSource, StringComparison.Ordinal);
         Assert.Contains("FolderTemplatesAppliedInBatches", workflowSource, StringComparison.Ordinal);
     }
 

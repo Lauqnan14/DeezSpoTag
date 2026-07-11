@@ -4335,6 +4335,7 @@ public partial class AutoTagService
         folderUniformity.Remove("createPlaylistFolder");
         folderUniformity.Remove("playlistNameTemplate");
         folderUniformity.Remove("illegalCharacterReplacer");
+        folderUniformity.Remove("renameSpotifyArtistFolders");
     }
 
     private static void EnsureLegacyOrganizerConfigRemoved(JsonNode node)

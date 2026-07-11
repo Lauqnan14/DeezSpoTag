@@ -28,7 +28,8 @@ internal static class TaggingProfileDataHelper
         "createSingleFolder",
         "createPlaylistFolder",
         "playlistNameTemplate",
-        "illegalCharacterReplacer"
+        "illegalCharacterReplacer",
+        "renameSpotifyArtistFolders"
     };
 
     public static bool StripAuthSecrets(Dictionary<string, JsonElement> data)

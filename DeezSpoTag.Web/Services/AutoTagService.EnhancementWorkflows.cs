@@ -166,11 +166,6 @@ public partial class AutoTagService
             return EnhancementWorkflowOutcome.Skipped("folder uniformity is not configured.");
         }
 
-        if (job.FolderTemplatesAppliedInBatches)
-        {
-            return EnhancementWorkflowOutcome.Completed("file and folder templates were applied to each completed 40-file batch.");
-        }
-
         var scopedFolders = ResolveScopedFolders(rootPath, folderUniformity!, enabledFolders);
         var rootPaths = ResolveFolderUniformityRootPaths(rootPath, folderUniformity!, enabledFolders, scopedFolders);
         if (rootPaths.Count == 0)
@@ -185,7 +180,19 @@ public partial class AutoTagService
         var scopedFoldersByPath = BuildScopedFoldersByPath(scopedFolders);
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
-        await RunFolderUniformityForPathsAsync(job, folderUniformity!, rootPaths, profileState, scopedFoldersByPath, cancellationToken);
+        if (job.FolderTemplatesAppliedInBatches)
+        {
+            AppendLog(job, "enhancement workflow: folder structure skipped (file and folder templates were applied to each completed 40-file batch).");
+        }
+        else if (ReadBool(folderUniformity!, "enforceFolderStructure") != false)
+        {
+            await RunFolderUniformityForPathsAsync(job, folderUniformity!, rootPaths, profileState, scopedFoldersByPath, cancellationToken);
+        }
+        else
+        {
+            AppendLog(job, "enhancement workflow: folder structure skipped (enforceFolderStructure is disabled).");
+        }
+
         await RunFolderUniformityDedupeAsync(job, folderUniformity!, scopedFolders, rootPaths, enabledFolders, cancellationToken);
 
         AppendLog(job, "enhancement workflow: folder uniformity completed.");
