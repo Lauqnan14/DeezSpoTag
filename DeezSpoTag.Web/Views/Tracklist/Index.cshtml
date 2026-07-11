@@ -895,9 +895,20 @@
     color: var(--primary-color);
 }
 
+.tracks-table tbody tr.track-row-dead.track-row-source-downloadable .track-actions {
+    opacity: 1;
+    filter: none;
+    color: var(--primary-color);
+}
+
 .tracks-table tbody tr.track-row-dead .track-checkbox {
     cursor: not-allowed;
     opacity: 0.45;
+}
+
+.tracks-table tbody tr.track-row-dead.track-row-source-downloadable .track-checkbox {
+    cursor: pointer;
+    opacity: 1;
 }
 
 .track-ignore-btn {
@@ -1828,6 +1839,55 @@ function normalizeDownloadSource(source) {
     return normalized;
 }
 
+function isDirectSourceDownloadSource(source) {
+    const normalized = String(source || '').trim().toLowerCase();
+    return normalized === 'spotify'
+        || normalized === 'apple'
+        || normalized === 'tidal'
+        || normalized === 'qobuz'
+        || normalized === 'amazon';
+}
+
+function getDirectSourceDownloadIdFromCheckbox(checkbox, source) {
+    switch (source) {
+        case 'spotify':
+            return String(checkbox?.dataset.spotifyId || '').trim();
+        case 'apple':
+            return '';
+        case 'tidal':
+            return String(checkbox?.dataset.tidalId || '').trim();
+        case 'qobuz':
+            return String(checkbox?.dataset.qobuzId || '').trim();
+        case 'amazon':
+            return String(checkbox?.dataset.amazonId || '').trim();
+        default:
+            return '';
+    }
+}
+
+function isDirectSourceDownloadCheckbox(checkbox) {
+    if (!checkbox) {
+        return false;
+    }
+    const source = String(checkbox.dataset.trackSource || tracklistSource || '').trim().toLowerCase();
+    if (!isDirectSourceDownloadSource(source)) {
+        return false;
+    }
+    const link = String(checkbox.dataset.trackLink || '').trim();
+    const platformId = getDirectSourceDownloadIdFromCheckbox(checkbox, source);
+    return !!platformId || isPlatformSourceUrl(link, source);
+}
+
+function resolveDownloadSourceForQueue(source, trackElements = []) {
+    const normalized = String(source || '').trim().toLowerCase();
+    if (isDirectSourceDownloadSource(normalized)
+        && Array.isArray(trackElements)
+        && trackElements.some(trackElement => isDirectSourceDownloadCheckbox(trackElement))) {
+        return normalized;
+    }
+    return normalizeDownloadSource(source);
+}
+
 function normalizeTrackRowPlaybackSource(source) {
     const normalized = String(source || '').trim().toLowerCase();
     return normalized === 'recommendations' ? 'deezer' : (normalized || 'deezer');
@@ -2010,7 +2070,8 @@ function updateTracklistLayoutState(tracks) {
     tracklistLayoutIsPlaylistLike = useUnifiedTracklistView || tracklistType !== 'album';
     const source = (requestSource || tracklistSource || '').toLowerCase();
     tracklistIsAtmosView = (source === 'apple' && Array.isArray(tracks) && tracks.some(track => track?.hasAtmos))
-        || (source === 'tidal' && tracklistRequestsTidalAtmos);
+        || (source === 'tidal' && (tracklistRequestsTidalAtmos || (Array.isArray(tracks) && tracks.some(track => isAtmosTrackRow(track)))))
+        || (Array.isArray(tracks) && tracks.some(track => isAtmosTrackRow(track)));
     tracklistIsVideoView = source === 'apple' && Array.isArray(tracks) && tracks.some(track => track?.isVideo);
     refreshDestinationSelectorLayoutState();
 }
@@ -3200,6 +3261,14 @@ function renderTracklist(data, options = {}) {
             track.index = index;
         }
     });
+    const sourceHasAtmos = data.hasAtmos === true || data.hasAtmos === 'true' || data.hasAtmos === 1;
+    if ((tracklistSource || '').toLowerCase() === 'tidal' && sourceHasAtmos) {
+        tracks.forEach((track) => {
+            if (track && typeof track === 'object' && track.hasAtmos === undefined) {
+                track.hasAtmos = true;
+            }
+        });
+    }
     if (tracklistSource === 'apple') {
         tracks.forEach(t => {
             if (!t.link) t.link = t.sourceUrl || t.appleUrl || '';
@@ -4325,11 +4394,14 @@ function applyMatchedRowState(row, deezerId) {
     const canRetryMatch = !deezerId
         && isDeezerMatchedExternalSource(source)
         && !!buildSpotifyTrackResolveRequestFromRow(row);
+    const sourceDownloadable = isDirectSourceDownloadCheckbox(row?.querySelector('.track-checkbox'));
     row.dataset.availabilityDeezerId = deezerId;
-    row.classList.toggle('track-row-dead', !deezerId && !canRetryMatch);
+    row.classList.toggle('track-row-dead', !deezerId && (!canRetryMatch || sourceDownloadable));
+    row.classList.toggle('track-row-source-downloadable', !deezerId && sourceDownloadable);
     updateMatchedRowPreviewControl(row, deezerId);
 
     if (deezerId) {
+        row.classList.remove('track-row-source-downloadable');
         const availabilityTrack = buildAvailabilityTrackFromRow(row, deezerId);
         if (availabilityTrack) {
             const availabilityKey = buildAvailabilityKeyFromTrack(availabilityTrack);
@@ -4349,6 +4421,7 @@ function applyUnmatchedRowState(row) {
 
     row.dataset.availabilityDeezerId = '';
     row.classList.add('track-row-dead');
+    row.classList.toggle('track-row-source-downloadable', isDirectSourceDownloadCheckbox(row.querySelector('.track-checkbox')));
     updateMatchedRowCheckbox(row, '');
     updateMatchedRowPreviewControl(row, '');
 }
@@ -4364,6 +4437,13 @@ function updateMatchedRowCheckbox(row, deezerId) {
         checkbox.disabled = false;
         checkbox.removeAttribute('aria-disabled');
         checkbox.setAttribute('title', 'Select track');
+        return;
+    }
+
+    if (isDirectSourceDownloadCheckbox(checkbox)) {
+        checkbox.disabled = false;
+        checkbox.removeAttribute('aria-disabled');
+        checkbox.setAttribute('title', 'Select source track');
         return;
     }
 
@@ -4969,7 +5049,36 @@ function isAtmosTrackRow(track) {
     return track?.hasAtmos === true
         || track?.hasAtmos === 'true'
         || track?.hasAtmos === 1
+        || (tracklistIsAtmosView && (tracklistSource || '').toLowerCase() === 'tidal')
         || (tracklistRequestsTidalAtmos && (tracklistSource || '').toLowerCase() === 'tidal');
+}
+
+function getDirectSourceDownloadId(track, platformIds, source, spotifyId = '') {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    switch (normalizedSource) {
+        case 'spotify':
+            return String(spotifyId || platformIds?.spotifyId || '').trim();
+        case 'apple':
+            return String(platformIds?.appleId || '').trim();
+        case 'tidal':
+            return String(platformIds?.tidalId || '').trim();
+        case 'qobuz':
+            return String(platformIds?.qobuzId || '').trim();
+        case 'amazon':
+            return String(platformIds?.amazonId || '').trim();
+        default:
+            return '';
+    }
+}
+
+function hasDirectSourceDownloadIdentity(track, platformIds, source, spotifyId = '') {
+    const normalizedSource = String(source || '').trim().toLowerCase();
+    if (!isDirectSourceDownloadSource(normalizedSource)) {
+        return false;
+    }
+    const link = String(track?.link || track?.sourceUrl || track?.appleUrl || '').trim();
+    const platformId = getDirectSourceDownloadId(track, platformIds, normalizedSource, spotifyId);
+    return !!platformId || isPlatformSourceUrl(link, normalizedSource);
 }
 
 function renderTrackLocationStatusCell(status) {
@@ -5533,6 +5642,9 @@ function resolveTrackPlatformIds(track, spotifyIdOverride = '') {
     const qobuzIdKeys = currentSource === 'qobuz'
         ? ['qobuzId', 'qobuz_id', 'id']
         : ['qobuzId', 'qobuz_id'];
+    const amazonIdKeys = currentSource === 'amazon'
+        ? ['amazonId', 'amazon_id', 'amazonMusicId', 'amazon_music_id', 'id']
+        : ['amazonId', 'amazon_id', 'amazonMusicId', 'amazon_music_id'];
 
     const deezerId = firstTrackValue(track, deezerIdKeys);
     return {
@@ -5541,7 +5653,7 @@ function resolveTrackPlatformIds(track, spotifyIdOverride = '') {
         appleId: firstTrackValue(track, appleIdKeys),
         tidalId: firstTrackValue(track, tidalIdKeys),
         qobuzId: firstTrackValue(track, qobuzIdKeys),
-        amazonId: firstTrackValue(track, ['amazonId', 'amazon_id', 'amazonMusicId', 'amazon_music_id'])
+        amazonId: firstTrackValue(track, amazonIdKeys)
     };
 }
 
@@ -5925,17 +6037,27 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             : '';
         const isDeadSpotifyRow = isSpotifyExternalSource && !deezerId;
         const isDeadBoomplayRow = isBoomplayExternalSource && !deezerId;
-        const isDeadGenericExternalRow = isGenericExternalSource && !deezerId;
+        const isDirectDownloadExternalSource = playbackSource === 'tidal'
+            || playbackSource === 'qobuz'
+            || playbackSource === 'amazon';
+        const isDirectSourceDownloadRow = hasDirectSourceDownloadIdentity(track, platformIds, playbackSource, spotifyId);
+        const isSourceUnmatchedDownloadableRow = isDirectSourceDownloadRow && !deezerId;
+        const isDeadGenericExternalRow = isGenericExternalSource && !isDirectDownloadExternalSource && !deezerId;
         const supportsOnDemandMatch = isDeezerMatchedExternalSource(playbackSource);
         const hasResolvableExternalLink = !!String(track.link || track.sourceUrl || track.appleUrl || '').trim()
             || (isSpotifyExternalSource && !!spotifyId);
         const isPendingExternalRow = (isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow)
             && supportsOnDemandMatch
             && hasResolvableExternalLink;
-        const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow;
+        const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow || isSourceUnmatchedDownloadableRow;
+        const shouldDisableCheckbox = isDeadExternalRow && !isSourceUnmatchedDownloadableRow;
         const rowSourceAttr = escapeHtml(playbackSource);
-        const rowClass = isDeadExternalRow ? ' class="track-row-dead"' : '';
-        const checkboxDisabledAttr = isDeadExternalRow ? ' disabled aria-disabled="true" title="Waiting for Deezer match"' : ' title="Select track"';
+        const rowClass = isDeadExternalRow
+            ? ` class="track-row-dead${isSourceUnmatchedDownloadableRow ? ' track-row-source-downloadable' : ''}"`
+            : '';
+        const checkboxDisabledAttr = shouldDisableCheckbox
+            ? ' disabled aria-disabled="true" title="Waiting for Deezer match"'
+            : ` title="${isSourceUnmatchedDownloadableRow ? 'Select source track' : 'Select track'}"`;
         const recommendationRejectButton = isRecommendationSource
             ? `<button class="track-recommendation-reject-btn" type="button"
                     data-recommendation-track-id="${escapeHtml(track.id || deezerId || '')}"
@@ -6529,10 +6651,14 @@ function getDownloadEligibleTrackCheckboxes(checkedOnly = false) {
     const source = normalizeDownloadSource(tracklistSource);
     const scope = '#tracks-table-body ';
     if (source === 'deezer' || source === 'boomplay') {
-        const selector = checkedOnly
-            ? `${scope}.track-checkbox[data-track-id]:not([data-track-id=""]):not(:disabled):checked`
-            : `${scope}.track-checkbox[data-track-id]:not([data-track-id=""]):not(:disabled)`;
-        return Array.from(document.querySelectorAll(selector));
+        const baseSelector = checkedOnly
+            ? `${scope}.track-checkbox:not(:disabled):checked`
+            : `${scope}.track-checkbox:not(:disabled)`;
+        return Array.from(document.querySelectorAll(baseSelector))
+            .filter(checkbox => {
+                const deezerId = String(checkbox.dataset.trackId || '').trim();
+                return !!deezerId || isDirectSourceDownloadCheckbox(checkbox);
+            });
     }
 
     const selector = checkedOnly
@@ -6906,15 +7032,13 @@ async function downloadTracks(trackElements, triggerButton) {
     if (requireDestination && stereoDestinationFolderId === null) {
         return;
     }
-    const hasSelectedAtmosAudioTracks = tracklistSource === 'apple'
-        && Array.isArray(trackElements)
+    const hasSelectedAtmosAudioTracks = Array.isArray(trackElements)
         && trackElements.some((trackElement) => {
             const hasAtmos = trackElement?.dataset?.trackHasAtmos === 'true'
                 || trackElement?.dataset?.trackHasAtmos === '1';
             return hasAtmos && !isAppleTrackVideo(trackElement);
         });
-    const useDualAtmosRouting = tracklistSource === 'apple'
-        && tracklistMultiQualityEnabled
+    const useDualAtmosRouting = tracklistMultiQualityEnabled
         && hasSelectedAtmosAudioTracks;
     const multiQualitySettings = downloader?.settings?.multiQuality || downloader?.settings?.MultiQuality || {};
     const configuredAtmosDestinationFolderId = parseFolderId(
@@ -7000,7 +7124,7 @@ async function downloadTracks(trackElements, triggerButton) {
         };
 
         if (downloader?.addToQueue) {
-            const source = normalizeDownloadSource(tracklistSource);
+            const source = resolveDownloadSourceForQueue(tracklistSource, trackElements);
             const requests = [];
             let boomplayUnmatchedCount = 0;
 
@@ -7112,16 +7236,19 @@ async function downloadTracks(trackElements, triggerButton) {
 
                 if (source === 'tidal' || source === 'amazon' || source === 'deezer') {
                     if (resolvedSourceUrl) {
-                        const isTidalAtmosRequest = source === 'tidal' && tracklistRequestsTidalAtmos;
+                        const isDirectAtmosTrack = (source === 'tidal' || source === 'amazon')
+                            && (trackElement.dataset.trackHasAtmos === 'true' || trackElement.dataset.trackHasAtmos === '1');
+                        const useDualRoutingForTrack = useDualAtmosRouting && isDirectAtmosTrack;
                         requests.push({
                             url: resolvedSourceUrl,
                             destinationFolderId: stereoDestinationFolderId,
-                            metadata: isTidalAtmosRequest
+                            secondaryDestinationFolderId: useDualRoutingForTrack ? atmosDestinationFolderId : null,
+                            metadata: isDirectAtmosTrack
                                 ? {
                                     ...metadata,
-                                    sourceService: 'tidal',
+                                    sourceService: source,
                                     sourceUrl: resolvedSourceUrl,
-                                    contentType: 'atmos',
+                                    contentType: useDualRoutingForTrack ? 'stereo' : 'atmos',
                                     hasAtmos: true,
                                     quality: 'DOLBY_ATMOS'
                                 }
@@ -7133,7 +7260,7 @@ async function downloadTracks(trackElements, triggerButton) {
                                 }
                                 : {
                                     ...metadata,
-                                    sourceService: 'amazon',
+                                    sourceService: source,
                                     sourceUrl: resolvedSourceUrl
                                 }
                         });

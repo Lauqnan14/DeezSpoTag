@@ -369,6 +369,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
 
         var coverUrl = BuildTidalImageUrl(GetString(albumNode.Value, "cover"));
         var normalizedAlbumUrl = BuildTidalEntityUrl(albumId, albumUrl, AlbumType);
+        var hasAtmos = HasTidalAtmos(albumNode.Value) || TracksContainAtmos(tracks);
         return new
         {
             id = albumId,
@@ -382,6 +383,8 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             sourceUrl = normalizedAlbumUrl,
             creator = new { name = ResolveArtistName(albumNode.Value) },
             nb_tracks = tracks.Count,
+            hasAtmos,
+            audioQuality = GetString(albumNode.Value, "audioQuality"),
             tracks
         };
     }
@@ -813,7 +816,7 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         string token,
         CancellationToken cancellationToken)
         => await FetchTidalTracksAsync(
-            $"albums/{Uri.EscapeDataString(albumId)}/tracks",
+            $"albums/{Uri.EscapeDataString(albumId)}/items",
             token,
             cancellationToken);
 
@@ -1025,6 +1028,8 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         var trackUrl = NormalizeTidalTrackUrl(GetString(trackNode, "url"), trackId);
         var artistName = ResolveArtistName(trackNode);
         var albumMetadata = ResolveTidalAlbumMetadata(trackNode);
+        var hasAtmos = HasTidalAtmos(trackNode);
+        var audioQuality = GetString(trackNode, "audioQuality");
         track = new
         {
             id = trackId,
@@ -1035,6 +1040,13 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
             link = trackUrl,
             sourceUrl = trackUrl,
             isrc,
+            tidalId = trackId,
+            tidal_id = trackId,
+            hasAtmos,
+            audioQuality,
+            quality = hasAtmos ? "DOLBY_ATMOS" : audioQuality,
+            bitDepth = hasAtmos ? "24B" : string.Empty,
+            sampleRate = hasAtmos ? "48kHz" : string.Empty,
             artist = new { id = string.Empty, name = artistName },
             album = new
             {
@@ -1045,6 +1057,42 @@ public sealed partial class ExternalPlaylistTracklistApiController : ControllerB
         };
         return true;
     }
+
+    private static bool TracksContainAtmos(IEnumerable<object> tracks)
+        => tracks.Any(track => track.GetType().GetProperty("hasAtmos")?.GetValue(track) is bool value && value);
+
+    private static bool HasTidalAtmos(JsonElement item)
+    {
+        if (StringContainsAtmos(GetString(item, "audioQuality")))
+        {
+            return true;
+        }
+
+        foreach (var propertyName in new[] { "audioModes", "audioMode", "mediaMetadata", "tags" })
+        {
+            if (item.TryGetProperty(propertyName, out var property) && JsonElementContainsAtmos(property))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool JsonElementContainsAtmos(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => StringContainsAtmos(element.GetString()),
+            JsonValueKind.Array => element.EnumerateArray().Any(JsonElementContainsAtmos),
+            JsonValueKind.Object => element.EnumerateObject().Any(prop => JsonElementContainsAtmos(prop.Value)),
+            _ => false
+        };
+    }
+
+    private static bool StringContainsAtmos(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+           && value.Contains("ATMOS", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeTidalTrackUrl(string trackUrl, string trackId)
     {
