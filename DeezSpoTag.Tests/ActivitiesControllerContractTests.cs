@@ -176,6 +176,34 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void ActivitiesDownloadsTab_LyricsBadgesUseCompletedSidecarEvidenceOnly()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("mappedStatus === 'complete' ? getLyricsBadgesFromFiles(item) : []", source, StringComparison.Ordinal);
+        Assert.Contains("lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : []", source, StringComparison.Ordinal);
+        Assert.Contains("name.endsWith('.ttml')", source, StringComparison.Ordinal);
+        Assert.Contains("name.endsWith('.lrc')", source, StringComparison.Ordinal);
+        Assert.Contains("name.endsWith('.txt')", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("function getLyricsBadgesFromStatus", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("existing.lyricsBadges", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTag_ProtectsExistingAlbumFromLossyPlatformMatches()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Services/AutoTag/LocalAutoTagRunner.cs"));
+
+        Assert.Contains("ApplyAlbumLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Album);", source, StringComparison.Ordinal);
+        Assert.Contains("sourceTrack.Album = currentAlbum;", source, StringComparison.Ordinal);
+        Assert.Contains("effectiveTagSettings.Album = false;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DownloadEngines_UseCanonicalRunningStartEvent()
     {
         var queueHelperSource = File.ReadAllText(Path.Combine(

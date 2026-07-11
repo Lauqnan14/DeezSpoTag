@@ -585,9 +585,11 @@ public sealed class DownloadIntentService
         await ResolveTrackIdentityMatrixAsync(
             intent,
             state.Settings,
-            fallbackInfo.FallbackPlan
-                .Select(step => step.Engine)
-                .Append(target.Engine),
+            BuildIdentityTargetsForDownload(
+                state.Settings,
+                fallbackInfo.FallbackPlan
+                    .Select(step => step.Engine)
+                    .Append(target.Engine)),
             cancellationToken);
 
         var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, target.Engine)
@@ -1171,13 +1173,15 @@ public sealed class DownloadIntentService
             return (nonMusicPlan, nonMusicSources, 0);
         }
 
-        var payloadSources = allowCrossEngineFallback
-            ? ResolveCrossEngineFallbackSources(intent, autoSources, settings, engine, quality)
-            : DownloadSourceOrder.ResolveEngineQualitySources(
-                settings,
-                engine,
-                quality,
-                strict: UseStrictQualityFallback(settings, engine, quality));
+        var payloadSources = IsAtmosSourceRequest(intent.ContentType, quality)
+            ? autoSources.Where(IsAtmosEncodedSource).ToList()
+            : allowCrossEngineFallback
+                ? ResolveCrossEngineFallbackSources(intent, autoSources, settings, engine, quality)
+                : DownloadSourceOrder.ResolveEngineQualitySources(
+                    settings,
+                    engine,
+                    quality,
+                    strict: UseStrictQualityFallback(settings, engine, quality));
         payloadSources = PrioritizeFallbackSourcesByHealth(
             payloadSources,
             settings,
@@ -2033,7 +2037,11 @@ public sealed class DownloadIntentService
             return (engine, sourceUrl, string.Empty, "watchlist-qobuz-deferred");
         }
 
-        await ResolveTrackIdentityMatrixAsync(intent, settings, new[] { engine }, cancellationToken);
+        await ResolveTrackIdentityMatrixAsync(
+            intent,
+            settings,
+            BuildIdentityTargetsForDownload(settings, new[] { engine }),
+            cancellationToken);
         var generatedIdentityResult = TryResolveDirectEngineIdentity(intent, engine, sourceUrl);
         if (generatedIdentityResult.HasValue)
         {
@@ -2497,6 +2505,38 @@ public sealed class DownloadIntentService
 
         var resolution = await ResolveCentralIdentityAsync(intent, settings, engines, cancellationToken);
         ApplyResolvedIdentity(intent, resolution);
+    }
+
+    private static IEnumerable<string> BuildIdentityTargetsForDownload(
+        DeezSpoTagSettings settings,
+        IEnumerable<string> targetEngines)
+    {
+        var engines = targetEngines
+            .Where(engine => !string.IsNullOrWhiteSpace(engine))
+            .Select(engine => engine.Trim())
+            .ToList();
+
+        if (ShouldResolveAppleIdentityForArtwork(settings)
+            && !engines.Contains(ApplePlatform, StringComparer.OrdinalIgnoreCase))
+        {
+            engines.Add(ApplePlatform);
+        }
+
+        return engines;
+    }
+
+    private static bool ShouldResolveAppleIdentityForArtwork(DeezSpoTagSettings settings)
+    {
+        if (settings.SaveAnimatedArtwork)
+        {
+            return true;
+        }
+
+        var needsCoverArtwork = settings.SaveArtwork || settings.Tags?.Cover == true;
+        return needsCoverArtwork
+               && (string.IsNullOrWhiteSpace(settings.ArtworkFallbackOrder)
+                   || settings.ArtworkFallbackOrder.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                       .Any(source => string.Equals(source, ApplePlatform, StringComparison.OrdinalIgnoreCase)));
     }
 
     private Task<TrackIdentityResolution> ResolveCentralIdentityAsync(
@@ -5907,10 +5947,12 @@ public sealed class DownloadIntentService
             secondaryDestinationFolderId,
             AtmosQuality));
         payload.Quality = secondaryQuality;
-        payload.TidalId = TryExtractTidalTrackId(tidalAtmosUrl) ?? string.Empty;
+        var resolvedTidalAtmosId = TryExtractTidalTrackId(tidalAtmosUrl) ?? string.Empty;
+        payload.TidalId = resolvedTidalAtmosId;
         payload.Id = Guid.NewGuid().ToString("N");
         payload.QualityBucket = AtmosQuality;
         ApplyIntentMetadata(payload, request.Intent);
+        payload.TidalId = resolvedTidalAtmosId;
         payload.Isrc = FirstNonEmpty(resolvedAtmosTrack?.Isrc, request.Intent.Isrc) ?? string.Empty;
         payload.Album = ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album) ?? string.Empty;
         payload.AlbumArtist = FirstNonEmpty(

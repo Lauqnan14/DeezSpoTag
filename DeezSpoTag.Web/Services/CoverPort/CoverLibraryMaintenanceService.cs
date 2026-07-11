@@ -261,7 +261,7 @@ public sealed class CoverLibraryMaintenanceService
             return false;
         }
 
-        var savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+        var animatedPaths = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             _appleMusicCatalogService,
             _httpClientFactory,
             new AppleQueueHelpers.AnimatedArtworkSaveRequest
@@ -279,7 +279,7 @@ public sealed class CoverLibraryMaintenanceService
                 OutputFormats = request.AnimatedArtworkFormats
             },
             cancellationToken);
-        if (savedAnimated)
+        if (animatedPaths.Count > 0)
         {
             logs.Enqueue($"[ok] {albumDir}: saved animated artwork.");
             return true;

@@ -3216,6 +3216,8 @@ public partial class AutoTagService
             AutoTagLiterals.DownloadTagSourceKey,
             TracknameTemplateKey,
             "saveArtwork",
+            "saveAnimatedArtwork",
+            "animatedArtworkFormats",
             "dlAlbumcoverForPlaylist",
             "saveArtworkArtist",
             "coverImageTemplate",

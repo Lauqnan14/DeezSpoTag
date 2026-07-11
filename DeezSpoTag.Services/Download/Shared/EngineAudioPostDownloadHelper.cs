@@ -168,7 +168,10 @@ public static partial class EngineAudioPostDownloadHelper
         public bool ShouldQueueWork => ShouldFetchArtwork || ShouldFetchLyrics;
     }
 
-    private sealed record PrefetchArtworkResult(bool Success, string? FailureReason = null);
+    private sealed record PrefetchArtworkResult(
+        bool Success,
+        string? FailureReason = null,
+        IReadOnlyList<string>? AnimatedArtworkPaths = null);
 
     private sealed record PrefetchCompletionResult(
         bool ShouldValidateArtwork,
@@ -2084,6 +2087,10 @@ public static partial class EngineAudioPostDownloadHelper
             }
 
             var result = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
+            AddGeneratedSidecars(
+                result.Files,
+                runState.ArtworkResult.AnimatedArtworkPaths,
+                execution.Request.Context.PathResult);
             execution.Request.Payload.Files = result.Files;
             execution.Request.Payload.LyricsStatus = result.LyricsStatus;
             var filesJson = System.Text.Json.JsonSerializer.Serialize(result.Files);
@@ -2113,6 +2120,39 @@ public static partial class EngineAudioPostDownloadHelper
                     execution.Request.Engine,
                     execution.Paths.QueueUuid);
             }
+        }
+    }
+
+    private static void AddGeneratedSidecars(
+        List<Dictionary<string, object>> files,
+        IReadOnlyList<string>? sidecarPaths,
+        PathGenerationResult pathResult)
+    {
+        if (sidecarPaths == null || sidecarPaths.Count == 0)
+        {
+            return;
+        }
+
+        var albumPath = DownloadPathResolver.NormalizeDisplayPath(pathResult.FilePath);
+        var artistPath = DownloadPathResolver.NormalizeDisplayPath(pathResult.ArtistPath ?? pathResult.FilePath);
+        var existing = files
+            .Select(file => file.TryGetValue("path", out var value) ? value?.ToString() : null)
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var sidecarPath in sidecarPaths)
+        {
+            var displayPath = DownloadPathResolver.NormalizeDisplayPath(sidecarPath);
+            if (string.IsNullOrWhiteSpace(displayPath) || !existing.Add(displayPath))
+            {
+                continue;
+            }
+
+            files.Add(new Dictionary<string, object>
+            {
+                ["path"] = displayPath,
+                ["albumPath"] = albumPath,
+                ["artistPath"] = artistPath
+            });
         }
     }
 
@@ -2181,21 +2221,26 @@ public static partial class EngineAudioPostDownloadHelper
             }
         }
 
+        IReadOnlyList<string>? animatedPaths = null;
         if (execution.Requirements.ShouldFetchAnimatedArtwork && runtime.AppleCatalog != null && runtime.HttpClientFactory != null)
         {
-            await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
+            animatedPaths = await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
         }
 
         if (execution.Requirements.ShouldFetchArtistArtwork)
         {
             var artistResult = await TrySaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
-            if (!artistResult.Success)
+            if (!artistResult.Success && execution.Request.Logger.IsEnabled(LogLevel.Debug))
             {
-                return artistResult;
+                execution.Request.Logger.LogDebug(
+                    "{Engine} artist artwork sidecar was not saved for {QueueUuid}: {Reason}",
+                    execution.Request.Engine,
+                    execution.Paths.QueueUuid,
+                    artistResult.FailureReason);
             }
         }
 
-        return new PrefetchArtworkResult(true);
+        return new PrefetchArtworkResult(true, AnimatedArtworkPaths: animatedPaths);
     }
 
     private static async Task<AppleArtworkIdentity?> ResolveAppleArtworkIdentityAsync(
@@ -2241,6 +2286,13 @@ public static partial class EngineAudioPostDownloadHelper
             return null;
         }
 
+        if (!AreExactArtworkAlbumsCompatible(payload.Album, identity.AppleAlbumName))
+        {
+            execution.Request.ActivityLog.Warn(
+                $"Animated artwork skipped: Apple release '{identity.AppleAlbumName}' does not match source release '{payload.Album}'.");
+            return null;
+        }
+
         return new AppleArtworkIdentity(
             identity.AppleId,
             identity.AppleAlbumId,
@@ -2248,6 +2300,18 @@ public static partial class EngineAudioPostDownloadHelper
             identity.AppleArtistName,
             identity.AppleIsrc,
             identity.AppleDurationMs);
+    }
+
+    private static bool AreExactArtworkAlbumsCompatible(string? sourceAlbum, string? candidateAlbum)
+    {
+        if (string.IsNullOrWhiteSpace(sourceAlbum) || string.IsNullOrWhiteSpace(candidateAlbum))
+        {
+            return false;
+        }
+
+        var source = TrackTitleMatcher.RemoveAtmosVersionMarker(sourceAlbum).Trim();
+        var candidate = TrackTitleMatcher.RemoveAtmosVersionMarker(candidateAlbum).Trim();
+        return string.Equals(source, candidate, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<PrefetchArtworkResult> TrySavePrimaryArtworkAsync(
@@ -2283,20 +2347,22 @@ public static partial class EngineAudioPostDownloadHelper
         return new PrefetchArtworkResult(false, "Album artwork download failed.");
     }
 
-    private static async Task LogMissingAnimatedArtworkAsync(
+    private static async Task<IReadOnlyList<string>> LogMissingAnimatedArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         AppleArtworkIdentity? appleIdentity,
         CancellationToken token)
     {
-        var animatedSaved = await SaveAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
-        if (!animatedSaved && execution.Request.Logger.IsEnabled(LogLevel.Debug))
+        var animatedPaths = await SaveAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
+        if (animatedPaths.Count == 0 && execution.Request.Logger.IsEnabled(LogLevel.Debug))
         {
             execution.Request.Logger.LogDebug(
                 "{Engine} animated artwork not available for {QueueUuid}",
                 execution.Request.Engine,
                 execution.Paths.QueueUuid);
         }
+
+        return animatedPaths;
     }
 
     private static async Task<PrefetchArtworkResult> TrySaveArtistArtworkAsync(
@@ -2370,49 +2436,67 @@ public static partial class EngineAudioPostDownloadHelper
         return anySaved;
     }
 
-    private static async Task<bool> SaveAnimatedArtworkAsync(
+    private static async Task<IReadOnlyList<string>> SaveAnimatedArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         AppleArtworkIdentity? appleIdentity,
         CancellationToken token)
     {
         var resolvedAppleId = appleIdentity?.AppleId;
-        if (string.IsNullOrWhiteSpace(resolvedAppleId))
-        {
-            return false;
-        }
-
         var settings = execution.Request.Settings;
         var coverName = runtime.PathProcessor.GenerateAlbumName(
             settings.CoverImageTemplate,
             execution.Request.Context.Track.Album,
             settings,
             execution.Request.Context.Track.Playlist);
-        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront;
-        var savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+        var request = new AppleQueueHelpers.AnimatedArtworkSaveRequest
+        {
+            AppleId = resolvedAppleId,
+            Artist = appleIdentity?.ArtistName ?? execution.Request.Payload.Artist,
+            Album = appleIdentity?.AlbumName ?? execution.Request.Payload.Album,
+            BaseFileName = coverName,
+            Storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
+            MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
+            OutputDir = execution.Paths.CoverPath,
+            Logger = execution.Request.Logger,
+            CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AlbumId) ? null : AlbumType,
+            CollectionId = appleIdentity?.AlbumId,
+            OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
+        };
+
+        var existingAnimatedPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
+            request,
+            execution.Request.Logger,
+            token);
+        if (existingAnimatedPaths.Count > 0)
+        {
+            execution.Request.ActivityLog.Info($"Animated artwork reused: {execution.Paths.CoverPath}");
+            return existingAnimatedPaths;
+        }
+
+        if (string.IsNullOrWhiteSpace(resolvedAppleId))
+        {
+            execution.Request.ActivityLog.Warn(
+                $"Animated artwork skipped: Apple identity could not be resolved for {execution.Request.Payload.Artist} - {execution.Request.Payload.Title}.");
+            return Array.Empty<string>();
+        }
+
+        var animatedPaths = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             runtime.AppleCatalog!,
             runtime.HttpClientFactory!,
-            new AppleQueueHelpers.AnimatedArtworkSaveRequest
-            {
-                AppleId = resolvedAppleId,
-                Artist = appleIdentity?.ArtistName ?? execution.Request.Payload.Artist,
-                Album = appleIdentity?.AlbumName ?? execution.Request.Payload.Album,
-                BaseFileName = coverName,
-                Storefront = storefront,
-                MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
-                OutputDir = execution.Paths.CoverPath,
-                Logger = execution.Request.Logger,
-                CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AlbumId) ? null : AlbumType,
-                CollectionId = appleIdentity?.AlbumId,
-                OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
-            },
+            request,
             token);
-        if (savedAnimated)
+        if (animatedPaths.Count > 0)
         {
             execution.Request.ActivityLog.Info($"Animated artwork saved: {execution.Paths.CoverPath}");
         }
+        else
+        {
+            execution.Request.ActivityLog.Warn(
+                $"Animated artwork unavailable for resolved Apple track {resolvedAppleId}: {execution.Request.Payload.Artist} - {execution.Request.Payload.Title}.");
+        }
 
-        return savedAnimated;
+        return animatedPaths;
     }
 
     private static async Task<bool> SaveArtistArtworkAsync(
@@ -3065,6 +3149,8 @@ public static partial class EngineAudioPostDownloadHelper
         return message.Contains("No Tidal download provider is currently available", StringComparison.OrdinalIgnoreCase)
                || message.Contains("No Qobuz public download provider is currently available", StringComparison.OrdinalIgnoreCase)
                || message.Contains("No enabled Amazon public download API provider", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("Amazon public download verification requires an interactive challenge", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("Amazon public download verification could not be completed automatically", StringComparison.OrdinalIgnoreCase)
                || message.Contains("provider is cooling down", StringComparison.OrdinalIgnoreCase)
                || message.Contains("no public download provider", StringComparison.OrdinalIgnoreCase);
     }

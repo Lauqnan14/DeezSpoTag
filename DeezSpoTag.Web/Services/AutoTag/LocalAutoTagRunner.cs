@@ -1651,7 +1651,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
-            var savedAnimated = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+            var animatedPaths = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
                 _appleMusicCatalogService,
                 _httpClientFactory,
                 new AppleQueueHelpers.AnimatedArtworkSaveRequest
@@ -1670,7 +1670,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 },
                 token);
 
-            if (savedAnimated)
+            if (animatedPaths.Count > 0)
             {
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
@@ -7914,7 +7914,34 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             existingArtistCredits,
             existingAlbumArtistCredits,
             file.Tag.Title);
+        ApplyAlbumLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Album);
         ApplyPlatformOverwriteGuards(effectiveTagSettings, sourceTrack, file, platformId);
+    }
+
+    private static void ApplyAlbumLossyOverwriteGuard(
+        TagSettings effectiveTagSettings,
+        AutoTagTrack sourceTrack,
+        string? existingAlbum)
+    {
+        var incomingAlbum = sourceTrack.Album?.Trim();
+        var currentAlbum = existingAlbum?.Trim();
+        if (!effectiveTagSettings.Album
+            || string.IsNullOrWhiteSpace(currentAlbum)
+            || string.IsNullOrWhiteSpace(incomingAlbum))
+        {
+            return;
+        }
+
+        var similarity = AutoTagSimilarity.ComputeScore(
+            AutoTagSimilarity.NormalizeText(currentAlbum),
+            AutoTagSimilarity.NormalizeText(incomingAlbum));
+        if (similarity >= 0.90d)
+        {
+            return;
+        }
+
+        sourceTrack.Album = currentAlbum;
+        effectiveTagSettings.Album = false;
     }
 
     private static void ApplyPlatformOverwriteGuards(

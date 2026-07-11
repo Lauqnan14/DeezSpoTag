@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -89,6 +91,126 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
         var formats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings);
 
         Assert.Equal(expectedFormats, formats);
+    }
+
+    [Fact]
+    public void DownloadArtwork_SourceCoverPrecedesProviderFallbacks()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Shared/DownloadEngineArtworkHelper.cs"));
+        var payloadAdd = source.IndexOf("AddCoverUrl(coverUrls, payloadCandidate.Url);", StringComparison.Ordinal);
+        var fallbackLoop = source.IndexOf("foreach (var fallback in fallbackOrder)", StringComparison.Ordinal);
+
+        Assert.True(payloadAdd >= 0 && payloadAdd < fallbackLoop);
+    }
+
+    [Fact]
+    public void AnimatedArtwork_RequiresExactSourceAlbumEdition()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Shared/EngineAudioPostDownloadHelper.cs"));
+
+        Assert.Contains("AreExactArtworkAlbumsCompatible(payload.Album, identity.AppleAlbumName)", source, StringComparison.Ordinal);
+        Assert.Contains("does not match source release", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnimatedArtworkConversion_ExistingMp4StillCreatesWebpAndGif()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var source = Path.Join(root, "source.mp4");
+        var outputBase = Path.Join(root, "cover - square_animated_artwork");
+        var existingMp4 = $"{outputBase}.mp4";
+        var liveSource = Environment.GetEnvironmentVariable("DEEZSPOTAG_ANIMATED_ARTWORK_SOURCE");
+        if (!string.IsNullOrWhiteSpace(liveSource) && File.Exists(liveSource))
+        {
+            File.Copy(liveSource, source);
+        }
+        else
+        {
+            await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=12", "-t", "1", "-pix_fmt", "yuv420p", source);
+        }
+        File.Copy(source, existingMp4);
+        var originalHash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingMp4)));
+
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "SaveAnimatedArtworkVariantAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task<IReadOnlyList<string>>>(method!.Invoke(null, new object[]
+        {
+            source,
+            outputBase,
+            new[] { "mp4", "webp", "gif" },
+            NullLogger.Instance,
+            CancellationToken.None
+        }));
+
+        var savedPaths = await task;
+        Assert.Contains(existingMp4, savedPaths);
+        Assert.Contains($"{outputBase}.webp", savedPaths);
+        Assert.Contains($"{outputBase}.gif", savedPaths);
+        Assert.Equal(originalHash, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingMp4))));
+        await AssertValidVideoAsync($"{outputBase}.webp");
+        await AssertValidVideoAsync($"{outputBase}.gif");
+    }
+
+    [Fact]
+    public async Task SaveExistingAnimatedArtworkVariantsAsync_ReusesExistingMp4AndCreatesRequestedFormats()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var existingMp4 = Path.Join(root, "cover - square_animated_artwork.mp4");
+        await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=12", "-t", "1", "-pix_fmt", "yuv420p", existingMp4);
+        var originalHash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingMp4)));
+
+        var savedPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
+            new AppleQueueHelpers.AnimatedArtworkSaveRequest
+            {
+                OutputDir = root,
+                BaseFileName = "cover",
+                OutputFormats = new[] { "mp4", "webp", "gif" },
+                Logger = NullLogger.Instance
+            },
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.Contains(existingMp4, savedPaths);
+        Assert.Contains(Path.Join(root, "cover - square_animated_artwork.webp"), savedPaths);
+        Assert.Contains(Path.Join(root, "cover - square_animated_artwork.gif"), savedPaths);
+        Assert.Equal(originalHash, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingMp4))));
+        await AssertValidVideoAsync(Path.Join(root, "cover - square_animated_artwork.webp"));
+        await AssertValidVideoAsync(Path.Join(root, "cover - square_animated_artwork.gif"));
+    }
+
+    private static async Task AssertValidVideoAsync(string path)
+    {
+        Assert.True(File.Exists(path));
+        Assert.True(new FileInfo(path).Length > 0);
+        await RunProcessAsync("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "default=noprint_wrappers=1", path);
+    }
+
+    private static async Task RunProcessAsync(string executable, params string[] arguments)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo(executable)
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        Assert.NotNull(process);
+        await process!.WaitForExitAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        Assert.True(process.ExitCode == 0, error);
     }
 
     private static DeezSpoTagSettings BuildSettings()

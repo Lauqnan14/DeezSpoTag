@@ -5420,11 +5420,7 @@ function mapQueueItem(item) {
         prefetchLyricsStatus,
         prefetchLyricsType);
     const mappedStatus = mapStatus(item.status);
-    const lyricsStateReset = (mappedStatus === 'queued' || mappedStatus === 'retrying')
-        && prefetchLyricsStatus !== undefined
-        && !String(prefetchLyricsStatus || '').trim()
-        && !String(prefetchLyricsType || '').trim()
-        && !String(item.lyricsStatus || item.lyrics_status || '').trim();
+    const lyricsBadges = mappedStatus === 'complete' ? getLyricsBadgesFromFiles(item) : [];
     return {
         taskId,
         title: resolveQueueItemTitle(item) || 'Unknown',
@@ -5445,8 +5441,7 @@ function mapQueueItem(item) {
         canRetry: getQueueBoolFlag(item, 'canRetry', 'CanRetry'),
         canDelete: getQueueBoolFlag(item, 'canDelete', 'CanDelete'),
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
-        lyricsBadges: getLyricsBadges(item),
-        lyricsStateReset,
+        lyricsBadges,
         cover: getCoverFromPayload(item)
     };
 }
@@ -5578,12 +5573,7 @@ function mergeQueueTask(existing, incoming) {
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
-        lyricsBadges: incoming.lyricsStateReset
-            ? []
-            : (Array.isArray(incoming.lyricsBadges) && incoming.lyricsBadges.length > 0
-                ? incoming.lyricsBadges
-                : existing.lyricsBadges),
-        lyricsStateReset: incoming.lyricsStateReset,
+        lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : [],
         cover: String(incoming.cover || '').trim() || existing.cover
     };
 }
@@ -6651,131 +6641,17 @@ function getCoverFromPayload(item) {
     return '';
 }
 
-function getLyricsBadges(item) {
-    const fileBadges = getLyricsBadgesFromFiles(item);
-    if (fileBadges.length) {
-        return fileBadges;
-    }
-
-    const tracks = [];
-    if (item.single && item.single.trackAPI) {
-        tracks.push(item.single.trackAPI);
-    }
-    if (item.collection && Array.isArray(item.collection.tracks)) {
-        tracks.push(...item.collection.tracks);
-    }
-
-    const badges = [];
-    if (tracks.some(track => track && track.lyrics_sync)) {
-        badges.push('synced');
-    }
-    if (tracks.some(track => track && track.lyrics_unsync)) {
-        badges.push('unsynced');
-    }
-    if (badges.length === 0) {
-        const statusBadges = getLyricsBadgesFromStatus(item.lyricsStatus || item.lyrics_status || '');
-        if (statusBadges.length) {
-            badges.push(...statusBadges);
-        }
-    }
-    if (badges.length === 0) {
-        const prefetchBadges = getLyricsBadgesFromStatus(
-            item.prefetchLyricsType || item.PrefetchLyricsType || '');
-        if (prefetchBadges.length) {
-            badges.push(...prefetchBadges);
-        }
-    }
-    return badges;
-}
-
 function getLyricsBadgesFromRealtimeUpdate(update, taskId) {
     if (!update || typeof update !== 'object') {
         return null;
     }
 
-    const fileBadges = getLyricsBadgesFromFiles(update);
-    if (fileBadges.length) {
-        return fileBadges;
-    }
-
-    const statusBadges = getLyricsBadgesFromStatus(update.lyricsStatus || update.lyrics_status || '');
-    if (statusBadges.length) {
-        return statusBadges;
-    }
-
-    const typeBadges = getLyricsBadgesFromStatus(update.prefetchLyricsType || '');
-    if (typeBadges.length) {
-        return typeBadges;
-    }
-
-    const prefetchState = queuePrefetchByTask[taskId];
-    if (prefetchState && prefetchState.lyricsType) {
-        const prefetchBadges = getLyricsBadgesFromStatus(prefetchState.lyricsType);
-        if (prefetchBadges.length) {
-            return prefetchBadges;
-        }
-    }
-
-    return null;
-}
-
-function getLyricsBadgesFromStatus(rawStatus) {
-    if (typeof rawStatus !== 'string' || !rawStatus.trim()) {
+    const status = mapStatus(update.status || update.Status || '');
+    if (status && status !== 'complete') {
         return [];
     }
 
-    const status = rawStatus.trim().toLowerCase();
-    if (!status || status === 'no-lyrics' || status === 'fetching' || status === 'failed' || status === 'skipped') {
-        return [];
-    }
-
-    const tokens = status
-        .split(/[^a-z0-9-]+/)
-        .filter(Boolean);
-    const badges = [];
-    const addBadge = (badge) => {
-        if (!badges.includes(badge)) {
-            badges.push(badge);
-        }
-    };
-
-    tokens.forEach(token => {
-        if (token === 'both') {
-            addBadge('synced');
-            addBadge('unsynced');
-            return;
-        }
-
-        if (token === 'time-synced'
-            || token === 'time-synced-lyrics'
-            || token === 'timesynced'
-            || token === 'ttml'
-            || token === 'syllable-lyrics') {
-            addBadge('time-synced');
-            return;
-        }
-
-        if (token === 'unsynced'
-            || token === 'unsynced-lyrics'
-            || token === 'unsynchronized-lyrics'
-            || token === 'unsynchronised-lyrics'
-            || token === 'unsyncedlyrics'
-            || token === 'plain'
-            || token === 'text'
-            || token === 'txt') {
-            addBadge('unsynced');
-            return;
-        }
-
-        if (token === 'synced'
-            || token === 'synced-lyrics'
-            || token === 'lyrics'
-            || token === 'lrc') {
-            addBadge('synced');
-        }
-    });
-
-    return badges;
+    return status === 'complete' ? getLyricsBadgesFromFiles(update) : null;
 }
 
 function areSameBadgeSet(left, right) {

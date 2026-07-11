@@ -1212,7 +1212,7 @@ public static class AppleQueueHelpers
             || candidate.Contains(expected, StringComparison.Ordinal);
     }
 
-    public static async Task<bool> SaveAnimatedArtworkAsync(
+    public static async Task<IReadOnlyList<string>> SaveAnimatedArtworkAsync(
         AppleMusicCatalogService appleCatalog,
         IHttpClientFactory httpClientFactory,
         AnimatedArtworkSaveRequest request,
@@ -1221,7 +1221,16 @@ public static class AppleQueueHelpers
         var outputDir = request.OutputDir;
         if (string.IsNullOrWhiteSpace(outputDir))
         {
-            return false;
+            return Array.Empty<string>();
+        }
+
+        var existingPaths = await SaveExistingAnimatedArtworkVariantsAsync(
+            request,
+            request.Logger,
+            cancellationToken);
+        if (existingPaths.Count > 0)
+        {
+            return existingPaths;
         }
 
         var motion = await ResolveAnimatedArtworkUrlsAsync(
@@ -1241,35 +1250,75 @@ public static class AppleQueueHelpers
             cancellationToken);
         if (motion == null)
         {
-            return false;
+            return Array.Empty<string>();
         }
 
         Directory.CreateDirectory(outputDir);
-        var anySaved = false;
+        var savedPaths = new List<string>();
         var baseName = BuildAnimatedArtworkBaseName(request.BaseFileName, request.Artist, request.Album);
         var outputFormats = ResolveAnimatedArtworkFormats(request.OutputFormats);
 
         if (!string.IsNullOrWhiteSpace(motion.SquareUrl))
         {
-            anySaved |= await SaveAnimatedArtworkVariantAsync(
+            savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
                 motion.SquareUrl,
                 Path.Join(outputDir, $"{baseName} - square_animated_artwork"),
                 outputFormats,
                 request.Logger,
-                cancellationToken);
+                cancellationToken));
         }
 
         if (!string.IsNullOrWhiteSpace(motion.TallUrl))
         {
-            anySaved |= await SaveAnimatedArtworkVariantAsync(
+            savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
                 motion.TallUrl,
                 Path.Join(outputDir, $"{baseName} - tall_animated_artwork"),
                 outputFormats,
                 request.Logger,
-                cancellationToken);
+                cancellationToken));
         }
 
-        return anySaved;
+        return savedPaths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public static async Task<IReadOnlyList<string>> SaveExistingAnimatedArtworkVariantsAsync(
+        AnimatedArtworkSaveRequest request,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var outputDir = request.OutputDir;
+        if (string.IsNullOrWhiteSpace(outputDir) || !Directory.Exists(outputDir))
+        {
+            return Array.Empty<string>();
+        }
+
+        var baseName = BuildAnimatedArtworkBaseName(request.BaseFileName, request.Artist, request.Album);
+        var outputFormats = ResolveAnimatedArtworkFormats(request.OutputFormats);
+        var savedPaths = new List<string>();
+        foreach (var variant in new[] { "square", "tall" })
+        {
+            var outputBase = Path.Join(outputDir, $"{baseName} - {variant}_animated_artwork");
+            var existingMp4 = $"{outputBase}.{AnimatedArtworkMp4}";
+            if (!File.Exists(existingMp4))
+            {
+                continue;
+            }
+
+            savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
+                existingMp4,
+                outputBase,
+                outputFormats,
+                logger,
+                cancellationToken));
+        }
+
+        return savedPaths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public static IReadOnlyList<string> ResolveAnimatedArtworkFormats(DeezSpoTagSettings settings)
@@ -1305,27 +1354,34 @@ public static class AppleQueueHelpers
         };
     }
 
-    private static async Task<bool> SaveAnimatedArtworkVariantAsync(
+    private static async Task<IReadOnlyList<string>> SaveAnimatedArtworkVariantAsync(
         string inputUrl,
         string outputPathWithoutExtension,
         IReadOnlyList<string> outputFormats,
         ILogger logger,
         CancellationToken cancellationToken)
     {
-        var anySaved = false;
+        var savedPaths = new List<string>();
+        var conversions = new List<Task<string?>>();
         foreach (var format in outputFormats)
         {
             var outputPath = $"{outputPathWithoutExtension}.{format}";
             if (File.Exists(outputPath))
             {
-                anySaved = true;
+                savedPaths.Add(outputPath);
                 continue;
             }
 
-            anySaved |= await RunFfmpegAnimatedArtworkAsync(inputUrl, outputPath, format, logger, cancellationToken);
+            conversions.Add(RunFfmpegAnimatedArtworkAsync(inputUrl, outputPath, format, logger, cancellationToken));
         }
 
-        return anySaved;
+        if (conversions.Count > 0)
+        {
+            var results = await Task.WhenAll(conversions);
+            savedPaths.AddRange(results.Where(static path => !string.IsNullOrWhiteSpace(path))!);
+        }
+
+        return savedPaths;
     }
 
     private static async Task<AnimatedArtworkUrls?> ResolveAnimatedArtworkUrlsAsync(
@@ -1914,7 +1970,7 @@ public static class AppleQueueHelpers
         return int.TryParse(parts[1], out height);
     }
 
-    private static async Task<bool> RunFfmpegAnimatedArtworkAsync(
+    private static async Task<string?> RunFfmpegAnimatedArtworkAsync(
         string inputUrl,
         string outputPath,
         string format,
@@ -1923,7 +1979,7 @@ public static class AppleQueueHelpers
     {
         if (string.IsNullOrWhiteSpace(FfmpegExecutable))
         {
-            return false;
+            return null;
         }
 
         try
@@ -1947,12 +2003,12 @@ public static class AppleQueueHelpers
             using var process = new Process { StartInfo = startInfo };
             process.Start();
             await process.WaitForExitAsync(cancellationToken);
-            return process.ExitCode == 0 && File.Exists(outputPath);
+            return process.ExitCode == 0 && File.Exists(outputPath) ? outputPath : null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogDebug(ex, "ffmpeg animated artwork conversion failed.");
-            return false;
+            return null;
         }
     }
 
@@ -1963,17 +2019,21 @@ public static class AppleQueueHelpers
             case AnimatedArtworkWebp:
                 startInfo.ArgumentList.Add("-an");
                 startInfo.ArgumentList.Add("-vf");
-                startInfo.ArgumentList.Add("fps=15,scale=iw:-1:flags=lanczos");
+                startInfo.ArgumentList.Add("fps=15,scale=iw:-2:flags=lanczos");
                 startInfo.ArgumentList.Add("-loop");
                 startInfo.ArgumentList.Add("0");
                 startInfo.ArgumentList.Add("-c:v");
                 startInfo.ArgumentList.Add("libwebp");
+                startInfo.ArgumentList.Add("-quality");
+                startInfo.ArgumentList.Add("90");
+                startInfo.ArgumentList.Add("-compression_level");
+                startInfo.ArgumentList.Add("2");
                 break;
 
             case AnimatedArtworkGif:
                 startInfo.ArgumentList.Add("-an");
                 startInfo.ArgumentList.Add("-vf");
-                startInfo.ArgumentList.Add("fps=12,scale=iw:-1:flags=lanczos");
+                startInfo.ArgumentList.Add("fps=12,scale=iw:-2:flags=lanczos");
                 startInfo.ArgumentList.Add("-loop");
                 startInfo.ArgumentList.Add("0");
                 break;

@@ -82,6 +82,15 @@ public static class DownloadEngineArtworkHelper
         var payloadCandidate = TryCreatePayloadCoverCandidate(request.PayloadCover);
         var rejectCompilationAlbumCandidate = ShouldRejectCompilationArtworkForRequest(request);
 
+        // The queued source cover belongs to the selected release. Other providers
+        // are fallbacks and must not replace it with another edition's artwork.
+        if (payloadCandidate != null
+            && (string.IsNullOrWhiteSpace(payloadCandidate.Provider)
+                || fallbackOrder.Contains(payloadCandidate.Provider, StringComparer.OrdinalIgnoreCase)))
+        {
+            AddCoverUrl(coverUrls, payloadCandidate.Url);
+        }
+
         foreach (var fallback in fallbackOrder)
         {
             string? coverUrl = null;
@@ -121,14 +130,7 @@ public static class DownloadEngineArtworkHelper
             }
 
             AddCoverUrl(coverUrls, coverUrl);
-            if (payloadCandidate != null
-                && string.Equals(payloadCandidate.Provider, fallback, StringComparison.OrdinalIgnoreCase))
-            {
-                AddCoverUrl(coverUrls, payloadCandidate.Url);
-            }
         }
-
-        AddUnidentifiedPayloadCoverAsLastFallback(coverUrls, payloadCandidate);
 
         return coverUrls;
     }
@@ -145,18 +147,6 @@ public static class DownloadEngineArtworkHelper
         return string.IsNullOrWhiteSpace(provider)
             ? new ArtworkCandidate(string.Empty, normalizedUrl)
             : new ArtworkCandidate(provider, normalizedUrl);
-    }
-
-    private static void AddUnidentifiedPayloadCoverAsLastFallback(
-        List<string> coverUrls,
-        ArtworkCandidate? payloadCandidate)
-    {
-        if (payloadCandidate == null || !string.IsNullOrWhiteSpace(payloadCandidate.Provider))
-        {
-            return;
-        }
-
-        AddCoverUrl(coverUrls, payloadCandidate.Url);
     }
 
     private static async Task<string?> TryResolveSpotifyCoverAsync(

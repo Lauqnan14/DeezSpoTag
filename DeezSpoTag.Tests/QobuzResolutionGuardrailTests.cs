@@ -100,9 +100,17 @@ public sealed class QobuzResolutionGuardrailTests
         var tidalAtmosMethod = downloadIntentService[tidalAtmosMethodStart..nextMethodStart];
 
         Assert.Contains("ResolveAtmosTrackAsync", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("ResolveTrackIdentityMatrixAsync", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("new[] { TidalPlatform }", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.Contains("if (string.IsNullOrWhiteSpace(tidalAtmosUrl))", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.Contains("payload.Isrc = FirstNonEmpty(resolvedAtmosTrack?.Isrc, request.Intent.Isrc)", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.Contains("ResolveResolvedAlbumForAtmos(request.Intent.Album, resolvedAtmosTrack?.Album)", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("payload.TidalId = resolvedTidalAtmosId", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("IsAtmosSourceRequest(intent.ContentType, quality)", downloadIntentService, StringComparison.Ordinal);
+        Assert.Contains("autoSources.Where(IsAtmosEncodedSource).ToList()", downloadIntentService, StringComparison.Ordinal);
+        Assert.True(
+            tidalAtmosMethod.LastIndexOf("payload.TidalId = resolvedTidalAtmosId", StringComparison.Ordinal)
+            > tidalAtmosMethod.IndexOf("ApplyIntentMetadata(payload, request.Intent)", StringComparison.Ordinal));
         Assert.Contains("ResolveAmazonAtmosAvailabilityAsync", tidalAtmosMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveIntentAsync", tidalAtmosMethod, StringComparison.Ordinal);
     }
@@ -114,10 +122,20 @@ public sealed class QobuzResolutionGuardrailTests
         var amazonSource = ReadSource("DeezSpoTag.Web/Services/AmazonMusicMetadataService.cs");
         var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
 
-        Assert.Contains("SearchTracksFromAllSourcesAsync", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("SearchTracksByIsrcAsync", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("BuildTidalNativeApiUrl", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("[\"isrc\"] = isrc.Trim()", tidalSource, StringComparison.Ordinal);
         Assert.Contains("HydrateTidalAtmosCandidatesAsync", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("maximumHydratedCandidates = 8", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("SearchTracksAsync(query, 25", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("sourceAlbum, string.Empty, expectedDuration", tidalSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SearchTracksFromAllSourcesAsync", tidalSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SearchTracksViaOauthAsync", tidalSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryGetTrackInfoByIdViaOauthAsync", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("if (publicTrack != null && HasTidalAtmosMode(publicTrack))", tidalSource, StringComparison.Ordinal);
         Assert.DoesNotContain("allTracks.AddRange(result.Where(HasTidalAtmosMode))", tidalSource, StringComparison.Ordinal);
         Assert.DoesNotContain("return null;\n                }\n            }\n\n            var trackInfo = await SearchAtmosTrackByMetadataWithIsrcAsync", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("Tidal credential playback info returned a preview asset", tidalSource, StringComparison.Ordinal);
 
         Assert.Contains("ResolveAtmosTrackAsync", amazonSource, StringComparison.Ordinal);
         Assert.Contains("candidate.HasAtmos && IsAcceptedResolvedTrack", amazonSource, StringComparison.Ordinal);

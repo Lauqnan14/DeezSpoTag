@@ -28,6 +28,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private const string CanceledStatus = "canceled";
     private const string InvalidPayloadMessage = "Invalid payload";
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan QobuzTrackResolutionTimeout = TimeSpan.FromSeconds(10);
     private const string UpdateQueueEvent = "updateQueue";
     private const string TrackType = "track";
     private readonly DownloadQueueRepository _queueRepository;
@@ -1062,13 +1063,27 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
-        var resolution = await _qobuzTrackResolver.ResolveTrackAsync(
-            resolvedIsrc,
-            payload.Title,
-            payload.Artist,
-            payload.Album,
-            payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-            cancellationToken);
+        QobuzTrackResolution? resolution;
+        using (var resolutionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            resolutionCts.CancelAfter(QobuzTrackResolutionTimeout);
+            try
+            {
+                resolution = await _qobuzTrackResolver.ResolveTrackAsync(
+                    resolvedIsrc,
+                    payload.Title,
+                    payload.Artist,
+                    payload.Album,
+                    payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
+                    resolutionCts.Token);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Qobuz track resolution timed out after {QobuzTrackResolutionTimeout.TotalSeconds:0} seconds.",
+                    ex);
+            }
+        }
 
         if (resolution == null)
         {

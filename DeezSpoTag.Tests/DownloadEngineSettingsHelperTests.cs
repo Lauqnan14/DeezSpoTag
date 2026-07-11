@@ -120,6 +120,8 @@ public sealed class DownloadEngineSettingsHelperTests
             RuntimeOverrides: new DownloadProfileRuntimeOverrides(
                 TracknameTemplate: "%artists% - %title%",
                 SaveArtwork: null,
+                SaveAnimatedArtwork: true,
+                AnimatedArtworkFormats: "mp4,webp,gif",
                 DlAlbumcoverForPlaylist: null,
                 SaveArtworkArtist: null,
                 CoverImageTemplate: null,
@@ -133,5 +135,7 @@ public sealed class DownloadEngineSettingsHelperTests
         Assert.Equal("%artists% - %title%", settings.TracknameTemplate);
         Assert.Equal("%tracknumber% - %title%", settings.AlbumTracknameTemplate);
         Assert.Equal("%playlist_position% - %title%", settings.PlaylistTracknameTemplate);
+        Assert.True(settings.SaveAnimatedArtwork);
+        Assert.Equal("mp4,webp,gif", settings.AnimatedArtworkFormats);
     }
 }

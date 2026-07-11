@@ -9,6 +9,7 @@ namespace DeezSpoTag.Services.Download.Fallback;
 
 public sealed class EngineFallbackCoordinator
 {
+    private static readonly TimeSpan FallbackStepResolveTimeout = TimeSpan.FromSeconds(8);
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
@@ -306,9 +307,26 @@ public sealed class EngineFallbackCoordinator
         FallbackStepExecutionContext context,
         CancellationToken cancellationToken)
     {
-        var resolvedUrl = await ResolveSourceUrlAsync(
-            context.ResolutionRequest with { Engine = step.Source },
-            cancellationToken);
+        string? resolvedUrl;
+        try
+        {
+            resolvedUrl = await ResolveSourceUrlAsync(
+                context.ResolutionRequest with { Engine = step.Source },
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            AddFallbackAttempt(
+                context.PayloadForSerialization,
+                step,
+                stepIndex,
+                "skipped",
+                "timeout",
+                "Timed out while resolving fallback URL.");
+            _activityLog.Warn($"Fallback skip: {request.QueueUuid} -> {step.Source} (resolution timeout)");
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(resolvedUrl))
         {
             AddFallbackAttempt(
@@ -603,6 +621,8 @@ public sealed class EngineFallbackCoordinator
         SourceResolutionRequest request,
         CancellationToken cancellationToken)
     {
+        using var stepCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        stepCts.CancelAfter(FallbackStepResolveTimeout);
         var result = await _fallbackSearchService.ResolveAsync(
             new EngineFallbackSearchRequest(
                 request.Engine,
@@ -625,7 +645,7 @@ public sealed class EngineFallbackCoordinator
                 request.MediaUserToken,
                 request.UserCountry,
                 request.FallbackSearchEnabled),
-            cancellationToken);
+            stepCts.Token);
         return result.ResolvedUrl;
     }
 

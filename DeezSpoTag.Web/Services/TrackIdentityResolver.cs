@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
@@ -9,6 +10,7 @@ using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Tidal;
 using DeezSpoTag.Services.Matching;
 using DeezSpoTag.Services.Metadata.Qobuz;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -23,7 +25,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private const string DefaultStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly TimeSpan ProviderResolveTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan AppleResolveTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan AppleIsrcResolveTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan SpotifyResolveTimeout = TimeSpan.FromSeconds(10);
+    private static readonly MemoryCache AppleIdentityCache = new(new MemoryCacheOptions { SizeLimit = 512 });
 
     private readonly ISpotifyIdResolver _spotifyIdResolver;
     private readonly SpotifyMetadataService _spotifyMetadataService;
@@ -187,7 +192,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         try
         {
-            var metadata = await _spotifyMetadataService.FetchByUrlAsync(spotifyUrl, cancellationToken);
+            using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            providerTimeout.CancelAfter(SpotifyResolveTimeout);
+            var metadata = await _spotifyMetadataService.FetchByUrlAsync(spotifyUrl, providerTimeout.Token)
+                .WaitAsync(providerTimeout.Token);
             var track = metadata?.TrackList.FirstOrDefault();
             if (track == null)
             {
@@ -205,6 +213,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Central identity resolver failed hydrating Spotify metadata.");
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "Central identity resolver timed out hydrating Spotify metadata.");
         }
     }
 
@@ -480,30 +492,61 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         List<PlatformIdentityCandidate> candidates,
         CancellationToken cancellationToken)
     {
-        var storefront = string.IsNullOrWhiteSpace(request.Storefront) ? DefaultStorefront : request.Storefront.Trim();
+        var hasConfiguredStorefront = !string.IsNullOrWhiteSpace(request.Storefront);
+        var storefront = hasConfiguredStorefront ? request.Storefront!.Trim() : DefaultStorefront;
         var language = string.IsNullOrWhiteSpace(request.Language) ? DefaultLanguage : request.Language.Trim();
         try
         {
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            providerTimeout.CancelAfter(ProviderResolveTimeout);
+            providerTimeout.CancelAfter(AppleResolveTimeout);
             var providerToken = providerTimeout.Token;
-            storefront = await _appleCatalogService.ResolveStorefrontAsync(storefront, request.MediaUserToken, providerToken)
-                .WaitAsync(providerToken);
-            var appleCandidate = await ResolveAppleCandidateByIsrcAsync(state, storefront, language, request.MediaUserToken, providerToken)
-                ?? await ResolveAppleCandidateBySearchAsync(state, storefront, language, providerToken);
+            if (!hasConfiguredStorefront)
+            {
+                storefront = await _appleCatalogService.ResolveStorefrontAsync(storefront, request.MediaUserToken, providerToken)
+                    .WaitAsync(providerToken);
+            }
+            var cacheKey = BuildAppleIdentityCacheKey(state, storefront, language);
+            if (!string.IsNullOrWhiteSpace(cacheKey)
+                && AppleIdentityCache.TryGetValue(cacheKey, out AppleIdentityCandidate? cachedCandidate)
+                && cachedCandidate != null)
+            {
+                ApplyAppleCandidate(state, cachedCandidate, storefront);
+                candidates.Add(Accepted(Apple, state.AppleId, state.AppleUrl, "apple-catalog-cache"));
+                return;
+            }
+
+            AppleIdentityCandidate? appleCandidate = null;
+            if (HasAppleMetadataSearchSignal(state))
+            {
+                appleCandidate = await ResolveAppleCandidateBySearchAsync(state, storefront, language, providerToken);
+            }
+
+            appleCandidate ??= await TryResolveAppleCandidateByIsrcAsync(state, storefront, language, request.MediaUserToken, providerToken);
+            if (appleCandidate == null || ShouldSearchForExactAppleAlbum(state.Album, appleCandidate.AlbumName))
+            {
+                var searchCandidate = await ResolveAppleCandidateBySearchAsync(state, storefront, language, providerToken);
+                if (searchCandidate != null
+                    && (!ShouldSearchForExactAppleAlbum(state.Album, searchCandidate.AlbumName)
+                        || appleCandidate == null))
+                {
+                    appleCandidate = searchCandidate;
+                }
+            }
             if (appleCandidate == null || string.IsNullOrWhiteSpace(appleCandidate.Id))
             {
                 candidates.Add(Rejected(Apple, "apple-unresolved"));
                 return;
             }
 
-            state.AppleId = appleCandidate.Id.Trim();
-            state.AppleUrl = BuildAppleUrl(state.AppleId, storefront);
-            state.AppleAlbumId = appleCandidate.AlbumId;
-            state.AppleAlbumName = appleCandidate.AlbumName;
-            state.AppleArtistName = appleCandidate.ArtistName;
-            state.AppleIsrc = appleCandidate.Isrc;
-            state.AppleDurationMs = appleCandidate.DurationMs;
+            ApplyAppleCandidate(state, appleCandidate, storefront);
+            if (!string.IsNullOrWhiteSpace(cacheKey))
+            {
+                AppleIdentityCache.Set(cacheKey, appleCandidate, new MemoryCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(30),
+                    Size = 1
+                });
+            }
             candidates.Add(Accepted(Apple, state.AppleId, state.AppleUrl, "apple-catalog"));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -542,6 +585,73 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             : await HydrateAppleCandidateAsync(candidate, state, storefront, language, mediaUserToken, cancellationToken);
     }
 
+    private async Task<AppleIdentityCandidate?> TryResolveAppleCandidateByIsrcAsync(
+        IdentityState state,
+        string storefront,
+        string language,
+        string? mediaUserToken,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(state.Isrc))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var lookupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            lookupTimeout.CancelAfter(AppleIsrcResolveTimeout);
+            return await ResolveAppleCandidateByIsrcAsync(
+                state,
+                storefront,
+                language,
+                mediaUserToken,
+                lookupTimeout.Token).WaitAsync(lookupTimeout.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogDebug(ex, "Central identity resolver Apple ISRC lookup did not complete quickly; falling back to Apple search.");
+            return null;
+        }
+    }
+
+    private static bool HasAppleMetadataSearchSignal(IdentityState state)
+        => !string.IsNullOrWhiteSpace(state.Title)
+           && !string.IsNullOrWhiteSpace(state.Artist)
+           && !string.IsNullOrWhiteSpace(state.Album);
+
+    private static void ApplyAppleCandidate(IdentityState state, AppleIdentityCandidate appleCandidate, string storefront)
+    {
+        state.AppleId = appleCandidate.Id.Trim();
+        state.AppleUrl = BuildAppleUrl(state.AppleId, storefront);
+        state.AppleAlbumId = appleCandidate.AlbumId;
+        state.AppleAlbumName = appleCandidate.AlbumName;
+        state.AppleArtistName = appleCandidate.ArtistName;
+        state.AppleIsrc = appleCandidate.Isrc;
+        state.AppleDurationMs = appleCandidate.DurationMs;
+    }
+
+    private static string? BuildAppleIdentityCacheKey(IdentityState state, string storefront, string language)
+    {
+        var title = TrackTitleMatcher.NormalizeText(state.Title);
+        var artist = TrackTitleMatcher.NormalizeText(state.Artist);
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist))
+        {
+            return null;
+        }
+
+        var album = TrackTitleMatcher.NormalizeText(state.Album);
+        var isrc = string.IsNullOrWhiteSpace(state.Isrc) ? string.Empty : state.Isrc.Trim().ToUpperInvariant();
+        var durationBucket = state.DurationMs is > 0
+            ? (state.DurationMs.Value / 1000).ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+        return $"apple:identity:{storefront}:{language}:{title}:{artist}:{album}:{isrc}:{durationBucket}";
+    }
+
     private async Task<AppleIdentityCandidate?> ResolveAppleCandidateBySearchAsync(
         IdentityState state,
         string storefront,
@@ -561,7 +671,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             language: language,
             cancellationToken,
             new AppleMusicCatalogService.AppleSearchOptions(
-                TypesOverride: "songs",
+                TypesOverride: "songs,albums",
                 IncludeRelationshipsTracks: false));
 
         var candidate = FindBestAppleCandidateFromSearch(doc.RootElement, state);
@@ -585,12 +695,14 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         try
         {
+            using var hydrateTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            hydrateTimeout.CancelAfter(AppleIsrcResolveTimeout);
             using var doc = await _appleCatalogService.GetSongAsync(
                 candidate.Id,
                 storefront,
                 language,
-                cancellationToken,
-                mediaUserToken);
+                hydrateTimeout.Token,
+                mediaUserToken).WaitAsync(hydrateTimeout.Token);
             var hydrated = FindBestAppleCandidateFromData(doc.RootElement, state);
             return hydrated == null
                 ? candidate
@@ -608,6 +720,11 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             _logger.LogDebug(ex, "Central identity resolver failed hydrating Apple song identity {AppleId}.", candidate.Id);
             return candidate;
         }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "Central identity resolver timed out hydrating Apple song identity {AppleId}; using search identity.", candidate.Id);
+            return candidate;
+        }
     }
 
     private static AppleIdentityCandidate? FindBestAppleCandidateFromSearch(JsonElement root, IdentityState state)
@@ -622,7 +739,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             return null;
         }
 
-        return FindBestAppleCandidate(data, state);
+        return FindBestAppleCandidate(data, state, allowVariantIsrc: true);
     }
 
     private static AppleIdentityCandidate? FindBestAppleCandidateFromData(JsonElement root, IdentityState state)
@@ -632,10 +749,10 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             return null;
         }
 
-        return FindBestAppleCandidate(data, state);
+        return FindBestAppleCandidate(data, state, allowVariantIsrc: false);
     }
 
-    private static AppleIdentityCandidate? FindBestAppleCandidate(JsonElement data, IdentityState state)
+    private static AppleIdentityCandidate? FindBestAppleCandidate(JsonElement data, IdentityState state, bool allowVariantIsrc)
     {
         AppleIdentityCandidate? bestCandidate = null;
         var bestScore = double.MinValue;
@@ -650,35 +767,79 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
             }
 
             var candidate = ReadAppleCandidate(item, attributes, id);
+            var source = new TrackMatchSource(
+                state.Isrc,
+                state.Title,
+                state.Artist,
+                state.Album,
+                state.DurationMs);
+            var matchCandidate = new TrackMatchCandidate(
+                candidate.Id,
+                candidate.Isrc,
+                candidate.Title,
+                candidate.ArtistName,
+                candidate.AlbumName,
+                candidate.DurationMs);
             var validation = TrackCandidateValidator.Validate(
-                new TrackMatchSource(
-                    state.Isrc,
-                    state.Title,
-                    state.Artist,
-                    state.Album,
-                    state.DurationMs),
-                new TrackMatchCandidate(
-                    candidate.Id,
-                    candidate.Isrc,
-                    candidate.Title,
-                    candidate.ArtistName,
-                    candidate.AlbumName,
-                    candidate.DurationMs),
+                source,
+                matchCandidate,
                 new TrackCandidateValidationOptions(
                     StrictWithoutIsrc: true,
                     AllowMissingCandidateArtist: false,
                     RequireCandidateDurationWhenSourceHasDuration: false,
                     MaxIsrcDurationDifferenceMs: 20_000,
                     MaxMetadataDurationDifferenceMs: 8_000));
-            if (validation.Accepted && validation.Score > bestScore)
+            if (!validation.Accepted && allowVariantIsrc && string.Equals(validation.Reason, "isrc_mismatch", StringComparison.OrdinalIgnoreCase))
             {
-                bestScore = validation.Score;
-                bestCandidate = candidate with { Score = validation.Score };
+                validation = TrackCandidateValidator.Validate(
+                    source with { Isrc = null },
+                    matchCandidate with { Isrc = null },
+                    new TrackCandidateValidationOptions(
+                        StrictWithoutIsrc: true,
+                        AllowMissingCandidateArtist: false,
+                        RequireCandidateDurationWhenSourceHasDuration: true,
+                        MaxMetadataDurationDifferenceMs: 8_000));
+            }
+            var score = validation.Accepted
+                ? ApplyAppleAlbumSelectionWeight(validation.Score, state.Album, candidate.AlbumName)
+                : validation.Score;
+            if (validation.Accepted && score > bestScore)
+            {
+                bestScore = score;
+                bestCandidate = candidate with { Score = score };
             }
         }
 
         return bestCandidate;
     }
+
+    private static double ApplyAppleAlbumSelectionWeight(double score, string? sourceAlbum, string? candidateAlbum)
+    {
+        if (string.IsNullOrWhiteSpace(sourceAlbum) || string.IsNullOrWhiteSpace(candidateAlbum))
+        {
+            return score;
+        }
+
+        var source = NormalizeAppleAlbumForExactMatch(sourceAlbum);
+        var candidate = NormalizeAppleAlbumForExactMatch(candidateAlbum);
+        if (string.Equals(source, candidate, StringComparison.OrdinalIgnoreCase))
+        {
+            return score + 50d;
+        }
+
+        return score - 25d;
+    }
+
+    private static bool ShouldSearchForExactAppleAlbum(string? sourceAlbum, string? candidateAlbum)
+        => !string.IsNullOrWhiteSpace(sourceAlbum)
+           && !string.IsNullOrWhiteSpace(candidateAlbum)
+           && !string.Equals(
+               NormalizeAppleAlbumForExactMatch(sourceAlbum),
+               NormalizeAppleAlbumForExactMatch(candidateAlbum),
+               StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeAppleAlbumForExactMatch(string value)
+        => TrackTitleMatcher.RemoveAtmosVersionMarker(value).Trim();
 
     private static AppleIdentityCandidate ReadAppleCandidate(JsonElement item, JsonElement attributes, string id)
     {

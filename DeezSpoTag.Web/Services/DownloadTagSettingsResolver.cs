@@ -115,6 +115,9 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         var runtime = new DownloadProfileRuntimeOverrides(
             TracknameTemplate: unifiedTrackTemplate,
             SaveArtwork: ReadBooleanValue(data, "saveArtwork"),
+            SaveAnimatedArtwork: ReadBooleanValue(data, "saveAnimatedArtwork")
+                ?? ReadNestedBooleanValue(data, "custom", "itunes", "animated_artwork"),
+            AnimatedArtworkFormats: ReadStringValue(data, "animatedArtworkFormats"),
             DlAlbumcoverForPlaylist: ReadBooleanValue(data, "dlAlbumcoverForPlaylist"),
             SaveArtworkArtist: ReadBooleanValue(data, "saveArtworkArtist"),
             CoverImageTemplate: ReadStringValue(data, "coverImageTemplate"),
@@ -126,6 +129,8 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         var hasAnyValue =
             !string.IsNullOrWhiteSpace(runtime.TracknameTemplate)
             || runtime.SaveArtwork.HasValue
+            || runtime.SaveAnimatedArtwork.HasValue
+            || !string.IsNullOrWhiteSpace(runtime.AnimatedArtworkFormats)
             || runtime.DlAlbumcoverForPlaylist.HasValue
             || runtime.SaveArtworkArtist.HasValue
             || !string.IsNullOrWhiteSpace(runtime.CoverImageTemplate)
@@ -137,9 +142,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         return hasAnyValue ? runtime : null;
     }
 
-    private static string? ReadStringValue(Dictionary<string, JsonElement> data, string key)
+    private static string? ReadStringValue(Dictionary<string, JsonElement>? data, string key)
     {
-        if (!TryGetCaseInsensitiveValue(data, key, out var element)
+        if (data == null
+            || !TryGetCaseInsensitiveValue(data, key, out var element)
             || element.ValueKind != JsonValueKind.String)
         {
             return null;
@@ -149,9 +155,9 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
-    private static bool? ReadBooleanValue(Dictionary<string, JsonElement> data, string key)
+    private static bool? ReadBooleanValue(Dictionary<string, JsonElement>? data, string key)
     {
-        if (!TryGetCaseInsensitiveValue(data, key, out var element))
+        if (data == null || !TryGetCaseInsensitiveValue(data, key, out var element))
         {
             return null;
         }
@@ -184,6 +190,46 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
         }
 
         return null;
+    }
+
+    private static bool? ReadNestedBooleanValue(
+        Dictionary<string, JsonElement>? data,
+        string parentKey,
+        string childKey,
+        string valueKey)
+    {
+        if (data == null
+            || !TryGetCaseInsensitiveValue(data, parentKey, out var parent)
+            || parent.ValueKind != JsonValueKind.Object
+            || !TryGetPropertyIgnoreCase(parent, childKey, out var child)
+            || child.ValueKind != JsonValueKind.Object
+            || !TryGetPropertyIgnoreCase(child, valueKey, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(value.GetString(), out var parsed) => parsed,
+            _ => null
+        };
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string key, out JsonElement value)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static bool TryGetCaseInsensitiveValue(

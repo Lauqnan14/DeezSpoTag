@@ -134,7 +134,7 @@ public sealed class LiveDiagnosticsTests
             Isrc: "USUG11904206",
             DurationMs: 200_040,
             TargetPlatforms: new[] { "spotify", "deezer", "apple", "qobuz", "tidal", "amazon" },
-            Storefront: "us",
+            Storefront: "ke",
             Language: "en-US");
 
         var result = await resolver.ResolveAsync(request, timeout.Token);
@@ -181,6 +181,43 @@ public sealed class LiveDiagnosticsTests
 
         AssertResolved("Spotify", result.SpotifyId, result.SpotifyUrl, result.Candidates);
         Assert.Equal("0VjIjW4GlUZAMYd2vXMi3b", result.SpotifyId);
+    }
+
+    [Fact]
+    public async Task CentralIdentityResolver_AppleResolveToleratesVariantIsrcLive()
+    {
+        if (!IsEnabled(IdentityResolverLiveFlag))
+        {
+            return;
+        }
+
+        var dataRoot = Environment.GetEnvironmentVariable(DataRootEnv);
+        Assert.False(string.IsNullOrWhiteSpace(dataRoot), $"{DataRootEnv} must point to the configured application data directory.");
+        Assert.True(Directory.Exists(dataRoot), $"{DataRootEnv} does not exist: {dataRoot}");
+
+        await using var provider = BuildIdentityResolverProvider(dataRoot);
+        var resolver = provider.GetRequiredService<ITrackIdentityResolver>();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var request = new TrackIdentityResolutionRequest(
+            SourcePlatform: "qobuz",
+            SourceUrl: "https://play.qobuz.com/track/90957992",
+            Title: "In Your Eyes",
+            Artist: "The Weeknd",
+            Album: "After Hours",
+            Isrc: "USUG12000657",
+            DurationMs: 238_000,
+            SpotifyId: "7szuecWAPwGoV1e5vGu8tl",
+            QobuzId: "90957992",
+            TargetPlatforms: new[] { "apple" },
+            Storefront: "us",
+            Language: "en-US");
+
+        var result = await resolver.ResolveAsync(request, timeout.Token);
+        WriteResolution(result);
+
+        AssertResolved("Apple", result.AppleId, result.AppleUrl, result.Candidates);
+        Assert.Equal("After Hours", result.AppleAlbumName);
+        Assert.Equal("The Weeknd", result.AppleArtistName);
     }
 
     [Fact]

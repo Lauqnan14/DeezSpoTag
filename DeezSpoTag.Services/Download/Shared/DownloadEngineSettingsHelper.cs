@@ -205,6 +205,17 @@ public static class DownloadEngineSettingsHelper
             settings.SaveArtwork = overrides.SaveArtwork.Value;
         }
 
+        if (overrides.SaveAnimatedArtwork.HasValue)
+        {
+            settings.SaveAnimatedArtwork = overrides.SaveAnimatedArtwork.Value;
+        }
+
+        var animatedArtworkFormats = NormalizeAnimatedArtworkFormats(overrides.AnimatedArtworkFormats);
+        if (!string.IsNullOrWhiteSpace(animatedArtworkFormats))
+        {
+            settings.AnimatedArtworkFormats = animatedArtworkFormats;
+        }
+
         if (overrides.DlAlbumcoverForPlaylist.HasValue)
         {
             settings.DlAlbumcoverForPlaylist = overrides.DlAlbumcoverForPlaylist.Value;
@@ -262,6 +273,24 @@ public static class DownloadEngineSettingsHelper
             .Select(candidate => candidate.ToLowerInvariant())
             .ToList();
 
+        return formats.Count == 0 ? null : string.Join(",", formats);
+    }
+
+    private static string? NormalizeAnimatedArtworkFormats(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "mp4", "webp", "gif" };
+        var formats = raw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static candidate => candidate.TrimStart('.'))
+            .Where(candidate => allowed.Contains(candidate))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(static candidate => candidate.ToLowerInvariant())
+            .ToList();
         return formats.Count == 0 ? null : string.Join(",", formats);
     }
 
