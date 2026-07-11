@@ -285,7 +285,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("status: PendingStatus", appSource, StringComparison.Ordinal);
         Assert.Contains("UpdateSharedWatchDownloadClaimsStatusAsync", appSource, StringComparison.Ordinal);
         Assert.Contains("RelatedQueueUuids", intentSource, StringComparison.Ordinal);
-        Assert.Contains("await _dedupeService.CheckAsync(BuildDedupeRequest(context), cancellationToken)", intentSource, StringComparison.Ordinal);
+        Assert.Contains("await _dedupeService.CheckAsync(BuildDedupeRequest(context, finalOutputPath), cancellationToken)", intentSource, StringComparison.Ordinal);
         Assert.Contains("dedupeDecision.QueueUuid", intentSource, StringComparison.Ordinal);
     }
 

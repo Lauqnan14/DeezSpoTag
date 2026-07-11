@@ -26,6 +26,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
     private readonly DeezSpoTag.Services.Library.LibraryRepository _libraryRepository;
     private readonly DownloadDedupeService _dedupeService;
     private readonly IAmazonDownloadService _amazonDownloadService;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<AmazonDownloadApiController> _logger;
 
     public AmazonDownloadApiController(
@@ -41,6 +42,7 @@ public sealed class AmazonDownloadApiController : ControllerBase
         _libraryRepository = services.LibraryRepository;
         _dedupeService = services.DedupeService;
         _amazonDownloadService = amazonDownloadService;
+        _serviceProvider = services.ServiceProvider;
         _logger = logger;
     }
 
@@ -83,7 +85,9 @@ public sealed class AmazonDownloadApiController : ControllerBase
         var quality = ResolveRequestedQuality(request);
         var enqueue = DownloadQueueEnqueueHelper.CreateDedupEnqueueDelegate<AmazonQueueItem>(
             _queueRepository,
-            _dedupeService);
+            _dedupeService,
+            _settingsService,
+            _serviceProvider);
         var onQueued = DownloadQueueEnqueueHelper.CreateQueueAddedNotifier<AmazonQueueItem>(
             _deezspotagListener,
             static payload => payload.ToQueuePayload());

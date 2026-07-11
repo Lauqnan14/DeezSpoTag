@@ -15,7 +15,9 @@ public sealed class DownloadDedupeServiceGuardrailTests
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadIntentService.cs");
 
         Assert.Contains("private readonly DownloadDedupeService _dedupeService;", source, StringComparison.Ordinal);
-        Assert.Contains("await _dedupeService.CheckAsync(BuildDedupeRequest(context), cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("var finalOutputPath = await ResolveExpectedFinalOutputPathAsync(payload, context, cancellationToken);", source, StringComparison.Ordinal);
+        Assert.Contains("DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync", source, StringComparison.Ordinal);
+        Assert.Contains("await _dedupeService.CheckAsync(BuildDedupeRequest(context, finalOutputPath), cancellationToken)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryValidateLibraryDuplicateStateAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveQueueDuplicateAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryBlockByGlobalBlocklistAsync", source, StringComparison.Ordinal);
@@ -204,7 +206,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
-    public async Task FinalDestinationDedupe_AllowsExistingDestinationOnlyForHigherQuality()
+    public async Task FinalDestinationDedupe_AllowsExistingDestinationOnlyForLossyToLosslessUpgrade()
     {
         var path = Path.Combine(Path.GetTempPath(), $"deezspotag-dedupe-{Guid.NewGuid():N}.mp3");
         await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
@@ -220,6 +222,30 @@ public sealed class DownloadDedupeServiceGuardrailTests
             });
 
             Assert.True(decision.Allowed);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task FinalDestinationDedupe_RejectsLosslessToHiResAutoUpgrade()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"deezspotag-dedupe-{Guid.NewGuid():N}.flac");
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+        try
+        {
+            var decision = await DownloadDedupeService.CheckFinalDestinationAsync(new DownloadDedupeRequest
+            {
+                TrackTitle = "Track",
+                TrackArtist = "Artist",
+                RequestedLocalQualityRank = 4,
+                FinalOutputPath = path
+            });
+
+            Assert.False(decision.Allowed);
+            Assert.Equal("final_destination_quality_not_higher", decision.ReasonCode);
         }
         finally
         {

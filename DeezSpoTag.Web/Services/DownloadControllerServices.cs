@@ -6,6 +6,7 @@ using DeezSpoTag.Services.Settings;
 namespace DeezSpoTag.Web.Services;
 
 public sealed class DownloadControllerServices(
+    IServiceProvider serviceProvider,
     DownloadQueueRepository queueRepository,
     DeezSpoTagSettingsService settingsService,
     DownloadOrchestrationService orchestrationService,
@@ -14,6 +15,7 @@ public sealed class DownloadControllerServices(
     DeezSpoTag.Services.Library.LibraryRepository libraryRepository,
     DownloadDedupeService dedupeService)
 {
+    public IServiceProvider ServiceProvider { get; } = serviceProvider;
     public DownloadQueueRepository QueueRepository { get; } = queueRepository;
     public DeezSpoTagSettingsService SettingsService { get; } = settingsService;
     public DownloadOrchestrationService OrchestrationService { get; } = orchestrationService;

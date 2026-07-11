@@ -8,10 +8,16 @@ using System.Threading.Tasks;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Core.Models.Settings;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -32,6 +38,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -56,6 +64,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -105,6 +115,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -147,6 +159,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -174,6 +188,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -195,6 +211,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.True(outcome.Success);
@@ -251,6 +269,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.False(outcome.Success);
@@ -272,6 +292,8 @@ public sealed class DownloadQueueEnqueueHelperTests
             redownloadCooldownMinutes: 720,
             context.QueueRepository,
             context.DedupeService,
+            context.SettingsService,
+            context.ServiceProvider,
             CancellationToken.None);
 
         Assert.True(outcome.Success);
@@ -302,7 +324,19 @@ public sealed class DownloadQueueEnqueueHelperTests
             queueRepository,
             libraryRepository,
             NullLogger<DownloadDedupeService>.Instance);
-        return new TestContext(tempRoot, queueDb, queueRepository, dedupeService);
+        var previousConfigDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
+        Environment.SetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR", Path.Join(tempRoot, "config"));
+        var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var settings = settingsService.LoadSettings();
+        settings.DownloadLocation = Path.Join(tempRoot, "library");
+        settings.TracknameTemplate = "%artist% - %title%";
+        settingsService.SaveSettings(settings);
+        var serviceProvider = new ServiceCollection()
+            .AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance)
+            .AddSingleton(new EnhancedPathTemplateProcessor(NullLogger<EnhancedPathTemplateProcessor>.Instance))
+            .AddSingleton<IDownloadTagSettingsResolver>(new TestDownloadTagSettingsResolver())
+            .BuildServiceProvider();
+        return new TestContext(tempRoot, queueDb, queueRepository, dedupeService, settingsService, serviceProvider, previousConfigDir);
     }
 
     private static DownloadQueueRepository BuildRepository(string tempRoot, string queueDbPath)
@@ -424,23 +458,38 @@ public sealed class DownloadQueueEnqueueHelperTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(string tempRoot, string queueDbPath, DownloadQueueRepository queueRepository, DownloadDedupeService dedupeService)
+        public TestContext(
+            string tempRoot,
+            string queueDbPath,
+            DownloadQueueRepository queueRepository,
+            DownloadDedupeService dedupeService,
+            DeezSpoTagSettingsService settingsService,
+            ServiceProvider serviceProvider,
+            string? previousConfigDir)
         {
             TempRoot = tempRoot;
             QueueDbPath = queueDbPath;
             QueueRepository = queueRepository;
             DedupeService = dedupeService;
+            SettingsService = settingsService;
+            ServiceProvider = serviceProvider;
+            PreviousConfigDir = previousConfigDir;
         }
 
         public string TempRoot { get; }
         public string QueueDbPath { get; }
         public DownloadQueueRepository QueueRepository { get; }
         public DownloadDedupeService DedupeService { get; }
+        public DeezSpoTagSettingsService SettingsService { get; }
+        public ServiceProvider ServiceProvider { get; }
+        private string? PreviousConfigDir { get; }
 
         public ValueTask DisposeAsync()
         {
             try
             {
+                ServiceProvider.Dispose();
+                Environment.SetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR", PreviousConfigDir);
                 if (Directory.Exists(TempRoot))
                 {
                     Directory.Delete(TempRoot, recursive: true);
@@ -453,5 +502,32 @@ public sealed class DownloadQueueEnqueueHelperTests
 
             return ValueTask.CompletedTask;
         }
+    }
+
+    private sealed class TestDownloadTagSettingsResolver : IDownloadTagSettingsResolver
+    {
+        private static readonly DownloadTagProfileSettings Profile = new(
+            new TagSettings(),
+            "follow-download-engine",
+            new FolderStructureSettings(),
+            null,
+            new DownloadProfileRuntimeOverrides(
+                TracknameTemplate: "%artist% - %title%",
+                SaveArtwork: null,
+                SaveAnimatedArtwork: null,
+                AnimatedArtworkFormats: null,
+                DlAlbumcoverForPlaylist: null,
+                SaveArtworkArtist: null,
+                CoverImageTemplate: null,
+                ArtistImageTemplate: null,
+                LocalArtworkFormat: null,
+                EmbedMaxQualityCover: null,
+                JpegImageQuality: null));
+
+        public Task<TagSettings?> ResolveAsync(long? destinationFolderId, CancellationToken cancellationToken)
+            => Task.FromResult<TagSettings?>(Profile.TagSettings);
+
+        public Task<DownloadTagProfileSettings?> ResolveProfileAsync(long? destinationFolderId, CancellationToken cancellationToken)
+            => Task.FromResult<DownloadTagProfileSettings?>(Profile);
     }
 }

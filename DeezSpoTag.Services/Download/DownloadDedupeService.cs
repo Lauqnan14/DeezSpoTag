@@ -102,9 +102,7 @@ public sealed class DownloadDedupeService
         }
 
         var existingLocalQualityRank = InferExistingFileLocalQualityRank(request.FinalOutputPath);
-        if (request.RequestedLocalQualityRank.HasValue
-            && existingLocalQualityRank.HasValue
-            && request.RequestedLocalQualityRank.Value > existingLocalQualityRank.Value)
+        if (IsLossyToLosslessUpgrade(request.RequestedLocalQualityRank, existingLocalQualityRank))
         {
             return Task.FromResult(DownloadDedupeDecision.AllowedDecision);
         }
@@ -118,12 +116,16 @@ public sealed class DownloadDedupeService
             "final-destination"));
     }
 
+    private static bool IsLossyToLosslessUpgrade(int? requestedLocalQualityRank, int? existingLocalQualityRank)
+        => requestedLocalQualityRank >= 3 && existingLocalQualityRank is > 0 and < 3;
+
     public static DownloadDedupeRequest FromQueuePayload(
         EngineQueueItemBase payload,
         int? durationMs,
         int? requestedLocalQualityRank = null,
         string? requestedAudioVariant = null,
-        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null,
+        string? finalOutputPath = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
 
@@ -148,6 +150,7 @@ public sealed class DownloadDedupeService
             ContentType = payload.ContentType,
             RequestedAudioVariant = requestedAudioVariant,
             RequestedLocalQualityRank = requestedLocalQualityRank,
+            FinalOutputPath = finalOutputPath,
             BlockRules = blockRules
         };
     }

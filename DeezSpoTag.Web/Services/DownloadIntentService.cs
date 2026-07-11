@@ -185,6 +185,7 @@ public sealed class DownloadIntentService
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly DownloadOrchestrationService _orchestrationService;
     private readonly IDeezSpoTagListener _deezspotagListener;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly QobuzTrackResolver _qobuzTrackResolver;
     private readonly ISpotifyIdResolver _spotifyIdResolver;
@@ -212,6 +213,7 @@ public sealed class DownloadIntentService
         ILogger<DownloadIntentService> logger,
         IServiceProvider serviceProvider)
     {
+        _serviceProvider = serviceProvider;
         _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         _settingsService = serviceProvider.GetRequiredService<DeezSpoTagSettingsService>();
         _orchestrationService = serviceProvider.GetRequiredService<DownloadOrchestrationService>();
@@ -6536,7 +6538,8 @@ public sealed class DownloadIntentService
             return destinationFailure;
         }
 
-        var dedupeDecision = await _dedupeService.CheckAsync(BuildDedupeRequest(context), cancellationToken);
+        var finalOutputPath = await ResolveExpectedFinalOutputPathAsync(payload, context, cancellationToken);
+        var dedupeDecision = await _dedupeService.CheckAsync(BuildDedupeRequest(context, finalOutputPath), cancellationToken);
         if (!dedupeDecision.Allowed)
         {
             return EnqueueItemDecision.Fail(
@@ -6712,7 +6715,60 @@ public sealed class DownloadIntentService
         return EnqueueItemDecision.Ok(item.QueueUuid);
     }
 
-    private static DownloadDedupeRequest BuildDedupeRequest(EnqueueItemContext context)
+    private async Task<string?> ResolveExpectedFinalOutputPathAsync<TPayload>(
+        TPayload payload,
+        EnqueueItemContext context,
+        CancellationToken cancellationToken)
+        where TPayload : class
+    {
+        if (payload is not EngineQueueItemBase enginePayload
+            || IsDirectDestinationPayload(payload)
+            || context.Identity.DestinationFolderId == null)
+        {
+            return null;
+        }
+
+        var settings = CloneSettings(context.Settings);
+        await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
+            _downloadTagSettingsResolver,
+            settings,
+            context.Identity.DestinationFolderId,
+            _logger,
+            cancellationToken,
+            new DownloadEngineSettingsHelper.ProfileResolutionOptions(CurrentEngine: context.Identity.Engine));
+
+        using var scope = _serviceProvider.CreateScope();
+        var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
+        var trackContext = EngineAudioPostDownloadHelper.BuildTrackContext(
+            enginePayload,
+            settings,
+            pathProcessor,
+            context.Identity.Engine,
+            ResolvePayloadSourceIdForEngine(context.Identity));
+
+        return !string.IsNullOrWhiteSpace(trackContext.PathResult.WritePath)
+            ? DownloadPathResolver.ResolveIoPath(trackContext.PathResult.WritePath)
+            : Path.Join(
+                DownloadPathResolver.ResolveIoPath(trackContext.PathResult.FilePath),
+                trackContext.PathResult.Filename);
+    }
+
+    private static DeezSpoTagSettings CloneSettings(DeezSpoTagSettings settings)
+        => JsonSerializer.Deserialize<DeezSpoTagSettings>(JsonSerializer.Serialize(settings)) ?? settings;
+
+    private static string? ResolvePayloadSourceIdForEngine(PayloadIdentity identity)
+        => identity.Engine switch
+        {
+            DeezerPlatform => identity.DeezerTrackId,
+            SpotifyPlatform => identity.SpotifyTrackId,
+            ApplePlatform => identity.AppleTrackId,
+            QobuzPlatform => identity.QobuzTrackId,
+            TidalPlatform => identity.TidalTrackId,
+            AmazonPlatform => identity.AmazonTrackId,
+            _ => null
+        };
+
+    private static DownloadDedupeRequest BuildDedupeRequest(EnqueueItemContext context, string? finalOutputPath)
         => new()
         {
             Isrc = context.Identity.Isrc,
@@ -6740,6 +6796,7 @@ public sealed class DownloadIntentService
             ContentType = context.Identity.ContentType,
             RequestedAudioVariant = context.Identity.RequestedAudioVariant,
             RequestedLocalQualityRank = context.LocalQualityUpgradeRequested ? context.RequestedLocalQualityRank : null,
+            FinalOutputPath = finalOutputPath,
             BlockRules = context.BlockRules
         };
 
