@@ -365,8 +365,61 @@ public class JellyfinApiClient
                 ResolveArtistText(item),
                 item.RunTimeTicks.HasValue
                     ? (int?)Math.Min(item.RunTimeTicks.Value / JellyfinTimeTicksPerMillisecond, int.MaxValue)
-                    : null))
+                    : null,
+                item.Path))
             .ToList();
+    }
+
+    public async Task<List<JellyfinAudioTrack>> GetAudioTracksAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string? libraryId = null,
+        int offset = 0,
+        int limit = 500,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId))
+        {
+            return new List<JellyfinAudioTrack>();
+        }
+
+        var normalizedOffset = Math.Max(0, offset);
+        var normalizedLimit = Math.Clamp(limit, 1, 1000);
+        var query = new StringBuilder();
+        query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
+        query.Append(RecursiveQuerySegment);
+        query.Append("&IncludeItemTypes=Audio");
+        query.Append("&Fields=Path,RunTimeTicks,AlbumArtists,Artists");
+        query.Append($"&Limit={normalizedLimit}");
+        query.Append($"&StartIndex={normalizedOffset}");
+        if (!string.IsNullOrWhiteSpace(libraryId))
+        {
+            query.Append($"&ParentId={Uri.EscapeDataString(libraryId)}");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new List<JellyfinAudioTrack>();
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+        return payload?.Items?
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Id))
+            .Select(static item => new JellyfinAudioTrack(
+                item.Id!,
+                item.Name ?? string.Empty,
+                ResolveArtistText(item),
+                item.RunTimeTicks.HasValue
+                    ? (int?)Math.Min(item.RunTimeTicks.Value / JellyfinTimeTicksPerMillisecond, int.MaxValue)
+                    : null,
+                item.Path))
+            .ToList() ?? new List<JellyfinAudioTrack>();
     }
 
     public async Task<List<JellyfinHistoryItem>> GetAudioPlayHistoryAsync(
@@ -688,25 +741,14 @@ public class JellyfinApiClient
             return false;
         }
 
-        await using var imageStream = await imageResponse.Content.ReadAsStreamAsync(cancellationToken);
-        using var uploadContent = new StreamContent(imageStream);
         var mediaType = imageResponse.Content.Headers.ContentType?.MediaType;
         if (string.IsNullOrWhiteSpace(mediaType))
         {
             mediaType = GetImageContentTypeFromUrl(imageUrl);
         }
 
-        uploadContent.Headers.ContentType = new MediaTypeHeaderValue(mediaType);
-
-        using var uploadRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            BuildUrl(serverUrl, $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary"))
-        {
-            Content = uploadContent
-        };
-        uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
-        using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
-        return uploadResponse.IsSuccessStatusCode;
+        var imageBytes = await imageResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+        return await UpdateItemPrimaryImageAsync(serverUrl, apiKey, itemId, imageBytes, mediaType, cancellationToken);
     }
 
     public async Task<bool> UpdateItemPrimaryImageFromFileAsync(
@@ -726,20 +768,14 @@ public class JellyfinApiClient
             return false;
         }
 
-        await using var imageStream = File.OpenRead(imagePath);
-        using var uploadContent = new StreamContent(imageStream);
-        uploadContent.Headers.ContentType = new MediaTypeHeaderValue(
-            string.IsNullOrWhiteSpace(contentType) ? GetImageContentTypeFromUrl(imagePath) : contentType);
-
-        using var uploadRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            BuildUrl(serverUrl, $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary"))
-        {
-            Content = uploadContent
-        };
-        uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
-        using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
-        return uploadResponse.IsSuccessStatusCode;
+        var imageBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
+        return await UpdateItemPrimaryImageAsync(
+            serverUrl,
+            apiKey,
+            itemId,
+            imageBytes,
+            string.IsNullOrWhiteSpace(contentType) ? GetImageContentTypeFromUrl(imagePath) : contentType,
+            cancellationToken);
     }
 
     public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
@@ -794,6 +830,16 @@ public class JellyfinApiClient
         string? name,
         string? overview,
         CancellationToken cancellationToken = default)
+        => await UpdateItemMetadataAsync(serverUrl, apiKey, userId: null, itemId, name, overview, cancellationToken);
+
+    public async Task<bool> UpdateItemMetadataAsync(
+        string serverUrl,
+        string apiKey,
+        string? userId,
+        string itemId,
+        string? name,
+        string? overview,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
@@ -803,7 +849,11 @@ public class JellyfinApiClient
             return false;
         }
 
-        var getUrl = BuildUrl(serverUrl, $"/Items/{itemId}");
+        var getUrl = BuildUrl(
+            serverUrl,
+            string.IsNullOrWhiteSpace(userId)
+                ? $"/Items/{Uri.EscapeDataString(itemId)}"
+                : $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(itemId)}");
         using var getRequest = new HttpRequestMessage(HttpMethod.Get, getUrl);
         getRequest.Headers.Add(EmbyTokenHeader, apiKey);
         using var getResponse = await _httpClient.SendAsync(getRequest, cancellationToken);
@@ -855,6 +905,64 @@ public class JellyfinApiClient
         postRequest.Headers.Add(EmbyTokenHeader, apiKey);
         using var postResponse = await _httpClient.SendAsync(postRequest, cancellationToken);
         return postResponse.IsSuccessStatusCode;
+    }
+
+    public async Task<JellyfinMediaItem?> GetItemAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string itemId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(userId)
+            || string.IsNullOrWhiteSpace(itemId))
+        {
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            BuildUrl(
+                serverUrl,
+                $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(itemId)}"));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        return await response.Content.ReadFromJsonAsync<JellyfinMediaItem>(cancellationToken: cancellationToken);
+    }
+
+    private async Task<bool> UpdateItemPrimaryImageAsync(
+        string serverUrl,
+        string apiKey,
+        string itemId,
+        byte[] imageBytes,
+        string contentType,
+        CancellationToken cancellationToken)
+    {
+        if (imageBytes.Length == 0)
+        {
+            return false;
+        }
+
+        using var uploadContent = new StringContent(
+            Convert.ToBase64String(imageBytes),
+            Encoding.UTF8,
+            string.IsNullOrWhiteSpace(contentType) ? "image/jpeg" : contentType);
+        using var uploadRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            BuildUrl(serverUrl, $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary"))
+        {
+            Content = uploadContent
+        };
+        uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
+        return uploadResponse.IsSuccessStatusCode;
     }
 
     private async Task<bool> UploadImageAsync(string url, string apiKey, string imagePath, CancellationToken cancellationToken)
@@ -928,7 +1036,9 @@ public class JellyfinApiClient
     {
         if (item.AlbumArtists is { Count: > 0 })
         {
-            return string.Join(", ", item.AlbumArtists.Where(static value => !string.IsNullOrWhiteSpace(value)));
+            return string.Join(", ", item.AlbumArtists
+                .Select(static value => value.Name)
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
         }
 
         if (item.Artists is { Count: > 0 })
@@ -1033,6 +1143,9 @@ public sealed class JellyfinMediaItem
     [JsonPropertyName("Type")]
     public string? Type { get; set; }
 
+    [JsonPropertyName("Overview")]
+    public string? Overview { get; set; }
+
     [JsonPropertyName("ProductionYear")]
     public int? ProductionYear { get; set; }
 
@@ -1052,7 +1165,7 @@ public sealed class JellyfinMediaItem
     public List<string>? Artists { get; set; }
 
     [JsonPropertyName("AlbumArtists")]
-    public List<string>? AlbumArtists { get; set; }
+    public List<JellyfinNamedItem>? AlbumArtists { get; set; }
 
     [JsonPropertyName("PlaylistItemId")]
     public string? PlaylistItemId { get; set; }
@@ -1067,6 +1180,15 @@ public sealed class JellyfinMediaItem
     public JellyfinUserData? UserData { get; set; }
 }
 
+public sealed class JellyfinNamedItem
+{
+    [JsonPropertyName("Name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("Id")]
+    public string? Id { get; set; }
+}
+
 public sealed class JellyfinUserData
 {
     [JsonPropertyName("LastPlayedDate")]
@@ -1077,7 +1199,8 @@ public sealed record JellyfinAudioTrack(
     string Id,
     string Name,
     string Artist,
-    int? DurationMs);
+    int? DurationMs,
+    string? FilePath = null);
 
 public sealed record JellyfinPlaylistEntry(
     string ItemId,

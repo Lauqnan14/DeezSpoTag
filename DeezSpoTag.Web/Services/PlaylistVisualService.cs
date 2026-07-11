@@ -6,6 +6,7 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class PlaylistVisualService
 {
+    private static readonly TimeSpan VisualMaterializationTimeout = TimeSpan.FromSeconds(10);
     private static readonly SearchValues<char> QueryOrFragmentDelimiters = SearchValues.Create("?#");
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IWebHostEnvironment _environment;
@@ -27,7 +28,8 @@ public sealed class PlaylistVisualService
         string? playlistName,
         string? remoteUrl,
         bool reuseSavedArtwork,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceRefresh = false)
     {
         if (!ShouldManageVisual(source, playlistName))
         {
@@ -36,7 +38,7 @@ public sealed class PlaylistVisualService
 
         var existing = GetStoredVisual(source, sourceId);
         var existingUrl = TryBuildExistingVisualUrl(source, sourceId, existing);
-        if (reuseSavedArtwork && !string.IsNullOrWhiteSpace(existingUrl))
+        if (!forceRefresh && !string.IsNullOrWhiteSpace(existingUrl))
         {
             return existingUrl;
         }
@@ -70,8 +72,11 @@ public sealed class PlaylistVisualService
                 return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
             }
 
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(VisualMaterializationTimeout);
+            var materializationToken = timeoutSource.Token;
             var client = _httpClientFactory.CreateClient();
-            using var response = await client.GetAsync(normalizedRemoteUri, cancellationToken);
+            using var response = await client.GetAsync(normalizedRemoteUri, materializationToken);
             if (!response.IsSuccessStatusCode)
             {
                 return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
@@ -80,7 +85,7 @@ public sealed class PlaylistVisualService
             var visualDir = GetVisualDirectory(source, sourceId);
             Directory.CreateDirectory(visualDir);
 
-            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            var bytes = await response.Content.ReadAsByteArrayAsync(materializationToken);
             if (bytes.Length == 0)
             {
                 return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
@@ -101,6 +106,11 @@ public sealed class PlaylistVisualService
             }
 
             return BuildVisualUrl(source, sourceId, File.GetLastWriteTimeUtc(targetPath));
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(ex, "Timed out while materializing playlist visual for {Source}:{SourceId}", source, sourceId);
+            return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

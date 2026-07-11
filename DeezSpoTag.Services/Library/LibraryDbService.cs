@@ -20,7 +20,9 @@ public sealed class LibraryDbService
     private const string PlaylistWatchStateTable = "playlist_watch_state";
     private const string PlaylistWatchPreferencesTable = "playlist_watch_preferences";
     private const string PlaylistWatchTrackTable = "playlist_watch_track";
+    private const string PlaylistWatchTargetMembershipTable = "playlist_watch_target_membership";
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
+    private const string MediaServerTrackMetadataTable = "media_server_track_metadata";
     private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
@@ -104,6 +106,12 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_track_source_status"] = (PlaylistWatchTrackTable, "source, source_id, status", false)
             ,
             ["idx_playlist_watch_track_unavailable_retry"] = (PlaylistWatchTrackTable, "source, source_id, status, unavailable_next_retry_utc", false)
+            ,
+            ["idx_playlist_watch_target_membership_target"] = (PlaylistWatchTargetMembershipTable, "target_service, target_playlist_id", false)
+            ,
+            ["idx_playlist_watch_target_membership_track"] = (PlaylistWatchTargetMembershipTable, "source, source_id, track_source_id", false)
+            ,
+            ["idx_media_server_track_metadata_service_item"] = (MediaServerTrackMetadataTable, "service, target_item_id", false)
             ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
             ,
@@ -382,6 +390,57 @@ WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_track_source_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_reason", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "verified_at_utc", TextType, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    target_playlist_id TEXT NOT NULL,
+    target_item_id TEXT,
+    local_track_id BIGINT,
+    sync_status TEXT NOT NULL DEFAULT 'waiting_for_target',
+    verified_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id, track_source_id, target_service)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS media_server_track_metadata (
+    track_id BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    target_item_id TEXT NOT NULL,
+    file_path TEXT,
+    updated_at_utc TEXT NOT NULL,
+    PRIMARY KEY (track_id, service)
+);", cancellationToken);
+        await ExecuteIfTableExistsAsync(connection, PlaylistWatchTrackTable, @"
+INSERT OR IGNORE INTO playlist_watch_target_membership (
+    source,
+    source_id,
+    track_source_id,
+    target_service,
+    target_playlist_id,
+    target_item_id,
+    local_track_id,
+    sync_status,
+    verified_at_utc,
+    updated_at
+)
+SELECT source,
+       source_id,
+       track_source_id,
+       target_service,
+       target_playlist_id,
+       target_item_id,
+       local_track_id,
+       COALESCE(sync_status, 'waiting_for_target'),
+       COALESCE(verified_at_utc, CURRENT_TIMESTAMP),
+       COALESCE(updated_at, CURRENT_TIMESTAMP)
+FROM playlist_watch_track
+WHERE target_service IS NOT NULL
+  AND TRIM(target_service) <> ''
+  AND target_playlist_id IS NOT NULL
+  AND TRIM(target_playlist_id) <> '';", cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     source TEXT NOT NULL,

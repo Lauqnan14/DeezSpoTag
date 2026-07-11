@@ -766,6 +766,13 @@ public sealed record PlaylistWatchDownloadClaimDto(
     string Status,
     DateTimeOffset UpdatedAt);
 
+public sealed record MediaServerTrackMetadataUpsertDto(
+    long TrackId,
+    string Service,
+    string TargetItemId,
+    string? FilePath,
+    DateTimeOffset UpdatedAtUtc);
+
 public sealed record ArtistWatchStateDto(
     long ArtistId,
     string? SpotifyId,

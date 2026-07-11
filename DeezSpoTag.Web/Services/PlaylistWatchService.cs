@@ -746,7 +746,8 @@ public sealed class PlaylistWatchService
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
         PlaylistWatchlistDto playlist,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceArtworkRefresh = false)
     {
         ArgumentNullException.ThrowIfNull(playlist);
 
@@ -778,7 +779,8 @@ public sealed class PlaylistWatchService
                 currentPlaylist.Name,
                 currentPlaylist.ImageUrl,
                 preference?.ReuseSavedArtwork == true,
-                cancellationToken);
+                cancellationToken,
+                forceArtworkRefresh);
         if (!string.Equals(managedImageUrl, currentPlaylist.ImageUrl, StringComparison.Ordinal))
         {
             currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };

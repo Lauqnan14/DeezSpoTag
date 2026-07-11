@@ -870,7 +870,10 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
-        var refreshedItem = await _playlistWatchService.RefreshPlaylistMetadataOnlyAsync(item, cancellationToken);
+        var refreshedItem = await _playlistWatchService.RefreshPlaylistMetadataOnlyAsync(
+            item,
+            cancellationToken,
+            forceArtworkRefresh: true);
         var artworkSync = await SyncArtworkForWatchlistItemAsync(refreshedItem, cancellationToken);
         return Ok(new { refreshed = true, artworkSync });
     }

@@ -3209,6 +3209,98 @@ ON CONFLICT(track_id) DO UPDATE SET
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyDictionary<long, string>> GetMediaServerItemIdsByTrackIdsAsync(
+        string service,
+        IReadOnlyList<long> trackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedService = NormalizeServiceKey(service);
+        if (string.IsNullOrWhiteSpace(normalizedService) || trackIds.Count == 0)
+        {
+            return new Dictionary<long, string>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+WITH requested AS (
+    SELECT CAST(value AS INTEGER) AS track_id
+    FROM json_each(@trackIdsJson)
+)
+SELECT mst.track_id,
+       mst.target_item_id
+FROM media_server_track_metadata mst
+JOIN requested r ON r.track_id = mst.track_id
+WHERE mst.service = @service
+  AND mst.target_item_id IS NOT NULL
+  AND TRIM(mst.target_item_id) <> ''
+ORDER BY mst.track_id, mst.updated_at_utc DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
+
+        var mapping = new Dictionary<long, string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackId = reader.GetInt64(0);
+            if (!mapping.ContainsKey(trackId))
+            {
+                mapping[trackId] = reader.GetString(1);
+            }
+        }
+
+        return mapping;
+    }
+
+    public async Task UpsertMediaServerTrackMetadataAsync(
+        IReadOnlyCollection<MediaServerTrackMetadataUpsertDto> metadata,
+        CancellationToken cancellationToken = default)
+    {
+        if (metadata.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO media_server_track_metadata
+    (track_id, service, target_item_id, file_path, updated_at_utc)
+VALUES
+    (@trackId, @service, @targetItemId, @filePath, @updatedAt)
+ON CONFLICT(track_id, service) DO UPDATE SET
+    target_item_id = excluded.target_item_id,
+    file_path = excluded.file_path,
+    updated_at_utc = excluded.updated_at_utc;";
+
+        await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
+        var trackIdParameter = command.Parameters.Add("@trackId", SqliteType.Integer);
+        var serviceParameter = command.Parameters.Add("@service", SqliteType.Text);
+        var targetItemIdParameter = command.Parameters.Add("@targetItemId", SqliteType.Text);
+        var filePathParameter = command.Parameters.Add("@filePath", SqliteType.Text);
+        var updatedAtParameter = command.Parameters.Add("@updatedAt", SqliteType.Text);
+
+        foreach (var item in metadata)
+        {
+            var normalizedService = NormalizeServiceKey(item.Service);
+            if (item.TrackId <= 0
+                || string.IsNullOrWhiteSpace(normalizedService)
+                || string.IsNullOrWhiteSpace(item.TargetItemId))
+            {
+                continue;
+            }
+
+            trackIdParameter.Value = item.TrackId;
+            serviceParameter.Value = normalizedService;
+            targetItemIdParameter.Value = item.TargetItemId.Trim();
+            filePathParameter.Value = string.IsNullOrWhiteSpace(item.FilePath) ? DBNull.Value : item.FilePath.Trim();
+            updatedAtParameter.Value = item.UpdatedAtUtc.ToString("O");
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     public async Task UpsertPlexTrackMetadataAsync(
         PlexTrackMetadataDto metadata,
         CancellationToken cancellationToken = default)
@@ -3408,6 +3500,9 @@ WHERE af.path IS NOT NULL
 
         return normalized.TrimEnd('/').ToLowerInvariant();
     }
+
+    private static string NormalizeServiceKey(string? service)
+        => (service ?? string.Empty).Trim().ToLowerInvariant();
 
     private sealed record LocalTrackFileRow(long TrackId, string AbsolutePath, string RelativePath);
 
@@ -7885,6 +7980,19 @@ WHERE source = @source
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string deleteMembershipSql = @"
+DELETE FROM playlist_watch_target_membership
+WHERE source = @source
+  AND source_id = @sourceId
+  AND target_service = @targetService;";
+        await using (var deleteMembership = new SqliteCommand(deleteMembershipSql, connection, transaction))
+        {
+            deleteMembership.Parameters.AddWithValue(SourceField, normalizedSource);
+            deleteMembership.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            deleteMembership.Parameters.AddWithValue("targetService", targetService);
+            await deleteMembership.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         const string resetSql = @"
 UPDATE playlist_watch_track
 SET target_service = @targetService,
@@ -7926,6 +8034,51 @@ WHERE source = @source
             update.Parameters.AddWithValue("localTrackId", membership.LocalTrackId);
             update.Parameters.AddWithValue("targetItemId", membership.TargetItemId);
             await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string insertMembershipSql = @"
+INSERT INTO playlist_watch_target_membership (
+    source,
+    source_id,
+    track_source_id,
+    target_service,
+    target_playlist_id,
+    target_item_id,
+    local_track_id,
+    sync_status,
+    verified_at_utc,
+    updated_at
+)
+VALUES (
+    @source,
+    @sourceId,
+    @trackSourceId,
+    @targetService,
+    @targetPlaylistId,
+    @targetItemId,
+    @localTrackId,
+    'playlist_synced',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+)
+ON CONFLICT(source, source_id, track_source_id, target_service) DO UPDATE SET
+    target_playlist_id = excluded.target_playlist_id,
+    target_item_id = excluded.target_item_id,
+    local_track_id = excluded.local_track_id,
+    sync_status = excluded.sync_status,
+    verified_at_utc = excluded.verified_at_utc,
+    updated_at = excluded.updated_at;";
+        foreach (var membership in memberships)
+        {
+            await using var insertMembership = new SqliteCommand(insertMembershipSql, connection, transaction);
+            insertMembership.Parameters.AddWithValue(SourceField, normalizedSource);
+            insertMembership.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            insertMembership.Parameters.AddWithValue("trackSourceId", membership.TrackSourceId);
+            insertMembership.Parameters.AddWithValue("targetService", targetService);
+            insertMembership.Parameters.AddWithValue("targetPlaylistId", targetPlaylistId);
+            insertMembership.Parameters.AddWithValue("targetItemId", membership.TargetItemId);
+            insertMembership.Parameters.AddWithValue("localTrackId", membership.LocalTrackId);
+            await insertMembership.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);

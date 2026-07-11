@@ -258,6 +258,17 @@ public sealed class MediaServerLibraryRefreshService
                         now))
                     .ToList();
                 await _libraryRepository.UpsertPlexTrackMetadataAsync(upserts, cancellationToken);
+                await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
+                    tracks
+                        .Where(track => filePathMap.ContainsKey(track.FilePath))
+                        .Select(track => new MediaServerTrackMetadataUpsertDto(
+                            filePathMap[track.FilePath],
+                            PlexService,
+                            track.RatingKey,
+                            track.FilePath,
+                            now))
+                        .ToList(),
+                    cancellationToken);
                 mappedCount += upserts.Count;
 
                 if (page.Count < PlexTrackPageSize)
@@ -293,9 +304,107 @@ public sealed class MediaServerLibraryRefreshService
         if (!refreshed)
         {
             _logger.LogWarning("Jellyfin library refresh request failed.");
+            return false;
+        }
+
+        try
+        {
+            await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Jellyfin library refresh was requested, but the local Jellyfin track metadata index could not be updated.");
         }
 
         return refreshed;
+    }
+
+    private async Task UpdateJellyfinTrackMetadataIndexAsync(
+        JellyfinAuth jellyfin,
+        CancellationToken cancellationToken)
+    {
+        if (!_libraryRepository.IsConfigured)
+        {
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(jellyfin.UserId))
+        {
+            _logger.LogWarning("Jellyfin track metadata index skipped because Jellyfin user id is missing.");
+            return;
+        }
+
+        var libraries = await _jellyfinApiClient.GetLibrariesAsync(
+            jellyfin.Url!,
+            jellyfin.ApiKey!,
+            cancellationToken);
+        var musicLibraries = libraries
+            .Where(static library => string.Equals(library.CollectionType, "music", StringComparison.OrdinalIgnoreCase))
+            .Where(static library => !string.IsNullOrWhiteSpace(library.Id))
+            .ToList();
+        if (musicLibraries.Count == 0)
+        {
+            _logger.LogWarning("Jellyfin track metadata index skipped because no music libraries were found.");
+            return;
+        }
+
+        var mappedCount = 0;
+        var seenItemIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var library in musicLibraries)
+        {
+            var offset = 0;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var page = await _jellyfinApiClient.GetAudioTracksAsync(
+                    jellyfin.Url!,
+                    jellyfin.ApiKey!,
+                    jellyfin.UserId!,
+                    library.Id,
+                    offset,
+                    PlexTrackPageSize,
+                    cancellationToken);
+                if (page.Count == 0)
+                {
+                    break;
+                }
+
+                var tracks = page
+                    .Where(track => !string.IsNullOrWhiteSpace(track.Id)
+                                    && !string.IsNullOrWhiteSpace(track.FilePath)
+                                    && seenItemIds.Add(track.Id))
+                    .ToList();
+                var filePathMap = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+                    tracks.Select(static track => track.FilePath!).ToList(),
+                    cancellationToken);
+                var now = DateTimeOffset.UtcNow;
+                var upserts = tracks
+                    .Where(track => !string.IsNullOrWhiteSpace(track.FilePath)
+                                    && filePathMap.ContainsKey(track.FilePath!))
+                    .Select(track => new MediaServerTrackMetadataUpsertDto(
+                        filePathMap[track.FilePath!],
+                        JellyfinService,
+                        track.Id,
+                        track.FilePath,
+                        now))
+                    .ToList();
+                await _libraryRepository.UpsertMediaServerTrackMetadataAsync(upserts, cancellationToken);
+                mappedCount += upserts.Count;
+
+                if (page.Count < PlexTrackPageSize)
+                {
+                    break;
+                }
+
+                offset += PlexTrackPageSize;
+            }
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Jellyfin track metadata index updated: mappedTracks={MappedTracks}.", mappedCount);
+        }
     }
 
     private async Task<bool> RetryRefreshAsync(

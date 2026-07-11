@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
+using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -162,6 +163,90 @@ public sealed class JellyfinApiClientUserResolutionTests
 
         Assert.Null(result);
         Assert.Empty(handler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task UpdateItemMetadataAsync_UsesUserScopedItemReadBeforePostingUpdate()
+    {
+        using var handler = new StubHandler(request =>
+        {
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri?.AbsolutePath == "/Users/user-1/Items/playlist-1")
+            {
+                return JsonResponse(HttpStatusCode.OK, """
+                    {
+                      "Id": "playlist-1",
+                      "Name": "Old Name",
+                      "Overview": ""
+                    }
+                    """);
+            }
+
+            if (request.Method == HttpMethod.Post
+                && request.RequestUri?.AbsolutePath == "/Items/playlist-1")
+            {
+                var body = request.Content?.ReadAsStringAsync(cancellationToken: CancellationToken.None).GetAwaiter().GetResult() ?? string.Empty;
+                Assert.Contains("\"Name\":\"Bongo Pop\"", body, StringComparison.Ordinal);
+                Assert.Contains("\"Overview\":\"Bongo sounds\"", body, StringComparison.Ordinal);
+                return new HttpResponseMessage(HttpStatusCode.NoContent);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        });
+        var client = CreateClient(handler);
+
+        var updated = await client.UpdateItemMetadataAsync(
+            "http://jellyfin.local",
+            "api-key",
+            "user-1",
+            "playlist-1",
+            "Bongo Pop",
+            "Bongo sounds",
+            CancellationToken.None);
+
+        Assert.True(updated);
+        Assert.Equal(2, handler.RequestedUris.Count);
+        Assert.Contains("/Users/user-1/Items/playlist-1", handler.RequestedUris[0], StringComparison.Ordinal);
+        Assert.Contains("/Items/playlist-1", handler.RequestedUris[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UpdateItemPrimaryImageFromFileAsync_UploadsBase64WithImageContentType()
+    {
+        var imagePath = Path.Combine(Path.GetTempPath(), $"jellyfin-playlist-{Guid.NewGuid():N}.jpg");
+        await File.WriteAllBytesAsync(imagePath, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+        try
+        {
+            using var handler = new StubHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post
+                    && request.RequestUri?.AbsolutePath == "/Items/playlist-1/Images/Primary")
+                {
+                    Assert.Equal("image/jpeg", request.Content?.Headers.ContentType?.MediaType);
+                    var body = request.Content?.ReadAsStringAsync(cancellationToken: CancellationToken.None).GetAwaiter().GetResult() ?? string.Empty;
+                    Assert.Equal(Convert.ToBase64String(new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 }), body);
+                    return new HttpResponseMessage(HttpStatusCode.NoContent);
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            var client = CreateClient(handler);
+
+            var updated = await client.UpdateItemPrimaryImageFromFileAsync(
+                "http://jellyfin.local",
+                "api-key",
+                "playlist-1",
+                imagePath,
+                "image/jpeg",
+                CancellationToken.None);
+
+            Assert.True(updated);
+            Assert.Single(handler.RequestedUris);
+        }
+        finally
+        {
+            File.Delete(imagePath);
+        }
     }
 
     private static JellyfinApiClient CreateClient(HttpMessageHandler handler)
