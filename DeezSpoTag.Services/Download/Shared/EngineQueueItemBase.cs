@@ -27,6 +27,11 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string Barcode { get; set; } = "";
     public string DeezerId { get; set; } = "";
     public string AppleId { get; set; } = "";
+    public string AppleAlbumId { get; set; } = "";
+    public string AppleAlbumName { get; set; } = "";
+    public string AppleArtistName { get; set; } = "";
+    public string AppleIsrc { get; set; } = "";
+    public int? AppleDurationMs { get; set; }
     public string QobuzId { get; set; } = "";
     public string TidalId { get; set; } = "";
     public string AmazonId { get; set; } = "";
@@ -100,6 +105,11 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["resolvedAutoIndex"] = ResolvedAutoIndex,
             ["resolutionError"] = ResolutionError,
             ["appleId"] = AppleId,
+            ["appleAlbumId"] = AppleAlbumId,
+            ["appleAlbumName"] = AppleAlbumName,
+            ["appleArtistName"] = AppleArtistName,
+            ["appleIsrc"] = AppleIsrc,
+            ["appleDurationMs"] = AppleDurationMs,
             ["qobuzId"] = QobuzId,
             ["tidalId"] = TidalId,
             ["amazonId"] = AmazonId,

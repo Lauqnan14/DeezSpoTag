@@ -5,7 +5,6 @@ using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Fallback;
-using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Shared.Utils;
@@ -215,8 +214,6 @@ public static partial class EngineAudioPostDownloadHelper
         EnhancedPathTemplateProcessor PathProcessor,
         ISpotifyArtworkResolver? SpotifyArtworkResolver,
         ILastFmArtistImageResolver? LastFmArtistImageResolver,
-        ISpotifyIdResolver? SpotifyIdResolver,
-        ITrackIdentityResolver? TrackIdentityResolver,
         IHttpClientFactory? HttpClientFactory,
         AppleMusicCatalogService? AppleCatalog,
         DeezerClient? DeezerApiClient);
@@ -1236,6 +1233,24 @@ public static partial class EngineAudioPostDownloadHelper
             track.Urls[AppleSource] = $"https://music.apple.com/us/song/{payload.AppleId}?i={payload.AppleId}";
         }
 
+        if (!string.IsNullOrWhiteSpace(payload.QobuzId))
+        {
+            track.Urls["qobuz_track_id"] = payload.QobuzId;
+            track.Urls[QobuzSource] = $"https://play.qobuz.com/track/{payload.QobuzId}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.TidalId))
+        {
+            track.Urls["tidal_track_id"] = payload.TidalId;
+            track.Urls[TidalSource] = $"https://listen.tidal.com/track/{payload.TidalId}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.AmazonId))
+        {
+            track.Urls["amazon_track_id"] = payload.AmazonId;
+            track.Urls[AmazonSource] = $"https://music.amazon.com/tracks/{payload.AmazonId}";
+        }
+
         if (!string.IsNullOrWhiteSpace(payload.SourceUrl))
         {
             track.Urls["source_url"] = payload.SourceUrl;
@@ -1830,23 +1845,13 @@ public static partial class EngineAudioPostDownloadHelper
             var settings = execution.Request.Settings;
             var appleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(settings);
             var preferMaxQualityCover = settings.EmbedMaxQualityCover;
-            var appleIdentity = await ResolveAppleArtworkIdentityAsync(execution, runtime, token);
-            if (!string.IsNullOrWhiteSpace(appleIdentity?.AppleId)
-                && !string.Equals(execution.Request.Payload.AppleId, appleIdentity.AppleId, StringComparison.Ordinal))
-            {
-                execution.Request.Payload.AppleId = appleIdentity.AppleId;
-                await execution.Request.QueueRepository.UpdatePayloadAsync(
-                    execution.Paths.QueueUuid,
-                    System.Text.Json.JsonSerializer.Serialize(execution.Request.Payload),
-                    token);
-            }
+            var appleIdentity = ResolveAppleArtworkIdentity(execution);
             var coverUrls = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
                 new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
                     settings,
                     runtime.AppleCatalog,
                     runtime.HttpClientFactory,
                     runtime.SpotifyArtworkResolver,
-                    runtime.SpotifyIdResolver,
                     runtime.DeezerApiClient,
                     appleIdentity?.AppleId ?? execution.Request.AppleCoverLookupIdOverride ?? execution.Request.Payload.AppleId,
                     execution.Request.Payload.Title,
@@ -1858,7 +1863,7 @@ public static partial class EngineAudioPostDownloadHelper
                     execution.Request.Payload.Isrc,
                     execution.Request.Logger)
                     {
-                        TrackIdentityResolver = runtime.TrackIdentityResolver
+                        SpotifyId = execution.Request.Payload.SpotifyId
                     },
                 token);
             var artworkTask = BuildArtworkPrefetchTask(
@@ -2180,8 +2185,6 @@ public static partial class EngineAudioPostDownloadHelper
         var pathProcessor = provider.GetRequiredService<EnhancedPathTemplateProcessor>();
         var spotifyArtworkResolver = provider.GetService<ISpotifyArtworkResolver>();
         var lastFmArtistImageResolver = provider.GetService<ILastFmArtistImageResolver>();
-        var spotifyIdResolver = provider.GetService<ISpotifyIdResolver>();
-        var trackIdentityResolver = provider.GetService<ITrackIdentityResolver>();
         var httpClientFactory = provider.GetService<IHttpClientFactory>();
         var appleCatalog = provider.GetService<AppleMusicCatalogService>();
         var deezerClient = provider.GetService<DeezerClient>();
@@ -2190,8 +2193,6 @@ public static partial class EngineAudioPostDownloadHelper
             pathProcessor,
             spotifyArtworkResolver,
             lastFmArtistImageResolver,
-            spotifyIdResolver,
-            trackIdentityResolver,
             httpClientFactory,
             appleCatalog,
             deezerClient);
@@ -2243,63 +2244,31 @@ public static partial class EngineAudioPostDownloadHelper
         return new PrefetchArtworkResult(true, AnimatedArtworkPaths: animatedPaths);
     }
 
-    private static async Task<AppleArtworkIdentity?> ResolveAppleArtworkIdentityAsync(
-        PrefetchExecutionContext execution,
-        PrefetchRuntimeServices runtime,
-        CancellationToken token)
+    private static AppleArtworkIdentity? ResolveAppleArtworkIdentity(PrefetchExecutionContext execution)
     {
-        if (runtime.TrackIdentityResolver == null)
-        {
-            return null;
-        }
-
-        var settings = execution.Request.Settings;
         var payload = execution.Request.Payload;
-        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
-            ? "us"
-            : settings.AppleMusic.Storefront;
-        var identity = await runtime.TrackIdentityResolver.ResolveAsync(
-            new TrackIdentityResolutionRequest(
-                SourcePlatform: payload.SourceService,
-                SourceUrl: FirstNonEmpty(payload.SourceUrl, payload.Url, payload.ResolvedSourceUrl),
-                Title: payload.Title,
-                Artist: payload.Artist,
-                Album: payload.Album,
-                Isrc: payload.Isrc,
-                DurationMs: payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-                SpotifyId: payload.SpotifyId,
-                DeezerId: payload.DeezerId,
-                AppleId: execution.Request.AnimatedArtworkAppleIdOverride
-                    ?? execution.Request.AppleCoverLookupIdOverride
-                    ?? payload.AppleId,
-                QobuzId: payload.QobuzId,
-                TidalId: payload.TidalId,
-                AmazonId: payload.AmazonId,
-                TargetPlatforms: new[] { AppleSource },
-                Storefront: storefront,
-                Language: "en-US",
-                MediaUserToken: settings.AppleMusic?.MediaUserToken),
-            token);
-
-        if (string.IsNullOrWhiteSpace(identity.AppleId))
+        var appleId = execution.Request.AnimatedArtworkAppleIdOverride
+            ?? execution.Request.AppleCoverLookupIdOverride
+            ?? payload.AppleId;
+        if (string.IsNullOrWhiteSpace(appleId))
         {
             return null;
         }
 
-        if (!AreExactArtworkAlbumsCompatible(payload.Album, identity.AppleAlbumName))
+        if (!AreExactArtworkAlbumsCompatible(payload.Album, payload.AppleAlbumName))
         {
             execution.Request.ActivityLog.Warn(
-                $"Animated artwork skipped: Apple release '{identity.AppleAlbumName}' does not match source release '{payload.Album}'.");
+                $"Animated artwork skipped: persisted Apple release '{payload.AppleAlbumName}' does not match source release '{payload.Album}'.");
             return null;
         }
 
         return new AppleArtworkIdentity(
-            identity.AppleId,
-            identity.AppleAlbumId,
-            identity.AppleAlbumName,
-            identity.AppleArtistName,
-            identity.AppleIsrc,
-            identity.AppleDurationMs);
+            appleId,
+            payload.AppleAlbumId,
+            payload.AppleAlbumName,
+            payload.AppleArtistName,
+            payload.AppleIsrc,
+            payload.AppleDurationMs);
     }
 
     private static bool AreExactArtworkAlbumsCompatible(string? sourceAlbum, string? candidateAlbum)

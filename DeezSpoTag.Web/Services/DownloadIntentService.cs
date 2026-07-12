@@ -630,6 +630,11 @@ public sealed class DownloadIntentService
                 DeezerArtistId: intent.DeezerArtistId,
                 SpotifyId: intent.SpotifyId,
                 AppleId: intent.AppleId,
+                AppleAlbumId: intent.AppleAlbumId,
+                AppleAlbumName: intent.AppleAlbumName,
+                AppleArtistName: intent.AppleArtistName,
+                AppleIsrc: intent.AppleIsrc,
+                AppleDurationMs: intent.AppleDurationMs,
                 QobuzId: qobuzId,
                 TidalId: tidalId,
                 AmazonId: amazonId,
@@ -651,6 +656,11 @@ public sealed class DownloadIntentService
             DeezerArtistId: intent.DeezerArtistId,
             SpotifyId: intent.SpotifyId,
             AppleId: intent.AppleId,
+            AppleAlbumId: intent.AppleAlbumId,
+            AppleAlbumName: intent.AppleAlbumName,
+            AppleArtistName: intent.AppleArtistName,
+            AppleIsrc: intent.AppleIsrc,
+            AppleDurationMs: intent.AppleDurationMs,
             QobuzId: qobuzId,
             TidalId: tidalId,
             AmazonId: amazonId,
@@ -740,6 +750,11 @@ public sealed class DownloadIntentService
                 DeezerArtistId: intent.DeezerArtistId,
                 SpotifyId: intent.SpotifyId,
                 AppleId: intent.AppleId,
+                AppleAlbumId: intent.AppleAlbumId,
+                AppleAlbumName: intent.AppleAlbumName,
+                AppleArtistName: intent.AppleArtistName,
+                AppleIsrc: intent.AppleIsrc,
+                AppleDurationMs: intent.AppleDurationMs,
                 QobuzId: qobuzId,
                 TidalId: tidalId,
                 AmazonId: amazonId,
@@ -763,6 +778,11 @@ public sealed class DownloadIntentService
             DeezerArtistId: intent.DeezerArtistId,
             SpotifyId: intent.SpotifyId,
             AppleId: intent.AppleId,
+            AppleAlbumId: intent.AppleAlbumId,
+            AppleAlbumName: intent.AppleAlbumName,
+            AppleArtistName: intent.AppleArtistName,
+            AppleIsrc: intent.AppleIsrc,
+            AppleDurationMs: intent.AppleDurationMs,
             QobuzId: intent.QobuzId,
             TidalId: intent.TidalId,
             AmazonId: intent.AmazonId,
@@ -2524,7 +2544,46 @@ public sealed class DownloadIntentService
             engines.Add(ApplePlatform);
         }
 
+        if (settings.SaveArtwork || settings.Tags?.Cover == true)
+        {
+            AddIdentityTargets(engines, ArtworkFallbackHelper.ResolveOrder(settings));
+        }
+
+        if (settings.SaveArtworkArtist)
+        {
+            AddIdentityTargets(engines, ArtworkFallbackHelper.ResolveArtistOrder(settings));
+        }
+
+        if (LyricsSettingsPolicy.CanFetchLyrics(settings))
+        {
+            var lyricsProviders = string.IsNullOrWhiteSpace(settings.LyricsFallbackOrder)
+                ? new[] { ApplePlatform, DeezerPlatform, SpotifyPlatform }
+                : settings.LyricsFallbackOrder.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            AddIdentityTargets(
+                engines,
+                settings.LyricsFallbackEnabled ? lyricsProviders : lyricsProviders.Take(1));
+        }
+
         return engines;
+    }
+
+    private static void AddIdentityTargets(List<string> engines, IEnumerable<string> sources)
+    {
+        foreach (var source in sources)
+        {
+            var normalized = source.Trim().ToLowerInvariant() switch
+            {
+                "applemusic" or "apple-music" or "apple_music" or "itunes" => ApplePlatform,
+                _ => source.Trim().ToLowerInvariant()
+            };
+            if (normalized is not (ApplePlatform or DeezerPlatform or SpotifyPlatform)
+                || engines.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            engines.Add(normalized);
+        }
     }
 
     private static bool ShouldResolveAppleIdentityForArtwork(DeezSpoTagSettings settings)
@@ -2617,6 +2676,11 @@ public sealed class DownloadIntentService
         intent.SpotifyId = FirstNonEmpty(intent.SpotifyId, resolution.SpotifyId) ?? string.Empty;
         intent.DeezerId = FirstNonEmpty(NormalizeDeezerTrackId(intent.DeezerId), NormalizeDeezerTrackId(resolution.DeezerId)) ?? string.Empty;
         intent.AppleId = FirstNonEmpty(intent.AppleId, resolution.AppleId) ?? string.Empty;
+        intent.AppleAlbumId = FirstNonEmpty(intent.AppleAlbumId, resolution.AppleAlbumId) ?? string.Empty;
+        intent.AppleAlbumName = FirstNonEmpty(intent.AppleAlbumName, resolution.AppleAlbumName) ?? string.Empty;
+        intent.AppleArtistName = FirstNonEmpty(intent.AppleArtistName, resolution.AppleArtistName) ?? string.Empty;
+        intent.AppleIsrc = FirstNonEmpty(intent.AppleIsrc, resolution.AppleIsrc) ?? string.Empty;
+        intent.AppleDurationMs ??= resolution.AppleDurationMs;
         intent.QobuzId = FirstNonEmpty(intent.QobuzId, resolution.QobuzId) ?? string.Empty;
         intent.TidalId = FirstNonEmpty(intent.TidalId, resolution.TidalId) ?? string.Empty;
         intent.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
@@ -6828,6 +6892,11 @@ public sealed class DownloadIntentService
             ? payload.DeezerId
             : intent.DeezerId ?? string.Empty;
         payload.AppleId = intent.AppleId ?? string.Empty;
+        payload.AppleAlbumId = intent.AppleAlbumId ?? string.Empty;
+        payload.AppleAlbumName = intent.AppleAlbumName ?? string.Empty;
+        payload.AppleArtistName = intent.AppleArtistName ?? string.Empty;
+        payload.AppleIsrc = intent.AppleIsrc ?? string.Empty;
+        payload.AppleDurationMs = intent.AppleDurationMs;
         payload.QobuzId = FirstNonEmpty(intent.QobuzId, TryExtractQobuzTrackId(context.SourceUrl)?.ToString(CultureInfo.InvariantCulture)) ?? string.Empty;
         payload.TidalId = FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(context.SourceUrl)) ?? string.Empty;
         payload.AmazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)

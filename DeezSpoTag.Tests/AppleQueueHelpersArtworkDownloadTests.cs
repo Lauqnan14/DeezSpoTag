@@ -112,7 +112,7 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Services/Download/Shared/EngineAudioPostDownloadHelper.cs"));
 
-        Assert.Contains("AreExactArtworkAlbumsCompatible(payload.Album, identity.AppleAlbumName)", source, StringComparison.Ordinal);
+        Assert.Contains("AreExactArtworkAlbumsCompatible(payload.Album, payload.AppleAlbumName)", source, StringComparison.Ordinal);
         Assert.Contains("does not match source release", source, StringComparison.Ordinal);
     }
 

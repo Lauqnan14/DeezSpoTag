@@ -176,14 +176,20 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
-    public void ArtworkPrefetch_PersistsResolvedAppleIdentityBeforeArtworkWork()
+    public void CentralResolution_PersistsAppleIdentityBeforeArtworkWork()
     {
-        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
+        var queueResolution = ReadSource("DeezSpoTag.Services", "Download", "Queue", "QueuePreResolutionPayload.cs");
+        var artwork = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineAudioPostDownloadHelper.cs");
 
-        var resolveIndex = source.IndexOf("var appleIdentity = await ResolveAppleArtworkIdentityAsync", StringComparison.Ordinal);
-        var persistIndex = source.IndexOf("execution.Request.QueueRepository.UpdatePayloadAsync", resolveIndex, StringComparison.Ordinal);
-        var artworkIndex = source.IndexOf("ResolveStandardAudioCoverUrlsAsync", resolveIndex, StringComparison.Ordinal);
-        Assert.True(resolveIndex >= 0 && persistIndex > resolveIndex && artworkIndex > persistIndex);
+        Assert.Contains("AppleId", queueResolution, StringComparison.Ordinal);
+        Assert.Contains("AppleAlbumId", queueResolution, StringComparison.Ordinal);
+        Assert.Contains("AppleAlbumName", queueResolution, StringComparison.Ordinal);
+        Assert.Contains("AppleArtistName", queueResolution, StringComparison.Ordinal);
+        Assert.Contains("AppleIsrc", queueResolution, StringComparison.Ordinal);
+        Assert.Contains("AppleDurationMs", queueResolution, StringComparison.Ordinal);
+        Assert.Contains("ResolveAppleArtworkIdentity(execution)", artwork, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveAppleArtworkIdentityAsync", artwork, StringComparison.Ordinal);
+        Assert.DoesNotContain("TrackIdentityResolutionRequest", artwork, StringComparison.Ordinal);
     }
 
     [Fact]

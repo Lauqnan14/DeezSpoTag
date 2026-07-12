@@ -43,6 +43,11 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public long? DestinationFolderId { get; set; }
     public long? SecondaryDestinationFolderId { get; set; }
     public string AppleId { get; set; } = "";
+    public string AppleAlbumId { get; set; } = "";
+    public string AppleAlbumName { get; set; } = "";
+    public string AppleArtistName { get; set; } = "";
+    public string AppleIsrc { get; set; } = "";
+    public int? AppleDurationMs { get; set; }
     public string WatchlistSource { get; set; } = "";
     public string WatchlistPlaylistId { get; set; } = "";
     public string WatchlistTrackId { get; set; } = "";

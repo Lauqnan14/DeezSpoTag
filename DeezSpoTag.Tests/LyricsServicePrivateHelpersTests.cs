@@ -166,6 +166,51 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void LyricsResolution_ConsumesCompleteCentralIdentityMatrix()
+    {
+        var repoRoot = Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var lyricsSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Utils",
+            "LyricsService.cs"));
+        var sharedSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "EngineAudioPostDownloadHelper.cs"));
+        var appleSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Apple",
+            "AppleLyricsService.cs"));
+
+        foreach (var key in new[]
+                 {
+                     "spotify_track_id",
+                     "deezer_track_id",
+                     "apple_track_id",
+                     "qobuz_track_id",
+                     "tidal_track_id",
+                     "amazon_track_id"
+                 })
+        {
+            Assert.Contains(key, sharedSource, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain("ITrackIdentityResolver", lyricsSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_trackIdentityResolver.ResolveAsync", lyricsSource, StringComparison.Ordinal);
+        Assert.Contains("TryResolveSpotifyTrackIdFromTrack", lyricsSource, StringComparison.Ordinal);
+        Assert.Contains("TryResolveDeezerTrackIdFromTrack", lyricsSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveAppleLyricsTrackId", lyricsSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveLyricsForTrackAsync", appleSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveAppleIdByIsrcAsync", appleSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryResolveAppleIdBySearchTermsAsync", appleSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildLrclibRequestOptions_UsesDefaultsWhenPropertiesMissing()
     {
         var providerOptions = new LrclibLyricsProviderOptions();

@@ -8,7 +8,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models.Settings;
-using DeezSpoTag.Services.Download.Identity;
 using System.Linq;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Security;
@@ -42,7 +41,6 @@ public class LyricsService
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly DeezSpoTag.Services.Apple.AppleLyricsService _appleLyricsService;
     private readonly LrclibLyricsService _lrclibLyricsService;
-    private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly ProtectedCredentialFileStore _spotifyWebPlayerCredentialStore;
     private string? _cachedGwToken;
     private DateTime _cachedGwTokenExpiry = DateTime.MinValue;
@@ -120,7 +118,6 @@ public class LyricsService
         _authenticatedDeezerService = authenticatedDeezerService;
         _appleLyricsService = appleLyricsService;
         _lrclibLyricsService = lrclibLyricsService;
-        _trackIdentityResolver = serviceProvider.GetRequiredService<ITrackIdentityResolver>();
         _spotifyWebPlayerCredentialStore = serviceProvider.GetRequiredService<ProtectedCredentialFileStore>();
     }
 
@@ -332,7 +329,7 @@ public class LyricsService
         CancellationToken cancellationToken)
     {
         state.DeezerAttempted = true;
-        var deezerTrackId = await ResolveDeezerLyricsTrackIdAsync(track, settings, cancellationToken);
+        var deezerTrackId = ResolveDeezerLyricsTrackId(track);
         if (string.IsNullOrWhiteSpace(deezerTrackId))
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -489,11 +486,17 @@ public class LyricsService
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken)
     {
+        var appleId = ResolveAppleLyricsTrackId(track);
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
+            return null;
+        }
+
         LyricsBase? appleLyrics = null;
         try
         {
             appleLyrics = await ResolveLoadedLyricsOrNullAsync(
-                () => _appleLyricsService.ResolveLyricsForTrackAsync(track, settings, cancellationToken));
+                () => _appleLyricsService.ResolveLyricsAsync(appleId, settings, cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -519,6 +522,16 @@ public class LyricsService
         }
 
         return appleLyrics;
+    }
+
+    private static string? ResolveAppleLyricsTrackId(Track track)
+    {
+        var candidate = FirstNonEmpty(
+            TryGetTrackUrl(track, "apple_track_id"),
+            TryGetTrackUrl(track, "apple_id"),
+            TryGetTrackUrl(track, AppleProvider),
+            string.Equals(track.Source, AppleProvider, StringComparison.OrdinalIgnoreCase) ? track.SourceId : null);
+        return AppleIdParser.Resolve(candidate, candidate);
     }
 
     private async Task<LyricsBase?> ResolvePaxsenixAppleLyricsByIdAsync(
@@ -1425,18 +1438,14 @@ public class LyricsService
         public string? Text { get; set; }
     }
 
-    private async Task<string?> ResolveDeezerLyricsTrackIdAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
+    private static string? ResolveDeezerLyricsTrackId(Track track)
     {
         if (TryResolveDeezerTrackIdFromTrack(track, out var deezerTrackId))
         {
             return deezerTrackId;
         }
 
-        var identity = await ResolveLyricsIdentityAsync(track, DeezerProvider, cancellationToken);
-        return TrackIdNormalization.NormalizeDeezerTrackIdOrNull(identity.DeezerId);
+        return null;
     }
 
     private static bool TryResolveDeezerTrackIdFromTrack(Track track, out string? deezerTrackId)
@@ -1450,11 +1459,6 @@ public class LyricsService
         CancellationToken cancellationToken)
     {
         var spotifyTrackId = ResolveSpotifyLyricsTrackId(track);
-        if (string.IsNullOrWhiteSpace(spotifyTrackId))
-        {
-            var identity = await ResolveLyricsIdentityAsync(track, SpotifyProvider, cancellationToken);
-            spotifyTrackId = identity.SpotifyId;
-        }
         if (string.IsNullOrWhiteSpace(spotifyTrackId))
         {
             return CreateLyricsError("Unable to resolve Spotify track ID for lyrics.");
@@ -1503,27 +1507,6 @@ public class LyricsService
     private static bool TryResolveSpotifyTrackIdFromTrack(Track track, out string? spotifyTrackId)
     {
         return TrackIdNormalization.TryResolveSpotifyTrackId(track, out spotifyTrackId);
-    }
-
-    private Task<TrackIdentityResolution> ResolveLyricsIdentityAsync(
-        Track track,
-        string targetPlatform,
-        CancellationToken cancellationToken)
-    {
-        return _trackIdentityResolver.ResolveAsync(
-            new TrackIdentityResolutionRequest(
-                SourcePlatform: track.Source,
-                SourceUrl: FirstNonEmpty(track.DownloadURL, TryGetTrackUrl(track, track.Source)),
-                Title: track.Title,
-                Artist: track.MainArtist?.Name ?? track.ArtistString,
-                Album: track.Album?.Title,
-                Isrc: track.ISRC,
-                DurationMs: track.Duration > 0 ? track.Duration * 1000 : null,
-                SpotifyId: TryResolveSpotifyTrackIdFromTrack(track, out var spotifyId) ? spotifyId : null,
-                DeezerId: TryResolveDeezerTrackIdFromTrack(track, out var deezerId) ? deezerId : null,
-                AppleId: TryGetTrackUrl(track, "apple_track_id") ?? TryGetTrackUrl(track, "apple_id"),
-                TargetPlatforms: new[] { targetPlatform }),
-            cancellationToken);
     }
 
     private static string? FirstNonEmpty(params string?[] values)

@@ -3,7 +3,6 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Fallback;
-using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,7 +22,6 @@ public static class DownloadEngineArtworkHelper
         AppleMusicCatalogService? AppleCatalog,
         IHttpClientFactory? HttpClientFactory,
         ISpotifyArtworkResolver? SpotifyArtworkResolver,
-        ISpotifyIdResolver? SpotifyIdResolver,
         DeezerClient? DeezerClient,
         string? AppleId,
         string? Title,
@@ -35,7 +33,7 @@ public static class DownloadEngineArtworkHelper
         string? Isrc,
         ILogger Logger)
     {
-        public ITrackIdentityResolver? TrackIdentityResolver { get; init; }
+        public string? SpotifyId { get; init; }
     }
 
     public sealed record AudioTagWithCoverRequest(
@@ -159,7 +157,7 @@ public static class DownloadEngineArtworkHelper
             return null;
         }
 
-        var spotifyId = await TryResolveSpotifyIdForArtworkAsync(request, cancellationToken);
+        var spotifyId = request.SpotifyId;
         if (string.IsNullOrWhiteSpace(spotifyId))
         {
             return null;
@@ -171,46 +169,6 @@ public static class DownloadEngineArtworkHelper
             cancellationToken,
             album,
             rejectCompilationAlbumCandidate);
-    }
-
-    private static async Task<string?> TryResolveSpotifyIdForArtworkAsync(
-        StandardAudioCoverResolveRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (request.TrackIdentityResolver != null)
-        {
-            var identity = await request.TrackIdentityResolver.ResolveAsync(
-                new TrackIdentityResolutionRequest(
-                    SourcePlatform: null,
-                    SourceUrl: null,
-                    Title: request.Title,
-                    Artist: request.Artist,
-                    Album: ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(request.Album),
-                    Isrc: request.Isrc,
-                    DurationMs: null,
-                    DeezerId: request.DeezerId,
-                    AppleId: request.AppleId,
-                    TargetPlatforms: new[] { SpotifyProvider }),
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(identity.SpotifyId))
-            {
-                return identity.SpotifyId;
-            }
-        }
-
-        if (request.SpotifyIdResolver == null
-            || string.IsNullOrWhiteSpace(request.Title)
-            || string.IsNullOrWhiteSpace(request.Artist))
-        {
-            return null;
-        }
-
-        return await request.SpotifyIdResolver.ResolveTrackIdAsync(
-            request.Title,
-            request.Artist,
-            ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(request.Album),
-            request.Isrc,
-            cancellationToken);
     }
 
     private static string? TryIdentifyArtworkProvider(string coverUrl)
@@ -374,11 +332,6 @@ public static class DownloadEngineArtworkHelper
             {
                 return byId;
             }
-        }
-
-        if (!string.IsNullOrWhiteSpace(request.Artist))
-        {
-            return await request.SpotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
         }
 
         return null;

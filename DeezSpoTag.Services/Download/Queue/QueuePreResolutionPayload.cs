@@ -34,6 +34,10 @@ public static class QueuePreResolutionPayload
         string? AppleId = null,
         string? AppleAlbumId = null,
         string? AppleArtistId = null,
+        string? AppleAlbumName = null,
+        string? AppleArtistName = null,
+        string? AppleIsrc = null,
+        int? AppleDurationMs = null,
         string? QobuzId = null,
         string? TidalId = null,
         string? AmazonId = null,
@@ -140,6 +144,13 @@ public static class QueuePreResolutionPayload
         SetResolutionPairIfPresent(payload, "AppleId", "appleId", result.AppleId);
         SetResolutionPairIfPresent(payload, "AppleAlbumId", "appleAlbumId", result.AppleAlbumId);
         SetResolutionPairIfPresent(payload, "AppleArtistId", "appleArtistId", result.AppleArtistId);
+        SetResolutionPairIfPresent(payload, "AppleAlbumName", "appleAlbumName", result.AppleAlbumName);
+        SetResolutionPairIfPresent(payload, "AppleArtistName", "appleArtistName", result.AppleArtistName);
+        SetResolutionPairIfPresent(payload, "AppleIsrc", "appleIsrc", result.AppleIsrc);
+        if (result.AppleDurationMs.HasValue && result.AppleDurationMs.Value > 0)
+        {
+            SetResolutionPair(payload, "AppleDurationMs", "appleDurationMs", result.AppleDurationMs.Value);
+        }
         SetResolutionPairIfPresent(payload, "QobuzId", "qobuzId", result.QobuzId);
         SetResolutionPairIfPresent(payload, "TidalId", "tidalId", result.TidalId);
         SetResolutionPairIfPresent(payload, "AmazonId", "amazonId", result.AmazonId);

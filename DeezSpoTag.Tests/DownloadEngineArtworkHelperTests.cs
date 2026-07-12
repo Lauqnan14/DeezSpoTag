@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -11,6 +13,41 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadEngineArtworkHelperTests
 {
+    [Fact]
+    public void DownloadArtwork_ConsumesPersistedIdsWithoutResolvingAgain()
+    {
+        var repoRoot = Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var helperSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "DownloadEngineArtworkHelper.cs"));
+        var postDownloadSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "EngineAudioPostDownloadHelper.cs"));
+        var intentSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Services",
+            "DownloadIntentService.cs"));
+
+        Assert.DoesNotContain("ITrackIdentityResolver", helperSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ISpotifyIdResolver", helperSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TrackIdentityResolutionRequest", helperSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ITrackIdentityResolver", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ISpotifyIdResolver", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("SpotifyId = execution.Request.Payload.SpotifyId", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("payload.AppleId", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveAppleArtworkIdentity(execution)", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("ArtworkFallbackHelper.ResolveOrder(settings)", intentSource, StringComparison.Ordinal);
+        Assert.Contains("ArtworkFallbackHelper.ResolveArtistOrder(settings)", intentSource, StringComparison.Ordinal);
+        Assert.Contains("LyricsSettingsPolicy.CanFetchLyrics(settings)", intentSource, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ResolveStandardAudioCoverUrlsAsync_ExcludesPayloadCover_WhenFallbackDisabled()
     {
@@ -26,7 +63,6 @@ public sealed class DownloadEngineArtworkHelperTests
                 AppleCatalog: null,
                 HttpClientFactory: null,
                 SpotifyArtworkResolver: null,
-                SpotifyIdResolver: null,
                 DeezerClient: null,
                 AppleId: null,
                 Title: "Hot Body",
@@ -60,7 +96,6 @@ public sealed class DownloadEngineArtworkHelperTests
                 AppleCatalog: null,
                 HttpClientFactory: null,
                 SpotifyArtworkResolver: null,
-                SpotifyIdResolver: null,
                 DeezerClient: null,
                 AppleId: null,
                 Title: "Hot Body",
@@ -91,7 +126,6 @@ public sealed class DownloadEngineArtworkHelperTests
                 AppleCatalog: null,
                 HttpClientFactory: null,
                 SpotifyArtworkResolver: null,
-                SpotifyIdResolver: null,
                 DeezerClient: null,
                 AppleId: null,
                 Title: "Hot Body",

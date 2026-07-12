@@ -1685,9 +1685,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
+        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
+            ? "us"
+            : settings.AppleMusic.Storefront;
+        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token);
+
         if (wantsAppleLyrics)
         {
-            await PopulateAppleLyricsAsync(filePath, track, config, settings, token);
+            await PopulateAppleLyricsAsync(filePath, track, config, settings, appleIdentity?.AppleId, token);
         }
 
         if (!wantsAnimatedArtwork)
@@ -1701,12 +1706,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront)
-            ? "us"
-            : settings.AppleMusic.Storefront;
         var maxResolution = settings.Video?.AppleMusicVideoMaxResolution ?? 2160;
         var baseFileName = BuildAlbumArtworkBaseFileName(track, settings);
-        var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token);
 
         await TryPopulateAppleAnimatedArtworkAsync(
             track,
@@ -1858,6 +1859,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Album: track.Album,
                     Isrc: track.Isrc,
                     DurationMs: track.Duration.HasValue ? (int)Math.Round(track.Duration.Value.TotalMilliseconds) : null,
+                    AppleId: track.TrackId,
                     TargetPlatforms: new[] { "apple" },
                     Storefront: storefront,
                     Language: "en-US",
@@ -2059,6 +2061,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagTrack track,
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
+        string? appleId,
         CancellationToken token)
     {
         var request = BuildLyricsPopulationRequest(filePath, track, config, settings);
@@ -2075,7 +2078,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         LyricsBase? lyrics;
         try
         {
-            lyrics = await ResolveAppleLyricsAsync(track, settings, token);
+            lyrics = await ResolveAppleLyricsAsync(appleId, settings, token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2203,47 +2206,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private async Task<LyricsBase?> ResolveAppleLyricsAsync(
-        AutoTagTrack track,
+        string? appleId,
         DeezSpoTagSettings settings,
         CancellationToken token)
     {
-        if (!string.IsNullOrWhiteSpace(track.TrackId))
+        if (string.IsNullOrWhiteSpace(appleId))
         {
-            var byId = await _appleLyricsService.ResolveLyricsAsync(track.TrackId, settings, token);
-            if (byId.IsLoaded())
-            {
-                return byId;
-            }
+            return null;
         }
 
-        var lookupTrack = BuildAppleLyricsLookupTrack(track);
-        var byLookup = await _appleLyricsService.ResolveLyricsForTrackAsync(lookupTrack, settings, token);
-        return byLookup.IsLoaded() ? byLookup : null;
-    }
-
-    private static Track BuildAppleLyricsLookupTrack(AutoTagTrack track)
-    {
-        var lookupTrack = new Track
-        {
-            Title = track.Title ?? string.Empty,
-            Album = new Album(track.Album ?? string.Empty),
-            ISRC = track.Isrc ?? string.Empty
-        };
-
-        var primaryArtist = track.Artists.FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(primaryArtist))
-        {
-            lookupTrack.MainArtist = new DeezSpoTag.Core.Models.Artist
-            {
-                Id = "0",
-                Name = primaryArtist,
-                Role = "Main"
-            };
-            lookupTrack.Artists = new List<string> { primaryArtist };
-            lookupTrack.Artist["Main"] = new List<string> { primaryArtist };
-        }
-
-        return lookupTrack;
+        var lyrics = await _appleLyricsService.ResolveLyricsAsync(appleId, settings, token);
+        return lyrics.IsLoaded() ? lyrics : null;
     }
 
     private static LyricsRequestFlags ApplyLyricsPreferenceGate(
