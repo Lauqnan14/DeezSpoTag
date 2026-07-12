@@ -509,6 +509,8 @@ public sealed class BoomplayMatcher
             other["language"] = new List<string> { language };
         }
 
+        var (mood, activity) = ClassifyMoodContexts(track.Moods);
+
         return new AutoTagTrack
         {
             Title = Normalize(track.Title),
@@ -526,9 +528,40 @@ public sealed class BoomplayMatcher
             Label = Normalize(track.Publisher),
             Bpm = track.Bpm > 0 ? track.Bpm : null,
             Key = Normalize(track.Key),
+            Mood = mood,
+            Activity = activity,
             Art = Normalize(track.CoverUrl),
             Other = other
         };
+    }
+
+    private static (string? Mood, string? Activity) ClassifyMoodContexts(IEnumerable<string> contexts)
+    {
+        var text = string.Join(" ", contexts).ToLowerInvariant();
+        string? mood = text switch
+        {
+            var value when value.Contains("happy") => "Happy",
+            var value when value.Contains("sad") || value.Contains("broken") || value.Contains("lonely") => "Sad",
+            var value when value.Contains("love") || value.Contains("mapenzi") => "Romantic",
+            var value when value.Contains("relax") || value.Contains("easy going") || value.Contains("tulia") => "Relaxed",
+            var value when value.Contains("chill") || value.Contains("vibe") => "Chill",
+            var value when value.Contains("party") || value.Contains("turnup") => "Party",
+            var value when value.Contains("uplifting") || value.Contains("power") || value.Contains("beast") => "Energetic",
+            _ => null
+        };
+        string? activity = text switch
+        {
+            var value when value.Contains("workout") || value.Contains("work out") || value.Contains("sweat") || value.Contains("runner") || value.Contains("cycles") => "Workout",
+            var value when value.Contains("sleep") || value.Contains("dream") => "Sleep",
+            var value when value.Contains("meditation") || value.Contains("reflection") => "Meditation",
+            var value when value.Contains("driving") || value.Contains("road trip") => "Driving",
+            var value when value.Contains("gaming") => "Gaming",
+            var value when value.Contains("worship") => "Worship",
+            var value when value.Contains("work from home") => "Work",
+            var value when value.Contains("comedy") => "Comedy",
+            _ => null
+        };
+        return (mood, activity);
     }
 
     private static List<string> ParseArtists(string? artist)

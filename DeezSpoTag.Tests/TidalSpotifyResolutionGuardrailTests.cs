@@ -209,6 +209,43 @@ public sealed class TidalSpotifyResolutionGuardrailTests
         Assert.Null(selected);
     }
 
+    [Fact]
+    public void SpotifyWebResolver_AllowsMetadataFallback_WhenIsrcBelongsToUnrelatedResult()
+    {
+        var items = new List<SpotifySearchItem>
+        {
+            new("unrelated", "Different Song", "track", "https://open.spotify.com/track/unrelated", null, "Different Artist - Different Album", 180_000, Isrc: "USXXX0000001"),
+            new("expected", "Target Song", "track", "https://open.spotify.com/track/expected", null, "Target Artist - Target Album", 180_000)
+        };
+
+        var hasConflict = InvokeHasConflictingIsrcForAcceptableMetadata(
+            items,
+            "Target Song",
+            "Target Artist",
+            "Target Album",
+            "TZA1X2200742");
+
+        Assert.False(hasConflict);
+    }
+
+    [Fact]
+    public void SpotifyWebResolver_BlocksMetadataFallback_WhenMatchingResultHasDifferentIsrc()
+    {
+        var items = new List<SpotifySearchItem>
+        {
+            new("conflict", "Target Song", "track", "https://open.spotify.com/track/conflict", null, "Target Artist - Target Album", 180_000, Isrc: "USXXX0000001")
+        };
+
+        var hasConflict = InvokeHasConflictingIsrcForAcceptableMetadata(
+            items,
+            "Target Song",
+            "Target Artist",
+            "Target Album",
+            "TZA1X2200742");
+
+        Assert.True(hasConflict);
+    }
+
     private static SpotifySearchItem? InvokeSelectBestCandidate(
         List<SpotifySearchItem> items,
         string title,
@@ -224,6 +261,23 @@ public sealed class TidalSpotifyResolutionGuardrailTests
         Assert.NotNull(method);
 
         return method!.Invoke(null, [items, title, artist, album, isrc, allowFirstWhenMetadataMissing]) as SpotifySearchItem;
+    }
+
+    private static bool InvokeHasConflictingIsrcForAcceptableMetadata(
+        List<SpotifySearchItem> items,
+        string title,
+        string artist,
+        string? album,
+        string? isrc)
+    {
+        var method = typeof(DeezSpoTag.Web.Services.SpotifyIdResolver).GetMethod(
+            "HasConflictingIsrcForAcceptableMetadata",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        return (bool)(method!.Invoke(null, [items, title, artist, album, isrc])
+            ?? throw new InvalidOperationException("SpotifyIdResolver.HasConflictingIsrcForAcceptableMetadata returned null."));
     }
 
     private static SpotifyTrackSummary? InvokeParseTrackSummary(JsonElement element)

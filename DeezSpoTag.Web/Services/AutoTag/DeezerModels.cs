@@ -7,23 +7,8 @@ public sealed class DeezerConfig
     [JsonPropertyName("art_resolution")]
     public int ArtResolution { get; set; } = 1200;
 
-    [JsonPropertyName("arl")]
-    public string? Arl { get; set; }
-
-    [JsonPropertyName("max_bitrate")]
-    public int? MaxBitrate { get; set; }
-
-    [JsonPropertyName("language")]
-    public string? Language { get; set; }
-
-    [JsonPropertyName("country")]
-    public string? Country { get; set; }
-
     [JsonPropertyName("match_by_id")]
     public bool MatchById { get; set; }
-
-    [JsonPropertyName("fetch_lyrics")]
-    public bool FetchLyrics { get; set; } = true;
 }
 
 public sealed class DeezerResponse<T>
@@ -210,12 +195,6 @@ public sealed class DeezerTrackInfo
     public string? Source { get; set; }
     public string? SourceId { get; set; }
     public string? Rating { get; set; }
-    public string? UnsyncedLyrics { get; set; }
-    public List<string> SyncedLyrics { get; set; } = new();
-}
-
-public sealed class DeezerLyricsPayload
-{
     public string? UnsyncedLyrics { get; set; }
     public List<string> SyncedLyrics { get; set; } = new();
 }

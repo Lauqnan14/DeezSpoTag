@@ -51,6 +51,8 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 SupportedTag.ISRC,
                 SupportedTag.ReleaseDate,
                 SupportedTag.Genre,
+                SupportedTag.Mood,
+                SupportedTag.Activity,
                 SupportedTag.Label,
                 SupportedTag.BPM,
                 SupportedTag.Key

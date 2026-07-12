@@ -254,7 +254,6 @@ public partial class AutoTagService
     private AutoTagJob? _latestTerminalJob;
     private readonly ILogger<AutoTagService> _logger;
     private readonly LibraryConfigStore _activityLog;
-    private readonly AuthenticatedDeezerService _deezerAuth;
     private readonly AutoTagMetadataService _metadataService;
     private readonly DeezSpoTag.Web.Services.AutoTag.IAutoTagRunner _autoTagRunner;
     private readonly AutoTagLibraryOrganizer _libraryOrganizer;
@@ -466,7 +465,6 @@ public partial class AutoTagService
     {
         public required IConfiguration Configuration { get; init; }
         public required LibraryConfigStore ActivityLog { get; init; }
-        public required AuthenticatedDeezerService DeezerAuth { get; init; }
         public required AutoTagMetadataService MetadataService { get; init; }
         public required DeezSpoTag.Web.Services.AutoTag.IAutoTagRunner AutoTagRunner { get; init; }
         public required AutoTagLibraryOrganizer LibraryOrganizer { get; init; }
@@ -498,7 +496,6 @@ public partial class AutoTagService
     {
         _logger = logger;
         _activityLog = collaborators.ActivityLog;
-        _deezerAuth = collaborators.DeezerAuth;
         _metadataService = collaborators.MetadataService;
         _autoTagRunner = collaborators.AutoTagRunner;
         _libraryOrganizer = collaborators.LibraryOrganizer;
@@ -718,8 +715,6 @@ public partial class AutoTagService
         {
             AppendLog(job, "runtime config preparing");
             var runtimeConfigJson = SanitizeConfigJson(configJson);
-            runtimeConfigJson = await InjectDeezerAuthAsync(runtimeConfigJson);
-            runtimeConfigJson = InjectDeezerDownloadOptions(runtimeConfigJson);
             runtimeConfigJson = await InjectPlatformDefaultsAsync(runtimeConfigJson);
             runtimeConfigJson = await InjectPlatformAuthAsync(runtimeConfigJson);
             runtimeConfigJson = InjectRunTrigger(runtimeConfigJson, job.Trigger);
@@ -4114,6 +4109,7 @@ public partial class AutoTagService
             EnsureEnhancementFolderScopesCanonical(node);
             EnsureLegacyFolderUniformityStructureMirrorsRemoved(node);
             EnsureLegacyOrganizerConfigRemoved(node);
+            EnsureLegacyDeezerAuthRemoved(node);
             EnsureSpotifySecret(node);
             return node.ToJsonString(new JsonSerializerOptions
             {
@@ -4345,6 +4341,34 @@ public partial class AutoTagService
         root.Remove("organizer");
     }
 
+    private static void EnsureLegacyDeezerAuthRemoved(JsonNode node)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                foreach (var key in obj.Select(static pair => pair.Key).ToList())
+                {
+                    if (string.Equals(key, "arl", StringComparison.OrdinalIgnoreCase))
+                    {
+                        obj.Remove(key);
+                        continue;
+                    }
+
+                    if (obj[key] is { } child)
+                    {
+                        EnsureLegacyDeezerAuthRemoved(child);
+                    }
+                }
+                break;
+            case JsonArray array:
+                foreach (var child in array.Where(static item => item != null))
+                {
+                    EnsureLegacyDeezerAuthRemoved(child!);
+                }
+                break;
+        }
+    }
+
     private static string RedactSensitiveConfigJson(string configJson)
     {
         if (string.IsNullOrWhiteSpace(configJson))
@@ -4503,104 +4527,6 @@ public partial class AutoTagService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to persist last AutoTag job id.");
-        }
-    }
-
-    private async Task<string> InjectDeezerAuthAsync(string configJson)
-    {
-        var arl = await _deezerAuth.GetArlAsync();
-        if (string.IsNullOrWhiteSpace(arl))
-        {
-            return configJson;
-        }
-
-        try
-        {
-            var node = JsonNode.Parse(configJson) as JsonObject;
-            if (node == null)
-            {
-                return configJson;
-            }
-
-            if (node[AutoTagLiterals.CustomKey] is not JsonObject custom)
-            {
-                custom = new JsonObject();
-                node[AutoTagLiterals.CustomKey] = custom;
-            }
-
-            if (custom[AutoTagLiterals.DeezerSource] is not JsonObject deezer)
-            {
-                deezer = new JsonObject();
-                custom[AutoTagLiterals.DeezerSource] = deezer;
-            }
-
-            if (deezer["art_resolution"] == null)
-            {
-                deezer["art_resolution"] = 1200;
-            }
-
-            if (deezer["arl"] == null)
-            {
-                deezer["arl"] = arl;
-            }
-
-            return node.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return configJson;
-        }
-    }
-
-    private string InjectDeezerDownloadOptions(string configJson)
-    {
-        try
-        {
-            var settings = _settingsService.LoadSettings();
-            var node = JsonNode.Parse(configJson) as JsonObject;
-            if (node == null)
-            {
-                return configJson;
-            }
-
-            if (node[AutoTagLiterals.CustomKey] is not JsonObject custom)
-            {
-                custom = new JsonObject();
-                node[AutoTagLiterals.CustomKey] = custom;
-            }
-
-            if (custom[AutoTagLiterals.DeezerSource] is not JsonObject deezer)
-            {
-                deezer = new JsonObject();
-                custom[AutoTagLiterals.DeezerSource] = deezer;
-            }
-
-            if (deezer["max_bitrate"] == null && settings.MaxBitrate > 0)
-            {
-                deezer["max_bitrate"] = settings.MaxBitrate;
-            }
-
-            if (deezer[AutoTagLiterals.LanguageTag] == null && !string.IsNullOrWhiteSpace(settings.DeezerLanguage))
-            {
-                deezer[AutoTagLiterals.LanguageTag] = settings.DeezerLanguage;
-            }
-
-            if (deezer["country"] == null && !string.IsNullOrWhiteSpace(settings.DeezerCountry))
-            {
-                deezer["country"] = settings.DeezerCountry;
-            }
-
-            return node.ToJsonString(new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return configJson;
         }
     }
 

@@ -1,92 +1,45 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Hosting;
 using DeezSpoTag.Services.Authentication;
+using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Core.Constants;
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Integrations.Deezer;
-using System.Text.Json;
 
 namespace DeezSpoTag.API.Controllers
 {
     /// <summary>
-    /// Login controller - Complete port from deezspotag login system
-    /// Ported from: /deezspotag/webui/src/server/routes/api/post/loginArl.ts and loginEmail.ts
+    /// Login controller backed by the centralized Deezer session and stored ARL.
     /// </summary>
     [ApiController]
     [Route("api/[controller]")]
     [AutoValidateAntiforgeryToken]
     public class LoginController : ControllerBase
     {
-        private const string DeezerScheme = "https";
-        private const string DeezerHost = "www.deezer.com";
         private const string InternalServerErrorMessage = "Internal server error";
-        private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
         private readonly ILoginStorageService _loginStorage;
         private readonly DeezerClient _deezerClient;
-        private readonly IDeezerAuthenticationService _deezerAuthService;
+        private readonly AuthenticatedDeezerService _authenticatedDeezerService;
         private readonly ILogger<LoginController> _logger;
-        private readonly IHttpClientFactory _httpClientFactory;
-        private readonly IHostEnvironment _hostEnvironment;
         private readonly bool _isSingleUser;
 
         public LoginController(
-        ILoginStorageService loginStorage,
-        DeezerClient deezerClient,
-        DeezSpoTag.Services.Authentication.IDeezerAuthenticationService deezerAuthService,
+            ILoginStorageService loginStorage,
+            DeezerClient deezerClient,
+            AuthenticatedDeezerService authenticatedDeezerService,
             IConfiguration configuration,
-            ILogger<LoginController> logger,
-            IHttpClientFactory httpClientFactory,
-            IHostEnvironment hostEnvironment)
+            ILogger<LoginController> logger)
         {
             _loginStorage = loginStorage ?? throw new ArgumentNullException(nameof(loginStorage));
             _deezerClient = deezerClient ?? throw new ArgumentNullException(nameof(deezerClient));
-            _deezerAuthService = deezerAuthService ?? throw new ArgumentNullException(nameof(deezerAuthService));
+            _authenticatedDeezerService = authenticatedDeezerService ?? throw new ArgumentNullException(nameof(authenticatedDeezerService));
             ArgumentNullException.ThrowIfNull(configuration);
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
-            _hostEnvironment = hostEnvironment ?? throw new ArgumentNullException(nameof(hostEnvironment));
 
             // Get single user mode setting (like deezspotag isSingleUser)
             _isSingleUser = configuration.GetValue<bool>("IsSingleUser", false);
-        }
-
-        /// <summary>
-        /// Check if Deezer is available in the current region
-        /// Ported from: deezspotag/webui/src/server/deezSpoTagApp.ts isDeezerAvailable method
-        /// </summary>
-        private async Task<bool> IsDeezerAvailableAsync()
-        {
-            try
-            {
-                using var httpClient = _httpClientFactory.CreateClient();
-                httpClient.DefaultRequestHeaders.Add("Cookie", "dz_lang=en; Domain=deezer.com; Path=/; Secure; hostOnly=false;");
-
-                var response = await httpClient.GetAsync(BuildDeezerHomeUrl());
-                response.EnsureSuccessStatusCode();
-
-                var content = await response.Content.ReadAsStringAsync();
-
-                // Extract title from HTML (exact port from deezspotag)
-                var titleMatch = System.Text.RegularExpressions.Regex.Match(
-                    content,
-                    @"<title[^>]*>([^<]+)<\/title>",
-                    System.Text.RegularExpressions.RegexOptions.None,
-                    RegexTimeout);
-                var title = titleMatch.Success ? titleMatch.Groups[1].Value.Trim() : "";
-
-                // Check if Deezer is available (exact deezspotag logic)
-                var isAvailable = title != "Deezer will soon be available in your country.";
-
-                _logger.LogDebug("Deezer availability check: {IsAvailable} (title: {Title})", isAvailable, title);
-                return isAvailable;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Error checking Deezer availability");
-                return false; // Assume not available on error
-            }
         }
 
         /// <summary>
@@ -99,14 +52,14 @@ namespace DeezSpoTag.API.Controllers
         {
             try
             {
-                var loginData = await _loginStorage.LoadLoginCredentialsAsync();
-
-                if (loginData?.Arl == null || loginData.User == null)
+                var client = await _authenticatedDeezerService.GetAuthenticatedClientAsync();
+                if (client?.LoggedIn != true || client.CurrentUser == null)
                 {
                     return Ok(new
                     {
                         status = LoginStatus.FAILED,
                         arl = default(string),
+                        live = false,
                         user = default(object),
                         childs = Array.Empty<string>(),
                         currentChild = 0
@@ -116,18 +69,19 @@ namespace DeezSpoTag.API.Controllers
                 return Ok(new
                 {
                     status = LoginStatus.SUCCESS,
-                    arl = loginData.Arl,
+                    arl = default(string),
+                    live = true,
                     user = new
                     {
-                        id = loginData.User.Id,
-                        name = loginData.User.Name,
-                        picture = loginData.User.Picture,
-                        country = loginData.User.Country,
-                        can_stream_lossless = loginData.User.CanStreamLossless,
-                        can_stream_hq = loginData.User.CanStreamHq
+                        id = client.CurrentUser.Id,
+                        name = client.CurrentUser.Name,
+                        picture = client.CurrentUser.Picture,
+                        country = client.CurrentUser.Country,
+                        can_stream_lossless = client.CurrentUser.CanStreamLossless,
+                        can_stream_hq = client.CurrentUser.CanStreamHq
                     },
-                    childs = _deezerClient.ChildAccounts ?? Array.Empty<string>(),
-                    currentChild = _deezerClient.SelectedAccount
+                    childs = client.ChildAccounts ?? Array.Empty<string>(),
+                    currentChild = client.SelectedAccount
                 });
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -142,6 +96,8 @@ namespace DeezSpoTag.API.Controllers
         /// Complete port from: /deezspotag/webui/src/server/routes/api/post/loginArl.ts
         /// </summary>
         [HttpPost("loginArl")]
+        [HttpPost("login/arl")]
+        [HttpPost("/api/authentication/login/arl")]
         [ValidateAntiForgeryToken]
         public async Task<IActionResult> LoginArl([FromBody] LoginArlRequest request)
         {
@@ -157,7 +113,6 @@ namespace DeezSpoTag.API.Controllers
                     request.Arl.Length, request.Child);
 
                 var response = await GetArlLoginStatusAsync(request);
-                response = await ApplyDeezerAvailabilityAsync(response);
                 var returnValue = BuildArlLoginResponse(request.Arl, response);
                 await PersistArlLoginStateAsync(request, response);
                 return Ok(returnValue);
@@ -171,13 +126,15 @@ namespace DeezSpoTag.API.Controllers
 
         private BadRequestObjectResult? ValidateArlRequest(LoginArlRequest request)
         {
-            if (!string.IsNullOrEmpty(request.Arl))
+            var normalizedArl = DeezerAuthUtils.NormalizeArl(request.Arl);
+            if (!string.IsNullOrEmpty(normalizedArl) && DeezerAuthUtils.IsValidArlLength(normalizedArl))
             {
+                request.Arl = normalizedArl;
                 return null;
             }
 
-            _logger.LogWarning("LoginArl called with empty ARL");
-            return BadRequest(new { error = "ARL is required" });
+            _logger.LogWarning("LoginArl called with an invalid ARL");
+            return BadRequest(new { error = "A valid ARL is required" });
         }
 
         private async Task<int> GetArlLoginStatusAsync(LoginArlRequest request)
@@ -197,17 +154,6 @@ namespace DeezSpoTag.API.Controllers
                 _logger.LogError(ex, "Error during ARL login");
                 return LoginStatus.FAILED;
             }
-        }
-
-        private async Task<int> ApplyDeezerAvailabilityAsync(int response)
-        {
-            if (await IsDeezerAvailableAsync())
-            {
-                return response;
-            }
-
-            _logger.LogWarning("Deezer is not available in this region");
-            return LoginStatus.NOT_AVAILABLE;
         }
 
         private object BuildArlLoginResponse(string arl, int response)
@@ -265,64 +211,6 @@ namespace DeezSpoTag.API.Controllers
         }
 
         /// <summary>
-        /// Login with email and password
-        /// Complete port from: /deezspotag/webui/src/server/routes/api/post/loginEmail.ts
-        /// </summary>
-        [HttpPost("loginEmail")]
-        [ValidateAntiForgeryToken]
-        public async Task<IActionResult> LoginEmail([FromBody] LoginEmailRequest request)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(request.Email) || string.IsNullOrEmpty(request.Password))
-                {
-                    _logger.LogWarning("LoginEmail called with missing email or password");
-                    return BadRequest(new { error = "Email and password are required" });
-                }
-
-                _logger.LogDebug("LoginEmail called");
-
-                // Exact logic from deezspotag loginEmail.ts
-                string? accessToken = request.AccessToken;
-
-                if (string.IsNullOrEmpty(accessToken))
-                {
-                    // Get access token from email/password (exact deezspotag logic)
-                    accessToken = await _deezerAuthService.GetAccessTokenFromEmailPasswordAsync(
-                        request.Email, request.Password);
-
-                    if (accessToken == "undefined")
-                        accessToken = null;
-                }
-
-                string? arl = null;
-                if (!string.IsNullOrEmpty(accessToken))
-                {
-                    // Get ARL from access token (exact deezspotag logic)
-                    arl = await _deezerAuthService.GetArlFromAccessTokenAsync(accessToken);
-                }
-
-                // Save credentials in single user mode (exact logic from deezspotag)
-                if (_isSingleUser && !string.IsNullOrEmpty(accessToken))
-                {
-                    await _loginStorage.SaveLoginCredentialsAsync(new LoginData
-                    {
-                        AccessToken = accessToken,
-                        Arl = arl
-                    });
-                }
-
-                // Return response exactly like deezspotag
-                return Ok(new { accessToken, arl });
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Error in LoginEmail");
-                return StatusCode(500, new { error = InternalServerErrorMessage });
-            }
-        }
-
-        /// <summary>
         /// Logout user
         /// Complete port from: /deezspotag/webui/src/server/routes/api/post/logout.ts
         /// </summary>
@@ -360,95 +248,6 @@ namespace DeezSpoTag.API.Controllers
             }
         }
 
-        #region Authentication Controller Methods (consolidated from AuthenticationController)
-
-        /// <summary>
-        /// Login with email and password (alternative endpoint)
-        /// Consolidated from AuthenticationController
-        /// </summary>
-        [HttpPost("login/email")]
-        [HttpPost("/api/authentication/login/email")]
-        [ValidateAntiForgeryToken]
-        public async Task<IActionResult> LoginWithEmail([FromBody] LoginEmailRequest request)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
-                {
-                    return BadRequest(new { error = "Email and password are required" });
-                }
-
-                var result = await _deezerAuthService.LoginWithEmailPasswordAsync(request.Email, request.Password);
-                return CreateAuthenticationResponse(result);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Error during email login");
-                return StatusCode(500, new { error = InternalServerErrorMessage });
-            }
-        }
-
-        /// <summary>
-        /// Login with ARL token (alternative endpoint)
-        /// Consolidated from AuthenticationController
-        /// </summary>
-        [HttpPost("login/arl")]
-        [HttpPost("/api/authentication/login/arl")]
-        [ValidateAntiForgeryToken]
-        public async Task<IActionResult> LoginWithArl([FromBody] LoginArlRequest request)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(request.Arl))
-                {
-                    return BadRequest(new { error = "ARL token is required" });
-                }
-
-                var result = await _deezerAuthService.LoginWithArlAsync(request.Arl);
-                return CreateAuthenticationResponse(result);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Error during ARL login");
-                return StatusCode(500, new { error = InternalServerErrorMessage });
-            }
-        }
-
-        /// <summary>
-        /// Get stored credentials (for debugging - remove in production)
-        /// Consolidated from AuthenticationController
-        /// </summary>
-        [HttpGet("credentials")]
-        [HttpGet("/api/authentication/credentials")]
-        public async Task<IActionResult> GetCredentials()
-        {
-            try
-            {
-                if (!_hostEnvironment.IsDevelopment())
-                {
-                    return NotFound();
-                }
-
-                var credentials = await _deezerAuthService.GetLoginCredentialsAsync();
-
-                return Ok(new
-                {
-                    hasArl = !string.IsNullOrEmpty(credentials.Arl),
-                    hasAccessToken = !string.IsNullOrEmpty(credentials.AccessToken),
-                    // Don't return actual values for security
-                    arlLength = credentials.Arl?.Length ?? 0,
-                    accessTokenLength = credentials.AccessToken?.Length ?? 0
-                });
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Error getting credentials");
-                return StatusCode(500, new { error = "Internal server error" });
-            }
-        }
-
-        #endregion
-
         /// <summary>
         /// Clear session data
         /// Ported from: deezspotag session cleanup logic
@@ -464,9 +263,6 @@ namespace DeezSpoTag.API.Controllers
                     _logger.LogDebug("Deezer client session cleared");
                 }
 
-                await _deezerAuthService.ClearSessionAsync();
-                _logger.LogDebug("Authentication service session cleared");
-
                 _logger.LogDebug("Session data cleanup completed");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -475,37 +271,6 @@ namespace DeezSpoTag.API.Controllers
             }
         }
 
-        private static string BuildDeezerHomeUrl()
-            => new UriBuilder(DeezerScheme, DeezerHost) { Path = "/" }.Uri.ToString();
-
-        private IActionResult CreateAuthenticationResponse(AuthenticationResult result)
-        {
-            if (!result.Success)
-            {
-                return BadRequest(new
-                {
-                    success = false,
-                    error = result.ErrorMessage,
-                    status = (int)result.Status
-                });
-            }
-
-            return Ok(new
-            {
-                success = true,
-                status = (int)result.Status,
-                user = new
-                {
-                    id = result.User?.Id,
-                    name = result.User?.Name,
-                    picture = result.User?.Picture,
-                    country = result.User?.Country,
-                    can_stream_lossless = result.User?.CanStreamLossless,
-                    can_stream_hq = result.User?.CanStreamHq
-                },
-                arl = result.Arl
-            });
-        }
     }
 
     /// <summary>
@@ -517,17 +282,5 @@ namespace DeezSpoTag.API.Controllers
         public required string Arl { get; set; }
         public int? Child { get; set; }
     }
-
-    /// <summary>
-    /// Login email request model
-    /// Exact port from deezspotag loginEmail request structure
-    /// </summary>
-    public class LoginEmailRequest
-    {
-        public required string Email { get; set; }
-        public required string Password { get; set; }
-        public string? AccessToken { get; set; }
-    }
-
 
 }

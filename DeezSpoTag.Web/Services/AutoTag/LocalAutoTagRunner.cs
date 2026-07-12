@@ -2011,7 +2011,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var shouldFetchUnsyncedPayload = wantsUnsynced || wantsTtml;
         return new DeezSpoTagSettings
         {
-            Arl = baseSettings.Arl,
             DeezerCountry = baseSettings.DeezerCountry,
             AppleMusic = baseSettings.AppleMusic,
             Video = baseSettings.Video,
@@ -2454,8 +2453,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             case SpotifyPlatform:
                 return await _spotifyMatcher.MatchAsync(info, context.MatchingConfig, token);
             case DeezerPlatform:
-                var deezerConfig = ResolveDeezerMatchConfig(context.Config, context.Settings);
-                deezerConfig.FetchLyrics = enableLyrics && !hasLyricsSidecar;
+                var deezerConfig = ResolveDeezerMatchConfig(context.Config);
                 return await _deezerMatcher.MatchAsync(info, context.MatchingConfig, deezerConfig, token);
             case BoomplayPlatform:
                 return await _boomplayMatcher.MatchAsync(
@@ -2556,17 +2554,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         CancellationToken token)
     {
         var shazamConfig = LoadConfig(config.Custom, ShazamPlatform, new ShazamMatchConfig());
-        var enableLyrics = ShouldRequestAnyLyrics(config, settings);
-        var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(filePath).HasAny;
-        var allowDeezerMatcherLyrics = enableLyrics && !hasLyricsSidecar;
         if (shazamConfig.IdFirst)
         {
             var idFirstMatch = await TryMatchShazamByIdsAsync(
                 info,
                 config,
-                settings,
                 matchingConfig,
-                allowDeezerMatcherLyrics,
                 token);
             if (idFirstMatch != null)
             {
@@ -2585,9 +2578,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private async Task<AutoTagMatchResult?> TryMatchShazamByIdsAsync(
         AutoTagAudioInfo info,
         AutoTagRunnerConfig config,
-        DeezSpoTagSettings settings,
         AutoTagMatchingConfig matchingConfig,
-        bool allowDeezerMatcherLyrics,
         CancellationToken token)
     {
         var effectiveInfo = BuildShazamIdFirstInfo(info);
@@ -2598,8 +2589,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (hasDeezerId)
         {
-            var deezerConfig = ResolveDeezerMatchConfig(config, settings);
-            deezerConfig.FetchLyrics = allowDeezerMatcherLyrics;
+            var deezerConfig = ResolveDeezerMatchConfig(config);
             deezerConfig.MatchById = true;
             var byDeezerId = await _deezerMatcher.MatchAsync(effectiveInfo, matchingConfig, deezerConfig, token);
             if (byDeezerId != null)
@@ -2619,8 +2609,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (hasIsrc)
         {
-            var deezerConfig = ResolveDeezerMatchConfig(config, settings);
-            deezerConfig.FetchLyrics = allowDeezerMatcherLyrics;
+            var deezerConfig = ResolveDeezerMatchConfig(config);
             deezerConfig.MatchById = true;
             var byDeezerIsrc = await _deezerMatcher.MatchAsync(effectiveInfo, matchingConfig, deezerConfig, token);
             if (byDeezerIsrc != null)
@@ -2638,13 +2627,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return null;
     }
 
-    private static DeezerConfig ResolveDeezerMatchConfig(AutoTagRunnerConfig config, DeezSpoTagSettings settings)
-    {
-        var deezerConfig = LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig());
-        deezerConfig.Arl = settings.Arl;
-
-        return deezerConfig;
-    }
+    private static DeezerConfig ResolveDeezerMatchConfig(AutoTagRunnerConfig config)
+        => LoadConfig(config.Custom, DeezerPlatform, new DeezerConfig());
 
     private static AutoTagAudioInfo BuildShazamIdFirstInfo(AutoTagAudioInfo source)
     {
@@ -4733,6 +4717,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         WriteRemixerTag(tagWriteContext, context);
         WriteIsrcTag(tagWriteContext, context);
         WriteMoodTag(tagWriteContext, context);
+        WriteActivityTag(tagWriteContext, context);
     }
 
     private static void WriteReleaseDateTag(TagLib.File file, TagWriteExecutionContext context)
@@ -4897,6 +4882,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         SetField(tagWriteContext, new TagFieldBinding("TMOO", "MOOD", "MOOD", SupportedTag.Mood), new List<string> { context.SourceTrack.Mood });
+    }
+
+    private static void WriteActivityTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains("activity") || string.IsNullOrWhiteSpace(context.SourceTrack.Activity))
+        {
+            return;
+        }
+
+        SetField(tagWriteContext, new TagFieldBinding("ACTIVITY", "ACTIVITY", "ACTIVITY", SupportedTag.Activity), new List<string> { context.SourceTrack.Activity });
     }
 
     private static void ApplyTrackAndLyricsTagWrites(
@@ -5881,6 +5876,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         add("liveness", track.Liveness.HasValue);
         add("key", !string.IsNullOrWhiteSpace(track.Key));
         add("mood", !string.IsNullOrWhiteSpace(track.Mood));
+        add("activity", !string.IsNullOrWhiteSpace(track.Activity));
     }
 
     private static void AddAutoTagNumericAndDateTags(AutoTagTrack track, Action<string, bool> add)
@@ -6052,6 +6048,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Duration => TagRawProbe.HasId3Raw(tag, "TLEN"),
             SupportedTag.Remixer => TagRawProbe.HasId3Raw(tag, "TPE4"),
             SupportedTag.Mood => TagRawProbe.HasId3Raw(tag, "TMOO"),
+            SupportedTag.Activity => TagRawProbe.HasId3Raw(tag, "ACTIVITY"),
             SupportedTag.ReleaseDate => TagRawProbe.HasId3Raw(tag, config.Id3v24 ? "TDRC" : "TYER"),
             SupportedTag.PublishDate => TagRawProbe.HasId3Raw(tag, "TDRL"),
             SupportedTag.URL => TagRawProbe.HasId3Raw(tag, WwwAudioFileTag),
@@ -6109,6 +6106,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Duration => tag.GetField(LengthUpperTag).Length > 0,
             SupportedTag.Remixer => tag.GetField(RemixerUpperTag).Length > 0,
             SupportedTag.Mood => tag.GetField("MOOD").Length > 0,
+            SupportedTag.Activity => tag.GetField("ACTIVITY").Length > 0,
             SupportedTag.ReleaseDate => tag.GetField("DATE").Length > 0,
             SupportedTag.PublishDate => tag.GetField(OriginalDateUpperTag).Length > 0,
             SupportedTag.URL => tag.GetField(WwwAudioFileTag).Length > 0,
@@ -6167,6 +6165,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Duration => Mp4TagHelper.HasRaw(file, LengthUpperTag),
             SupportedTag.Remixer => Mp4TagHelper.HasRaw(file, RemixerUpperTag),
             SupportedTag.Mood => Mp4TagHelper.HasRaw(file, "MOOD"),
+            SupportedTag.Activity => Mp4TagHelper.HasRaw(file, "ACTIVITY"),
             SupportedTag.Key => Mp4TagHelper.HasRaw(file, InitialKeyRawTag),
             SupportedTag.ReleaseDate =>
                 Mp4TagHelper.HasRaw(file, "©day")
@@ -6387,6 +6386,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 VorbisFormat => "MOOD",
                 _ => "MOOD"
             },
+            SupportedTag.Activity => "ACTIVITY",
             SupportedTag.CatalogNumber => CatalogNumberUpperTag,
             _ => tag.ToString()
         };

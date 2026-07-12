@@ -35,6 +35,7 @@ public enum SupportedTag
     ReleaseType,
     DiscNumber,
     Mood,
+    Activity,
     SyncedLyrics,
     TtmlLyrics,
     UnsyncedLyrics,

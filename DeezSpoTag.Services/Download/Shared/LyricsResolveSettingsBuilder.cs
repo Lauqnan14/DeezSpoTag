@@ -23,7 +23,6 @@ internal static class LyricsResolveSettingsBuilder
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = settings.LyricsFallbackOrder,
             DeezerCountry = settings.DeezerCountry,
-            Arl = settings.Arl,
             AppleMusic = settings.AppleMusic,
             AuthorizationToken = settings.AuthorizationToken,
             Tags = new TagSettings

@@ -125,6 +125,9 @@ public sealed class BoomplayApiController : ControllerBase
             albumArtist = DecodeBoomplayText(track.AlbumArtist),
             album = MapTrackAlbum(track),
             genres,
+            moods = NormalizeValues(track.Moods),
+            tags = track.Tags,
+            fieldSources = track.FieldSources,
             genreSource = GetGenreSource(track, genres),
             releaseDate = track.ReleaseDate ?? string.Empty,
             trackNumber = track.TrackNumber > 0 ? track.TrackNumber : (int?)null,
@@ -156,6 +159,12 @@ public sealed class BoomplayApiController : ControllerBase
 
     private static string DecodeBoomplayText(string? value)
         => WebUtility.HtmlDecode(value ?? string.Empty).Trim();
+
+    private static List<string> NormalizeValues(IEnumerable<string> values)
+        => values.Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static object MapTrackArtist(BoomplayTrackMetadata track)
         => new { id = string.Empty, name = DecodeBoomplayText(track.Artist) };
@@ -358,6 +367,10 @@ public sealed class BoomplayApiController : ControllerBase
                         title = album,
                         cover_medium = cover
                     },
+                    genres = NormalizeValues(track.Genres),
+                    moods = NormalizeValues(track.Moods),
+                    tags = track.Tags,
+                    fieldSources = track.FieldSources,
                     link = trackUrl,
                     sourceUrl = trackUrl
                 }
@@ -382,6 +395,10 @@ public sealed class BoomplayApiController : ControllerBase
                     track_position = index + 1,
                     artist = MapTrackArtist(track),
                     album = MapTrackAlbum(track),
+                    genres = NormalizeValues(track.Genres),
+                    moods = NormalizeValues(track.Moods),
+                    tags = track.Tags,
+                    fieldSources = track.FieldSources,
                     link = trackUrl,
                     sourceUrl = trackUrl
                 };

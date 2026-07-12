@@ -35,6 +35,8 @@ public sealed class BoomplayMetadataService
     private const int PlaylistCacheSizeLimit = 500;
     private const int SearchCacheSizeLimit = 500;
     private const int AlbumCacheSizeLimit = 1000;
+    private const int MoodPlaylistFetchConcurrency = 6;
+    private static readonly TimeSpan MoodIndexLifetime = TimeSpan.FromHours(12);
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex SongPathRegex = CreateRegex(@"(?:^|/)songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PlaylistPathRegex = CreateRegex(@"(?:^|/)playlists/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -135,6 +137,9 @@ public sealed class BoomplayMetadataService
     private readonly MemoryCache _playlistCache = new(new MemoryCacheOptions { SizeLimit = PlaylistCacheSizeLimit });
     private readonly MemoryCache _searchCache = new(new MemoryCacheOptions { SizeLimit = SearchCacheSizeLimit });
     private readonly MemoryCache _albumCache = new(new MemoryCacheOptions { SizeLimit = AlbumCacheSizeLimit });
+    private readonly SemaphoreSlim _moodIndexLock = new(1, 1);
+    private IReadOnlyDictionary<string, IReadOnlyList<string>>? _moodIndex;
+    private DateTimeOffset _moodIndexExpiresAt;
     private static readonly HashSet<string> GenreNoiseValues = new(StringComparer.OrdinalIgnoreCase)
     {
         BoomplaySource,
@@ -723,7 +728,111 @@ public sealed class BoomplayMetadataService
         }
 
         await ApplyStreamTagsAsync(songId, parsed, streamTagAttempts, cancellationToken);
+        await ApplyBoomplayMoodContextsAsync(parsed, cancellationToken);
         return new SongAttemptParseResult(parsed);
+    }
+
+    private async Task ApplyBoomplayMoodContextsAsync(BoomplayTrackMetadata track, CancellationToken cancellationToken)
+    {
+        var index = await GetMoodIndexAsync(cancellationToken);
+        if (!index.TryGetValue(track.Id, out var moods))
+        {
+            return;
+        }
+
+        foreach (var mood in moods)
+        {
+            AddClassificationValues(track.Moods, mood);
+        }
+        SetFieldSource(track, "moods", "boomplay-mood-playlists");
+    }
+
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetMoodIndexAsync(CancellationToken cancellationToken)
+    {
+        if (_moodIndex != null && DateTimeOffset.UtcNow < _moodIndexExpiresAt)
+        {
+            return _moodIndex;
+        }
+
+        await _moodIndexLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_moodIndex != null && DateTimeOffset.UtcNow < _moodIndexExpiresAt)
+            {
+                return _moodIndex;
+            }
+
+            try
+            {
+                var refreshed = await BuildMoodIndexAsync(cancellationToken);
+                _moodIndex = refreshed;
+                _moodIndexExpiresAt = DateTimeOffset.UtcNow.Add(MoodIndexLifetime);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && _moodIndex != null)
+            {
+                _logger.LogWarning(ex, "Boomplay mood index refresh failed; retaining stale index.");
+                _moodIndexExpiresAt = DateTimeOffset.UtcNow.AddMinutes(30);
+            }
+            return _moodIndex;
+        }
+        finally
+        {
+            _moodIndexLock.Release();
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> BuildMoodIndexAsync(CancellationToken cancellationToken)
+    {
+        var catalogHtml = await GetHtmlAsync($"{BoomplayBaseUrl}/more/home/moods-and-activities", cancellationToken);
+        var playlists = ParseMoodPlaylistCatalog(catalogHtml);
+        if (playlists.Count < 5)
+        {
+            throw new InvalidDataException($"Boomplay mood catalog validation failed: only {playlists.Count} playlists found.");
+        }
+        var results = new ConcurrentDictionary<string, ConcurrentDictionary<string, byte>>(StringComparer.Ordinal);
+
+        await Parallel.ForEachAsync(
+            playlists,
+            new ParallelOptions { MaxDegreeOfParallelism = MoodPlaylistFetchConcurrency, CancellationToken = cancellationToken },
+            async (playlist, token) =>
+            {
+                try
+                {
+                    var html = await GetHtmlAsync($"{BoomplayBaseUrl}/playlists/{playlist.Id}", token);
+                    foreach (Match match in SongIdInHtmlRegex.Matches(html))
+                    {
+                        var moods = results.GetOrAdd(match.Groups["id"].Value, static _ => new(StringComparer.OrdinalIgnoreCase));
+                        moods.TryAdd(playlist.Name, 0);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogDebug(ex, "Boomplay mood playlist fetch failed for {PlaylistId}", playlist.Id);
+                }
+            });
+
+        if (results.IsEmpty)
+        {
+            throw new InvalidDataException("Boomplay mood index validation failed: no track memberships found.");
+        }
+
+        return results.ToDictionary(
+            static pair => pair.Key,
+            static pair => (IReadOnlyList<string>)pair.Value.Keys.OrderBy(static value => value, StringComparer.OrdinalIgnoreCase).ToList(),
+            StringComparer.Ordinal);
+    }
+
+    private static IReadOnlyList<(string Id, string Name)> ParseMoodPlaylistCatalog(string html)
+    {
+        var document = new HtmlDocument();
+        document.LoadHtml(html);
+        return (document.DocumentNode.SelectNodes("//a[contains(@href, '/playlists/')][strong]")?.AsEnumerable() ?? Enumerable.Empty<HtmlNode>())
+            .Select(static node => (
+                Id: PlaylistPathRegex.Match(node.GetAttributeValue("href", string.Empty)).Groups["id"].Value,
+                Name: DecodeAndTrim(node.SelectSingleNode("./strong")?.InnerText)))
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name))
+            .DistinctBy(static item => item.Id)
+            .ToList();
     }
 
     private async Task<BoomplayTrackMetadata?> GetOfficialSongMetadataAsync(
@@ -2557,6 +2666,11 @@ public sealed class BoomplayMetadataService
         TryApplyNumericTag(tags, "TBPM", track.Bpm, static (item, value) => item.Bpm = value, track);
         ApplyFillOnlyTag(track, tags, "TKEY", static item => item.Key, static (item, value) => item.Key = value);
         ApplyFillOnlyTag(track, tags, "TLAN", static item => item.Language, static (item, value) => item.Language = value);
+        if (tags.TryGetValue("TMOO", out var mood))
+        {
+            AddClassificationValues(track.Moods, mood);
+            SetFieldSource(track, "moods", "stream");
+        }
 
         if (appliedAnyCore)
         {
@@ -2626,6 +2740,7 @@ public sealed class BoomplayMetadataService
         track.Genres.Clear();
         AddGenre(track, genre);
         track.HasStreamGenreMetadata = true;
+        SetFieldSource(track, "genres", "stream");
     }
 
     private static void TryApplyReleaseDateTag(BoomplayTrackMetadata track, Dictionary<string, string> tags)
@@ -3612,6 +3727,8 @@ public sealed class BoomplayMetadataService
 
     private static void TryApplySongDetailField(BoomplayTrackMetadata track, string normalizedLabel, string valueText)
     {
+        track.Tags[normalizedLabel] = valueText;
+
         if (track.DurationMs <= 0 && IsDurationLabel(normalizedLabel))
         {
             track.DurationMs = ParseDurationMs(valueText);
@@ -3621,6 +3738,14 @@ public sealed class BoomplayMetadataService
         if (normalizedLabel == "genre" || normalizedLabel.Contains("genre", StringComparison.Ordinal))
         {
             AddGenre(track, valueText);
+            SetFieldSource(track, "genres", "html");
+            return;
+        }
+
+        if (normalizedLabel == "mood" || normalizedLabel.Contains("mood", StringComparison.Ordinal))
+        {
+            AddClassificationValues(track.Moods, valueText);
+            SetFieldSource(track, "moods", "html");
             return;
         }
 
@@ -3686,6 +3811,25 @@ public sealed class BoomplayMetadataService
         }
     }
 
+    private static void AddClassificationValues(List<string> target, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        foreach (var item in value.Split(GenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!target.Contains(item, StringComparer.OrdinalIgnoreCase))
+            {
+                target.Add(item);
+            }
+        }
+    }
+
+    private static void SetFieldSource(BoomplayTrackMetadata track, string field, string source)
+        => track.FieldSources[field] = source;
+
     private static bool IsLikelyGenreValue(string? value)
     {
         var cleaned = DecodeAndTrim(value);
@@ -3734,7 +3878,12 @@ public sealed class BoomplayMetadataService
 
         if (!addedFromScopedSnippet)
         {
-            TryExtractGenresFromSnippet(html, target);
+            addedFromScopedSnippet = TryExtractGenresFromSnippet(html, target);
+        }
+
+        if (addedFromScopedSnippet && !target.HasStreamGenreMetadata)
+        {
+            SetFieldSource(target, "genres", "embedded-json");
         }
     }
 
@@ -3922,6 +4071,9 @@ public sealed class BoomplayTrackMetadata
     public int DiscNumber { get; set; }
     public string ReleaseDate { get; set; } = string.Empty;
     public List<string> Genres { get; set; } = new();
+    public List<string> Moods { get; set; } = new();
+    public Dictionary<string, string> Tags { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> FieldSources { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string Composer { get; set; } = string.Empty;
     public string Publisher { get; set; } = string.Empty;
     public int Bpm { get; set; }

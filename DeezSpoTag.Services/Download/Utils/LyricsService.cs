@@ -162,7 +162,7 @@ public class LyricsService
             }
 
             MergeProviderLyrics(state, providerLyrics);
-            if (ShouldReturnResolvedLyrics(state, outputRequirements))
+            if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: true))
             {
                 return state.ResolvedLyrics;
             }
@@ -176,7 +176,7 @@ public class LyricsService
                 state.ResolvedLyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
             }
 
-            if (ShouldReturnResolvedLyrics(state, outputRequirements))
+            if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: false))
             {
                 return state.ResolvedLyrics;
             }
@@ -245,7 +245,8 @@ public class LyricsService
 
     private static bool ShouldReturnResolvedLyrics(
         LyricsResolutionState state,
-        LyricsOutputRequirements requirements)
+        LyricsOutputRequirements requirements,
+        bool requireAllRequestedRichLyrics)
     {
         var lyrics = state.ResolvedLyrics;
         if (lyrics == null)
@@ -255,19 +256,20 @@ public class LyricsService
 
         var hasTtml = DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics);
         var hasRealLrc = lyrics.CanSaveLrcSidecar();
-        if (requirements.WantsTtmlLyrics && !hasTtml)
+        if (requireAllRequestedRichLyrics && requirements.WantsTtmlLyrics && !hasTtml)
         {
             return false;
         }
 
-        if (requirements.WantsLrcLyrics && !hasRealLrc)
+        if (requireAllRequestedRichLyrics && requirements.WantsLrcLyrics && !hasRealLrc)
         {
             return false;
         }
 
         if (requirements.WantsRichLyrics)
         {
-            return true;
+            return (requirements.WantsTtmlLyrics && hasTtml)
+                || (requirements.WantsLrcLyrics && hasRealLrc);
         }
 
         if (requirements.WantsPlainLyrics && string.IsNullOrWhiteSpace(lyrics.UnsyncedLyrics))
@@ -341,10 +343,6 @@ public class LyricsService
         }
 
         state.Arl ??= await _authenticatedDeezerService.GetArlAsync();
-        if (string.IsNullOrWhiteSpace(state.Arl))
-        {
-            state.Arl = settings.Arl;
-        }
         if (string.IsNullOrEmpty(state.Arl))
         {
             state.DeezerMissingAuth = true;

@@ -130,6 +130,7 @@
         { tag: "bpm", label: "BPM" },
         { tag: "key", label: "Key" },
         { tag: "mood", label: "Mood" },
+        { tag: "activity", label: "Activity" },
         { tag: "catalogNumber", label: "Catalog Number" },
         { tag: "trackNumber", label: "Track Number" },
         { tag: "discNumber", label: "Disc Number" },

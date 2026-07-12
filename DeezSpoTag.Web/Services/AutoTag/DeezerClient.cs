@@ -10,12 +10,9 @@ public sealed class DeezerClient
 {
     private const string HttpsScheme = "https";
     private const string DeezerApiHost = "api.deezer.com";
-    private const string DeezerGatewayHost = "www.deezer.com";
-    private const string DeezerGatewayPath = "/ajax/gw-light.php";
     private const string DeezerCdnImageHost = "e-cdns-images.dzcdn.net";
     private const int RateLimitCode = 4;
     private const int MaxAttempts = 3;
-    private static readonly string GatewayBaseUrl = BuildUrl(DeezerGatewayHost, DeezerGatewayPath);
     private static readonly TimeSpan[] RetryBackoff =
     [
         TimeSpan.FromSeconds(1),
@@ -24,8 +21,6 @@ public sealed class DeezerClient
     ];
     private readonly HttpClient _httpClient;
     private readonly ILogger<DeezerClient> _logger;
-    private bool _hasArl;
-    private string? _gatewayApiToken;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -35,22 +30,6 @@ public sealed class DeezerClient
     {
         _httpClient = httpClient;
         _logger = logger;
-    }
-
-    public void SetArl(string? arl)
-    {
-        _httpClient.DefaultRequestHeaders.Remove("Cookie");
-
-        if (string.IsNullOrWhiteSpace(arl))
-        {
-            _hasArl = false;
-            _gatewayApiToken = null;
-            return;
-        }
-
-        _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Cookie", $"arl={arl}");
-        _hasArl = true;
-        _gatewayApiToken = null;
     }
 
     public async Task<DeezerSearchResults<DeezerTrack>?> SearchTracksAsync(string query, CancellationToken cancellationToken)
@@ -96,52 +75,6 @@ public sealed class DeezerClient
     public async Task<DeezerAlbumFull?> GetAlbumAsync(long id, CancellationToken cancellationToken)
     {
         return await GetAsync<DeezerAlbumFull>($"/album/{id}", new Dictionary<string, string>(), cancellationToken);
-    }
-
-    public async Task<DeezerLyricsPayload?> GetLyricsAsync(string trackId, CancellationToken cancellationToken)
-    {
-        if (!_hasArl || string.IsNullOrWhiteSpace(trackId))
-        {
-            return null;
-        }
-
-        var payload = await GatewayCallAsync("song.getLyrics", new Dictionary<string, object> { ["SNG_ID"] = trackId }, cancellationToken);
-        if (payload == null)
-        {
-            return null;
-        }
-
-        var payloadValue = payload.Value;
-        if (payloadValue.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        var result = new DeezerLyricsPayload();
-
-        if (TryGetPropertyIgnoreCase(payloadValue, "LYRICS_TEXT", out var unsyncedElement) &&
-            unsyncedElement.ValueKind == JsonValueKind.String)
-        {
-            result.UnsyncedLyrics = unsyncedElement.GetString();
-        }
-
-        if (TryGetPropertyIgnoreCase(payloadValue, "LYRICS_SYNC_JSON", out var syncedElement))
-        {
-            result.SyncedLyrics = ParseSyncedLyrics(syncedElement);
-        }
-
-        if (result.SyncedLyrics.Count == 0 &&
-            TryGetPropertyIgnoreCase(payloadValue, "LYRICS_SYNC", out var fallbackSyncElement))
-        {
-            result.SyncedLyrics = ParseSyncedLyrics(fallbackSyncElement);
-        }
-
-        if (string.IsNullOrWhiteSpace(result.UnsyncedLyrics) && result.SyncedLyrics.Count == 0)
-        {
-            return null;
-        }
-
-        return result;
     }
 
     public static string BuildImageUrl(string imageType, string md5, int resolution)
@@ -381,244 +314,4 @@ public sealed class DeezerClient
         return Encoding.UTF8.GetString(bytes);
     }
 
-    private async Task<JsonElement?> GatewayCallAsync(string method, Dictionary<string, object> args, CancellationToken cancellationToken)
-    {
-        var token = await EnsureGatewayApiTokenAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            _logger.LogWarning("Deezer gateway token unavailable for method {Method}.", method);
-            return null;
-        }
-
-        var query = $"api_version=1.0&api_token={Uri.EscapeDataString(token)}&input=3&method={Uri.EscapeDataString(method)}&cid={Random.Shared.Next(0, 1_000_000_000)}";
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{GatewayBaseUrl}?{query}")
-        {
-            Content = new StringContent(JsonSerializer.Serialize(args), Encoding.UTF8, "application/json")
-        };
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogWarning("Deezer gateway method {Method} failed with status {Status}.", method, response.StatusCode);
-            return null;
-        }
-
-        var payload = await ReadResponsePayloadAsync(response, cancellationToken);
-        if (string.IsNullOrWhiteSpace(payload))
-        {
-            return null;
-        }
-
-        using var doc = JsonDocument.Parse(payload);
-        if (doc.RootElement.TryGetProperty("error", out var errorElement) &&
-            errorElement.ValueKind == JsonValueKind.Object &&
-            TryGetPropertyIgnoreCase(errorElement, "code", out var codeElement) &&
-            codeElement.TryGetInt32(out var code) &&
-            code != 0)
-        {
-            _logger.LogWarning("Deezer gateway method {Method} returned error code {Code}.", method, code);
-            return null;
-        }
-
-        if (!TryGetPropertyIgnoreCase(doc.RootElement, "results", out var results))
-        {
-            return null;
-        }
-
-        return results.Clone();
-    }
-
-    private async Task<string?> EnsureGatewayApiTokenAsync(CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(_gatewayApiToken))
-        {
-            return _gatewayApiToken;
-        }
-
-        var query = "api_version=1.0&api_token=null&input=3&method=deezer.getUserData";
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{GatewayBaseUrl}?{query}")
-        {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json")
-        };
-
-        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        var payload = await ReadResponsePayloadAsync(response, cancellationToken);
-        if (string.IsNullOrWhiteSpace(payload))
-        {
-            return null;
-        }
-
-        using var doc = JsonDocument.Parse(payload);
-        if (!TryGetPropertyIgnoreCase(doc.RootElement, "results", out var results) || results.ValueKind != JsonValueKind.Object)
-        {
-            return null;
-        }
-
-        if (TryGetPropertyIgnoreCase(results, "checkForm", out var checkFormElement) &&
-            checkFormElement.ValueKind == JsonValueKind.String)
-        {
-            _gatewayApiToken = checkFormElement.GetString();
-        }
-
-        return _gatewayApiToken;
-    }
-
-    private static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            var property = element.EnumerateObject().FirstOrDefault(property =>
-                property.NameEquals(name) || property.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-            if (property.Name != null)
-            {
-                value = property.Value;
-                return true;
-            }
-        }
-
-        value = default;
-        return false;
-    }
-
-    private static List<string> ParseSyncedLyrics(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.Array)
-        {
-            return ParseSyncedLyricsArray(element);
-        }
-
-        if (element.ValueKind != JsonValueKind.String)
-        {
-            return new List<string>();
-        }
-
-        var raw = element.GetString();
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return new List<string>();
-        }
-
-        return ParseSyncedLyricsString(raw);
-    }
-
-    private static List<string> ParseSyncedLyricsArray(JsonElement element)
-    {
-        var lines = new List<string>();
-        foreach (var line in element.EnumerateArray())
-        {
-            if (!TryParseSyncedLyricLine(line, out var lrcLine))
-            {
-                continue;
-            }
-
-            lines.Add(lrcLine);
-        }
-
-        return lines;
-    }
-
-    private static List<string> ParseSyncedLyricsString(string raw)
-    {
-        var lines = new List<string>();
-        var trimmed = raw.Trim();
-        if (trimmed.StartsWith('[') && trimmed.Contains("lrc_timestamp", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(trimmed);
-                if (doc.RootElement.ValueKind == JsonValueKind.Array)
-                {
-                    return ParseSyncedLyrics(doc.RootElement);
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // fall through to plain-text parsing
-            }
-        }
-
-        foreach (var rawLine in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (rawLine.StartsWith('['))
-            {
-                lines.Add(rawLine);
-                continue;
-            }
-
-            var parts = rawLine.Split('\t', 2, StringSplitOptions.TrimEntries);
-            if (parts.Length != 2 || !int.TryParse(parts[0], out var ms))
-            {
-                continue;
-            }
-
-            var text = WebUtility.HtmlDecode(parts[1]);
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                continue;
-            }
-
-            lines.Add($"{BuildLrcTimestamp(ms)}{text}");
-        }
-
-        return lines;
-    }
-
-    private static bool TryParseSyncedLyricLine(JsonElement line, out string lrcLine)
-    {
-        lrcLine = string.Empty;
-        if (line.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        var text = string.Empty;
-        var ms = 0;
-        var timestamp = string.Empty;
-
-        if (TryGetPropertyIgnoreCase(line, "line", out var lineText) && lineText.ValueKind == JsonValueKind.String)
-        {
-            text = WebUtility.HtmlDecode(lineText.GetString() ?? string.Empty);
-        }
-
-        var hasMilliseconds = TryGetPropertyIgnoreCase(line, "milliseconds", out var msElement)
-            && msElement.TryGetInt32(out ms);
-
-        if (TryGetPropertyIgnoreCase(line, "lrc_timestamp", out var tsElement) && tsElement.ValueKind == JsonValueKind.String)
-        {
-            timestamp = tsElement.GetString() ?? string.Empty;
-        }
-
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(timestamp))
-        {
-            if (!hasMilliseconds || ms < 0)
-            {
-                return false;
-            }
-
-            timestamp = BuildLrcTimestamp(ms);
-        }
-        else if (!timestamp.StartsWith('['))
-        {
-            timestamp = $"[{timestamp}]";
-        }
-
-        lrcLine = $"{timestamp}{text}";
-        return true;
-    }
-
-    private static string BuildLrcTimestamp(int milliseconds)
-    {
-        var timeSpan = TimeSpan.FromMilliseconds(milliseconds);
-        return $"[{timeSpan.Minutes:D2}:{timeSpan.Seconds:D2}.{timeSpan.Milliseconds / 10:D2}]";
-    }
 }

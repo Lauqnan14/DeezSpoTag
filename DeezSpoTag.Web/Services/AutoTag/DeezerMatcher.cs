@@ -34,7 +34,6 @@ public sealed class DeezerMatcher
 
     public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, DeezerConfig deezerConfig, CancellationToken cancellationToken)
     {
-        _client.SetArl(deezerConfig.Arl);
         var effectiveInfo = BuildEffectiveInfo(info);
 
         if (deezerConfig.MatchById)
@@ -152,7 +151,7 @@ public sealed class DeezerMatcher
             track.ArtUrl = DeezerClient.BuildImageUrl(CoverImageType, track.ArtHash, deezerConfig.ArtResolution);
         }
 
-        await ExtendTrackAsync(track, deezerConfig, cancellationToken);
+        await ExtendTrackAsync(track, cancellationToken);
         return new AutoTagMatchResult { Accuracy = accuracy, Track = ToAutoTagTrack(track) };
     }
 
@@ -351,13 +350,9 @@ public sealed class DeezerMatcher
         return string.Join(' ', cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
 
-    private async Task ExtendTrackAsync(DeezerTrackInfo track, DeezerConfig deezerConfig, CancellationToken cancellationToken)
+    private async Task ExtendTrackAsync(DeezerTrackInfo track, CancellationToken cancellationToken)
     {
         await ExtendTrackMetadataAsync(track, cancellationToken);
-        if (deezerConfig.FetchLyrics)
-        {
-            await ExtendLyricsAsync(track, cancellationToken);
-        }
         await ExtendAlbumMetadataAsync(track, cancellationToken);
     }
 
@@ -446,33 +441,6 @@ public sealed class DeezerMatcher
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed extending Deezer track ID {TrackId}.", trackId);
-        }
-    }
-
-    private async Task ExtendLyricsAsync(DeezerTrackInfo track, CancellationToken cancellationToken)
-    {
-        if (!long.TryParse(track.TrackId, out var trackId))
-        {
-            return;
-        }
-
-        try
-        {
-            var lyrics = await _client.GetLyricsAsync(track.TrackId, cancellationToken);
-            if (lyrics == null)
-            {
-                return;
-            }
-
-            track.UnsyncedLyrics = lyrics.UnsyncedLyrics;
-            if (lyrics.SyncedLyrics.Count > 0)
-            {
-                track.SyncedLyrics = lyrics.SyncedLyrics;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed extending Deezer lyrics for track ID {TrackId}.", trackId);
         }
     }
 

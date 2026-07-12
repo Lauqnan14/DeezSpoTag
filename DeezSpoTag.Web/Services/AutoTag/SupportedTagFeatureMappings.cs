@@ -18,7 +18,8 @@ internal static class SupportedTagFeatureMappings
         ("timeSignature", SupportedTag.TimeSignature),
         ("liveness", SupportedTag.Liveness),
         ("key", SupportedTag.Key),
-        ("mood", SupportedTag.Mood)
+        ("mood", SupportedTag.Mood),
+        ("activity", SupportedTag.Activity)
     };
 
     public static void AddAudioFeatureTags(Dictionary<string, SupportedTag> lookup)

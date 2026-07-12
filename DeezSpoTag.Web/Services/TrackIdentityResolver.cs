@@ -396,13 +396,51 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     {
         var query = string.Join(' ', new[] { state.Artist, state.Title, state.Album }
             .Where(static value => !string.IsNullOrWhiteSpace(value)));
-        var tracks = await _deezerClient.SearchTracksAsync(query, 25, cancellationToken)
-            .WaitAsync(cancellationToken);
+        var countries = _deezerClient.CountryCandidates;
+        for (var countryIndex = 0; countryIndex < countries.Count; countryIndex++)
+        {
+            List<DeezSpoTag.Integrations.Deezer.Track> tracks;
+            try
+            {
+                tracks = await _deezerClient.SearchTracksForCountryAsync(
+                    query,
+                    25,
+                    countries[countryIndex],
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && countryIndex + 1 < countries.Count)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Configured-country Deezer metadata search failed; retrying authenticated country.");
+                continue;
+            }
+
+            var bestId = await ResolveBestDeezerMetadataCandidateAsync(state, tracks, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(bestId))
+            {
+                return bestId;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> ResolveBestDeezerMetadataCandidateAsync(
+        IdentityState state,
+        IReadOnlyCollection<DeezSpoTag.Integrations.Deezer.Track> tracks,
+        CancellationToken cancellationToken)
+    {
         string? bestId = null;
         var bestScore = double.MinValue;
         foreach (var track in tracks.Take(15))
         {
-            var candidate = await HydrateDeezerCandidateAsync(track, cancellationToken);
+            var candidate = BuildDeezerSearchCandidate(track);
+            if (!string.IsNullOrWhiteSpace(state.Isrc))
+            {
+                candidate = await HydrateDeezerCandidateAsync(track, cancellationToken);
+            }
+
             var validation = ValidateDeezerCandidate(
                 state,
                 candidate.Id,
@@ -420,6 +458,16 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
 
         return bestId;
     }
+
+    private static DeezerIdentityCandidate BuildDeezerSearchCandidate(
+        DeezSpoTag.Integrations.Deezer.Track track)
+        => new(
+            track.Id,
+            FirstNonEmpty(track.Isrc, track.ISRC),
+            track.Title,
+            track.MainArtist?.Name ?? track.Artist?.Name,
+            track.Album?.Title,
+            track.Duration);
 
     private async Task<DeezerIdentityCandidate> HydrateDeezerCandidateAsync(
         Track track,

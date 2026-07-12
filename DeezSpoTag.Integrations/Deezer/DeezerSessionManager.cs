@@ -41,6 +41,19 @@ public sealed class DeezerSessionManager : IDisposable
     public int SelectedAccount { get; private set; }
     public string? LastLoginFailureReason { get; private set; }
 
+    public IReadOnlyList<string> GetCountryCandidates()
+    {
+        var countries = new List<string>(2);
+        AddCountryCandidate(countries, ResolveCountry(CurrentUser?.Country));
+        AddCountryCandidate(countries, CurrentUser?.Country);
+        if (countries.Count == 0)
+        {
+            countries.Add(DefaultCountry);
+        }
+
+        return countries;
+    }
+
     // Shared authentication state
     public CookieContainer CookieContainer => _sharedCookieContainer;
     public Dictionary<string, string> HttpHeaders => _httpHeaders;
@@ -157,6 +170,36 @@ public sealed class DeezerSessionManager : IDisposable
     /// </summary>
     public async Task<T> GatewayApiCallAsync<T>(string method, object? args = null, Dictionary<string, object>? parameters = null) where T : class
     {
+        var countries = string.Equals(method, GetUserDataMethod, StringComparison.Ordinal)
+            ? new[] { ResolveCountry(fallback: null) }
+            : GetCountryCandidates();
+        Exception? lastFailure = null;
+        for (var index = 0; index < countries.Count; index++)
+        {
+            try
+            {
+                return await GatewayApiCallForCountryAsync<T>(method, args, parameters, countries[index]);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && index + 1 < countries.Count)
+            {
+                lastFailure = ex;
+                _logger.LogInformation(
+                    "Deezer gateway method {Method} was unavailable for country {Country}; retrying country {FallbackCountry}.",
+                    method,
+                    countries[index],
+                    countries[index + 1]);
+            }
+        }
+
+        throw lastFailure ?? new DeezerGatewayException($"Failed to call {method}");
+    }
+
+    public async Task<T> GatewayApiCallForCountryAsync<T>(
+        string method,
+        object? args,
+        Dictionary<string, object>? parameters,
+        string country) where T : class
+    {
         args ??= new { };
         parameters ??= new Dictionary<string, object>();
 
@@ -184,7 +227,7 @@ public sealed class DeezerSessionManager : IDisposable
         var url = $"{BuildDeezerWebBaseUrl()}/ajax/gw-light.php?{BuildQueryString(queryParams)}";
         return await ExecuteWithRetryAsync(
             method,
-            () => ExecuteGatewayRequestAsync<T>(method, args, url),
+            () => ExecuteGatewayRequestAsync<T>(method, args, url, country),
             endpoint => new DeezerGatewayException($"Failed to call {endpoint} after {MaxRetries} retries"));
     }
 
@@ -201,15 +244,43 @@ public sealed class DeezerSessionManager : IDisposable
     /// </summary>
     public async Task<T> PublicApiCallAsync<T>(string endpoint, Dictionary<string, object>? args = null) where T : class
     {
-        args ??= new Dictionary<string, object>();
+        var countries = GetCountryCandidates();
+        Exception? lastFailure = null;
+        for (var index = 0; index < countries.Count; index++)
+        {
+            try
+            {
+                return await PublicApiCallForCountryAsync<T>(endpoint, args, countries[index]);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && index + 1 < countries.Count)
+            {
+                lastFailure = ex;
+                _logger.LogInformation(
+                    "Deezer public endpoint {Endpoint} was unavailable for country {Country}; retrying country {FallbackCountry}.",
+                    endpoint,
+                    countries[index],
+                    countries[index + 1]);
+            }
+        }
 
+        throw lastFailure ?? new InvalidOperationException($"Failed to call {endpoint}");
+    }
+
+    internal async Task<T> PublicApiCallForCountryAsync<T>(
+        string endpoint,
+        Dictionary<string, object>? args,
+        string country) where T : class
+    {
+        var requestArgs = args == null
+            ? new Dictionary<string, object>()
+            : new Dictionary<string, object>(args);
         if (!string.IsNullOrEmpty(AccessToken))
         {
-            args["access_token"] = AccessToken;
+            requestArgs["access_token"] = AccessToken;
         }
 
         var url = $"{BuildDeezerPublicApiBaseUrl()}/{endpoint}";
-        var queryString = BuildQueryString(args);
+        var queryString = BuildQueryString(requestArgs);
         if (!string.IsNullOrEmpty(queryString))
         {
             url += $"?{queryString}";
@@ -217,13 +288,13 @@ public sealed class DeezerSessionManager : IDisposable
 
         return await ExecuteWithRetryAsync(
             endpoint,
-            () => ExecutePublicRequestAsync<T>(endpoint, url),
+            () => ExecutePublicRequestAsync<T>(endpoint, url, country),
             name => new InvalidOperationException($"Failed to call {name} after {MaxRetries} retries"));
     }
 
-    private async Task<T> ExecuteGatewayRequestAsync<T>(string method, object args, string url) where T : class
+    private async Task<T> ExecuteGatewayRequestAsync<T>(string method, object args, string url, string country) where T : class
     {
-        using var httpClient = CreateHttpClient();
+        using var httpClient = CreateHttpClient(country);
         var json = JsonConvert.SerializeObject(args);
         using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
@@ -274,9 +345,9 @@ public sealed class DeezerSessionManager : IDisposable
         return gwResponse.Results;
     }
 
-    private async Task<T> ExecutePublicRequestAsync<T>(string endpoint, string url) where T : class
+    private async Task<T> ExecutePublicRequestAsync<T>(string endpoint, string url, string country) where T : class
     {
-        using var httpClient = CreateHttpClient();
+        using var httpClient = CreateHttpClient(country);
         var response = await httpClient.GetAsync(url);
         var content = await response.Content.ReadAsStringAsync();
 
@@ -291,6 +362,26 @@ public sealed class DeezerSessionManager : IDisposable
             MissingMemberHandling = MissingMemberHandling.Ignore,
             NullValueHandling = NullValueHandling.Ignore
         };
+
+        Newtonsoft.Json.Linq.JObject? root;
+        try
+        {
+            root = Newtonsoft.Json.Linq.JObject.Parse(content);
+        }
+        catch (JsonException)
+        {
+            root = null;
+        }
+
+        if (root?["error"] is Newtonsoft.Json.Linq.JObject errorObject && errorObject.HasValues)
+        {
+            var error = errorObject.ToObject<DeezerApiError>() ?? new DeezerApiError
+            {
+                Message = "Unknown Deezer API error"
+            };
+            await HandleApiErrorAsync(error);
+            throw new RetryableApiResponseException($"API error returned for {endpoint}");
+        }
 
         try
         {
@@ -401,20 +492,57 @@ public sealed class DeezerSessionManager : IDisposable
 
         ValidateMediaFormatPermission(format);
         var requestBody = BuildMediaRequestBody(trackTokens, format);
+        var countries = GetCountryCandidates();
+        for (var index = 0; index < countries.Count; index++)
+        {
+            try
+            {
+                var results = await RequestMediaUrlsAsync(trackTokens, format, requestBody, countries[index]);
+                if (results.Any(static result => !string.IsNullOrWhiteSpace(result.Url)) || index + 1 >= countries.Count)
+                {
+                    return results;
+                }
 
+                _logger.LogInformation(
+                    "Deezer media URL was unavailable for country {Country}; retrying country {FallbackCountry}.",
+                    countries[index],
+                    countries[index + 1]);
+            }
+            catch (DeezerException ex) when (ex.ErrorCode == "WrongGeolocation" && index + 1 < countries.Count)
+            {
+                _logger.LogInformation(
+                    "Deezer media was geoblocked for country {Country}; retrying country {FallbackCountry}.",
+                    countries[index],
+                    countries[index + 1]);
+            }
+        }
+
+        return trackTokens.Select(_ => DeezerMediaResult.Empty()).ToList();
+    }
+
+    private async Task<List<DeezerMediaResult>> RequestMediaUrlsAsync(
+        string[] trackTokens,
+        string format,
+        object requestBody,
+        string country)
+    {
         try
         {
-            using var httpClient = CreateHttpClient();
+            using var httpClient = CreateHttpClient(country);
             var json = JsonConvert.SerializeObject(requestBody);
             using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Requesting media URLs for {Count} tracks with format {Format}", trackTokens.Length, format);            }
+                _logger.LogDebug(
+                    "Requesting media URLs for {Count} tracks with format {Format} and country {Country}",
+                    trackTokens.Length,
+                    format,
+                    country);
+            }
 
             var response = await httpClient.PostAsync(BuildDeezerMediaApiUrl(), content);
             var responseContent = await response.Content.ReadAsStringAsync();
-
             if (!response.IsSuccessStatusCode || !TryParseMediaResponse(responseContent, response, out var mediaResponse))
             {
                 return trackTokens.Select(_ => DeezerMediaResult.Empty()).ToList();
@@ -422,9 +550,9 @@ public sealed class DeezerSessionManager : IDisposable
 
             return mediaResponse.Data.Select(MapMediaResult).ToList();
         }
-        catch (Exception ex) when (!(ex is DeezerException))
+        catch (Exception ex) when (ex is not DeezerException)
         {
-            _logger.LogError(ex, "Failed to get media URLs");
+            _logger.LogError(ex, "Failed to get media URLs for country {Country}", country);
             return trackTokens.Select(_ => DeezerMediaResult.Empty()).ToList();
         }
     }
@@ -604,7 +732,7 @@ public sealed class DeezerSessionManager : IDisposable
             LicenseToken = user.Options?.LicenseToken ?? string.Empty,
             CanStreamHq = user.Options?.WebHq == true || user.Options?.MobileHq == true,
             CanStreamLossless = user.Options?.WebLossless == true || user.Options?.MobileLossless == true,
-            Country = ResolveCountry(user.Options?.LicenseCountry),
+            Country = NormalizeCountryCode(user.Options?.LicenseCountry, DefaultCountry),
             Language = ResolveLanguage(user.Setting?.Global?.Language),
             LovedTracksId = child.LovedTracksId ?? string.Empty
         };
@@ -620,7 +748,7 @@ public sealed class DeezerSessionManager : IDisposable
             LicenseToken = user?.Options?.LicenseToken ?? string.Empty,
             CanStreamHq = user?.Options?.WebHq == true || user?.Options?.MobileHq == true,
             CanStreamLossless = user?.Options?.WebLossless == true || user?.Options?.MobileLossless == true,
-            Country = ResolveCountry(user?.Options?.LicenseCountry),
+            Country = NormalizeCountryCode(user?.Options?.LicenseCountry, DefaultCountry),
             Language = ResolveLanguage(user?.Setting?.Global?.Language)
         };
     }
@@ -657,9 +785,8 @@ public sealed class DeezerSessionManager : IDisposable
     /// <summary>
     /// Create HTTP client with shared cookies and headers
     /// </summary>
-    private HttpClient CreateHttpClient()
+    private HttpClient CreateHttpClient(string? countryOverride = null)
     {
-        ApplyLocaleOverride();
         var handler = new HttpClientHandler()
         {
             CookieContainer = _sharedCookieContainer
@@ -672,8 +799,13 @@ public sealed class DeezerSessionManager : IDisposable
             Timeout = HttpRequestTimeout
         };
 
-        // Apply all shared headers
-        foreach (var header in _httpHeaders)
+        var headers = new Dictionary<string, string>(_httpHeaders, StringComparer.OrdinalIgnoreCase);
+        var language = ResolveLanguage(CurrentUser?.Language);
+        var country = NormalizeCountryCode(countryOverride, ResolveCountry(CurrentUser?.Country));
+        headers["Content-Language"] = $"{language}-{country}";
+        headers["Accept-Language"] = $"{language}-{country},{language};q=0.9,en-US;q=0.8,en;q=0.7";
+
+        foreach (var header in headers)
         {
             httpClient.DefaultRequestHeaders.TryAddWithoutValidation(header.Key, header.Value);
         }
@@ -696,15 +828,39 @@ public sealed class DeezerSessionManager : IDisposable
         var overrideCountry = Environment.GetEnvironmentVariable("DEEZER_COUNTRY");
         if (!string.IsNullOrWhiteSpace(settings?.DeezerCountry))
         {
-            return settings.DeezerCountry;
+            return NormalizeCountryCode(settings.DeezerCountry, fallback ?? DefaultCountry);
         }
 
         if (!string.IsNullOrWhiteSpace(overrideCountry))
         {
-            return overrideCountry;
+            return NormalizeCountryCode(overrideCountry, fallback ?? DefaultCountry);
         }
 
-        return !string.IsNullOrWhiteSpace(fallback) ? fallback : DefaultCountry;
+        return NormalizeCountryCode(fallback, DefaultCountry);
+    }
+
+    private static void AddCountryCandidate(List<string> countries, string? country)
+    {
+        var normalized = NormalizeCountryCode(country, fallback: string.Empty);
+        if (!string.IsNullOrWhiteSpace(normalized)
+            && !countries.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+        {
+            countries.Add(normalized);
+        }
+    }
+
+    private static string NormalizeCountryCode(string? country, string fallback)
+    {
+        var normalized = country?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (normalized.Length == 2 && normalized.All(char.IsLetter))
+        {
+            return normalized;
+        }
+
+        var normalizedFallback = fallback?.Trim().ToUpperInvariant() ?? string.Empty;
+        return normalizedFallback.Length == 2 && normalizedFallback.All(char.IsLetter)
+            ? normalizedFallback
+            : string.Empty;
     }
 
     private string ResolveLanguage(string? fallback)

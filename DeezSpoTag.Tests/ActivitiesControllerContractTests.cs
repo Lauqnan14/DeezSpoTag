@@ -176,13 +176,15 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
-    public void ActivitiesDownloadsTab_LyricsBadgesUseCompletedSidecarEvidenceOnly()
+    public void ActivitiesDownloadsTab_LyricsBadgesUseSidecarOrCompletedPrefetchEvidenceOnly()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
 
-        Assert.Contains("mappedStatus === 'complete' ? getLyricsBadgesFromFiles(item) : []", source, StringComparison.Ordinal);
+        Assert.Contains("const lyricsBadges = resolveLyricsBadgesForQueueItem(item, taskId, mappedStatus);", source, StringComparison.Ordinal);
+        Assert.Contains("function getLyricsBadgesFromPrefetchPayload(item, taskId)", source, StringComparison.Ordinal);
+        Assert.Contains("status === 'completed' && type", source, StringComparison.Ordinal);
         Assert.Contains("lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : []", source, StringComparison.Ordinal);
         Assert.Contains("name.endsWith('.ttml')", source, StringComparison.Ordinal);
         Assert.Contains("name.endsWith('.lrc')", source, StringComparison.Ordinal);

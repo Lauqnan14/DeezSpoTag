@@ -1226,7 +1226,6 @@ public partial class Program
         RegisterDeezerServices(services, configuration);
 
         services.AddDeezSpoTagServices();
-        services.AddDeezSpoTagAuthentication();
         services.AddDownloadEngine();
         services.AddSingleton<DeezSpoTag.Services.Download.IActivityLogWriter, DeezSpoTag.Web.Services.ActivityLogWriter>();
         services.AddSingleton<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
@@ -1257,7 +1256,6 @@ public partial class Program
             {
                 Configuration = sp.GetRequiredService<IConfiguration>(),
                 ActivityLog = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
-                DeezerAuth = sp.GetRequiredService<DeezSpoTag.Services.Download.AuthenticatedDeezerService>(),
                 MetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagMetadataService>(),
                 AutoTagRunner = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.IAutoTagRunner>(),
                 LibraryOrganizer = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagLibraryOrganizer>(),

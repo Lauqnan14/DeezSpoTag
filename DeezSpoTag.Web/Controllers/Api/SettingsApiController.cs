@@ -65,7 +65,6 @@ namespace DeezSpoTag.Web.Controllers.Api
                     defaultSettings = redactedDefaults,
                     secrets = new
                     {
-                        hasArl = !string.IsNullOrWhiteSpace(settings.Arl),
                         hasApiToken = !string.IsNullOrWhiteSpace(settings.ApiToken),
                         hasAuthorizationToken = !string.IsNullOrWhiteSpace(settings.AuthorizationToken),
                         hasAppleMediaUserToken,
@@ -289,7 +288,6 @@ namespace DeezSpoTag.Web.Controllers.Api
             DeezSpoTagSettings incoming,
             PlatformAuthState platformAuth)
         {
-            incoming.Arl = KeepIncomingOrPersisted(incoming.Arl, persisted.Arl);
             incoming.ApiToken = KeepIncomingOrPersisted(incoming.ApiToken, persisted.ApiToken);
             incoming.AuthorizationToken = KeepIncomingOrPersisted(incoming.AuthorizationToken, persisted.AuthorizationToken);
 
@@ -442,7 +440,6 @@ namespace DeezSpoTag.Web.Controllers.Api
                 JsonSerializer.Serialize(source, options),
                 options) ?? new DeezSpoTagSettings();
 
-            clone.Arl = string.Empty;
             clone.ApiToken = string.Empty;
             clone.AuthorizationToken = string.Empty;
             clone.AppleMusic ??= new AppleMusicSettings();

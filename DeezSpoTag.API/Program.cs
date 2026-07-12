@@ -5,18 +5,17 @@ using DeezSpoTag.Services.Download;
 var builder = WebApplication.CreateBuilder(args);
 
 // Register services for dependency injection
-builder.Services.AddScoped<DeezSpoTag.Services.Authentication.IDeezerAuthenticationService, DeezSpoTag.Services.Authentication.DeezerAuthenticationService>();
 builder.Services.AddSingleton<ILoginStorageService, LoginStorageService>();
 
 // Register Deezer SDK services (DeezerApiClient removed - was just a wrapper)
-builder.Services.AddScoped<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>(sp =>
+builder.Services.AddSingleton<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>(sp =>
     new DeezSpoTag.Integrations.Deezer.DeezerSessionManager(
         sp.GetRequiredService<ILogger<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>>(),
         () => sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>().LoadSettings()));
-builder.Services.AddScoped<DeezSpoTag.Integrations.Deezer.DeezerApiService>();
-builder.Services.AddScoped<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>();
-builder.Services.AddScoped<DeezSpoTag.Integrations.Deezer.DeezerClient>();
-builder.Services.AddScoped<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
+builder.Services.AddSingleton<DeezSpoTag.Integrations.Deezer.DeezerApiService>();
+builder.Services.AddSingleton<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>();
+builder.Services.AddSingleton<DeezSpoTag.Integrations.Deezer.DeezerClient>();
+builder.Services.AddSingleton<DeezSpoTag.Services.Download.AuthenticatedDeezerService>();
 
 // Register Settings service (handled in AddDownloadEngine -> AddDeezSpoTagQueue)
 

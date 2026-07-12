@@ -145,7 +145,6 @@ public class DeezSpoTagSettings
     public bool SaveDownloadQueue { get; set; } = false;
     public string TagsLanguage { get; set; } = "";
     public int PreviewVolume { get; set; } = 80;
-    public string Arl { get; set; } = string.Empty;
     public bool EmbedMaxQualityCover { get; set; } = true;
     public string TidalQuality { get; set; } = "LOSSLESS";
     public string QobuzQuality { get; set; } = "6";

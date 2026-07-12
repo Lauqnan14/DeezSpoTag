@@ -35,6 +35,7 @@ public sealed class DeezerClient : IDisposable
     public List<DeezerUser> Children => _sessionManager?.Children ?? new List<DeezerUser>();
     public int SelectedAccount => _sessionManager?.SelectedAccount ?? 0;
     public string? LastLoginFailureReason => _sessionManager?.LastLoginFailureReason;
+    public IReadOnlyList<string> CountryCandidates => _sessionManager?.GetCountryCandidates() ?? Array.Empty<string>();
 
     // Compatibility properties for existing code that expects Api and Gw properties
     public DeezerClient Api { get; private set; }
@@ -261,8 +262,52 @@ public sealed class DeezerClient : IDisposable
         return args;
     }
 
-    private Task<DeezerSearchResult> SearchEndpointAsync(string endpoint, string query, ApiOptions? options = null)
-        => CallAsync<DeezerSearchResult>(endpoint, GenerateSearchArgs(query, options));
+    private async Task<DeezerSearchResult> SearchEndpointAsync(
+        string endpoint,
+        string query,
+        ApiOptions? options = null)
+    {
+        var sessionManager = RequireSessionManager();
+        var countries = sessionManager.GetCountryCandidates();
+        var args = GenerateSearchArgs(query, options);
+        DeezerSearchResult? lastResponse = null;
+        for (var countryIndex = 0; countryIndex < countries.Count; countryIndex++)
+        {
+            try
+            {
+                var response = await SearchEndpointForCountryAsync(
+                    endpoint,
+                    args,
+                    countries[countryIndex]);
+                lastResponse = response;
+                if (response.Data?.Length > 0 || countryIndex + 1 >= countries.Count)
+                {
+                    return response;
+                }
+
+                _logger.LogInformation(
+                    "Deezer search returned no results for configured country {Country}; retrying authenticated country {FallbackCountry}.",
+                    countries[countryIndex],
+                    countries[countryIndex + 1]);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && countryIndex + 1 < countries.Count)
+            {
+                _logger.LogInformation(
+                    ex,
+                    "Deezer search failed for configured country {Country}; retrying authenticated country {FallbackCountry}.",
+                    countries[countryIndex],
+                    countries[countryIndex + 1]);
+            }
+        }
+
+        return lastResponse ?? new DeezerSearchResult();
+    }
+
+    private Task<DeezerSearchResult> SearchEndpointForCountryAsync(
+        string endpoint,
+        Dictionary<string, object> args,
+        string country)
+        => RequireSessionManager().PublicApiCallForCountryAsync<DeezerSearchResult>(endpoint, args, country);
 
     public Task<DeezerSearchResult> SearchAsync(string query, ApiOptions? options = null)
         => SearchEndpointAsync("search", query, options);
@@ -295,7 +340,22 @@ public sealed class DeezerClient : IDisposable
     public async Task<List<Track>> SearchTracksAsync(string query, int limit, CancellationToken cancellationToken = default)
     {
         var options = new ApiOptions { Limit = limit };
-        var result = await SearchTrackAsync(query, options);
+        var result = await SearchTrackAsync(query, options).WaitAsync(cancellationToken);
+        return ConvertSearchResultTracks(result.Data);
+    }
+
+    public async Task<List<Track>> SearchTracksForCountryAsync(
+        string query,
+        int limit,
+        string country,
+        CancellationToken cancellationToken = default)
+    {
+        var options = new ApiOptions { Limit = limit };
+        var result = await SearchEndpointForCountryAsync(
+                "search/track",
+                GenerateSearchArgs(query, options),
+                country)
+            .WaitAsync(cancellationToken);
         return ConvertSearchResultTracks(result.Data);
     }
 
@@ -320,12 +380,26 @@ public sealed class DeezerClient : IDisposable
     public async Task<string> GetTrackIdFromMetadataAsync(string artist, string track, string album, int? durationMs = null)
     {
         var searchInput = CreateMetadataSearchInput(artist, track, album, durationMs);
-        foreach (var attempt in BuildMetadataSearchAttempts(searchInput))
+        var attempts = BuildMetadataSearchAttempts(searchInput).ToArray();
+        var countries = CountryCandidates;
+        for (var countryIndex = 0; countryIndex < countries.Count; countryIndex++)
         {
-            var match = await SearchMetadataAttemptAsync(attempt, searchInput);
-            if (!string.IsNullOrWhiteSpace(match))
+            try
             {
-                return match;
+                foreach (var attempt in attempts)
+                {
+                    var match = await SearchMetadataAttemptAsync(attempt, searchInput, countries[countryIndex]);
+                    if (!string.IsNullOrWhiteSpace(match))
+                    {
+                        return match;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && countryIndex + 1 < countries.Count)
+            {
+                _logger.LogInformation(
+                    ex,
+                    "Configured-country Deezer metadata resolution failed; retrying authenticated country.");
             }
         }
 
@@ -346,78 +420,104 @@ public sealed class DeezerClient : IDisposable
             ? (int)Math.Round(durationMs.Value / 1000d)
             : (int?)null;
         var sourceAllowsDerivative = DeezerCandidateHeuristics.SourceAllowsDerivative(track, artist, string.Empty);
+        string? bestLowerConfidenceId = null;
+        var countries = CountryCandidates;
+        for (var countryIndex = 0; countryIndex < countries.Count; countryIndex++)
+        {
+            try
+            {
+                var scoredMatches = await SearchFastMetadataCandidatesAsync(
+                    artist,
+                    track,
+                    durationSeconds,
+                    sourceAllowsDerivative,
+                    countries[countryIndex]);
+                var highConfidence = scoredMatches.HighQuality
+                    .OrderByDescending(entry => entry.Value)
+                    .FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(highConfidence.Key))
+                {
+                    return highConfidence.Key;
+                }
 
-        var scoredMatches = await SearchFastMetadataCandidatesAsync(artist, track, durationSeconds, sourceAllowsDerivative);
-        return ResolveBestFastMetadataMatch(scoredMatches.HighQuality, scoredMatches.ExploreMore);
+                bestLowerConfidenceId ??= scoredMatches.ExploreMore
+                    .OrderByDescending(entry => entry.Value)
+                    .Select(entry => entry.Key)
+                    .FirstOrDefault(static id => !string.IsNullOrWhiteSpace(id));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && countryIndex + 1 < countries.Count)
+            {
+                _logger.LogInformation(
+                    ex,
+                    "Configured-country fast Deezer metadata resolution failed; retrying authenticated country.");
+            }
+        }
+
+        return bestLowerConfidenceId ?? "0";
     }
 
     private static List<Track> ConvertSearchResultTracks(object[]? data)
     {
-        if (data == null)
+        if (data == null || data.Length == 0)
         {
             return new List<Track>();
         }
 
-        return data
-            .OfType<System.Text.Json.JsonElement>()
-            .Select(ConvertSearchResultTrack)
-            .ToList();
+        var tracks = new List<Track>(data.Length);
+        foreach (var item in data)
+        {
+            try
+            {
+                var track = ConvertSearchResultTrack(item);
+                if (!string.IsNullOrWhiteSpace(track.Id) && track.Id != "0")
+                {
+                    tracks.Add(track);
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore malformed candidates without discarding valid search rows.
+            }
+        }
+
+        return tracks;
     }
 
-    private static Track ConvertSearchResultTrack(System.Text.Json.JsonElement jsonElement)
+    private static Track ConvertSearchResultTrack(object value)
     {
+        var json = value switch
+        {
+            JToken token => token,
+            System.Text.Json.JsonElement element => JToken.Parse(element.GetRawText()),
+            _ => JToken.FromObject(value)
+        };
         var track = new Track
         {
-            Id = TryGetJsonElementString(jsonElement, "id"),
-            Title = TryGetJsonElementString(jsonElement, "title"),
-            Duration = TryGetJsonElementInt(jsonElement, "duration")
+            Id = json["id"]?.ToString() ?? string.Empty,
+            Title = json["title"]?.ToString() ?? string.Empty,
+            Duration = json["duration"]?.Value<int?>() ?? 0,
+            ISRC = json["isrc"]?.ToString() ?? string.Empty
         };
 
-        if (jsonElement.TryGetProperty(JsonArtistKey, out var artist))
+        if (json[JsonArtistKey] is JToken artist)
         {
             track.MainArtist = new Artist
             {
-                Id = TryGetJsonElementInt64(artist, "id", 0L).ToString(),
-                Name = TryGetJsonElementString(artist, "name")
+                Id = artist["id"]?.ToString() ?? "0",
+                Name = artist["name"]?.ToString() ?? string.Empty
             };
         }
 
-        if (jsonElement.TryGetProperty(JsonAlbumKey, out var album))
+        if (json[JsonAlbumKey] is JToken album)
         {
             track.Album = new Album
             {
-                Id = TryGetJsonElementString(album, "id"),
-                Title = TryGetJsonElementString(album, "title")
+                Id = album["id"]?.ToString() ?? string.Empty,
+                Title = album["title"]?.ToString() ?? string.Empty
             };
         }
 
         return track;
-    }
-
-    private static string TryGetJsonElementString(System.Text.Json.JsonElement element, string propertyName)
-    {
-        return element.TryGetProperty(propertyName, out var value)
-            ? value.ToString() switch
-            {
-                null => string.Empty,
-                _ when value.ValueKind == System.Text.Json.JsonValueKind.String => value.GetString() ?? string.Empty,
-                var raw => raw
-            }
-            : string.Empty;
-    }
-
-    private static int TryGetJsonElementInt(System.Text.Json.JsonElement element, string propertyName)
-    {
-        return element.TryGetProperty(propertyName, out var value) && value.TryGetInt32(out var number)
-            ? number
-            : 0;
-    }
-
-    private static long TryGetJsonElementInt64(System.Text.Json.JsonElement element, string propertyName, long fallback)
-    {
-        return element.TryGetProperty(propertyName, out var value) && value.TryGetInt64(out var number)
-            ? number
-            : fallback;
     }
 
     private readonly record struct MetadataSearchInput(string Artist, string Track, string Album, int? DurationSeconds);
@@ -502,9 +602,15 @@ public sealed class DeezerClient : IDisposable
         return null;
     }
 
-    private async Task<string?> SearchMetadataAttemptAsync(MetadataSearchAttempt attempt, MetadataSearchInput input)
+    private async Task<string?> SearchMetadataAttemptAsync(
+        MetadataSearchAttempt attempt,
+        MetadataSearchInput input,
+        string country)
     {
-        var result = await SearchTrackAsync(attempt.Query, new ApiOptions { Limit = attempt.Limit, Strict = attempt.Strict });
+        var result = await SearchEndpointForCountryAsync(
+            "search/track",
+            GenerateSearchArgs(attempt.Query, new ApiOptions { Limit = attempt.Limit, Strict = attempt.Strict }),
+            country);
         return SelectBestMetadataMatch(result.Data, input.Artist, attempt.MatchTrack, attempt.MatchAlbum, input.DurationSeconds);
     }
 
@@ -512,7 +618,8 @@ public sealed class DeezerClient : IDisposable
         string artist,
         string track,
         int? durationSeconds,
-        bool sourceAllowsDerivative)
+        bool sourceAllowsDerivative,
+        string country)
     {
         const int threshold = 40;
         var highQuality = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -520,7 +627,10 @@ public sealed class DeezerClient : IDisposable
 
         foreach (var query in BuildFastMetadataQueries(artist, track))
         {
-            var result = await SearchTrackAsync(query, new ApiOptions { Limit = 3, Strict = true });
+            var result = await SearchEndpointForCountryAsync(
+                "search/track",
+                GenerateSearchArgs(query, new ApiOptions { Limit = 3, Strict = true }),
+                country);
             foreach (var candidate in DeezerMetadataMatchHelper.ConvertSearchResults(result.Data))
             {
                 var score = DeezerCandidateHeuristics.ScoreFastMatch(
@@ -563,20 +673,6 @@ public sealed class DeezerClient : IDisposable
         {
             yield return titleOnly;
         }
-    }
-
-    private static string ResolveBestFastMetadataMatch(
-        Dictionary<string, int> highQuality,
-        Dictionary<string, int> exploreMore)
-    {
-        var bestHigh = highQuality.OrderByDescending(entry => entry.Value).FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(bestHigh.Key))
-        {
-            return bestHigh.Key;
-        }
-
-        var bestExplore = exploreMore.OrderByDescending(entry => entry.Value).FirstOrDefault();
-        return !string.IsNullOrWhiteSpace(bestExplore.Key) ? bestExplore.Key : "0";
     }
 
     private readonly record struct SongSeekCandidateMatch(string? Id, double Score);
@@ -1214,15 +1310,50 @@ public sealed class DeezerClient : IDisposable
         bool suggest = true, bool artistSuggest = true, bool topTracks = true)
     {
         query = CleanSearchQuery(query);
-        return await ApiCallAsync<GwSearchResponse>("deezer.pageSearch", new
+        var sessionManager = RequireSessionManager();
+        GwSearchResponse? lastResponse = null;
+        var countries = sessionManager.GetCountryCandidates();
+        for (var countryIndex = 0; countryIndex < countries.Count; countryIndex++)
         {
-            query,
-            start = index,
-            nb = limit,
-            suggest,
-            artist_suggest = artistSuggest,
-            top_tracks = topTracks
-        });
+            var country = countries[countryIndex];
+            try
+            {
+                var response = await sessionManager.GatewayApiCallForCountryAsync<GwSearchResponse>(
+                    "deezer.pageSearch",
+                    new
+                    {
+                        query,
+                        start = index,
+                        nb = limit,
+                        suggest,
+                        artist_suggest = artistSuggest,
+                        top_tracks = topTracks,
+                        country
+                    },
+                    parameters: null,
+                    country);
+                lastResponse = response;
+                if (HasSearchResults(response) || countryIndex + 1 >= countries.Count)
+                {
+                    return response;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && countryIndex + 1 < countries.Count)
+            {
+                // Continue with the account's actual country.
+            }
+        }
+
+        return lastResponse ?? new GwSearchResponse();
+    }
+
+    private static bool HasSearchResults(GwSearchResponse response)
+    {
+        return response.Track?.Data?.Length > 0
+            || response.Album?.Data?.Length > 0
+            || response.Artist?.Data?.Length > 0
+            || response.Playlist?.Data?.Length > 0
+            || response.TopResult?.Count > 0;
     }
 
     private static string CleanSearchQuery(string term)

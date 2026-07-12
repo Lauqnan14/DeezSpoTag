@@ -408,6 +408,54 @@ public sealed class LyricsServicePrivateHelpersTests
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
     }
 
+    [Fact]
+    public void ShouldReturnResolvedLyrics_AllowsLrcOnlyAtFinalProvider_WhenBothFormatsAreRequested()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = false,
+            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
+            LrcFormat = "both"
+        };
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+        var state = CreateLyricsResolutionState(new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric { Text = "Line one", Milliseconds = 1000 },
+                new SynchronizedLyric { Text = "Line two", Milliseconds = 2000 }
+            ],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+        });
+
+        var early = InvokeShouldReturnResolvedLyrics(state, requirements, requireAllRequestedRichLyrics: true);
+        var final = InvokeShouldReturnResolvedLyrics(state, requirements, requireAllRequestedRichLyrics: false);
+
+        Assert.False(early);
+        Assert.True(final);
+    }
+
+    [Fact]
+    public void ShouldReturnResolvedLyrics_StillAcceptsPlainOnly_WhenNoRichLyricsExist()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = false,
+            SaveLyrics = true,
+            LrcType = "unsynced-lyrics",
+            LrcFormat = "both"
+        };
+        var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
+        var state = CreateLyricsResolutionState(new LyricsSource
+        {
+            UnsyncedLyrics = "Plain fallback",
+            UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText
+        });
+
+        Assert.True(InvokeShouldReturnResolvedLyrics(state, requirements, requireAllRequestedRichLyrics: false));
+    }
+
     [Theory]
     [InlineData("ttml", true)]
     [InlineData("both", true)]
@@ -428,6 +476,26 @@ public sealed class LyricsServicePrivateHelpersTests
         var result = InvokeStatic<bool>("ShouldSaveTtml", settings, appleLyrics);
 
         Assert.Equal(expected, result);
+    }
+
+    private static object CreateLyricsResolutionState(LyricsBase lyrics)
+    {
+        var stateType = typeof(LyricsService).GetNestedType("LyricsResolutionState", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("LyricsService.LyricsResolutionState not found.");
+        var state = Activator.CreateInstance(stateType, nonPublic: true)
+            ?? throw new InvalidOperationException("Could not create LyricsResolutionState.");
+        stateType.GetProperty("ResolvedLyrics")?.SetValue(state, lyrics);
+        return state;
+    }
+
+    private static bool InvokeShouldReturnResolvedLyrics(
+        object state,
+        object requirements,
+        bool requireAllRequestedRichLyrics)
+    {
+        return (bool)(GetStaticMethod("ShouldReturnResolvedLyrics")
+            .Invoke(null, [state, requirements, requireAllRequestedRichLyrics])
+            ?? throw new InvalidOperationException("LyricsService.ShouldReturnResolvedLyrics returned null."));
     }
 
     [Fact]

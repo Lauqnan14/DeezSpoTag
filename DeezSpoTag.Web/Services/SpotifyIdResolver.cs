@@ -49,7 +49,7 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
                 }
 
                 if (metadataItems is { Count: > 0 }
-                    && metadataItems.All(static item => string.IsNullOrWhiteSpace(item.Isrc)))
+                    && !HasConflictingIsrcForAcceptableMetadata(metadataItems, title, artist, album, isrc))
                 {
                     var metadataOnlyCandidate = SelectBestCandidate(
                         metadataItems,
@@ -97,6 +97,44 @@ public sealed class SpotifyIdResolver : ISpotifyIdResolver
             album,
             isrc,
             allowFirstWhenMetadataMissing: false)?.Id;
+    }
+
+    private static bool HasConflictingIsrcForAcceptableMetadata(
+        List<SpotifySearchItem> items,
+        string title,
+        string artist,
+        string? album,
+        string? isrc)
+    {
+        var normalizedIsrc = NormalizeIsrc(isrc);
+        if (string.IsNullOrWhiteSpace(normalizedIsrc))
+        {
+            return false;
+        }
+
+        var targetTitle = SpotifyTextNormalizer.NormalizeToken(title);
+        var targetArtist = SpotifyTextNormalizer.NormalizeToken(artist);
+        var targetAlbum = SpotifyTextNormalizer.NormalizeToken(album);
+        foreach (var item in items)
+        {
+            if (string.IsNullOrWhiteSpace(item.Isrc))
+            {
+                continue;
+            }
+
+            if (string.Equals(NormalizeIsrc(item.Isrc), normalizedIsrc, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var score = CalculateMatchScore(item, targetTitle, targetArtist, targetAlbum, out var acceptable);
+            if (acceptable && score > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string BuildPlainQuery(string title, string artist, string? album)

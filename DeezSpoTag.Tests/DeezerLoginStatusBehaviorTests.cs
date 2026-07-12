@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -13,7 +14,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Newtonsoft.Json.Linq;
 using Xunit;
+using DeezerSearchTrack = DeezSpoTag.Integrations.Deezer.Track;
 
 namespace DeezSpoTag.Tests;
 
@@ -121,6 +124,53 @@ public sealed class DeezerLoginStatusBehaviorTests
         Assert.False(File.Exists(Path.Join(repoRoot, DeezSpoTagWebDirectory, "Services", $"{DeezerWarmupServiceName}.cs")));
     }
 
+    [Fact]
+    public void CountryCandidates_PrioritizeConfiguredCountryBeforeAuthenticatedCountry()
+    {
+        var sessionManager = new DeezerSessionManager(
+            NullLogger<DeezerSessionManager>.Instance,
+            () => new DeezSpoTagSettings { DeezerCountry = UnitedStatesCountry });
+        SetLiveUser(sessionManager, country: "KE");
+
+        Assert.Equal(new[] { UnitedStatesCountry, "KE" }, sessionManager.GetCountryCandidates());
+    }
+
+    [Fact]
+    public void CountryCandidates_DoNotRepeatAuthenticatedCountryWhenItMatchesConfiguration()
+    {
+        var sessionManager = new DeezerSessionManager(
+            NullLogger<DeezerSessionManager>.Instance,
+            () => new DeezSpoTagSettings { DeezerCountry = UnitedStatesCountry });
+        SetLiveUser(sessionManager, country: UnitedStatesCountry);
+
+        Assert.Equal(new[] { UnitedStatesCountry }, sessionManager.GetCountryCandidates());
+    }
+
+    [Fact]
+    public void SearchTrackConversion_AcceptsNewtonsoftPayloadRows()
+    {
+        var row = JObject.Parse("""
+            {
+              "id": "3135556",
+              "title": "Harder, Better, Faster, Stronger",
+              "duration": 224,
+              "isrc": "GBDUW0000059",
+              "artist": { "id": 27, "name": "Daft Punk" },
+              "album": { "id": 302127, "title": "Discovery" }
+            }
+            """);
+        var method = typeof(DeezerClient).GetMethod(
+            "ConvertSearchResultTracks",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        var tracks = Assert.IsType<List<DeezerSearchTrack>>(method!.Invoke(null, new object?[] { new object[] { row } }));
+        var track = Assert.Single(tracks);
+        Assert.Equal("3135556", track.Id);
+        Assert.Equal("GBDUW0000059", track.ISRC);
+        Assert.Equal("Daft Punk", track.MainArtist?.Name);
+        Assert.Equal("Discovery", track.Album?.Title);
+    }
+
     private static LoginApiController CreateController(DeezerClient client, ILoginStorageService loginStorage)
     {
         var configuration = new ConfigurationBuilder()
@@ -163,11 +213,18 @@ public sealed class DeezerLoginStatusBehaviorTests
         var sessionManager = new DeezerSessionManager(
             NullLogger<DeezerSessionManager>.Instance,
             () => new DeezSpoTagSettings());
+        SetLiveUser(sessionManager, UnitedStatesCountry);
+        client.SetSessionManager(sessionManager);
+        return client;
+    }
+
+    private static void SetLiveUser(DeezerSessionManager sessionManager, string country)
+    {
         var user = new DeezSpoTag.Core.Models.Deezer.DeezerUser
         {
             Id = "456",
             Name = "Live Deezer User",
-            Country = UnitedStatesCountry
+            Country = country
         };
         typeof(DeezerSessionManager)
             .GetProperty("CurrentUser")!
@@ -175,8 +232,6 @@ public sealed class DeezerLoginStatusBehaviorTests
         typeof(DeezerSessionManager)
             .GetProperty("LoggedIn")!
             .SetValue(sessionManager, true);
-        client.SetSessionManager(sessionManager);
-        return client;
     }
 
     private static string SerializeOkResult(IActionResult result)

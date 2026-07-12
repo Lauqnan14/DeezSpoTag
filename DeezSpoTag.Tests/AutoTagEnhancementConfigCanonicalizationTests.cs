@@ -100,6 +100,31 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     }
 
     [Fact]
+    public void SanitizeConfigJson_RemovesLegacyEmbeddedDeezerAuthentication()
+    {
+        var json = """
+        {
+          "arl": "legacy-root-token",
+          "custom": {
+            "deezer": {
+              "ARL": "legacy-custom-token",
+              "art_resolution": 1200
+            }
+          }
+        }
+        """;
+
+        var sanitized = (string)SanitizeConfigJsonMethod.Invoke(null, [json])!;
+        using var document = JsonDocument.Parse(sanitized);
+
+        Assert.False(document.RootElement.TryGetProperty("arl", out _));
+        var deezer = document.RootElement.GetProperty("custom").GetProperty("deezer");
+        Assert.DoesNotContain(deezer.EnumerateObject(), property =>
+            string.Equals(property.Name, "arl", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(1200, deezer.GetProperty("art_resolution").GetInt32());
+    }
+
+    [Fact]
     public void TaggingProfileDataHelper_CanonicalizeEnhancementConfig_MigratesAndPurgesLegacyKeys()
     {
         var data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
