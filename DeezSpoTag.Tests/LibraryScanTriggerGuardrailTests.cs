@@ -91,8 +91,23 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains(".GroupBy(item => item.DestinationFolderId!.Value)", source, StringComparison.Ordinal);
         Assert.Contains("ApplyTargetFiles(configJson, sourceFiles)", source, StringComparison.Ordinal);
         Assert.Contains("RunPipelineEnrichmentAsync(context, group, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("BatchScopedFilesOnly = true", source, StringComparison.Ordinal);
+        Assert.Contains("group.SourceFilePaths", source, StringComparison.Ordinal);
+        Assert.Contains("FilterQueueItemsToBatchScope", ReadSource("DeezSpoTag.Web", "Services", "AutoTagDownloadMoveService.cs"), StringComparison.Ordinal);
         Assert.Contains("includeTargetFiles: true", autoTagSource, StringComparison.Ordinal);
         Assert.DoesNotContain("The latest completed item will determine the AutoTag profile", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStaleRecovery_DoesNotOwnFileMovement()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+
+        Assert.DoesNotContain("RunStaleRecoveryCleanupAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldAutoMoveAfterEnrichmentStage", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("cleanup auto-move queued", source, StringComparison.Ordinal);
+        Assert.Contains("file finalization remains owned by its authoritative pipeline", source, StringComparison.Ordinal);
+        Assert.Contains("download-root finalization is owned by download orchestration", source, StringComparison.Ordinal);
     }
 
     [Fact]

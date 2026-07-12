@@ -1235,34 +1235,7 @@ public sealed class PlaylistWatchService
     }
 
     private static bool IsPendingWatchClaimStillOwnedByQueue(DownloadQueueItem? queueItem)
-    {
-        if (queueItem == null)
-        {
-            return false;
-        }
-
-        var status = NormalizeReasonCode(queueItem.Status);
-        if (status is "queued" or "resolving" or "preparing" or "prepared" or "inqueue" or "running" or "downloading" or "paused" or "retrying")
-        {
-            return true;
-        }
-
-        if (!IsCompletedQueueStatus(status))
-        {
-            return false;
-        }
-
-        var moveStatus = NormalizeReasonCode(queueItem.FinalizationStatus);
-        var enrichmentStatus = NormalizeReasonCode(queueItem.EnrichmentStatus);
-        return !IsTerminalWatchFinalizationFailure(moveStatus)
-            && !IsTerminalWatchFinalizationFailure(enrichmentStatus);
-    }
-
-    private static bool IsTerminalWatchFinalizationFailure(string? status)
-    {
-        var normalized = NormalizeReasonCode(status);
-        return normalized is "failed" or "error" or "canceled" or "cancelled" or "blocked" or "interrupted";
-    }
+        => DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(queueItem, DateTimeOffset.UtcNow);
 
     private static bool IsCompletedQueueStatus(string? status)
     {

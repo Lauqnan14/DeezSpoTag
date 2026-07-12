@@ -463,13 +463,19 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             "DeezSpoTag.Web",
             "Services",
             "PlaylistWatchHostedService.cs"));
+        var recoveryPolicySource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Queue",
+            "DownloadQueueRecoveryPolicy.cs"));
 
         Assert.Contains("SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' END", repositorySource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                item.QueueUuid,\n                notification.Source,", finalizationSource, StringComparison.Ordinal);
-        Assert.Contains("private static bool IsTerminalWatchFinalizationFailure", watchSource, StringComparison.Ordinal);
-        Assert.Contains("private static bool IsTerminalWatchFinalizationFailure", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("return !IsTerminalWatchFinalizationFailure(moveStatus)", watchSource, StringComparison.Ordinal);
-        Assert.Contains("return !IsTerminalWatchFinalizationFailure(moveStatus)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", watchSource, StringComparison.Ordinal);
+        Assert.Contains("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("PostDownloadPendingLease", recoveryPolicySource, StringComparison.Ordinal);
+        Assert.Contains("enrichmentStatus == \"running\" || finalizationStatus == \"running\"", recoveryPolicySource, StringComparison.Ordinal);
     }
 
     [Fact]

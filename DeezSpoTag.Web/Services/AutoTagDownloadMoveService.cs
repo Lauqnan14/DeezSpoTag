@@ -25,7 +25,6 @@ public sealed class AutoTagMoveSummary
     public List<string> DestinationRoots { get; set; } = new();
     public List<long> ChangedFolderIds { get; set; } = new();
     public List<string> ChangedFilePaths { get; set; } = new();
-    public bool RecoveryCleanup { get; set; }
     public string? Error { get; set; }
 
     public void AddDestinationRoot(string? rootPath)
@@ -80,7 +79,6 @@ public sealed class AutoTagMoveSummary
             DestinationRoots = DestinationRoots.ToList(),
             ChangedFolderIds = ChangedFolderIds.ToList(),
             ChangedFilePaths = ChangedFilePaths.ToList(),
-            RecoveryCleanup = RecoveryCleanup,
             Error = Error
         };
     }
@@ -264,9 +262,20 @@ public sealed class AutoTagDownloadMoveService
         var normalizedRootPath = ResolveExistingDirectoryPath(rootPath);
         var settings = _settingsService.LoadSettings();
         var items = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        if (options.BatchScopedFilesOnly)
+        {
+            items = FilterQueueItemsToBatchScope(items, normalizedRootPath, taggedFiles, failedFiles);
+        }
         items = await ReconcileMonitoredRoutingDestinationsAsync(items, normalizedRootPath, cancellationToken);
         var foldersById = await LoadFoldersByIdAsync(cancellationToken);
-        await MoveRemainingContentByDestinationAsync(items, normalizedRootPath, settings, foldersById, summary, cancellationToken);
+        await MoveRemainingContentByDestinationAsync(
+            items,
+            normalizedRootPath,
+            settings,
+            foldersById,
+            options.BatchScopedFilesOnly,
+            summary,
+            cancellationToken);
         var residualConversion = BuildConversionPlan(settings, null);
         var overwritePolicy = string.IsNullOrWhiteSpace(settings.OverwriteFile) ? "y" : settings.OverwriteFile;
         var residualTransitions = await MoveResidualFilesAsync(
@@ -287,6 +296,45 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return summary;
+    }
+
+    private static List<DownloadQueueItem> FilterQueueItemsToBatchScope(
+        IReadOnlyList<DownloadQueueItem> items,
+        string rootPath,
+        IReadOnlyCollection<string> taggedFiles,
+        IReadOnlyCollection<string> failedFiles)
+    {
+        var allowed = BuildNormalizedPathSet(taggedFiles.Concat(failedFiles).ToArray());
+        if (allowed.Count == 0)
+        {
+            return new List<DownloadQueueItem>();
+        }
+
+        return items.Where(item => PayloadContainsBatchFile(item.PayloadJson, rootPath, allowed)).ToList();
+    }
+
+    private static bool PayloadContainsBatchFile(
+        string? payloadJson,
+        string rootPath,
+        IReadOnlySet<string> allowed)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectPayloadPaths(rootPath, document.RootElement, files, roots);
+            return files.Select(NormalizePathForComparison).Any(allowed.Contains);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static bool IsUnderRoot(string rootPath, string candidatePath)
@@ -332,6 +380,7 @@ public sealed class AutoTagDownloadMoveService
         string rootPath,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IReadOnlyDictionary<long, FolderDto> foldersById,
+        bool batchScopedFilesOnly,
         AutoTagMoveSummary summary,
         CancellationToken cancellationToken)
     {
@@ -355,6 +404,12 @@ public sealed class AutoTagDownloadMoveService
             rootOwnersByDestination);
         var transitionsByQueue = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         PopulatePayloadSourceMaps(items, rootPath, payloadSourceMaps);
+        if (batchScopedFilesOnly)
+        {
+            rootsByDestination.Clear();
+            rootBucketsByDestination.Clear();
+            rootOwnersByDestination.Clear();
+        }
 
         if (rootsByDestination.Count == 0 && filesByDestination.Count == 0)
         {
@@ -1302,6 +1357,24 @@ public sealed class AutoTagDownloadMoveService
 
         var taggedSet = BuildNormalizedPathSet(context.TaggedFiles);
         var failedSet = BuildNormalizedPathSet(context.FailedFiles);
+        if (context.Options.BatchScopedFilesOnly)
+        {
+            var scopedAudioKeys = taggedSet
+                .Concat(failedSet)
+                .Where(IsAudioExtension)
+                .Select(BuildSidecarKey)
+                .Where(static key => !string.IsNullOrWhiteSpace(key))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            files = files.Where(file =>
+                    taggedSet.Contains(NormalizePathForComparison(file))
+                    || failedSet.Contains(NormalizePathForComparison(file))
+                    || scopedAudioKeys.Contains(BuildSidecarKey(file)))
+                .ToList();
+        }
+        if (files.Count == 0)
+        {
+            return null;
+        }
         var preferredExtensions = context.Options.PreferredExtensions
             .Select(value => value.Trim().TrimStart('.'))
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -1813,6 +1886,18 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return result;
+    }
+
+    private static string NormalizePathForComparison(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return path;
+        }
     }
 
     private static ResidualBucket GetAudioBucket(

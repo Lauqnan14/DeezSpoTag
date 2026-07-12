@@ -247,7 +247,6 @@ public partial class AutoTagService
     private readonly ConcurrentDictionary<string, byte> _activeJobIds = new();
     private readonly ConcurrentDictionary<string, string> _activeJobStages = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, string> _lastActivityLines = new();
-    private readonly ConcurrentDictionary<string, byte> _staleRecoveryCleanupJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _stuckRecoveryJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> _enhancementPlexRefreshJobs = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _jobCancellationSources = new(StringComparer.OrdinalIgnoreCase);
@@ -2227,8 +2226,7 @@ public partial class AutoTagService
                     IncludesEnrichmentStage = includesEnrichmentStage,
                     IncludesEnhancementStage = includesEnhancementStage,
                     IncludesEnhancementWorkflows = includesEnhancementWorkflows,
-                    FileOutcomes = fileOutcomes,
-                    EarlyAutoMove = execution.EarlyAutoMove
+                    FileOutcomes = fileOutcomes
                 },
                 cancellationToken);
         }
@@ -2351,7 +2349,7 @@ public partial class AutoTagService
         return true;
     }
 
-    private readonly record struct StageRunResult(bool Success, AutoMoveExecutionResult? EarlyAutoMove);
+    private readonly record struct StageRunResult(bool Success);
 
     private async Task<StageRunResult> ExecuteStagesAsync(
         AutoTagJob job,
@@ -2361,66 +2359,17 @@ public partial class AutoTagService
         Dictionary<string, FileTagOutcome> fileOutcomes,
         CancellationToken cancellationToken)
     {
-        AutoMoveExecutionResult? earlyAutoMove = null;
         for (var index = 0; index < stages.Count; index++)
         {
             var stage = stages[index];
             var stageResult = await ExecuteSingleStageAsync(job, stage, index, stages.Count, path, fileOutcomes, cancellationToken);
             if (!stageResult.Success)
             {
-                return new StageRunResult(false, earlyAutoMove);
-            }
-
-            if (earlyAutoMove is null && ShouldAutoMoveAfterEnrichmentStage(job, path, stages, index))
-            {
-                var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
-                AppendLog(job, "enrichment completed, auto-move starting before enhancement");
-                earlyAutoMove = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
-                AppendLog(job, "auto-move completed before enhancement");
+                return new StageRunResult(false);
             }
         }
 
-        return new StageRunResult(true, earlyAutoMove);
-    }
-
-    private bool ShouldAutoMoveAfterEnrichmentStage(
-        AutoTagJob job,
-        string path,
-        IReadOnlyList<AutoTagStageConfig> stages,
-        int completedStageIndex)
-    {
-        if (completedStageIndex < 0
-            || completedStageIndex >= stages.Count
-            || !string.Equals(stages[completedStageIndex].Name, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (!stages
-                .Skip(completedStageIndex + 1)
-                .Any(stage => string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)))
-        {
-            return false;
-        }
-
-        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return IsConfiguredDownloadRootPath(path);
-    }
-
-    private bool IsConfiguredDownloadRootPath(string path)
-    {
-        return ConfiguredDownloadRootResolver.TryResolve(
-                _settingsService,
-                "download location",
-                "download location is not configured.",
-                out var configuredDownloadRoot,
-                out _)
-            && IsPathUnderRoot(path, configuredDownloadRoot)
-            && IsPathUnderRoot(configuredDownloadRoot, path);
+        return new StageRunResult(true);
     }
 
     private readonly record struct StageExecutionResult(bool Success);
@@ -2580,8 +2529,7 @@ public partial class AutoTagService
         SuccessPostProcessingContext context,
         CancellationToken cancellationToken)
     {
-        var autoMove = context.EarlyAutoMove
-            ?? await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
+        var autoMove = await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
             path,
@@ -2620,7 +2568,6 @@ public partial class AutoTagService
         public required bool IncludesEnhancementStage { get; init; }
         public required bool IncludesEnhancementWorkflows { get; init; }
         public required Dictionary<string, FileTagOutcome> FileOutcomes { get; init; }
-        public AutoMoveExecutionResult? EarlyAutoMove { get; init; }
     }
 
     private async Task<AutoMoveExecutionResult> RunFinalAutoMoveAsync(
@@ -2630,6 +2577,23 @@ public partial class AutoTagService
         Dictionary<string, FileTagOutcome> fileOutcomes,
         CancellationToken cancellationToken)
     {
+        if (ConfiguredDownloadRootResolver.TryResolve(
+                _settingsService,
+                "download location",
+                "download location is not configured.",
+                out var configuredDownloadRoot,
+                out _)
+            && IsPathUnderRoot(path, configuredDownloadRoot))
+        {
+            AppendLog(job, "auto-move skipped: download-root finalization is owned by download orchestration");
+            var summary = new AutoTagMoveSummary
+            {
+                Error = "auto-move skipped for download-root run."
+            };
+            ApplyAutoMoveSummary(job, summary);
+            return new AutoMoveExecutionResult(false, summary);
+        }
+
         if (IsEnhancementRunIntent(job.RunIntent))
         {
             AppendLog(job, "auto-move skipped: enhancement run uses configured enhancement workflows only");
@@ -3896,7 +3860,7 @@ public partial class AutoTagService
         var destinations = summary.DestinationRoots.Count > 0
             ? string.Join(", ", summary.DestinationRoots)
             : "<none>";
-        var label = summary.RecoveryCleanup ? "auto-move recovery summary" : "auto-move summary";
+        const string label = "auto-move summary";
         AppendLog(
             job,
             $"{label}: moved={summary.MovedCount}, skipped={summary.SkippedCount}, failed={summary.FailedCount}, destinations=[{destinations}]");
@@ -7437,7 +7401,7 @@ public partial class AutoTagService
         job.FinishedAt ??= DateTimeOffset.UtcNow;
         job.Error ??= "AutoTag job was interrupted by an application restart; resume is available.";
         SaveJob(job);
-        TryQueueStaleRecoveryCleanup(job);
+        RecordStaleRecoveryPending(job);
     }
 
     private static DateTimeOffset ResolveLastActivityTimestamp(AutoTagJob job)
@@ -7586,7 +7550,7 @@ public partial class AutoTagService
 
         if (!restartStalePersistedJobs)
         {
-            TryQueueStaleRecoveryCleanup(job);
+            RecordStaleRecoveryPending(job);
             return;
         }
 
@@ -7598,14 +7562,14 @@ public partial class AutoTagService
         if (job.ResumeCheckpoint == null)
         {
             AppendLog(job, "stuck watchdog: auto-resume skipped because no resume checkpoint is available.");
-            TryQueueStaleRecoveryCleanup(job);
+            RecordStaleRecoveryPending(job);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(job.RootPath))
         {
             AppendLog(job, "stuck watchdog: auto-resume skipped because the job root path is missing.");
-            TryQueueStaleRecoveryCleanup(job);
+            RecordStaleRecoveryPending(job);
             return;
         }
 
@@ -7613,7 +7577,7 @@ public partial class AutoTagService
         if (string.IsNullOrWhiteSpace(runtimeConfigPath) || !File.Exists(runtimeConfigPath))
         {
             AppendLog(job, "stuck watchdog: auto-resume skipped because the runtime config was not found.");
-            TryQueueStaleRecoveryCleanup(job);
+            RecordStaleRecoveryPending(job);
             return;
         }
 
@@ -7623,7 +7587,7 @@ public partial class AutoTagService
             if (string.IsNullOrWhiteSpace(configJson))
             {
                 AppendLog(job, "stuck watchdog: auto-resume skipped because the runtime config is empty.");
-                TryQueueStaleRecoveryCleanup(job);
+                RecordStaleRecoveryPending(job);
                 return;
             }
 
@@ -7652,7 +7616,7 @@ public partial class AutoTagService
         {
             _logger.LogWarning(ex, "AutoTag stuck watchdog failed to auto-resume job {JobId}.", job.Id);
             AppendLog(job, $"stuck watchdog: auto-resume failed: {ex.Message}");
-            TryQueueStaleRecoveryCleanup(job);
+            RecordStaleRecoveryPending(job);
         }
     }
 
@@ -7723,119 +7687,9 @@ public partial class AutoTagService
         return $"{Math.Max(1, duration.TotalMinutes):0}m";
     }
 
-    private void TryQueueStaleRecoveryCleanup(AutoTagJob job)
+    private void RecordStaleRecoveryPending(AutoTagJob job)
     {
-        if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase))
-        {
-            AppendLog(job, "stale recovery: cleanup auto-move skipped for download enrichment (finalization owned by orchestration)");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(job.RootPath))
-        {
-            return;
-        }
-
-        if (!_staleRecoveryCleanupJobs.TryAdd(job.Id, 0))
-        {
-            return;
-        }
-
-        AppendLog(job, "stale recovery: cleanup auto-move queued");
-        _ = RunStaleRecoveryCleanupAsync(job);
-    }
-
-    private async Task RunStaleRecoveryCleanupAsync(AutoTagJob job)
-    {
-        try
-        {
-            if (!await WaitForDownloadsToIdleForRecoveryAsync(CancellationToken.None))
-            {
-                var skippedSummary = new AutoTagMoveSummary
-                {
-                    RecoveryCleanup = true,
-                    Error = "cleanup auto-move skipped: downloads remained active."
-                };
-                ApplyAutoMoveSummary(job, skippedSummary);
-                return;
-            }
-
-            if (_disableAutoMove)
-            {
-                var disabledSummary = new AutoTagMoveSummary
-                {
-                    RecoveryCleanup = true,
-                    Error = "cleanup auto-move skipped: disabled by configuration."
-                };
-                ApplyAutoMoveSummary(job, disabledSummary);
-                return;
-            }
-
-            AppendLog(job, "stale recovery: cleanup auto-move starting");
-            var runtimeConfigPath = TryFindRuntimeConfigPath(job.Id, "base");
-            var organizerOptions = string.IsNullOrWhiteSpace(runtimeConfigPath)
-                ? new AutoTagOrganizerOptions()
-                : LoadOrganizerOptions(runtimeConfigPath);
-            var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
-                job.RootPath!,
-                organizerOptions,
-                Array.Empty<string>(),
-                Array.Empty<string>(),
-                CancellationToken.None);
-            summary.RecoveryCleanup = true;
-            ApplyAutoMoveSummary(job, summary);
-            AppendLog(job, "stale recovery: cleanup auto-move finished");
-
-            if (summary.MovedCount > 0 && string.IsNullOrWhiteSpace(summary.Error))
-            {
-                await TriggerPlexScanAfterMoveAsync(job, CancellationToken.None);
-                await IngestKnownFilesAfterAutoMoveAsync(
-                    job,
-                    summary,
-                    CancellationToken.None);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // No-op: service-level recovery path is best-effort.
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "AutoTag stale recovery cleanup failed for {JobId}.", job.Id);
-            var failedSummary = new AutoTagMoveSummary
-            {
-                RecoveryCleanup = true,
-                FailedCount = 1,
-                Error = ex.Message
-            };
-            ApplyAutoMoveSummary(job, failedSummary);
-            AppendLog(job, $"stale recovery: cleanup auto-move failed: {ex.Message}");
-        }
-        finally
-        {
-            _staleRecoveryCleanupJobs.TryRemove(job.Id, out _);
-        }
-    }
-
-    private async Task<bool> WaitForDownloadsToIdleForRecoveryAsync(CancellationToken cancellationToken)
-    {
-        const int attempts = 12;
-        for (var attempt = 0; attempt < attempts; attempt++)
-        {
-            if (!await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
-            {
-                return true;
-            }
-
-            if (attempt == attempts - 1)
-            {
-                return false;
-            }
-
-            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
-        }
-
-        return false;
+        AppendLog(job, "stale recovery: auto-move disabled; file finalization remains owned by its authoritative pipeline");
     }
 
     private string? TryFindRuntimeConfigPath(string jobId, string stage)

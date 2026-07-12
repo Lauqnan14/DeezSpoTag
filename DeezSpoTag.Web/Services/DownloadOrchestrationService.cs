@@ -1191,13 +1191,24 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 continue;
             }
 
-            await _queueRepository.MarkMoveNotRequiredAsync(item.QueueUuid, cancellationToken);
-            await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusNotRequired, cancellationToken);
-            var marker = BuildCompletionMarker(item);
-            if (!string.IsNullOrWhiteSpace(marker))
+            if (HasVerifiedFinalDestination(item, downloadRootPath))
             {
-                closedMarkers[marker] = item.UpdatedAt;
+                await _queueRepository.MarkMoveNotRequiredAsync(item.QueueUuid, cancellationToken);
+                await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusNotRequired, cancellationToken);
+                var marker = BuildCompletionMarker(item);
+                if (!string.IsNullOrWhiteSpace(marker))
+                {
+                    closedMarkers[marker] = item.UpdatedAt;
+                }
+                continue;
             }
+
+            await _queueRepository.MarkMoveFailedAsync(item.QueueUuid, cancellationToken);
+            await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusInterrupted, cancellationToken);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                ErrorLogLevel,
+                $"Automation: completed download {item.QueueUuid} lost its staging artifact before enrichment/finalization and has no verified library destination."));
         }
 
         if (closedMarkers.Count > 0)
@@ -1210,6 +1221,52 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         return remaining;
+    }
+
+    private static bool HasVerifiedFinalDestination(DownloadQueueItem item, string downloadRootPath)
+    {
+        if (string.IsNullOrWhiteSpace(item.FinalDestinationsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(item.FinalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var source = property.Name;
+                var destination = property.Value.GetString();
+                if (string.IsNullOrWhiteSpace(destination)
+                    || string.Equals(source, destination, StringComparison.OrdinalIgnoreCase)
+                    || IsPathWithinScope(destination, downloadRootPath))
+                {
+                    continue;
+                }
+
+                var destinationIo = DownloadPathResolver.ResolveIoPath(destination);
+                if (!string.IsNullOrWhiteSpace(destinationIo) && File.Exists(destinationIo))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private async Task<PipelineEnrichmentResult> RunPipelineEnrichmentAsync(
@@ -1314,6 +1371,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
                 context.DownloadRootPath,
+                new AutoTagOrganizerOptions
+                {
+                    BatchScopedFilesOnly = true
+                },
+                group.SourceFilePaths,
+                Array.Empty<string>(),
                 cancellationToken);
 
             var sourceFilesRemain = HasExistingGroupSourceFiles(group);

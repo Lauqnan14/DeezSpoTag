@@ -2797,11 +2797,30 @@ WHERE lower(trim(COALESCE(enrichment_status, ''))) = 'cancelled';";
     {
         const string sql = @"
 UPDATE download_task
-SET move_status = '" + MoveStatusMoved + @"'
+SET move_status = '" + MoveStatusPending + @"',
+    enrichment_status = CASE
+        WHEN lower(COALESCE(enrichment_status, '')) IN ('" + EnrichmentStatusCompleted + @"', '" + EnrichmentStatusNotRequired + @"') THEN enrichment_status
+        ELSE '" + EnrichmentStatusPending + @"'
+    END,
+    updated_at = CURRENT_TIMESTAMP
 WHERE lower(status) IN ('completed', 'complete')
-  AND final_destinations_json IS NOT NULL
-  AND trim(final_destinations_json) <> ''
-  AND lower(COALESCE(move_status, '')) NOT IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"');
+  AND destination_folder_id IS NOT NULL
+  AND lower(COALESCE(move_status, '')) = '" + MoveStatusMoved + @"'
+  AND json_valid(final_destinations_json)
+  AND EXISTS (SELECT 1 FROM json_each(final_destinations_json))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM json_each(final_destinations_json)
+      WHERE lower(trim(key)) <> lower(trim(CAST(value AS TEXT)))
+  );
+
+UPDATE download_task
+SET move_status = CASE
+        WHEN destination_folder_id IS NULL THEN '" + MoveStatusNotRequired + @"'
+        ELSE '" + MoveStatusPending + @"'
+    END
+WHERE lower(status) IN ('completed', 'complete')
+  AND (move_status IS NULL OR trim(move_status) = '');
 
 UPDATE download_task
 SET move_status = '" + MoveStatusNotRequired + @"',

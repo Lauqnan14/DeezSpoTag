@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
@@ -16,6 +17,59 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     private const string WatchlistPayloadJson = """
         {"WatchlistOrigin":"playlist","WatchlistSource":"spotify","WatchlistPlaylistId":"playlist-1","WatchlistTrackId":"track-1"}
         """;
+
+    [Fact]
+    public void WatchlistClaimOwnership_ExpiresCompletedPendingWorkButProtectsRunningWork()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var completed = CreateQueueItem("claim-item", "Artist", "Track", 1) with
+        {
+            Status = "completed",
+            EnrichmentStatus = "pending",
+            FinalizationStatus = "pending",
+            UpdatedAt = now - DownloadQueueRecoveryPolicy.PostDownloadPendingLease - TimeSpan.FromMinutes(1)
+        };
+
+        Assert.False(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(completed, now));
+        Assert.True(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(
+            completed with { EnrichmentStatus = "running" },
+            now));
+        Assert.False(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(
+            completed with { EnrichmentStatus = null, FinalizationStatus = null, UpdatedAt = now },
+            now));
+    }
+
+    [Fact]
+    public async Task StartupRecovery_DemotesIdentityOnlyDestinationMapFromMovedToPending()
+    {
+        await using var context = await CreateContextAsync();
+        var stagingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Track.flac");
+        var item = CreateQueueItem("identity-destination", "Artist", "Track", 1) with
+        {
+            Status = "completed",
+            FinalizationStatus = "moved",
+            EnrichmentStatus = "pending",
+            FinalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                [stagingPath] = stagingPath
+            })
+        };
+        await context.QueueRepository.EnqueueAsync(item, CancellationToken.None);
+        await context.QueueRepository.UpdateFinalDestinationsAsync(
+            item.QueueUuid,
+            item.FinalDestinationsJson,
+            cancellationToken: CancellationToken.None);
+        await context.QueueRepository.MarkMoveSucceededAsync(item.QueueUuid, CancellationToken.None);
+
+        var restartedRepository = new DownloadQueueRepository(
+            context.Configuration,
+            NullLogger<DownloadQueueRepository>.Instance);
+        var recovered = await restartedRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
+
+        Assert.NotNull(recovered);
+        Assert.Equal("pending", recovered!.FinalizationStatus);
+        Assert.Equal("pending", recovered.EnrichmentStatus);
+    }
 
     [Fact]
     public async Task ExistsDuplicateAsync_DoesNotTreatSharedAlbumOrArtistIdsAsTrackDuplicates()
@@ -1062,7 +1116,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             config,
             NullLogger<DownloadQueueRepository>.Instance,
             cleanupService);
-        return Task.FromResult(new TestContext(tempRoot, queueRepository));
+        return Task.FromResult(new TestContext(tempRoot, config, queueRepository));
     }
 
     private static DownloadQueueItem CreateQueueItem(
@@ -1113,13 +1167,15 @@ public sealed class DownloadQueueRepositoryDuplicateTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(string tempRoot, DownloadQueueRepository queueRepository)
+        public TestContext(string tempRoot, IConfiguration configuration, DownloadQueueRepository queueRepository)
         {
             TempRoot = tempRoot;
+            Configuration = configuration;
             QueueRepository = queueRepository;
         }
 
         public string TempRoot { get; }
+        public IConfiguration Configuration { get; }
         public DownloadQueueRepository QueueRepository { get; }
 
         public ValueTask DisposeAsync()
