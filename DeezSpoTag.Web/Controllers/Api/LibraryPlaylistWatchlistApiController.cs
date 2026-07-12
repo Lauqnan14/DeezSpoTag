@@ -1264,10 +1264,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             statusByTrackId.TryGetValue(trackSourceId, out var persistedStatus);
             claimsByTrackId.TryGetValue(trackSourceId, out var trackClaims);
             var queueTask = ResolveCurrentQueueTask(
-                normalizedSource,
-                candidate,
                 trackClaims,
-                queueTasks,
                 queueTasksByUuid);
             var locationStatus = ResolvePlaylistTrackLocationStatus(
                 ignoredTrackIds.Contains(trackSourceId),
@@ -1312,8 +1309,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return new PlaylistTrackLocationStatus("blocked", "Blocked", "Ignored or blocked by monitored playlist rules.");
         }
 
-        var queueState = ResolveQueueLocationStatus(NormalizeStatusText(queueTask?.Status));
-        if (queueState != null)
+        var queueStatus = NormalizeStatusText(queueTask?.Status);
+        var queueState = ResolveQueueLocationStatus(queueStatus);
+        if (queueState != null && IsActiveQueueStatus(queueStatus))
         {
             return queueState;
         }
@@ -1324,17 +1322,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return persistedState;
         }
 
-        return persistedState;
+        return queueState ?? persistedState;
     }
+
+    private static bool IsActiveQueueStatus(string status)
+        => status is "queued" or "inqueue" or "pending" or "running" or "downloading" or "paused" or "retrying";
 
     private static string NormalizeStatusText(string? status)
         => string.IsNullOrWhiteSpace(status) ? string.Empty : status.Trim().ToLowerInvariant();
 
     private static DownloadQueueItem? ResolveCurrentQueueTask(
-        string source,
-        PlaylistWatchService.PlaylistTrackCandidate candidate,
         IReadOnlyList<PlaylistWatchDownloadClaimDto>? claims,
-        IReadOnlyList<DownloadQueueItem> queueTasks,
         IReadOnlyDictionary<string, DownloadQueueItem> queueTasksByUuid)
     {
         var claimedTasks = claims?
@@ -1342,71 +1340,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             .Where(static task => task != null)
             .Cast<DownloadQueueItem>()
             .ToList();
-        var matchingTasks = claimedTasks is { Count: > 0 }
-            ? claimedTasks
-            : queueTasks.Where(task => QueueTaskMatchesCandidate(source, candidate, task)).ToList();
-
-        return matchingTasks
+        return (claimedTasks ?? [])
             .Where(static task => ResolveQueueLocationStatus(NormalizeStatusText(task.Status)) != null)
             .OrderBy(static task => QueueStatusPriority(task.Status))
             .ThenByDescending(static task => task.UpdatedAt)
             .FirstOrDefault();
-    }
-
-    private static bool QueueTaskMatchesCandidate(
-        string source,
-        PlaylistWatchService.PlaylistTrackCandidate candidate,
-        DownloadQueueItem task)
-    {
-        if (!string.IsNullOrWhiteSpace(candidate.Isrc)
-            && string.Equals(candidate.Isrc.Trim(), task.Isrc?.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var trackSourceId = candidate.TrackSourceId?.Trim();
-        if (string.IsNullOrWhiteSpace(trackSourceId))
-        {
-            return false;
-        }
-
-        var queueSourceId = source switch
-        {
-            "deezer" => task.DeezerTrackId,
-            "spotify" => task.SpotifyTrackId,
-            "apple" or "applemusic" => task.AppleTrackId,
-            "qobuz" => ReadQueuePayloadId(task.PayloadJson, "QobuzId", "qobuzId"),
-            "tidal" => ReadQueuePayloadId(task.PayloadJson, "TidalId", "tidalId"),
-            "amazon" or "amazonmusic" => ReadQueuePayloadId(task.PayloadJson, "AmazonId", "amazonId"),
-            _ => null
-        };
-        return string.Equals(trackSourceId, queueSourceId?.Trim(), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string? ReadQueuePayloadId(string? payloadJson, string pascalName, string camelName)
-    {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(payloadJson);
-            var root = document.RootElement;
-            if (root.TryGetProperty(pascalName, out var pascalValue) && pascalValue.ValueKind == JsonValueKind.String)
-            {
-                return pascalValue.GetString();
-            }
-
-            return root.TryGetProperty(camelName, out var camelValue) && camelValue.ValueKind == JsonValueKind.String
-                ? camelValue.GetString()
-                : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
     }
 
     private static int QueueStatusPriority(string? status)

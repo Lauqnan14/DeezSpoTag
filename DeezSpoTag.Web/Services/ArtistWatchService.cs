@@ -214,9 +214,11 @@ public sealed class ArtistWatchService
                 BuildArtistQueueOptions(artist, album.Name ?? string.Empty, AlbumGroup),
                 cancellationToken);
             await AddSpotifyAlbumWatchHistoryIfQueuedAsync(artist, album, queuedCount, cancellationToken);
+            if (queuedCount >= tracks.Count)
+            {
+                insertedAlbums.Add(new ArtistWatchAlbumInsert(SpotifySource, album.Id));
+            }
         }
-
-        insertedAlbums.Add(new ArtistWatchAlbumInsert(SpotifySource, album.Id));
     }
 
     private async Task AddSpotifyAlbumWatchHistoryIfQueuedAsync(
@@ -344,9 +346,9 @@ public sealed class ArtistWatchService
                 cancellationToken);
         }
 
-        return newTracks
+        return queuedCount >= newTracks.Count ? newTracks
             .Select(track => new ArtistWatchAlbumInsert(SpotifySource, BuildSpotifyTopTrackWatchId(track.Id)))
-            .ToList();
+            .ToList() : [];
     }
 
     private async Task CheckAppleArtistAsync(
@@ -517,13 +519,13 @@ public sealed class ArtistWatchService
         var intents = await BuildAppleAlbumIntentsAsync(albumId, albumName, storefront, cancellationToken);
         if (intents.Count > 0)
         {
-            await QueueAppleAlbumIntentsAsync(artist, albumId, albumName, intents, cancellationToken);
+            var queuedCount = await QueueAppleAlbumIntentsAsync(artist, albumId, albumName, intents, cancellationToken);
+            return queuedCount >= intents.Count ? albumId : null;
         }
-
-        return albumId;
+        return null;
     }
 
-    private async Task QueueAppleAlbumIntentsAsync(
+    private async Task<int> QueueAppleAlbumIntentsAsync(
         WatchlistArtistDto artist,
         string albumId,
         string albumName,
@@ -546,6 +548,7 @@ public sealed class ArtistWatchService
                 AlbumGroup,
                 cancellationToken);
         }
+        return queuedCount;
     }
 
     private async Task<JsonDocument?> TryGetAppleAlbumDocumentAsync(
@@ -625,9 +628,9 @@ public sealed class ArtistWatchService
                     AlbumGroup,
                     cancellationToken);
             }
+            return queuedCount >= tracks.Count ? albumId : null;
         }
-
-        return albumId;
+        return null;
     }
 
     private static bool TryGetDataArray(JsonElement root, out JsonElement data)

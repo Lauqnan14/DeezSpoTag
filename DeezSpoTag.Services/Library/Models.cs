@@ -768,6 +768,16 @@ public sealed record PlaylistWatchDownloadClaimDto(
     string Status,
     DateTimeOffset UpdatedAt);
 
+public sealed record WatchlistSyncJobDto(
+    long Id,
+    string Source,
+    string PlaylistId,
+    string TrackId,
+    long? DestinationFolderId,
+    IReadOnlyList<string> FinalFilePaths,
+    int AttemptCount,
+    DateTimeOffset NextAttemptUtc);
+
 public sealed record MediaServerTrackMetadataUpsertDto(
     long TrackId,
     string Service,

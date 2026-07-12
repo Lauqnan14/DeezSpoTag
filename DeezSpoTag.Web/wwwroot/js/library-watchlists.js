@@ -1409,9 +1409,9 @@ function toNonNegativeCount(value) {
 
 function renderPlaylistWatchlistPresentationBadges(item) {
     const sourceTrackCount = toNonNegativeCount(item.trackCount);
-    const syncedTrackCount = toNonNegativeCount(item.syncedTrackCount);
     const ignoredBlockedTrackCount = toNonNegativeCount(item.ignoredBlockedTrackCount);
     const totalTrackCount = Math.max(0, sourceTrackCount - ignoredBlockedTrackCount);
+    const syncedTrackCount = Math.min(toNonNegativeCount(item.syncedTrackCount), totalTrackCount);
     const incompleteTrackCount = Math.max(0, totalTrackCount - syncedTrackCount);
     const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
     const hasIncompleteSync = incompleteTrackCount > 0 && totalTrackCount > syncedTrackCount;

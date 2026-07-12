@@ -429,7 +429,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var summarizedWatchlist = await _repository.GetPlaylistWatchlistAsync();
         var summarizedPlaylist = Assert.Single(summarizedWatchlist, item => item.Source == "spotify" && item.SourceId == "pl-123");
         Assert.Equal(0, summarizedPlaylist.SyncedTrackCount);
-        Assert.Equal(25, summarizedPlaylist.IncompleteTrackCount);
+        Assert.Equal(23, summarizedPlaylist.IncompleteTrackCount);
         Assert.Equal(2, summarizedPlaylist.IgnoredBlockedTrackCount);
         Assert.Equal(3, summarizedPlaylist.ReroutedTrackCount);
 
@@ -501,7 +501,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
         Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
-        Assert.Equal(24, summaryAfterRestart.IncompleteTrackCount);
+        Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
         Assert.Equal(2, summaryAfterRestart.IgnoredBlockedTrackCount);
         Assert.Equal(3, summaryAfterRestart.ReroutedTrackCount);
         await _repository.UpdatePlaylistWatchTrackVerificationAsync(

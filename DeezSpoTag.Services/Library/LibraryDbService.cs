@@ -116,6 +116,8 @@ public sealed class LibraryDbService
             ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
             ,
+            ["idx_watchlist_sync_job_due"] = ("watchlist_sync_job", "next_attempt_utc, id", false)
+            ,
             ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)
             ,
             ["idx_recommendation_rejection_library"] = (RecommendationRejectionTable, "library_id, folder_id, station_id", false)
@@ -443,7 +445,7 @@ WHERE target_service IS NOT NULL
   AND target_playlist_id IS NOT NULL
   AND TRIM(target_playlist_id) <> '';", cancellationToken);
         await EnsureTableAsync(connection, @"
-CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
+	CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,
     track_source_id TEXT NOT NULL,
@@ -454,6 +456,22 @@ CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id, track_source_id, queue_uuid)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS watchlist_sync_job (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    playlist_id TEXT NOT NULL,
+    track_id TEXT NOT NULL,
+    destination_folder_id BIGINT,
+    final_file_paths_json TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source, playlist_id, track_id)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_sync_job_due", "watchlist_sync_job", "next_attempt_utc, id", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
     watch_type TEXT NOT NULL PRIMARY KEY,

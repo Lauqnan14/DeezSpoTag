@@ -20,11 +20,12 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     private static readonly TimeSpan FollowUpDelay = TimeSpan.FromMinutes(10);
     private const int MaxFollowUpPasses = 12;
 
-    private readonly Channel<SyncRequest> _queue = Channel.CreateUnbounded<SyncRequest>(
-        new UnboundedChannelOptions
+    private readonly Channel<SyncRequest> _queue = Channel.CreateBounded<SyncRequest>(
+        new BoundedChannelOptions(256)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait
         });
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _playlistLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SyncRequest> _pendingAfterCurrentRun = new(StringComparer.OrdinalIgnoreCase);
@@ -43,7 +44,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         _logger = logger;
     }
 
-    public ValueTask NotifyFinalizedAsync(
+    public async ValueTask NotifyFinalizedAsync(
         string source,
         string playlistId,
         string trackId,
@@ -53,28 +54,38 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     {
         if (!IsWatchlistEnabled())
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
         if (string.IsNullOrWhiteSpace(source)
             || string.IsNullOrWhiteSpace(playlistId)
             || string.IsNullOrWhiteSpace(trackId))
         {
-            return ValueTask.CompletedTask;
+            return;
         }
 
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        var paths = NormalizeChangedFilePaths(finalFilePaths);
+        await repository.EnqueueWatchlistSyncJobAsync(source, playlistId, trackId, destinationFolderId, paths, cancellationToken);
+        var due = await repository.GetDueWatchlistSyncJobsAsync(100, cancellationToken);
+        var job = due.FirstOrDefault(item => string.Equals(item.Source, source.Trim(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(item.PlaylistId, playlistId.Trim(), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(item.TrackId, trackId.Trim(), StringComparison.OrdinalIgnoreCase));
         var request = new SyncRequest(
+            job?.Id ?? 0,
             source.Trim().ToLowerInvariant(),
             playlistId.Trim(),
             trackId.Trim(),
             destinationFolderId,
-            NormalizeChangedFilePaths(finalFilePaths),
+            paths,
             FollowUpPass: 0);
-        return _queue.Writer.WriteAsync(request, cancellationToken);
+        await _queue.Writer.WriteAsync(request, cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await RecoverDurableJobsAsync(stoppingToken);
         await foreach (var request in _queue.Reader.ReadAllAsync(stoppingToken))
         {
             if (!IsWatchlistEnabled())
@@ -84,6 +95,16 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
             _ = RunQueuedRequestAsync(request, stoppingToken);
         }
+    }
+
+    private async Task RecoverDurableJobsAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        if (!repository.IsConfigured) return;
+        foreach (var job in await repository.GetDueWatchlistSyncJobsAsync(100, cancellationToken))
+            await _queue.Writer.WriteAsync(new SyncRequest(job.Id, job.Source, job.PlaylistId, job.TrackId,
+                job.DestinationFolderId, job.FinalFilePaths, job.AttemptCount), cancellationToken);
     }
 
     private bool IsWatchlistEnabled()
@@ -144,6 +165,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 var synced = await TrySyncOnceAsync(request, attempt + 1, stoppingToken);
                 if (synced)
                 {
+                    await CompleteDurableJobAsync(request, stoppingToken);
                     return;
                 }
             }
@@ -154,6 +176,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.PlaylistId,
                 request.TrackId);
             ScheduleFollowUp(request, stoppingToken);
+            await PersistRetryAsync(request, stoppingToken);
         }
         catch (OperationCanceledException ex) when (stoppingToken.IsCancellationRequested)
         {
@@ -175,6 +198,21 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 await _queue.Writer.WriteAsync(pendingRequest, stoppingToken);
             }
         }
+    }
+
+    private async Task CompleteDurableJobAsync(SyncRequest request, CancellationToken cancellationToken)
+    {
+        if (request.JobId <= 0) return;
+        using var scope = _serviceProvider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<LibraryRepository>().CompleteWatchlistSyncJobAsync(request.JobId, cancellationToken);
+    }
+
+    private async Task PersistRetryAsync(SyncRequest request, CancellationToken cancellationToken)
+    {
+        if (request.JobId <= 0) return;
+        using var scope = _serviceProvider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<LibraryRepository>().RetryWatchlistSyncJobAsync(
+            request.JobId, request.FollowUpPass + 1, DateTimeOffset.UtcNow + FollowUpDelay, "Playlist synchronization not ready.", cancellationToken);
     }
 
     private static string BuildKey(SyncRequest request)
@@ -486,6 +524,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     }
 
     private sealed record SyncRequest(
+        long JobId,
         string Source,
         string PlaylistId,
         string TrackId,

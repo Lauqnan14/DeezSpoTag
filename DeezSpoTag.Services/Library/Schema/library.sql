@@ -573,6 +573,24 @@ CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
 CREATE INDEX IF NOT EXISTS idx_playlist_watch_download_claim_queue
     ON playlist_watch_download_claim (queue_uuid, status);
 
+CREATE TABLE IF NOT EXISTS watchlist_sync_job (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    playlist_id TEXT NOT NULL,
+    track_id TEXT NOT NULL,
+    destination_folder_id BIGINT,
+    final_file_paths_json TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source, playlist_id, track_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_sync_job_due
+    ON watchlist_sync_job (next_attempt_utc, id);
+
 CREATE TABLE IF NOT EXISTS playlist_watch_ignore (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,
