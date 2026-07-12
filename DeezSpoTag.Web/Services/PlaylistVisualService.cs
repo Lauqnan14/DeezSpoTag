@@ -150,6 +150,39 @@ public sealed class PlaylistVisualService
             BuildVisualVariantUrl(source, sourceId, Path.GetFileName(file), File.GetLastWriteTimeUtc(file)));
     }
 
+    public StoredPlaylistVisual? GetStoredVisualFromManagedUrl(string source, string sourceId, string? managedUrl)
+    {
+        if (!IsManagedVisualUrl(managedUrl))
+        {
+            return null;
+        }
+
+        var fileName = TryExtractManagedVisualFileName(managedUrl);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return GetStoredVisual(source, sourceId);
+        }
+
+        if (!string.Equals(fileName, Path.GetFileName(fileName), StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var visualDir = GetVisualDirectory(source, sourceId);
+        var filePath = Path.Join(visualDir, fileName);
+        if (!File.Exists(filePath))
+        {
+            return null;
+        }
+
+        var activeFileName = ResolveActiveFileName(visualDir);
+        return new StoredPlaylistVisual(
+            filePath,
+            ResolveContentType(filePath),
+            string.Equals(fileName, activeFileName, StringComparison.OrdinalIgnoreCase),
+            BuildVisualVariantUrl(source, sourceId, fileName, File.GetLastWriteTimeUtc(filePath)));
+    }
+
     public IReadOnlyList<StoredPlaylistVisual> GetStoredVisuals(string source, string sourceId)
     {
         var visualDir = GetVisualDirectory(source, sourceId);
@@ -330,6 +363,35 @@ public sealed class PlaylistVisualService
         }
 
         return BuildVisualUrl(source, sourceId, File.GetLastWriteTimeUtc(existing.FilePath));
+    }
+
+    private static string? TryExtractManagedVisualFileName(string? managedUrl)
+    {
+        if (string.IsNullOrWhiteSpace(managedUrl))
+        {
+            return null;
+        }
+
+        var queryIndex = managedUrl.IndexOf('?', StringComparison.Ordinal);
+        if (queryIndex < 0 || queryIndex == managedUrl.Length - 1)
+        {
+            return null;
+        }
+
+        foreach (var pair in managedUrl[(queryIndex + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separatorIndex = pair.IndexOf('=', StringComparison.Ordinal);
+            var key = separatorIndex >= 0 ? pair[..separatorIndex] : pair;
+            if (!string.Equals(Uri.UnescapeDataString(key), "file", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = separatorIndex >= 0 ? pair[(separatorIndex + 1)..] : string.Empty;
+            return string.IsNullOrWhiteSpace(value) ? null : Uri.UnescapeDataString(value);
+        }
+
+        return null;
     }
 
     private static string ResolveImageExtension(string? mediaType, string? url)

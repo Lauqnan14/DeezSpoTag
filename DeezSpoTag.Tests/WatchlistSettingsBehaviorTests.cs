@@ -1,8 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -492,6 +499,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("preference?.ReuseSavedArtwork == true", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistPosterFromUrlAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromUrlAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("VerifyJellyfinPrimaryImageChangedAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetJellyfinPrimaryImageTagAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveJellyfinVisualFromPlaylistImage", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveJellyfinVisualFromManagedImage", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkOnlyAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkOnlyAsync", controllerSource, StringComparison.Ordinal);
         Assert.Contains("ResolveStoredVisualForArtworkSync", syncSource, StringComparison.Ordinal);
@@ -504,6 +515,66 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("VerifyAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
+
+        var artworkOnlyBody = ExtractMethodBody(syncSource, "public async Task<PlaylistSyncResult> SyncPlaylistArtworkOnlyAsync(");
+        Assert.Contains("ResolveTargetServicesAsync(preference, cancellationToken)", artworkOnlyBody, StringComparison.Ordinal);
+        Assert.Contains("CombinePlaylistSyncTargetResults(results)", artworkOnlyBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveTargetServiceAsync(preference, cancellationToken)", artworkOnlyBody, StringComparison.Ordinal);
+
+        var jellyfinArtworkBody = ExtractMethodBody(syncSource, "private async Task<bool> SyncJellyfinPlaylistArtworkAsync(");
+        Assert.Contains("ResolveJellyfinVisualFromPlaylistImage(playlist)", jellyfinArtworkBody, StringComparison.Ordinal);
+        Assert.Contains("ResolveJellyfinVisualFromManagedImage(", jellyfinArtworkBody, StringComparison.Ordinal);
+        Assert.Contains("UpdateItemPrimaryImageFromFileAsync", jellyfinArtworkBody, StringComparison.Ordinal);
+
+        var jellyfinArtworkOnlyBody = ExtractMethodBody(syncSource, "private async Task<PlaylistSyncResult> SyncJellyfinPlaylistArtworkOnlyAsync(");
+        Assert.Contains("ResolveExistingTargetPlaylistId(preference, JellyfinService)", jellyfinArtworkOnlyBody, StringComparison.Ordinal);
+        Assert.Contains("FindPlaylistIdByNameAsync", jellyfinArtworkOnlyBody, StringComparison.Ordinal);
+        Assert.True(
+            jellyfinArtworkOnlyBody.IndexOf("ResolveExistingTargetPlaylistId(preference, JellyfinService)", StringComparison.Ordinal)
+            < jellyfinArtworkOnlyBody.IndexOf("FindPlaylistIdByNameAsync", StringComparison.Ordinal),
+            "Jellyfin artwork-only sync must use the persisted target playlist id before falling back to a name lookup.");
+
+        var plexArtworkBody = ExtractMethodBody(syncSource, "private async Task SyncPlexPlaylistArtworkAsync(");
+        var navidromeArtworkBody = ExtractMethodBody(syncSource, "private async Task<bool> SyncNavidromePlaylistArtworkAsync(");
+        Assert.DoesNotContain("GetStoredVisualFromManagedUrl", plexArtworkBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveJellyfinVisual", plexArtworkBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetStoredVisualFromManagedUrl", navidromeArtworkBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveJellyfinVisual", navidromeArtworkBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PlaylistVisualService_ResolvesExactManagedVisualFileBeforeActiveFallback()
+    {
+        var service = new PlaylistVisualService(
+            new StubHttpClientFactory(),
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlaylistVisualService>.Instance);
+        const string source = "spotify";
+        const string sourceId = "playlist-1";
+
+        await service.StoreUploadedVisualAsync(
+            source,
+            sourceId,
+            new byte[] { 0xFF, 0xD8, 0x01, 0xFF, 0xD9 },
+            "image/jpeg",
+            CancellationToken.None);
+        var oldVisual = service.GetStoredVisuals(source, sourceId).Single();
+
+        await service.StoreUploadedVisualAsync(
+            source,
+            sourceId,
+            new byte[] { 0xFF, 0xD8, 0x02, 0xFF, 0xD9 },
+            "image/jpeg",
+            CancellationToken.None);
+        var newVisual = service.GetStoredVisuals(source, sourceId)
+            .Single(visual => !string.Equals(visual.FilePath, oldVisual.FilePath, StringComparison.OrdinalIgnoreCase));
+
+        Assert.True(service.SetActiveVisual(source, sourceId, Path.GetFileName(oldVisual.FilePath)));
+
+        var resolved = service.GetStoredVisualFromManagedUrl(source, sourceId, newVisual.Url);
+
+        Assert.NotNull(resolved);
+        Assert.Equal(Path.GetFileName(newVisual.FilePath), Path.GetFileName(resolved!.FilePath));
     }
 
     [Fact]
@@ -747,5 +818,28 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         }
 
         throw new InvalidOperationException($"Missing method body end for: {methodMarker}");
+    }
+
+    private sealed class StubWebHostEnvironment : IWebHostEnvironment
+    {
+        public StubWebHostEnvironment(string rootPath)
+        {
+            ContentRootPath = rootPath;
+            ContentRootFileProvider = new PhysicalFileProvider(rootPath);
+            WebRootPath = rootPath;
+            WebRootFileProvider = new PhysicalFileProvider(rootPath);
+        }
+
+        public string EnvironmentName { get; set; } = Environments.Development;
+        public string ApplicationName { get; set; } = "DeezSpoTag.Tests";
+        public string ContentRootPath { get; set; }
+        public IFileProvider ContentRootFileProvider { get; set; }
+        public string WebRootPath { get; set; }
+        public IFileProvider WebRootFileProvider { get; set; }
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new();
     }
 }

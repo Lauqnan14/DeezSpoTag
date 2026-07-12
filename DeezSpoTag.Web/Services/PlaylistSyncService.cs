@@ -997,19 +997,26 @@ public sealed class PlaylistSyncService
             return new PlaylistSyncResult(true, "Playlist artwork sync disabled.");
         }
 
-        var service = await ResolveTargetServiceAsync(preference, cancellationToken);
-        if (string.IsNullOrWhiteSpace(service))
+        var services = await ResolveTargetServicesAsync(preference, cancellationToken);
+        if (services.Count == 0)
         {
             return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
         }
 
-        return service switch
+        var results = new List<(string Service, PlaylistSyncResult Result)>(services.Count);
+        foreach (var service in services)
         {
-            PlexService => await SyncPlexPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
-            JellyfinService => await SyncJellyfinPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
-            NavidromeService => await SyncNavidromePlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
-            _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
-        };
+            var result = service switch
+            {
+                PlexService => await SyncPlexPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
+                JellyfinService => await SyncJellyfinPlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
+                NavidromeService => await SyncNavidromePlaylistArtworkOnlyAsync(playlist, preference, cancellationToken),
+                _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
+            };
+            results.Add((service, result));
+        }
+
+        return CombinePlaylistSyncTargetResults(results);
     }
 
     public async Task<PlaylistTrackSyncReadiness> CheckTrackReadyForAutomaticSyncAsync(
@@ -1710,12 +1717,17 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(JellyfinNotConfiguredMessage);
         }
 
-        var playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
-            jellyfin.Url,
-            jellyfin.ApiKey,
-            jellyfin.UserId,
-            ResolvePlaylistName(playlist),
-            cancellationToken);
+        var playlistId = ResolveExistingTargetPlaylistId(preference, JellyfinService);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                ResolvePlaylistName(playlist),
+                cancellationToken);
+        }
+
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             return PlaylistSyncResult.Failed("Target Jellyfin playlist was not found.");
@@ -1802,6 +1814,31 @@ public sealed class PlaylistSyncService
         return visual is not null && File.Exists(visual.FilePath) ? visual : null;
     }
 
+    private PlaylistVisualService.StoredPlaylistVisual? ResolveJellyfinVisualFromPlaylistImage(PlaylistWatchlistDto playlist)
+    {
+        var urlVisual = _playlistVisualService.GetStoredVisualFromManagedUrl(playlist.Source, playlist.SourceId, playlist.ImageUrl);
+        if (urlVisual != null && File.Exists(urlVisual.FilePath))
+        {
+            return urlVisual;
+        }
+
+        return ResolveCachedVisualForArtworkSync(playlist);
+    }
+
+    private PlaylistVisualService.StoredPlaylistVisual? ResolveJellyfinVisualFromManagedImage(
+        PlaylistWatchlistDto playlist,
+        string? managedImageUrl,
+        bool reuseSavedArtwork)
+    {
+        var urlVisual = _playlistVisualService.GetStoredVisualFromManagedUrl(playlist.Source, playlist.SourceId, managedImageUrl);
+        if (urlVisual != null && File.Exists(urlVisual.FilePath))
+        {
+            return urlVisual;
+        }
+
+        return ResolveStoredVisualForArtworkSync(playlist, managedImageUrl, reuseSavedArtwork);
+    }
+
     private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
     {
         return preference == null || preference.UpdateArtwork || preference.ReuseSavedArtwork;
@@ -1881,10 +1918,9 @@ public sealed class PlaylistSyncService
             return true;
         }
 
-        var cachedVisual = ResolveCachedVisualForArtworkSync(playlist);
+        var cachedVisual = ResolveJellyfinVisualFromPlaylistImage(playlist);
         if (cachedVisual != null)
         {
-            var beforeTag = await GetJellyfinPrimaryImageTagAsync(jellyfin, playlistId, cancellationToken);
             var cachedUpdated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
@@ -1892,8 +1928,7 @@ public sealed class PlaylistSyncService
                 cachedVisual.FilePath,
                 cachedVisual.ContentType,
                 cancellationToken);
-            var verified = cachedUpdated && await VerifyJellyfinPrimaryImageChangedAsync(jellyfin, playlistId, beforeTag, cancellationToken);
-            if (!verified)
+            if (!cachedUpdated)
             {
                 _logger.LogWarning(
                     "Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from cached local file {ImagePath}.",
@@ -1902,7 +1937,7 @@ public sealed class PlaylistSyncService
                     SafeLog(cachedVisual.FilePath));
             }
 
-            return verified;
+            return cachedUpdated;
         }
 
         var managedImageUrl = await _playlistVisualService.ResolveManagedVisualUrlAsync(
@@ -1912,13 +1947,12 @@ public sealed class PlaylistSyncService
             playlist.ImageUrl,
             preference?.ReuseSavedArtwork == true,
             cancellationToken);
-        var visual = ResolveStoredVisualForArtworkSync(
+        var visual = ResolveJellyfinVisualFromManagedImage(
             playlist,
             managedImageUrl,
             preference?.ReuseSavedArtwork == true);
         if (visual != null && File.Exists(visual.FilePath))
         {
-            var beforeTag = await GetJellyfinPrimaryImageTagAsync(jellyfin, playlistId, cancellationToken);
             var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
@@ -1926,8 +1960,7 @@ public sealed class PlaylistSyncService
                 visual.FilePath,
                 visual.ContentType,
                 cancellationToken);
-            var verified = updated && await VerifyJellyfinPrimaryImageChangedAsync(jellyfin, playlistId, beforeTag, cancellationToken);
-            if (!verified)
+            if (!updated)
             {
                 _logger.LogWarning(
                     "Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from local file {ImagePath}.",
@@ -1936,20 +1969,18 @@ public sealed class PlaylistSyncService
                     SafeLog(visual.FilePath));
             }
 
-            return verified;
+            return updated;
         }
 
         if (IsAbsoluteHttpUrl(managedImageUrl))
         {
-            var beforeTag = await GetJellyfinPrimaryImageTagAsync(jellyfin, playlistId, cancellationToken);
             var updated = await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 playlistId,
                 managedImageUrl!,
                 cancellationToken);
-            var verified = updated && await VerifyJellyfinPrimaryImageChangedAsync(jellyfin, playlistId, beforeTag, cancellationToken);
-            if (!verified)
+            if (!updated)
             {
                 _logger.LogWarning(
                     "Failed to update Jellyfin playlist artwork for {Source}:{SourceId} from URL {ImageUrl}.",
@@ -1958,7 +1989,7 @@ public sealed class PlaylistSyncService
                     SafeLog(managedImageUrl));
             }
 
-            return verified;
+            return updated;
         }
 
         LogSkippedRelativeArtworkUrl("Jellyfin", playlist);
@@ -2013,33 +2044,6 @@ public sealed class PlaylistSyncService
             SafeLog(actual?.Name),
             actual?.Overview?.Length ?? 0);
         return false;
-    }
-
-    private async Task<string?> GetJellyfinPrimaryImageTagAsync(
-        JellyfinConnection jellyfin,
-        string playlistId,
-        CancellationToken cancellationToken)
-    {
-        var item = await _jellyfinApiClient.GetItemAsync(
-            jellyfin.Url,
-            jellyfin.ApiKey,
-            jellyfin.UserId,
-            playlistId,
-            cancellationToken);
-        return item?.ImageTags != null && item.ImageTags.TryGetValue("Primary", out var tag)
-            ? tag
-            : null;
-    }
-
-    private async Task<bool> VerifyJellyfinPrimaryImageChangedAsync(
-        JellyfinConnection jellyfin,
-        string playlistId,
-        string? beforeTag,
-        CancellationToken cancellationToken)
-    {
-        var afterTag = await GetJellyfinPrimaryImageTagAsync(jellyfin, playlistId, cancellationToken);
-        return !string.IsNullOrWhiteSpace(afterTag)
-            && !string.Equals(beforeTag, afterTag, StringComparison.Ordinal);
     }
 
     private static List<string> BuildJellyfinFullSyncIssues(
