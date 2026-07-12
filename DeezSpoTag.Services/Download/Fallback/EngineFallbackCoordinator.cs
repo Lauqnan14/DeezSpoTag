@@ -10,6 +10,7 @@ namespace DeezSpoTag.Services.Download.Fallback;
 public sealed class EngineFallbackCoordinator
 {
     private static readonly TimeSpan FallbackStepResolveTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan AmazonFallbackStepResolveTimeout = TimeSpan.FromSeconds(25);
     private const string DeezerEngine = "deezer";
     private const string QobuzEngine = "qobuz";
     private const string AppleEngine = "apple";
@@ -622,7 +623,7 @@ public sealed class EngineFallbackCoordinator
         CancellationToken cancellationToken)
     {
         using var stepCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        stepCts.CancelAfter(FallbackStepResolveTimeout);
+        stepCts.CancelAfter(ResolveFallbackStepTimeout(request.Engine));
         var result = await _fallbackSearchService.ResolveAsync(
             new EngineFallbackSearchRequest(
                 request.Engine,
@@ -648,6 +649,11 @@ public sealed class EngineFallbackCoordinator
             stepCts.Token);
         return result.ResolvedUrl;
     }
+
+    private static TimeSpan ResolveFallbackStepTimeout(string engine)
+        => string.Equals(engine, AmazonEngine, StringComparison.OrdinalIgnoreCase)
+            ? AmazonFallbackStepResolveTimeout
+            : FallbackStepResolveTimeout;
 
     private static void TrySetIsrc(object payload, string isrc)
     {

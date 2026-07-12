@@ -81,6 +81,16 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
 
         var session = await CreateSessionAsync(cancellationToken);
+        return await SearchAsync(session, query, type, limit, cancellationToken);
+    }
+
+    private async Task<AmazonSearchPayload> SearchAsync(
+        AmazonSession session,
+        string query,
+        string type,
+        int limit,
+        CancellationToken cancellationToken)
+    {
         var keyword = query.Trim();
         var normalizedType = NormalizeType(type);
         if (normalizedType != "all")
@@ -143,6 +153,17 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         }
 
         var session = await CreateSessionAsync(cancellationToken);
+        return await GetTracklistAsync(session, id, type, targetUrl, cancellationToken);
+    }
+
+    private async Task<AmazonTracklistPayload?> GetTracklistAsync(
+        AmazonSession session,
+        string id,
+        string type,
+        string targetUrl,
+        CancellationToken cancellationToken)
+    {
+        var normalizedType = NormalizeType(type);
         using var document = await FetchCatalogDocumentAsync(session, ExtractAsin(id) ?? ExtractAsin(targetUrl) ?? id, normalizedType, targetUrl, cancellationToken);
         return BuildTracklistPayload(document.RootElement, id, normalizedType, targetUrl);
     }
@@ -259,24 +280,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
         int? durationMs,
         string? isrc,
         CancellationToken cancellationToken)
-    {
-        var query = BuildTrackSearchQuery(title, artist, album);
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return null;
-        }
-
-        var search = await SearchAsync(query, "track", 25, cancellationToken);
-        foreach (var candidate in search.Tracks.Where(IsDownloadableMusicTrackResult))
-        {
-            if (IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
-    }
+        => await ResolveTrackFromCatalogAsync(title, artist, album, durationMs, isrc, requireAtmos: false, cancellationToken);
 
     public async Task<AmazonCatalogItem?> ResolveAtmosTrackAsync(
         string title,
@@ -312,20 +316,7 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             }
         }
 
-        var query = BuildTrackSearchQuery(title, artist, album);
-        if (!string.IsNullOrWhiteSpace(query))
-        {
-            var search = await SearchAsync(query, "track", 25, cancellationToken);
-            foreach (var candidate in search.Tracks.Where(IsDownloadableMusicTrackResult))
-            {
-                if (candidate.HasAtmos && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
-                {
-                    return candidate;
-                }
-            }
-        }
-
-        return null;
+        return await ResolveTrackFromCatalogAsync(title, artist, album, durationMs, isrc, requireAtmos: true, cancellationToken);
     }
 
     public async Task<AmazonFallbackTrackResolution?> ResolveAmazonFallbackTrackAsync(
@@ -345,11 +336,19 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
     private static string BuildTrackSearchQuery(string title, string artist, string? album)
         => string.Join(' ', new[] { title, artist, album }.Where(static value => !string.IsNullOrWhiteSpace(value)));
 
+    private static string BuildAlbumSearchQuery(string title, string artist, string? album)
+        => string.Join(' ', new[] { string.IsNullOrWhiteSpace(album) ? title : album, artist }.Where(static value => !string.IsNullOrWhiteSpace(value)));
+
     private static bool IsDownloadableMusicTrackResult(AmazonCatalogItem item)
         => item.Type == "track"
            && !string.IsNullOrWhiteSpace(item.Id)
            && !string.IsNullOrWhiteSpace(item.Title)
            && !string.IsNullOrWhiteSpace(item.Artist);
+
+    private static bool IsResolvableAlbumResult(AmazonCatalogItem item)
+        => item.Type == "album"
+           && !string.IsNullOrWhiteSpace(item.Id)
+           && !string.IsNullOrWhiteSpace(item.Title);
 
     private static bool IsAcceptedResolvedTrack(
         AmazonCatalogItem candidate,
@@ -380,6 +379,125 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
                 MaxMetadataDurationDifferenceMs: 8_000));
         return validation.Accepted;
     }
+
+    private async Task<AmazonCatalogItem?> ResolveTrackFromCatalogAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        string? isrc,
+        bool requireAtmos,
+        CancellationToken cancellationToken)
+    {
+        var query = BuildTrackSearchQuery(title, artist, album);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return null;
+        }
+
+        var session = await CreateSessionAsync(cancellationToken);
+        var candidates = await ResolveTrackCatalogCandidatesAsync(session, query, title, artist, album, cancellationToken);
+        foreach (var candidate in candidates.Tracks.Where(IsDownloadableMusicTrackResult))
+        {
+            if ((!requireAtmos || candidate.HasAtmos) && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
+            {
+                return candidate;
+            }
+        }
+
+        var expandedTracks = await ExpandAlbumTracksForSearchAsync(session, candidates.Albums, cancellationToken);
+        foreach (var candidate in expandedTracks.Where(IsDownloadableMusicTrackResult))
+        {
+            if ((!requireAtmos || candidate.HasAtmos) && IsAcceptedResolvedTrack(candidate, title, artist, durationMs, isrc))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<AmazonTrackCatalogCandidates> ResolveTrackCatalogCandidatesAsync(
+        AmazonSession session,
+        string trackQuery,
+        string title,
+        string artist,
+        string? album,
+        CancellationToken cancellationToken)
+    {
+        var trackSearchTask = SearchAsync(session, trackQuery, "track", 25, cancellationToken);
+        var allSearchTask = SearchAsync(session, trackQuery, "all", 12, cancellationToken);
+        var albumQuery = BuildAlbumSearchQuery(title, artist, album);
+        var albumSearchTask = !string.IsNullOrWhiteSpace(albumQuery)
+                              && !string.Equals(albumQuery, trackQuery, StringComparison.OrdinalIgnoreCase)
+            ? SearchAsync(session, albumQuery, "album", 8, cancellationToken)
+            : Task.FromResult(AmazonSearchPayload.Empty);
+
+        await Task.WhenAll(trackSearchTask, allSearchTask, albumSearchTask);
+        var trackSearch = await trackSearchTask;
+        var allSearch = await allSearchTask;
+        var albumSearch = await albumSearchTask;
+
+        var tracks = trackSearch.Tracks
+            .Concat(allSearch.Tracks)
+            .Where(IsDownloadableMusicTrackResult)
+            .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .ToArray();
+        var albums = allSearch.Albums
+            .Concat(albumSearch.Albums)
+            .Where(IsResolvableAlbumResult)
+            .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .OrderBy(albumCandidate => IsExactSearchMatch(albumCandidate, trackQuery) ? 0 : 1)
+            .Take(4)
+            .ToArray();
+
+        return new AmazonTrackCatalogCandidates(tracks, albums);
+    }
+
+    private async Task<AmazonCatalogItem[]> ExpandAlbumTracksForSearchAsync(
+        AmazonSession session,
+        IReadOnlyList<AmazonCatalogItem> albums,
+        CancellationToken cancellationToken)
+    {
+        if (albums.Count == 0)
+        {
+            return [];
+        }
+
+        var tracks = new List<AmazonCatalogItem>();
+        foreach (var album in albums)
+        {
+            var tracklist = await GetTracklistAsync(session, album.Id, "album", album.Url, cancellationToken);
+            if (tracklist is null)
+            {
+                continue;
+            }
+
+            tracks.AddRange(tracklist.Tracks.Select(track => new AmazonCatalogItem(
+                Id: track.AmazonId,
+                Type: "track",
+                Title: track.Title,
+                Artist: track.Artist,
+                Album: string.IsNullOrWhiteSpace(track.Album) ? album.Title : track.Album,
+                Url: track.SourceUrl,
+                CoverUrl: string.IsNullOrWhiteSpace(track.Cover) ? album.CoverUrl : track.Cover,
+                DurationMs: track.DurationMs > 0 ? track.DurationMs : null,
+                Isrc: track.Isrc,
+                HasAtmos: track.HasAtmos || album.HasAtmos)));
+        }
+
+        return tracks
+            .Where(IsDownloadableMusicTrackResult)
+            .GroupBy(static track => track.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .ToArray();
+    }
+
+    private sealed record AmazonTrackCatalogCandidates(
+        IReadOnlyList<AmazonCatalogItem> Tracks,
+        IReadOnlyList<AmazonCatalogItem> Albums);
 
     private async Task<IReadOnlyList<AmazonCatalogItem>> TrySearchTypedAsync(
         AmazonSession session,

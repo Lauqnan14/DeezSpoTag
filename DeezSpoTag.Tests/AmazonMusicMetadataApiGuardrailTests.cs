@@ -56,15 +56,16 @@ public sealed class AmazonMusicMetadataApiGuardrailTests
     }
 
     [Fact]
-    public void AmazonTrackResolution_DoesNotSearchAlbumsOrOpenAlbumTracklists()
+    public void AmazonTrackResolution_UsesCatalogAlbumExpansionWhenTypedTrackSearchMisses()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AmazonMusicMetadataService.cs");
 
-        Assert.DoesNotContain("BuildAlbumSearchQuery", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("ExpandAlbumTracksForSearchAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("SearchAsync(albumQuery", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetTracklistAsync(albumCandidate", source, StringComparison.Ordinal);
-        Assert.Contains("SearchAsync(query, \"track\"", source, StringComparison.Ordinal);
+        Assert.Contains("SearchAsync(session, trackQuery, \"track\"", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveTrackFromCatalogAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveTrackCatalogCandidatesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("BuildAlbumSearchQuery", source, StringComparison.Ordinal);
+        Assert.Contains("ExpandAlbumTracksForSearchAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetTracklistAsync(session, album.Id, \"album\", album.Url", source, StringComparison.Ordinal);
         Assert.Contains("ResolveAtmosTrackAsync", source, StringComparison.Ordinal);
     }
 

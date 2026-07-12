@@ -25,6 +25,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
     private const string DefaultStorefront = "us";
     private const string DefaultLanguage = "en-US";
     private static readonly TimeSpan ProviderResolveTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan AmazonResolveTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan AppleResolveTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan AppleIsrcResolveTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan SpotifyResolveTimeout = TimeSpan.FromSeconds(10);
@@ -1005,7 +1006,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         try
         {
             using var providerTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            providerTimeout.CancelAfter(ProviderResolveTimeout);
+            providerTimeout.CancelAfter(AmazonResolveTimeout);
             var providerToken = providerTimeout.Token;
             resolved = await _amazonMusicMetadataService.ResolveTrackAsync(
                 state.Title,
