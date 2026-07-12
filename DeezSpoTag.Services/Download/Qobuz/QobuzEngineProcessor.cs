@@ -29,7 +29,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private const string CanceledStatus = "canceled";
     private const string InvalidPayloadMessage = "Invalid payload";
     private static readonly TimeSpan PrefetchCancelDrainTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan QobuzTrackResolutionTimeout = TimeSpan.FromSeconds(10);
     private const string UpdateQueueEvent = "updateQueue";
     private const string TrackType = "track";
     private readonly DownloadQueueRepository _queueRepository;
@@ -45,7 +44,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
     private readonly IFolderConversionSettingsOverlay _folderConversionSettingsOverlay;
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
-    private readonly QobuzTrackResolver _qobuzTrackResolver;
     private readonly IQobuzMetadataService _qobuzMetadataService;
     private readonly ILogger<QobuzEngineProcessor> _logger;
 
@@ -67,7 +65,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         _postDownloadTaskScheduler = serviceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
         _folderConversionSettingsOverlay = serviceProvider.GetRequiredService<IFolderConversionSettingsOverlay>();
         _tagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
-        _qobuzTrackResolver = serviceProvider.GetRequiredService<QobuzTrackResolver>();
         _qobuzMetadataService = serviceProvider.GetRequiredService<IQobuzMetadataService>();
         _logger = logger;
     }
@@ -352,100 +349,22 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         string? resolvedIsrc,
         CancellationToken cancellationToken)
     {
-        var sourceSelection = ResolveQobuzSource(payload);
-        if (sourceSelection.HasTrackUrl)
-        {
-            var directTrackId = ExtractQobuzTrackId(sourceSelection.TrackUrl);
-            if (directTrackId.HasValue)
-            {
-                var directResolution = await ValidateQobuzUrlTrackSelectionAsync(
-                    payload,
-                    directTrackId.Value,
-                    resolvedIsrc,
-                    cancellationToken);
-                if (directResolution != null)
-                {
-                    payload.QobuzId = directResolution.Track.Id.ToString();
-                    payload.QobuzResolutionSource = directResolution.Source;
-                    payload.QobuzResolutionScore = directResolution.Score;
-                    payload.SourceUrl = $"https://play.qobuz.com/track/{directResolution.Track.Id}";
-                    MarkResolutionComplete(payload);
-                    await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-                    return directResolution;
-                }
-
-                _logger.LogWarning(
-                    "Rejected queued Qobuz URL track id {TrackId} because it did not match requested metadata for {Artist} - {Title}.",
-                    directTrackId.Value,
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Artist),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(payload.Title));
-            }
-        }
-
-        var resolvedTrack = await ResolvePreferredQobuzTrackAsync(payload, resolvedIsrc, cancellationToken);
-        if (resolvedTrack == null)
+        var trackId = TryParseQobuzTrackId(payload.QobuzId, out var qobuzId)
+            ? qobuzId
+            : ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
+        if (!trackId.HasValue || trackId.Value <= 0)
         {
             return null;
         }
 
+        var resolvedTrack = BuildResolvedUrlTrack(payload, trackId.Value, resolvedIsrc);
         payload.QobuzId = resolvedTrack.Track.Id.ToString();
-        payload.QobuzResolutionSource = resolvedTrack.Source;
+        payload.QobuzResolutionSource = "central_resolver";
         payload.QobuzResolutionScore = resolvedTrack.Score;
         payload.SourceUrl = $"https://play.qobuz.com/track/{resolvedTrack.Track.Id}";
         MarkResolutionComplete(payload);
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
         return resolvedTrack;
-    }
-
-    private async Task<QobuzTrackResolution?> ValidateQobuzUrlTrackSelectionAsync(
-        QobuzQueueItem payload,
-        int trackId,
-        string? resolvedIsrc,
-        CancellationToken cancellationToken)
-    {
-        if (IsFirstClassQueuedQobuzIdentity(payload, trackId))
-        {
-            return BuildResolvedUrlTrack(payload, trackId, resolvedIsrc);
-        }
-
-        var validationIsrc = string.IsNullOrWhiteSpace(resolvedIsrc) ? payload.Isrc : resolvedIsrc;
-        var hasValidationIdentity = !string.IsNullOrWhiteSpace(validationIsrc)
-                                    || (!string.IsNullOrWhiteSpace(payload.Title)
-                                        && !string.IsNullOrWhiteSpace(payload.Artist));
-        if (!hasValidationIdentity)
-        {
-            return BuildResolvedUrlTrack(payload, trackId, resolvedIsrc);
-        }
-
-        if (!QobuzTrackId.TryCreate(trackId, out var qobuzTrackId))
-        {
-            return null;
-        }
-
-        var validated = await _qobuzTrackResolver.ValidateTrackIdAsync(
-            qobuzTrackId,
-            validationIsrc,
-            payload.Title,
-            payload.Artist,
-            payload.Album,
-            payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-            cancellationToken);
-        if (validated?.Track.Id > 0)
-        {
-            return new QobuzTrackResolution(validated.Track, "validated_url", validated.Score);
-        }
-
-        return null;
-    }
-
-    private static bool IsFirstClassQueuedQobuzIdentity(QobuzQueueItem payload, int trackId)
-    {
-        if (TryParseQobuzTrackId(payload.QobuzId, out var qobuzId) && qobuzId == trackId)
-        {
-            return true;
-        }
-
-        return (ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url)) == trackId;
     }
 
     private static bool TryParseQobuzTrackId(string? value, out int trackId)
@@ -1062,66 +981,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         => "Qobuz public download provider is unavailable. Waiting for provider health to recover.";
 
     private readonly record struct QobuzSourceSelection(string TrackUrl, bool HasTrackUrl);
-
-    private async Task<QobuzTrackResolution?> ResolvePreferredQobuzTrackAsync(
-        QobuzQueueItem payload,
-        string? resolvedIsrc,
-        CancellationToken cancellationToken)
-    {
-        QobuzTrackResolution? resolution;
-        using (var resolutionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-        {
-            resolutionCts.CancelAfter(QobuzTrackResolutionTimeout);
-            try
-            {
-                var directTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
-                resolution = directTrackId.HasValue
-                    && QobuzTrackId.TryCreate(directTrackId.Value, out var validatedTrackId)
-                    ? await _qobuzTrackResolver.ValidateTrackIdAsync(
-                        validatedTrackId,
-                        resolvedIsrc,
-                        payload.Title,
-                        payload.Artist,
-                        payload.Album,
-                        payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-                        resolutionCts.Token)
-                    : await _qobuzTrackResolver.ResolveTrackAsync(
-                        resolvedIsrc,
-                        payload.Title,
-                        payload.Artist,
-                        payload.Album,
-                        payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-                        resolutionCts.Token);
-            }
-            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                throw new TimeoutException(
-                    $"Qobuz track resolution timed out after {QobuzTrackResolutionTimeout.TotalSeconds:0} seconds.",
-                    ex);
-            }
-        }
-
-        if (resolution == null)
-        {
-            return null;
-        }
-
-        var existingTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
-        if (existingTrackId.HasValue
-            && existingTrackId.Value != resolution.Track.Id
-            && _logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Qobuz resolution corrected track for {QueueUuid}: existing={ExistingTrackId} resolved={ResolvedTrackId} source={Source} score={Score}",
-                payload.Id,
-                existingTrackId.Value,
-                resolution.Track.Id,
-                resolution.Source,
-                resolution.Score);
-        }
-
-        return resolution;
-    }
 
     private static bool HasQobuzTrackUrl(string? sourceUrl)
     {

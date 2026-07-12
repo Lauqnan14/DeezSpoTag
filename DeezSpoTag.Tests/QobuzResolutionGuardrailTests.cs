@@ -10,7 +10,7 @@ public sealed class QobuzResolutionGuardrailTests
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 
     [Fact]
-    public void QobuzProcessor_ValidatesCandidateBeforePersistingStagingPath()
+    public void QobuzProcessor_ConsumesCentrallyResolvedIdentityBeforePersistingStagingPath()
     {
         var source = ReadSource("DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs");
 
@@ -28,11 +28,9 @@ public sealed class QobuzResolutionGuardrailTests
             StringComparison.Ordinal);
 
         Assert.True(resolveIndex >= 0);
-        Assert.Contains("ValidateQobuzUrlTrackSelectionAsync", source, StringComparison.Ordinal);
-        Assert.Contains("_qobuzTrackResolver.ValidateTrackIdAsync", source, StringComparison.Ordinal);
-        Assert.Contains("new QobuzTrackResolution(track, \"resolved_url\", 20)", source, StringComparison.Ordinal);
-        Assert.Contains("new QobuzTrackResolution(validated.Track, \"validated_url\", validated.Score)", source, StringComparison.Ordinal);
-        Assert.Contains("if (sourceSelection.HasTrackUrl)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ValidateQobuzUrlTrackSelectionAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_qobuzTrackResolver", source, StringComparison.Ordinal);
+        Assert.Contains("BuildResolvedUrlTrack(payload, trackId.Value, resolvedIsrc)", source, StringComparison.Ordinal);
         Assert.Contains("payload.ResolutionStatus = QueuePreResolutionPayload.Resolved", source, StringComparison.Ordinal);
         Assert.True(contextIndex > resolveIndex);
         Assert.True(persistIndex > contextIndex);
@@ -144,12 +142,52 @@ public sealed class QobuzResolutionGuardrailTests
     }
 
     [Fact]
-    public void QobuzDownload_ValidatesResolvedTrackIdWithoutRepeatingCatalogSearch()
+    public void QobuzDownload_ConsumesResolvedTrackIdWithoutRepeatingIdentityResolution()
     {
         var source = ReadSource("DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs");
 
-        Assert.Contains("QobuzTrackId.TryCreate(directTrackId.Value", source, StringComparison.Ordinal);
-        Assert.Contains("_qobuzTrackResolver.ValidateTrackIdAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TryParseQobuzTrackId(payload.QobuzId", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_qobuzTrackResolver", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EveryAudioEngine_ConsumesItsCentrallyResolvedSourceIdentity()
+    {
+        var deezer = ReadSource("DeezSpoTag.Services/Download/Deezer/DeezerEngineProcessor.cs");
+        var qobuz = ReadSource("DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs");
+        var tidal = ReadSource("DeezSpoTag.Services/Download/Tidal/TidalEngineProcessor.cs");
+        var amazon = ReadSource("DeezSpoTag.Services/Download/Amazon/AmazonEngineProcessor.cs");
+        var apple = ReadSource("DeezSpoTag.Services/Download/Apple/AppleEngineProcessor.cs");
+
+        Assert.Contains("_deezerClient.GetTrackAsync(payload.DeezerId)", deezer, StringComparison.Ordinal);
+        Assert.Contains("TryParseQobuzTrackId(payload.QobuzId", qobuz, StringComparison.Ordinal);
+        Assert.Contains("NormalizeNumericTrackId(payload.TidalId)", tidal, StringComparison.Ordinal);
+        Assert.Contains("NormalizeAmazonTrackId(payload.AmazonId)", amazon, StringComparison.Ordinal);
+        Assert.Contains("AppleIdParser.Resolve(payload.AppleId, payload.SourceUrl)", apple, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ResolveAndPersistStorefrontAppleIdAsync", apple, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveAppleIdForStorefrontAsync", apple, StringComparison.Ordinal);
+        Assert.DoesNotContain("ValidateQobuzUrlTrackSelectionAsync", qobuz, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void QueueDispatchAndFallback_AlwaysReenterCentralResolution()
+    {
+        var app = ReadSource("DeezSpoTag.Services/Download/Shared/DeezSpoTagApp.cs");
+        var fallback = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs");
+
+        Assert.Contains(
+            "string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved",
+            app,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "|| string.IsNullOrWhiteSpace(resolutionStatus)",
+            app,
+            StringComparison.Ordinal);
+        Assert.Contains("MarkCentralResolutionPending(context.PayloadForSerialization)", fallback, StringComparison.Ordinal);
+        Assert.Contains("payload.ResolutionStatus = QueuePreResolutionPayload.Pending", fallback, StringComparison.Ordinal);
+        Assert.Contains("payload.ResolvedEngine = string.Empty", fallback, StringComparison.Ordinal);
+        Assert.Contains("payload.ResolvedSourceUrl = string.Empty", fallback, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

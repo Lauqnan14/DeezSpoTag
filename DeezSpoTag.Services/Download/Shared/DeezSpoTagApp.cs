@@ -521,8 +521,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             await _queueRepository.UpdatePayloadAsync(item.QueueUuid, normalizedPayload!, cancellationToken);
         }
 
-        if (string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved, StringComparison.OrdinalIgnoreCase)
-            || string.IsNullOrWhiteSpace(resolutionStatus))
+        if (string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved, StringComparison.OrdinalIgnoreCase))
         {
             return normalizedItem;
         }

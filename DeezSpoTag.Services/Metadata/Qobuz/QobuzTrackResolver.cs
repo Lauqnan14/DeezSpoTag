@@ -109,20 +109,6 @@ public sealed class QobuzTrackResolver
         return best;
     }
 
-    public async Task<string?> ResolveTrackUrlAsync(
-        string? isrc,
-        string? title,
-        string? artist,
-        string? album,
-        int? durationMs,
-        CancellationToken cancellationToken)
-    {
-        var resolved = await ResolveTrackAsync(isrc, title, artist, album, durationMs, cancellationToken);
-        return resolved?.Track.Id > 0
-            ? $"https://play.qobuz.com/track/{resolved.Track.Id}"
-            : null;
-    }
-
     public async Task<QobuzTrackResolution?> ValidateTrackIdAsync(
         QobuzTrackId trackId,
         string? isrc,
@@ -132,31 +118,12 @@ public sealed class QobuzTrackResolver
         int? durationMs,
         CancellationToken cancellationToken)
     {
-        var track = !string.IsNullOrWhiteSpace(isrc)
-            ? await TryFindTrackByISRCAsync(isrc, cancellationToken)
-            : await TryGetTrackAsync(trackId.Value, cancellationToken);
-        if ((track == null || track.Id != trackId.Value)
-            && !string.IsNullOrWhiteSpace(title)
-            && !string.IsNullOrWhiteSpace(artist))
+        if (!string.IsNullOrWhiteSpace(isrc))
         {
-            var query = $"{title.Trim()} {artist.Trim()}";
-            track = (await SearchTracksSafeAsync(query, cancellationToken))
-                .FirstOrDefault(candidate => candidate.Id == trackId.Value);
+            return await ResolveTrackAsync(isrc, title, artist, album, durationMs, cancellationToken);
         }
-        if ((track == null || track.Id != trackId.Value)
-            && !string.IsNullOrWhiteSpace(album))
-        {
-            var albumVariant = BuildAlbumTitleVariants(album)
-                .OrderBy(static value => value.Length)
-                .FirstOrDefault();
-            var albumQuery = string.Join(' ', new[] { albumVariant, artist }
-                .Where(static value => !string.IsNullOrWhiteSpace(value)));
-            if (!string.IsNullOrWhiteSpace(albumQuery))
-            {
-                track = (await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken))
-                    .FirstOrDefault(candidate => candidate.Id == trackId.Value);
-            }
-        }
+
+        var track = await TryGetTrackAsync(trackId.Value, cancellationToken);
         if (track == null || track.Id <= 0)
         {
             return null;
@@ -165,24 +132,12 @@ public sealed class QobuzTrackResolver
         var expectedDurationSec = durationMs.HasValue && durationMs.Value > 0
             ? (int)Math.Round(durationMs.Value / 1000d)
             : 0;
-        if (!string.IsNullOrWhiteSpace(isrc)
-            && !string.IsNullOrWhiteSpace(track.ISRC)
-            && !IsExactIsrcMatch(track, isrc))
-        {
-            return null;
-        }
-
         if (HasContradictoryMetadata(track, title, artist, expectedDurationSec))
         {
             return null;
         }
 
         var score = ScoreCandidate(track, title, artist, album, expectedDurationSec, preferHiRes: true);
-        if (!string.IsNullOrWhiteSpace(isrc))
-        {
-            return BuildResolution(track, "direct_isrc", Math.Max(score, 20));
-        }
-
         var hasAuthoritativeMetadataMatch = HasAuthoritativeMetadataMatch(
             track,
             title,

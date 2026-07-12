@@ -350,19 +350,6 @@ public sealed class TidalDownloadService
         CancellationToken cancellationToken)
     {
         var trackId = GetTrackIdFromUrl(tidalUrl);
-        var trackInfo = await GetTrackInfoByIdAsync(trackId, cancellationToken);
-        var validation = ValidateResolvedTrack(
-            trackInfo,
-            request.TrackName,
-            request.ArtistName,
-            request.AlbumName,
-            request.Isrc,
-            request.DurationSeconds);
-        if (!validation.Accepted)
-        {
-            throw new InvalidOperationException(
-                $"Tidal track identity mismatch ({validation.Reason}); download blocked before media retrieval.");
-        }
 
         var outputPathContext = new AudioFilePathHelper.AudioPathContext
         {
@@ -384,11 +371,11 @@ public sealed class TidalDownloadService
         var outputPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, isAtmosRequest ? ".m4a" : ".flac");
         await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
 
-        var expectedDurationSeconds = ResolveExpectedDurationSeconds(request.DurationSeconds, trackInfo.Duration);
+        var expectedDurationSeconds = Math.Max(0, request.DurationSeconds);
         var manifestAttempts = isAtmosRequest ? 3 : 1;
         for (var attempt = 1; attempt <= manifestAttempts; attempt++)
         {
-            var candidateUrls = await GetDownloadUrlCandidatesAsync(trackInfo.Id, request.Quality, cancellationToken);
+            var candidateUrls = await GetDownloadUrlCandidatesAsync(trackId, request.Quality, cancellationToken);
             try
             {
                 await DownloadValidatedFileAsync(
@@ -408,7 +395,7 @@ public sealed class TidalDownloadService
                 _logger.LogWarning(
                     ex,
                     "Tidal Atmos manifest candidate failed duration validation for track {TrackId}; retrying manifest fetch ({Attempt}/{Attempts}).",
-                    trackInfo.Id,
+                    trackId,
                     attempt + 1,
                     manifestAttempts);
             }

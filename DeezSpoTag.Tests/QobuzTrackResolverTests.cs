@@ -14,7 +14,7 @@ namespace DeezSpoTag.Tests;
 public sealed class QobuzTrackResolverTests
 {
     [Fact]
-    public async Task ResolveTrackUrlAsync_AcceptsExactIsrcWithoutTitleArtist()
+    public async Task ResolveTrackAsync_AcceptsExactIsrcWithoutTitleArtist()
     {
         var resolver = CreateResolver(new StubQobuzMetadataService
         {
@@ -27,7 +27,7 @@ public sealed class QobuzTrackResolverTests
             }
         });
 
-        var result = await resolver.ResolveTrackUrlAsync(
+        var result = await resolver.ResolveTrackAsync(
             "GBDUW0000059",
             title: null,
             artist: null,
@@ -35,7 +35,8 @@ public sealed class QobuzTrackResolverTests
             durationMs: null,
             CancellationToken.None);
 
-        Assert.Equal("https://play.qobuz.com/track/411245095", result);
+        Assert.NotNull(result);
+        Assert.Equal(411245095, result!.Track.Id);
     }
 
     [Fact]

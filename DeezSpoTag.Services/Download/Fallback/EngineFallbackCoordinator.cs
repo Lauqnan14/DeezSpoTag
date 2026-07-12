@@ -344,7 +344,7 @@ public sealed class EngineFallbackCoordinator
         context.Mutators.SetSourceUrl(resolvedUrl ?? string.Empty);
         TrySetResolvedEngineId(context.PayloadForSerialization, step.Source, resolvedUrl);
         context.Mutators.ApplyStep((step.Source, step.Quality, stepIndex));
-        ClearResolutionError(context.PayloadForSerialization);
+        MarkCentralResolutionPending(context.PayloadForSerialization);
         var requeued = await PersistAdvancedFallbackStateAsync(
             request.QueueUuid,
             step.Source,
@@ -444,12 +444,18 @@ public sealed class EngineFallbackCoordinator
         }
     }
 
-    private static void ClearResolutionError(object payloadForSerialization)
+    private static void MarkCentralResolutionPending(object payloadForSerialization)
     {
-        if (payloadForSerialization is EngineQueueItemBase payload)
+        if (payloadForSerialization is not EngineQueueItemBase payload)
         {
-            payload.ResolutionError = string.Empty;
+            return;
         }
+
+        payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
+        payload.ResolvedAtUtc = null;
+        payload.ResolvedEngine = string.Empty;
+        payload.ResolvedSourceUrl = string.Empty;
+        payload.ResolutionError = string.Empty;
     }
 
     private static void TrySetResolvedEngineId(object payloadForSerialization, string source, string? resolvedUrl)

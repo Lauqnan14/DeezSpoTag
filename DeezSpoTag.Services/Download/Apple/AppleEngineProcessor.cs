@@ -276,7 +276,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             return null;
         }
 
-        await ResolveAndPersistStorefrontAppleIdAsync(next.QueueUuid, payload, settings, itemToken);
         if (isVideoPayload)
         {
             await TryPopulateVideoMetadataAsync(payload, next.QueueUuid, itemToken);
@@ -291,24 +290,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             OriginalDownloadLocation = originalDownloadLocation,
             ResolvedDownloadTagSource = resolvedDownloadTagSource
         };
-    }
-
-    private async Task ResolveAndPersistStorefrontAppleIdAsync(
-        string queueUuid,
-        AppleQueueItem payload,
-        DeezSpoTagSettings settings,
-        CancellationToken itemToken)
-    {
-        var resolvedAppleId = await ResolveAppleIdForStorefrontAsync(payload, settings, itemToken);
-        if (string.IsNullOrWhiteSpace(resolvedAppleId)
-            || string.Equals(payload.AppleId, resolvedAppleId, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        payload.AppleId = resolvedAppleId;
-        var json = System.Text.Json.JsonSerializer.Serialize(payload);
-        await _queueRepository.UpdatePayloadAsync(queueUuid, json, itemToken);
     }
 
     private async Task<DownloadRequestContext> BuildDownloadRequestContextAsync(
@@ -362,37 +343,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         CancellationToken itemToken)
     {
         var appleId = ResolveAppleId(payload);
-        if (string.IsNullOrWhiteSpace(appleId) && !string.IsNullOrWhiteSpace(payload.Isrc))
-        {
-            try
-            {
-                using var scope = _serviceProvider.CreateScope();
-                var catalog = scope.ServiceProvider.GetRequiredService<AppleMusicCatalogService>();
-                using var isrcDoc = await catalog.GetSongByIsrcAsync(payload.Isrc, settings.AppleMusic.Storefront, DefaultLanguage, itemToken, settings.AppleMusic.MediaUserToken);
-                var resolved = TryExtractAppleIdFromCatalog(isrcDoc);
-                if (!string.IsNullOrWhiteSpace(resolved))
-                {
-                    appleId = resolved;
-                    payload.AppleId = resolved;
-                    if (_logger.IsEnabled(LogLevel.Information))
-                    {
-                        _logger.LogInformation("Apple ID resolved via ISRC for {QueueUuid}: {AppleId}", queueUuid, resolved);                    }
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Apple ISRC lookup failed for {QueueUuid}", queueUuid);                }
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(appleId) && string.IsNullOrWhiteSpace(payload.AppleId))
-        {
-            payload.AppleId = appleId;
-            var json = System.Text.Json.JsonSerializer.Serialize(payload);
-            await _queueRepository.UpdatePayloadAsync(queueUuid, json, itemToken);
-        }
 
         using var buildScope = _serviceProvider.CreateScope();
         var pathProcessor = buildScope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
@@ -1000,85 +950,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         var folders = await libraryRepository.GetFoldersAsync(cancellationToken);
         var explicitFolder = folders.FirstOrDefault(folder => folder.Id == destinationFolderId.Value && folder.Enabled);
         return explicitFolder?.RootPath;
-    }
-
-    private async Task<string?> ResolveAppleIdForStorefrontAsync(
-        AppleQueueItem payload,
-        DeezSpoTagSettings settings,
-        CancellationToken cancellationToken)
-    {
-        var appleId = ResolveAppleId(payload);
-        if (string.IsNullOrWhiteSpace(appleId))
-        {
-            return appleId;
-        }
-
-        var storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront;
-        var mediaUserToken = settings.AppleMusic?.MediaUserToken;
-        var isVideo = AppleVideoClassifier.IsVideo(payload.SourceUrl, payload.CollectionType, payload.ContentType);
-
-        try
-        {
-            using var scope = _serviceProvider.CreateScope();
-            var catalog = scope.ServiceProvider.GetRequiredService<AppleMusicCatalogService>();
-            if (isVideo)
-            {
-                using var doc = await catalog.GetMusicVideoAsync(appleId, storefront, DefaultLanguage, cancellationToken);
-                var resolved = TryExtractAppleIdFromCatalog(doc);
-                return string.IsNullOrWhiteSpace(resolved) ? appleId : resolved;
-            }
-
-            using (var doc = await catalog.GetSongAsync(appleId, storefront, DefaultLanguage, cancellationToken, mediaUserToken))
-            {
-                var resolved = TryExtractAppleIdFromCatalog(doc);
-                if (!string.IsNullOrWhiteSpace(resolved))
-                {
-                    return resolved;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(payload.Isrc))
-            {
-                using var isrcDoc = await catalog.GetSongByIsrcAsync(payload.Isrc, storefront, DefaultLanguage, cancellationToken, mediaUserToken);
-                var resolved = TryExtractAppleIdFromCatalog(isrcDoc);
-                if (!string.IsNullOrWhiteSpace(resolved))
-                {
-                    return resolved;
-                }
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return appleId;
-        }
-
-        return appleId;
-    }
-
-    private static string? TryExtractAppleIdFromCatalog(System.Text.Json.JsonDocument? doc)
-    {
-        if (doc == null)
-        {
-            return null;
-        }
-
-        var root = doc.RootElement;
-        if (root.TryGetProperty("data", out var dataArr)
-            && dataArr.ValueKind == System.Text.Json.JsonValueKind.Array
-            && dataArr.GetArrayLength() > 0)
-        {
-            return dataArr[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
-        }
-
-        if (root.TryGetProperty("results", out var results) && results.ValueKind == System.Text.Json.JsonValueKind.Object &&
-            results.TryGetProperty("songs", out var songs) && songs.ValueKind == System.Text.Json.JsonValueKind.Object &&
-            songs.TryGetProperty("data", out var songData) && songData.ValueKind == System.Text.Json.JsonValueKind.Array &&
-            songData.GetArrayLength() > 0)
-        {
-            return songData[0].TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
-        }
-
-        return null;
     }
 
     private static bool IsWrapperRequired(AppleDownloadRequest request)
