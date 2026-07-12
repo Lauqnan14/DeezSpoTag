@@ -483,76 +483,6 @@ public sealed class PlaylistWatchService
         });
 
         var queuePlanningAllowed = mode == PlaylistReconciliationMode.QueuePlanningAllowed;
-        var selection = new PlaylistTrackSelection([], 0, 0, 0, 0, 0, 0);
-        if (queuePlanningAllowed)
-        {
-            selection = await SelectMissingPlaylistTracksAsync(
-                source,
-                sourceId,
-                candidates,
-                bypassFolderAndSync ? null : preference?.DestinationFolderId,
-                queueOptions,
-                cancellationToken);
-            await _libraryRepository.AddPlaylistWatchTracksAsync(
-                source,
-                sourceId,
-                selection.MissingTracks
-                    .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
-                    .ToList(),
-                cancellationToken);
-        }
-
-        if (queuePlanningAllowed && selection.LocalCount > 0)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                selection.LocalCount,
-                "skipped_already_available",
-                cancellationToken);
-        }
-        if (queuePlanningAllowed && selection.ClaimedCount > 0)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                selection.ClaimedCount,
-                "skipped_already_queued",
-                cancellationToken);
-        }
-        if (queuePlanningAllowed && selection.RecoveredClaimCount > 0)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                selection.RecoveredClaimCount,
-                "stale_claim_recovered",
-                cancellationToken);
-        }
-        if (queuePlanningAllowed && selection.BlockedCount > 0)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                selection.BlockedCount,
-                "skipped_blocked",
-                cancellationToken);
-        }
-        if (queuePlanningAllowed && selection.UnavailableCount > 0)
-        {
-            await AddPlaylistWatchHistoryStageAsync(
-                source,
-                sourceId,
-                currentPlaylist.Name,
-                selection.UnavailableCount,
-                "skipped_unavailable_recheck_window",
-                cancellationToken);
-        }
-
         PlaylistSyncResult? syncResult = null;
         if (_playlistSyncService == null)
         {
@@ -598,6 +528,31 @@ public sealed class PlaylistWatchService
                 currentPlaylist.Name,
                 syncResult.SyncedTracks,
                 syncResult.Success ? "media_sync_completed" : "media_sync_waiting",
+                cancellationToken);
+        }
+
+        var selection = new PlaylistTrackSelection([], 0, 0, 0, 0, 0, 0);
+        if (queuePlanningAllowed)
+        {
+            selection = await SelectMissingPlaylistTracksAsync(
+                source,
+                sourceId,
+                candidates,
+                bypassFolderAndSync ? null : preference?.DestinationFolderId,
+                queueOptions,
+                cancellationToken);
+            await _libraryRepository.AddPlaylistWatchTracksAsync(
+                source,
+                sourceId,
+                selection.MissingTracks
+                    .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
+                    .ToList(),
+                cancellationToken);
+            await RecordPlaylistSelectionHistoryAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                selection,
                 cancellationToken);
         }
 
@@ -719,6 +674,36 @@ public sealed class PlaylistWatchService
             candidates,
             force,
             cancellationToken);
+    }
+
+    private async Task RecordPlaylistSelectionHistoryAsync(
+        string source,
+        string sourceId,
+        string playlistName,
+        PlaylistTrackSelection selection,
+        CancellationToken cancellationToken)
+    {
+        var stages = new[]
+        {
+            (selection.LocalCount, "skipped_already_available"),
+            (selection.ClaimedCount, "skipped_already_queued"),
+            (selection.RecoveredClaimCount, "stale_claim_recovered"),
+            (selection.BlockedCount, "skipped_blocked"),
+            (selection.UnavailableCount, "skipped_unavailable_recheck_window")
+        };
+        foreach (var (count, stage) in stages)
+        {
+            if (count > 0)
+            {
+                await AddPlaylistWatchHistoryStageAsync(
+                    source,
+                    sourceId,
+                    playlistName,
+                    count,
+                    stage,
+                    cancellationToken);
+            }
+        }
     }
 
     private static int CountReroutedTracks(

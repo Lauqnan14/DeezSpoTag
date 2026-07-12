@@ -732,6 +732,27 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.True(existenceResults[0]);
         Assert.True(existenceResults[1]);
         Assert.False(existenceResults[2]);
+
+        var sourceIdentity = await _repository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Wrong display title",
+                "Wrong display artist",
+                null,
+                "spotify",
+                "sp-song-1"));
+        Assert.Equal("source_id", sourceIdentity.MatchType);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], sourceIdentity.LocalTrackId);
+
+        var metadataIdentity = await _repository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Song One",
+                "Artist One",
+                187000,
+                AlbumTitle: "Album One"));
+        Assert.Equal("metadata_exact", metadataIdentity.MatchType);
+        Assert.Equal(seeded.TrackIdsByTitle["Song One"], metadataIdentity.LocalTrackId);
     }
 
     [Fact]

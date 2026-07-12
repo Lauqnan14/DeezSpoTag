@@ -41,7 +41,6 @@ public sealed class PlaylistSyncService
         int SearchMatches);
 
     private const string SpotifySource = "spotify";
-    private const string IsrcSource = "isrc";
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
     private const string NavidromeService = "navidrome";
@@ -683,21 +682,36 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
         }
 
-        var availableTrackRows = await ResolveAvailableTrackRowsAsync(
-            playlist.Source,
-            eligibleTracks,
-            cancellationToken);
-        foreach (var row in availableTrackRows)
+        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
+        var normalizedSource = NormalizeSource(playlist.Source);
+        foreach (var track in eligibleTracks)
         {
+            var identity = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+                new LibraryRepository.LibraryExistenceInput(
+                    track.Isrc,
+                    track.Name,
+                    track.Artists,
+                    track.DurationMs,
+                    normalizedSource,
+                    track.SourceTrackId,
+                    track.Album),
+                cancellationToken: cancellationToken);
+            var identityStatus = identity.IsAmbiguous
+                ? "review"
+                : identity.LocalTrackId.HasValue ? "identity_verified" : "missing";
             await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
                 playlist.Source,
                 playlist.SourceId,
                 new PlaylistWatchTrackVerification(
-                    row.Track.SourceTrackId,
-                    row.LocalTrackId,
-                    "identity_verified",
-                    "Local library track matched the monitored source identity."),
+                    track.SourceTrackId,
+                    identity.LocalTrackId,
+                    identityStatus,
+                    identity.Reason),
                 cancellationToken);
+            if (identity.LocalTrackId.HasValue && !identity.IsAmbiguous)
+            {
+                availableTrackRows.Add((track, identity.LocalTrackId.Value));
+            }
         }
 
         if (availableTrackRows.Count == 0)
@@ -2482,50 +2496,21 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        var isrcValues = tracks
-            .Select(static track => track.Isrc)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Select(static value => value!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
         var normalizedSource = NormalizeSource(playlistSource);
-        var sourceIds = tracks
-            .Select(static track => track.SourceTrackId)
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Select(static value => value.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var byIsrc = isrcValues.Count == 0
-            ? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
-            : await _libraryRepository.GetTrackIdsBySourceIdsAsync(IsrcSource, isrcValues, cancellationToken);
-        var bySource = string.IsNullOrWhiteSpace(normalizedSource) || sourceIds.Count == 0
-            ? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
-            : await _libraryRepository.GetTrackIdsBySourceIdsAsync(normalizedSource, sourceIds, cancellationToken);
-
         var resolved = new List<long>(tracks.Count);
         foreach (var track in tracks)
         {
-            var isrc = track.Isrc?.Trim();
-            if (!string.IsNullOrWhiteSpace(isrc) && byIsrc.TryGetValue(isrc, out var isrcTrackId))
-            {
-                resolved.Add(isrcTrackId);
-                continue;
-            }
-
-            var sourceId = track.SourceTrackId.Trim();
-            if (!string.IsNullOrWhiteSpace(sourceId) && bySource.TryGetValue(sourceId, out var sourceTrackId))
-            {
-                resolved.Add(sourceTrackId);
-                continue;
-            }
-
-            var metadataTrackId = await _libraryRepository.FindLocalTrackIdByMetadataAsync(
-                track.Name,
-                track.Artists,
-                track.Album,
-                track.DurationMs,
-                cancellationToken);
-            resolved.Add(metadataTrackId ?? 0L);
+            var decision = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+                new LibraryRepository.LibraryExistenceInput(
+                    track.Isrc,
+                    track.Name,
+                    track.Artists,
+                    track.DurationMs,
+                    normalizedSource,
+                    track.SourceTrackId,
+                    track.Album),
+                cancellationToken: cancellationToken);
+            resolved.Add(decision.IsAmbiguous ? 0L : decision.LocalTrackId ?? 0L);
         }
 
         return resolved;
@@ -2536,43 +2521,18 @@ public sealed class PlaylistSyncService
         SyncTrackSummary track,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(track.Isrc))
-        {
-            var byIsrc = await _libraryRepository.GetTrackIdsBySourceIdsAsync(
-                IsrcSource,
-                new[] { track.Isrc },
-                cancellationToken);
-            if (byIsrc.TryGetValue(track.Isrc, out var isrcTrackId))
-            {
-                return isrcTrackId;
-            }
-        }
-
-        var byMetadata = await _libraryRepository.FindLocalTrackIdByMetadataAsync(
-            track.Name,
-            track.Artists,
-            track.Album,
-            track.DurationMs,
-            cancellationToken);
-        if (byMetadata.HasValue)
-        {
-            return byMetadata;
-        }
-
         var source = NormalizeSource(playlistSource);
-        if (!string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(track.SourceTrackId))
-        {
-            var bySource = await _libraryRepository.GetTrackIdsBySourceIdsAsync(
+        var decision = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                track.Isrc,
+                track.Name,
+                track.Artists,
+                track.DurationMs,
                 source,
-                new[] { track.SourceTrackId },
-                cancellationToken);
-            if (bySource.TryGetValue(track.SourceTrackId, out var sourceTrackId))
-            {
-                return sourceTrackId;
-            }
-        }
-
-        return null;
+                track.SourceTrackId,
+                track.Album),
+            cancellationToken: cancellationToken);
+        return decision.IsAmbiguous ? null : decision.LocalTrackId;
     }
 
     private async Task<PlaylistTrackSyncReadiness> CheckPlexTrackReadyAsync(

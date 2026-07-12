@@ -319,6 +319,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("TryRecordWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
         Assert.Contains("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
         Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
+        Assert.True(
+            source.IndexOf("syncResult = await SyncPlaylistAsync(", StringComparison.Ordinal)
+            < source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal),
+            "Playlist sync and local identity reconciliation must finish before missing tracks are selected for queueing.");
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
         Assert.Contains("public static DownloadDedupeRequest FromDownloadIntent(", dedupeSource, StringComparison.Ordinal);

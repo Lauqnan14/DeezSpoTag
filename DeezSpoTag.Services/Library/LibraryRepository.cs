@@ -7946,13 +7946,16 @@ SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' E
     identity_reason = @identityReason,
     redirect_track_source_id = @redirectTrackSourceId,
     redirect_reason = @redirectReason,
-    sync_status = CASE WHEN @identityStatus = 'review' THEN 'review' ELSE COALESCE(sync_status, 'downloaded') END,
+    sync_status = CASE
+        WHEN @identityStatus = 'review' THEN 'review'
+        WHEN @localTrackId IS NOT NULL THEN 'waiting_for_target'
+        ELSE 'downloaded'
+    END,
     verified_at_utc = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE source = @source
   AND source_id = @sourceId
-  AND track_source_id = @trackSourceId
-  AND (identity_status IS NULL OR identity_status <> 'review' OR @identityStatus = 'review');";
+  AND track_source_id = @trackSourceId;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -10251,7 +10254,18 @@ SELECT f.root_path, af.relative_path, af.path
         string? ArtistName,
         int? DurationMs,
         string? Source = null,
-        string? SourceId = null);
+        string? SourceId = null,
+        string? AlbumTitle = null);
+
+    public sealed record LocalTrackIdentityResult(
+        long? LocalTrackId,
+        string MatchType,
+        string Reason,
+        IReadOnlyList<long> CandidateTrackIds)
+    {
+        public bool Exists => LocalTrackId.HasValue || CandidateTrackIds.Count > 0;
+        public bool IsAmbiguous => string.Equals(MatchType, "ambiguous", StringComparison.Ordinal);
+    }
 
     private sealed record LocalTrackMetadataCandidate(
         long TrackId,
@@ -10261,23 +10275,125 @@ SELECT f.root_path, af.relative_path, af.path
         int? DurationMs,
         int? QualityRank);
 
-    public async Task<long?> FindLocalTrackIdByMetadataAsync(
-        string? trackTitle,
-        string? artistName,
-        string? albumTitle,
-        int? durationMs = null,
+    public async Task<LocalTrackIdentityResult> ResolveLocalTrackIdentityAsync(
+        LibraryExistenceInput input,
+        long? libraryId = null,
+        long? folderId = null,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(trackTitle) || string.IsNullOrWhiteSpace(artistName))
+        if (!IsConfigured)
+        {
+            return new LocalTrackIdentityResult(null, "none", "The local library is not configured.", Array.Empty<long>());
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var exactTrackId = await FindExactLocalTrackByIsrcAsync(
+            connection, input.Isrc, libraryId, folderId, cancellationToken);
+        if (exactTrackId.HasValue)
+        {
+            return new LocalTrackIdentityResult(exactTrackId, "isrc", "Matched the stored ISRC.", new[] { exactTrackId.Value });
+        }
+
+        exactTrackId = await FindExactLocalTrackIdAsync(
+            connection, input.Source, input.SourceId, libraryId, folderId, cancellationToken);
+        if (exactTrackId.HasValue)
+        {
+            return new LocalTrackIdentityResult(exactTrackId, "source_id", "Matched the stored source track ID.", new[] { exactTrackId.Value });
+        }
+
+        return await ResolveLocalTrackByMetadataAsync(connection, input, libraryId, folderId, cancellationToken);
+    }
+
+    private static async Task<long?> FindExactLocalTrackByIsrcAsync(
+        SqliteConnection connection,
+        string? isrc,
+        long? libraryId,
+        long? folderId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedIsrc = isrc?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedIsrc) || normalizedIsrc.Length > 64)
         {
             return null;
         }
 
-        var primaryArtist = ArtistNameNormalizer.ExtractPrimaryArtist(artistName.Trim());
-        var artistSearch = $"%{(string.IsNullOrWhiteSpace(primaryArtist) ? artistName : primaryArtist).Trim()}%";
+        const string sql = @"
+SELECT t.id
+FROM track t
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+LEFT JOIN track_source ts ON ts.track_id = t.id AND LOWER(ts.source) = 'isrc'
+WHERE f.enabled = TRUE
+  AND (@libraryId IS NULL OR f.library_id = @libraryId)
+  AND (@folderId IS NULL OR f.id = @folderId)
+  AND (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
+ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("isrc", normalizedIsrc);
+        command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+    }
 
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = $@"
+    private static async Task<long?> FindExactLocalTrackIdAsync(
+        SqliteConnection connection,
+        string? source,
+        string? sourceId,
+        long? libraryId,
+        long? folderId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedSource = source?.Trim();
+        var normalizedSourceId = sourceId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedSource)
+            || string.IsNullOrWhiteSpace(normalizedSourceId)
+            || normalizedSource.Length > 64
+            || normalizedSourceId.Length > 256)
+        {
+            return null;
+        }
+
+        const string sql = @"
+SELECT ts.track_id
+FROM track_source ts
+JOIN track_local tl ON tl.track_id = ts.track_id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.enabled = TRUE
+  AND (@libraryId IS NULL OR f.library_id = @libraryId)
+  AND (@folderId IS NULL OR f.id = @folderId)
+  AND LOWER(ts.source) = LOWER(@source)
+  AND (
+      LOWER(ts.source_id) = LOWER(@sourceId)
+      OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(@sourceId) || ';') > 0
+  )
+ORDER BY af.quality_rank DESC NULLS LAST, ts.track_id DESC
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<LocalTrackIdentityResult> ResolveLocalTrackByMetadataAsync(
+        SqliteConnection connection,
+        LibraryExistenceInput input,
+        long? libraryId,
+        long? folderId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryBuildTrackLookup(input, out var trackTitle, out var artistName, out var artistSearch))
+        {
+            return new LocalTrackIdentityResult(null, "none", "Title and artist metadata are required.", Array.Empty<long>());
+        }
+
+        const string sql = @"
 SELECT DISTINCT
        t.id,
        COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
@@ -10292,22 +10408,22 @@ JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = TRUE
+  AND (@libraryId IS NULL OR f.library_id = @libraryId)
+  AND (@folderId IS NULL OR f.id = @folderId)
   AND (
       LOWER(ar.name) LIKE LOWER(@artistSearch)
       OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(@artistSearch)
       OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(@artistSearch)
   )
-  AND (@{DurationMsField} IS NULL OR COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) IS NULL OR ABS(COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) - @{DurationMsField}) <= 2000)
 ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
 LIMIT 100;";
-
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
-        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
-        LocalTrackMetadataCandidate? best = null;
-        var bestScore = int.MinValue;
+        var scored = new List<(LocalTrackMetadataCandidate Candidate, int Score)>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var candidate = new LocalTrackMetadataCandidate(
@@ -10325,28 +10441,48 @@ LIMIT 100;";
             }
 
             var score = 1000;
-            if (!string.IsNullOrWhiteSpace(albumTitle)
-                && TrackTitleMatcher.TitlesMatch(albumTitle, candidate.Album))
+            if (!string.IsNullOrWhiteSpace(input.AlbumTitle)
+                && TrackTitleMatcher.TitlesMatch(input.AlbumTitle, candidate.Album))
             {
                 score += 100;
             }
 
-            if (durationMs.HasValue
-                && candidate.DurationMs.HasValue
-                && Math.Abs(durationMs.Value - candidate.DurationMs.Value) <= 2000)
+            if (input.DurationMs.HasValue && candidate.DurationMs.HasValue)
             {
-                score += 25;
+                var difference = Math.Abs(input.DurationMs.Value - candidate.DurationMs.Value);
+                score += difference <= 2000 ? 75 : difference <= 10000 ? 25 : 0;
             }
 
             score += Math.Clamp(candidate.QualityRank ?? 0, 0, 100);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = candidate;
-            }
+            scored.Add((candidate, score));
         }
 
-        return best?.TrackId;
+        if (scored.Count == 0)
+        {
+            return new LocalTrackIdentityResult(null, "none", "No local track matched the stored or tagged metadata.", Array.Empty<long>());
+        }
+
+        var ordered = scored
+            .OrderByDescending(static item => item.Score)
+            .ThenByDescending(static item => item.Candidate.QualityRank)
+            .ToList();
+        var best = ordered[0];
+        var competing = ordered
+            .Where(item => item.Score == best.Score)
+            .Select(static item => item.Candidate.TrackId)
+            .Distinct()
+            .ToArray();
+        if (competing.Length > 1)
+        {
+            return new LocalTrackIdentityResult(
+                null, "ambiguous", "Multiple local files match the playlist metadata equally.", competing);
+        }
+
+        return new LocalTrackIdentityResult(
+            best.Candidate.TrackId,
+            best.Score >= 1100 ? "metadata_exact" : "metadata_equivalent",
+            "Matched the stored and tagged title, artist, album, and duration metadata.",
+            new[] { best.Candidate.TrackId });
     }
 
     public async Task<IReadOnlyList<bool>> ExistsInLibraryAsync(
@@ -10358,57 +10494,11 @@ LIMIT 100;";
             return Array.Empty<bool>();
         }
 
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string isrcSql = @"
-SELECT EXISTS(
-    SELECT 1
-    FROM track t
-    JOIN track_local tl ON tl.track_id = t.id
-    LEFT JOIN track_source ts ON ts.track_id = t.id AND ts.source = 'isrc'
-    WHERE (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
-	);";
-        const string sourceSql = @"
-SELECT EXISTS(
-    SELECT 1
-    FROM track_source ts
-    JOIN track_local tl ON tl.track_id = ts.track_id
-    WHERE LOWER(ts.source) = LOWER(@source)
-      AND (
-          LOWER(ts.source_id) = LOWER(@sourceId)
-          OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(@sourceId) || ';') > 0
-      )
-);";
-        const string trackSql = $@"
-SELECT ar.name,
-       t.title,
-       t.duration_ms
-FROM track t
-JOIN album al ON al.id = t.album_id
-JOIN artist ar ON ar.id = al.artist_id
-JOIN track_local tl ON tl.track_id = t.id
-WHERE LOWER(ar.name) LIKE LOWER(@artistSearch)
-  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
-LIMIT 100;";
-
-        await using var isrcCommand = new SqliteCommand(isrcSql, connection);
-        isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
-        await using var sourceCommand = new SqliteCommand(sourceSql, connection);
-        sourceCommand.Parameters.AddWithValue(SourceField, string.Empty);
-        sourceCommand.Parameters.AddWithValue(SourceIdField, string.Empty);
-        await using var trackCommand = new SqliteCommand(trackSql, connection);
-        trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
-        trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
-
         var results = new bool[inputs.Count];
-
-        for (var i = 0; i < inputs.Count; i++)
+        for (var index = 0; index < inputs.Count; index++)
         {
-            results[i] = await ExistsInLibraryAsync(
-                inputs[i],
-                isrcCommand,
-                sourceCommand,
-                trackCommand,
-                cancellationToken);
+            results[index] = (await ResolveLocalTrackIdentityAsync(
+                inputs[index], cancellationToken: cancellationToken)).Exists;
         }
 
         return results;
@@ -10425,145 +10515,14 @@ LIMIT 100;";
             return Array.Empty<bool>();
         }
 
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string isrcSql = @"
-SELECT EXISTS(
-    SELECT 1
-    FROM track t
-    JOIN track_local tl ON tl.track_id = t.id
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    LEFT JOIN track_source ts ON ts.track_id = t.id AND ts.source = 'isrc'
-    WHERE f.library_id = @libraryId
-      AND (@folderId IS NULL OR f.id = @folderId)
-      AND (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
-	);";
-        const string sourceSql = @"
-SELECT EXISTS(
-    SELECT 1
-    FROM track_source ts
-    JOIN track_local tl ON tl.track_id = ts.track_id
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    WHERE f.library_id = @libraryId
-      AND (@folderId IS NULL OR f.id = @folderId)
-      AND LOWER(ts.source) = LOWER(@source)
-      AND (
-          LOWER(ts.source_id) = LOWER(@sourceId)
-          OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(@sourceId) || ';') > 0
-      )
-);";
-        const string trackSql = $@"
-SELECT ar.name,
-       t.title,
-       t.duration_ms
-FROM track t
-JOIN album al ON al.id = t.album_id
-JOIN artist ar ON ar.id = al.artist_id
-JOIN track_local tl ON tl.track_id = t.id
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-WHERE f.library_id = @libraryId
-  AND (@folderId IS NULL OR f.id = @folderId)
-  AND LOWER(ar.name) LIKE LOWER(@artistSearch)
-  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
-LIMIT 100;";
-
-        await using var isrcCommand = new SqliteCommand(isrcSql, connection);
-        isrcCommand.Parameters.AddWithValue("isrc", string.Empty);
-        isrcCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
-        isrcCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
-
-        await using var sourceCommand = new SqliteCommand(sourceSql, connection);
-        sourceCommand.Parameters.AddWithValue(SourceField, string.Empty);
-        sourceCommand.Parameters.AddWithValue(SourceIdField, string.Empty);
-        sourceCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
-        sourceCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
-
-        await using var trackCommand = new SqliteCommand(trackSql, connection);
-        trackCommand.Parameters.AddWithValue(ArtistSearchParameter, string.Empty);
-        trackCommand.Parameters.AddWithValue(DurationMsField, DBNull.Value);
-        trackCommand.Parameters.AddWithValue(LibraryIdField, libraryId);
-        trackCommand.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
-
         var results = new bool[inputs.Count];
-
-        for (var i = 0; i < inputs.Count; i++)
+        for (var index = 0; index < inputs.Count; index++)
         {
-            results[i] = await ExistsInLibraryAsync(
-                inputs[i],
-                isrcCommand,
-                sourceCommand,
-                trackCommand,
-                cancellationToken);
+            results[index] = (await ResolveLocalTrackIdentityAsync(
+                inputs[index], libraryId, folderId, cancellationToken)).Exists;
         }
 
         return results;
-    }
-
-    private static async Task<bool> ExistsInLibraryAsync(
-        LibraryExistenceInput input,
-        SqliteCommand isrcCommand,
-        SqliteCommand sourceCommand,
-        SqliteCommand trackCommand,
-        CancellationToken cancellationToken)
-    {
-        if (await ExistsByIsrcAsync(isrcCommand, input.Isrc, cancellationToken))
-        {
-            return true;
-        }
-
-        if (await ExistsBySourceAsync(sourceCommand, input.Source, input.SourceId, cancellationToken))
-        {
-            return true;
-        }
-
-        if (!TryBuildTrackLookup(input, out var trackTitle, out var artistName, out var artistSearch))
-        {
-            return false;
-        }
-
-        trackCommand.Parameters[ArtistSearchParameter]!.Value = artistSearch;
-        trackCommand.Parameters[DurationMsField]!.Value = input.DurationMs.HasValue ? input.DurationMs.Value : DBNull.Value;
-        return await ExistsByArtistAndTitleAsync(trackCommand, artistName, trackTitle, cancellationToken);
-    }
-
-    private static async Task<bool> ExistsByIsrcAsync(
-        SqliteCommand isrcCommand,
-        string? isrc,
-        CancellationToken cancellationToken)
-    {
-        var normalizedIsrc = isrc?.Trim();
-        if (string.IsNullOrWhiteSpace(normalizedIsrc))
-        {
-            return false;
-        }
-
-        isrcCommand.Parameters["isrc"]!.Value = normalizedIsrc;
-        var result = await isrcCommand.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
-    }
-
-    private static async Task<bool> ExistsBySourceAsync(
-        SqliteCommand sourceCommand,
-        string? source,
-        string? sourceId,
-        CancellationToken cancellationToken)
-    {
-        var normalizedSource = source?.Trim();
-        var normalizedSourceId = sourceId?.Trim();
-        if (string.IsNullOrWhiteSpace(normalizedSource)
-            || string.IsNullOrWhiteSpace(normalizedSourceId)
-            || normalizedSource.Length > 64
-            || normalizedSourceId.Length > 256)
-        {
-            return false;
-        }
-
-        sourceCommand.Parameters[SourceField]!.Value = normalizedSource;
-        sourceCommand.Parameters[SourceIdField]!.Value = normalizedSourceId;
-        var result = await sourceCommand.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result != DBNull.Value && Convert.ToInt64(result) == 1;
     }
 
     private static bool TryBuildTrackLookup(
@@ -10585,30 +10544,6 @@ LIMIT 100;";
         return true;
     }
 
-    private static async Task<bool> ExistsByArtistAndTitleAsync(
-        SqliteCommand trackCommand,
-        string artistName,
-        string trackTitle,
-        CancellationToken cancellationToken)
-    {
-        await using var reader = await trackCommand.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var candidateArtist = await ReadNullableStringAsync(reader, 0, cancellationToken) ?? string.Empty;
-            var candidateTitle = await ReadNullableStringAsync(reader, 1, cancellationToken) ?? string.Empty;
-            if (!TrackTitleMatcher.ArtistsMatch(artistName, candidateArtist))
-            {
-                continue;
-            }
-
-            if (TrackTitleMatcher.TitlesMatch(trackTitle, candidateTitle))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     public async Task<bool> ExistsTrackSourceInFolderAsync(
         string source,

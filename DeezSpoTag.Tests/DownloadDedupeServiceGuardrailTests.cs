@@ -266,6 +266,16 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
+    public void PlaylistSync_UsesCentralLocalTrackIdentityResolver()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
+
+        Assert.Contains("ResolveLocalTrackIdentityAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("FindLocalTrackIdByMetadataAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetTrackIdsBySourceIdsAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Recommendations_FilterFinalPoolThroughDedupe()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "LibraryRecommendationService.cs");
