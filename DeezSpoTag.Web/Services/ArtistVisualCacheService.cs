@@ -101,10 +101,13 @@ public sealed class ArtistVisualCacheService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to cache artist visual for artist {ArtistId} from {Source}.", artistId, source);
+            _logger.LogDebug(ex, "Failed to cache artist visual for artist {ArtistId} from {Source}.", artistId, SanitizeLogValue(source));
             return null;
         }
     }
+
+    private static string SanitizeLogValue(string value)
+        => value.Replace('\r', '_').Replace('\n', '_');
 
     private string? TryNormalizeManagedPath(string? path)
     {

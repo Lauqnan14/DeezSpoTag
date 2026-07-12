@@ -668,6 +668,7 @@ public sealed class AppleLyricsService
                 {
                     DtdProcessing = DtdProcessing.Prohibit,
                     XmlResolver = null,
+                    ValidationType = ValidationType.Schema,
                     MaxCharactersInDocument = 4 * 1024 * 1024
                 });
             document = XDocument.Load(reader, LoadOptions.None);
