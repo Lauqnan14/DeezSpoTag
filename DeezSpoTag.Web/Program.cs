@@ -1286,7 +1286,6 @@ public partial class Program
                 BeatportMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BeatportMatcher>(),
                 DiscogsMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.DiscogsMatcher>(),
                 TraxsourceMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.TraxsourceMatcher>(),
-                JunoDownloadMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.JunoDownloadMatcher>(),
                 BandcampMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BandcampMatcher>(),
                 BpmSupremeMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.BpmSupremeMatcher>(),
                 ItunesMatcher = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.ItunesMatcher>(),
@@ -1333,7 +1332,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BeatportPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.DiscogsPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.TraxsourcePlatform>();
-        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.JunoDownloadPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.PortedPlatformRegistry>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.MusicBrainzClient>()
             .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
@@ -1365,8 +1363,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.DiscogsMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.TraxsourceClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.TraxsourceMatcher>();
-        services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.JunoDownloadClient>();
-        services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.JunoDownloadMatcher>();
         services.AddSingleton<DeezSpoTag.Web.Services.TaggingProfileService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ExternalFileImportService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagConfigBuilder>();

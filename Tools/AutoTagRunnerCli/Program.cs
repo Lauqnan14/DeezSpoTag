@@ -94,7 +94,6 @@ internal static class Program
             "beatport",
             "discogs",
             "traxsource",
-            "junodownload",
             "bandcamp",
             "bpmsupreme",
             "itunes",
@@ -119,7 +118,6 @@ internal static class Program
                         "beatport" => await provider.GetRequiredService<BeatportMatcher>().MatchAsync(info, matchingConfig, beatportConfig, includeReleaseMeta: false, matchById: false, CancellationToken.None),
                         "discogs" => await provider.GetRequiredService<DiscogsMatcher>().MatchAsync(info, matchingConfig, discogsConfig, matchById: false, needsLabelOrCatalog: false, CancellationToken.None),
                         "traxsource" => await provider.GetRequiredService<TraxsourceMatcher>().MatchAsync(info, matchingConfig, extend: false, albumMeta: false, CancellationToken.None),
-                        "junodownload" => await provider.GetRequiredService<JunoDownloadMatcher>().MatchAsync(info, matchingConfig, CancellationToken.None),
                         "bandcamp" => await provider.GetRequiredService<BandcampMatcher>().MatchAsync(info, matchingConfig, CancellationToken.None),
                         "bpmsupreme" => await provider.GetRequiredService<BpmSupremeMatcher>().MatchAsync(info, matchingConfig, bpmConfig, CancellationToken.None),
                         "itunes" => await provider.GetRequiredService<ItunesMatcher>().MatchAsync(info, matchingConfig, itunesConfig, CancellationToken.None),
@@ -388,7 +386,6 @@ internal static class Program
         services.AddTransient<BeatportTokenService>();
         services.AddTransient<DiscogsClient>();
         services.AddTransient<TraxsourceClient>();
-        services.AddTransient<JunoDownloadClient>();
         services.AddTransient<BandcampClient>();
         services.AddTransient<BpmSupremeClient>();
         services.AddTransient<ItunesClient>();
@@ -398,7 +395,6 @@ internal static class Program
         services.AddTransient<BeatportMatcher>();
         services.AddTransient<DiscogsMatcher>();
         services.AddTransient<TraxsourceMatcher>();
-        services.AddTransient<JunoDownloadMatcher>();
         services.AddTransient<BandcampMatcher>();
         services.AddTransient<BpmSupremeMatcher>();
         services.AddTransient<ItunesMatcher>();

@@ -33,11 +33,6 @@ Traxsource
 - `Done` Album meta extension only when album-art/track-total/album-artist/track-number/catalog-number tags are enabled.
 - `Verify` HTML parsing still matches Traxsource markup.
 
-JunoDownload
-- `Done` Query uses `CleanTitle`.
-- `Done` Match rules are identical (title, artist, duration).
-- `Verify` Rate limit handling (429 retry) matches OneTagger.
-
 Bandcamp
 - `Done` Query uses `CleanTitle` and artist.
 - `Done` Match rules align with OneTagger (artist + title).

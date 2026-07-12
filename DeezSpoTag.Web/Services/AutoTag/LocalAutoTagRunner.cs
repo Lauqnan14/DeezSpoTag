@@ -361,7 +361,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly BeatportMatcher _beatportMatcher;
     private readonly DiscogsMatcher _discogsMatcher;
     private readonly TraxsourceMatcher _traxsourceMatcher;
-    private readonly JunoDownloadMatcher _junoDownloadMatcher;
     private readonly BandcampMatcher _bandcampMatcher;
     private readonly BpmSupremeMatcher _bpmSupremeMatcher;
     private readonly ItunesMatcher _itunesMatcher;
@@ -397,7 +396,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _beatportMatcher = collaborators.BeatportMatcher;
         _discogsMatcher = collaborators.DiscogsMatcher;
         _traxsourceMatcher = collaborators.TraxsourceMatcher;
-        _junoDownloadMatcher = collaborators.JunoDownloadMatcher;
         _bandcampMatcher = collaborators.BandcampMatcher;
         _bpmSupremeMatcher = collaborators.BpmSupremeMatcher;
         _itunesMatcher = collaborators.ItunesMatcher;
@@ -2442,8 +2440,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 return await _discogsMatcher.MatchAsync(info, context.MatchingConfig, LoadConfig(context.Config.Custom, "discogs", new DiscogsConfig()), context.Config.MatchById, discogsNeedsLabelCatalog, token);
             case "traxsource":
                 return await _traxsourceMatcher.MatchAsync(info, context.MatchingConfig, traxsourceExtend, traxsourceAlbumMeta, token);
-            case "junodownload":
-                return await _junoDownloadMatcher.MatchAsync(info, context.MatchingConfig, token);
             case "bandcamp":
                 return await _bandcampMatcher.MatchAsync(info, context.MatchingConfig, token);
             case "bpmsupreme":
@@ -6437,7 +6433,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required BeatportMatcher BeatportMatcher { get; init; }
         public required DiscogsMatcher DiscogsMatcher { get; init; }
         public required TraxsourceMatcher TraxsourceMatcher { get; init; }
-        public required JunoDownloadMatcher JunoDownloadMatcher { get; init; }
         public required BandcampMatcher BandcampMatcher { get; init; }
         public required BpmSupremeMatcher BpmSupremeMatcher { get; init; }
         public required ItunesMatcher ItunesMatcher { get; init; }

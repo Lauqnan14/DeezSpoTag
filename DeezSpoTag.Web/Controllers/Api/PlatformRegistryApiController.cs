@@ -38,7 +38,6 @@ public class PlatformRegistryApiController : ControllerBase
         NavidromePlatform,
         "beatport",
         "traxsource",
-        "junodownload",
         "musicbrainz",
         "itunes",
         "bandcamp",
@@ -90,7 +89,6 @@ public class PlatformRegistryApiController : ControllerBase
     {
         [LastFmPlatform] = "Last.fm",
         [BpmSupremePlatform] = "BPM Supreme",
-        ["junodownload"] = "Juno Download",
         ["musicbrainz"] = "MusicBrainz",
         ["itunes"] = "iTunes",
         [AppleMusicPlatform] = "Apple Music",
