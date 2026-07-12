@@ -208,6 +208,7 @@ internal static class Program
                 }
             },
             null,
+            null,
             CancellationToken.None);
 
         var afterTags = DumpTags(targetFile);

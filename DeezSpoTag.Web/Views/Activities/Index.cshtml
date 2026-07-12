@@ -11,6 +11,10 @@
     {
         ("Runtime", "autotag-runtime", "00:00"),
         ("Exit Code", "autotag-exit-code", "--"),
+        ("Operation", "autotag-enhancement-feature", "--"),
+        ("Phase", "autotag-current-phase", "--"),
+        ("Batch", "autotag-current-batch", "--"),
+        ("Items", "autotag-current-items", "--"),
         ("Platform", "autotag-platform", "--"),
         ("Last Track", "autotag-last-track", "--"),
         ("Last Result", "autotag-last-result", "--"),
@@ -2810,6 +2814,26 @@
                         </div>
                     </div>
                     <div class="autotag-last-log" id="autotag-last-log">No recent log lines.</div>
+                    <div class="form-label text-muted mt-3">Current Batch</div>
+                    <div class="autotag-history-table mb-3">
+                        <table class="table mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Time</th>
+                                    <th scope="col">Operation</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Progress</th>
+                                    <th scope="col">File</th>
+                                    <th scope="col">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="autotag-live-status-table">
+                                <tr>
+                                    <td colspan="6">No active AutoTag batch.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                     <div class="form-label text-muted">Latest Log</div>
                     <pre id="autotag-log" class="autotag-log">No AutoTag job started yet.</pre>
                 </div>
@@ -3319,10 +3343,10 @@
                                         <thead>
                                             <tr>
                                                 <th scope="col">Time</th>
-                                                <th scope="col">Platform</th>
+                                                <th scope="col">Operation</th>
                                                 <th scope="col">Status</th>
-                                                <th scope="col">Accuracy</th>
-                                                <th scope="col">Track</th>
+                                                <th scope="col">Accuracy / Progress</th>
+                                                <th scope="col">File</th>
                                                 <th scope="col">Diff</th>
                                             </tr>
                                         </thead>

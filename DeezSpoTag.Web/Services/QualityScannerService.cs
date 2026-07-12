@@ -29,6 +29,7 @@ public sealed class QualityScannerService
     private readonly ILogger<QualityScannerService> _logger;
     private readonly SemaphoreSlim _automationSettingsChanged = new(0, 1);
     private CancellationTokenSource? _cts;
+    private Task _currentRunTask = Task.CompletedTask;
     private QualityScannerState _state = QualityScannerState.Idle();
     private sealed record TrackActionOutcome(string LastAction, DateTimeOffset? LastQueuedAtUtc, string? LastError, bool IncrementDuplicateCount)
     {
@@ -157,14 +158,43 @@ public sealed class QualityScannerService
                 AtmosDestinationFolderId: atmosDestinationFolderId,
                 MarkAutomationWindow: request.MarkAutomationWindow,
                 TechnicalProfiles: NormalizeTechnicalProfiles(request.TechnicalProfiles),
-                FolderIds: NormalizeFolderIds(request.FolderIds, request.FolderId));
-            _ = RunAsync(options, _cts.Token);
+                FolderIds: NormalizeFolderIds(request.FolderIds, request.FolderId),
+                TargetTrackIds: NormalizeTrackIds(request.TargetTrackIds));
+            _currentRunTask = RunAsync(options, _cts.Token);
         }
 
         if (previousCts is not null)
         {
             await previousCts.CancelAsync();
             previousCts.Dispose();
+        }
+
+        return true;
+    }
+
+    public async Task<bool> StartAndWaitAsync(
+        QualityScannerStartRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var started = await StartAsync(request, cancellationToken);
+        if (!started)
+        {
+            return false;
+        }
+
+        Task runTask;
+        lock (_stateLock)
+        {
+            runTask = _currentRunTask;
+        }
+        await runTask.WaitAsync(cancellationToken);
+        var finalState = GetState();
+        if (string.Equals(finalState.Status, "error", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(finalState.ErrorMessage)
+                    ? "Quality scanner failed."
+                    : finalState.ErrorMessage);
         }
 
         return true;
@@ -324,6 +354,13 @@ public sealed class QualityScannerService
             tracks = tracks
             .Where(track => options.TechnicalProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
             .ToList();
+        }
+
+        if (options.TargetTrackIds.Count > 0)
+        {
+            tracks = tracks
+                .Where(track => options.TargetTrackIds.Contains(track.TrackId))
+                .ToList();
         }
 
         return tracks;
@@ -1517,6 +1554,13 @@ public sealed class QualityScannerService
         return normalized;
     }
 
+    private static HashSet<long> NormalizeTrackIds(IReadOnlyCollection<long>? source)
+    {
+        return source is null
+            ? new HashSet<long>()
+            : source.Where(id => id > 0).ToHashSet();
+    }
+
     private static int? NormalizeMinBitDepth(int? minBitDepth)
     {
         if (!minBitDepth.HasValue || minBitDepth.Value <= 0)
@@ -1616,6 +1660,7 @@ public sealed class QualityScannerStartRequest
     public bool MarkAutomationWindow { get; init; }
     public IReadOnlyCollection<string>? TechnicalProfiles { get; init; }
     public IReadOnlyCollection<long>? FolderIds { get; init; }
+    public IReadOnlyCollection<long>? TargetTrackIds { get; init; }
 }
 
 public sealed record QualityScannerState(
@@ -1687,7 +1732,8 @@ internal sealed record QualityScannerRunOptions(
     long? AtmosDestinationFolderId,
     bool MarkAutomationWindow,
     IReadOnlySet<string> TechnicalProfiles,
-    IReadOnlySet<long> FolderIds);
+    IReadOnlySet<long> FolderIds,
+    IReadOnlySet<long> TargetTrackIds);
 
 internal sealed record QualityScanMatch(
     string Source,

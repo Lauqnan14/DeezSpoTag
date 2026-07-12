@@ -52,6 +52,9 @@
         },
         custom: {},
         enhancement: {
+            gapFilling: {
+                folderIds: []
+            },
             folderUniformity: {
                 enabled: false,
                 folderIds: [],
@@ -80,6 +83,7 @@
                 enabled: false,
                 folderIds: [],
                 minResolution: 500,
+                upgradeLowResolutionCovers: false,
                 replaceMissingEmbeddedCovers: false,
                 syncExternalCovers: false,
                 queueAnimatedArtwork: false,
@@ -130,7 +134,7 @@
         { tag: "bpm", label: "BPM" },
         { tag: "key", label: "Key" },
         { tag: "mood", label: "Mood", tooltip: "Shared across enabled providers. Last.fm supplies controlled community mood tags; Boomplay supplies editorial moods." },
-        { tag: "activity", label: "Activity", tooltip: "Shared across providers that expose a verified activity classification, such as Boomplay." },
+        { tag: "activity", label: "Activity", tooltip: "Activity tags such as workout, reading, and sleeping." },
         { tag: "catalogNumber", label: "Catalog Number" },
         { tag: "trackNumber", label: "Track Number" },
         { tag: "discNumber", label: "Disc Number" },
@@ -1116,6 +1120,10 @@
         updateFolderSelectionSummary("enhancementCoverFolderTrigger", "enhancementCoverFolder", selectedIds);
     }
 
+    function updateGapFillingFolderSummary(selectedIds) {
+        updateFolderSelectionSummary("enhancementGapFillFolderTrigger", "enhancementGapFillFolder", selectedIds);
+    }
+
     function updateFolderUniformityFolderSummary(selectedIds) {
         updateFolderSelectionSummary("enhancementFolderUniformityFolderTrigger", "enhancementFolderUniformityFolder", selectedIds);
     }
@@ -1150,6 +1158,10 @@
         setupSimpleDropdown("enhancementCoverFolderDropdown", "enhancementCoverFolderTrigger", "enhancementCoverFolderMenu");
     }
 
+    function setupGapFillingFolderDropdown() {
+        setupSimpleDropdown("enhancementGapFillFolderDropdown", "enhancementGapFillFolderTrigger", "enhancementGapFillFolderMenu");
+    }
+
     function setupQualityChecksFolderDropdown() {
         setupSimpleDropdown("enhancementQualityFolderDropdown", "enhancementQualityFolderTrigger", "enhancementQualityFolderMenu");
     }
@@ -1160,6 +1172,38 @@
 
     function renderEnhancementFolderOptions() {
         ensureEnhancementDefaults();
+        const gapFillOptions = el("enhancementGapFillFolderOptions");
+        if (gapFillOptions) {
+            const selectedIds = parseFolderIdList(state.config.enhancement.gapFilling.folderIds);
+            gapFillOptions.innerHTML = "";
+            state.libraryFolders
+                .filter(isMusicEnhancementEligibleFolder)
+                .forEach((folder) => {
+                    const label = document.createElement("label");
+                    label.className = "fallback-source-toggle";
+
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.dataset.gapFillFolderId = String(folder.id);
+                    checkbox.checked = selectedIds.includes(folder.id);
+                    checkbox.addEventListener("change", () => {
+                        const ids = collectCheckedFolderIds(
+                            gapFillOptions,
+                            "input[data-gap-fill-folder-id]:checked",
+                            "gapFillFolderId"
+                        );
+                        updateGapFillingFolderSummary(ids);
+                    });
+
+                    label.appendChild(checkbox);
+                    label.append(` ${folder.displayName || folder.libraryName || folder.rootPath || "Unnamed library"}`);
+                    gapFillOptions.appendChild(label);
+                });
+
+            updateGapFillingFolderSummary(selectedIds);
+            setupGapFillingFolderDropdown();
+        }
+
         const folderUniformityOptions = el("enhancementFolderUniformityFolderOptions");
         if (folderUniformityOptions) {
             const selectedIds = parseFolderIdList(state.config.enhancement.folderUniformity.folderIds);
@@ -2005,6 +2049,9 @@
         }
 
         const enhancement = config.enhancement;
+        if (!enhancement.gapFilling || typeof enhancement.gapFilling !== "object") {
+            enhancement.gapFilling = structuredClone(DEFAULT_CONFIG.enhancement.gapFilling);
+        }
         if (!enhancement.folderUniformity || typeof enhancement.folderUniformity !== "object") {
             enhancement.folderUniformity = structuredClone(DEFAULT_CONFIG.enhancement.folderUniformity);
         }
@@ -2014,6 +2061,10 @@
         if (!enhancement.qualityChecks || typeof enhancement.qualityChecks !== "object") {
             enhancement.qualityChecks = structuredClone(DEFAULT_CONFIG.enhancement.qualityChecks);
         }
+
+        const gapFilling = enhancement.gapFilling;
+        gapFilling.folderIds = parseFolderIdList(gapFilling.folderIds);
+        delete gapFilling.folderId;
 
         const folderUniformity = enhancement.folderUniformity;
         const folderUniformityHasEnabledFlag = Object.hasOwn(folderUniformity, "enabled");
@@ -2068,6 +2119,7 @@
             coverMaintenance.minResolution = 500;
         }
         coverMaintenance.minResolution = Math.max(100, Math.min(2000, coverMaintenance.minResolution));
+        coverMaintenance.upgradeLowResolutionCovers = coverMaintenance.upgradeLowResolutionCovers === true;
         coverMaintenance.replaceMissingEmbeddedCovers = coverMaintenance.replaceMissingEmbeddedCovers === true;
         coverMaintenance.syncExternalCovers = coverMaintenance.syncExternalCovers === true;
         coverMaintenance.queueAnimatedArtwork = coverMaintenance.queueAnimatedArtwork === true;
@@ -2075,6 +2127,7 @@
             ? coverMaintenance.enabled === true
             : coverMaintenance.replaceMissingEmbeddedCovers
                 || coverMaintenance.syncExternalCovers
+                || coverMaintenance.upgradeLowResolutionCovers
                 || coverMaintenance.queueAnimatedArtwork;
         coverMaintenance.workerCount = Number.parseInt(String(coverMaintenance.workerCount ?? 8), 10);
         if (!Number.isFinite(coverMaintenance.workerCount)) {
@@ -2866,6 +2919,7 @@
         setChecked("autotag-move-failed", state.config.moveFailed);
         setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
         setChecked("enableFolderUniformityWorkflow", state.config.enhancement.folderUniformity.enabled);
+        updateGapFillingFolderSummary(state.config.enhancement.gapFilling.folderIds ?? []);
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
         setChecked("folderUniformityIncludeSubfolders", state.config.enhancement.folderUniformity.includeSubfolders);
         setChecked("moveMisplacedFiles", state.config.enhancement.folderUniformity.moveMisplacedFiles);
@@ -2888,6 +2942,8 @@
         setValue("folderUniformityDuplicatesFolderName", state.config.enhancement.folderUniformity.duplicatesFolderName || "%duplicates%");
         updateFolderUniformityFolderSummary(state.config.enhancement.folderUniformity.folderIds ?? []);
         setChecked("enableCoverMaintenanceWorkflow", state.config.enhancement.coverMaintenance.enabled);
+        setChecked("upgradeLowResolutionCovers", state.config.enhancement.coverMaintenance.upgradeLowResolutionCovers);
+        setValue("coverMinResolution", state.config.enhancement.coverMaintenance.minResolution ?? 500);
         setChecked("replaceMissingCovers", state.config.enhancement.coverMaintenance.replaceMissingEmbeddedCovers);
         setChecked("syncExternalCovers", state.config.enhancement.coverMaintenance.syncExternalCovers);
         setChecked("queueAnimatedArtwork", state.config.enhancement.coverMaintenance.queueAnimatedArtwork);
@@ -3913,6 +3969,8 @@
         state.config.moveFailed = getChecked("autotag-move-failed", state.config.moveFailed);
         state.config.moveFailedPath = getValue("autotag-move-failed-path", state.config.moveFailedPath || "").trim() || null;
         delete state.config.organizer;
+        const gapFilling = state.config.enhancement.gapFilling;
+        gapFilling.folderIds = parseFolderIdList(getValue("enhancementGapFillFolder", (gapFilling.folderIds ?? []).join(",")));
         const folderUniformity = state.config.enhancement.folderUniformity;
         folderUniformity.enabled = getChecked("enableFolderUniformityWorkflow", folderUniformity.enabled);
         folderUniformity.folderIds = parseFolderIdList(getValue("enhancementFolderUniformityFolder", (folderUniformity.folderIds ?? []).join(",")));
@@ -3947,7 +4005,8 @@
         const coverMaintenance = state.config.enhancement.coverMaintenance;
         coverMaintenance.enabled = getChecked("enableCoverMaintenanceWorkflow", coverMaintenance.enabled);
         coverMaintenance.folderIds = parseFolderIdList(getValue("enhancementCoverFolder", (coverMaintenance.folderIds ?? []).join(",")));
-        coverMaintenance.minResolution = Math.max(100, Math.min(2000, Number.parseInt(String(coverMaintenance.minResolution ?? 500), 10) || 500));
+        coverMaintenance.minResolution = Math.max(100, Math.min(5000, Number.parseInt(getValue("coverMinResolution", coverMaintenance.minResolution ?? 500), 10) || 500));
+        coverMaintenance.upgradeLowResolutionCovers = getChecked("upgradeLowResolutionCovers", coverMaintenance.upgradeLowResolutionCovers);
         coverMaintenance.replaceMissingEmbeddedCovers = getChecked("replaceMissingCovers", coverMaintenance.replaceMissingEmbeddedCovers);
         coverMaintenance.syncExternalCovers = getChecked("syncExternalCovers", coverMaintenance.syncExternalCovers);
         coverMaintenance.queueAnimatedArtwork = getChecked("queueAnimatedArtwork", coverMaintenance.queueAnimatedArtwork);
@@ -4168,104 +4227,6 @@
         });
     }
 
-    function createUniformityReportStat(label, value) {
-        const stat = document.createElement("div");
-        stat.className = "uniformity-report-stat";
-
-        const statLabel = document.createElement("span");
-        statLabel.className = "uniformity-report-stat-label";
-        statLabel.textContent = label;
-
-        const statValue = document.createElement("span");
-        statValue.className = "uniformity-report-stat-value";
-        statValue.textContent = String(value ?? 0);
-
-        stat.appendChild(statLabel);
-        stat.appendChild(statValue);
-        return stat;
-    }
-
-    function renderFolderUniformityReports(reports) {
-        const container = el("folderUniformityReports");
-        if (!container) {
-            return;
-        }
-
-        container.innerHTML = "";
-        if (!Array.isArray(reports) || reports.length === 0) {
-            container.classList.add("d-none");
-            return;
-        }
-
-        const orderedStats = [
-            ["Candidate files", "candidateFiles"],
-            ["Planned moves", "plannedMoves"],
-            ["Moved files", "movedFiles"],
-            ["Replaced duplicates", "replacedDuplicates"],
-            ["Quarantined duplicates", "quarantinedDuplicates"],
-            ["Skipped conflicts", "skippedConflicts"]
-        ];
-
-        reports.forEach((report) => {
-            const card = document.createElement("article");
-            card.className = "uniformity-report-card";
-
-            const header = document.createElement("div");
-            header.className = "uniformity-report-header";
-
-            const titleWrap = document.createElement("div");
-            const title = document.createElement("h6");
-            title.className = "uniformity-report-title";
-            title.textContent = String(report?.folderName || "Library folder");
-
-            const subtitle = document.createElement("div");
-            subtitle.className = "uniformity-report-subtitle";
-            subtitle.textContent = `Folder ${String(report?.folderId ?? "-")}`;
-
-            titleWrap.appendChild(title);
-            titleWrap.appendChild(subtitle);
-
-            const summary = document.createElement("div");
-            summary.className = "uniformity-report-subtitle";
-            summary.textContent = `${Number(report?.movedFolders ?? 0)} folders moved, ${Number(report?.movedSidecars ?? 0)} sidecars moved, ${Number(report?.mergedLyricsSidecars ?? 0)} lyrics merged`;
-
-            header.appendChild(titleWrap);
-            header.appendChild(summary);
-
-            const statsGrid = document.createElement("div");
-            statsGrid.className = "uniformity-report-stats";
-            orderedStats.forEach(([label, key]) => {
-                statsGrid.appendChild(createUniformityReportStat(label, report?.[key]));
-            });
-
-            card.appendChild(header);
-            card.appendChild(statsGrid);
-
-            const entries = Array.isArray(report?.entries)
-                ? report.entries.filter((entry) => typeof entry === "string" && entry.trim().length > 0)
-                : [];
-            if (entries.length > 0) {
-                const details = document.createElement("details");
-                details.className = "uniformity-report-details";
-
-                const detailsSummary = document.createElement("summary");
-                detailsSummary.textContent = `View reconciliation log (${entries.length})`;
-
-                const pre = document.createElement("pre");
-                pre.className = "uniformity-report-entries";
-                pre.textContent = entries.join("\n");
-
-                details.appendChild(detailsSummary);
-                details.appendChild(pre);
-                card.appendChild(details);
-            }
-
-            container.appendChild(card);
-        });
-
-        container.classList.remove("d-none");
-    }
-
     function setExternalStartStatus(message) {
         const target = el("autotag-external-start-status");
         if (target) {
@@ -4296,39 +4257,6 @@
         }
 
         return `${phase} (${percent}%) - ${folderProgress} folders${sourceFolderProgress}${sourceFolderSuffix}`;
-    }
-
-    function renderFolderUniformityLiveLog(status) {
-        const container = el("folderUniformityLiveLogContainer");
-        const pre = el("folderUniformityLiveLog");
-        if (!container || !pre) {
-            return;
-        }
-
-        const logs = Array.isArray(status?.logs)
-            ? status.logs
-                .map((line) => String(line || "").trim())
-                .filter((line) => line.length > 0)
-            : [];
-        const errors = Array.isArray(status?.errors)
-            ? status.errors
-                .map((line) => String(line || "").trim())
-                .filter((line) => line.length > 0)
-            : [];
-        const combined = [...logs];
-        if (errors.length > 0) {
-            combined.push(...errors.map((line) => `[error] ${line}`));
-        }
-
-        if (combined.length === 0) {
-            pre.textContent = "";
-            container.classList.add("d-none");
-            return;
-        }
-
-        const tailCount = 28;
-        pre.textContent = combined.slice(-tailCount).join("\n");
-        container.classList.remove("d-none");
     }
 
     function rememberActiveFolderUniformityJob(jobId) {
@@ -4393,8 +4321,13 @@
                 workflow ? `Running ${String(workflow.name || "enhancement")}...` : `Enhancement ${status || "running"}...`);
             const expectedWorkflow = workflows.find((item) => String(item?.name || "").toLowerCase() === expectedWorkflowName);
             const expectedStatus = String(expectedWorkflow?.status || "").toLowerCase();
+            const isGapFillStage = expectedWorkflowName === "tag-gap-fill"
+                && String(job?.enhancementFeature || "").toLowerCase() === "tag-gap-fill";
             if (["failed", "error", "interrupted", "canceled", "blocked", "skipped"].includes(status)
                 && !expectedWorkflow) {
+                return job;
+            }
+            if (isGapFillStage && !["queued", "running", "tagging"].includes(status)) {
                 return job;
             }
             if (!["queued", "running", "tagging"].includes(status)
@@ -4434,17 +4367,114 @@
             .filter(([folderId]) => Number.isFinite(folderId) && folderId > 0);
     }
 
-    async function startCentralEnhancementFeature(feature, folderIds, statusElementId) {
+    async function startCentralEnhancementFeature(feature, folderIds, statusElementId, groupId = null) {
+        const request = { scope: "full", features: [feature], folderIds };
+        if (groupId) {
+            request.groupId = groupId;
+        }
         const response = await fetch("/api/autotag/enhancement/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scope: "full", features: [feature], folderIds })
+            body: JSON.stringify(request)
         });
         const payload = await response.json().catch(() => null);
         if (!response.ok) {
             throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
         }
+        if (payload?.jobId) {
+            localStorage.setItem("autotagJobId", String(payload.jobId));
+        }
         return pollCentralEnhancementJob(payload.jobId, statusElementId, feature);
+    }
+
+    async function runAllEnhancementWorkflows() {
+        const button = el("runAllEnhancementWorkflows");
+        if (button) {
+            button.disabled = true;
+        }
+
+        try {
+            const config = readConfigFromUI();
+            await flushProfileAutoSave();
+            const enhancement = config.enhancement;
+            const features = [];
+            if (Array.isArray(config.gapFillTags) && config.gapFillTags.length > 0) {
+                features.push({ id: "tag-gap-fill", label: "Gap Filling", folderIds: enhancement.gapFilling.folderIds });
+            }
+            if (enhancement.folderUniformity.enabled
+                && (enhancement.folderUniformity.enforceFolderStructure || enhancement.folderUniformity.runDedupe)) {
+                features.push({ id: "folder-uniformity", label: "Folder Uniformity", folderIds: enhancement.folderUniformity.folderIds });
+            }
+            const checks = enhancement.qualityChecks;
+            const hasQualityAction = checks.flagDuplicates
+                || checks.flagMissingTags
+                || checks.flagMismatchedMetadata
+                || checks.queueAtmosAlternatives
+                || checks.queueLyricsRefresh
+                || checks.queueTechnicalProfileUpgrades;
+            if (checks.enabled && hasQualityAction) {
+                features.push({ id: "quality-checks", label: "Quality Checks", folderIds: checks.folderIds });
+            }
+            const covers = enhancement.coverMaintenance;
+            const hasCoverAction = covers.upgradeLowResolutionCovers
+                || covers.replaceMissingEmbeddedCovers
+                || covers.syncExternalCovers
+                || covers.queueAnimatedArtwork;
+            if (covers.enabled && hasCoverAction) {
+                features.push({ id: "cover-maintenance", label: "Cover Maintenance", folderIds: covers.folderIds });
+            }
+            if (features.length === 0) {
+                throw new Error("Select Gap Filling tags or enable at least one configured Enhancement workflow.");
+            }
+
+            const groupId = globalThis.crypto?.randomUUID?.() || `enhancement-${Date.now()}`;
+            const failures = [];
+            let completedJobs = 0;
+            for (const feature of features) {
+                let scopes;
+                try {
+                    scopes = await resolveEnhancementFolderScopes(feature.folderIds);
+                } catch (error) {
+                    failures.push(`${feature.label}: ${error?.message || error}`);
+                    continue;
+                }
+                for (const scope of scopes) {
+                    setEnhancementStatus(
+                        "enhancementRunAllStatus",
+                        `Running ${feature.label} (${completedJobs + 1} job completed)...`);
+                    try {
+                        const job = await startCentralEnhancementFeature(
+                            feature.id,
+                            scope,
+                            "enhancementRunAllStatus",
+                            groupId);
+                        completedJobs += 1;
+                        const failed = ["failed", "error", "interrupted", "canceled"].includes(
+                            String(job?.status || "").toLowerCase());
+                        if (failed) {
+                            failures.push(`${feature.label}: ${job?.error || "job failed"}`);
+                        }
+                    } catch (error) {
+                        failures.push(`${feature.label}: ${error?.message || error}`);
+                    }
+                }
+            }
+
+            if (failures.length > 0) {
+                throw new Error(failures.join("; "));
+            }
+            const message = `Completed ${completedJobs} Enhancement section job(s).`;
+            setEnhancementStatus("enhancementRunAllStatus", message);
+            showToast(message, "success");
+        } catch (error) {
+            const message = `Enhancement run failed: ${error?.message || error}`;
+            setEnhancementStatus("enhancementRunAllStatus", message);
+            showToast(message, "error");
+        } finally {
+            if (button) {
+                button.disabled = false;
+            }
+        }
     }
 
     async function resumeFolderUniformityRunIfNeeded() {
@@ -4511,9 +4541,8 @@
 
         try {
             const config = readConfigFromUI();
+            await flushProfileAutoSave();
             const options = config.enhancement.folderUniformity;
-            renderFolderUniformityReports([]);
-            renderFolderUniformityLiveLog({ logs: [], errors: [] });
             setEnhancementStatus("folderUniformityStatus", "Starting folder uniformity run...");
             clearFolderUniformityLastScanTimer();
             saveFolderUniformityStatusSnapshot({
@@ -4571,6 +4600,7 @@
 
         try {
             const config = readConfigFromUI();
+            await flushProfileAutoSave();
             const checks = config.enhancement.qualityChecks;
             setEnhancementStatus("enhancementQualityChecksStatus", "Running selected quality checks...");
             const scopes = await resolveEnhancementFolderScopes(checks.folderIds);
@@ -4589,10 +4619,50 @@
             }
             const message = `Enhancement quality checks completed for ${scopes.length} music folders.`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
-            showToast(message, failed ? "error" : "success");
+            showToast(message, "success");
         } catch (error) {
             const message = `Enhancement quality checks failed: ${error?.message || error}`;
             setEnhancementStatus("enhancementQualityChecksStatus", message);
+            showToast(message, "error");
+        } finally {
+            if (button) {
+                button.disabled = false;
+            }
+        }
+    }
+
+    async function runEnhancementGapFilling() {
+        const button = el("runEnhancementGapFilling");
+        if (button) {
+            button.disabled = true;
+        }
+
+        try {
+            const config = readConfigFromUI();
+            await flushProfileAutoSave();
+            if (!Array.isArray(config.gapFillTags) || config.gapFillTags.length === 0) {
+                throw new Error("Select at least one Gap Filling tag before starting the run.");
+            }
+            const scopes = await resolveEnhancementFolderScopes(config.enhancement.gapFilling.folderIds);
+            if (scopes.length === 0) {
+                throw new Error("No enabled music folders are available for enhancement.");
+            }
+
+            for (let index = 0; index < scopes.length; index += 1) {
+                setEnhancementStatus("enhancementGapFillingStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
+                const job = await startCentralEnhancementFeature("tag-gap-fill", scopes[index], "enhancementGapFillingStatus");
+                const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase());
+                if (failed) {
+                    throw new Error(job?.error || `Folder ${index + 1} failed.`);
+                }
+            }
+
+            const message = `Gap Filling completed for ${scopes.length} music folders.`;
+            setEnhancementStatus("enhancementGapFillingStatus", message);
+            showToast(message, "success");
+        } catch (error) {
+            const message = `Gap Filling failed: ${error?.message || error}`;
+            setEnhancementStatus("enhancementGapFillingStatus", message);
             showToast(message, "error");
         } finally {
             if (button) {
@@ -4609,52 +4679,33 @@
 
         try {
             const config = readConfigFromUI();
+            await flushProfileAutoSave();
             const options = config.enhancement.coverMaintenance;
-            const artworkSettings = readArtworkSettingsFromUI();
-            const policy = resolveCoverMaintenancePolicyFromTechnical(artworkSettings);
-            const targetPolicy = policy.targetPolicy;
-            const inheritedTargetResolution = targetPolicy.mode === "platform" ? targetPolicy.resolution : null;
-            const requestSources = policy.sources.length > 0 ? policy.sources : null;
-            const targetPolicyLabel = targetPolicy.mode === "platform" && targetPolicy.platformName
-                ? `inherited from ${targetPolicy.platformName} art_resolution`
-                : "manual target";
-            const sourceLabel = requestSources ? requestSources.join(", ") : "default sources";
-            setEnhancementStatus(
-                "coverMaintenanceStatus",
-                `Running cover maintenance (${targetPolicy.resolution}px, ${targetPolicyLabel}, sources: ${sourceLabel})...`
-            );
-            const response = await fetch("/api/cover-maintenance/run", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    enabled: true,
-                    folderIds: parseFolderIdList(options.folderIds),
-                    includeSubfolders: config.includeSubfolders !== false,
-                    workerCount: options.workerCount,
-                    upgradeLowResolutionCovers: true,
-                    minResolution: options.minResolution,
-                    targetResolution: targetPolicy.resolution,
-                    targetResolutionMode: "platform",
-                    targetResolutionPlatform: targetPolicy.platformId,
-                    inheritedTargetResolution,
-                    sizeTolerancePercent: 25,
-                    preserveSourceFormat: false,
-                    replaceMissingEmbeddedCovers: options.replaceMissingEmbeddedCovers,
-                    syncExternalCovers: options.syncExternalCovers,
-                    queueAnimatedArtwork: options.queueAnimatedArtwork,
-                    sources: requestSources
-                })
-            });
-            const payload = await response.json().catch(() => null);
-            if (!response.ok) {
-                const message = payload?.error || payload?.message || `Request failed (${response.status})`;
-                throw new Error(message);
+            const hasAction = options.upgradeLowResolutionCovers
+                || options.replaceMissingEmbeddedCovers
+                || options.syncExternalCovers
+                || options.queueAnimatedArtwork;
+            if (!hasAction) {
+                throw new Error("Enable at least one Cover Maintenance action before starting the run.");
+            }
+            const scopes = await resolveEnhancementFolderScopes(options.folderIds);
+            if (scopes.length === 0) {
+                throw new Error("No enabled music folders are available for enhancement.");
+            }
+            for (let index = 0; index < scopes.length; index += 1) {
+                setEnhancementStatus("coverMaintenanceStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
+                const job = await startCentralEnhancementFeature("cover-maintenance", scopes[index], "coverMaintenanceStatus");
+                const workflow = findEnhancementWorkflow(job, "cover-maintenance");
+                const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
+                    || String(workflow?.status || "").toLowerCase() === "failed";
+                if (failed) {
+                    throw new Error(workflow?.message || job?.error || `Folder ${index + 1} failed.`);
+                }
             }
 
-            const summary = payload?.message
-                || `Cover maintenance finished: ${Number(payload?.albumsUpdated ?? 0)} updated, ${Number(payload?.albumsSkipped ?? 0)} skipped, ${Number(payload?.errors ?? 0)} errors.`;
-            setEnhancementStatus("coverMaintenanceStatus", summary);
-            showToast("Cover maintenance completed.", "success");
+            const message = `Cover Maintenance completed for ${scopes.length} music folders.`;
+            setEnhancementStatus("coverMaintenanceStatus", message);
+            showToast(message, "success");
         } catch (error) {
             const message = `Cover maintenance failed: ${error?.message || error}`;
             setEnhancementStatus("coverMaintenanceStatus", message);
@@ -6919,6 +6970,8 @@
     el("autotag-profile-copy")?.addEventListener("click", copyProfile);
     el("autotag-profile-delete")?.addEventListener("click", deleteProfile);
     el("runCoverMaintenance")?.addEventListener("click", runCoverMaintenance);
+    el("runEnhancementGapFilling")?.addEventListener("click", runEnhancementGapFilling);
+    el("runAllEnhancementWorkflows")?.addEventListener("click", runAllEnhancementWorkflows);
     el("runFolderUniformity")?.addEventListener("click", runFolderUniformity);
     el("runEnhancementQualityChecks")?.addEventListener("click", runEnhancementQualityChecks);
     el("enhancementRenameSpotifyArtistFolders")?.addEventListener("change", () => {

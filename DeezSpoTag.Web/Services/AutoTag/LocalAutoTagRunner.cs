@@ -738,8 +738,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static bool IsLibraryWideEnhancementBatchingEnabled(AutoTagRunnerConfig config)
-        => config.TargetFiles == null
-           && (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
+        => (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
 
     private static int CompareLibraryWideEnhancementFiles(string? left, string? right)
     {

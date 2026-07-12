@@ -37,6 +37,12 @@ public class AutoTagLibraryOrganizer
         public List<string> Entries { get; } = new();
     }
 
+    public sealed record AutoTagOrganizerBatchResult(
+        int BatchNumber,
+        int BatchCount,
+        IReadOnlyList<string> Files,
+        AutoTagOrganizerReport Report);
+
     private const string MainArtistRole = "Main";
     private const string FeaturedArtistRole = "Featured";
     private const string SinglesAlbumTitle = "Singles";
@@ -91,18 +97,31 @@ public class AutoTagLibraryOrganizer
         AutoTagOrganizerOptions options,
         int batchSize,
         Action<string>? log,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<AutoTagOrganizerBatchResult, CancellationToken, Task>? batchCompleted = null)
     {
         var normalizedRoot = Path.GetFullPath(rootPath);
         var files = EnumerateAudioFiles(normalizedRoot, options.IncludeSubfolders).ToList();
         var effectiveBatchSize = Math.Max(1, batchSize);
+        var batchCount = files.Count == 0 ? 0 : (int)Math.Ceiling(files.Count / (double)effectiveBatchSize);
         options.BatchScopedFilesOnly = true;
         for (var offset = 0; offset < files.Count; offset += effectiveBatchSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var batch = files.Skip(offset).Take(effectiveBatchSize).ToList();
+            var report = new AutoTagOrganizerReport();
             log?.Invoke($"organizer template batch prepared: {offset + 1}-{offset + batch.Count} of {files.Count}");
-            await OrganizeAsync(normalizedRoot, batch, options, report: null, log, cancellationToken);
+            await OrganizeAsync(normalizedRoot, batch, options, report, log, cancellationToken);
+            if (batchCompleted != null)
+            {
+                await batchCompleted(
+                    new AutoTagOrganizerBatchResult(
+                        offset / effectiveBatchSize + 1,
+                        batchCount,
+                        batch,
+                        report),
+                    cancellationToken);
+            }
         }
     }
 

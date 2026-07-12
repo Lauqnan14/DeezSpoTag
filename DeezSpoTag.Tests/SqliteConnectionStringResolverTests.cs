@@ -18,7 +18,7 @@ public sealed class SqliteConnectionStringResolverTests
 
         var resolved = SqliteConnectionStringResolver.Resolve(null, "library.db");
         var builder = new SqliteConnectionStringBuilder(resolved);
-        var expectedPath = Path.GetFullPath(Path.Combine(root, "library.db"));
+        var expectedPath = Path.GetFullPath(Path.Combine(root, "db", "library", "library.db"));
 
         Assert.Equal(expectedPath, builder.DataSource);
     }
@@ -31,7 +31,7 @@ public sealed class SqliteConnectionStringResolverTests
 
         var resolved = SqliteConnectionStringResolver.Resolve("Mode=ReadWriteCreate;Cache=Shared", "fallback.db");
         var builder = new SqliteConnectionStringBuilder(resolved);
-        var expectedPath = Path.GetFullPath(Path.Combine(root, "fallback.db"));
+        var expectedPath = Path.GetFullPath(Path.Combine(root, "db", "library", "fallback.db"));
 
         Assert.Equal(expectedPath, builder.DataSource);
     }
@@ -44,7 +44,7 @@ public sealed class SqliteConnectionStringResolverTests
 
         var resolved = SqliteConnectionStringResolver.Resolve("Data Source=my.db;Mode=ReadWriteCreate", "fallback.db");
         var builder = new SqliteConnectionStringBuilder(resolved);
-        var expectedPath = Path.GetFullPath(Path.Combine(root, "my.db"));
+        var expectedPath = Path.GetFullPath(Path.Combine(root, "db", "library", "my.db"));
 
         Assert.Equal(expectedPath, builder.DataSource);
         Assert.Equal(SqliteOpenMode.ReadWriteCreate, builder.Mode);
@@ -77,8 +77,20 @@ public sealed class SqliteConnectionStringResolverTests
 
         var resolved = SqliteConnectionStringResolver.Resolve("custom.sqlite", "fallback.db");
         var builder = new SqliteConnectionStringBuilder(resolved);
-        var expectedPath = Path.GetFullPath(Path.Combine(root, "custom.sqlite"));
+        var expectedPath = Path.GetFullPath(Path.Combine(root, "db", "library", "custom.sqlite"));
 
         Assert.Equal(expectedPath, builder.DataSource);
+    }
+
+    [Fact]
+    public void Resolve_UsesQueueScope_ForQueueFallback()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        using var _ = new TestConfigRootScope(root);
+
+        var resolved = SqliteConnectionStringResolver.Resolve(null, "queue.db");
+        var builder = new SqliteConnectionStringBuilder(resolved);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(root, "db", "queue", "queue.db")), builder.DataSource);
     }
 }

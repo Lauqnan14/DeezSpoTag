@@ -2178,6 +2178,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             $"Automation: enhancement ({sourceLabel}) starting for {target.RootPath}."));
 
         AutoTagJob? enhancementJob = null;
+        var attemptedJobs = new List<AutoTagJob>();
         try
         {
             _taggingInProgress = true;
@@ -2205,7 +2206,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             var enhancementConfig = ClearEnrichmentTags(profileConfigJson);
-            if (!GetAutoTagStages(enhancementConfig).HasEnhancement)
+            var enabledFeatures = GetEnabledEnhancementFeatures(enhancementConfig);
+            if (enabledFeatures.Count == 0)
             {
                 _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                     DateTimeOffset.UtcNow,
@@ -2214,25 +2216,43 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 return new EnhancementTargetRunResult(true, false);
             }
 
-            enhancementJob = await _autoTagService.StartJob(
-                target.RootPath,
-                enhancementConfig,
-                new AutoTagService.StartJobOptions(
-                    Trigger: AutoTagLiterals.ScheduleTrigger,
-                    ProfileId: enhancementProfile.Id,
-                    ProfileName: enhancementProfile.Name,
-                    RunIntent: AutoTagLiterals.RunIntentEnhancementOnly));
-            if (enhancementJob == null)
+            var enhancementGroupId = Guid.NewGuid().ToString("N");
+            foreach (var feature in enabledFeatures)
             {
-                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                    DateTimeOffset.UtcNow,
-                    "info",
-                    $"Automation: enhancement skipped for {target.RootPath} because downloads are active."));
-                return new EnhancementTargetRunResult(false, false);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                var featureConfig = BuildEnhancementFeatureConfig(enhancementConfig, feature, target.FolderId);
+                enhancementJob = await _autoTagService.StartJob(
+                    target.RootPath,
+                    featureConfig,
+                    new AutoTagService.StartJobOptions(
+                        Trigger: AutoTagLiterals.ScheduleTrigger,
+                        ProfileId: enhancementProfile.Id,
+                        ProfileName: enhancementProfile.Name,
+                        RunIntent: AutoTagLiterals.RunIntentEnhancementOnly,
+                        EnhancementFeature: feature,
+                        EnhancementGroupId: enhancementGroupId));
+                if (enhancementJob == null)
+                {
+                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "info",
+                        $"Automation: enhancement section {feature} skipped for {target.RootPath} because downloads are active."));
+                    return new EnhancementTargetRunResult(attemptedJobs.Count > 0, false);
+                }
 
-            MarkEnhancementStageStarted(enhancementJob);
-            await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
+                attemptedJobs.Add(enhancementJob);
+                MarkEnhancementStageStarted(enhancementJob);
+                await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
+                MarkEnhancementStageFinished();
+
+                if ((string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(enhancementJob.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(enhancementJob.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase))
+                    && _enhancementPauseRequested)
+                {
+                    break;
+                }
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2252,7 +2272,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
             "info",
-            $"Automation: enhancement ({sourceLabel}) finished for {target.RootPath} (status={enhancementJob?.Status ?? "skipped"})."));
+            $"Automation: enhancement ({sourceLabel}) finished for {target.RootPath} "
+            + $"({attemptedJobs.Count} section job(s), last status={enhancementJob?.Status ?? "skipped"})."));
 
         if (enhancementJob != null
             && (string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
@@ -2268,10 +2289,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 return new EnhancementTargetRunResult(false, true);
             }
 
-        var attempted = enhancementJob != null
-            && !string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(enhancementJob.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(enhancementJob.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase);
+        var attempted = attemptedJobs.Any(job =>
+            !string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase));
         return new EnhancementTargetRunResult(attempted, false);
     }
 
@@ -2678,6 +2699,104 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
+    private static List<string> GetEnabledEnhancementFeatures(string configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson)
+            || JsonNode.Parse(configJson) is not JsonObject root)
+        {
+            return new List<string>();
+        }
+
+        var features = new List<string>();
+        if (ReadArrayCount(root, "gapFillTags") > 0)
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureGapFill);
+        }
+
+        if (root[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
+        {
+            return features;
+        }
+
+        if (IsFolderUniformityWorkflowEnabled(enhancementRoot))
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureFolderUniformity);
+        }
+        if (IsCoverMaintenanceWorkflowEnabled(enhancementRoot))
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureCoverMaintenance);
+        }
+        if (IsQualityChecksWorkflowEnabled(enhancementRoot))
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureQualityChecks);
+        }
+
+        return features;
+    }
+
+    private static string BuildEnhancementFeatureConfig(
+        string configJson,
+        string selectedFeature,
+        string folderId)
+    {
+        if (JsonNode.Parse(configJson) is not JsonObject root)
+        {
+            throw new InvalidOperationException("Enhancement profile config is invalid.");
+        }
+
+        var enhancementRoot = root[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
+        root[AutoTagLiterals.EnhancementStage] = enhancementRoot;
+        SetEnhancementSectionState(
+            enhancementRoot,
+            "folderUniformity",
+            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureFolderUniformity, StringComparison.OrdinalIgnoreCase),
+            folderId);
+        SetEnhancementSectionState(
+            enhancementRoot,
+            "coverMaintenance",
+            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureCoverMaintenance, StringComparison.OrdinalIgnoreCase),
+            folderId);
+        SetEnhancementSectionState(
+            enhancementRoot,
+            "qualityChecks",
+            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureQualityChecks, StringComparison.OrdinalIgnoreCase),
+            folderId);
+        SetEnhancementSectionState(
+            enhancementRoot,
+            "gapFilling",
+            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureGapFill, StringComparison.OrdinalIgnoreCase),
+            folderId);
+
+        if (!string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureGapFill, StringComparison.OrdinalIgnoreCase))
+        {
+            root["gapFillTags"] = new JsonArray();
+        }
+        root.Remove(AutoTagLiterals.TargetFilesKey);
+
+        return root.ToJsonString(new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            WriteIndented = true
+        });
+    }
+
+    private static void SetEnhancementSectionState(
+        JsonObject enhancementRoot,
+        string sectionName,
+        bool enabled,
+        string folderId)
+    {
+        var section = enhancementRoot[sectionName] as JsonObject ?? new JsonObject();
+        section["enabled"] = enabled;
+        var folderIds = new JsonArray();
+        if (long.TryParse(folderId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericFolderId))
+        {
+            folderIds.Add(numericFolderId);
+        }
+        section["folderIds"] = folderIds;
+        enhancementRoot[sectionName] = section;
+    }
+
     private static string ClearEnhancementTags(string configJson)
     {
         return ClearStageTags(configJson, clearEnrichment: false, clearEnhancement: true);
@@ -2797,6 +2916,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         return ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true
             || ReadBool(coverMaintenance, "syncExternalCovers") == true
+            || ReadBool(coverMaintenance, "upgradeLowResolutionCovers") == true
             || ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
     }
 
@@ -2813,8 +2933,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             || ReadBool(qualityChecks, "flagMismatchedMetadata") == true
             || ReadBool(qualityChecks, "queueAtmosAlternatives") == true
             || ReadBool(qualityChecks, "queueLyricsRefresh") == true
-            || (ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") == true
-                && ReadArrayCount(qualityChecks, "technicalProfiles") > 0);
+            || ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") == true;
     }
 
     private static bool? ReadBool(JsonObject obj, string key)

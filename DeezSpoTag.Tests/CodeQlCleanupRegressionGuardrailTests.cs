@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Services.Utils;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -60,7 +61,7 @@ public sealed class CodeQlCleanupRegressionGuardrailTests
     }
 
     [Fact]
-    public void ResolveDbPathStrict_RejectsLegacyAndScopedDatabaseConflict()
+    public void ResolveDbPathStrict_RetainsRicherScopedDatabaseAndArchivesLegacyConflict()
     {
         var root = CreateTempDirectory("deezspotag-db-conflict-");
         try
@@ -68,13 +69,136 @@ public sealed class CodeQlCleanupRegressionGuardrailTests
             var legacyPath = Path.Join(root, "library.db");
             var scopedPath = Path.Join(root, "db", "library", "library.db");
             Directory.CreateDirectory(Path.GetDirectoryName(scopedPath)!);
-            File.WriteAllText(legacyPath, "legacy");
-            File.WriteAllText(scopedPath, "scoped");
+            CreateSqliteDatabase(legacyPath, ("cache", 2));
+            CreateSqliteDatabase(scopedPath, ("cache", 1), ("track", 1));
+
+            var resolved = AppDataPathResolver.ResolveDbPathStrict(root, "library", "library.db");
+
+            Assert.Equal(scopedPath, resolved);
+            Assert.False(File.Exists(legacyPath));
+            Assert.True(File.Exists(scopedPath));
+            Assert.Equal(1, ReadTableRowCount(scopedPath, "track"));
+            var backup = FindMigrationBackup(root, "legacy-library.db");
+            Assert.Equal(2, ReadTableRowCount(backup, "cache"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveDbPathStrict_PromotesRicherLegacyDatabaseAndArchivesScopedConflict()
+    {
+        var root = CreateTempDirectory("deezspotag-db-promote-");
+        try
+        {
+            var legacyPath = Path.Join(root, "library.db");
+            var scopedPath = Path.Join(root, "db", "library", "library.db");
+            Directory.CreateDirectory(Path.GetDirectoryName(scopedPath)!);
+            CreateSqliteDatabase(legacyPath, ("cache", 1), ("track", 3));
+            CreateSqliteDatabase(scopedPath, ("cache", 1));
+
+            var resolved = AppDataPathResolver.ResolveDbPathStrict(root, "library", "library.db");
+
+            Assert.Equal(scopedPath, resolved);
+            Assert.False(File.Exists(legacyPath));
+            Assert.Equal(3, ReadTableRowCount(scopedPath, "track"));
+            var backup = FindMigrationBackup(root, "scoped-library.db");
+            Assert.Equal(1, ReadTableRowCount(backup, "cache"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveDbPathStrict_PromotesLegacyDatabaseWhenSchemasMatchAndItHasMoreData()
+    {
+        var root = CreateTempDirectory("deezspotag-db-row-count-");
+        try
+        {
+            var legacyPath = Path.Join(root, "library.db");
+            var scopedPath = Path.Join(root, "db", "library", "library.db");
+            Directory.CreateDirectory(Path.GetDirectoryName(scopedPath)!);
+            CreateSqliteDatabase(legacyPath, ("track", 5));
+            CreateSqliteDatabase(scopedPath, ("track", 1));
+
+            AppDataPathResolver.ResolveDbPathStrict(root, "library", "library.db");
+
+            Assert.Equal(5, ReadTableRowCount(scopedPath, "track"));
+            Assert.Equal(1, ReadTableRowCount(FindMigrationBackup(root, "scoped-library.db"), "track"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveDbPathStrict_PreservesPopulatedLegacyLibraryWhenScopedSchemaIsNewerButEmpty()
+    {
+        var root = CreateTempDirectory("deezspotag-db-older-schema-");
+        try
+        {
+            var legacyPath = Path.Join(root, "deezspotag.db");
+            var scopedPath = Path.Join(root, "db", "library", "deezspotag.db");
+            Directory.CreateDirectory(Path.GetDirectoryName(scopedPath)!);
+            CreateSqliteDatabase(legacyPath, ("track", 4), ("audio_file", 4), ("folder", 1));
+            CreateSqliteDatabase(scopedPath, ("track", 0), ("audio_file", 0), ("folder", 0), ("new_schema_table", 0));
+
+            AppDataPathResolver.ResolveDbPathStrict(root, "library", "deezspotag.db");
+
+            Assert.Equal(4, ReadTableRowCount(scopedPath, "track"));
+            Assert.Equal(0, ReadTableRowCount(FindMigrationBackup(root, "scoped-deezspotag.db"), "track"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveDbPathStrict_ArchivesZeroLengthLegacyDatabaseWithoutDeletingIt()
+    {
+        var root = CreateTempDirectory("deezspotag-db-zero-");
+        try
+        {
+            var legacyPath = Path.Join(root, "library.db");
+            var scopedPath = Path.Join(root, "db", "library", "library.db");
+            Directory.CreateDirectory(Path.GetDirectoryName(scopedPath)!);
+            File.WriteAllBytes(legacyPath, Array.Empty<byte>());
+            CreateSqliteDatabase(scopedPath, ("track", 1));
+
+            AppDataPathResolver.ResolveDbPathStrict(root, "library", "library.db");
+
+            Assert.False(File.Exists(legacyPath));
+            var backup = FindMigrationBackup(root, "legacy-library.db");
+            Assert.Equal(0, new FileInfo(backup).Length);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ResolveDbPathStrict_PreservesBothFilesWhenNeitherConflictIsValidSqlite()
+    {
+        var root = CreateTempDirectory("deezspotag-db-invalid-");
+        try
+        {
+            var legacyPath = Path.Join(root, "library.db");
+            var scopedPath = Path.Join(root, "db", "library", "library.db");
+            Directory.CreateDirectory(Path.GetDirectoryName(scopedPath)!);
+            File.WriteAllText(legacyPath, "legacy-invalid");
+            File.WriteAllText(scopedPath, "scoped-invalid");
 
             var exception = Assert.Throws<InvalidOperationException>(
                 () => AppDataPathResolver.ResolveDbPathStrict(root, "library", "library.db"));
 
-            Assert.Contains("Database layout conflict", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("neither", exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(legacyPath));
             Assert.True(File.Exists(scopedPath));
         }
@@ -147,6 +271,44 @@ public sealed class CodeQlCleanupRegressionGuardrailTests
         var path = Path.Join(Path.GetTempPath(), prefix + Path.GetRandomFileName());
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    private static void CreateSqliteDatabase(string path, params (string Table, int Rows)[] tables)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var connection = new SqliteConnection($"Data Source={path}");
+        connection.Open();
+        foreach (var (table, rows) in tables)
+        {
+            using var create = connection.CreateCommand();
+            create.CommandText = $"CREATE TABLE \"{table}\" (id INTEGER PRIMARY KEY, value TEXT NOT NULL);";
+            create.ExecuteNonQuery();
+            for (var index = 0; index < rows; index++)
+            {
+                using var insert = connection.CreateCommand();
+                insert.CommandText = $"INSERT INTO \"{table}\"(value) VALUES ($value);";
+                insert.Parameters.AddWithValue("$value", $"value-{index}");
+                insert.ExecuteNonQuery();
+            }
+        }
+    }
+
+    private static long ReadTableRowCount(string path, string table)
+    {
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM \"{table}\";";
+        return Convert.ToInt64(command.ExecuteScalar());
+    }
+
+    private static string FindMigrationBackup(string root, string fileName)
+    {
+        var matches = Directory.GetFiles(
+            Path.Join(root, "db", "migration-backups"),
+            fileName,
+            SearchOption.AllDirectories);
+        return Assert.Single(matches);
     }
 
     private static int CountOccurrences(string source, string value)

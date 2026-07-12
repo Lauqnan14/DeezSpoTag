@@ -180,7 +180,6 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("_libraryScanRunner.RunAsync", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("IngestKnownFilesAfterAutoMoveAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("_libraryScanRunner", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TriggerLibraryScanAfterAutoMovePlexRefreshRequestedAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("_libraryScanRunner.EnqueueAsync(", source, StringComparison.Ordinal);
     }
@@ -211,17 +210,17 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void AutoTagEnhancementRefresh_IsTargetedAndInterruptible()
+    public void AutoTagEnhancementRefresh_UsesSingleConfiguredServerCompletionPath()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
 
         Assert.Contains("public List<string> EnhancedFilePaths", source, StringComparison.Ordinal);
         Assert.Contains("TrackEnhancedFilePath(job, stageName, status)", source, StringComparison.Ordinal);
-        Assert.Contains("QueueEnhancementPlexRefreshBatchIfDue(job)", source, StringComparison.Ordinal);
-        Assert.Contains("TriggerTargetedPlexRefreshForEnhancedFilesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("LastPlexRefreshEnhancedFileCount", source, StringComparison.Ordinal);
-        Assert.Contains("GetMetadataParentKeysAsync", source, StringComparison.Ordinal);
-        Assert.Contains("RefreshMetadataAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshEnhancementLibraryIndexAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueEnhancementPlexRefreshBatchIfDue", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TriggerTargetedPlexRefreshForEnhancedFilesAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LastPlexRefreshEnhancedFileCount", source, StringComparison.Ordinal);
         Assert.Contains("_jobCancellationSources", source, StringComparison.Ordinal);
         Assert.Contains("stopped = true;", source, StringComparison.Ordinal);
         Assert.Contains("RunIntegratedEnhancementWorkflowsAsync", source, StringComparison.Ordinal);

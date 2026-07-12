@@ -1,7 +1,15 @@
+using Microsoft.Data.Sqlite;
+
 namespace DeezSpoTag.Services.Utils;
 
 public static class AppDataPathResolver
 {
+    private sealed record DatabaseEvidence(
+        bool IsValid,
+        HashSet<string> Tables,
+        long RowCount,
+        long FileLength);
+
     public const string ConfigDirEnvVar = "DEEZSPOTAG_CONFIG_DIR";
     public const string DataDirEnvVar = "DEEZSPOTAG_DATA_DIR";
     private const string WorkersProjectDirectoryName = "DeezSpoTag.Workers";
@@ -261,24 +269,200 @@ public static class AppDataPathResolver
 
         if (File.Exists(legacyPath) && File.Exists(scopedPath))
         {
-            var legacyInfo = new FileInfo(legacyPath);
-            var scopedInfo = new FileInfo(scopedPath);
-            if (legacyInfo.Length == 0 && scopedInfo.Length > 0)
-            {
-                File.Delete(legacyPath);
-                return scopedPath;
-            }
-
-            throw new InvalidOperationException(
-                $"Database layout conflict for '{fileName}': both '{legacyPath}' and '{scopedPath}' exist. Remove the legacy file.");
+            ReconcileDatabaseLayoutConflict(normalizedRoot, scope, fileName, legacyPath, scopedPath);
         }
 
         if (File.Exists(legacyPath))
         {
-            File.Move(legacyPath, scopedPath);
+            MoveDatabaseBundle(legacyPath, scopedPath);
         }
 
         return scopedPath;
+    }
+
+    private static void ReconcileDatabaseLayoutConflict(
+        string dataRoot,
+        string scope,
+        string fileName,
+        string legacyPath,
+        string scopedPath)
+    {
+        var legacy = InspectDatabase(legacyPath, includeRowCounts: false);
+        var scoped = InspectDatabase(scopedPath, includeRowCounts: false);
+        if (!legacy.IsValid && !scoped.IsValid)
+        {
+            throw new InvalidOperationException(
+                $"Database layout conflict for '{fileName}': neither '{legacyPath}' nor '{scopedPath}' is a valid SQLite database. Both files were preserved.");
+        }
+
+        var useLegacy = ShouldUseLegacyDatabase(scope, legacyPath, scopedPath, legacy, scoped);
+        var backupDirectory = CreateMigrationBackupDirectory(dataRoot, scope);
+        if (useLegacy)
+        {
+            ArchiveDatabaseBundle(scopedPath, backupDirectory, $"scoped-{fileName}");
+            MoveDatabaseBundle(legacyPath, scopedPath);
+            Console.WriteLine(
+                $"Database migration: promoted legacy '{legacyPath}' to '{scopedPath}'. Previous scoped database archived in '{backupDirectory}'.");
+            return;
+        }
+
+        ArchiveDatabaseBundle(legacyPath, backupDirectory, $"legacy-{fileName}");
+        Console.WriteLine(
+            $"Database migration: retained scoped '{scopedPath}'. Legacy database archived in '{backupDirectory}'.");
+    }
+
+    private static bool ShouldUseLegacyDatabase(
+        string scope,
+        string legacyPath,
+        string scopedPath,
+        DatabaseEvidence legacy,
+        DatabaseEvidence scoped)
+    {
+        if (legacy.IsValid != scoped.IsValid)
+        {
+            return legacy.IsValid;
+        }
+
+        var legacyWithRows = InspectDatabase(legacyPath, includeRowCounts: true);
+        var scopedWithRows = InspectDatabase(scopedPath, includeRowCounts: true);
+        var anchorTables = ResolveDatabaseAnchorTables(scope);
+        var legacyHasAnchors = anchorTables.Count > 0 && anchorTables.All(legacy.Tables.Contains);
+        var scopedHasAnchors = anchorTables.Count > 0 && anchorTables.All(scoped.Tables.Contains);
+        if (legacyHasAnchors != scopedHasAnchors)
+        {
+            return legacyHasAnchors;
+        }
+        if (legacyHasAnchors
+            && scopedHasAnchors
+            && legacyWithRows.RowCount != scopedWithRows.RowCount)
+        {
+            return legacyWithRows.RowCount > scopedWithRows.RowCount;
+        }
+
+        if (legacy.Tables.IsProperSupersetOf(scoped.Tables))
+        {
+            return true;
+        }
+        if (scoped.Tables.IsProperSupersetOf(legacy.Tables))
+        {
+            return false;
+        }
+
+        if (legacyWithRows.RowCount != scopedWithRows.RowCount)
+        {
+            return legacyWithRows.RowCount > scopedWithRows.RowCount;
+        }
+
+        if (legacyWithRows.FileLength != scopedWithRows.FileLength)
+        {
+            return legacyWithRows.FileLength > scopedWithRows.FileLength;
+        }
+
+        return false;
+    }
+
+    private static IReadOnlyList<string> ResolveDatabaseAnchorTables(string scope)
+    {
+        return scope.Trim().ToLowerInvariant() switch
+        {
+            "library" => new[] { "track", "audio_file", "folder" },
+            "queue" => new[] { "download_task" },
+            "identity" => new[] { "AspNetUsers" },
+            _ => Array.Empty<string>()
+        };
+    }
+
+    private static DatabaseEvidence InspectDatabase(string path, bool includeRowCounts)
+    {
+        var fileLength = new FileInfo(path).Length;
+        if (fileLength == 0)
+        {
+            return new DatabaseEvidence(false, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0, 0);
+        }
+
+        try
+        {
+            var connectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString();
+            using var connection = new SqliteConnection(connectionString);
+            connection.Open();
+
+            using (var integrity = connection.CreateCommand())
+            {
+                integrity.CommandText = "PRAGMA quick_check;";
+                if (!string.Equals(integrity.ExecuteScalar()?.ToString(), "ok", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new DatabaseEvidence(false, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0, fileLength);
+                }
+            }
+
+            var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var schema = connection.CreateCommand())
+            {
+                schema.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';";
+                using var reader = schema.ExecuteReader();
+                while (reader.Read())
+                {
+                    var table = reader.GetString(0).Trim();
+                    if (!string.IsNullOrWhiteSpace(table))
+                    {
+                        tables.Add(table);
+                    }
+                }
+            }
+
+            long rowCount = 0;
+            if (includeRowCounts)
+            {
+                foreach (var table in tables)
+                {
+                    using var count = connection.CreateCommand();
+                    count.CommandText = $"SELECT COUNT(*) FROM \"{table.Replace("\"", "\"\"")}\";";
+                    rowCount = checked(rowCount + Convert.ToInt64(count.ExecuteScalar()));
+                }
+            }
+
+            return new DatabaseEvidence(true, tables, rowCount, fileLength);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new DatabaseEvidence(false, new HashSet<string>(StringComparer.OrdinalIgnoreCase), 0, fileLength);
+        }
+    }
+
+    private static string CreateMigrationBackupDirectory(string dataRoot, string scope)
+    {
+        var backupDirectory = Path.Join(
+            dataRoot,
+            "db",
+            "migration-backups",
+            $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{scope}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(backupDirectory);
+        return backupDirectory;
+    }
+
+    private static void ArchiveDatabaseBundle(string sourcePath, string backupDirectory, string backupFileName)
+    {
+        var destinationPath = Path.Join(backupDirectory, backupFileName);
+        MoveDatabaseBundle(sourcePath, destinationPath);
+    }
+
+    private static void MoveDatabaseBundle(string sourcePath, string destinationPath)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.Move(sourcePath, destinationPath);
+        foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
+        {
+            var sourceSidecar = sourcePath + suffix;
+            if (File.Exists(sourceSidecar))
+            {
+                File.Move(sourceSidecar, destinationPath + suffix);
+            }
+        }
     }
 
     public static string? NormalizeConfiguredDataRoot(string? configuredPath)

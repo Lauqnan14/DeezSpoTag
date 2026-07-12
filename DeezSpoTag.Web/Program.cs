@@ -1267,6 +1267,7 @@ public partial class Program
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 KnownFileIngestionService = sp.GetRequiredService<DeezSpoTag.Web.Services.KnownLibraryFileIngestionService>(),
+                LibraryScanRunner = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryScanRunner>(),
                 QualityScannerService = sp.GetRequiredService<DeezSpoTag.Web.Services.QualityScannerService>(),
                 DuplicateCleanerService = sp.GetRequiredService<DeezSpoTag.Web.Services.DuplicateCleanerService>(),
                 LyricsRefreshQueueService = sp.GetRequiredService<DeezSpoTag.Web.Services.LyricsRefreshQueueService>(),

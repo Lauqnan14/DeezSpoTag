@@ -103,6 +103,7 @@ internal static class TaggingProfileDataHelper
             }
 
             var changed = false;
+            changed |= CanonicalizeFolderScopeNode(enhancementNode, "gapFilling");
             changed |= CanonicalizeFolderScopeNode(enhancementNode, "folderUniformity");
             changed |= CanonicalizeFolderScopeNode(enhancementNode, "coverMaintenance");
             changed |= CanonicalizeFolderScopeNode(enhancementNode, "qualityChecks");

@@ -121,7 +121,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
                 try
                 {
-                    await ProcessTrackLyricsRefreshAsync(item.TrackId, item.SettingsJson, stoppingToken);
+                    _ = await ProcessTrackLyricsRefreshAsync(item.TrackId, item.SettingsJson, stoppingToken);
                     lock (_queueLock)
                     {
                         _processedCount++;
@@ -152,20 +152,31 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         }
     }
 
-    private async Task ProcessTrackLyricsRefreshAsync(
+    public async Task<LyricsRefreshTrackResult> RefreshTrackNowAsync(
+        long trackId,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        return await ProcessTrackLyricsRefreshAsync(
+            trackId,
+            JsonSerializer.Serialize(settings),
+            cancellationToken);
+    }
+
+    private async Task<LyricsRefreshTrackResult> ProcessTrackLyricsRefreshAsync(
         long trackId,
         string? settingsJson,
         CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
-            return;
+            return LyricsRefreshTrackResult.Skipped(trackId, null, "Library repository is not configured.");
         }
 
         var info = await _repository.GetTrackAudioInfoAsync(trackId, cancellationToken);
         if (info is null || string.IsNullOrWhiteSpace(info.FilePath) || !File.Exists(info.FilePath))
         {
-            return;
+            return LyricsRefreshTrackResult.Skipped(trackId, info?.FilePath, "Audio file is unavailable.");
         }
 
         var sourceLinks = await _repository.GetTrackSourceLinksAsync(trackId, cancellationToken);
@@ -173,14 +184,14 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         var settings = ResolveEffectiveSettings(settingsJson);
         if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
         {
-            return;
+            return LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "Lyrics fetching is disabled by the assigned profile.");
         }
 
         var directory = Path.GetDirectoryName(info.FilePath);
         var filename = Path.GetFileNameWithoutExtension(info.FilePath);
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(filename))
         {
-            return;
+            return LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "Audio path is invalid.");
         }
 
         var paths = (
@@ -190,7 +201,15 @@ public sealed class LyricsRefreshQueueService : BackgroundService
             CoverPath: string.Empty,
             ArtistPath: string.Empty);
 
+        var audioModifiedBefore = File.GetLastWriteTimeUtc(info.FilePath);
         await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken);
+        var formats = new[] { "lrc", "ttml", "txt" }
+            .Where(format => File.Exists(Path.Join(directory, $"{filename}.{format}")))
+            .ToList();
+        var embeddedUpdated = File.GetLastWriteTimeUtc(info.FilePath) > audioModifiedBefore;
+        return formats.Count > 0 || embeddedUpdated
+            ? LyricsRefreshTrackResult.Completed(trackId, info.FilePath, formats, embeddedUpdated)
+            : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics were returned by the enabled providers.");
     }
 
     private DeezSpoTagSettings ResolveEffectiveSettings(string? settingsJson)
@@ -349,6 +368,31 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 }
 
 public sealed record LyricsRefreshEnqueueResult(string JobType, int Requested, int Enqueued, int Skipped);
+
+public sealed record LyricsRefreshTrackResult(
+    long TrackId,
+    string? FilePath,
+    bool Success,
+    bool EmbeddedUpdated,
+    IReadOnlyList<string> SidecarFormats,
+    string Message)
+{
+    public static LyricsRefreshTrackResult Completed(
+        long trackId,
+        string filePath,
+        IReadOnlyList<string> sidecarFormats,
+        bool embeddedUpdated)
+        => new(
+            trackId,
+            filePath,
+            true,
+            embeddedUpdated,
+            sidecarFormats,
+            $"Lyrics updated ({(sidecarFormats.Count == 0 ? "embedded" : string.Join(", ", sidecarFormats))}).");
+
+    public static LyricsRefreshTrackResult Skipped(long trackId, string? filePath, string message)
+        => new(trackId, filePath, false, false, Array.Empty<string>(), message);
+}
 
 public sealed record LyricsRefreshQueueStatus(
     string JobType,

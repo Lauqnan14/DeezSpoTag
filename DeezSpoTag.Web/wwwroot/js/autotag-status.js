@@ -135,6 +135,47 @@
         return parts[parts.length - 1] || value;
     }
 
+    function formatEnhancementFeature(value) {
+        const normalized = String(value || "").trim().toLowerCase();
+        switch (normalized) {
+            case "tag-gap-fill":
+                return "Gap Filling";
+            case "folder-uniformity":
+                return "Folder Uniformity";
+            case "quality-checks":
+                return "Quality Checks";
+            case "cover-maintenance":
+                return "Cover Maintenance";
+            case "library-index-refresh":
+                return "Library Index Refresh";
+            case "missing-core-metadata-discovery":
+                return "Missing Core Metadata Discovery";
+            case "final-library-reindex":
+                return "Final Library Reindex";
+            case "lyrics-refresh":
+                return "Lyrics Refresh";
+            case "folder-tag-alignment":
+                return "Folder and File Template Alignment";
+            case "technical-quality-upgrade":
+                return "Technical Quality Upgrade";
+            case "atmos-alternatives":
+                return "Atmos Alternatives";
+            default:
+                return value || "--";
+        }
+    }
+
+    function updateEnhancementMetadata(job) {
+        setText("autotag-enhancement-feature", formatEnhancementFeature(job?.enhancementFeature || job?.runIntent));
+        setText("autotag-current-phase", formatEnhancementFeature(job?.currentPhase));
+        const batchCount = Number(job?.batchCount || 0);
+        const currentBatch = Number(job?.currentBatch || 0);
+        setText("autotag-current-batch", batchCount > 0 ? `${currentBatch || 1} / ${batchCount}` : "--");
+        const totalItems = Number(job?.totalItems || 0);
+        const processedItems = Number(job?.processedItems || 0);
+        setText("autotag-current-items", totalItems > 0 ? `${processedItems} / ${totalItems}` : "--");
+    }
+
     function getStatusClass(status) {
         switch (status?.toLowerCase()) {
             case STATUS_OK:
@@ -343,6 +384,7 @@
         setText("autotag-error-count", String(job?.errorCount ?? 0));
         setText("autotag-review-count", String(job?.reviewCount ?? 0));
         setText("autotag-skipped-count", String(job?.skippedCount ?? 0));
+        updateEnhancementMetadata(job);
 
         const lastLogEl = el("autotag-last-log");
         if (lastLogEl) {
@@ -388,12 +430,14 @@
         setText("autotag-error-count", String(summary.errorCount ?? 0));
         setText("autotag-review-count", String(summary.reviewCount ?? 0));
         setText("autotag-skipped-count", String(summary.skippedCount ?? 0));
+        updateEnhancementMetadata(summary);
         setText("autotag-last-log", logs.length ? stripAnsi(logs[logs.length - 1]) : "No recent log lines.");
         updateLogs(logs);
         updateProgressBar({
             status: summary.status,
             progress: typeof summary.progress === "number" ? summary.progress : null
         });
+        renderLiveBatchStatus({ ...summary, statusHistory: archive?.statusHistory || [] });
     }
 
     function updateProgressBar(job) {
@@ -440,6 +484,46 @@
             ? logLines.map(stripAnsi).join("\n")
             : "No AutoTag logs yet.";
         setText("autotag-log", text);
+    }
+
+    function renderLiveBatchStatus(job) {
+        const tableBody = el("autotag-live-status-table");
+        if (!tableBody) {
+            return;
+        }
+
+        const history = Array.isArray(job?.statusHistory) ? job.statusHistory : [];
+        const requestedBatchSize = Number(job?.batchSize || 0);
+        const batchSize = Math.max(1, Math.min(40, requestedBatchSize || 40));
+        const rows = history.slice(-batchSize).reverse();
+        if (!rows.length) {
+            const phase = formatEnhancementFeature(job?.currentPhase);
+            const message = job?.id
+                ? `Waiting for item results${phase !== "--" ? ` from ${phase}` : ""}.`
+                : "No active AutoTag batch.";
+            tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(message)}</td></tr>`;
+            return;
+        }
+
+        tableBody.innerHTML = rows.map((entry) => {
+            const wrap = entry?.status || {};
+            const inner = wrap.status || {};
+            const time = entry?.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : "--";
+            const operation = formatEnhancementFeature(wrap.platform || job?.enhancementFeature);
+            const result = inner.status || "--";
+            const statusClass = getStatusClass(result);
+            const progress = typeof wrap.progress === "number"
+                ? `${Math.round(Math.max(0, Math.min(1, wrap.progress)) * 100)}%`
+                : "--";
+            return `<tr>
+                <td data-label="Time">${escapeHtml(time)}</td>
+                <td data-label="Operation">${escapeHtml(operation)}</td>
+                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}</td>
+                <td data-label="Progress">${escapeHtml(progress)}</td>
+                <td data-label="File" title="${escapeHtml(inner.path || "")}">${escapeHtml(toFileName(inner.path))}</td>
+                <td data-label="Details" title="${escapeHtml(inner.message || "")}">${escapeHtml(inner.message || "--")}</td>
+            </tr>`;
+        }).join("");
     }
 
     function updateFilterCountsFromHistory() {
@@ -507,7 +591,11 @@
             const result = inner.status || "--";
             const resultNormalized = String(result).toLowerCase();
             const statusClass = getStatusClass(result);
-            const accuracy = typeof inner.accuracy === "number" ? inner.accuracy.toFixed(2) : "--";
+            const accuracy = typeof inner.accuracy === "number"
+                ? inner.accuracy.toFixed(2)
+                : (typeof status.progress === "number"
+                    ? `${Math.round(Math.max(0, Math.min(1, status.progress)) * 100)}%`
+                    : "--");
             const track = toFileName(inner.path);
             const usedShazam = inner.usedShazam ? '<i class="fas fa-music ms-1" title="Identified with Shazam"></i>' : "";
             const message = inner.message ? ` <span class="text-muted" title="${escapeHtml(inner.message)}">(${escapeHtml(inner.message)})</span>` : "";
@@ -598,6 +686,16 @@
             exitCode: job.exitCode ?? null,
             rootPath: job.rootPath || null,
             trigger: job.trigger || "manual",
+            runIntent: job.runIntent || null,
+            enhancementFeature: job.enhancementFeature || null,
+            enhancementGroupId: job.enhancementGroupId || null,
+            currentPhase: job.currentPhase || null,
+            currentBatch: job.currentBatch ?? 0,
+            batchCount: job.batchCount ?? 0,
+            batchProcessed: job.batchProcessed ?? 0,
+            batchSize: job.batchSize ?? 0,
+            processedItems: job.processedItems ?? 0,
+            totalItems: job.totalItems ?? 0,
             okCount: job.okCount ?? 0,
             errorCount: job.errorCount ?? 0,
             reviewCount: job.reviewCount ?? 0,
@@ -742,6 +840,7 @@
             const started = run?.startedAt ? new Date(run.startedAt).toLocaleTimeString() : "--";
             const duration = formatDuration(run?.startedAt, run?.finishedAt);
             const path = run?.rootPath || "--";
+            const operation = formatEnhancementFeature(run?.enhancementFeature || run?.runIntent);
             const liveBadge = hasActiveLiveRun() && normalizeRunId(run?.id) === normalizeRunId(state.liveJobSummary?.id)
                 ? '<span class="badge bg-info text-dark">Live</span>'
                 : "";
@@ -750,8 +849,10 @@
                 <div class="autotag-run-item-meta">
                     <span>${escapeHtml(duration)}</span>
                     <span>${escapeHtml(run.trigger || "manual")}</span>
+                    <span>${escapeHtml(operation)}</span>
                     <span>${escapeHtml(`logs ${run.logCount ?? 0}`)}</span>
                 </div>
+                <div class="autotag-run-item-path" title="${escapeHtml(run.id)}">${escapeHtml(`job ${run.id}`)}</div>
                 <div class="autotag-run-item-path">${escapeHtml(path)}</div>
             </button>`;
         }).join("");
@@ -1053,6 +1154,7 @@
         updateLogs([]);
         updateLiveMetadata(null);
         updateProgressBar(null);
+        renderLiveBatchStatus(null);
     }
 
     async function applyPolledJob(job, logs) {
@@ -1068,6 +1170,9 @@
         }
         updateLiveMetadata(hasLogsPayload ? { ...job, logs } : job);
         updateProgressBar(job);
+        if (hasLiveDetailPayload(job)) {
+            renderLiveBatchStatus(job);
+        }
         const hasDetails = hasLiveDetailPayload(job);
         if (shouldFollowLiveRunInHistory() && hasDetails) {
             renderLiveRunSelection(job, logs);

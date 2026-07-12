@@ -107,106 +107,6 @@
     gap: 8px 16px;
 }
 
-.uniformity-report-list {
-    display: grid;
-    gap: 16px;
-    margin-top: 16px;
-}
-
-.uniformity-report-card {
-    padding: 16px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 10px;
-}
-
-.uniformity-report-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.uniformity-report-title {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-}
-
-.uniformity-report-subtitle {
-    color: var(--text-muted);
-    font-size: 12px;
-}
-
-.uniformity-report-stats {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 12px;
-}
-
-.uniformity-report-stat {
-    padding: 10px 12px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-}
-
-.uniformity-report-stat-label {
-    display: block;
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-}
-
-.uniformity-report-stat-value {
-    font-size: 14px;
-    font-weight: 600;
-}
-
-.uniformity-report-details {
-    margin-top: 8px;
-}
-
-.uniformity-report-details summary {
-    cursor: pointer;
-    color: var(--primary-color);
-    font-weight: 600;
-}
-
-.uniformity-report-entries {
-    margin: 10px 0 0;
-    padding: 12px;
-    max-height: 240px;
-    overflow: auto;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 8px;
-    white-space: pre-wrap;
-    font-family: var(--font-family-monospace, monospace);
-    font-size: 12px;
-    line-height: 1.5;
-}
-
-.uniformity-live-log {
-    margin-top: 12px;
-    padding: 12px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-secondary);
-    border-radius: 10px;
-}
-
-.uniformity-live-log-title {
-    margin-bottom: 8px;
-    font-size: 12px;
-    color: var(--text-muted);
-}
-
-.uniformity-live-log .uniformity-report-entries {
-    margin-top: 0;
-}
-
 /* Prevent hard-refresh flash of hidden tabs before shared CSS loads */
 #autotagTabsContent > .tab-pane {
     display: none;
@@ -226,13 +126,6 @@
         grid-template-columns: repeat(2, 1fr);
     }
 
-    .uniformity-report-header {
-        flex-direction: column;
-    }
-
-    .uniformity-report-stats {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
 }
 </style>
 }
@@ -942,6 +835,10 @@
                         </div>
                     </div>
                     <span class="helper">Choose which maintenance workflows run automatically when an enhancement run starts.</span>
+                    <div class="enhancement-action-row">
+                        <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runAllEnhancementWorkflows">Run Enabled Workflows</button>
+                    </div>
+                    <span class="helper" id="enhancementRunAllStatus"></span>
                 </section>
             </div>
 
@@ -953,8 +850,28 @@
                     </h5>
                 </div>
                 <div class="card-body autotag-card-body">
-                    <div class="download-section">
+                    <div class="download-section enhancement-settings-panel folder-settings-panel">
                         <div class="tags-grid gap-fill-tags-grid" id="gap-fill-tags"></div>
+                        <section class="playlist-settings-section mt-3">
+                            <div class="playlist-settings-section-title">Scope</div>
+                            <div class="download-grid download-grid-2">
+                                <div class="form-group">
+                                    <label for="enhancementGapFillFolder">Library folder scope</label>
+                                    <div class="dropdown-select" id="enhancementGapFillFolderDropdown">
+                                        <button type="button" class="dropdown-trigger" id="enhancementGapFillFolderTrigger">All enabled music folders</button>
+                                        <div class="dropdown-menu" id="enhancementGapFillFolderMenu">
+                                            <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                            <div id="enhancementGapFillFolderOptions" class="dropdown-options"></div>
+                                        </div>
+                                    </div>
+                                    <input type="hidden" id="enhancementGapFillFolder" value="" />
+                                </div>
+                            </div>
+                        </section>
+                        <div class="enhancement-action-row">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runEnhancementGapFilling">Run Gap Filling</button>
+                        </div>
+                        <span class="helper" id="enhancementGapFillingStatus"></span>
                     </div>
                 </div>
             </div>
@@ -1138,7 +1055,7 @@
                                 <div class="checkbox-group">
                                     <input type="checkbox" id="flagDuplicates" />
                                     <label for="flagDuplicates">
-                                        Flag duplicate tracks
+                                        Move duplicate tracks to the duplicates folder
                                         <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
                                             <i class="fas fa-info-circle"></i>
                                         </span>
@@ -1162,7 +1079,7 @@
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="enhancementQueueLyricsRefresh" />
-                                <label for="enhancementQueueLyricsRefresh">Queue lyrics refresh</label>
+                                <label for="enhancementQueueLyricsRefresh">Refresh lyrics using profile preferences</label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="enhancementQueueTechnicalProfileUpgrades" />
@@ -1270,6 +1187,10 @@
                             <div class="playlist-settings-section-title">Maintenance Actions</div>
                             <div class="download-grid download-grid-3 enhancement-checkbox-grid">
                                 <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="upgradeLowResolutionCovers" />
+                                    <label for="upgradeLowResolutionCovers">Upgrade low-resolution covers</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
                                     <input type="checkbox" id="replaceMissingCovers" />
                                     <label for="replaceMissingCovers">Replace missing embedded covers</label>
                                 </div>
@@ -1280,6 +1201,12 @@
                                 <div class="checkbox-group align-self-end">
                                     <input type="checkbox" id="queueAnimatedArtwork" />
                                     <label for="queueAnimatedArtwork">Queue animated artwork</label>
+                                </div>
+                            </div>
+                            <div class="download-grid download-grid-3 mt-3">
+                                <div class="form-group">
+                                    <label for="coverMinResolution">Minimum cover resolution</label>
+                                    <input type="number" id="coverMinResolution" value="500" min="100" max="5000" step="100" />
                                 </div>
                             </div>
                         </section>

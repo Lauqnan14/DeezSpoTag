@@ -100,6 +100,12 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("Enhancement request is required.");
         }
 
+        var selectedFeatures = NormalizeEnhancementFeatures(request.Features);
+        if (selectedFeatures.Count != 1)
+        {
+            return BadRequest("Select exactly one enhancement section per job.");
+        }
+
         var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
             _libraryRepository,
             _libraryConfigStore,
@@ -148,17 +154,6 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var targetFiles = NormalizeEnhancementTargetFiles(request.TargetFiles, scopedFolders);
-        if (targetFiles.Count == 0 && ShouldRunMissingCoreMetadataEnhancement(request, configNode))
-        {
-            var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(
-                scopedFolders.Select(folder => folder.Id).ToList(),
-                cancellationToken);
-            targetFiles = missingFiles
-                .Select(file => file.FilePath)
-                .Where(path => !string.IsNullOrWhiteSpace(path) && System.IO.File.Exists(path))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
 
         var runIntent = string.Equals(
             request.Scope,
@@ -185,7 +180,9 @@ public class AutoTagJobsController : ControllerBase
                 ProfileId: selectedProfile.Id,
                 ProfileName: selectedProfile.Name,
                 RunIntent: runIntent,
-                FolderStructureOverride: selectedProfile.FolderStructure));
+                FolderStructureOverride: selectedProfile.FolderStructure,
+                EnhancementFeature: selectedFeatures.SingleOrDefault(),
+                EnhancementGroupId: request.GroupId));
         return CreateStartJobResponse(job);
     }
 
@@ -217,6 +214,7 @@ public class AutoTagJobsController : ControllerBase
         ApplyEnhancementFolderScope(enhancement, "folderUniformity", folderIds);
         ApplyEnhancementFolderScope(enhancement, "coverMaintenance", folderIds);
         ApplyEnhancementFolderScope(enhancement, "qualityChecks", folderIds);
+        ApplyEnhancementFolderScope(enhancement, "gapFilling", folderIds);
         if (targetFiles.Count > 0)
         {
             configNode[AutoTagLiterals.TargetFilesKey] = new JsonArray(
@@ -231,23 +229,24 @@ public class AutoTagJobsController : ControllerBase
         enhancement[name] = feature;
     }
 
-    private static bool ShouldRunMissingCoreMetadataEnhancement(
-        AutoTagEnhancementStartRequest request,
-        JsonObject configNode)
-    {
-        var selectedFeatures = (request.Features ?? Array.Empty<string>())
-            .Select(value => value?.Trim())
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return selectedFeatures.Contains("quality-checks")
-            && IsMissingCoreMetadataScanEnabled(configNode);
-    }
-
     private static bool ShouldKeepGapFillForMissingCoreMetadataScan(
         JsonObject configNode,
         IReadOnlyList<string> targetFiles)
     {
-        return targetFiles.Count > 0 && IsMissingCoreMetadataScanEnabled(configNode);
+        _ = targetFiles;
+        return IsMissingCoreMetadataScanEnabled(configNode);
+    }
+
+    private static HashSet<string> NormalizeEnhancementFeatures(IReadOnlyList<string>? features)
+    {
+        return (features ?? Array.Empty<string>())
+            .Select(value => value?.Trim().ToLowerInvariant())
+            .Where(value => value is AutoTagLiterals.EnhancementFeatureGapFill
+                or AutoTagLiterals.EnhancementFeatureFolderUniformity
+                or AutoTagLiterals.EnhancementFeatureQualityChecks
+                or AutoTagLiterals.EnhancementFeatureCoverMaintenance)
+            .Select(value => value!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool IsMissingCoreMetadataScanEnabled(JsonObject configNode)
@@ -708,8 +707,18 @@ public class AutoTagJobsController : ControllerBase
             job.SkippedCount,
             job.RootPath,
             job.Trigger,
+            job.RunIntent,
             job.ProfileId,
             job.ProfileName,
+            job.EnhancementFeature,
+            job.EnhancementGroupId,
+            job.CurrentPhase,
+            job.CurrentBatch,
+            job.BatchCount,
+            job.BatchProcessed,
+            job.BatchSize,
+            job.ProcessedItems,
+            job.TotalItems,
             job.AutoMoveSummary,
             job.EnhancementWorkflows,
             job.CurrentPlatform,
@@ -752,8 +761,18 @@ public class AutoTagJobsController : ControllerBase
             skippedCount = 0,
             rootPath,
             trigger = "manual",
+            runIntent = AutoTagLiterals.RunIntentDefault,
             profileId,
             profileName,
+            enhancementFeature = (string?)null,
+            enhancementGroupId = (string?)null,
+            currentPhase = (string?)null,
+            currentBatch = 0,
+            batchCount = 0,
+            batchProcessed = 0,
+            batchSize = 0,
+            processedItems = 0,
+            totalItems = 0,
             autoMoveSummary,
             currentPlatform,
             lastStatus,
@@ -836,4 +855,5 @@ public sealed class AutoTagEnhancementStartRequest
     public IReadOnlyList<string>? Features { get; set; }
     public IReadOnlyList<long>? FolderIds { get; set; }
     public IReadOnlyList<string>? TargetFiles { get; set; }
+    public string? GroupId { get; set; }
 }

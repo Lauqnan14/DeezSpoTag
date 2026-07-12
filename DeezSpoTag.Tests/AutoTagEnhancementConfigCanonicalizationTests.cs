@@ -231,7 +231,8 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("enhancementQueueTechnicalProfileUpgrades", viewSource, StringComparison.Ordinal);
         Assert.Contains("startCentralEnhancementFeature(\"quality-checks\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("ApplyEnhancementFolderScope(enhancement, \"qualityChecks\"", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("queueTechnicalProfileUpgrades && technicalProfiles.Count > 0", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("var runQualityUpgradeStage = queueTechnicalProfileUpgrades", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("TargetTrackIds = batch.Select(track => track.TrackId).ToList()", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("StartEnhancementQualityScannerAsync", controllerSource, StringComparison.Ordinal);
     }
 
@@ -366,7 +367,9 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
         var autoTagServiceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
 
-        Assert.Contains("GetMissingCoreMetadataFilesAsync", controllerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetMissingCoreMetadataFilesAsync", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("GetMissingCoreMetadataFilesAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("MissingCoreMetadataTags", workflowSource, StringComparison.Ordinal);
         Assert.Contains("ResolveEnhancementTargetRootPath(targetFiles)", controllerSource, StringComparison.Ordinal);
         Assert.Contains("TRIM(COALESCE(t.tag_title", repositorySource, StringComparison.Ordinal);
         Assert.Contains("TRIM(COALESCE(t.tag_artist", repositorySource, StringComparison.Ordinal);
@@ -389,6 +392,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
         var orchestrationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
         var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagEnhancementController.cs"));
+        var organizerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs"));
 
         Assert.Contains("enableFolderUniformityWorkflow", viewSource, StringComparison.Ordinal);
         Assert.Contains("enableQualityChecksWorkflow", viewSource, StringComparison.Ordinal);
@@ -413,7 +417,31 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("ApplyEnhancementBatchTemplatesAsync", serviceSource, StringComparison.Ordinal);
         Assert.Contains("OrganizeFilesAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("folder structure skipped (enforceFolderStructure is disabled)", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("FolderTemplatesAppliedInBatches", workflowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("FolderTemplatesAppliedInBatches", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("AutoTagOrganizerBatchResult", organizerSource, StringComparison.Ordinal);
+        Assert.Contains("RecordEnhancementItemStatus", workflowSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementActivities_ExposeSectionAndFortyFileBatchProgress()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml"));
+        var autoTagViewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var statusScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
+        var orchestrationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
+
+        Assert.Contains("autotag-enhancement-feature", viewSource, StringComparison.Ordinal);
+        Assert.Contains("autotag-current-batch", viewSource, StringComparison.Ordinal);
+        Assert.Contains("autotag-live-status-table", viewSource, StringComparison.Ordinal);
+        Assert.Contains("runAllEnhancementWorkflows", autoTagViewSource, StringComparison.Ordinal);
+        Assert.Contains("renderLiveBatchStatus", statusScript, StringComparison.Ordinal);
+        Assert.Contains("EnhancementGroupId", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("private const int EnhancementBatchSize = 40", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("GetEnabledEnhancementFeatures", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("BuildEnhancementFeatureConfig", orchestrationSource, StringComparison.Ordinal);
     }
 
     private static long[] ReadLongArray(JsonElement element)

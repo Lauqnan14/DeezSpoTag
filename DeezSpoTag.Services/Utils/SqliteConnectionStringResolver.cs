@@ -83,15 +83,25 @@ public static class SqliteConnectionStringResolver
         }
 
         var dataRoot = DeezSpoTagDataRootResolver.Resolve();
-        Directory.CreateDirectory(dataRoot);
-        return Path.GetFullPath(Path.Join(dataRoot, fileName));
+        return AppDataPathResolver.ResolveDbPathStrict(dataRoot, ResolveScope(defaultFileName), fileName);
     }
 
     private static string BuildFallback(string defaultFileName)
     {
         var dataRoot = DeezSpoTagDataRootResolver.Resolve();
-        Directory.CreateDirectory(dataRoot);
-        var dbPath = Path.Join(dataRoot, defaultFileName);
+        var dbPath = AppDataPathResolver.ResolveDbPathStrict(
+            dataRoot,
+            ResolveScope(defaultFileName),
+            defaultFileName);
         return $"Data Source={Path.GetFullPath(dbPath)}";
+    }
+
+    private static string ResolveScope(string defaultFileName)
+    {
+        return string.Equals(defaultFileName, "queue.db", StringComparison.OrdinalIgnoreCase)
+            ? "queue"
+            : defaultFileName.Contains("identity", StringComparison.OrdinalIgnoreCase)
+                ? "identity"
+                : "library";
     }
 }

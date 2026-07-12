@@ -91,7 +91,17 @@ public sealed class CoverLibraryMaintenanceService
         }
 
         var logs = new ConcurrentQueue<string>();
-        var albumDirs = CollectAlbumDirectories(rootPaths, request.IncludeSubfolders);
+        var albumDirs = request.TargetFiles is { Count: > 0 }
+            ? request.TargetFiles
+                .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                .Select(Path.GetFullPath)
+                .Where(path => rootPaths.Any(root => IsSameOrDescendantPath(path, root)))
+                .Select(Path.GetDirectoryName)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+            : CollectAlbumDirectories(rootPaths, request.IncludeSubfolders);
         var scanned = 0;
         var updated = 0;
         var skipped = 0;
@@ -189,6 +199,14 @@ public sealed class CoverLibraryMaintenanceService
         }
 
         return updatedAnything;
+    }
+
+    private static bool IsSameOrDescendantPath(string path, string root)
+    {
+        var normalizedPath = Path.GetFullPath(path);
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return normalizedPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> TryUpdateStillCoverAsync(
@@ -392,7 +410,12 @@ public sealed class CoverLibraryMaintenanceService
         var externalLowRes = artworkState.HasExternal && IsLowResolution(artworkState.ExternalSize!.Value, minResolution);
         var embeddedLowRes = artworkState.HasEmbedded && IsLowResolution(artworkState.EmbeddedSize!.Value, minResolution);
         var needsUpgrade = request.UpgradeLowResolutionCovers && (externalLowRes || embeddedLowRes);
-        var noArtworkAtAll = !artworkState.HasExternal && !artworkState.HasEmbedded;
+        var stillCoverActionEnabled = request.ReplaceMissingEmbeddedCovers
+            || request.SyncExternalCovers
+            || request.UpgradeLowResolutionCovers;
+        var noArtworkAtAll = stillCoverActionEnabled
+            && !artworkState.HasExternal
+            && !artworkState.HasEmbedded;
         var needsAnimatedArtwork = request.QueueAnimatedArtwork && !artworkState.HasAnimatedArtwork;
         return new AlbumWorkPlan(needsEmbedded, needsExternal, needsUpgrade, noArtworkAtAll, needsAnimatedArtwork);
     }
@@ -699,7 +722,8 @@ public sealed record CoverLibraryMaintenanceRequest(
     int AnimatedArtworkMaxResolution = 2160,
     IReadOnlyCollection<string>? AnimatedArtworkFormats = null,
     IReadOnlyCollection<CoverSourceName>? EnabledSources = null,
-    string CoverImageTemplate = "cover");
+    string CoverImageTemplate = "cover",
+    IReadOnlyList<string>? TargetFiles = null);
 
 public sealed record CoverLibraryMaintenanceResult(
     bool Success,
