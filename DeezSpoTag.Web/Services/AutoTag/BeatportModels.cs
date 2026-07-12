@@ -8,34 +8,14 @@ public sealed class BeatportOAuth
     public string AccessToken { get; set; } = "";
     [JsonPropertyName("expires_in")]
     public long ExpiresIn { get; set; }
+    [JsonPropertyName("refresh_token")]
+    public string? RefreshToken { get; set; }
 }
 
 public sealed class BeatportTrackResults
 {
-    public List<BeatportTrackResult> Data { get; set; } = new();
-}
-
-public sealed class BeatportTrackResult
-{
-    [JsonPropertyName("track_id")]
-    public long TrackId { get; set; }
-    [JsonPropertyName("track_name")]
-    public string TrackName { get; set; } = "";
-    public List<BeatportArtist>? Artists { get; set; }
-    public string? Isrc { get; set; }
-    public long? Length { get; set; }
-    [JsonPropertyName("mix_name")]
-    public string? MixName { get; set; }
-}
-
-public sealed class BeatportArtist
-{
-    [JsonPropertyName("artist_id")]
-    public long ArtistId { get; set; }
-    [JsonPropertyName("artist_name")]
-    public string ArtistName { get; set; } = "";
-    [JsonPropertyName("artist_type_name")]
-    public string ArtistTypeName { get; set; } = "";
+    public List<BeatportTrack> Results { get; set; } = new();
+    public string? Next { get; set; }
 }
 
 public sealed class BeatportTrack

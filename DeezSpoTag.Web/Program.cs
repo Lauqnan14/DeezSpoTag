@@ -1358,6 +1358,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.DeezerMatcher>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LastFmMatcher>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BoomplayMatcher>();
+        services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BeatportTokenService>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.BeatportClient>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.BeatportMatcher>();
         services.AddHttpClient<DeezSpoTag.Web.Services.AutoTag.DiscogsClient>();

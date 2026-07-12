@@ -60,6 +60,7 @@ internal static class Program
         var services = new ServiceCollection();
         services.AddLogging(b => b.AddSimpleConsole(o => { o.SingleLine = true; }).SetMinimumLevel(LogLevel.Information));
         services.AddHttpClient();
+        services.AddDataProtection();
         RegisterSharedAutoTagServices(services);
 
         var provider = services.BuildServiceProvider();
@@ -384,6 +385,7 @@ internal static class Program
     {
         services.AddTransient<MusicBrainzClient>();
         services.AddTransient<BeatportClient>();
+        services.AddTransient<BeatportTokenService>();
         services.AddTransient<DiscogsClient>();
         services.AddTransient<TraxsourceClient>();
         services.AddTransient<JunoDownloadClient>();

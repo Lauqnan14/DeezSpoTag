@@ -69,12 +69,12 @@ public sealed class BeatportMatcher
         for (var page = 1; page <= Math.Max(1, beatportConfig.MaxPages); page++)
         {
             var results = await _client.SearchAsync(query, page, 25, cancellationToken);
-            if (results?.Data == null || results.Data.Count == 0)
+            if (results?.Results == null || results.Results.Count == 0)
             {
                 continue;
             }
 
-            var candidates = results.Data
+            var candidates = results.Results
                 .Select(r => ToTrack(r, !beatportConfig.IgnoreVersion))
                 .ToList();
             var pageMatch = await MatchSearchCandidatesAsync(
@@ -132,13 +132,14 @@ public sealed class BeatportMatcher
     private async Task<AutoTagMatchResult?> MatchByIsrcAsync(string isrc, BeatportMatchConfig beatportConfig, bool includeReleaseMeta, CancellationToken cancellationToken)
     {
         var results = await _client.SearchAsync(isrc, 1, 25, cancellationToken);
-        var first = results?.Data?.FirstOrDefault();
+        var first = results?.Results?.FirstOrDefault(track =>
+            string.Equals(track.Isrc?.Trim(), isrc.Trim(), StringComparison.OrdinalIgnoreCase));
         if (first == null)
         {
             return null;
         }
 
-        var full = await ResolveFullTrackAsync(first.TrackId.ToString(CultureInfo.InvariantCulture), beatportConfig, includeReleaseMeta, cancellationToken);
+        var full = await ResolveFullTrackAsync(first.Id.ToString(CultureInfo.InvariantCulture), beatportConfig, includeReleaseMeta, cancellationToken);
         if (full == null)
         {
             return null;
@@ -185,15 +186,15 @@ public sealed class BeatportMatcher
         return info;
     }
 
-    private static BeatportTrackInfo ToTrack(BeatportTrackResult result, bool includeVersion)
+    private static BeatportTrackInfo ToTrack(BeatportTrack result, bool includeVersion)
     {
         return new BeatportTrackInfo
         {
-            Title = result.TrackName,
-            TrackId = result.TrackId.ToString(CultureInfo.InvariantCulture),
-            Artists = result.Artists?.Select(a => a.ArtistName).ToList() ?? new List<string>(),
+            Title = result.Name,
+            TrackId = result.Id.ToString(CultureInfo.InvariantCulture),
+            Artists = result.Artists.Select(a => a.Name).ToList(),
             Version = includeVersion ? result.MixName : null,
-            Duration = TimeSpan.FromMilliseconds(result.Length ?? 0),
+            Duration = TimeSpan.FromMilliseconds(result.LengthMs ?? 0),
             Isrc = result.Isrc
         };
     }

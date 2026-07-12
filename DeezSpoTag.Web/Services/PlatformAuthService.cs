@@ -19,6 +19,7 @@ public class PlatformAuthState
     public AmazonMusicAuth? AmazonMusic { get; set; }
     public SoulseekAuth? Soulseek { get; set; }
     public BoomplayAuth? Boomplay { get; set; }
+    public BeatportAuth? Beatport { get; set; }
 }
 
 public class SpotifyConfig
@@ -159,6 +160,17 @@ public class BoomplayAuth
     public DateTimeOffset? SavedAt { get; set; }
 }
 
+public sealed class BeatportAuth
+{
+    public string? ClientId { get; set; }
+    public string? ClientSecret { get; set; }
+    public string? RedirectUri { get; set; }
+    public string? Scope { get; set; }
+    public string? AccessToken { get; set; }
+    public string? RefreshToken { get; set; }
+    public DateTimeOffset? ExpiresAtUtc { get; set; }
+}
+
 public class PlatformAuthService
 {
     private const string QobuzProtectionPurpose = "DeezSpoTag.PlatformAuth.Qobuz";
@@ -167,6 +179,7 @@ public class PlatformAuthService
     private const string SoulseekProtectionPurpose = "DeezSpoTag.PlatformAuth.Soulseek";
     private const string BoomplayProtectionPurpose = "DeezSpoTag.PlatformAuth.Boomplay";
     private const string NavidromeProtectionPurpose = "DeezSpoTag.PlatformAuth.Navidrome";
+    private const string BeatportProtectionPurpose = "DeezSpoTag.PlatformAuth.Beatport";
     private const string SpotifyFileName = "spotify.json";
     private const string DiscogsFileName = "discogs.json";
     private const string LastFmFileName = "lastfm.json";
@@ -177,6 +190,7 @@ public class PlatformAuthService
     private const string AppleMusicFileName = "applemusic.json";
     private const string QobuzFileName = "qobuz.json";
     private const string TidalFileName = "tidal.json";
+    private const string BeatportFileName = "beatport.json";
     private const string AmazonMusicFileName = "amazonmusic.json";
     private const string SoulseekFileName = "soulseek.json";
     private const string BoomplayFileName = "boomplay.json";
@@ -194,6 +208,7 @@ public class PlatformAuthService
     private readonly string[] _legacyAggregateFileCandidates;
     private readonly ProtectedCredentialFileStore _qobuzCredentialStore;
     private readonly ProtectedCredentialFileStore _tidalCredentialStore;
+    private readonly ProtectedCredentialFileStore _beatportCredentialStore;
     private readonly ProtectedCredentialFileStore _amazonMusicCredentialStore;
     private readonly ProtectedCredentialFileStore _soulseekCredentialStore;
     private readonly ProtectedCredentialFileStore _boomplayCredentialStore;
@@ -238,6 +253,7 @@ public class PlatformAuthService
         AppleMusicFileName,
         QobuzFileName,
         TidalFileName,
+        BeatportFileName,
         AmazonMusicFileName,
         SoulseekFileName,
         BoomplayFileName
@@ -267,6 +283,7 @@ public class PlatformAuthService
         _tidalCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             TidalProtectionPurpose);
+        _beatportCredentialStore = new ProtectedCredentialFileStore(dataProtectionProvider, BeatportProtectionPurpose);
         _amazonMusicCredentialStore = new ProtectedCredentialFileStore(
             dataProtectionProvider,
             AmazonMusicProtectionPurpose);
@@ -350,6 +367,7 @@ public class PlatformAuthService
         await SavePlatformSectionNoLockAsync(AppleMusicFileName, state.AppleMusic);
         await SaveQobuzNoLockAsync(state.Qobuz);
         await SaveTidalNoLockAsync(state.Tidal);
+        await SaveBeatportNoLockAsync(state.Beatport);
         await SaveAmazonMusicNoLockAsync(state.AmazonMusic);
         await SaveSoulseekNoLockAsync(state.Soulseek);
         await SaveBoomplayNoLockAsync(state.Boomplay);
@@ -373,6 +391,7 @@ public class PlatformAuthService
             AppleMusic = await LoadPlatformSectionNoLockAsync<AppleMusicAuth>(AppleMusicFileName),
             Qobuz = await LoadQobuzNoLockAsync(),
             Tidal = await LoadTidalNoLockAsync(),
+            Beatport = await LoadBeatportNoLockAsync(),
             AmazonMusic = await LoadAmazonMusicNoLockAsync(),
             Soulseek = await LoadSoulseekNoLockAsync(),
             Boomplay = await LoadBoomplayNoLockAsync()
@@ -475,6 +494,29 @@ public class PlatformAuthService
 
         await _tidalCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
         HardenCredentialFilePermissions(path, "Tidal");
+    }
+
+    private async Task<BeatportAuth?> LoadBeatportNoLockAsync()
+    {
+        var path = GetPlatformFilePath(BeatportFileName);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var json = await _beatportCredentialStore.ReadTextAndMigrateAsync(path);
+            HardenCredentialFilePermissions(path, "Beatport");
+            return string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<BeatportAuth>(json, _jsonOptions);
+        }
+        catch (JsonException ex) { MoveCorruptAuthFileNoLock(path, ex); return null; }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        { _logger.LogWarning(ex, "Failed to load protected Beatport auth section from {Path}", path); return null; }
+    }
+
+    private async Task SaveBeatportNoLockAsync(BeatportAuth? auth)
+    {
+        var path = GetPlatformFilePath(BeatportFileName);
+        if (auth is null) { TryDeletePlatformSectionNoLock(path); return; }
+        await _beatportCredentialStore.WriteTextAsync(path, JsonSerializer.Serialize(auth, _jsonOptions));
+        HardenCredentialFilePermissions(path, "Beatport");
     }
 
     private async Task<AmazonMusicAuth?> LoadAmazonMusicNoLockAsync()
