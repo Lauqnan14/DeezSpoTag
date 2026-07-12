@@ -213,13 +213,16 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     {
         var modelsSource = ReadSource("DeezSpoTag.Services/Library/Models.cs");
         var schemaSource = ReadSource("DeezSpoTag.Services/Library/Schema/library.sql");
+        var migrationSource = ReadSource("DeezSpoTag.Services/Library/LibraryDbService.cs");
         var repositorySource = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
         var retryServiceSource = ReadSource("DeezSpoTag.Web/Services/ManualUnavailableRetryService.cs");
         var programSource = ReadSource("DeezSpoTag.Web/Program.cs");
 
         Assert.Contains("DateTimeOffset NextRetryAtUtc", modelsSource, StringComparison.Ordinal);
         Assert.Contains("next_retry_at_utc TEXT NOT NULL", schemaSource, StringComparison.Ordinal);
-        Assert.Contains("idx_manual_unavailable_track_retry", schemaSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("idx_manual_unavailable_track_retry", schemaSource, StringComparison.Ordinal);
+        Assert.Contains("EnsureColumnAsync(connection, ManualUnavailableTrackTable, \"next_retry_at_utc\"", migrationSource, StringComparison.Ordinal);
+        Assert.Contains("EnsureIndexAsync(connection, \"idx_manual_unavailable_track_retry\"", migrationSource, StringComparison.Ordinal);
         Assert.Contains("GetDueManualUnavailableTracksAsync", repositorySource, StringComparison.Ordinal);
         Assert.Contains("ScheduleManualUnavailableTrackRetryAsync", repositorySource, StringComparison.Ordinal);
         Assert.Contains("intentService.EnqueueManualAsync(intent", retryServiceSource, StringComparison.Ordinal);

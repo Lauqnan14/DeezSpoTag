@@ -636,9 +636,6 @@ CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_added
 CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_destination
     ON manual_unavailable_track (destination_folder_id);
 
-CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_retry
-    ON manual_unavailable_track (next_retry_at_utc);
-
 CREATE TABLE IF NOT EXISTS track_shazam_cache (
     track_id BIGINT PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
     shazam_track_id TEXT,

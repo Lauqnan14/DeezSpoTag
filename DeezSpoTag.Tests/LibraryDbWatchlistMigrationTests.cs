@@ -163,6 +163,67 @@ WHERE source = 'spotify'
     }
 
     [Fact]
+    public async Task EnsureSchema_UpgradesLegacyManualUnavailableRetrySchemaBeforeCreatingIndex()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+CREATE TABLE manual_unavailable_track (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_uuid TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT,
+    album_artist TEXT,
+    isrc TEXT,
+    engine TEXT,
+    source_service TEXT,
+    source_url TEXT,
+    deezer_track_id TEXT,
+    spotify_track_id TEXT,
+    apple_track_id TEXT,
+    qobuz_track_id TEXT,
+    tidal_track_id TEXT,
+    amazon_track_id TEXT,
+    destination_folder_id INTEGER,
+    expected_final_path TEXT,
+    quality TEXT,
+    content_type TEXT,
+    reason TEXT,
+    payload_json TEXT,
+    first_unavailable_at_utc TEXT NOT NULL,
+    added_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+INSERT INTO manual_unavailable_track (
+    queue_uuid, title, artist, first_unavailable_at_utc, added_at_utc, updated_at_utc)
+VALUES (
+    'legacy-queue', 'Legacy Track', 'Legacy Artist',
+    '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        Assert.True(await IndexExistsAsync(verifyConnection, "idx_manual_unavailable_track_retry"));
+
+        await using var verifyCommand = verifyConnection.CreateCommand();
+        verifyCommand.CommandText = @"
+SELECT next_retry_at_utc, title
+FROM manual_unavailable_track
+WHERE queue_uuid = 'legacy-queue';";
+        await using var reader = await verifyCommand.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.False(await reader.IsDBNullAsync(0));
+        Assert.Equal("Legacy Track", reader.GetString(1));
+    }
+
+    [Fact]
     public async Task AddWatchlistHistoryAsync_ReturnsInsertedEntry_And_SinceQueryReturnsNewerRows()
     {
         var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);

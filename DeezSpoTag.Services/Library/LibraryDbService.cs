@@ -577,6 +577,7 @@ CREATE TABLE IF NOT EXISTS manual_unavailable_track (
     updated_at_utc TEXT NOT NULL
 );", cancellationToken);
         await EnsureColumnAsync(connection, ManualUnavailableTrackTable, "next_retry_at_utc", TextType, cancellationToken);
+        await BackfillManualUnavailableRetryDeadlinesAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_added", ManualUnavailableTrackTable, "added_at_utc DESC", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_destination", ManualUnavailableTrackTable, DestinationFolderIdColumn, unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_retry", ManualUnavailableTrackTable, "next_retry_at_utc", unique: false, cancellationToken);
@@ -862,6 +863,18 @@ CREATE TABLE IF NOT EXISTS {tableName} (
         }
 
         var sql = ResolveBackfillLegacySql(table, column, legacyColumn);
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task BackfillManualUnavailableRetryDeadlinesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE manual_unavailable_track
+SET next_retry_at_utc = datetime(added_at_utc, '+7 days')
+WHERE next_retry_at_utc IS NULL OR trim(next_retry_at_utc) = '';";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
