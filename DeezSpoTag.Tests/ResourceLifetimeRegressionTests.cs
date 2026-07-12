@@ -97,7 +97,8 @@ public sealed class ResourceLifetimeRegressionTests
         Assert.Contains("ArtworkFallbackTimeout", source, StringComparison.Ordinal);
         Assert.Contains("LyricsResolutionTimeout", source, StringComparison.Ordinal);
         Assert.Contains("AppleExtrasTimeout", source, StringComparison.Ordinal);
-        Assert.Contains("timeoutSource.CancelAfter(timeout)", source, StringComparison.Ordinal);
+        Assert.Contains("await stepTask.WaitAsync(timeout, context.Token)", source, StringComparison.Ordinal);
+        Assert.Contains("timeoutSource.Cancel()", source, StringComparison.Ordinal);
         Assert.Contains("timed out after", source, StringComparison.Ordinal);
     }
 
