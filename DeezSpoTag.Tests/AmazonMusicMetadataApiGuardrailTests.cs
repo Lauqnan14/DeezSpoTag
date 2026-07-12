@@ -24,7 +24,7 @@ public sealed class AmazonMusicMetadataApiGuardrailTests
     }
 
     [Fact]
-    public void AmazonMetadata_UsesTypedSearchBeforeShowSearchFallback()
+    public void AmazonMetadata_UsesOnlyDedicatedTypedSearchEndpoints()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AmazonMusicMetadataService.cs");
 
@@ -34,9 +34,9 @@ public sealed class AmazonMusicMetadataApiGuardrailTests
         Assert.Contains("SearchPlaylistsPath = \"/searchCatalogPlaylists\"", source, StringComparison.Ordinal);
         Assert.Contains("SearchCommunityPlaylistsPath = \"/searchCommunityPlaylists\"", source, StringComparison.Ordinal);
         Assert.Contains("TrySearchTypedAsync", source, StringComparison.Ordinal);
-        Assert.Contains("PostSkillJsonAsync(session, SearchAllPath", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SearchAllPath", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("/showSearch", source, StringComparison.Ordinal);
         Assert.Contains("TrySearchCommunityPlaylistsAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("falling back to showSearch", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -56,17 +56,25 @@ public sealed class AmazonMusicMetadataApiGuardrailTests
     }
 
     [Fact]
-    public void AmazonTrackResolution_UsesCatalogAlbumExpansionWhenTypedTrackSearchMisses()
+    public void AmazonTrackResolution_UsesValidatedTypedTrackSearchOnly()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AmazonMusicMetadataService.cs");
 
         Assert.Contains("SearchAsync(session, trackQuery, \"track\"", source, StringComparison.Ordinal);
         Assert.Contains("ResolveTrackFromCatalogAsync", source, StringComparison.Ordinal);
         Assert.Contains("ResolveTrackCatalogCandidatesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("BuildAlbumSearchQuery", source, StringComparison.Ordinal);
-        Assert.Contains("ExpandAlbumTracksForSearchAsync", source, StringComparison.Ordinal);
-        Assert.Contains("GetTracklistAsync(session, album.Id, \"album\", album.Url", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExpandAlbumTracksForSearchAsync", source, StringComparison.Ordinal);
         Assert.Contains("ResolveAtmosTrackAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AmazonTrackResolution_ValidatesAlbumVariant()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AmazonMusicMetadataService.cs");
+
+        Assert.Contains("string? album,\n        int? durationMs", source, StringComparison.Ordinal);
+        Assert.Contains("Album: album", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Album: null", source, StringComparison.Ordinal);
     }
 
     [Fact]

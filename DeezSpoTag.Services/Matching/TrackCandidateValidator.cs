@@ -83,11 +83,6 @@ public static class TrackCandidateValidator
         TrackMatchCandidate candidate,
         TrackCandidateValidationOptions options)
     {
-        if (HasTitle(source) && HasTitle(candidate) && !TrackTitleMatcher.TitlesMatch(source.Title, candidate.Title))
-        {
-            return Reject("title_mismatch");
-        }
-
         if (HasArtist(source) && HasArtist(candidate) && !TrackTitleMatcher.ArtistsMatch(source.Artist, candidate.Artist))
         {
             return Reject("artist_mismatch");
@@ -101,11 +96,6 @@ public static class TrackCandidateValidator
         if (durationResult != null)
         {
             return durationResult;
-        }
-
-        if (HasAlbum(source) && HasAlbum(candidate) && !TrackTitleMatcher.TitlesMatch(source.Album, candidate.Album))
-        {
-            return Reject("album_mismatch");
         }
 
         return Accept("isrc", 1.0d);

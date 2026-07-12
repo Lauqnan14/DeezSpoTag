@@ -292,31 +292,33 @@ public sealed class QobuzApiClient : IQobuzApiClient
 
     public async Task<QobuzTrackSearchResponse?> SearchTracksAsync(string query, int limit, int offset, CancellationToken cancellationToken)
     {
-        var url = $"/api.json/0.2/track/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}&app_id={_config.AppId}";
+        var url = $"/api.json/0.2/track/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}";
         return await GetAsync<QobuzTrackSearchResponse>(url, cancellationToken);
     }
 
     public async Task<QobuzAlbumSearchResponse?> SearchAlbumsAsync(string query, int limit, int offset, CancellationToken cancellationToken)
     {
-        var url = $"/api.json/0.2/album/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}&app_id={_config.AppId}";
+        var url = $"/api.json/0.2/album/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}";
         return await GetAsync<QobuzAlbumSearchResponse>(url, cancellationToken);
     }
 
     public async Task<QobuzArtistSearchResponse?> SearchArtistsAsync(string query, int limit, int offset, CancellationToken cancellationToken)
     {
-        var url = $"/api.json/0.2/artist/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}&app_id={_config.AppId}";
+        var url = $"/api.json/0.2/artist/search?query={Uri.EscapeDataString(query)}&limit={limit}&offset={offset}";
         return await GetAsync<QobuzArtistSearchResponse>(url, cancellationToken);
     }
 
     public async Task<QobuzTrack?> GetTrackAsync(int trackId, CancellationToken cancellationToken)
     {
-        var url = $"/api.json/0.2/track/get?track_id={trackId}&app_id={_config.AppId}";
+        var url = $"/api.json/0.2/track/get?track_id={trackId}";
         return await GetAsync<QobuzTrack>(url, cancellationToken);
     }
 
     private async Task<T?> GetAsync<T>(string url, CancellationToken cancellationToken)
     {
-        using var response = await _httpClient.GetAsync(url, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("x-app-id", _config.AppId);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             return default;
@@ -325,6 +327,7 @@ public sealed class QobuzApiClient : IQobuzApiClient
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         return await JsonSerializer.DeserializeAsync<T>(stream, _serializerOptions, cancellationToken);
     }
+
 
     private async Task<string?> GetStoreCookiesAsync(string store, CancellationToken cancellationToken)
     {

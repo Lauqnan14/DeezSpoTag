@@ -60,16 +60,50 @@ public sealed class QobuzTrackResolver
                 var exactScore = ScoreCandidate(exact, title, artist, album, expectedDurationSec, preferHiRes: true);
                 return BuildResolution(exact, "isrc", Math.Max(exactScore, 20));
             }
+
+            var metadataQuery = string.Join(' ', new[] { title, artist }
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
+            if (string.IsNullOrWhiteSpace(metadataQuery))
+            {
+                return null;
+            }
+
+            var metadataCandidates = await SearchTracksSafeAsync(metadataQuery, cancellationToken);
+            var metadataMatch = PickBestCandidate(
+                metadataCandidates,
+                isrc,
+                title,
+                artist,
+                album,
+                expectedDurationSec);
+            if (metadataMatch != null)
+            {
+                return metadataMatch;
+            }
+
+            var albumVariant = BuildAlbumTitleVariants(album)
+                .OrderBy(static value => value.Length)
+                .FirstOrDefault();
+            var albumQuery = string.Join(' ', new[] { albumVariant, artist }
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
+            if (string.IsNullOrWhiteSpace(albumQuery))
+            {
+                return null;
+            }
+
+            var albumCandidates = await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken);
+            return PickBestCandidate(
+                albumCandidates,
+                isrc,
+                title,
+                artist,
+                album,
+                expectedDurationSec);
         }
 
         var candidates = new Dictionary<int, QobuzTrack>();
         await CollectAlbumCandidatesAsync(candidates, title, artist, album, cancellationToken);
         await CollectCandidatesAsync(candidates, title, artist, album, requireArtist: !string.IsNullOrWhiteSpace(isrc), cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(isrc))
-        {
-            await CollectQueryAsync(candidates, $"isrc:{isrc.Trim()}", cancellationToken);
-        }
 
         var best = PickBestCandidate(candidates.Values, isrc, title, artist, album, expectedDurationSec);
         return best;
@@ -98,7 +132,31 @@ public sealed class QobuzTrackResolver
         int? durationMs,
         CancellationToken cancellationToken)
     {
-        var track = await TryGetTrackAsync(trackId.Value, cancellationToken);
+        var track = !string.IsNullOrWhiteSpace(isrc)
+            ? await TryFindTrackByISRCAsync(isrc, cancellationToken)
+            : await TryGetTrackAsync(trackId.Value, cancellationToken);
+        if ((track == null || track.Id != trackId.Value)
+            && !string.IsNullOrWhiteSpace(title)
+            && !string.IsNullOrWhiteSpace(artist))
+        {
+            var query = $"{title.Trim()} {artist.Trim()}";
+            track = (await SearchTracksSafeAsync(query, cancellationToken))
+                .FirstOrDefault(candidate => candidate.Id == trackId.Value);
+        }
+        if ((track == null || track.Id != trackId.Value)
+            && !string.IsNullOrWhiteSpace(album))
+        {
+            var albumVariant = BuildAlbumTitleVariants(album)
+                .OrderBy(static value => value.Length)
+                .FirstOrDefault();
+            var albumQuery = string.Join(' ', new[] { albumVariant, artist }
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
+            if (!string.IsNullOrWhiteSpace(albumQuery))
+            {
+                track = (await SearchAlbumTracksSafeAsync(albumQuery, cancellationToken))
+                    .FirstOrDefault(candidate => candidate.Id == trackId.Value);
+            }
+        }
         if (track == null || track.Id <= 0)
         {
             return null;
@@ -108,6 +166,7 @@ public sealed class QobuzTrackResolver
             ? (int)Math.Round(durationMs.Value / 1000d)
             : 0;
         if (!string.IsNullOrWhiteSpace(isrc)
+            && !string.IsNullOrWhiteSpace(track.ISRC)
             && !IsExactIsrcMatch(track, isrc))
         {
             return null;
@@ -119,6 +178,11 @@ public sealed class QobuzTrackResolver
         }
 
         var score = ScoreCandidate(track, title, artist, album, expectedDurationSec, preferHiRes: true);
+        if (!string.IsNullOrWhiteSpace(isrc))
+        {
+            return BuildResolution(track, "direct_isrc", Math.Max(score, 20));
+        }
+
         var hasAuthoritativeMetadataMatch = HasAuthoritativeMetadataMatch(
             track,
             title,

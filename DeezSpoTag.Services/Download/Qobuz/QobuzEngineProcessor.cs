@@ -1074,13 +1074,24 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             resolutionCts.CancelAfter(QobuzTrackResolutionTimeout);
             try
             {
-                resolution = await _qobuzTrackResolver.ResolveTrackAsync(
-                    resolvedIsrc,
-                    payload.Title,
-                    payload.Artist,
-                    payload.Album,
-                    payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-                    resolutionCts.Token);
+                var directTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
+                resolution = directTrackId.HasValue
+                    && QobuzTrackId.TryCreate(directTrackId.Value, out var validatedTrackId)
+                    ? await _qobuzTrackResolver.ValidateTrackIdAsync(
+                        validatedTrackId,
+                        resolvedIsrc,
+                        payload.Title,
+                        payload.Artist,
+                        payload.Album,
+                        payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
+                        resolutionCts.Token)
+                    : await _qobuzTrackResolver.ResolveTrackAsync(
+                        resolvedIsrc,
+                        payload.Title,
+                        payload.Artist,
+                        payload.Album,
+                        payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
+                        resolutionCts.Token);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {

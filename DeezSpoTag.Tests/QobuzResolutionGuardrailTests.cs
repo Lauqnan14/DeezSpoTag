@@ -143,6 +143,15 @@ public sealed class QobuzResolutionGuardrailTests
         Assert.Contains("amazonId,", downloadIntentService, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void QobuzDownload_ValidatesResolvedTrackIdWithoutRepeatingCatalogSearch()
+    {
+        var source = ReadSource("DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs");
+
+        Assert.Contains("QobuzTrackId.TryCreate(directTrackId.Value", source, StringComparison.Ordinal);
+        Assert.Contains("_qobuzTrackResolver.ValidateTrackIdAsync", source, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

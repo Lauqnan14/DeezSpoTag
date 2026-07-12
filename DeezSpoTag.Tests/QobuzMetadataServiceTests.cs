@@ -16,6 +16,28 @@ namespace DeezSpoTag.Tests;
 public sealed class QobuzMetadataServiceTests
 {
     [Fact]
+    public async Task FindTrackByIsrc_UsesExactCatalogSearchResult()
+    {
+        var expected = new QobuzTrack { Id = 41904271, ISRC = "USCGH1697037", Title = "Caroline" };
+        var apiClient = new StubQobuzApiClient
+        {
+            CatalogResponse = new QobuzCatalogSearchResponse
+            {
+                Tracks = new QobuzSearchList<QobuzTrack> { Items = [expected] }
+            }
+        };
+        var options = Options.Create(new QobuzApiConfig { DefaultStore = "us-en" });
+        var service = new QobuzMetadataService(
+            apiClient,
+            new QobuzArtistService(apiClient, new MemoryCache(new MemoryCacheOptions()), options),
+            options);
+
+        var track = await service.FindTrackByISRC("USCGH1697037", CancellationToken.None);
+
+        Assert.Same(expected, track);
+    }
+
+    [Fact]
     public async Task QobuzApiClient_ParsesAlbumPageTrackMetadata()
     {
         using var client = new HttpClient(new StubHttpMessageHandler("""
@@ -329,4 +351,5 @@ public sealed class QobuzMetadataServiceTests
             });
         }
     }
+
 }
