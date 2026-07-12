@@ -74,6 +74,7 @@ public sealed class LibraryDbService
             ["idx_download_blocklist_normalized"] = (DownloadBlocklistTable, "normalized_value, is_enabled", false),
             ["idx_manual_unavailable_track_added"] = (ManualUnavailableTrackTable, "added_at_utc DESC", false),
             ["idx_manual_unavailable_track_destination"] = (ManualUnavailableTrackTable, DestinationFolderIdColumn, false),
+            ["idx_manual_unavailable_track_retry"] = (ManualUnavailableTrackTable, "next_retry_at_utc", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
             ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false),
             ["idx_album_artist_id"] = (AlbumTable, ArtistIdColumn, false),
@@ -571,11 +572,14 @@ CREATE TABLE IF NOT EXISTS manual_unavailable_track (
     reason TEXT,
     payload_json TEXT,
     first_unavailable_at_utc TEXT NOT NULL,
+    next_retry_at_utc TEXT NOT NULL,
     added_at_utc TEXT NOT NULL,
     updated_at_utc TEXT NOT NULL
 );", cancellationToken);
+        await EnsureColumnAsync(connection, ManualUnavailableTrackTable, "next_retry_at_utc", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_added", ManualUnavailableTrackTable, "added_at_utc DESC", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_manual_unavailable_track_destination", ManualUnavailableTrackTable, DestinationFolderIdColumn, unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_manual_unavailable_track_retry", ManualUnavailableTrackTable, "next_retry_at_utc", unique: false, cancellationToken);
 
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS track_shazam_cache (

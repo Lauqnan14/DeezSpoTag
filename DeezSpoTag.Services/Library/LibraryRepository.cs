@@ -13257,11 +13257,67 @@ SELECT id,
        reason,
        payload_json,
        first_unavailable_at_utc,
+       COALESCE(next_retry_at_utc, datetime(added_at_utc, '+7 days')) AS next_retry_at_utc,
        added_at_utc,
        updated_at_utc
 FROM manual_unavailable_track
-ORDER BY added_at_utc DESC, id DESC;";
+ORDER BY added_at_utc ASC, id ASC;";
         await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<ManualUnavailableTrackDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(await ReadManualUnavailableTrackAsync(reader, cancellationToken));
+        }
+
+        return results;
+    }
+
+    public async Task<IReadOnlyList<ManualUnavailableTrackDto>> GetDueManualUnavailableTracksAsync(
+        DateTimeOffset dueAtUtc,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || limit <= 0)
+        {
+            return Array.Empty<ManualUnavailableTrackDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id,
+       queue_uuid,
+       title,
+       artist,
+       album,
+       album_artist,
+       isrc,
+       engine,
+       source_service,
+       source_url,
+       deezer_track_id,
+       spotify_track_id,
+       apple_track_id,
+       qobuz_track_id,
+       tidal_track_id,
+       amazon_track_id,
+       destination_folder_id,
+       expected_final_path,
+       quality,
+       content_type,
+       reason,
+       payload_json,
+       first_unavailable_at_utc,
+       COALESCE(next_retry_at_utc, datetime(added_at_utc, '+7 days')) AS next_retry_at_utc,
+       added_at_utc,
+       updated_at_utc
+FROM manual_unavailable_track
+WHERE COALESCE(next_retry_at_utc, datetime(added_at_utc, '+7 days')) <= @dueAtUtc
+ORDER BY next_retry_at_utc ASC, id ASC
+LIMIT @limit;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("dueAtUtc", dueAtUtc.UtcDateTime.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var results = new List<ManualUnavailableTrackDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -13299,18 +13355,20 @@ ORDER BY added_at_utc DESC, id DESC;";
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        var now = DateTimeOffset.UtcNow;
+        var nowText = now.ToString("O", CultureInfo.InvariantCulture);
+        var nextRetryText = (input.NextRetryAtUtc ?? now.AddDays(7)).UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
         const string sql = @"
 INSERT INTO manual_unavailable_track (
     queue_uuid, title, artist, album, album_artist, isrc, engine, source_service, source_url,
     deezer_track_id, spotify_track_id, apple_track_id, qobuz_track_id, tidal_track_id, amazon_track_id,
     destination_folder_id, expected_final_path, quality, content_type, reason, payload_json,
-    first_unavailable_at_utc, added_at_utc, updated_at_utc)
+    first_unavailable_at_utc, next_retry_at_utc, added_at_utc, updated_at_utc)
 VALUES (
     @queueUuid, @title, @artist, @album, @albumArtist, @isrc, @engine, @sourceService, @sourceUrl,
     @deezerTrackId, @spotifyTrackId, @appleTrackId, @qobuzTrackId, @tidalTrackId, @amazonTrackId,
     @destinationFolderId, @expectedFinalPath, @quality, @contentType, @reason, @payloadJson,
-    @now, @now, @now)
+    @now, @nextRetryAtUtc, @now, @now)
 ON CONFLICT(queue_uuid) DO UPDATE SET
     title = excluded.title,
     artist = excluded.artist,
@@ -13332,6 +13390,7 @@ ON CONFLICT(queue_uuid) DO UPDATE SET
     content_type = excluded.content_type,
     reason = excluded.reason,
     payload_json = excluded.payload_json,
+    next_retry_at_utc = excluded.next_retry_at_utc,
     updated_at_utc = excluded.updated_at_utc
 RETURNING id,
           queue_uuid,
@@ -13356,6 +13415,7 @@ RETURNING id,
           reason,
           payload_json,
           first_unavailable_at_utc,
+          next_retry_at_utc,
           added_at_utc,
           updated_at_utc;";
         await using var command = new SqliteCommand(sql, connection);
@@ -13380,7 +13440,8 @@ RETURNING id,
         command.Parameters.AddWithValue("contentType", ToDbText(input.ContentType));
         command.Parameters.AddWithValue("reason", ToDbText(input.Reason));
         command.Parameters.AddWithValue("payloadJson", ToDbText(input.PayloadJson));
-        command.Parameters.AddWithValue("now", now);
+        command.Parameters.AddWithValue("now", nowText);
+        command.Parameters.AddWithValue("nextRetryAtUtc", nextRetryText);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
@@ -13400,6 +13461,31 @@ RETURNING id,
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand("DELETE FROM manual_unavailable_track WHERE id = @id;", connection);
         command.Parameters.AddWithValue("id", id);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<bool> ScheduleManualUnavailableTrackRetryAsync(
+        long id,
+        DateTimeOffset nextRetryAtUtc,
+        string? reason,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured || id <= 0)
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE manual_unavailable_track
+SET next_retry_at_utc = @nextRetryAtUtc,
+    reason = COALESCE(@reason, reason),
+    updated_at_utc = @updatedAtUtc
+WHERE id = @id;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("nextRetryAtUtc", nextRetryAtUtc.UtcDateTime.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("reason", ToDbText(reason));
+        command.Parameters.AddWithValue("updatedAtUtc", DateTimeOffset.UtcNow.UtcDateTime.ToString("O", CultureInfo.InvariantCulture));
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
@@ -13431,7 +13517,8 @@ RETURNING id,
             await reader.IsDBNullAsync(21, cancellationToken) ? null : reader.GetString(21),
             ParseUtcDateTimeOffsetInvariant(reader.GetString(22)),
             ParseUtcDateTimeOffsetInvariant(reader.GetString(23)),
-            ParseUtcDateTimeOffsetInvariant(reader.GetString(24)));
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(24)),
+            ParseUtcDateTimeOffsetInvariant(reader.GetString(25)));
 
     private static object ToDbDate(DateTimeOffset? value)
         => value.HasValue ? value.Value.UtcDateTime.ToString("O", CultureInfo.InvariantCulture) : DBNull.Value;

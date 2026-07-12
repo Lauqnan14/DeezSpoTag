@@ -36,6 +36,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
     private const string GlobalRoutingTemplateSourceId = "__playlist_routing_rules_template__";
     private const string PlaylistWatchType = "playlist";
     private const string PlaylistWatchlistEntryNotFoundMessage = "Playlist watchlist entry not found.";
+    private const string ManualUnavailableImageUrl = "/images/unavailable/unavailable.jpg";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
     private readonly PlaylistWatchService _playlistWatchService;
@@ -144,9 +145,32 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         var tracks = await _repository.GetManualUnavailableTracksAsync(cancellationToken);
         return Ok(new
         {
-            imageUrl = "/images/unavailable/unavailable.jpg",
+            imageUrl = ManualUnavailableImageUrl,
             count = tracks.Count,
             tracks
+        });
+    }
+
+    [HttpGet("manual-unavailable/tracklist")]
+    public async Task<IActionResult> GetManualUnavailableTracklist(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var tracks = await _repository.GetManualUnavailableTracksAsync(cancellationToken);
+        return Ok(new
+        {
+            title = "Unavailable Tracks",
+            name = "Unavailable Tracks",
+            description = "Manual downloads that were unavailable from enabled sources.",
+            creator = new { name = "DeezSpoTag" },
+            cover_big = ManualUnavailableImageUrl,
+            cover_xl = ManualUnavailableImageUrl,
+            picture = ManualUnavailableImageUrl,
+            nb_tracks = tracks.Count,
+            tracks = tracks.Select(MapManualUnavailableTrack)
         });
     }
 
@@ -162,6 +186,50 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return deleted
             ? Ok(new { success = true, deleted = true })
             : NotFound("Unavailable track record not found.");
+    }
+
+    private static object MapManualUnavailableTrack(ManualUnavailableTrackDto track, int index)
+    {
+        var coverUrl = ManualUnavailableImageUrl;
+        return new
+        {
+            id = track.DeezerId ?? track.QueueUuid,
+            manualUnavailableId = track.Id,
+            queueUuid = track.QueueUuid,
+            title = track.Title,
+            artist = new { name = track.Artist },
+            artistName = track.Artist,
+            album = new
+            {
+                title = string.IsNullOrWhiteSpace(track.Album) ? "Unknown" : track.Album,
+                cover_medium = coverUrl,
+                cover_big = coverUrl
+            },
+            albumArtist = track.AlbumArtist,
+            duration = 0,
+            durationMs = 0,
+            preview = string.Empty,
+            link = track.SourceUrl ?? string.Empty,
+            sourceUrl = track.SourceUrl ?? string.Empty,
+            sourceTrackId = track.QueueUuid,
+            track_position = index + 1,
+            deezerId = track.DeezerId,
+            spotifyId = track.SpotifyId,
+            appleId = track.AppleId,
+            qobuzId = track.QobuzId,
+            tidalId = track.TidalId,
+            amazonId = track.AmazonId,
+            isrc = track.Isrc,
+            quality = track.Quality,
+            contentType = string.IsNullOrWhiteSpace(track.ContentType) ? "music" : track.ContentType,
+            destinationFolderId = track.DestinationFolderId,
+            expectedFinalPath = track.ExpectedFinalPath,
+            reason = track.Reason,
+            firstUnavailableAtUtc = track.FirstUnavailableAtUtc,
+            addedAtUtc = track.AddedAtUtc,
+            nextRetryAtUtc = track.NextRetryAtUtc,
+            retryInUtc = track.NextRetryAtUtc
+        };
     }
 
     private PlaylistWatchlistDto HydratePlaylistVisual(PlaylistWatchlistDto item)

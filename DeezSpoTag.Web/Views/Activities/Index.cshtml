@@ -5008,7 +5008,7 @@ async function clearCanceledTasks() {
 	            || statusForUi === 'canceled'
 	            || (statusForUi === 'complete' && task.failed > 0)));
 	        const canMonitorUnavailable = task.canMonitorUnavailable === true && statusForUi === 'unavailable';
-	        const canDelete = task.canDelete === true || (task.canDelete === undefined && (statusForUi === 'failed' || statusForUi === 'canceled'));
+	        const canDelete = task.canDelete === true || (task.canDelete === undefined && (statusForUi === 'failed' || statusForUi === 'unavailable' || statusForUi === 'canceled'));
 	        const canCancel = task.canCancel === true || (task.canCancel === undefined && (
 	            statusForUi === 'queued'
 	            || statusForUi === 'waiting'
@@ -5036,6 +5036,9 @@ async function clearCanceledTasks() {
 		        const deleteFailedButton = canDelete && statusForUi === 'failed'
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
+		        const deleteUnavailableButton = canDelete && statusForUi === 'unavailable'
+		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
+		            : '';
 		        const deleteCanceledButton = canDelete && statusForUi === 'canceled'
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${taskActionAttrs} onclick="deleteFailedTask('${safeTaskIdArg}')">${activityActionIconSvg('delete')}<span>Delete</span></button>`
 		            : '';
@@ -5048,8 +5051,8 @@ async function clearCanceledTasks() {
 		            ? `<button type="button" class="btn-danger action-btn action-btn-sm"${cancelActionAttrs} onclick="cancelTask('${safeTaskIdArg}')">${activityActionIconSvg('cancel')}<span>Cancel</span></button>`
 		            : '';
 
-        const taskActions = (pauseButton || resumeButton || retryButton || monitorUnavailableButton || deleteFailedButton || deleteCanceledButton || cancelButton)
-            ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${monitorUnavailableButton}${deleteFailedButton}${deleteCanceledButton}${cancelButton}</div>`
+        const taskActions = (pauseButton || resumeButton || retryButton || monitorUnavailableButton || deleteFailedButton || deleteUnavailableButton || deleteCanceledButton || cancelButton)
+            ? `<div class="task-actions">${pauseButton}${resumeButton}${retryButton}${monitorUnavailableButton}${deleteFailedButton}${deleteUnavailableButton}${deleteCanceledButton}${cancelButton}</div>`
             : '';
 
         const displayQuality = normalizeTaskQualityLabel(task);

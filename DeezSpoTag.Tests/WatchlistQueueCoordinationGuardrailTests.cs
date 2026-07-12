@@ -182,7 +182,50 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("if (string.Equals(effectiveItem.Status, UnavailableStatus", appSource, StringComparison.Ordinal);
         Assert.Contains("IsMonitorableUnavailableActivityItem(item)", activitiesSource, StringComparison.Ordinal);
         Assert.Contains("payload[\"status\"] = IsMonitorableUnavailableActivityItem(item)", activitiesSource, StringComparison.Ordinal);
-        Assert.Contains("payload[\"canRetry\"] = IsMonitorableUnavailableActivityItem(item) ? false", activitiesSource, StringComparison.Ordinal);
+        Assert.Contains("payload[\"canRetry\"] = CanRetryActivityItem(item)", activitiesSource, StringComparison.Ordinal);
+        Assert.Contains("ActivityStatus.Failed or ActivityStatus.Unavailable or ActivityStatus.Canceled", activitiesSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualUnavailablePlaylist_RendersAsLastNormalTracklistWithRetryColumn()
+    {
+        var watchlistSource = ReadSource("DeezSpoTag.Web/wwwroot/js/library-watchlists.js");
+        var tracklistSource = ReadSource("DeezSpoTag.Web/Views/Tracklist/Index.cshtml");
+        var apiSource = ReadSource("DeezSpoTag.Web/Controllers/Api/LibraryPlaylistWatchlistApiController.cs");
+
+        Assert.Contains("items.map((item, index) =>", watchlistSource, StringComparison.Ordinal);
+        Assert.Contains("}).join('') + manualUnavailableCard", watchlistSource, StringComparison.Ordinal);
+        Assert.Contains("/Tracklist?id=manual-unavailable&type=playlist&source=manual-unavailable", watchlistSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("openManualUnavailablePlaylistPanel", watchlistSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("renderManualUnavailableTrackRow", watchlistSource, StringComparison.Ordinal);
+        Assert.Contains("manual-unavailable/tracklist", apiSource, StringComparison.Ordinal);
+        Assert.Contains("nextRetryAtUtc", apiSource, StringComparison.Ordinal);
+        Assert.Contains("function isManualUnavailableTracklist()", tracklistSource, StringComparison.Ordinal);
+        Assert.Contains("await loadManualUnavailableTracklist();", tracklistSource, StringComparison.Ordinal);
+        Assert.Contains("renderManualUnavailableRetryCell(track)", tracklistSource, StringComparison.Ordinal);
+        Assert.Contains("isManualUnavailableTracklist() ? 'Retry in' : 'State'", tracklistSource, StringComparison.Ordinal);
+        Assert.Contains("data-manual-unavailable-retry-at", tracklistSource, StringComparison.Ordinal);
+        Assert.Contains("data-manual-unavailable-delete", tracklistSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualUnavailableRetry_PersistsPerTrackDeadlineAndUsesCentralManualQueue()
+    {
+        var modelsSource = ReadSource("DeezSpoTag.Services/Library/Models.cs");
+        var schemaSource = ReadSource("DeezSpoTag.Services/Library/Schema/library.sql");
+        var repositorySource = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
+        var retryServiceSource = ReadSource("DeezSpoTag.Web/Services/ManualUnavailableRetryService.cs");
+        var programSource = ReadSource("DeezSpoTag.Web/Program.cs");
+
+        Assert.Contains("DateTimeOffset NextRetryAtUtc", modelsSource, StringComparison.Ordinal);
+        Assert.Contains("next_retry_at_utc TEXT NOT NULL", schemaSource, StringComparison.Ordinal);
+        Assert.Contains("idx_manual_unavailable_track_retry", schemaSource, StringComparison.Ordinal);
+        Assert.Contains("GetDueManualUnavailableTracksAsync", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("ScheduleManualUnavailableTrackRetryAsync", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("intentService.EnqueueManualAsync(intent", retryServiceSource, StringComparison.Ordinal);
+        Assert.Contains("DateTimeOffset.UtcNow.Add(RetryDelay)", retryServiceSource, StringComparison.Ordinal);
+        Assert.Contains("DeleteManualUnavailableTrackAsync(track.Id", retryServiceSource, StringComparison.Ordinal);
+        Assert.Contains("ManualUnavailableRetryService", programSource, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

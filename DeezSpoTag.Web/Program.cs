@@ -1654,6 +1654,11 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Download intent background queue after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.ManualUnavailableRetryService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.ManualUnavailableRetryService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Manual unavailable track retry sweep after HTTP readiness.");
         services.AddScoped<DeezSpoTag.Web.Services.DownloadIntentService>();
         services.AddScoped<DeezSpoTag.Web.Services.TrackAvailabilityService>();
         services.AddSingleton<DeezSpoTag.Services.Download.ISpotifyIdResolver, DeezSpoTag.Web.Services.SpotifyIdResolver>();

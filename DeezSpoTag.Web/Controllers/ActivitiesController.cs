@@ -382,7 +382,7 @@ public class ActivitiesController : Controller
 
             if (!CanDeleteActivityItem(item))
             {
-                return BadRequest("Only failed or canceled downloads can be deleted");
+                return BadRequest("Only failed, unavailable, or canceled downloads can be deleted");
             }
 
             var hidden = await _queueRepository.MarkActivitiesClearedByUuidAsync(request.Uuid, HttpContext.RequestAborted);
@@ -432,7 +432,7 @@ public class ActivitiesController : Controller
 
             if (!CanRetryActivityItem(item))
             {
-                return BadRequest("Only failed, canceled, or partially failed completed downloads can be retried");
+                return BadRequest("Only failed, unavailable, canceled, or partially failed completed downloads can be retried");
             }
 
             var retryQueued = await GetDeezSpoTagApp().RetryDownloadAsync(request.Uuid, HttpContext.RequestAborted);
@@ -696,13 +696,13 @@ public class ActivitiesController : Controller
     private static bool CanRetryActivityItem(DownloadQueueItem item)
     {
         var activityStatus = GetActivityStatus(item.Status);
-        return activityStatus is ActivityStatus.Failed or ActivityStatus.Canceled
+        return activityStatus is ActivityStatus.Failed or ActivityStatus.Unavailable or ActivityStatus.Canceled
             || (activityStatus == ActivityStatus.Complete && (item.Failed ?? 0) > 0);
     }
 
     private static bool CanDeleteActivityItem(DownloadQueueItem item)
     {
-        return GetActivityStatus(item.Status) is ActivityStatus.Failed or ActivityStatus.Canceled;
+        return GetActivityStatus(item.Status) is ActivityStatus.Failed or ActivityStatus.Unavailable or ActivityStatus.Canceled;
     }
 
     private static bool CanClearActivityItem(DownloadQueueItem item)
@@ -740,7 +740,7 @@ public class ActivitiesController : Controller
         payload["canPause"] = CanPauseActivityItem(item);
         payload["canResume"] = CanResumeActivityItem(item);
         payload["canCancel"] = CanCancelActivityItem(item);
-        payload["canRetry"] = IsMonitorableUnavailableActivityItem(item) ? false : CanRetryActivityItem(item);
+        payload["canRetry"] = CanRetryActivityItem(item);
         payload["canDelete"] = CanDeleteActivityItem(item);
         payload["canClear"] = CanClearActivityItem(item);
         payload["canMonitorUnavailable"] = CanMonitorUnavailableItem(item, payload, monitoredUnavailableQueueUuids);

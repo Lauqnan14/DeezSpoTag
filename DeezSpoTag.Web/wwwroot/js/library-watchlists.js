@@ -1657,7 +1657,7 @@ async function loadPlaylistWatchlist() {
             ? renderManualUnavailablePlaylistCard(manualUnavailableTracks, manualUnavailable?.imageUrl)
             : '';
 
-        container.innerHTML = manualUnavailableCard + items.map((item, index) => {
+        container.innerHTML = items.map((item, index) => {
             const imageUrl = toSafeHttpUrl(item.imageUrl || '');
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`
@@ -1728,7 +1728,7 @@ async function loadPlaylistWatchlist() {
                     ${circuitMeta ? `<div class="watchlist-card-meta">${escapeHtml(circuitMeta)}</div>` : ''}
                 </div>
             </div>`;
-        }).join('');
+        }).join('') + manualUnavailableCard;
 
         bindPlaylistWatchlistDragOrdering(container);
 
@@ -1742,7 +1742,7 @@ async function loadPlaylistWatchlist() {
 
         container.querySelectorAll('[data-manual-unavailable-open]').forEach(button => {
             button.addEventListener('click', () => {
-                openManualUnavailablePlaylistPanel(manualUnavailableTracks);
+                window.location.href = '/Tracklist?id=manual-unavailable&type=playlist&source=manual-unavailable';
             });
         });
 
@@ -1974,85 +1974,6 @@ function renderManualUnavailablePlaylistCard(tracks, imageUrl) {
             <div class="watchlist-card-meta">${escapeHtml(trackLabel)}</div>
             <div class="watchlist-card-meta">Manual downloads only</div>
         </div>
-    </div>`;
-}
-
-function openManualUnavailablePlaylistPanel(tracks) {
-    const existing = document.getElementById('manualUnavailablePlaylistPanel');
-    if (existing) {
-        existing.remove();
-    }
-
-    const overlay = document.createElement('div');
-    overlay.id = 'manualUnavailablePlaylistPanel';
-    overlay.className = 'playlist-settings-overlay manual-unavailable-overlay';
-    const rows = Array.isArray(tracks) && tracks.length > 0
-        ? tracks.map(track => renderManualUnavailableTrackRow(track)).join('')
-        : '<div class="watchlist-empty-state">No unavailable tracks.</div>';
-    overlay.innerHTML = `<div class="playlist-settings-panel watchlist-playlist-settings manual-unavailable-panel">
-        <div class="playlist-settings-panel-header">
-            <div>
-                <h3>Unavailable Tracks</h3>
-                <p>Manual downloads that were unavailable from enabled sources.</p>
-            </div>
-            <button type="button" class="playlist-settings-close" data-manual-unavailable-close aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-        <div class="manual-unavailable-tracklist">${rows}</div>
-    </div>`;
-    document.body.appendChild(overlay);
-    overlay.querySelector('[data-manual-unavailable-close]')?.addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', event => {
-        if (event.target === overlay) {
-            overlay.remove();
-        }
-    });
-    overlay.querySelectorAll('[data-manual-unavailable-delete]').forEach(button => {
-        button.addEventListener('click', async () => {
-            const id = button.dataset.manualUnavailableDelete;
-            if (!id) {
-                return;
-            }
-            const confirmed = await confirmWithAppUi(
-                'Delete this unavailable track record permanently?',
-                { title: 'Delete Unavailable Record', okText: 'Delete' });
-            if (!confirmed) {
-                return;
-            }
-            button.disabled = true;
-            try {
-                await fetchJson(`/api/library/playlists/manual-unavailable/${encodeURIComponent(id)}`, { method: 'DELETE' });
-                button.closest('.manual-unavailable-row')?.remove();
-                await loadPlaylistWatchlist();
-                if (!overlay.querySelector('.manual-unavailable-row')) {
-                    overlay.remove();
-                }
-            } catch (error) {
-                button.disabled = false;
-                showToast(`Unavailable record delete failed: ${error.message}`, true);
-            }
-        });
-    });
-}
-
-function renderManualUnavailableTrackRow(track) {
-    const title = track?.title || 'Unknown Track';
-    const artist = track?.artist || 'Unknown Artist';
-    const album = track?.album || '';
-    const quality = track?.quality || track?.contentType || '';
-    const destination = track?.expectedFinalPath || (track?.destinationFolderId ? `Destination folder ${track.destinationFolderId}` : '');
-    const reason = track?.reason || 'Unavailable from enabled sources.';
-    return `<div class="manual-unavailable-row">
-        <div class="manual-unavailable-row-main">
-            <div class="manual-unavailable-title">${escapeHtml(title)}</div>
-            <div class="manual-unavailable-meta">${escapeHtml([artist, album].filter(Boolean).join(' • '))}</div>
-            ${quality ? `<div class="manual-unavailable-meta">${escapeHtml(quality)}</div>` : ''}
-            ${destination ? `<div class="manual-unavailable-meta">${escapeHtml(destination)}</div>` : ''}
-            <div class="manual-unavailable-reason">${escapeHtml(reason)}</div>
-        </div>
-        <button type="button" class="dropdown-item danger manual-unavailable-delete" data-manual-unavailable-delete="${escapeHtml(String(track?.id || ''))}">
-            <i class="fa-solid fa-trash"></i>
-            <span>Delete</span>
-        </button>
     </div>`;
 }
 

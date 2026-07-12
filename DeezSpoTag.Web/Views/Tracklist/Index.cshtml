@@ -745,6 +745,35 @@
     color: #aab4c4;
 }
 
+.manual-unavailable-retry-cell {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.manual-unavailable-retry-countdown {
+    color: var(--text-primary);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.manual-unavailable-delete-inline {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid color-mix(in srgb, #ff5f6d 36%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, #ff5f6d 12%, transparent);
+    color: #ff7a86;
+    cursor: pointer;
+}
+
+.manual-unavailable-delete-inline .material-icons {
+    font-size: 16px;
+}
+
 .availability-icons {
     display: inline-flex;
     gap: 8px;
@@ -1585,6 +1614,7 @@ let monitorStatusRequestSeq = 0;
 let monitorMutationInFlight = false;
 let monitoredPlaylistTrackStatuses = new Map();
 let monitoredPlaylistTracklistActive = false;
+let manualUnavailableRetryTimer = null;
 
 function getDeezerTracklistUrl() {
     const normalizedType = String(tracklistType || '').trim().toLowerCase();
@@ -1640,6 +1670,10 @@ function isSpotifyPlaylistDeezerMatchContext() {
 function isRecommendationTracklistContext() {
     return (requestSource || tracklistSource || '').toLowerCase() === 'recommendations'
         || String(tracklistType || '').toLowerCase() === 'recommendation';
+}
+
+function isManualUnavailableTracklist() {
+    return (requestSource || tracklistSource || '').toLowerCase() === 'manual-unavailable';
 }
 
 function isPodcastTracklistContext() {
@@ -2344,6 +2378,11 @@ async function loadTracklist() {
             return;
         }
 
+        if (isManualUnavailableTracklist()) {
+            await loadManualUnavailableTracklist();
+            return;
+        }
+
         if (tracklistSource === 'plex') {
             await loadPlexTracklist();
             return;
@@ -2409,6 +2448,18 @@ async function loadTracklist() {
         const message = error && error.message ? error.message : 'Failed to load tracklist';
         document.getElementById('tracklist-container').innerHTML = `<div class="error">${message}</div>`;
     }
+}
+
+async function loadManualUnavailableTracklist() {
+    resetSpotifyState();
+    const response = await fetch('/api/library/playlists/manual-unavailable/tracklist');
+    if (!response.ok) {
+        throw new Error(`Failed to load unavailable tracklist (HTTP ${response.status})`);
+    }
+
+    const payload = await response.json();
+    await loadIgnoredTracks();
+    renderTracklist(payload, { allowEmptyTracks: true });
 }
 
 async function preloadMonitoredPlaylistTrackStatuses() {
@@ -3321,9 +3372,10 @@ function renderTracklist(data, options = {}) {
         downloadActions.style.display = isLocalSource ? 'none' : 'flex';
     }
     if (monitorButton) {
-        monitorButton.disabled = isLocalSource;
+        monitorButton.disabled = isLocalSource || isManualUnavailableTracklist();
+        monitorButton.style.display = isManualUnavailableTracklist() ? 'none' : '';
     }
-    if (!isLocalSource) {
+    if (!isLocalSource && !isManualUnavailableTracklist()) {
         updateMonitorButtonState();
     } else {
         setIgnoreVisibility(false);
@@ -3390,21 +3442,25 @@ function renderTracklist(data, options = {}) {
 
     bindTracklistHeaderActions();
     bindSoundtrackTracklistMatchButton();
-    if (!isLocalSource) {
+    if (!isLocalSource && !isManualUnavailableTracklist()) {
         void updateMonitorButtonState();
     }
     applyIgnoredTrackState();
     bindIgnoreButtons();
     bindRecommendationRejectButtons();
+    bindManualUnavailableDeleteButtons();
+    startManualUnavailableRetryCountdowns();
     scheduleAvailabilityChecks(tracks, isLocalSource);
 
     const externalSource = (tracklistSource || '').toLowerCase();
-    if (externalSource && externalSource !== 'deezer' && !isRecommendationTracklistContext()) {
+    if (externalSource && externalSource !== 'deezer' && !isRecommendationTracklistContext() && !isManualUnavailableTracklist()) {
         scheduleExternalTracklistMatches(tracks, externalSource);
     }
 
     preloadDeezerPlaybackContextsForVisibleRows();
-    void loadTracklistRecommendations();
+    if (!isManualUnavailableTracklist()) {
+        void loadTracklistRecommendations();
+    }
 }
 
 async function loadTracklistRecommendations() {
@@ -5066,6 +5122,10 @@ function shouldRenderIgnoreColumn(isPlaylistLike, isLocalSource) {
 }
 
 function shouldShowMonitoredStateColumn(isLocalSource) {
+    if (isManualUnavailableTracklist()) {
+        return true;
+    }
+
     return monitoredPlaylistTracklistActive && !isLocalSource && tracklistLayoutIsPlaylistLike;
 }
 
@@ -5130,6 +5190,105 @@ function renderTrackLocationStatusCell(status) {
     const label = String(status?.label || '').trim() || resolveTrackLocationStatusLabel(normalizedStatus);
     const detail = String(status?.detail || '').trim();
     return `<span class="track-location-status-pill track-location-status-pill--${escapeHtml(normalizedStatus)}" title="${escapeHtml(detail)}">${escapeHtml(label)}</span>`;
+}
+
+function renderManualUnavailableRetryCell(track) {
+    const retryAt = String(track?.nextRetryAtUtc || track?.retryInUtc || '').trim();
+    const recordId = String(track?.manualUnavailableId || '').trim();
+    const reason = String(track?.reason || 'Unavailable from enabled sources.').trim();
+    const title = retryAt ? `Next automatic availability check: ${retryAt}` : reason;
+    return `<div class="manual-unavailable-retry-cell" title="${escapeHtml(title)}">
+        <span class="manual-unavailable-retry-countdown" data-manual-unavailable-retry-at="${escapeHtml(retryAt)}">${escapeHtml(formatManualUnavailableRetryIn(retryAt))}</span>
+        ${recordId ? `<button class="manual-unavailable-delete-inline" type="button" data-manual-unavailable-delete="${escapeHtml(recordId)}" title="Delete unavailable record permanently" aria-label="Delete unavailable record">
+            <span class="material-icons" aria-hidden="true">delete</span>
+        </button>` : ''}
+    </div>`;
+}
+
+function formatManualUnavailableRetryIn(value) {
+    if (!value) {
+        return 'Pending';
+    }
+
+    const retryAtMs = Date.parse(value);
+    if (!Number.isFinite(retryAtMs)) {
+        return 'Pending';
+    }
+
+    const remainingMs = retryAtMs - Date.now();
+    if (remainingMs <= 0) {
+        return 'Due now';
+    }
+
+    const totalSeconds = Math.ceil(remainingMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0) {
+        return `${days}d ${hours}h`;
+    }
+    if (hours > 0) {
+        return `${hours}h ${minutes}m`;
+    }
+    if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+    }
+    return `${seconds}s`;
+}
+
+function refreshManualUnavailableRetryCountdowns() {
+    document.querySelectorAll('[data-manual-unavailable-retry-at]').forEach(element => {
+        element.textContent = formatManualUnavailableRetryIn(element.dataset.manualUnavailableRetryAt || '');
+    });
+}
+
+function startManualUnavailableRetryCountdowns() {
+    if (manualUnavailableRetryTimer) {
+        clearInterval(manualUnavailableRetryTimer);
+        manualUnavailableRetryTimer = null;
+    }
+
+    if (!isManualUnavailableTracklist()) {
+        return;
+    }
+
+    refreshManualUnavailableRetryCountdowns();
+    manualUnavailableRetryTimer = setInterval(refreshManualUnavailableRetryCountdowns, 1000);
+}
+
+function bindManualUnavailableDeleteButtons() {
+    if (!isManualUnavailableTracklist()) {
+        return;
+    }
+
+    document.querySelectorAll('[data-manual-unavailable-delete]').forEach(button => {
+        button.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const id = button.dataset.manualUnavailableDelete;
+            if (!id) {
+                return;
+            }
+
+            const confirmed = await DeezSpoTag.ui.confirm(
+                'Delete this unavailable track record permanently?',
+                { title: 'Delete Unavailable Record', okText: 'Delete' });
+            if (!confirmed) {
+                return;
+            }
+
+            button.disabled = true;
+            try {
+                await fetchJson(`/api/library/playlists/manual-unavailable/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                button.closest('tr[data-track-index]')?.remove();
+                showTracklistToast('Unavailable record deleted.', 'success');
+            } catch (error) {
+                button.disabled = false;
+                showTracklistToast(`Unavailable record delete failed: ${error.message}`, 'error');
+            }
+        });
+    });
 }
 
 function resolveMonitoredTrackLocationStatus(track, source) {
@@ -6161,7 +6320,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             ${collectionCell}
             ${shouldShowQualityColumn() ? `<td class="track-quality">${renderQualityCell(track)}</td>` : ''}
             <td class="track-duration">${formatTrackDurationSeconds(durationSeconds)}</td>
-            ${shouldShowMonitoredStateColumn(isLocalSource) ? `<td class="track-location-status">${renderTrackLocationStatusCell(resolveMonitoredTrackLocationStatus(track, playbackSource))}</td>` : ''}
+            ${shouldShowMonitoredStateColumn(isLocalSource) ? `<td class="track-location-status">${isManualUnavailableTracklist() ? renderManualUnavailableRetryCell(track) : renderTrackLocationStatusCell(resolveMonitoredTrackLocationStatus(track, playbackSource))}</td>` : ''}
             ${shouldShowAvailabilityColumn(isLocalSource) ? `<td class="track-availability">${renderAvailabilityCell()}</td>` : ''}
             <td class="track-actions">
                 <div class="track-actions-row">
@@ -6255,7 +6414,7 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
                     <th class="track-duration">
                         <span class="material-icons">timer</span>
                     </th>
-                    ${shouldShowMonitoredStateColumn(isLocalSource) ? '<th class="track-location-status">State</th>' : ''}
+                    ${shouldShowMonitoredStateColumn(isLocalSource) ? `<th class="track-location-status">${isManualUnavailableTracklist() ? 'Retry in' : 'State'}</th>` : ''}
                     ${shouldShowAvailabilityColumn(isLocalSource) ? '<th class="track-availability">Availability</th>' : ''}
                     <th class="track-actions">
                         <div class="track-actions-row">

@@ -146,6 +146,7 @@ public sealed record ManualUnavailableTrackDto(
     string? Reason,
     string? PayloadJson,
     DateTimeOffset FirstUnavailableAtUtc,
+    DateTimeOffset NextRetryAtUtc,
     DateTimeOffset AddedAtUtc,
     DateTimeOffset UpdatedAtUtc);
 
@@ -170,7 +171,8 @@ public sealed record ManualUnavailableTrackUpsertInput(
     string? Quality,
     string? ContentType,
     string? Reason,
-    string? PayloadJson);
+    string? PayloadJson,
+    DateTimeOffset? NextRetryAtUtc = null);
 
 public sealed record ShazamTrackCacheDto(
     long TrackId,

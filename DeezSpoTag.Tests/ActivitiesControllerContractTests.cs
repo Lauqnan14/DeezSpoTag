@@ -296,6 +296,20 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void ActivitiesDownloadsTab_UnavailableRowsKeepRetryDeleteAndMonitorActions()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("statusForUi === 'unavailable'", source, StringComparison.Ordinal);
+        Assert.Contains("const retryButton = canRetry", source, StringComparison.Ordinal);
+        Assert.Contains("const monitorUnavailableButton = canMonitorUnavailable", source, StringComparison.Ordinal);
+        Assert.Contains("const deleteUnavailableButton = canDelete && statusForUi === 'unavailable'", source, StringComparison.Ordinal);
+        Assert.Contains("${retryButton}${monitorUnavailableButton}${deleteFailedButton}${deleteUnavailableButton}", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PauseQueuedAsync_CoversAllPendingActiveStatuses()
     {
         var source = File.ReadAllText(Path.Combine(

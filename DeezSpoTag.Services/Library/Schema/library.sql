@@ -625,6 +625,7 @@ CREATE TABLE IF NOT EXISTS manual_unavailable_track (
     reason TEXT,
     payload_json TEXT,
     first_unavailable_at_utc TEXT NOT NULL,
+    next_retry_at_utc TEXT NOT NULL,
     added_at_utc TEXT NOT NULL,
     updated_at_utc TEXT NOT NULL
 );
@@ -634,6 +635,9 @@ CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_added
 
 CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_destination
     ON manual_unavailable_track (destination_folder_id);
+
+CREATE INDEX IF NOT EXISTS idx_manual_unavailable_track_retry
+    ON manual_unavailable_track (next_retry_at_utc);
 
 CREATE TABLE IF NOT EXISTS track_shazam_cache (
     track_id BIGINT PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
