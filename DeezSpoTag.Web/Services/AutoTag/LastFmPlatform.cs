@@ -16,7 +16,9 @@ public sealed class LastFmPlatform : AutoTagPlatformBase
             RequiresAuth = true,
             SupportedTags = new List<SupportedTag>
             {
-                SupportedTag.Genre
+                SupportedTag.Genre,
+                SupportedTag.Style,
+                SupportedTag.Mood
             },
             CustomOptions = new PlatformCustomOptions
             {
@@ -28,6 +30,13 @@ public sealed class LastFmPlatform : AutoTagPlatformBase
                         Label = "Max tags",
                         Tooltip = "How many top tags to keep from Last.fm (higher = noisier).",
                         Value = new PlatformCustomOptionNumber { Min = 1, Max = 50, Step = 1, Value = 12, Slider = true }
+                    },
+                    new()
+                    {
+                        Id = "minTagCount",
+                        Label = "Minimum tag weight",
+                        Tooltip = "Reject weak community tags below this Last.fm weight.",
+                        Value = new PlatformCustomOptionNumber { Min = 0, Max = 100, Step = 1, Value = 10, Slider = true }
                     }
                 }
             }

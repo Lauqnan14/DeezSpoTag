@@ -4,8 +4,9 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class LastFmConfig
 {
-    public string ApiKey { get; set; } = string.Empty;
     public int MaxTags { get; set; } = 12;
+    public int MinTagCount { get; set; } = 10;
+    public double MinRelativeWeight { get; set; } = 0.15;
 }
 
 public sealed class LastFmTopTagsResponse
@@ -24,6 +25,18 @@ public sealed class LastFmTopTagsContainer
 {
     [JsonPropertyName("tag")]
     public List<LastFmTag>? Tag { get; init; }
+
+    [JsonPropertyName("@attr")]
+    public LastFmTopTagsAttributes? Attributes { get; init; }
+}
+
+public sealed class LastFmTopTagsAttributes
+{
+    [JsonPropertyName("artist")]
+    public string Artist { get; init; } = string.Empty;
+
+    [JsonPropertyName("track")]
+    public string Track { get; init; } = string.Empty;
 }
 
 public sealed class LastFmTag
@@ -32,6 +45,6 @@ public sealed class LastFmTag
     public string Name { get; init; } = string.Empty;
 
     [JsonPropertyName("count")]
-    public string? Count { get; init; }
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    public int? Count { get; init; }
 }
-
