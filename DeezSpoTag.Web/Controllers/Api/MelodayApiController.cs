@@ -11,7 +11,8 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.IgnoreAntiforgeryToken]
 public class MelodayApiController : ControllerBase
 {
-    private static readonly TimeSpan ManualRunTimeout = TimeSpan.FromSeconds(60);
+    // A run updates every populated library and may contact three remote media servers.
+    private static readonly TimeSpan ManualRunTimeout = TimeSpan.FromMinutes(15);
     private readonly MelodayService _melodayService;
 
     public MelodayApiController(MelodayService melodayService)
@@ -28,7 +29,7 @@ public class MelodayApiController : ControllerBase
         MelodayRunResult result;
         try
         {
-            result = await _melodayService.RunAsync(refreshHistory: false, timeout.Token);
+            result = await _melodayService.RunAsync(refreshHistory: true, timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

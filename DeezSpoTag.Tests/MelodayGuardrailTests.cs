@@ -34,14 +34,16 @@ public sealed class MelodayGuardrailTests
     }
 
     [Fact]
-    public void Meloday_Uses_Stable_App_Mix_Identity_Instead_Of_Target_User_Identity()
+    public void Meloday_Uses_Stable_Library_Specific_App_Mix_Identity()
     {
         var source = ReadMelodayService();
 
         Assert.Contains("MelodayAppUserId", source, StringComparison.Ordinal);
         Assert.Contains("EnsureMelodayAppUserAsync", source, StringComparison.Ordinal);
-        Assert.Contains("BuildMelodayMixId(mode)", source, StringComparison.Ordinal);
-        Assert.Contains("=> $\"meloday-{MelodayModes.Normalize(mode)}\"", source, StringComparison.Ordinal);
+        Assert.Contains("BuildMelodayMixId(mode, context.Library.Id)", source, StringComparison.Ordinal);
+        Assert.Contains("BuildMelodayMixId(string mode, long libraryId)", source, StringComparison.Ordinal);
+        Assert.Contains("=> $\"meloday-{MelodayModes.Normalize(mode)}-{libraryId}\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildMelodayMixId(mode),", source, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildMelodayMixId(mode, context.HistoryTarget.Service)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("meloday-{targetService}", source, StringComparison.Ordinal);
     }
@@ -85,20 +87,27 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("DELETE FROM mix_item WHERE mix_cache_id", repository, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM mix_cache WHERE id", repository, StringComparison.Ordinal);
         Assert.Contains("className = \"meloday-playlist-delete\"", script, StringComparison.Ordinal);
+        Assert.Contains("headers.set(\"X-CSRF-TOKEN\", csrfToken)", script, StringComparison.Ordinal);
+        Assert.Contains("credentials: \"same-origin\"", script, StringComparison.Ordinal);
         Assert.Contains("method: \"DELETE\"", script, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Meloday_Default_Library_Selection_Does_Not_Stop_At_First_One_Track_Library()
+    public void Meloday_Generates_A_Distinct_Mix_For_Every_Nonempty_Library()
     {
         var source = ReadMelodayService();
-        var body = ExtractMethodBody(source, "private async Task<LibraryDto?> SelectLibraryAsync");
+        var resolverBody = ExtractMethodBody(source, "private async Task<IReadOnlyList<LibraryDto>> ResolveMelodayLibrariesAsync");
+        var runBody = ExtractMethodBody(source, "public async Task<MelodayRunResult> RunAsync");
 
-        Assert.Contains("requestedTrackCount", body, StringComparison.Ordinal);
-        Assert.Contains("bestLibrary", body, StringComparison.Ordinal);
-        Assert.Contains("sample.Count > bestCount", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("GetRandomTrackIdsAsync(library.Id, 1", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("return library;", body, StringComparison.Ordinal);
+        Assert.Contains("string.IsNullOrWhiteSpace(libraryName)", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("string.Equals(library.Name, libraryName.Trim()", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("GetRandomTrackIdsAsync", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("if (sample.Count > 0)", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("populatedLibraries.Add(library)", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("foreach (var library in libraries)", runBody, StringComparison.Ordinal);
+        Assert.Contains("BuildMelodayMixId(mode, context.Library.Id)", source, StringComparison.Ordinal);
+        Assert.Contains("context.Library.Name} {GetModeLabel(mode)}", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SelectLibraryAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]

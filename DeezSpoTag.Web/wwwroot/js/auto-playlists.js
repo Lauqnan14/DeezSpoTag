@@ -98,20 +98,29 @@
 
     const deleteMix = async (playlist) => {
         if (!playlist?.id || !playlist?.libraryId) {
-            return;
+            return false;
         }
 
         if (!confirm(`Delete ${playlist.name || "this Meloday playlist"} from DeezSpoTag?`)) {
-            return;
+            return false;
+        }
+
+        const headers = new Headers();
+        const csrfToken = document.querySelector('meta[name="deezspotag-csrf-token"]')?.getAttribute("content")?.trim();
+        if (csrfToken) {
+            headers.set("X-CSRF-TOKEN", csrfToken);
         }
 
         const response = await fetch(`/api/mixes/${encodeURIComponent(playlist.id)}?libraryId=${encodeURIComponent(playlist.libraryId)}`, {
-            method: "DELETE"
+            method: "DELETE",
+            headers,
+            credentials: "same-origin"
         });
         if (!response.ok && response.status !== 404) {
             throw new Error(`Delete failed: HTTP ${response.status}`);
         }
-        loadMixes();
+        await loadMixes();
+        return true;
     };
 
     const openRecommendationStation = (station, libraryId) => {
@@ -251,7 +260,10 @@
             event.stopPropagation();
             deleteButton.disabled = true;
             try {
-                await deleteMix(playlist);
+                const deleted = await deleteMix(playlist);
+                if (!deleted) {
+                    deleteButton.disabled = false;
+                }
             } catch {
                 deleteButton.disabled = false;
             }

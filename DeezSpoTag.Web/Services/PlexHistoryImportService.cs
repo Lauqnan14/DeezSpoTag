@@ -41,12 +41,16 @@ public sealed class PlexHistoryImportService
             plex.MachineIdentifier,
             cancellationToken);
 
-        var history = await _plexApiClient.GetHistoryAsync(plex.Url, plex.Token, cancellationToken);
         var latestImportedUtc = await _libraryRepository.GetLatestPlayHistoryUtcAsync(
             plexUserId,
             "plex",
             cancellationToken);
         var importFromUtc = latestImportedUtc?.Subtract(ImportOverlap);
+        var history = await _plexApiClient.GetHistoryAsync(
+            plex.Url,
+            plex.Token,
+            importFromUtc,
+            cancellationToken);
         var pendingHistory = history
             .Where(static item => item.ViewedAtUtc is not null)
             .Where(item => !importFromUtc.HasValue || item.ViewedAtUtc!.Value >= importFromUtc.Value)
@@ -69,7 +73,7 @@ public sealed class PlexHistoryImportService
         foreach (var item in pendingHistory)
         {
             var trackId = await ResolveTrackIdAsync(item, trackIdsByRatingKey, metadataLookupCache, stats, cancellationToken);
-            var libraryId = await ResolveLibraryIdAsync(item.FilePath, cancellationToken);
+            var libraryId = await ResolveLibraryIdAsync(item.FilePath, trackId, cancellationToken);
             if (!trackId.HasValue) stats.Unresolved++;
 
             AddRatingKeyUpsertIfAvailable(item.RatingKey, trackId, trackIdsByRatingKey, ratingKeyUpserts);
@@ -151,15 +155,15 @@ public sealed class PlexHistoryImportService
         return trackIdsByRatingKey.TryGetValue(ratingKey, out trackId);
     }
 
-    private async Task<long?> ResolveLibraryIdAsync(string? filePath, CancellationToken cancellationToken)
+    private async Task<long?> ResolveLibraryIdAsync(string? filePath, long? trackId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(filePath))
         {
-            return null;
+            return trackId.HasValue ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken) : null;
         }
 
         var folder = await _libraryRepository.ResolveFolderForPathAsync(filePath, cancellationToken);
-        return folder?.LibraryId;
+        return folder?.LibraryId ?? (trackId.HasValue ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken) : null);
     }
 
     private static void AddRatingKeyUpsertIfAvailable(

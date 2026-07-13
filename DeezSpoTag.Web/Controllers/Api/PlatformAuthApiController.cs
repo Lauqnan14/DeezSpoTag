@@ -112,16 +112,16 @@ public class PlatformAuthApiController : ControllerBase
 
         return Ok(new
         {
-            spotify = state.Spotify,
+            spotify = state.Spotify is null ? null : new { state.Spotify.ActiveAccount, accounts = state.Spotify.Accounts?.Select(a => new { a.Name, a.Region, a.CreatedAt, a.UpdatedAt }) },
             spotifyConnected = HasSpotifyRuntimeCredentials(state.Spotify),
             deezerConnected = _deezerSessionManager.LoggedIn && _deezerSessionManager.CurrentUser is not null,
-            discogs = state.Discogs,
+            discogs = state.Discogs is null ? null : new { state.Discogs.Username, state.Discogs.AvatarUrl, state.Discogs.Location, tokenSaved = !string.IsNullOrWhiteSpace(state.Discogs.Token) },
             lastFm = ToPublicLastFm(state.LastFm),
-            bpmSupreme = state.BpmSupreme,
-            plex = state.Plex,
-            jellyfin = state.Jellyfin,
+            bpmSupreme = state.BpmSupreme is null ? null : new { state.BpmSupreme.Email, state.BpmSupreme.Library, passwordSaved = !string.IsNullOrWhiteSpace(state.BpmSupreme.Password) },
+            plex = state.Plex is null ? null : new { state.Plex.Url, state.Plex.ServerName, state.Plex.MachineIdentifier, state.Plex.Version, state.Plex.Username, state.Plex.AvatarUrl, tokenSaved = !string.IsNullOrWhiteSpace(state.Plex.Token) },
+            jellyfin = state.Jellyfin is null ? null : new { state.Jellyfin.Url, state.Jellyfin.Username, state.Jellyfin.UserId, state.Jellyfin.ServerName, state.Jellyfin.Version, state.Jellyfin.AvatarUrl, apiKeySaved = !string.IsNullOrWhiteSpace(state.Jellyfin.ApiKey) },
             navidrome = ToPublicNavidrome(state.Navidrome),
-            appleMusic = state.AppleMusic,
+            appleMusic = state.AppleMusic is null ? null : new { state.AppleMusic.Email, mediaUserTokenSaved = !string.IsNullOrWhiteSpace(state.AppleMusic.MediaUserToken), authorizationTokenSaved = !string.IsNullOrWhiteSpace(state.AppleMusic.AuthorizationToken), state.AppleMusic.WrapperReady, state.AppleMusic.WrapperLoggedInAt },
             qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
             tidal = ToPublicTidal(state.Tidal, tidalProviders),
             amazonMusic = ToPublicAmazonMusic(state.AmazonMusic, amazonProviders),

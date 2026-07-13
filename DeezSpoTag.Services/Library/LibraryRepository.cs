@@ -3079,6 +3079,68 @@ WHERE t.id IN (
             .ToList();
     }
 
+    public async Task<long?> GetLibraryIdForTrackAsync(long trackId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT f.library_id
+FROM track_local tl
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE tl.track_id = @trackId
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value is null or DBNull ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    public async Task<int> BackfillPlayHistoryLibraryIdsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE play_history
+SET library_id = (
+    SELECT f.library_id
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE tl.track_id = play_history.track_id
+    LIMIT 1
+)
+WHERE library_id IS NULL
+  AND track_id IS NOT NULL
+  AND EXISTS (
+      SELECT 1 FROM track_local tl
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE tl.track_id = play_history.track_id
+  );";
+        await using var command = new SqliteCommand(sql, connection);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> DeleteLegacyMelodayMixesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string legacyPredicate = @"
+mix_id LIKE 'meloday-%'
+AND mix_id NOT GLOB 'meloday-direct-[0-9]*'
+AND mix_id NOT GLOB 'meloday-sonic-[0-9]*'";
+        await using (var items = new SqliteCommand(
+            $"DELETE FROM mix_item WHERE mix_cache_id IN (SELECT id FROM mix_cache WHERE {legacyPredicate});",
+            connection,
+            transaction))
+        {
+            await items.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using var mixes = new SqliteCommand($"DELETE FROM mix_cache WHERE {legacyPredicate};", connection, transaction);
+        var deleted = await mixes.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
+    }
+
     public async Task<IReadOnlyList<string>> GetPlexRatingKeysAsync(IReadOnlyList<long> trackIds, CancellationToken cancellationToken = default)
     {
         if (trackIds.Count == 0)

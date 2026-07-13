@@ -12,6 +12,7 @@ public sealed class NavidromeApiClient
     private const string ClientName = "DeezSpoTag";
     private const string ApiVersion = "1.16.1";
     private const string NativeAuthorizationHeader = "X-ND-Authorization";
+    private const int DefaultHistoryPageSize = 500;
     private readonly HttpClient _httpClient;
 
     public NavidromeApiClient(HttpClient httpClient)
@@ -73,6 +74,83 @@ public sealed class NavidromeApiClient
                 song.Duration.HasValue ? song.Duration.Value * 1000 : null,
                 song.Path))
             .ToList() ?? new List<NavidromeAudioTrack>();
+    }
+
+    public async Task<List<NavidromeHistoryItem>> GetPlayHistoryAsync(
+        string serverUrl,
+        string username,
+        string password,
+        DateTimeOffset? playedSinceUtc = null,
+        int pageSize = DefaultHistoryPageSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password))
+        {
+            return new List<NavidromeHistoryItem>();
+        }
+
+        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return new List<NavidromeHistoryItem>();
+        }
+
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 5000);
+        var normalizedSinceUtc = playedSinceUtc?.ToUniversalTime();
+        var history = new List<NavidromeHistoryItem>();
+        for (var offset = 0; ; offset += normalizedPageSize)
+        {
+            var page = await GetNativeSongHistoryPageAsync(
+                serverUrl,
+                token,
+                offset,
+                normalizedPageSize,
+                cancellationToken);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            var reachedImportBoundary = false;
+            foreach (var song in page)
+            {
+                if (!song.PlayDate.HasValue)
+                {
+                    reachedImportBoundary = true;
+                    continue;
+                }
+
+                var playedAtUtc = song.PlayDate.Value.ToUniversalTime();
+                if (normalizedSinceUtc.HasValue && playedAtUtc < normalizedSinceUtc.Value)
+                {
+                    reachedImportBoundary = true;
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(song.Id))
+                {
+                    continue;
+                }
+
+                history.Add(new NavidromeHistoryItem(
+                    song.Id,
+                    song.Title ?? string.Empty,
+                    song.Artist ?? string.Empty,
+                    song.Duration.HasValue ? (int?)Math.Round(song.Duration.Value * 1000d) : null,
+                    ResolveNativeSongPath(song.LibraryPath, song.Path),
+                    playedAtUtc,
+                    song.PlayCount));
+            }
+
+            if (reachedImportBoundary || page.Count < normalizedPageSize)
+            {
+                break;
+            }
+        }
+
+        return history;
     }
 
     public async Task<List<NavidromeArtistSummary>> SearchArtistsAsync(
@@ -558,6 +636,70 @@ public sealed class NavidromeApiClient
         }
     }
 
+    private async Task<List<NavidromeNativeSong>> GetNativeSongHistoryPageAsync(
+        string serverUrl,
+        string token,
+        int offset,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var query = string.Join("&", new[]
+        {
+            $"_start={offset}",
+            $"_end={offset + pageSize}",
+            "_sort=playDate",
+            "_order=DESC"
+        });
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{BuildNativeUrl(serverUrl, "/api/song")}?{query}");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
+
+        try
+        {
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new List<NavidromeNativeSong>();
+            }
+
+            return await response.Content.ReadFromJsonAsync<List<NavidromeNativeSong>>(
+                cancellationToken: cancellationToken) ?? new List<NavidromeNativeSong>();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new List<NavidromeNativeSong>();
+        }
+        catch (HttpRequestException)
+        {
+            return new List<NavidromeNativeSong>();
+        }
+        catch (JsonException)
+        {
+            return new List<NavidromeNativeSong>();
+        }
+    }
+
+    private static string? ResolveNativeSongPath(string? libraryPath, string? songPath)
+    {
+        if (string.IsNullOrWhiteSpace(songPath))
+        {
+            return null;
+        }
+
+        var normalizedSongPath = songPath.Trim();
+        if (string.IsNullOrWhiteSpace(libraryPath)
+            || normalizedSongPath.StartsWith("/", StringComparison.Ordinal)
+            || normalizedSongPath.StartsWith('\\')
+            || (normalizedSongPath.Length > 2 && char.IsLetter(normalizedSongPath[0]) && normalizedSongPath[1] == ':'))
+        {
+            return normalizedSongPath;
+        }
+
+        return $"{libraryPath.Trim().TrimEnd('/', '\\')}/{normalizedSongPath.TrimStart('/', '\\')}";
+    }
+
     private static string BuildUrl(
         string serverUrl,
         string method,
@@ -638,6 +780,14 @@ public sealed class NavidromeApiClient
 
 public sealed record NavidromeSystemInfo(string? Version, string ServerName);
 public sealed record NavidromeAudioTrack(string Id, string Title, string Artist, int? DurationMs, string? FilePath = null);
+public sealed record NavidromeHistoryItem(
+    string ItemId,
+    string Title,
+    string Artist,
+    int? DurationMs,
+    string? FilePath,
+    DateTimeOffset PlayedAtUtc,
+    long PlayCount);
 public sealed record NavidromeArtistSummary(string Id, string Name, string? CoverArt = null);
 public sealed record NavidromeArtistInfo(
     string? Biography,
@@ -675,6 +825,26 @@ file sealed class NavidromeNativeLoginResponse
 {
     [JsonPropertyName("token")]
     public string? Token { get; set; }
+}
+
+internal sealed class NavidromeNativeSong
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+    [JsonPropertyName("artist")]
+    public string? Artist { get; set; }
+    [JsonPropertyName("duration")]
+    public double? Duration { get; set; }
+    [JsonPropertyName("path")]
+    public string? Path { get; set; }
+    [JsonPropertyName("libraryPath")]
+    public string? LibraryPath { get; set; }
+    [JsonPropertyName("playDate")]
+    public DateTimeOffset? PlayDate { get; set; }
+    [JsonPropertyName("playCount")]
+    public long PlayCount { get; set; }
 }
 
 file sealed class NavidromeSearchResponse

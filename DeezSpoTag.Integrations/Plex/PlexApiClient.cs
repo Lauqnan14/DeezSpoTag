@@ -22,6 +22,8 @@ public class PlexApiClient
     private const string ParentThumbAttributeName = "parentThumb";
     private const int PlaylistItemBatchSize = 50;
     private const int PlaylistItemsPageSize = 200;
+    private const int HistoryPageSize = 200;
+    private const int DefaultHistoryItemLimit = 200;
     private readonly ILogger<PlexApiClient> _logger;
     private readonly HttpClient _httpClient;
     private sealed record SectionMediaRequest(
@@ -2165,56 +2167,92 @@ public class PlexApiClient
         var items = string.Join(",", ratingKeys);
         return $"server://{machineIdentifier}/com.plexapp.plugins.library/library/metadata/{items}";
     }
-    public async Task<List<PlexHistoryItem>> GetHistoryAsync(string serverUrl, string token, CancellationToken cancellationToken = default)
+    public Task<List<PlexHistoryItem>> GetHistoryAsync(
+        string serverUrl,
+        string token,
+        CancellationToken cancellationToken = default)
+    {
+        return GetHistoryInternalAsync(
+            serverUrl,
+            token,
+            viewedSinceUtc: null,
+            maxItems: DefaultHistoryItemLimit,
+            cancellationToken);
+    }
+
+    public Task<List<PlexHistoryItem>> GetHistoryAsync(
+        string serverUrl,
+        string token,
+        DateTimeOffset? viewedSinceUtc,
+        CancellationToken cancellationToken = default)
+    {
+        return GetHistoryInternalAsync(
+            serverUrl,
+            token,
+            viewedSinceUtc,
+            maxItems: null,
+            cancellationToken);
+    }
+
+    private async Task<List<PlexHistoryItem>> GetHistoryInternalAsync(
+        string serverUrl,
+        string token,
+        DateTimeOffset? viewedSinceUtc,
+        int? maxItems,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var baseUrl = serverUrl.TrimEnd('/');
-            var urls = new[]
+            if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(token))
             {
-                $"{baseUrl}/status/sessions/history?X-Plex-Token={token}",
-                $"{baseUrl}/status/sessions/history/all?X-Plex-Token={token}",
-                $"{baseUrl}/status/sessions/history?X-Plex-Token={token}&X-Plex-Container-Start=0&X-Plex-Container-Size=200"
-            };
-
-            foreach (var url in urls)
-            {
-                using var response = await _httpClient.GetAsync(url, cancellationToken);
-                if (!response.IsSuccessStatusCode)
-                {
-                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                    {
-                        continue;
-                    }
-                    _logger.LogWarning("Failed to load Plex history from {Url}: {StatusCode}", url, response.StatusCode);
-                    return new List<PlexHistoryItem>();
-                }
-
-                var content = await response.Content.ReadAsStringAsync(cancellationToken);
-                var doc = XDocument.Parse(content);
-                var items = new List<PlexHistoryItem>();
-                foreach (var track in doc.Descendants(TrackElementName))
-                {
-                    var viewedAt = ParseUnixTime(track.Attribute("viewedAt")?.Value);
-                    var part = track.Descendants("Part").FirstOrDefault();
-                    var filePath = part?.Attribute("file")?.Value;
-                    items.Add(new PlexHistoryItem
-                    {
-                        RatingKey = track.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty,
-                        Title = track.Attribute(TitleAttributeName)?.Value ?? string.Empty,
-                        Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
-                        Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
-                        ViewedAtUtc = viewedAt,
-                        DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
-                        FilePath = filePath
-                    });
-                }
-
-                return items;
+                return [];
             }
 
-            _logger.LogWarning("Failed to load Plex history: NotFound");
-            return new List<PlexHistoryItem>();
+            var baseUrl = serverUrl.TrimEnd('/');
+            var sections = await GetLibrarySectionsAsync(baseUrl, token, cancellationToken);
+            var musicSectionKeys = sections
+                .Where(static section =>
+                    string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(section.Type, "music", StringComparison.OrdinalIgnoreCase))
+                .Select(static section => section.Key)
+                .Where(static key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // The supported endpoint contains every media type. Restricting by each
+            // music section prevents recent video plays from hiding audio history.
+            var sectionFilters = musicSectionKeys.Count > 0
+                ? musicSectionKeys.Cast<string?>().ToList()
+                : [null];
+            var primary = await LoadPagedHistoryAsync(
+                baseUrl,
+                token,
+                "/status/sessions/history/all",
+                sectionFilters,
+                viewedSinceUtc,
+                maxItems,
+                cancellationToken);
+            if (primary.EndpointAvailable)
+            {
+                return primary.Items;
+            }
+
+            // Older servers exposed the collection without the /all suffix.
+            var legacy = await LoadPagedHistoryAsync(
+                baseUrl,
+                token,
+                "/status/sessions/history",
+                sectionFilters,
+                viewedSinceUtc,
+                maxItems,
+                cancellationToken);
+            if (legacy.EndpointAvailable)
+            {
+                return legacy.Items;
+            }
+
+            _logger.LogWarning("Plex playback-history endpoints are not available on the configured server.");
+            return [];
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -2227,6 +2265,103 @@ public class PlexApiClient
             return new List<PlexHistoryItem>();
         }
     }
+
+    private async Task<PlexHistoryLoadResult> LoadPagedHistoryAsync(
+        string baseUrl,
+        string token,
+        string endpoint,
+        IReadOnlyList<string?> sectionFilters,
+        DateTimeOffset? viewedSinceUtc,
+        int? maxItems,
+        CancellationToken cancellationToken)
+    {
+        var items = new List<PlexHistoryItem>();
+        foreach (var sectionKey in sectionFilters)
+        {
+            var offset = 0;
+            while (!maxItems.HasValue || items.Count < maxItems.Value)
+            {
+                var requestedSize = maxItems.HasValue
+                    ? Math.Min(HistoryPageSize, maxItems.Value - items.Count)
+                    : HistoryPageSize;
+                var url = BuildHistoryUrl(baseUrl, endpoint, sectionKey, viewedSinceUtc);
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("X-Plex-Token", token);
+                request.Headers.TryAddWithoutValidation("X-Plex-Container-Start", offset.ToString(CultureInfo.InvariantCulture));
+                request.Headers.TryAddWithoutValidation("X-Plex-Container-Size", requestedSize.ToString(CultureInfo.InvariantCulture));
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    return new PlexHistoryLoadResult(false, []);
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning(
+                        "Failed to load Plex history from {Endpoint}: {StatusCode}",
+                        endpoint,
+                        response.StatusCode);
+                    return new PlexHistoryLoadResult(true, items);
+                }
+
+                var content = await response.Content.ReadAsStringAsync(cancellationToken);
+                var doc = XDocument.Parse(content);
+                var root = doc.Root;
+                var pageElements = root?.Elements().ToList() ?? [];
+                foreach (var track in pageElements.Where(static element => element.Name.LocalName == TrackElementName))
+                {
+                    var part = track.Descendants("Part").FirstOrDefault();
+                    items.Add(new PlexHistoryItem
+                    {
+                        RatingKey = track.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty,
+                        Title = track.Attribute(TitleAttributeName)?.Value ?? string.Empty,
+                        Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
+                        Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
+                        ViewedAtUtc = ParseUnixTime(track.Attribute("viewedAt")?.Value),
+                        DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
+                        FilePath = part?.Attribute("file")?.Value,
+                        LibrarySectionId = track.Attribute("librarySectionID")?.Value ?? sectionKey
+                    });
+                    if (maxItems.HasValue && items.Count >= maxItems.Value)
+                    {
+                        break;
+                    }
+                }
+
+                var totalSize = ParseInt(root?.Attribute("totalSize")?.Value);
+                offset += requestedSize;
+                if (pageElements.Count == 0
+                    || (totalSize > 0 && offset >= totalSize)
+                    || (totalSize == 0 && pageElements.Count < requestedSize))
+                {
+                    break;
+                }
+            }
+        }
+
+        return new PlexHistoryLoadResult(true, items);
+    }
+
+    private static string BuildHistoryUrl(
+        string baseUrl,
+        string endpoint,
+        string? sectionKey,
+        DateTimeOffset? viewedSinceUtc)
+    {
+        var query = new List<string> { "sort=viewedAt%3Adesc" };
+        if (!string.IsNullOrWhiteSpace(sectionKey))
+        {
+            query.Add($"librarySectionID={Uri.EscapeDataString(sectionKey)}");
+        }
+        if (viewedSinceUtc.HasValue)
+        {
+            query.Add($"viewedAt%3E={viewedSinceUtc.Value.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        return $"{baseUrl}{endpoint}?{string.Join('&', query)}";
+    }
+
+    private sealed record PlexHistoryLoadResult(bool EndpointAvailable, List<PlexHistoryItem> Items);
     private static PlexPlaylist ParsePlaylist(XElement element, string serverUrl, string token)
     {
         return new PlexPlaylist
@@ -2406,6 +2541,7 @@ public class PlexHistoryItem
     public DateTimeOffset? ViewedAtUtc { get; set; }
     public long DurationMs { get; set; }
     public string? FilePath { get; set; }
+    public string? LibrarySectionId { get; set; }
 }
 
 public class PlexPlaylistTrack

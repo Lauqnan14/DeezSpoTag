@@ -67,7 +67,8 @@ public sealed class MelodayCollaborators
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
         PlexHistoryImportService historyImportService,
-        JellyfinHistoryImportService jellyfinHistoryImportService)
+        JellyfinHistoryImportService jellyfinHistoryImportService,
+        NavidromeHistoryImportService navidromeHistoryImportService)
     {
         PlexApiClient = plexApiClient;
         JellyfinApiClient = jellyfinApiClient;
@@ -76,6 +77,7 @@ public sealed class MelodayCollaborators
         LibraryRepository = libraryRepository;
         HistoryImportService = historyImportService;
         JellyfinHistoryImportService = jellyfinHistoryImportService;
+        NavidromeHistoryImportService = navidromeHistoryImportService;
     }
 
     public PlexApiClient PlexApiClient { get; }
@@ -85,6 +87,7 @@ public sealed class MelodayCollaborators
     public LibraryRepository LibraryRepository { get; }
     public PlexHistoryImportService HistoryImportService { get; }
     public JellyfinHistoryImportService JellyfinHistoryImportService { get; }
+    public NavidromeHistoryImportService NavidromeHistoryImportService { get; }
 }
 
 public sealed class MelodayService
@@ -107,6 +110,7 @@ public sealed class MelodayService
     private readonly LibraryRepository _libraryRepository;
     private readonly PlexHistoryImportService _historyImportService;
     private readonly JellyfinHistoryImportService _jellyfinHistoryImportService;
+    private readonly NavidromeHistoryImportService _navidromeHistoryImportService;
     private readonly ILogger<MelodayService> _logger;
     private readonly MelodaySettingsStore _settingsStore;
     private readonly Random _random = new();
@@ -190,6 +194,7 @@ public sealed class MelodayService
         _libraryRepository = collaborators.LibraryRepository;
         _historyImportService = collaborators.HistoryImportService;
         _jellyfinHistoryImportService = collaborators.JellyfinHistoryImportService;
+        _navidromeHistoryImportService = collaborators.NavidromeHistoryImportService;
         _webRoot = env.WebRootPath;
         _logger = logger;
         _settingsStore = settingsStore;
@@ -236,18 +241,30 @@ public sealed class MelodayService
             {
                 await _jellyfinHistoryImportService.ImportAsync(cancellationToken);
             }
+
+            if (targets.Any(static target => target.IsNavidrome))
+            {
+                await _navidromeHistoryImportService.ImportAsync(cancellationToken);
+            }
         }
 
-        var libraries = await _libraryRepository.GetLibrariesAsync(cancellationToken);
-        var library = await SelectLibraryAsync(libraries, effective.LibraryName, effective.MaxTracks, cancellationToken);
-        if (library is null)
+        await _libraryRepository.BackfillPlayHistoryLibraryIdsAsync(cancellationToken);
+        await _libraryRepository.DeleteLegacyMelodayMixesAsync(cancellationToken);
+
+        var libraries = await ResolveMelodayLibrariesAsync(
+            await _libraryRepository.GetLibrariesAsync(cancellationToken),
+            effective.LibraryName,
+            cancellationToken);
+        if (libraries.Count == 0)
         {
-            _lastMessage = "No library configured.";
+            _lastMessage = string.IsNullOrWhiteSpace(effective.LibraryName)
+                ? "No nonempty music libraries are configured."
+                : $"Configured library '{effective.LibraryName.Trim()}' was not found or contains no tracks.";
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
         var historyUserIds = new List<long>();
-        foreach (var target in targets.Where(static target => target.IsPlex || target.IsJellyfin))
+        foreach (var target in targets)
         {
             var userId = await EnsureHistoryUserAsync(target, cancellationToken);
             if (!historyUserIds.Contains(userId))
@@ -265,62 +282,68 @@ public sealed class MelodayService
         var lookbackStart = now.AddDays(-effective.HistoryLookbackDays);
         var excludeStart = now.AddDays(-effective.ExcludePlayedDays);
 
-        var history = new List<PlayHistoryEntryDto>();
-        var excludedTrackIds = new HashSet<long>();
-        foreach (var historyUserId in historyUserIds)
-        {
-            var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
-                historyUserId,
-                library.Id,
-                lookbackStart,
-                period.Hours,
-                now,
-                cancellationToken);
-            history.AddRange(userHistory);
-
-            var userExcluded = await _libraryRepository.GetPlayedTrackIdsSinceAsync(
-                historyUserId,
-                library.Id,
-                excludeStart,
-                cancellationToken);
-            excludedTrackIds.UnionWith(userExcluded);
-        }
-
-        var historyTrackIds = history
-            .Select(entry => entry.TrackId)
-            .Where(id => !excludedTrackIds.Contains(id))
-            .Distinct()
-            .ToList();
-
-        var ratingKeyByTrackId = new Dictionary<long, string>();
-        var liveMetadataByTrackId = new Dictionary<long, PlexTrackMetadata>();
-
-        var balancedHistorical = BuildBalancedHistoricalSelection(history, excludedTrackIds, liveMetadataByTrackId, effective.MaxTracks);
         var sonicPlex = targets.FirstOrDefault(static target => target.IsPlex)?.Plex;
-        var similarContext = new SimilarTrackContext(
-            ratingKeyByTrackId,
-            excludedTrackIds,
-            excludeStart,
-            sonicPlex,
-            effective,
-            liveMetadataByTrackId,
-            cancellationToken);
         var requestedModes = ResolveRunModes(effective.Mode);
-        var runModeContext = new RunModeContext(
-            targets,
-            library,
-            historyTrackIds,
-            balancedHistorical,
-            similarContext,
-            periodName,
-            period,
-            username,
-            mixUserId,
-            sonicPlex);
         var results = new List<MelodayRunResult>();
-        foreach (var mode in requestedModes)
+        foreach (var library in libraries)
         {
-            results.Add(await RunModeAsync(mode, runModeContext, cancellationToken));
+            var history = new List<PlayHistoryEntryDto>();
+            var excludedTrackIds = new HashSet<long>();
+            foreach (var historyUserId in historyUserIds)
+            {
+                var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
+                    historyUserId,
+                    library.Id,
+                    lookbackStart,
+                    period.Hours,
+                    now,
+                    cancellationToken);
+                history.AddRange(userHistory);
+
+                var userExcluded = await _libraryRepository.GetPlayedTrackIdsSinceAsync(
+                    historyUserId,
+                    library.Id,
+                    excludeStart,
+                    cancellationToken);
+                excludedTrackIds.UnionWith(userExcluded);
+            }
+
+            var historyTrackIds = history
+                .Select(entry => entry.TrackId)
+                .Where(id => !excludedTrackIds.Contains(id))
+                .Distinct()
+                .ToList();
+            var ratingKeyByTrackId = new Dictionary<long, string>();
+            var liveMetadataByTrackId = new Dictionary<long, PlexTrackMetadata>();
+            var balancedHistorical = BuildBalancedHistoricalSelection(
+                history,
+                excludedTrackIds,
+                liveMetadataByTrackId,
+                effective.MaxTracks);
+            var similarContext = new SimilarTrackContext(
+                ratingKeyByTrackId,
+                excludedTrackIds,
+                excludeStart,
+                sonicPlex,
+                effective,
+                liveMetadataByTrackId,
+                cancellationToken);
+            var runModeContext = new RunModeContext(
+                targets,
+                library,
+                historyTrackIds,
+                balancedHistorical,
+                similarContext,
+                periodName,
+                period,
+                username,
+                mixUserId,
+                sonicPlex);
+
+            foreach (var mode in requestedModes)
+            {
+                results.Add(await RunModeAsync(mode, runModeContext, cancellationToken));
+            }
         }
 
         var successful = results.Where(static result => result.Success).ToList();
@@ -331,10 +354,20 @@ public sealed class MelodayService
         }
 
         _lastRunUtc = DateTimeOffset.UtcNow;
-        _lastMessage = successful.Count == 1
-            ? successful[0].Message
-            : "Meloday Direct and Sonic playlists updated.";
-        return new MelodayRunResult(true, _lastMessage, successful[0].PlaylistId);
+        _lastMessage = $"Generated {successful.Count} of {results.Count} Meloday playlists across {libraries.Count} {(libraries.Count == 1 ? "library" : "libraries")}.";
+        if (successful.Count < results.Count)
+        {
+            var failureMessages = results
+                .Where(static result => !result.Success)
+                .Select(static result => result.Message)
+                .Where(static message => !string.IsNullOrWhiteSpace(message));
+            _lastMessage += $" {string.Join(" ", failureMessages)}";
+        }
+
+        var firstPlaylistId = successful
+            .Select(static result => result.PlaylistId)
+            .FirstOrDefault(static playlistId => !string.IsNullOrWhiteSpace(playlistId));
+        return new MelodayRunResult(true, _lastMessage, firstPlaylistId);
     }
 
     private async Task<MelodayRunResult> RunModeAsync(
@@ -348,7 +381,7 @@ public sealed class MelodayService
 
         if (finalTracks.Count == 0)
         {
-            return new MelodayRunResult(false, $"No tracks available for Meloday {GetModeLabel(mode)}.", null);
+            return new MelodayRunResult(false, $"No tracks available for {context.Library.Name} Meloday {GetModeLabel(mode)}.", null);
         }
 
         var selectedTrackIds = finalTracks.Take(context.SimilarContext.Options.MaxTracks).ToList();
@@ -366,9 +399,12 @@ public sealed class MelodayService
         var persistedMetadata = (await _libraryRepository.GetPlexTrackMetadataAsync(orderedTrackIds, cancellationToken))
             .ToDictionary(entry => entry.TrackId);
 
+        var playlistPrefix = string.IsNullOrWhiteSpace(context.SimilarContext.Options.PlaylistPrefix)
+            ? "Meloday"
+            : context.SimilarContext.Options.PlaylistPrefix.Trim();
         var optionsForTitle = CloneOptionsWithPlaylistPrefix(
             context.SimilarContext.Options,
-            $"{context.SimilarContext.Options.PlaylistPrefix} {GetModeLabel(mode)}");
+            $"{playlistPrefix} {context.Library.Name} {GetModeLabel(mode)}");
         var (title, description) = BuildTitleAndDescription(new PlaylistDescriptionContext(
             optionsForTitle,
             context.PeriodName,
@@ -381,7 +417,7 @@ public sealed class MelodayService
 
         var mixCacheId = await _libraryRepository.UpsertMixCacheAsync(
             new LibraryRepository.MixCacheUpsertInput(
-                BuildMelodayMixId(mode),
+                BuildMelodayMixId(mode, context.Library.Id),
                 context.MixUserId,
                 context.Library.Id,
                 title,
@@ -416,11 +452,11 @@ public sealed class MelodayService
             .ToList();
         if (synced.Count == 0)
         {
-            return new MelodayRunResult(true, $"Meloday {GetModeLabel(mode)} was created in the app but was not synced to any target server.", null);
+            return new MelodayRunResult(true, $"{context.Library.Name} Meloday {GetModeLabel(mode)} was created in the app but was not synced to any target server.", null);
         }
 
         var services = string.Join(", ", synced.Select(static result => result.Service));
-        return new MelodayRunResult(true, $"Meloday {GetModeLabel(mode)} playlist updated in {services}.", synced[0].PlaylistId);
+        return new MelodayRunResult(true, $"{context.Library.Name} Meloday {GetModeLabel(mode)} playlist updated in {services}.", synced[0].PlaylistId);
     }
 
     private async Task<string?> TrySyncTargetPlaylistAsync(
@@ -466,8 +502,8 @@ public sealed class MelodayService
         return string.Equals(mode, MelodayModes.Direct, StringComparison.OrdinalIgnoreCase) ? "Direct" : "Sonic";
     }
 
-    private static string BuildMelodayMixId(string mode)
-        => $"meloday-{MelodayModes.Normalize(mode)}";
+    private static string BuildMelodayMixId(string mode, long libraryId)
+        => $"meloday-{MelodayModes.Normalize(mode)}-{libraryId}";
 
     private static MelodayOptions CloneOptionsWithPlaylistPrefix(MelodayOptions source, string playlistPrefix) => new()
     {
@@ -919,38 +955,30 @@ public sealed class MelodayService
         return true;
     }
 
-    private async Task<LibraryDto?> SelectLibraryAsync(
+    private async Task<IReadOnlyList<LibraryDto>> ResolveMelodayLibrariesAsync(
         IReadOnlyList<LibraryDto> libraries,
         string? libraryName,
-        int requestedTrackCount,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(libraryName))
-        {
-            return libraries.FirstOrDefault(l => string.Equals(l.Name, libraryName, StringComparison.OrdinalIgnoreCase));
-        }
-
-        LibraryDto? bestLibrary = null;
-        var bestCount = 0;
-        foreach (var library in libraries)
+        var candidates = string.IsNullOrWhiteSpace(libraryName)
+            ? libraries
+            : libraries
+                .Where(library => string.Equals(library.Name, libraryName.Trim(), StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        var populatedLibraries = new List<LibraryDto>();
+        foreach (var library in candidates)
         {
             var sample = await _libraryRepository.GetRandomTrackIdsAsync(
                 library.Id,
-                Math.Max(1, requestedTrackCount),
+                1,
                 cancellationToken);
-            if (sample.Count > bestCount)
+            if (sample.Count > 0)
             {
-                bestLibrary = library;
-                bestCount = sample.Count;
-            }
-
-            if (bestCount >= requestedTrackCount)
-            {
-                return bestLibrary;
+                populatedLibraries.Add(library);
             }
         }
 
-        return bestLibrary ?? (libraries.Count > 0 ? libraries[0] : null);
+        return populatedLibraries;
     }
 
     private async Task<List<long>> BuildInitialTrackSelectionAsync(
@@ -2539,6 +2567,7 @@ public sealed class MelodayService
     {
         public bool IsPlex => string.Equals(Service, "plex", StringComparison.OrdinalIgnoreCase);
         public bool IsJellyfin => string.Equals(Service, "jellyfin", StringComparison.OrdinalIgnoreCase);
+        public bool IsNavidrome => string.Equals(Service, "navidrome", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record GeneratedMelodayCover(string? Url, string? FilePath, string ContentType);

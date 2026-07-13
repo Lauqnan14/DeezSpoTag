@@ -55,7 +55,7 @@ public sealed class JellyfinHistoryImportService
         foreach (var item in history)
         {
             var trackId = await ResolveTrackIdAsync(item, metadataLookupCache, stats, cancellationToken);
-            var libraryId = await ResolveLibraryIdAsync(item.FilePath, cancellationToken);
+            var libraryId = await ResolveLibraryIdAsync(item.FilePath, trackId, cancellationToken);
             if (!trackId.HasValue)
             {
                 stats.Unresolved++;
@@ -133,15 +133,19 @@ public sealed class JellyfinHistoryImportService
         return resolved;
     }
 
-    private async Task<long?> ResolveLibraryIdAsync(string? filePath, CancellationToken cancellationToken)
+    private async Task<long?> ResolveLibraryIdAsync(string? filePath, long? trackId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(filePath))
         {
-            return null;
+            return trackId.HasValue
+                ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken)
+                : null;
         }
 
         var folder = await _libraryRepository.ResolveFolderForPathAsync(filePath, cancellationToken);
-        return folder?.LibraryId;
+        return folder?.LibraryId ?? (trackId.HasValue
+            ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken)
+            : null);
     }
 
     private sealed class ImportStats
