@@ -108,6 +108,11 @@ const libraryState = {
     libraryUpdateRefreshPromise: null,
     libraryUpdatedHandlerBound: false,
     folderSaveInProgress: false,
+    targetLibraries: {
+        loaded: false,
+        loadingPromise: null,
+        sources: {}
+    },
     unmatchedArtistResolver: {
         items: [],
         suggestions: new Map(),
@@ -3518,6 +3523,7 @@ async function loadFolders() {
     libraryState.aliases.clear();
     if (document.getElementById('foldersContainer')) {
         renderFolders();
+        void loadFolderTargetLibraries();
         void loadAutoTagFolderDefaults().then(() => {
             renderFolders();
         });
@@ -9086,6 +9092,202 @@ async function loadFavorites() {
     }
 }
 
+const TARGET_LIBRARY_FIELDS = Object.freeze({
+    plex: Object.freeze({ fieldId: 'folderPlexSectionId', property: 'plexSectionId', label: 'Plex' }),
+    jellyfin: Object.freeze({ fieldId: 'folderJellyfinLibraryId', property: 'jellyfinLibraryId', label: 'Jellyfin' }),
+    navidrome: Object.freeze({ fieldId: 'folderNavidromeLibraryId', property: 'navidromeLibraryId', label: 'Navidrome' })
+});
+
+function normalizeTargetLibraryName(value) {
+    return String(value ?? '')
+        .normalize('NFKC')
+        .trim()
+        .replaceAll(/\s+/g, ' ')
+        .toLocaleLowerCase();
+}
+
+function currentFolderModalTargetMatchNames(folder) {
+    const displayName = document.getElementById('folderName')?.value || folder?.displayName || '';
+    const rootPath = document.getElementById('folderPath')?.value || folder?.rootPath || '';
+    return [...new Set([
+        normalizeTargetLibraryName(displayName),
+        normalizeTargetLibraryName(deriveFolderDisplayName(rootPath))
+    ].filter(Boolean))];
+}
+
+function isFolderModalMusicLibrary() {
+    if (document.getElementById('folderVideoDestination')?.checked === true
+        || document.getElementById('folderPodcastDestination')?.checked === true) {
+        return false;
+    }
+    const quality = String(document.getElementById('folderQuality')?.value || '').toLowerCase();
+    return !quality.includes('video') && !quality.includes('podcast');
+}
+
+function targetLibraryOptionById(source, id) {
+    const normalizedId = String(id ?? '').trim();
+    return (Array.isArray(source?.libraries) ? source.libraries : [])
+        .find((library) => String(library?.id ?? '').trim() === normalizedId) || null;
+}
+
+function findExactTargetLibraryMatches(source, names) {
+    const matchNames = new Set(names);
+    return (Array.isArray(source?.libraries) ? source.libraries : [])
+        .filter((library) => matchNames.has(normalizeTargetLibraryName(library?.name)));
+}
+
+function setTargetLibrarySelectOptions(serverType, folder, warnings) {
+    const definition = TARGET_LIBRARY_FIELDS[serverType];
+    const select = document.getElementById(definition.fieldId);
+    const help = document.querySelector(`[data-target-library-help="${serverType}"]`);
+    if (!select) {
+        return;
+    }
+
+    const source = libraryState.targetLibraries.sources?.[serverType] || {};
+    const configured = source.configured === true;
+    const libraries = Array.isArray(source.libraries) ? source.libraries : [];
+    const storedValue = String(folder?.[definition.property] ?? '').trim();
+    const priorValue = String(select.value || '').trim();
+    const desiredValue = select.dataset.explicitSelection === 'true' ? priorValue : storedValue;
+    select.replaceChildren();
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    if (!configured) {
+        placeholder.textContent = `${definition.label} is not configured`;
+    } else if (source.error) {
+        placeholder.textContent = `${definition.label} libraries unavailable`;
+    } else if (libraries.length === 0) {
+        placeholder.textContent = `No ${definition.label} music libraries found`;
+    } else {
+        placeholder.textContent = `Do not use ${definition.label} for this folder`;
+    }
+    select.append(placeholder);
+
+    libraries.forEach((library) => {
+        const option = document.createElement('option');
+        option.value = String(library.id ?? '').trim();
+        option.textContent = String(library.name ?? library.id ?? '').trim();
+        select.append(option);
+    });
+
+    if (desiredValue && !targetLibraryOptionById(source, desiredValue)) {
+        const unavailable = document.createElement('option');
+        unavailable.value = desiredValue;
+        unavailable.textContent = `Unavailable library (${desiredValue})`;
+        select.append(unavailable);
+        warnings.push(`${definition.label} library ${desiredValue} is no longer available.`);
+    }
+
+    select.value = desiredValue;
+    const names = currentFolderModalTargetMatchNames(folder);
+    if (!select.value && configured && !source.error && libraries.length > 0 && select.dataset.explicitSelection !== 'true') {
+        const exactMatches = findExactTargetLibraryMatches(source, names);
+        const uniqueMatches = [...new Map(exactMatches.map((library) => [String(library.id), library])).values()];
+        if (uniqueMatches.length === 1) {
+            select.value = String(uniqueMatches[0].id);
+            select.dataset.autoMatched = 'true';
+        } else if (uniqueMatches.length > 1) {
+            warnings.push(`${definition.label} has multiple exact name matches; choose the correct library.`);
+        }
+    }
+
+    const musicEligible = isFolderModalMusicLibrary();
+    select.disabled = !musicEligible || !configured || !!source.error || libraries.length === 0;
+    if (help) {
+        if (!musicEligible) {
+            help.textContent = 'Meloday target bindings are used only for music and Atmos folders.';
+        } else if (source.error) {
+            help.textContent = String(source.error);
+        } else if (select.dataset.autoMatched === 'true' && select.value) {
+            help.textContent = 'Matched by the exact folder/library name. Review before saving.';
+        } else if (select.value) {
+            help.textContent = `History will be pulled from this ${definition.label} library only.`;
+        } else if (configured && libraries.length > 0) {
+            help.textContent = `Choose the matching ${definition.label} library.`;
+        } else {
+            help.textContent = '';
+        }
+    }
+
+    if (musicEligible && configured && libraries.length > 0 && !select.value) {
+        warnings.push(`${definition.label} is configured, but this folder is not mapped to a ${definition.label} library.`);
+    }
+}
+
+function syncFolderTargetLibrarySelectors(folder = null) {
+    const warnings = [];
+    Object.keys(TARGET_LIBRARY_FIELDS).forEach((serverType) => {
+        setTargetLibrarySelectOptions(serverType, folder, warnings);
+    });
+
+    const status = document.getElementById('folderTargetLibraryStatus');
+    if (status) {
+        const sources = Object.entries(TARGET_LIBRARY_FIELDS).map(([serverType, definition]) => {
+            const source = libraryState.targetLibraries.sources?.[serverType] || {};
+            const count = Array.isArray(source.libraries) ? source.libraries.length : 0;
+            if (source.configured !== true) {
+                return `${definition.label}: not configured`;
+            }
+            if (source.error) {
+                return `${definition.label}: unavailable`;
+            }
+            return `${definition.label}: ${count} music ${count === 1 ? 'library' : 'libraries'}`;
+        });
+        status.textContent = sources.join(' · ');
+    }
+
+    const warning = document.getElementById('folderTargetLibraryWarning');
+    if (warning) {
+        warning.textContent = warnings.join(' ');
+        warning.classList.toggle('hidden', warnings.length === 0);
+    }
+}
+
+async function loadFolderTargetLibraries(folder = null, force = false) {
+    if (!document.getElementById('folderTargetLibrarySection')) {
+        return;
+    }
+    if (libraryState.targetLibraries.loaded && !force) {
+        syncFolderTargetLibrarySelectors(folder);
+        return;
+    }
+    if (libraryState.targetLibraries.loadingPromise && !force) {
+        await libraryState.targetLibraries.loadingPromise;
+        syncFolderTargetLibrarySelectors(folder);
+        return;
+    }
+
+    const status = document.getElementById('folderTargetLibraryStatus');
+    if (status) {
+        status.textContent = 'Loading configured server libraries...';
+    }
+    libraryState.targetLibraries.loadingPromise = fetchJson('/api/library/folders/target-libraries')
+        .then((payload) => {
+            libraryState.targetLibraries.sources = payload && typeof payload === 'object' ? payload : {};
+            libraryState.targetLibraries.loaded = true;
+        })
+        .catch((error) => {
+            libraryState.targetLibraries.sources = Object.fromEntries(
+                Object.keys(TARGET_LIBRARY_FIELDS).map((serverType) => [serverType, {
+                    configured: true,
+                    libraries: [],
+                    error: `Libraries could not be loaded: ${error?.message || error}`
+                }])
+            );
+            libraryState.targetLibraries.loaded = true;
+        })
+        .finally(() => {
+            libraryState.targetLibraries.loadingPromise = null;
+        });
+    await libraryState.targetLibraries.loadingPromise;
+    syncFolderTargetLibrarySelectors(folder);
+    if (document.getElementById('foldersContainer')) {
+        renderFolders();
+    }
+}
+
 function resetFolderModal() {
     const title = document.getElementById('folderModalTitle');
     if (title) {
@@ -9141,6 +9343,15 @@ function resetFolderModalFields() {
     if (convertBitrateField) {
         convertBitrateField.value = '';
     }
+    Object.values(TARGET_LIBRARY_FIELDS).forEach((definition) => {
+        const select = document.getElementById(definition.fieldId);
+        if (!select) {
+            return;
+        }
+        select.value = '';
+        delete select.dataset.explicitSelection;
+        delete select.dataset.autoMatched;
+    });
 }
 
 function syncFolderConversionFieldsState() {
@@ -9179,6 +9390,7 @@ function openFolderModal(folder = null) {
     modal.classList.remove('hidden');
     modal.setAttribute('aria-hidden', 'false');
     syncAppModalOpenState();
+    void loadFolderTargetLibraries(folder);
 }
 
 function resolveFolderDestinationFlags(folder) {
@@ -9339,9 +9551,15 @@ async function saveFolder() {
                 desiredQuality: finalQuality,
                 convertEnabled: folderInput.convertEnabled,
                 convertFormat: folderInput.convertFormat,
-                convertBitrate: folderInput.convertBitrate
+                convertBitrate: folderInput.convertBitrate,
+                plexSectionId: folderInput.plexSectionId,
+                jellyfinLibraryId: folderInput.jellyfinLibraryId,
+                navidromeLibraryId: folderInput.navidromeLibraryId
             })
         });
+        if (folderInput.isEdit) {
+            await persistFolderTargetLibraries(folder.id, folderInput);
+        }
         await persistFolderDestinationRole(folder, folderInput);
         resetFolderModalFields();
         syncFolderConversionFieldsState();
@@ -9356,6 +9574,18 @@ async function saveFolder() {
         libraryState.folderSaveInProgress = false;
         updateSaveFolderState();
     }
+}
+
+async function persistFolderTargetLibraries(folderId, folderInput) {
+    return fetchJson(`/api/library/folders/${encodeURIComponent(folderId)}/target-libraries`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            plexSectionId: folderInput.plexSectionId,
+            jellyfinLibraryId: folderInput.jellyfinLibraryId,
+            navidromeLibraryId: folderInput.navidromeLibraryId
+        })
+    });
 }
 
 function readFolderModalInput() {
@@ -9384,7 +9614,10 @@ function readFolderModalInput() {
         usePodcastDestination: document.getElementById('folderPodcastDestination')?.checked === true,
         convertEnabled,
         convertFormat: convertEnabled ? normalizeFolderConvertFormatValue(document.getElementById('folderConvertFormat')?.value || '') : null,
-        convertBitrate: convertEnabled ? normalizeFolderConvertBitrateValue(document.getElementById('folderConvertBitrate')?.value || '') : null
+        convertBitrate: convertEnabled ? normalizeFolderConvertBitrateValue(document.getElementById('folderConvertBitrate')?.value || '') : null,
+        plexSectionId: String(document.getElementById('folderPlexSectionId')?.value || '').trim() || null,
+        jellyfinLibraryId: String(document.getElementById('folderJellyfinLibraryId')?.value || '').trim() || null,
+        navidromeLibraryId: String(document.getElementById('folderNavidromeLibraryId')?.value || '').trim() || null
     };
 }
 
@@ -9534,6 +9767,50 @@ function bindFolderChangeInput(input, action) {
     input.addEventListener('change', action);
 }
 
+function getFolderBeingEdited() {
+    const id = Number.parseInt(String(document.getElementById('folderEditId')?.value || ''), 10);
+    return Number.isFinite(id) && id > 0
+        ? libraryState.folders.find((folder) => folder.id === id) || null
+        : null;
+}
+
+function bindFolderTargetLibraryInputs() {
+    const resyncForFolderIdentity = () => {
+        Object.values(TARGET_LIBRARY_FIELDS).forEach((definition) => {
+            const select = document.getElementById(definition.fieldId);
+            if (select?.dataset.autoMatched === 'true') {
+                select.value = '';
+                delete select.dataset.autoMatched;
+            }
+        });
+        if (libraryState.targetLibraries.loaded) {
+            syncFolderTargetLibrarySelectors(getFolderBeingEdited());
+        }
+    };
+
+    ['folderName', 'folderPath'].forEach((id) => {
+        const input = document.getElementById(id);
+        input?.addEventListener('input', resyncForFolderIdentity);
+        input?.addEventListener('change', resyncForFolderIdentity);
+    });
+
+    ['folderQuality', 'folderAtmosDestination', 'folderVideoDestination', 'folderPodcastDestination'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('change', () => {
+            if (libraryState.targetLibraries.loaded) {
+                syncFolderTargetLibrarySelectors(getFolderBeingEdited());
+            }
+        });
+    });
+
+    Object.values(TARGET_LIBRARY_FIELDS).forEach((definition) => {
+        document.getElementById(definition.fieldId)?.addEventListener('change', (event) => {
+            event.currentTarget.dataset.explicitSelection = 'true';
+            delete event.currentTarget.dataset.autoMatched;
+            syncFolderTargetLibrarySelectors(getFolderBeingEdited());
+        });
+    });
+}
+
 function getLibraryBootstrapElements() {
     const folderModal = document.getElementById('folderModal');
     const unmatchedModal = document.getElementById('unmatchedArtistsModal');
@@ -9600,6 +9877,9 @@ function bindFolderPathBrowser(elements) {
             folderNameInput.value = deriveFolderDisplayName(selected) || selected;
         }
         updateSaveFolderState();
+        if (libraryState.targetLibraries.loaded) {
+            syncFolderTargetLibrarySelectors(getFolderBeingEdited());
+        }
     });
 }
 
@@ -10221,12 +10501,45 @@ function computeFolderRowViewModel(folder, context) {
     };
 }
 
+function buildFolderTargetLibraryBadges(folder) {
+    if (resolveFolderContentMode(folder) === 'video' || resolveFolderContentMode(folder) === 'podcast') {
+        return '';
+    }
+
+    const badges = Object.entries(TARGET_LIBRARY_FIELDS).flatMap(([serverType, definition]) => {
+        const id = String(folder?.[definition.property] ?? '').trim();
+        if (!id) {
+            return [];
+        }
+        const source = libraryState.targetLibraries.sources?.[serverType];
+        const library = targetLibraryOptionById(source, id);
+        const name = library?.name || id;
+        return [`<span class="folder-target-library-badge" title="${escapeHtml(`${definition.label} library ID: ${id}`)}">${escapeHtml(definition.label)}: ${escapeHtml(name)}</span>`];
+    });
+    const hasConfiguredUnmappedServer = libraryState.targetLibraries.loaded
+        && Object.entries(TARGET_LIBRARY_FIELDS).some(([serverType, definition]) => {
+            const source = libraryState.targetLibraries.sources?.[serverType];
+            return source?.configured === true
+                && !source.error
+                && Array.isArray(source.libraries)
+                && source.libraries.length > 0
+                && !String(folder?.[definition.property] ?? '').trim();
+        });
+    if (badges.length === 0 || hasConfiguredUnmappedServer) {
+        badges.push('<span class="folder-target-library-badge is-warning" title="Edit this folder and map each configured target music library.">Meloday mapping incomplete</span>');
+    }
+    return `<span class="folder-target-library-badges">${badges.join('')}</span>`;
+}
+
 function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
     return `
             <div class="table-row">
                 <span class="folder-label">
-                    ${escapeHtml(folder.displayName)}
-                    ${viewModel.currentLibraryEnabled ? '' : '<span class="folder-library-disabled-badge">Hidden</span>'}
+                    <span class="folder-name-line">
+                        ${escapeHtml(folder.displayName)}
+                        ${viewModel.currentLibraryEnabled ? '' : '<span class="folder-library-disabled-badge">Hidden</span>'}
+                    </span>
+                    ${buildFolderTargetLibraryBadges(folder)}
                 </span>
                 <span>${escapeHtml(folder.rootPath)}</span>
                 <span class="folder-quality-cell">

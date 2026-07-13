@@ -96,14 +96,18 @@ public sealed class MelodayGuardrailTests
     public void Meloday_Generates_A_Distinct_Mix_For_Every_Nonempty_Library()
     {
         var source = ReadMelodayService();
-        var resolverBody = ExtractMethodBody(source, "private async Task<IReadOnlyList<LibraryDto>> ResolveMelodayLibrariesAsync");
+        var resolverBody = ExtractMethodBody(source, "private static IReadOnlyList<LibraryDto> ResolveMelodayLibraries");
         var runBody = ExtractMethodBody(source, "public async Task<MelodayRunResult> RunAsync");
 
         Assert.Contains("string.IsNullOrWhiteSpace(libraryName)", resolverBody, StringComparison.Ordinal);
-        Assert.Contains("string.Equals(library.Name, libraryName.Trim()", resolverBody, StringComparison.Ordinal);
-        Assert.Contains("GetRandomTrackIdsAsync", resolverBody, StringComparison.Ordinal);
-        Assert.Contains("if (sample.Count > 0)", resolverBody, StringComparison.Ordinal);
-        Assert.Contains("populatedLibraries.Add(library)", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("folder.LibraryId.HasValue", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("folder.LibraryName", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("GroupBy(folder => folder.LibraryId", resolverBody, StringComparison.Ordinal);
+        Assert.Contains("GetConfiguredEnabledMusicFoldersAsync", runBody, StringComparison.Ordinal);
+        Assert.Contains("folder.PlexSectionId", runBody, StringComparison.Ordinal);
+        Assert.Contains("folder.JellyfinLibraryId", runBody, StringComparison.Ordinal);
+        Assert.Contains("folder.NavidromeLibraryId", runBody, StringComparison.Ordinal);
+        Assert.Contains("folder.Id", runBody, StringComparison.Ordinal);
         Assert.Contains("foreach (var library in libraries)", runBody, StringComparison.Ordinal);
         Assert.Contains("BuildMelodayMixId(mode, context.Library.Id)", source, StringComparison.Ordinal);
         Assert.Contains("context.Library.Name} {GetModeLabel(mode)}", source, StringComparison.Ordinal);
@@ -123,6 +127,18 @@ public sealed class MelodayGuardrailTests
         Assert.DoesNotContain("if (string.IsNullOrWhiteSpace(options.BaseUrl))\n        {\n            return null;\n        }", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RenderCoverAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("CoversPath", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Artwork_Is_Deterministic_Per_Library_Period_And_Mode()
+    {
+        var source = ReadMelodayService();
+
+        Assert.Contains("GetArtworkIndex(periodName, libraryId, mode", source, StringComparison.Ordinal);
+        Assert.Contains("context.Library.Id", source, StringComparison.Ordinal);
+        Assert.Contains("libraryId * 7L", source, StringComparison.Ordinal);
+        Assert.Contains("MelodayModes.Sonic", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveStaticCoverFile", source, StringComparison.Ordinal);
     }
 
     private static string ReadMelodayService()

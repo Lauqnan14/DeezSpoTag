@@ -40,6 +40,29 @@ public sealed class NavidromeApiClient
             : null;
     }
 
+    public async Task<List<NavidromeLibrary>> GetLibrariesAsync(
+        string serverUrl,
+        string username,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        var response = await SendAsync<NavidromeMusicFoldersResponse>(
+            serverUrl,
+            username,
+            password,
+            "getMusicFolders",
+            Array.Empty<KeyValuePair<string, string?>>(),
+            cancellationToken);
+        return response?.SubsonicResponse?.MusicFolders?.Folders?
+            .Where(static folder => folder.Id.HasValue)
+            .Select(static folder => new NavidromeLibrary(
+                folder.Id!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                string.IsNullOrWhiteSpace(folder.Name)
+                    ? folder.Id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : folder.Name!))
+            .ToList() ?? new List<NavidromeLibrary>();
+    }
+
     public async Task<List<NavidromeAudioTrack>> SearchTracksAsync(
         string serverUrl,
         string username,
@@ -72,17 +95,59 @@ public sealed class NavidromeApiClient
                 song.Title ?? string.Empty,
                 song.Artist ?? string.Empty,
                 song.Duration.HasValue ? song.Duration.Value * 1000 : null,
-                song.Path))
+                song.Path,
+                song.MusicFolderId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
             .ToList() ?? new List<NavidromeAudioTrack>();
     }
 
-    public async Task<List<NavidromeHistoryItem>> GetPlayHistoryAsync(
+    public Task<List<NavidromeHistoryItem>> GetPlayHistoryAsync(
         string serverUrl,
         string username,
         string password,
         DateTimeOffset? playedSinceUtc = null,
         int pageSize = DefaultHistoryPageSize,
         CancellationToken cancellationToken = default)
+        => GetPlayHistoryInternalAsync(
+            serverUrl,
+            username,
+            password,
+            libraryId: null,
+            playedSinceUtc,
+            pageSize,
+            cancellationToken);
+
+    public Task<List<NavidromeHistoryItem>> GetPlayHistoryAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string libraryId,
+        DateTimeOffset? playedSinceUtc = null,
+        int pageSize = DefaultHistoryPageSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(libraryId))
+        {
+            return Task.FromResult(new List<NavidromeHistoryItem>());
+        }
+
+        return GetPlayHistoryInternalAsync(
+            serverUrl,
+            username,
+            password,
+            libraryId.Trim(),
+            playedSinceUtc,
+            pageSize,
+            cancellationToken);
+    }
+
+    private async Task<List<NavidromeHistoryItem>> GetPlayHistoryInternalAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string? libraryId,
+        DateTimeOffset? playedSinceUtc,
+        int pageSize,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(username)
@@ -107,6 +172,7 @@ public sealed class NavidromeApiClient
                 token,
                 offset,
                 normalizedPageSize,
+                libraryId,
                 cancellationToken);
             if (page.Count == 0)
             {
@@ -141,7 +207,8 @@ public sealed class NavidromeApiClient
                     song.Duration.HasValue ? (int?)Math.Round(song.Duration.Value * 1000d) : null,
                     ResolveNativeSongPath(song.LibraryPath, song.Path),
                     playedAtUtc,
-                    song.PlayCount));
+                    song.PlayCount,
+                    song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? libraryId));
             }
 
             if (reachedImportBoundary || page.Count < normalizedPageSize)
@@ -641,15 +708,22 @@ public sealed class NavidromeApiClient
         string token,
         int offset,
         int pageSize,
+        string? libraryId,
         CancellationToken cancellationToken)
     {
-        var query = string.Join("&", new[]
+        var queryParts = new List<string>
         {
             $"_start={offset}",
             $"_end={offset + pageSize}",
             "_sort=playDate",
             "_order=DESC"
-        });
+        };
+        if (!string.IsNullOrWhiteSpace(libraryId))
+        {
+            queryParts.Add($"library_id={Uri.EscapeDataString(libraryId)}");
+        }
+
+        var query = string.Join("&", queryParts);
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
             $"{BuildNativeUrl(serverUrl, "/api/song")}?{query}");
@@ -779,7 +853,14 @@ public sealed class NavidromeApiClient
 }
 
 public sealed record NavidromeSystemInfo(string? Version, string ServerName);
-public sealed record NavidromeAudioTrack(string Id, string Title, string Artist, int? DurationMs, string? FilePath = null);
+public sealed record NavidromeLibrary(string Id, string Name);
+public sealed record NavidromeAudioTrack(
+    string Id,
+    string Title,
+    string Artist,
+    int? DurationMs,
+    string? FilePath = null,
+    string? LibraryId = null);
 public sealed record NavidromeHistoryItem(
     string ItemId,
     string Title,
@@ -787,7 +868,8 @@ public sealed record NavidromeHistoryItem(
     int? DurationMs,
     string? FilePath,
     DateTimeOffset PlayedAtUtc,
-    long PlayCount);
+    long PlayCount,
+    string? LibraryId = null);
 public sealed record NavidromeArtistSummary(string Id, string Name, string? CoverArt = null);
 public sealed record NavidromeArtistInfo(
     string? Biography,
@@ -821,6 +903,34 @@ file sealed class NavidromePingResponse
     public NavidromeBaseResponse? SubsonicResponse { get; set; }
 }
 
+file sealed class NavidromeMusicFoldersResponse
+{
+    [JsonPropertyName("subsonic-response")]
+    public NavidromeMusicFoldersSubsonicResponse? SubsonicResponse { get; set; }
+}
+
+file sealed class NavidromeMusicFoldersSubsonicResponse : NavidromeBaseResponse
+{
+    [JsonPropertyName("musicFolders")]
+    public NavidromeMusicFoldersContainer? MusicFolders { get; set; }
+}
+
+file sealed class NavidromeMusicFoldersContainer
+{
+    [JsonPropertyName("musicFolder")]
+    public List<NavidromeMusicFolder>? Folders { get; set; }
+}
+
+file sealed class NavidromeMusicFolder
+{
+    [JsonPropertyName("id")]
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    public int? Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+}
+
 file sealed class NavidromeNativeLoginResponse
 {
     [JsonPropertyName("token")]
@@ -841,6 +951,8 @@ internal sealed class NavidromeNativeSong
     public string? Path { get; set; }
     [JsonPropertyName("libraryPath")]
     public string? LibraryPath { get; set; }
+    [JsonPropertyName("libraryId")]
+    public int? LibraryId { get; set; }
     [JsonPropertyName("playDate")]
     public DateTimeOffset? PlayDate { get; set; }
     [JsonPropertyName("playCount")]
@@ -957,6 +1069,9 @@ file sealed class NavidromeSong
     public int? Duration { get; set; }
     [JsonPropertyName("path")]
     public string? Path { get; set; }
+    [JsonPropertyName("musicFolderId")]
+    [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
+    public int? MusicFolderId { get; set; }
 }
 
 file sealed class NavidromeArtist

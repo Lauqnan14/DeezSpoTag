@@ -18,7 +18,14 @@ public sealed record FolderDto(
     bool AutoTagEnabled,
     bool ConvertEnabled,
     string? ConvertFormat,
-    string? ConvertBitrate);
+    string? ConvertBitrate,
+    string? PlexSectionId = null,
+    string? JellyfinLibraryId = null,
+    string? NavidromeLibraryId = null);
+
+public sealed record FolderLibraryScopeDto(
+    long FolderId,
+    long LibraryId);
 
 public sealed record LibraryDto(long Id, string Name);
 

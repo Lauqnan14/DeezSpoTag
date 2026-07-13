@@ -74,7 +74,8 @@ public sealed class LibraryRepository
         DateTimeOffset PlayedAtUtc,
         int? DurationMs,
         string? MetadataJson,
-        string Source = "plex");
+        string Source = "plex",
+        long? FolderId = null);
 
     public sealed record MixCacheUpsertInput(
         string MixId,
@@ -97,7 +98,10 @@ public sealed class LibraryRepository
         string? ConvertFormat,
         string? ConvertBitrate,
         string? AutoTagProfileId = null,
-        bool ReplaceAutoTagProfile = false);
+        bool ReplaceAutoTagProfile = false,
+        string? PlexSectionId = null,
+        string? JellyfinLibraryId = null,
+        string? NavidromeLibraryId = null);
 
     public sealed record TrackAnalysisFilter(
         long LibraryId,
@@ -1651,7 +1655,10 @@ INSERT INTO quality_scan_action_log (
                                     folder.auto_tag_enabled,
                                     folder.convert_enabled,
                                     folder.convert_format,
-                                    folder.convert_bitrate
+                                    folder.convert_bitrate,
+                                    folder.plex_section_id,
+                                    folder.jellyfin_library_id,
+                                    folder.navidrome_library_id
                                FROM folder
                           LEFT JOIN library ON library.id = folder.library_id
                            ORDER BY folder.display_name;";
@@ -1664,6 +1671,81 @@ INSERT INTO quality_scan_action_log (
         }
 
         return folders;
+    }
+
+    public async Task<IReadOnlyList<FolderDto>> GetConfiguredEnabledMusicFoldersAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var folders = await GetFoldersAsync(cancellationToken);
+        return folders
+            .Where(static folder => folder.Enabled
+                && folder.LibraryId.HasValue
+                && IsMusicFolderQuality(folder.DesiredQuality))
+            .OrderBy(static folder => folder.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(static folder => folder.Id)
+            .ToList();
+    }
+
+    public async Task<FolderDto?> ResolveConfiguredFolderAsync(
+        string source,
+        string targetLibraryId,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTargetId = NormalizeTargetLibraryId(targetLibraryId);
+        if (normalizedTargetId is null)
+        {
+            return null;
+        }
+
+        var normalizedSource = source?.Trim().ToLowerInvariant();
+        var folders = await GetConfiguredEnabledMusicFoldersAsync(cancellationToken);
+        var matches = folders
+            .Where(folder => string.Equals(
+                normalizedSource switch
+                {
+                    "plex" => folder.PlexSectionId,
+                    "jellyfin" => folder.JellyfinLibraryId,
+                    "navidrome" => folder.NavidromeLibraryId,
+                    _ => null
+                },
+                normalizedTargetId,
+                StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    public async Task<FolderLibraryScopeDto?> GetFolderScopeForTrackAsync(
+        long trackId,
+        long? preferredFolderId = null,
+        long? preferredLibraryId = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT f.id, f.library_id
+FROM track_local tl
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE tl.track_id = @trackId
+  AND f.enabled = TRUE
+  AND f.library_id IS NOT NULL
+  AND (@folderId IS NULL OR f.id = @folderId)
+  AND (@libraryId IS NULL OR f.library_id = @libraryId)
+ORDER BY f.id
+LIMIT 2;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(TrackIdField, trackId);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)preferredFolderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(LibraryIdField, (object?)preferredLibraryId ?? DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var scope = new FolderLibraryScopeDto(reader.GetInt64(0), reader.GetInt64(1));
+        return await reader.ReadAsync(cancellationToken) ? null : scope;
     }
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Destination integrity repair intentionally evaluates playlist and artist preference paths in a single transactional workflow.")]
@@ -1787,7 +1869,10 @@ INSERT INTO quality_scan_action_log (
             autoTagEnabled,
             convertEnabled,
             convertFormat,
-            convertBitrate);
+            convertBitrate,
+            await ReadNullableStringAsync(reader, 13, cancellationToken),
+            await ReadNullableStringAsync(reader, 14, cancellationToken),
+            await ReadNullableStringAsync(reader, 15, cancellationToken));
     }
 
     private static async Task<string> ReadFolderDesiredQualityAsync(SqliteDataReader reader, CancellationToken cancellationToken)
@@ -2541,11 +2626,29 @@ LIMIT 1;";
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = $@"
 INSERT OR IGNORE INTO play_history
-    (library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, event_key, played_at_utc, play_duration_ms, source, metadata_json)
+    (library_id, folder_id, plex_user_id, track_id, plex_track_key, plex_rating_key, event_key, played_at_utc, play_duration_ms, source, metadata_json)
 VALUES
-    (@libraryId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @eventKey, @playedAtUtc, @{DurationMsField}, @source, @metadataJson);";
+    (@libraryId, @folderId, @plexUserId, @trackId, @plexTrackKey, @plexRatingKey, @eventKey, @playedAtUtc, @{DurationMsField}, @source, @metadataJson)
+ON CONFLICT (plex_user_id, source, event_key) DO UPDATE SET
+    library_id = CASE
+        WHEN excluded.track_id IS NOT NULL THEN excluded.library_id
+        ELSE COALESCE(play_history.library_id, excluded.library_id)
+    END,
+    folder_id = CASE
+        WHEN excluded.track_id IS NOT NULL THEN excluded.folder_id
+        ELSE COALESCE(play_history.folder_id, excluded.folder_id)
+    END,
+    track_id = COALESCE(excluded.track_id, play_history.track_id),
+    plex_track_key = COALESCE(excluded.plex_track_key, play_history.plex_track_key),
+    plex_rating_key = COALESCE(excluded.plex_rating_key, play_history.plex_rating_key),
+    play_duration_ms = COALESCE(excluded.play_duration_ms, play_history.play_duration_ms),
+    metadata_json = COALESCE(excluded.metadata_json, play_history.metadata_json)
+WHERE (play_history.track_id IS NULL AND excluded.track_id IS NOT NULL)
+   OR (play_history.folder_id IS NULL AND excluded.folder_id IS NOT NULL)
+   OR (play_history.library_id IS NULL AND excluded.library_id IS NOT NULL);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(LibraryIdField, (object?)input.LibraryId ?? DBNull.Value);
+        command.Parameters.AddWithValue("folderId", (object?)input.FolderId ?? DBNull.Value);
         command.Parameters.AddWithValue("plexUserId", input.PlexUserId);
         command.Parameters.AddWithValue(TrackIdField, (object?)input.TrackId ?? DBNull.Value);
         command.Parameters.AddWithValue("plexTrackKey", (object?)input.PlexTrackKey ?? DBNull.Value);
@@ -2591,6 +2694,27 @@ WHERE plex_user_id = @plexUserId
         return value is string text && !string.IsNullOrWhiteSpace(text)
             ? ParseDateTimeOffsetInvariant(text)
             : null;
+    }
+
+    public async Task<DateTimeOffset?> GetLatestPlayHistoryUtcForFolderAsync(
+        long plexUserId,
+        string source,
+        long folderId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT MAX(played_at_utc)
+FROM play_history
+WHERE plex_user_id = @plexUserId
+  AND source = @source
+  AND folder_id = @folderId;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("plexUserId", plexUserId);
+        command.Parameters.AddWithValue("source", source.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue(FolderIdParameter, folderId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : ParseDateTimeOffsetInvariant(Convert.ToString(result, CultureInfo.InvariantCulture)!);
     }
 
     public async Task<bool> TryClaimBackgroundJobAsync(
@@ -2733,6 +2857,9 @@ FROM track_local tl
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE f.library_id = @libraryId
+  AND f.enabled = 1
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
 ORDER BY RANDOM()
 LIMIT @limit;";
         return await ExecuteTrackIdListQueryAsync(
@@ -2892,7 +3019,8 @@ LIMIT @limit;";
         DateTimeOffset lookbackStartUtc,
         IReadOnlyList<int> allowedHours,
         DateTimeOffset excludeAfterUtc,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        long? folderId = null)
     {
         if (allowedHours.Count == 0)
         {
@@ -2907,6 +3035,7 @@ SELECT ph.track_id,
 FROM play_history ph
 WHERE ph.plex_user_id = @plexUserId
   AND ph.library_id = @libraryId
+  AND (@folderId IS NULL OR ph.folder_id = @folderId)
   AND ph.track_id IS NOT NULL
   AND ph.played_at_utc >= @lookbackStart
   AND ph.played_at_utc < @excludeAfter
@@ -2920,6 +3049,7 @@ LIMIT @historyLimit;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("plexUserId", plexUserId);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("lookbackStart", lookbackStartUtc.ToString("O"));
         command.Parameters.AddWithValue("excludeAfter", excludeAfterUtc.ToString("O"));
         command.Parameters.AddWithValue("allowedHoursJson", SerializeJsonArray(allowedHours));
@@ -2940,7 +3070,8 @@ LIMIT @historyLimit;";
         long plexUserId,
         long libraryId,
         DateTimeOffset sinceUtc,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        long? folderId = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
@@ -2948,11 +3079,13 @@ SELECT DISTINCT ph.track_id
 FROM play_history ph
 WHERE ph.plex_user_id = @plexUserId
   AND ph.library_id = @libraryId
+  AND (@folderId IS NULL OR ph.folder_id = @folderId)
   AND ph.track_id IS NOT NULL
   AND ph.played_at_utc >= @sinceUtc;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("plexUserId", plexUserId);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue("sinceUtc", sinceUtc.ToString("O"));
 
         var ids = new HashSet<long>();
@@ -3097,27 +3230,93 @@ LIMIT 1;";
 
     public async Task<int> BackfillPlayHistoryLibraryIdsAsync(CancellationToken cancellationToken = default)
     {
+        await BackfillPlayHistoryFolderIdsAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-UPDATE play_history
-SET library_id = (
-    SELECT f.library_id
-    FROM track_local tl
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    WHERE tl.track_id = play_history.track_id
-    LIMIT 1
+UPDATE play_history AS ph
+SET library_id = COALESCE(
+    (
+        SELECT f.library_id
+        FROM folder f
+        WHERE f.id = ph.folder_id
+    ),
+    (
+        SELECT MIN(f.library_id)
+        FROM track_local tl
+        JOIN audio_file af ON af.id = tl.audio_file_id
+        JOIN folder f ON f.id = af.folder_id
+        WHERE tl.track_id = ph.track_id
+          AND f.library_id IS NOT NULL
+        GROUP BY tl.track_id
+        HAVING COUNT(DISTINCT f.library_id) = 1
+    )
 )
-WHERE library_id IS NULL
-  AND track_id IS NOT NULL
-  AND EXISTS (
-      SELECT 1 FROM track_local tl
-      JOIN audio_file af ON af.id = tl.audio_file_id
-      JOIN folder f ON f.id = af.folder_id
-      WHERE tl.track_id = play_history.track_id
+WHERE ph.library_id IS NULL
+  AND ph.track_id IS NOT NULL
+  AND (
+      ph.folder_id IS NOT NULL
+      OR 1 = (
+          SELECT COUNT(DISTINCT f.library_id)
+          FROM track_local tl
+          JOIN audio_file af ON af.id = tl.audio_file_id
+          JOIN folder f ON f.id = af.folder_id
+          WHERE tl.track_id = ph.track_id
+            AND f.library_id IS NOT NULL
+      )
   );";
         await using var command = new SqliteCommand(sql, connection);
         return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> BackfillPlayHistoryFolderIdsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string unambiguousTrackFolderSql = @"
+UPDATE play_history AS ph
+SET folder_id = (
+    SELECT MIN(af.folder_id)
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    WHERE tl.track_id = ph.track_id
+    GROUP BY tl.track_id
+    HAVING COUNT(DISTINCT af.folder_id) = 1
+)
+WHERE ph.folder_id IS NULL
+  AND ph.track_id IS NOT NULL
+  AND 1 = (
+      SELECT COUNT(DISTINCT af.folder_id)
+      FROM track_local tl
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      WHERE tl.track_id = ph.track_id
+  );";
+        await using var unambiguousTrackFolder = new SqliteCommand(unambiguousTrackFolderSql, connection);
+        var updated = await unambiguousTrackFolder.ExecuteNonQueryAsync(cancellationToken);
+
+        const string unambiguousLibraryFolderSql = @"
+UPDATE play_history AS ph
+SET folder_id = (
+    SELECT MIN(af.folder_id)
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE tl.track_id = ph.track_id
+      AND f.library_id = ph.library_id
+    GROUP BY tl.track_id
+    HAVING COUNT(DISTINCT af.folder_id) = 1
+)
+WHERE ph.folder_id IS NULL
+  AND ph.library_id IS NOT NULL
+  AND ph.track_id IS NOT NULL
+  AND 1 = (
+      SELECT COUNT(DISTINCT af.folder_id)
+      FROM track_local tl
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE tl.track_id = ph.track_id
+        AND f.library_id = ph.library_id
+  );";
+        await using var unambiguousLibraryFolder = new SqliteCommand(unambiguousLibraryFolderSql, connection);
+        return updated + await unambiguousLibraryFolder.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<int> DeleteLegacyMelodayMixesAsync(CancellationToken cancellationToken = default)
@@ -3136,6 +3335,33 @@ AND mix_id NOT GLOB 'meloday-sonic-[0-9]*'";
             await items.ExecuteNonQueryAsync(cancellationToken);
         }
         await using var mixes = new SqliteCommand($"DELETE FROM mix_cache WHERE {legacyPredicate};", connection, transaction);
+        var deleted = await mixes.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
+    }
+
+    public async Task<int> DeleteInactiveMelodayMixesAsync(
+        IReadOnlyCollection<long> activeLibraryIds,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        var activeJson = SerializeJsonArray(activeLibraryIds.Distinct().ToList());
+        const string predicate = @"
+mix_id GLOB 'meloday-direct-[0-9]*' OR mix_id GLOB 'meloday-sonic-[0-9]*'";
+        const string inactive = @"
+library_id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(@activeLibraryIdsJson))";
+        await using (var items = new SqliteCommand(
+            $"DELETE FROM mix_item WHERE mix_cache_id IN (SELECT id FROM mix_cache WHERE ({predicate}) AND {inactive});",
+            connection,
+            transaction))
+        {
+            items.Parameters.AddWithValue("activeLibraryIdsJson", activeJson);
+            await items.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using var mixes = new SqliteCommand(
+            $"DELETE FROM mix_cache WHERE ({predicate}) AND {inactive};", connection, transaction);
+        mixes.Parameters.AddWithValue("activeLibraryIdsJson", activeJson);
         var deleted = await mixes.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return deleted;
@@ -5340,8 +5566,8 @@ ORDER BY mi.position;";
         var (normalizedConvertEnabled, normalizedConvertFormat, normalizedConvertBitrate) =
             NormalizeFolderConvertSettings(input.ConvertEnabled, input.ConvertFormat, input.ConvertBitrate);
         const string sql = @"
-INSERT INTO folder (root_path, display_name, enabled, library_id, desired_quality, desired_quality_value, auto_tag_enabled, auto_tag_profile_id, convert_enabled, convert_format, convert_bitrate)
-VALUES (@rootPath, @displayName, @enabled, @libraryId, @desiredQualityNumeric, @desiredQualityValue, @autoTagEnabled, @autoTagProfileId, @convertEnabled, @convertFormat, @convertBitrate)
+INSERT INTO folder (root_path, display_name, enabled, library_id, desired_quality, desired_quality_value, auto_tag_enabled, auto_tag_profile_id, convert_enabled, convert_format, convert_bitrate, plex_section_id, jellyfin_library_id, navidrome_library_id)
+VALUES (@rootPath, @displayName, @enabled, @libraryId, @desiredQualityNumeric, @desiredQualityValue, @autoTagEnabled, @autoTagProfileId, @convertEnabled, @convertFormat, @convertBitrate, @plexSectionId, @jellyfinLibraryId, @navidromeLibraryId)
 RETURNING id;";
         await using var command = new SqliteCommand(sql, connection);
         AddFolderCommonParameters(
@@ -5358,6 +5584,7 @@ RETURNING id;";
                 normalizedConvertBitrate));
         command.Parameters.AddWithValue("autoTagEnabled", autoTagEnabled);
         command.Parameters.AddWithValue("autoTagProfileId", (object?)input.AutoTagProfileId ?? DBNull.Value);
+        AddFolderTargetLibraryParameters(command, input);
         var insertedId = await command.ExecuteScalarAsync(cancellationToken);
         return (await GetFoldersAsync(cancellationToken)).First(folder => folder.Id == Convert.ToInt64(insertedId));
     }
@@ -5384,6 +5611,9 @@ SET root_path = @rootPath,
     convert_enabled = @convertEnabled,
     convert_format = @convertFormat,
     convert_bitrate = @convertBitrate,
+    plex_section_id = @plexSectionId,
+    jellyfin_library_id = @jellyfinLibraryId,
+    navidrome_library_id = @navidromeLibraryId,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = @id;";
         await using var command = new SqliteCommand(sql, connection);
@@ -5402,8 +5632,37 @@ WHERE id = @id;";
         command.Parameters.AddWithValue("id", id);
         command.Parameters.AddWithValue("autoTagProfileId", (object?)input.AutoTagProfileId ?? DBNull.Value);
         command.Parameters.AddWithValue("replaceAutoTagProfile", input.ReplaceAutoTagProfile ? 1 : 0);
+        AddFolderTargetLibraryParameters(command, input);
         var rows = await command.ExecuteNonQueryAsync(cancellationToken);
         if (rows == 0)
+        {
+            return null;
+        }
+
+        return (await GetFoldersAsync(cancellationToken)).FirstOrDefault(folder => folder.Id == id);
+    }
+
+    public async Task<FolderDto?> UpdateFolderTargetLibrariesAsync(
+        long id,
+        string? plexSectionId,
+        string? jellyfinLibraryId,
+        string? navidromeLibraryId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE folder
+SET plex_section_id = @plexSectionId,
+    jellyfin_library_id = @jellyfinLibraryId,
+    navidrome_library_id = @navidromeLibraryId,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = @id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("plexSectionId", (object?)NormalizeTargetLibraryId(plexSectionId) ?? DBNull.Value);
+        command.Parameters.AddWithValue("jellyfinLibraryId", (object?)NormalizeTargetLibraryId(jellyfinLibraryId) ?? DBNull.Value);
+        command.Parameters.AddWithValue("navidromeLibraryId", (object?)NormalizeTargetLibraryId(navidromeLibraryId) ?? DBNull.Value);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) == 0)
         {
             return null;
         }
@@ -11617,6 +11876,29 @@ ON CONFLICT DO NOTHING;";
         command.Parameters.AddWithValue("convertEnabled", parameters.ConvertEnabled);
         command.Parameters.AddWithValue("convertFormat", (object?)parameters.ConvertFormat ?? DBNull.Value);
         command.Parameters.AddWithValue("convertBitrate", (object?)parameters.ConvertBitrate ?? DBNull.Value);
+    }
+
+    private static void AddFolderTargetLibraryParameters(
+        SqliteCommand command,
+        FolderUpsertInput input)
+    {
+        command.Parameters.AddWithValue("plexSectionId", (object?)NormalizeTargetLibraryId(input.PlexSectionId) ?? DBNull.Value);
+        command.Parameters.AddWithValue("jellyfinLibraryId", (object?)NormalizeTargetLibraryId(input.JellyfinLibraryId) ?? DBNull.Value);
+        command.Parameters.AddWithValue("navidromeLibraryId", (object?)NormalizeTargetLibraryId(input.NavidromeLibraryId) ?? DBNull.Value);
+    }
+
+    private static string? NormalizeTargetLibraryId(string? value)
+    {
+        var normalized = value?.Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static bool IsMusicFolderQuality(string? desiredQuality)
+    {
+        var normalized = desiredQuality?.Trim().ToLowerInvariant();
+        return normalized is null
+            || (!normalized.Contains("video", StringComparison.Ordinal)
+                && !normalized.Contains("podcast", StringComparison.Ordinal));
     }
 
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)

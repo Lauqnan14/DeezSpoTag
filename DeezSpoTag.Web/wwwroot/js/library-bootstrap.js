@@ -5,6 +5,7 @@ function initializeLibraryBootstrapBindings(elements) {
     wireExclusiveFolderDestinationRoles();
     bindFolderModalActions(elements);
     bindFolderPathBrowser(elements);
+    bindFolderTargetLibraryInputs();
     bindFolderPathInput(elements.folderPathInput, updateSaveFolderState);
     bindFolderChangeInput(elements.folderConvertEnabledInput, syncFolderConversionFieldsState);
     bindFolderChangeInput(elements.folderConvertFormatInput, syncFolderConversionFieldsState);

@@ -84,11 +84,15 @@ public sealed class LibraryDbService
             ,
             ["idx_play_history_library"] = (PlayHistoryTable, LibraryIdColumn, false)
             ,
+            ["idx_play_history_folder"] = (PlayHistoryTable, "folder_id", false)
+            ,
             ["idx_play_history_user_source_time"] = (PlayHistoryTable, "plex_user_id, source, played_at_utc DESC", false)
             ,
             ["idx_play_history_user_library_time"] = (PlayHistoryTable, "plex_user_id, library_id, played_at_utc DESC", false)
             ,
             ["idx_play_history_user_library_track_time"] = (PlayHistoryTable, "plex_user_id, library_id, track_id, played_at_utc DESC", false)
+            ,
+            ["idx_play_history_user_folder_time"] = (PlayHistoryTable, "plex_user_id, folder_id, played_at_utc DESC", false)
             ,
             ["idx_background_job_state_due"] = (BackgroundJobStateTable, "status, next_due_at_utc", false)
             ,
@@ -171,11 +175,14 @@ public sealed class LibraryDbService
 
     private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
+        await EnsureColumnAsync(connection, PlayHistoryTable, "folder_id", BigIntType, cancellationToken);
         var playHistoryRebuilt = await MigratePlayHistoryIdentityAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_play_history_library", PlayHistoryTable, LibraryIdColumn, unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_play_history_folder", PlayHistoryTable, "folder_id", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_play_history_user_source_time", PlayHistoryTable, "plex_user_id, source, played_at_utc DESC", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_play_history_user_library_time", PlayHistoryTable, "plex_user_id, library_id, played_at_utc DESC", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_play_history_user_library_track_time", PlayHistoryTable, "plex_user_id, library_id, track_id, played_at_utc DESC", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_play_history_user_folder_time", PlayHistoryTable, "plex_user_id, folder_id, played_at_utc DESC", unique: false, cancellationToken);
         await DropIndexIfExistsAsync(connection, "idx_play_history_user", cancellationToken);
         await DropIndexIfExistsAsync(connection, "idx_play_history_played_at", cancellationToken);
         if (playHistoryRebuilt)
@@ -344,7 +351,11 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
         await EnsureColumnAsync(connection, FolderTable, "convert_enabled", $"{IntegerType} DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "convert_format", TextType, cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "convert_bitrate", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "plex_section_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "jellyfin_library_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, FolderTable, "navidrome_library_id", TextType, cancellationToken);
         await BackfillFolderLibraryLinksAsync(connection, cancellationToken);
+        await BackfillPlayHistoryFolderLinksAsync(connection, cancellationToken);
 
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "batch_next_offset", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "batch_processing_snapshot_id", TextType, cancellationToken);
@@ -711,6 +722,7 @@ DROP TABLE IF EXISTS play_history_canonical;
 CREATE TABLE play_history_canonical (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    folder_id BIGINT REFERENCES folder(id) ON DELETE SET NULL,
     plex_user_id BIGINT NOT NULL REFERENCES plex_user(id) ON DELETE CASCADE,
     track_id BIGINT REFERENCES track(id) ON DELETE SET NULL,
     plex_track_key TEXT,
@@ -724,10 +736,11 @@ CREATE TABLE play_history_canonical (
     UNIQUE (plex_user_id, source, event_key)
 );
 INSERT OR IGNORE INTO play_history_canonical
-    (id, library_id, plex_user_id, track_id, plex_track_key, plex_rating_key, event_key,
+    (id, library_id, folder_id, plex_user_id, track_id, plex_track_key, plex_rating_key, event_key,
      played_at_utc, play_duration_ms, source, metadata_json, created_at)
 SELECT ph.id,
        CASE WHEN l.id IS NOT NULL THEN ph.library_id END,
+       CASE WHEN f.id IS NOT NULL THEN ph.folder_id END,
        ph.plex_user_id,
        CASE WHEN t.id IS NOT NULL THEN ph.track_id END,
        ph.plex_track_key,
@@ -748,6 +761,7 @@ SELECT ph.id,
 FROM play_history ph
 JOIN plex_user pu ON pu.id = ph.plex_user_id
 LEFT JOIN library l ON l.id = ph.library_id
+LEFT JOIN folder f ON f.id = ph.folder_id
 LEFT JOIN track t ON t.id = ph.track_id
 WHERE ph.played_at_utc IS NOT NULL
   AND (
@@ -930,6 +944,96 @@ SET library_id = (
 WHERE library_id IS NULL;";
         await using var assignLibraries = new SqliteCommand(assignLibrariesSql, connection);
         await assignLibraries.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task BackfillPlayHistoryFolderLinksAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (!await TableExistsAsync(connection, PlayHistoryTable, cancellationToken)
+            || !await ColumnExistsAsync(connection, PlayHistoryTable, "folder_id", cancellationToken))
+        {
+            return;
+        }
+
+        const string sql = @"
+UPDATE play_history AS ph
+SET folder_id = (
+    SELECT MIN(af.folder_id)
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    WHERE tl.track_id = ph.track_id
+    GROUP BY tl.track_id
+    HAVING COUNT(DISTINCT af.folder_id) = 1
+)
+WHERE ph.folder_id IS NULL
+  AND ph.track_id IS NOT NULL
+  AND 1 = (
+      SELECT COUNT(DISTINCT af.folder_id)
+      FROM track_local tl
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      WHERE tl.track_id = ph.track_id
+  );
+
+UPDATE play_history AS ph
+SET folder_id = (
+    SELECT MIN(af.folder_id)
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE tl.track_id = ph.track_id
+      AND f.library_id = ph.library_id
+    GROUP BY tl.track_id
+    HAVING COUNT(DISTINCT af.folder_id) = 1
+)
+WHERE ph.folder_id IS NULL
+  AND ph.library_id IS NOT NULL
+  AND ph.track_id IS NOT NULL
+  AND 1 = (
+      SELECT COUNT(DISTINCT af.folder_id)
+      FROM track_local tl
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE tl.track_id = ph.track_id
+        AND f.library_id = ph.library_id
+  );
+
+UPDATE play_history AS ph
+SET library_id = (
+    SELECT f.library_id
+    FROM folder f
+    WHERE f.id = ph.folder_id
+)
+WHERE ph.folder_id IS NOT NULL
+  AND ph.library_id IS NOT (
+      SELECT f.library_id
+      FROM folder f
+      WHERE f.id = ph.folder_id
+  );
+
+UPDATE play_history AS ph
+SET library_id = (
+    SELECT MIN(f.library_id)
+    FROM track_local tl
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE tl.track_id = ph.track_id
+      AND f.library_id IS NOT NULL
+    GROUP BY tl.track_id
+    HAVING COUNT(DISTINCT f.library_id) = 1
+)
+WHERE ph.library_id IS NULL
+  AND ph.track_id IS NOT NULL
+  AND 1 = (
+      SELECT COUNT(DISTINCT f.library_id)
+      FROM track_local tl
+      JOIN audio_file af ON af.id = tl.audio_file_id
+      JOIN folder f ON f.id = af.folder_id
+      WHERE tl.track_id = ph.track_id
+        AND f.library_id IS NOT NULL
+  );";
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<bool> TableExistsAsync(

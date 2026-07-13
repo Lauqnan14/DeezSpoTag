@@ -428,6 +428,43 @@ public class JellyfinApiClient
         string userId,
         int limit = 500,
         CancellationToken cancellationToken = default)
+        => await GetAudioPlayHistoryInternalAsync(
+            serverUrl,
+            apiKey,
+            userId,
+            libraryId: null,
+            limit,
+            cancellationToken);
+
+    public async Task<List<JellyfinHistoryItem>> GetAudioPlayHistoryAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string libraryId,
+        int limit = 500,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(libraryId))
+        {
+            return new List<JellyfinHistoryItem>();
+        }
+
+        return await GetAudioPlayHistoryInternalAsync(
+            serverUrl,
+            apiKey,
+            userId,
+            libraryId.Trim(),
+            limit,
+            cancellationToken);
+    }
+
+    private async Task<List<JellyfinHistoryItem>> GetAudioPlayHistoryInternalAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string? libraryId,
+        int limit,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
@@ -445,6 +482,10 @@ public class JellyfinApiClient
         query.Append("&SortOrder=Descending");
         query.Append("&Fields=Path,RunTimeTicks,UserData,Artists,Album");
         query.Append($"&Limit={Math.Clamp(limit, 1, 2000)}");
+        if (!string.IsNullOrWhiteSpace(libraryId))
+        {
+            query.Append($"&ParentId={Uri.EscapeDataString(libraryId)}");
+        }
 
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
         request.Headers.Add(EmbyTokenHeader, apiKey);

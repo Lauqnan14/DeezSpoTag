@@ -125,6 +125,7 @@ public sealed class MelodayService
     private sealed record RunModeContext(
         IReadOnlyList<MediaServerTarget> SyncTargets,
         LibraryDto Library,
+        IReadOnlyList<FolderDto> LibraryFolders,
         IReadOnlyList<long> HistoryTrackIds,
         IReadOnlyList<long> BalancedHistorical,
         SimilarTrackContext SimilarContext,
@@ -136,6 +137,7 @@ public sealed class MelodayService
 
     private sealed record PlaylistSyncContext(
         MediaServerTarget Target,
+        IReadOnlyList<FolderDto> LibraryFolders,
         string Title,
         string Description,
         IReadOnlyList<long> OrderedTrackIds,
@@ -251,15 +253,30 @@ public sealed class MelodayService
         await _libraryRepository.BackfillPlayHistoryLibraryIdsAsync(cancellationToken);
         await _libraryRepository.DeleteLegacyMelodayMixesAsync(cancellationToken);
 
-        var libraries = await ResolveMelodayLibrariesAsync(
-            await _libraryRepository.GetLibrariesAsync(cancellationToken),
-            effective.LibraryName,
-            cancellationToken);
+        var configuredFolders = new List<FolderDto>();
+        foreach (var folder in await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
+        {
+            if (string.IsNullOrWhiteSpace(folder.PlexSectionId)
+                && string.IsNullOrWhiteSpace(folder.JellyfinLibraryId)
+                && string.IsNullOrWhiteSpace(folder.NavidromeLibraryId))
+            {
+                continue;
+            }
+            var tracks = await _libraryRepository.GetTrackIdsForLibraryScopeAsync(
+                folder.LibraryId!.Value, folder.Id, cancellationToken);
+            if (tracks.Count > 0)
+            {
+                configuredFolders.Add(folder);
+            }
+        }
+        var libraries = ResolveMelodayLibraries(configuredFolders, effective.LibraryName);
+        await _libraryRepository.DeleteInactiveMelodayMixesAsync(
+            libraries.Select(static library => library.Id).ToList(), cancellationToken);
         if (libraries.Count == 0)
         {
             _lastMessage = string.IsNullOrWhiteSpace(effective.LibraryName)
-                ? "No nonempty music libraries are configured."
-                : $"Configured library '{effective.LibraryName.Trim()}' was not found or contains no tracks.";
+                ? "No nonempty music folders with target-library bindings are configured."
+                : $"Configured library '{effective.LibraryName.Trim()}' was not found, mapped, or contains no tracks.";
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
@@ -287,25 +304,24 @@ public sealed class MelodayService
         var results = new List<MelodayRunResult>();
         foreach (var library in libraries)
         {
+            var libraryFolders = configuredFolders
+                .Where(folder => folder.LibraryId == library.Id)
+                .ToList();
             var history = new List<PlayHistoryEntryDto>();
             var excludedTrackIds = new HashSet<long>();
             foreach (var historyUserId in historyUserIds)
             {
-                var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
-                    historyUserId,
-                    library.Id,
-                    lookbackStart,
-                    period.Hours,
-                    now,
-                    cancellationToken);
-                history.AddRange(userHistory);
+                foreach (var folder in libraryFolders)
+                {
+                    var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
+                        historyUserId, library.Id, lookbackStart, period.Hours, now,
+                        cancellationToken, folder.Id);
+                    history.AddRange(userHistory);
 
-                var userExcluded = await _libraryRepository.GetPlayedTrackIdsSinceAsync(
-                    historyUserId,
-                    library.Id,
-                    excludeStart,
-                    cancellationToken);
-                excludedTrackIds.UnionWith(userExcluded);
+                    var userExcluded = await _libraryRepository.GetPlayedTrackIdsSinceAsync(
+                        historyUserId, library.Id, excludeStart, cancellationToken, folder.Id);
+                    excludedTrackIds.UnionWith(userExcluded);
+                }
             }
 
             var historyTrackIds = history
@@ -315,6 +331,12 @@ public sealed class MelodayService
                 .ToList();
             var ratingKeyByTrackId = new Dictionary<long, string>();
             var liveMetadataByTrackId = new Dictionary<long, PlexTrackMetadata>();
+            var allowedTrackIds = new HashSet<long>();
+            foreach (var folder in libraryFolders)
+            {
+                allowedTrackIds.UnionWith(await _libraryRepository.GetTrackIdsForLibraryScopeAsync(
+                    library.Id, folder.Id, cancellationToken));
+            }
             var balancedHistorical = BuildBalancedHistoricalSelection(
                 history,
                 excludedTrackIds,
@@ -327,10 +349,12 @@ public sealed class MelodayService
                 sonicPlex,
                 effective,
                 liveMetadataByTrackId,
+                allowedTrackIds,
                 cancellationToken);
             var runModeContext = new RunModeContext(
                 targets,
                 library,
+                libraryFolders,
                 historyTrackIds,
                 balancedHistorical,
                 similarContext,
@@ -429,13 +453,19 @@ public sealed class MelodayService
             cancellationToken);
         await _libraryRepository.ReplaceMixItemsAsync(mixCacheId, orderedTrackIds, cancellationToken);
 
-        var cover = await TryGenerateCoverAsync(optionsForTitle, context.PeriodName, title, cancellationToken);
+        var cover = await TryGenerateCoverAsync(
+            optionsForTitle,
+            context.PeriodName,
+            context.Library.Id,
+            mode,
+            cancellationToken);
         var syncResults = new List<(string Service, string? PlaylistId)>();
         foreach (var target in context.SyncTargets)
         {
             var targetPlaylistId = await TrySyncTargetPlaylistAsync(
                 new PlaylistSyncContext(
                     target,
+                    context.LibraryFolders,
                     title,
                     description,
                     orderedTrackIds,
@@ -632,6 +662,7 @@ public sealed class MelodayService
 
         var ratingKeyList = await ResolvePlexRatingKeysForSyncAsync(
             context.OrderedTrackIds,
+            context.LibraryFolders,
             context.SimilarContext.RatingKeyByTrackId,
             cancellationToken);
         if (ratingKeyList.Count == 0)
@@ -699,19 +730,39 @@ public sealed class MelodayService
 
     private async Task<List<string>> ResolvePlexRatingKeysForSyncAsync(
         IReadOnlyList<long> orderedTrackIds,
+        IReadOnlyList<FolderDto> folders,
         Dictionary<long, string> ratingKeyByTrackId,
         CancellationToken cancellationToken)
     {
-        var locallyKnownRatingKeys = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(orderedTrackIds, cancellationToken);
+        var plex = (await _authService.LoadAsync()).Plex;
+        if (plex is null || string.IsNullOrWhiteSpace(plex.Url) || string.IsNullOrWhiteSpace(plex.Token))
+        {
+            return new List<string>();
+        }
+        var remoteTracks = new List<PlexTrack>();
+        foreach (var sectionId in folders.Select(static folder => folder.PlexSectionId)
+                     .Where(static id => !string.IsNullOrWhiteSpace(id))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            for (var offset = 0; ; offset += 500)
+            {
+                var page = await _plexApiClient.GetLibraryTracksAsync(
+                    plex.Url, plex.Token, sectionId!, offset, 500, cancellationToken);
+                remoteTracks.AddRange(page);
+                if (page.Count < 500) break;
+            }
+        }
+        var summaries = (await _libraryRepository.GetTrackSummariesAsync(orderedTrackIds, cancellationToken))
+            .ToDictionary(static summary => summary.TrackId);
         var ratingKeys = new List<string>();
 
         foreach (var trackId in orderedTrackIds)
         {
-            if (!ratingKeyByTrackId.TryGetValue(trackId, out var knownRatingKey))
+            if (!summaries.TryGetValue(trackId, out var summary))
             {
-                locallyKnownRatingKeys.TryGetValue(trackId, out knownRatingKey);
+                continue;
             }
-
+            var knownRatingKey = SelectBestPlexTrackMatch(summary, remoteTracks)?.RatingKey;
             if (string.IsNullOrWhiteSpace(knownRatingKey))
             {
                 continue;
@@ -740,7 +791,8 @@ public sealed class MelodayService
             return null;
         }
 
-        var itemIds = await ResolveJellyfinItemIdsAsync(jellyfin, context.OrderedTrackIds, cancellationToken);
+        var itemIds = await ResolveJellyfinItemIdsAsync(
+            jellyfin, context.LibraryFolders, context.OrderedTrackIds, cancellationToken);
         if (itemIds.Count == 0)
         {
             return null;
@@ -836,7 +888,8 @@ public sealed class MelodayService
             return null;
         }
 
-        var itemIds = await ResolveNavidromeItemIdsAsync(navidrome, context.OrderedTrackIds, cancellationToken);
+        var itemIds = await ResolveNavidromeItemIdsAsync(
+            navidrome, context.LibraryFolders, context.OrderedTrackIds, cancellationToken);
         if (itemIds.Count == 0)
         {
             return null;
@@ -855,12 +908,27 @@ public sealed class MelodayService
 
     private async Task<List<string>> ResolveJellyfinItemIdsAsync(
         JellyfinAuth jellyfin,
+        IReadOnlyList<FolderDto> folders,
         IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
         var summaries = await _libraryRepository.GetTrackSummariesAsync(orderedTrackIds, cancellationToken);
         var summaryByTrackId = summaries.ToDictionary(static summary => summary.TrackId);
         var itemIds = new List<string>();
+        var libraryTracks = new List<JellyfinAudioTrack>();
+        foreach (var libraryId in folders.Select(static folder => folder.JellyfinLibraryId)
+                     .Where(static id => !string.IsNullOrWhiteSpace(id))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            for (var offset = 0; ; offset += 1000)
+            {
+                var page = await _jellyfinApiClient.GetAudioTracksAsync(
+                    jellyfin.Url!, jellyfin.ApiKey!, jellyfin.UserId!, libraryId,
+                    offset, 1000, cancellationToken);
+                libraryTracks.AddRange(page);
+                if (page.Count < 1000) break;
+            }
+        }
         foreach (var trackId in orderedTrackIds)
         {
             if (!summaryByTrackId.TryGetValue(trackId, out var summary))
@@ -868,14 +936,7 @@ public sealed class MelodayService
                 continue;
             }
 
-            var query = $"{summary.Title} {summary.ArtistName}".Trim();
-            var matches = await _jellyfinApiClient.SearchTracksAsync(
-                jellyfin.Url!,
-                jellyfin.ApiKey!,
-                jellyfin.UserId!,
-                query,
-                cancellationToken);
-            var match = matches.FirstOrDefault(candidate => IsJellyfinTrackMatch(summary, candidate));
+            var match = libraryTracks.FirstOrDefault(candidate => IsJellyfinTrackMatch(summary, candidate));
             if (match is not null && !itemIds.Contains(match.Id, StringComparer.OrdinalIgnoreCase))
             {
                 itemIds.Add(match.Id);
@@ -887,6 +948,7 @@ public sealed class MelodayService
 
     private async Task<List<string>> ResolveNavidromeItemIdsAsync(
         NavidromeAuth navidrome,
+        IReadOnlyList<FolderDto> folders,
         IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
@@ -894,6 +956,10 @@ public sealed class MelodayService
         var summaryByTrackId = summaries.ToDictionary(static summary => summary.TrackId);
         var itemIds = new List<string>();
         var cache = new Dictionary<string, List<NavidromeAudioTrack>>(StringComparer.OrdinalIgnoreCase);
+        var allowedLibraryIds = folders
+            .Select(static folder => folder.NavidromeLibraryId)
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var trackId in orderedTrackIds)
         {
             if (!summaryByTrackId.TryGetValue(trackId, out var summary))
@@ -913,7 +979,9 @@ public sealed class MelodayService
                 cache[query] = matches;
             }
 
-            var match = matches.FirstOrDefault(candidate => IsNavidromeTrackMatch(summary, candidate));
+            var match = matches.FirstOrDefault(candidate =>
+                allowedLibraryIds.Contains(candidate.LibraryId ?? string.Empty)
+                && IsNavidromeTrackMatch(summary, candidate));
             if (match is not null && !itemIds.Contains(match.Id, StringComparer.OrdinalIgnoreCase))
             {
                 itemIds.Add(match.Id);
@@ -955,30 +1023,18 @@ public sealed class MelodayService
         return true;
     }
 
-    private async Task<IReadOnlyList<LibraryDto>> ResolveMelodayLibrariesAsync(
-        IReadOnlyList<LibraryDto> libraries,
-        string? libraryName,
-        CancellationToken cancellationToken)
+    private static IReadOnlyList<LibraryDto> ResolveMelodayLibraries(
+        IReadOnlyList<FolderDto> folders,
+        string? libraryName)
     {
-        var candidates = string.IsNullOrWhiteSpace(libraryName)
-            ? libraries
-            : libraries
-                .Where(library => string.Equals(library.Name, libraryName.Trim(), StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        var populatedLibraries = new List<LibraryDto>();
-        foreach (var library in candidates)
-        {
-            var sample = await _libraryRepository.GetRandomTrackIdsAsync(
-                library.Id,
-                1,
-                cancellationToken);
-            if (sample.Count > 0)
-            {
-                populatedLibraries.Add(library);
-            }
-        }
-
-        return populatedLibraries;
+        return folders
+            .Where(folder => folder.LibraryId.HasValue && !string.IsNullOrWhiteSpace(folder.LibraryName))
+            .Where(folder => string.IsNullOrWhiteSpace(libraryName)
+                || string.Equals(folder.LibraryName, libraryName.Trim(), StringComparison.OrdinalIgnoreCase))
+            .GroupBy(folder => folder.LibraryId!.Value)
+            .Select(group => new LibraryDto(group.Key, group.First().LibraryName!))
+            .OrderBy(library => library.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private async Task<List<long>> BuildInitialTrackSelectionAsync(
@@ -1558,7 +1614,8 @@ public sealed class MelodayService
             return false;
         }
 
-        return !context.ExcludedTrackIds.Contains(trackId);
+        return context.AllowedTrackIds.Contains(trackId)
+            && !context.ExcludedTrackIds.Contains(trackId);
     }
 
     private async Task<IReadOnlyList<long>> ProcessTracksAsync(
@@ -2403,7 +2460,8 @@ public sealed class MelodayService
     private async Task<GeneratedMelodayCover?> TryGenerateCoverAsync(
         MelodayOptions options,
         string periodName,
-        string title,
+        long libraryId,
+        string mode,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_webRoot))
@@ -2411,11 +2469,11 @@ public sealed class MelodayService
             return null;
         }
 
-        var staticPosterPath = TryResolveStaticCoverPath(periodName);
+        var staticPosterPath = TryResolveStaticCoverPath(periodName, libraryId, mode);
         if (!string.IsNullOrWhiteSpace(staticPosterPath))
         {
             return new GeneratedMelodayCover(
-                TryResolveStaticCoverUrl(options, periodName),
+                TryResolveStaticCoverUrl(options, periodName, libraryId, mode),
                 staticPosterPath,
                 ResolveContentType(staticPosterPath));
         }
@@ -2424,22 +2482,12 @@ public sealed class MelodayService
         return null;
     }
 
-    private string? TryResolveStaticCoverPath(string periodName)
+    private string? TryResolveStaticCoverPath(string periodName, long libraryId, string mode)
     {
         var staticDir = Path.Join(_webRoot, "images", "meloday");
         if (!Directory.Exists(staticDir))
         {
             return null;
-        }
-
-        var preferredFile = ResolveStaticCoverFile(periodName);
-        if (!string.IsNullOrWhiteSpace(preferredFile))
-        {
-            var preferredPath = Path.Join(staticDir, preferredFile);
-            if (File.Exists(preferredPath))
-            {
-                return preferredPath;
-            }
         }
 
         var candidates = Directory.EnumerateFiles(staticDir)
@@ -2459,11 +2507,11 @@ public sealed class MelodayService
             return null;
         }
 
-        var index = GetPeriodIndex(periodName) % candidates.Count;
+        var index = GetArtworkIndex(periodName, libraryId, mode, candidates.Count);
         return candidates[index];
     }
 
-    private string? TryResolveStaticCoverUrl(MelodayOptions options, string periodName)
+    private string? TryResolveStaticCoverUrl(MelodayOptions options, string periodName, long libraryId, string mode)
     {
         var staticDir = Path.Join(_webRoot, "images", "meloday");
         if (!Directory.Exists(staticDir))
@@ -2475,12 +2523,6 @@ public sealed class MelodayService
         if (string.IsNullOrWhiteSpace(baseUrl))
         {
             return null;
-        }
-
-        var preferredFile = ResolveStaticCoverFile(periodName);
-        if (!string.IsNullOrWhiteSpace(preferredFile) && File.Exists(Path.Join(staticDir, preferredFile)))
-        {
-            return $"{baseUrl}/images/meloday/{Uri.EscapeDataString(preferredFile)}";
         }
 
         var candidates = Directory.EnumerateFiles(staticDir)
@@ -2503,24 +2545,17 @@ public sealed class MelodayService
             return null;
         }
 
-        var index = GetPeriodIndex(periodName) % candidates.Count;
+        var index = GetArtworkIndex(periodName, libraryId, mode, candidates.Count);
         var selected = candidates[index];
         return $"{baseUrl}/images/meloday/{Uri.EscapeDataString(selected)}";
     }
 
-    private static string? ResolveStaticCoverFile(string periodName)
+    private static int GetArtworkIndex(string periodName, long libraryId, string mode, int candidateCount)
     {
-        return periodName switch
-        {
-            DawnPeriodName => "1.jpg",
-            EarlyMorningPeriodName => "2.jpg",
-            MorningPeriodName => "3.jpg",
-            AfternoonPeriodName => "4.jpg",
-            EveningPeriodName => "5.jpg",
-            NightPeriodName => "6.jpg",
-            LateNightPeriodName => "7.jpg",
-            _ => null
-        };
+        if (candidateCount <= 1) return 0;
+        var modeOffset = string.Equals(mode, MelodayModes.Sonic, StringComparison.OrdinalIgnoreCase) ? 11 : 0;
+        var value = ((long)GetPeriodIndex(periodName) * 31L) + (libraryId * 7L) + modeOffset;
+        return (int)(Math.Abs(value) % candidateCount);
     }
 
     private static int GetPeriodIndex(string periodName)
@@ -2556,6 +2591,7 @@ public sealed class MelodayService
         PlexAuth? Plex,
         MelodayOptions Options,
         Dictionary<long, PlexTrackMetadata> LiveMetadataByTrackId,
+        IReadOnlySet<long> AllowedTrackIds,
         CancellationToken CancellationToken);
 
     private sealed record MediaServerTarget(

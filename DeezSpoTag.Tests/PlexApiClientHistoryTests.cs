@@ -105,6 +105,56 @@ public sealed class PlexApiClientHistoryTests
         Assert.Empty(history);
     }
 
+    [Fact]
+    public async Task GetHistoryAsync_WithExplicitSections_SkipsDiscoveryNormalizesAndDeduplicates()
+    {
+        var requests = new List<string>();
+        using var handler = new StubHandler(request =>
+        {
+            Assert.NotEqual("/library/sections", request.RequestUri!.AbsolutePath);
+            requests.Add(request.RequestUri.OriginalString);
+            var sectionId = request.RequestUri.Query.Contains("librarySectionID=12", StringComparison.Ordinal)
+                ? "12"
+                : "7";
+            return Xml($"<MediaContainer size=\"1\" totalSize=\"1\"><Track ratingKey=\"track-{sectionId}\" title=\"Track\" viewedAt=\"1700000000\"/></MediaContainer>");
+        });
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var history = await client.GetHistoryAsync(
+            "http://plex.local:32400",
+            "secret",
+            new[] { " 7 ", "", "7", "12" },
+            DateTimeOffset.FromUnixTimeSeconds(1));
+
+        Assert.Equal(2, history.Count);
+        Assert.Equal(new[] { "7", "12" }, history.Select(item => item.LibrarySectionId));
+        Assert.Equal(2, requests.Count);
+        Assert.Contains(requests, uri => uri.Contains("librarySectionID=7", StringComparison.Ordinal));
+        Assert.Contains(requests, uri => uri.Contains("librarySectionID=12", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetHistoryAsync_WithNoValidExplicitSections_DoesNotRequestUnscopedHistory()
+    {
+        var requestCount = 0;
+        using var handler = new StubHandler(_ =>
+        {
+            requestCount++;
+            return Xml("<MediaContainer />");
+        });
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var history = await client.GetHistoryAsync(
+            "http://plex.local:32400",
+            "secret",
+            new[] { " ", "" });
+
+        Assert.Empty(history);
+        Assert.Equal(0, requestCount);
+    }
+
     private static HttpResponseMessage Xml(string xml)
         => new(HttpStatusCode.OK) { Content = new StringContent(xml) };
 

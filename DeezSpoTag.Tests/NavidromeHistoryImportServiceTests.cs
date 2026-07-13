@@ -107,8 +107,8 @@ JOIN plex_user pu ON pu.id = ph.plex_user_id;";
         await using var command = connection.CreateCommand();
         command.CommandText = @"
 INSERT INTO library (id, name) VALUES (1, 'Music');
-INSERT INTO folder (id, root_path, display_name, enabled, library_id)
-VALUES (1, '/local/music', 'Music', 1, 1);
+INSERT INTO folder (id, root_path, display_name, enabled, library_id, desired_quality_value, navidrome_library_id)
+VALUES (1, '/local/music', 'Music', 1, 1, 'cd_lossless', '1');
 INSERT INTO artist (id, name) VALUES (1, 'Artist One');
 INSERT INTO album (id, artist_id, title) VALUES (1, 1, 'Album One');
 INSERT INTO track (id, album_id, title, duration_ms) VALUES (1, 1, 'Track One', 181500);

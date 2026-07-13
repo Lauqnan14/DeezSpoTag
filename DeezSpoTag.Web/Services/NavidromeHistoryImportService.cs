@@ -44,52 +44,39 @@ public sealed class NavidromeHistoryImportService
             navidrome.Url,
             navidrome.ServerName,
             cancellationToken);
-        var latestImportedUtc = await _libraryRepository.GetLatestPlayHistoryUtcAsync(
-            historyUserId,
-            "navidrome",
-            cancellationToken);
-        var importFromUtc = latestImportedUtc?.Subtract(ImportOverlap);
-        var history = await _navidromeApiClient.GetPlayHistoryAsync(
-            navidrome.Url,
-            username,
-            navidrome.Password,
-            importFromUtc,
-            cancellationToken: cancellationToken);
-
         var stats = new ImportStats();
-        var metadataLookupCache = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in history)
+        var fetchedCount = 0;
+        var folders = (await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
+            .Where(static folder => !string.IsNullOrWhiteSpace(folder.NavidromeLibraryId))
+            .ToList();
+        foreach (var folder in folders)
         {
-            var trackId = await ResolveTrackIdAsync(item, metadataLookupCache, stats, cancellationToken);
-            var libraryId = trackId.HasValue
-                ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken)
-                : null;
-            if (!trackId.HasValue)
+            var latest = await _libraryRepository.GetLatestPlayHistoryUtcForFolderAsync(
+                historyUserId, "navidrome", folder.Id, cancellationToken);
+            var history = await _navidromeApiClient.GetPlayHistoryAsync(
+                navidrome.Url, username, navidrome.Password, folder.NavidromeLibraryId!,
+                latest?.Subtract(ImportOverlap), cancellationToken: cancellationToken);
+            fetchedCount += history.Count;
+            foreach (var item in history)
             {
-                stats.Unresolved++;
-            }
-
-            if (await _libraryRepository.AddPlayHistoryAsync(
-                    new LibraryRepository.PlayHistoryWriteInput(
-                        historyUserId,
-                        libraryId,
-                        trackId,
-                        item.ItemId,
-                        null,
-                        item.PlayedAtUtc,
-                        item.DurationMs,
-                        JsonSerializer.Serialize(item),
-                        "navidrome"),
-                    cancellationToken))
-            {
-                stats.Inserted++;
+                var trackId = await ResolveTrackIdAsync(item, folder, stats, cancellationToken);
+                if (!trackId.HasValue) stats.Unresolved++;
+                if (await _libraryRepository.AddPlayHistoryAsync(
+                        new LibraryRepository.PlayHistoryWriteInput(
+                            historyUserId, folder.LibraryId, trackId, item.ItemId, null,
+                            item.PlayedAtUtc, item.DurationMs, JsonSerializer.Serialize(item),
+                            "navidrome", folder.Id),
+                        cancellationToken))
+                {
+                    stats.Inserted++;
+                }
             }
         }
 
         _logger.LogInformation(
             "Imported {Count} Navidrome history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
             stats.Inserted,
-            history.Count,
+            fetchedCount,
             stats.ResolvedByFilePath,
             stats.ResolvedByMetadata,
             stats.Unresolved);
@@ -98,43 +85,32 @@ public sealed class NavidromeHistoryImportService
 
     private async Task<long?> ResolveTrackIdAsync(
         NavidromeHistoryItem item,
-        Dictionary<string, long?> metadataLookupCache,
+        FolderDto folder,
         ImportStats stats,
         CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(item.FilePath))
         {
             var pathMatch = await _libraryRepository.GetTrackIdForFilePathAsync(item.FilePath, cancellationToken);
-            if (pathMatch.HasValue)
+            if (pathMatch.HasValue && await _libraryRepository.GetFolderScopeForTrackAsync(
+                    pathMatch.Value, folder.Id, folder.LibraryId, cancellationToken) is not null)
             {
                 stats.ResolvedByFilePath++;
                 return pathMatch;
             }
         }
 
-        if (string.IsNullOrWhiteSpace(item.Artist) || string.IsNullOrWhiteSpace(item.Title))
-        {
-            return null;
-        }
-
-        var cacheKey = $"{item.Artist.Trim().ToLowerInvariant()}|{item.Title.Trim().ToLowerInvariant()}|{item.DurationMs}";
-        if (metadataLookupCache.TryGetValue(cacheKey, out var cached))
-        {
-            return cached;
-        }
-
-        var resolved = await _libraryRepository.GetLocalTrackIdByTrackMetadataAsync(
-            item.Artist,
-            item.Title,
-            item.DurationMs,
+        var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null, item.Title, item.Artist, item.DurationMs, "navidrome", item.ItemId),
+            folder.LibraryId,
+            folder.Id,
             cancellationToken);
-        if (resolved.HasValue)
+        if (resolved.LocalTrackId.HasValue)
         {
             stats.ResolvedByMetadata++;
         }
-
-        metadataLookupCache[cacheKey] = resolved;
-        return resolved;
+        return resolved.LocalTrackId;
     }
 
     private sealed class ImportStats

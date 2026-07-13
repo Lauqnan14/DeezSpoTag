@@ -44,46 +44,39 @@ public sealed class JellyfinHistoryImportService
             jellyfin.ServerName,
             cancellationToken);
 
-        var history = await _jellyfinApiClient.GetAudioPlayHistoryAsync(
-            jellyfin.Url,
-            jellyfin.ApiKey,
-            jellyfin.UserId,
-            cancellationToken: cancellationToken);
-
         var stats = new ImportStats();
-        var metadataLookupCache = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in history)
+        var fetchedCount = 0;
+        var folders = (await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
+            .Where(static folder => !string.IsNullOrWhiteSpace(folder.JellyfinLibraryId))
+            .ToList();
+        foreach (var folder in folders)
         {
-            var trackId = await ResolveTrackIdAsync(item, metadataLookupCache, stats, cancellationToken);
-            var libraryId = await ResolveLibraryIdAsync(item.FilePath, trackId, cancellationToken);
-            if (!trackId.HasValue)
+            var history = await _jellyfinApiClient.GetAudioPlayHistoryAsync(
+                jellyfin.Url, jellyfin.ApiKey, jellyfin.UserId, folder.JellyfinLibraryId!,
+                cancellationToken: cancellationToken);
+            fetchedCount += history.Count;
+            foreach (var item in history)
             {
-                stats.Unresolved++;
-            }
-
-            var inserted = await _libraryRepository.AddPlayHistoryAsync(
-                new LibraryRepository.PlayHistoryWriteInput(
-                    userId,
-                    libraryId,
-                    trackId,
-                    item.FilePath,
-                    item.ItemId,
-                    item.PlayedAtUtc,
-                    item.DurationMs,
-                    JsonSerializer.Serialize(item),
-                    "jellyfin"),
-                cancellationToken);
-            if (inserted)
-            {
-                stats.Inserted++;
+                var trackId = await ResolveTrackIdAsync(item, folder, stats, cancellationToken);
+                if (!trackId.HasValue) stats.Unresolved++;
+                if (await _libraryRepository.AddPlayHistoryAsync(
+                        new LibraryRepository.PlayHistoryWriteInput(
+                            userId, folder.LibraryId, trackId, item.FilePath, item.ItemId,
+                            item.PlayedAtUtc, item.DurationMs, JsonSerializer.Serialize(item),
+                            "jellyfin", folder.Id),
+                        cancellationToken))
+                {
+                    stats.Inserted++;
+                }
             }
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Imported {Count} Jellyfin history entries. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
+                "Imported {Count} folder-scoped Jellyfin history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
                 stats.Inserted,
+                fetchedCount,
                 stats.ResolvedByFilePath,
                 stats.ResolvedByMetadata,
                 stats.Unresolved);
@@ -94,58 +87,32 @@ public sealed class JellyfinHistoryImportService
 
     private async Task<long?> ResolveTrackIdAsync(
         JellyfinHistoryItem item,
-        Dictionary<string, long?> metadataLookupCache,
+        FolderDto folder,
         ImportStats stats,
         CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(item.FilePath))
         {
             var pathMatch = await _libraryRepository.GetTrackIdForFilePathAsync(item.FilePath, cancellationToken);
-            if (pathMatch.HasValue)
+            if (pathMatch.HasValue && await _libraryRepository.GetFolderScopeForTrackAsync(
+                    pathMatch.Value, folder.Id, folder.LibraryId, cancellationToken) is not null)
             {
                 stats.ResolvedByFilePath++;
                 return pathMatch;
             }
         }
 
-        if (string.IsNullOrWhiteSpace(item.Artist) || string.IsNullOrWhiteSpace(item.Title))
-        {
-            return null;
-        }
-
-        var cacheKey = $"{item.Artist.Trim().ToLowerInvariant()}|{item.Title.Trim().ToLowerInvariant()}|{item.DurationMs}";
-        if (metadataLookupCache.TryGetValue(cacheKey, out var cached))
-        {
-            return cached;
-        }
-
-        var resolved = await _libraryRepository.GetLocalTrackIdByTrackMetadataAsync(
-            item.Artist,
-            item.Title,
-            item.DurationMs,
+        var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null, item.Title, item.Artist, item.DurationMs, "jellyfin", item.ItemId, item.Album),
+            folder.LibraryId,
+            folder.Id,
             cancellationToken);
-        if (resolved.HasValue)
+        if (resolved.LocalTrackId.HasValue)
         {
             stats.ResolvedByMetadata++;
         }
-
-        metadataLookupCache[cacheKey] = resolved;
-        return resolved;
-    }
-
-    private async Task<long?> ResolveLibraryIdAsync(string? filePath, long? trackId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return trackId.HasValue
-                ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken)
-                : null;
-        }
-
-        var folder = await _libraryRepository.ResolveFolderForPathAsync(filePath, cancellationToken);
-        return folder?.LibraryId ?? (trackId.HasValue
-            ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken)
-            : null);
+        return resolved.LocalTrackId;
     }
 
     private sealed class ImportStats

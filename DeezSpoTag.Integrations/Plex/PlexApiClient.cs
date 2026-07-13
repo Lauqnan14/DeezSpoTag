@@ -2177,6 +2177,7 @@ public class PlexApiClient
             token,
             viewedSinceUtc: null,
             maxItems: DefaultHistoryItemLimit,
+            requestedSectionKeys: null,
             cancellationToken);
     }
 
@@ -2191,6 +2192,39 @@ public class PlexApiClient
             token,
             viewedSinceUtc,
             maxItems: null,
+            requestedSectionKeys: null,
+            cancellationToken);
+    }
+
+    public Task<List<PlexHistoryItem>> GetHistoryAsync(
+        string serverUrl,
+        string token,
+        string librarySectionId,
+        DateTimeOffset? viewedSinceUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        return GetHistoryAsync(
+            serverUrl,
+            token,
+            new[] { librarySectionId },
+            viewedSinceUtc,
+            cancellationToken);
+    }
+
+    public Task<List<PlexHistoryItem>> GetHistoryAsync(
+        string serverUrl,
+        string token,
+        IReadOnlyCollection<string> librarySectionIds,
+        DateTimeOffset? viewedSinceUtc = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(librarySectionIds);
+        return GetHistoryInternalAsync(
+            serverUrl,
+            token,
+            viewedSinceUtc,
+            maxItems: viewedSinceUtc.HasValue ? null : DefaultHistoryItemLimit,
+            requestedSectionKeys: librarySectionIds,
             cancellationToken);
     }
 
@@ -2199,6 +2233,7 @@ public class PlexApiClient
         string token,
         DateTimeOffset? viewedSinceUtc,
         int? maxItems,
+        IReadOnlyCollection<string>? requestedSectionKeys,
         CancellationToken cancellationToken)
     {
         try
@@ -2209,15 +2244,31 @@ public class PlexApiClient
             }
 
             var baseUrl = serverUrl.TrimEnd('/');
-            var sections = await GetLibrarySectionsAsync(baseUrl, token, cancellationToken);
-            var musicSectionKeys = sections
-                .Where(static section =>
-                    string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(section.Type, "music", StringComparison.OrdinalIgnoreCase))
-                .Select(static section => section.Key)
-                .Where(static key => !string.IsNullOrWhiteSpace(key))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            List<string> musicSectionKeys;
+            if (requestedSectionKeys is not null)
+            {
+                musicSectionKeys = requestedSectionKeys
+                    .Where(static key => !string.IsNullOrWhiteSpace(key))
+                    .Select(static key => key.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (musicSectionKeys.Count == 0)
+                {
+                    return [];
+                }
+            }
+            else
+            {
+                var sections = await GetLibrarySectionsAsync(baseUrl, token, cancellationToken);
+                musicSectionKeys = sections
+                    .Where(static section =>
+                        string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(section.Type, "music", StringComparison.OrdinalIgnoreCase))
+                    .Select(static section => section.Key)
+                    .Where(static key => !string.IsNullOrWhiteSpace(key))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
 
             // The supported endpoint contains every media type. Restricting by each
             // music section prevents recent video plays from hiding audio history.

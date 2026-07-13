@@ -346,6 +346,36 @@
                                 </div>
                             </section>
 
+                            <section class="playlist-settings-section folder-target-library-section" id="folderTargetLibrarySection">
+                                <div class="playlist-settings-section-title">Meloday Target Libraries</div>
+                                <p class="playlist-settings-help">Bind this folder to its matching music library on each configured server. Meloday uses these stable library IDs to pull only that library's history and to select tracks from this folder.</p>
+                                <div class="folder-target-library-status" id="folderTargetLibraryStatus" role="status">Loading configured server libraries...</div>
+                                <div class="form-row folder-target-library-grid">
+                                    <div class="form-group">
+                                        <label for="folderPlexSectionId">Plex music library</label>
+                                        <select id="folderPlexSectionId" data-target-library="plex" disabled>
+                                            <option value="">Loading Plex libraries...</option>
+                                        </select>
+                                        <span class="helper" data-target-library-help="plex"></span>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="folderJellyfinLibraryId">Jellyfin music library</label>
+                                        <select id="folderJellyfinLibraryId" data-target-library="jellyfin" disabled>
+                                            <option value="">Loading Jellyfin libraries...</option>
+                                        </select>
+                                        <span class="helper" data-target-library-help="jellyfin"></span>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="folderNavidromeLibraryId">Navidrome music library</label>
+                                        <select id="folderNavidromeLibraryId" data-target-library="navidrome" disabled>
+                                            <option value="">Loading Navidrome libraries...</option>
+                                        </select>
+                                        <span class="helper" data-target-library-help="navidrome"></span>
+                                    </div>
+                                </div>
+                                <div class="folder-target-library-warning hidden" id="folderTargetLibraryWarning" role="alert"></div>
+                            </section>
+
                             <section class="playlist-settings-section">
                                 <div class="playlist-settings-section-title">Conversion Override</div>
                                 <div class="form-group">

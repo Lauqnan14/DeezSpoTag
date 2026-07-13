@@ -177,6 +177,9 @@ CREATE TABLE IF NOT EXISTS folder (
     convert_enabled INTEGER NOT NULL DEFAULT 0,
     convert_format TEXT,
     convert_bitrate TEXT,
+    plex_section_id TEXT,
+    jellyfin_library_id TEXT,
+    navidrome_library_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -732,6 +735,7 @@ CREATE TABLE IF NOT EXISTS plex_user (
 CREATE TABLE IF NOT EXISTS play_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     library_id BIGINT REFERENCES library(id) ON DELETE SET NULL,
+    folder_id BIGINT REFERENCES folder(id) ON DELETE SET NULL,
     plex_user_id BIGINT NOT NULL REFERENCES plex_user(id) ON DELETE CASCADE,
     track_id BIGINT REFERENCES track(id) ON DELETE SET NULL,
     plex_track_key TEXT,

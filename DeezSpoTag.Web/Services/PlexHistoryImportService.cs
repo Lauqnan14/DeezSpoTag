@@ -41,45 +41,33 @@ public sealed class PlexHistoryImportService
             plex.MachineIdentifier,
             cancellationToken);
 
-        var latestImportedUtc = await _libraryRepository.GetLatestPlayHistoryUtcAsync(
-            plexUserId,
-            "plex",
-            cancellationToken);
-        var importFromUtc = latestImportedUtc?.Subtract(ImportOverlap);
-        var history = await _plexApiClient.GetHistoryAsync(
-            plex.Url,
-            plex.Token,
-            importFromUtc,
-            cancellationToken);
-        var pendingHistory = history
-            .Where(static item => item.ViewedAtUtc is not null)
-            .Where(item => !importFromUtc.HasValue || item.ViewedAtUtc!.Value >= importFromUtc.Value)
-            .ToList();
-        var knownRatingKeys = pendingHistory
-            .Select(item => item.RatingKey?.Trim())
-            .Where(key => !string.IsNullOrWhiteSpace(key))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Cast<string>()
-            .ToList();
-        var trackIdsByRatingKey = new Dictionary<string, long>(
-            await _libraryRepository.GetTrackIdsByPlexRatingKeysAsync(
-                knownRatingKeys,
-                cancellationToken),
-            StringComparer.OrdinalIgnoreCase);
         var stats = new ImportStats();
-        var metadataLookupCache = new Dictionary<string, long?>(StringComparer.OrdinalIgnoreCase);
         var ratingKeyUpserts = new List<PlexTrackMetadataUpsertDto>();
-
-        foreach (var item in pendingHistory)
+        var fetchedCount = 0;
+        var folders = (await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
+            .Where(static folder => !string.IsNullOrWhiteSpace(folder.PlexSectionId))
+            .ToList();
+        foreach (var folder in folders)
         {
-            var trackId = await ResolveTrackIdAsync(item, trackIdsByRatingKey, metadataLookupCache, stats, cancellationToken);
-            var libraryId = await ResolveLibraryIdAsync(item.FilePath, trackId, cancellationToken);
-            if (!trackId.HasValue) stats.Unresolved++;
-
-            AddRatingKeyUpsertIfAvailable(item.RatingKey, trackId, trackIdsByRatingKey, ratingKeyUpserts);
-            if (await WritePlayHistoryAsync(plexUserId, libraryId, trackId, item, cancellationToken))
+            var latest = await _libraryRepository.GetLatestPlayHistoryUtcForFolderAsync(
+                plexUserId, "plex", folder.Id, cancellationToken);
+            var importFromUtc = latest?.Subtract(ImportOverlap);
+            var history = await _plexApiClient.GetHistoryAsync(
+                plex.Url, plex.Token, folder.PlexSectionId!, importFromUtc, cancellationToken);
+            fetchedCount += history.Count;
+            foreach (var item in history.Where(static item => item.ViewedAtUtc.HasValue))
             {
-                stats.Inserted++;
+                var trackId = await ResolveTrackIdInFolderAsync(item, folder, stats, cancellationToken);
+                if (!trackId.HasValue) stats.Unresolved++;
+                if (trackId.HasValue && !string.IsNullOrWhiteSpace(item.RatingKey))
+                {
+                    ratingKeyUpserts.Add(new PlexTrackMetadataUpsertDto(trackId.Value, item.RatingKey.Trim(), DateTimeOffset.UtcNow));
+                }
+                if (await WritePlayHistoryAsync(
+                        plexUserId, folder.LibraryId, folder.Id, trackId, item, cancellationToken))
+                {
+                    stats.Inserted++;
+                }
             }
         }
 
@@ -91,103 +79,48 @@ public sealed class PlexHistoryImportService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Processed {Count} incremental Plex history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByRatingKey={ResolvedByRatingKey} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
+                "Processed {Count} folder-scoped Plex history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
                 stats.Inserted,
-                history.Count,
+                fetchedCount,
                 stats.ResolvedByFilePath,
-                stats.ResolvedByRatingKey,
                 stats.ResolvedByMetadata,
                 stats.Unresolved);
         }
         return stats.Inserted;
     }
 
-    private async Task<long?> ResolveTrackIdAsync(
+    private async Task<long?> ResolveTrackIdInFolderAsync(
         PlexHistoryItem item,
-        Dictionary<string, long> trackIdsByRatingKey,
-        Dictionary<string, long?> metadataLookupCache,
+        FolderDto folder,
         ImportStats stats,
         CancellationToken cancellationToken)
     {
-        var trackId = await TryResolveTrackIdByFilePathAsync(item.FilePath, cancellationToken);
-        if (trackId.HasValue)
+        if (!string.IsNullOrWhiteSpace(item.FilePath))
         {
-            stats.ResolvedByFilePath++;
-            return trackId;
+            var pathId = await _libraryRepository.GetTrackIdForFilePathAsync(item.FilePath, cancellationToken);
+            if (pathId.HasValue && await _libraryRepository.GetFolderScopeForTrackAsync(
+                    pathId.Value, folder.Id, folder.LibraryId, cancellationToken) is not null)
+            {
+                stats.ResolvedByFilePath++;
+                return pathId;
+            }
         }
 
-        if (TryResolveTrackIdByRatingKey(item.RatingKey, trackIdsByRatingKey, out var mappedTrackId))
-        {
-            stats.ResolvedByRatingKey++;
-            return mappedTrackId;
-        }
-
-        trackId = await TryResolveTrackIdByMetadataAsync(item, metadataLookupCache, cancellationToken);
-        if (trackId.HasValue)
-        {
-            stats.ResolvedByMetadata++;
-        }
-
-        return trackId;
-    }
-
-    private async Task<long?> TryResolveTrackIdByFilePathAsync(string? filePath, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return null;
-        }
-
-        return await _libraryRepository.GetTrackIdForFilePathAsync(filePath, cancellationToken);
-    }
-
-    private static bool TryResolveTrackIdByRatingKey(
-        string? ratingKey,
-        Dictionary<string, long> trackIdsByRatingKey,
-        out long trackId)
-    {
-        trackId = default;
-        if (string.IsNullOrWhiteSpace(ratingKey))
-        {
-            return false;
-        }
-
-        return trackIdsByRatingKey.TryGetValue(ratingKey, out trackId);
-    }
-
-    private async Task<long?> ResolveLibraryIdAsync(string? filePath, long? trackId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return trackId.HasValue ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken) : null;
-        }
-
-        var folder = await _libraryRepository.ResolveFolderForPathAsync(filePath, cancellationToken);
-        return folder?.LibraryId ?? (trackId.HasValue ? await _libraryRepository.GetLibraryIdForTrackAsync(trackId.Value, cancellationToken) : null);
-    }
-
-    private static void AddRatingKeyUpsertIfAvailable(
-        string? ratingKey,
-        long? trackId,
-        Dictionary<string, long> trackIdsByRatingKey,
-        List<PlexTrackMetadataUpsertDto> ratingKeyUpserts)
-    {
-        if (!trackId.HasValue || string.IsNullOrWhiteSpace(ratingKey))
-        {
-            return;
-        }
-
-        var normalizedKey = ratingKey.Trim();
-        trackIdsByRatingKey[normalizedKey] = trackId.Value;
-        ratingKeyUpserts.Add(new PlexTrackMetadataUpsertDto(
-            trackId.Value,
-            normalizedKey,
-            DateTimeOffset.UtcNow));
+        var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null, item.Title, item.Artist, item.DurationMs > 0 ? (int?)item.DurationMs : null,
+                "plex", item.RatingKey, item.Album),
+            folder.LibraryId,
+            folder.Id,
+            cancellationToken);
+        if (resolved.LocalTrackId.HasValue) stats.ResolvedByMetadata++;
+        return resolved.LocalTrackId;
     }
 
     private async Task<bool> WritePlayHistoryAsync(
         long plexUserId,
         long? libraryId,
+        long folderId,
         long? trackId,
         PlexHistoryItem item,
         CancellationToken cancellationToken)
@@ -201,41 +134,16 @@ public sealed class PlexHistoryImportService
                 item.RatingKey,
                 item.ViewedAtUtc!.Value,
                 item.DurationMs > 0 ? (int?)item.DurationMs : null,
-                null),
+                null,
+                "plex",
+                folderId),
             cancellationToken);
-    }
-
-    private async Task<long?> TryResolveTrackIdByMetadataAsync(
-        PlexHistoryItem item,
-        Dictionary<string, long?> cache,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(item.Artist) || string.IsNullOrWhiteSpace(item.Title))
-        {
-            return null;
-        }
-
-        var cacheKey = $"{item.Artist.Trim().ToLowerInvariant()}|{item.Title.Trim().ToLowerInvariant()}|{item.DurationMs}";
-        if (cache.TryGetValue(cacheKey, out var cached))
-        {
-            return cached;
-        }
-
-        var durationMs = item.DurationMs > 0 ? (int?)item.DurationMs : null;
-        var resolved = await _libraryRepository.GetLocalTrackIdByTrackMetadataAsync(
-            item.Artist,
-            item.Title,
-            durationMs,
-            cancellationToken);
-        cache[cacheKey] = resolved;
-        return resolved;
     }
 
     private sealed class ImportStats
     {
         public int Inserted { get; set; }
         public int ResolvedByFilePath { get; set; }
-        public int ResolvedByRatingKey { get; set; }
         public int ResolvedByMetadata { get; set; }
         public int Unresolved { get; set; }
     }
