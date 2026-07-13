@@ -1269,7 +1269,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             var locationStatus = ResolvePlaylistTrackLocationStatus(
                 ignoredTrackIds.Contains(trackSourceId),
                 persistedStatus,
-                queueTask);
+                queueTask?.Status);
             return new
             {
                 candidate.TrackSourceId,
@@ -1299,17 +1299,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }).ToList());
     }
 
-    private static PlaylistTrackLocationStatus ResolvePlaylistTrackLocationStatus(
+    internal static PlaylistTrackLocationStatus ResolvePlaylistTrackLocationStatus(
         bool ignored,
         PlaylistWatchTrackStatusDto? persistedStatus,
-        DownloadQueueItem? queueTask)
+        string? liveQueueStatus)
     {
         if (ignored)
         {
             return new PlaylistTrackLocationStatus("blocked", "Blocked", "Ignored or blocked by monitored playlist rules.");
         }
 
-        var queueStatus = NormalizeStatusText(queueTask?.Status);
+        var queueStatus = NormalizeStatusText(liveQueueStatus);
         var queueState = ResolveQueueLocationStatus(queueStatus);
         if (queueState != null && IsActiveQueueStatus(queueStatus))
         {
@@ -1370,7 +1370,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         };
     }
 
-    private sealed record PlaylistTrackLocationStatus(
+    internal sealed record PlaylistTrackLocationStatus(
         string Status,
         string Label,
         string Detail);

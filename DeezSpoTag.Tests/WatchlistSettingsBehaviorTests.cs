@@ -5,7 +5,9 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
@@ -390,7 +392,40 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void PlaylistTrackStatus_UsesLiveQueueForQueueFailureDisplay()
+    public void PlaylistTrackStatus_PreservesUpgradedLiveQueuePrecedence()
+    {
+        var synced = CreatePlaylistTrackStatus(
+            status: "completed",
+            localTrackId: 42,
+            identityStatus: "verified",
+            syncStatus: "playlist_synced");
+        var local = CreatePlaylistTrackStatus(
+            status: "completed",
+            localTrackId: 42,
+            identityStatus: "verified");
+
+        Assert.Equal(
+            "downloading",
+            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, synced, "running").Status);
+        Assert.Equal(
+            "synced",
+            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, synced, "failed").Status);
+        Assert.Equal(
+            "failed",
+            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, "failed").Status);
+        Assert.Equal(
+            "library",
+            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, local, "cancelled").Status);
+        Assert.Equal(
+            "missing",
+            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, null).Status);
+        Assert.Equal(
+            "blocked",
+            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(true, synced, "running").Status);
+    }
+
+    [Fact]
+    public void PlaylistTrackStatus_UsesOnlyExplicitPlaylistQueueClaims()
     {
         var repoRoot = ResolveRepoRoot();
         var source = File.ReadAllText(Path.Join(
@@ -400,10 +435,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             "Api",
             "LibraryPlaylistWatchlistApiController.cs"));
 
-        Assert.Contains("var queueState = ResolveQueueLocationStatus(NormalizeStatusText(queueTask?.Status));", source, StringComparison.Ordinal);
-        Assert.Contains("\"failed\" => new PlaylistTrackLocationStatus(\"failed\", \"Failed\", \"Queued download failed.\")", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("var queueState = ResolveQueueLocationStatus(normalized);", source, StringComparison.Ordinal);
-        Assert.Contains("return new PlaylistTrackLocationStatus(\"missing\", \"Missing\", \"Not downloaded and not currently queued.\");", source, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistWatchDownloadClaimsForPlaylistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("return (claimedTasks ?? [])", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("QueueTaskMatchesCandidate", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadQueuePayloadId", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -778,6 +813,26 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             // Best-effort cleanup.
         }
     }
+
+    private static PlaylistWatchTrackStatusDto CreatePlaylistTrackStatus(
+        string status,
+        long? localTrackId = null,
+        string? identityStatus = null,
+        string? syncStatus = null)
+        => new(
+            TrackSourceId: "track-1",
+            Isrc: null,
+            Status: status,
+            UpdatedAt: DateTimeOffset.UtcNow,
+            UnavailableReason: null,
+            UnavailableSinceUtc: null,
+            UnavailableLastCheckedUtc: null,
+            UnavailableNextRecheckUtc: null,
+            UnavailableSettingsFingerprint: null,
+            LocalTrackId: localTrackId,
+            IdentityStatus: identityStatus,
+            SyncStatus: syncStatus,
+            TargetService: "plex");
 
     private static string ResolveRepoRoot()
     {
