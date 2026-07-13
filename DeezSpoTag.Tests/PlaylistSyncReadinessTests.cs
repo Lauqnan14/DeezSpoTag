@@ -144,7 +144,7 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             new object?[]
             {
                 CreatePlaylist(),
-                new List<PlaylistWatchService.PlaylistTrackCandidate>
+                new List<PlaylistTrackCandidate>
                 {
                     CreateCandidate(),
                     CreateCandidate("track-2", "Song Two")
@@ -170,7 +170,7 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             TrackCount: 1,
             CreatedAt: DateTimeOffset.UtcNow);
 
-    private static PlaylistWatchService.PlaylistTrackCandidate CreateCandidate(
+    private static PlaylistTrackCandidate CreateCandidate(
         string trackSourceId = "track-1",
         string title = "Song One")
         => new(

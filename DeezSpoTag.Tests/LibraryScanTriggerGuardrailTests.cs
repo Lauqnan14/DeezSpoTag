@@ -253,13 +253,13 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", source, StringComparison.Ordinal);
-        Assert.Contains("mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly", source, StringComparison.Ordinal);
+        Assert.Contains("mode: PlaylistReconciliationMode.SyncOnly", source, StringComparison.Ordinal);
     }
 
     [Fact]
     public void PlaylistWatch_DoesNotRunPreQueueMediaServerSync()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
+        var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
 
         Assert.DoesNotContain("PreQueuePlaylistSyncAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RunPreQueueLibraryScanAsync", source, StringComparison.Ordinal);

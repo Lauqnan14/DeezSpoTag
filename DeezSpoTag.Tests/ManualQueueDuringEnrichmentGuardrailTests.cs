@@ -50,7 +50,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     [Fact]
     public void WatchlistQueueing_UsesStrictExecutionGateForAdmission()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
+        var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
 
         Assert.Contains("EvaluateDownloadGateAsync", source, StringComparison.Ordinal);
         Assert.Contains("intentService.EnqueueAsync", source, StringComparison.Ordinal);

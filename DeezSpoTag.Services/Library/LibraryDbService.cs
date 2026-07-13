@@ -129,6 +129,8 @@ public sealed class LibraryDbService
             ["idx_recommendation_rejection_rejected"] = (RecommendationRejectionTable, "rejected_at_utc", false)
             ,
             ["idx_watchlist_history_source_created"] = (WatchlistHistoryTable, "source, created_at", false)
+            ,
+            ["idx_watchlist_history_item_created"] = (WatchlistHistoryTable, "item_key, created_at", false)
         };
     private readonly IConfiguration _configuration;
     private readonly ILogger<LibraryDbService> _logger;
@@ -522,6 +524,7 @@ CREATE TABLE IF NOT EXISTS watchlist_source_circuit_state (
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchIgnoreTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, WatchlistHistoryTable, SourceIdColumn, TextType, cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistHistoryTable, "item_key", TextType, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     source TEXT NOT NULL,
@@ -551,6 +554,7 @@ CREATE TABLE IF NOT EXISTS recommendation_rejection (
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchTrackTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, PlaylistWatchIgnoreTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
         await BackfillColumnFromLegacyAsync(connection, WatchlistHistoryTable, SourceIdColumn, ExternalIdColumn, cancellationToken);
+        await BackfillWatchlistHistoryItemKeysAsync(connection, cancellationToken);
         await NormalizeWatchlistKeysAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_watchlist_spotify_id", ArtistWatchlistTable, "spotify_id", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_artist_watchlist_deezer_id", ArtistWatchlistTable, DeezerIdColumn, unique: false, cancellationToken);
@@ -563,6 +567,7 @@ CREATE TABLE IF NOT EXISTS recommendation_rejection (
         await EnsureIndexAsync(connection, "idx_playlist_watch_download_claim_queue", PlaylistWatchDownloadClaimTable, "queue_uuid, status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_source_circuit_open", WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_history_source_created", WatchlistHistoryTable, "source, created_at", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_history_item_created", WatchlistHistoryTable, "item_key, created_at", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS download_blocklist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -895,6 +900,19 @@ CREATE TABLE IF NOT EXISTS {tableName} (
         }
 
         var sql = ResolveBackfillLegacySql(table, column, legacyColumn);
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task BackfillWatchlistHistoryItemKeysAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+UPDATE watchlist_history
+SET item_key = lower(trim(watch_type)) || ':' || lower(trim(source)) || ':' || trim(source_id)
+WHERE lower(trim(watch_type)) = 'playlist'
+  AND (item_key IS NULL OR trim(item_key) = '');";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

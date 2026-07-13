@@ -17,47 +17,46 @@ public sealed class LibraryPlaylistWatchlistDependencies
 {
     public required LibraryRepository Repository { get; init; }
     public required LibraryConfigStore ConfigStore { get; init; }
-    public required PlaylistWatchService PlaylistWatchService { get; init; }
+    public required PlaylistWatchReconciler PlaylistWatchReconciler { get; init; }
     public required PlaylistSyncService PlaylistSyncService { get; init; }
     public required PlaylistVisualService PlaylistVisualService { get; init; }
     public required DownloadQueueRepository QueueRepository { get; init; }
     public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
     public WatchlistFinalizationService? WatchlistFinalizationService { get; init; }
-    public PlaylistWatchHostedService? PlaylistWatchHostedService { get; init; }
+    public WatchlistRunCoordinator? WatchlistRunCoordinator { get; init; }
 }
 
 [Route("api/library/playlists")]
 [ApiController]
 [Authorize]
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
-public class LibraryPlaylistWatchlistApiController : ControllerBase
+public partial class WatchlistApiController : ControllerBase
 {
     private const string GlobalRoutingTemplateSource = "global";
     private const string GlobalRoutingTemplateSourceId = "__playlist_routing_rules_template__";
     private const string PlaylistWatchType = "playlist";
     private const string PlaylistWatchlistEntryNotFoundMessage = "Playlist watchlist entry not found.";
-    private const string ManualUnavailableImageUrl = "/images/unavailable/unavailable.jpg";
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
-    private readonly PlaylistWatchService _playlistWatchService;
+    private readonly PlaylistWatchReconciler _playlistWatchReconciler;
     private readonly PlaylistSyncService _playlistSyncService;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
-    private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
+    private readonly WatchlistRunCoordinator? _watchlistCoordinator;
 
-    public LibraryPlaylistWatchlistApiController(LibraryPlaylistWatchlistDependencies dependencies)
+    public WatchlistApiController(LibraryPlaylistWatchlistDependencies dependencies)
     {
         _repository = dependencies.Repository;
         _configStore = dependencies.ConfigStore;
-        _playlistWatchService = dependencies.PlaylistWatchService;
+        _playlistWatchReconciler = dependencies.PlaylistWatchReconciler;
         _playlistSyncService = dependencies.PlaylistSyncService;
         _playlistVisualService = dependencies.PlaylistVisualService;
         _profileResolutionService = dependencies.ProfileResolutionService;
         _queueRepository = dependencies.QueueRepository;
         _watchlistFinalizationService = dependencies.WatchlistFinalizationService;
-        _playlistWatchHostedService = dependencies.PlaylistWatchHostedService;
+        _watchlistCoordinator = dependencies.WatchlistRunCoordinator;
     }
 
     [HttpGet]
@@ -74,8 +73,58 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        var hydrated = items.Select(HydratePlaylistVisual).ToList();
+        var summarized = await HydrateQueuePresentationSummaryAsync(items, cancellationToken);
+        var hydrated = summarized.Select(HydratePlaylistVisual).ToList();
         return Ok(hydrated);
+    }
+
+    private async Task<IReadOnlyList<PlaylistWatchlistDto>> HydrateQueuePresentationSummaryAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
+    {
+        if (playlists.Count == 0)
+        {
+            return playlists;
+        }
+
+        if (_queueRepository == null)
+        {
+            return playlists;
+        }
+
+        var claims = await _repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken);
+        var queueItems = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var queueByUuid = queueItems.ToDictionary(item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
+        var claimsByPlaylist = claims.GroupBy(
+            claim => $"{claim.Source}:{claim.SourceId}",
+            StringComparer.OrdinalIgnoreCase);
+        var counts = claimsByPlaylist.ToDictionary(
+            group => group.Key,
+            group =>
+            {
+                var active = group
+                    .Select(claim => new { claim.TrackSourceId, Task = queueByUuid.GetValueOrDefault(claim.QueueUuid) })
+                    .Where(entry => entry.Task != null)
+                    .ToList();
+                var downloading = active
+                    .Where(entry => NormalizeStatusText(entry.Task!.Status) is "running" or "downloading")
+                    .Select(entry => entry.TrackSourceId)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+                var queued = active
+                    .Where(entry => NormalizeStatusText(entry.Task!.Status) is "queued" or "inqueue" or "pending" or "paused" or "retrying")
+                    .Select(entry => entry.TrackSourceId)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count();
+                return (Queued: queued, Downloading: downloading);
+            },
+            StringComparer.OrdinalIgnoreCase);
+
+        return playlists
+            .Select(item => counts.TryGetValue($"{item.Source}:{item.SourceId}", out var count)
+                ? item with { QueuedTrackCount = count.Queued, DownloadingTrackCount = count.Downloading }
+                : item with { QueuedTrackCount = 0, DownloadingTrackCount = 0 })
+            .ToList();
     }
 
     [HttpGet("watch-runtime")]
@@ -132,104 +181,6 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             circuits,
             utcNow = DateTimeOffset.UtcNow
         });
-    }
-
-    [HttpGet("manual-unavailable")]
-    public async Task<IActionResult> GetManualUnavailable(CancellationToken cancellationToken)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return DatabaseNotConfigured();
-        }
-
-        var tracks = await _repository.GetManualUnavailableTracksAsync(cancellationToken);
-        return Ok(new
-        {
-            imageUrl = ManualUnavailableImageUrl,
-            count = tracks.Count,
-            tracks
-        });
-    }
-
-    [HttpGet("manual-unavailable/tracklist")]
-    public async Task<IActionResult> GetManualUnavailableTracklist(CancellationToken cancellationToken)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return DatabaseNotConfigured();
-        }
-
-        var tracks = await _repository.GetManualUnavailableTracksAsync(cancellationToken);
-        return Ok(new
-        {
-            title = "Unavailable Tracks",
-            name = "Unavailable Tracks",
-            description = "Manual downloads that were unavailable from enabled sources.",
-            creator = new { name = "DeezSpoTag" },
-            cover_big = ManualUnavailableImageUrl,
-            cover_xl = ManualUnavailableImageUrl,
-            picture = ManualUnavailableImageUrl,
-            nb_tracks = tracks.Count,
-            tracks = tracks.Select(MapManualUnavailableTrack)
-        });
-    }
-
-    [HttpDelete("manual-unavailable/{id:long}")]
-    public async Task<IActionResult> DeleteManualUnavailable(long id, CancellationToken cancellationToken)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return DatabaseNotConfigured();
-        }
-
-        var deleted = await _repository.DeleteManualUnavailableTrackAsync(id, cancellationToken);
-        return deleted
-            ? Ok(new { success = true, deleted = true })
-            : NotFound("Unavailable track record not found.");
-    }
-
-    private static object MapManualUnavailableTrack(ManualUnavailableTrackDto track, int index)
-    {
-        var coverUrl = ManualUnavailableImageUrl;
-        return new
-        {
-            id = track.DeezerId ?? track.QueueUuid,
-            manualUnavailableId = track.Id,
-            queueUuid = track.QueueUuid,
-            title = track.Title,
-            artist = new { name = track.Artist },
-            artistName = track.Artist,
-            album = new
-            {
-                title = string.IsNullOrWhiteSpace(track.Album) ? "Unknown" : track.Album,
-                cover_medium = coverUrl,
-                cover_big = coverUrl
-            },
-            albumArtist = track.AlbumArtist,
-            duration = 0,
-            durationMs = 0,
-            preview = string.Empty,
-            link = track.SourceUrl ?? string.Empty,
-            sourceUrl = track.SourceUrl ?? string.Empty,
-            sourceTrackId = track.QueueUuid,
-            track_position = index + 1,
-            deezerId = track.DeezerId,
-            spotifyId = track.SpotifyId,
-            appleId = track.AppleId,
-            qobuzId = track.QobuzId,
-            tidalId = track.TidalId,
-            amazonId = track.AmazonId,
-            isrc = track.Isrc,
-            quality = track.Quality,
-            contentType = string.IsNullOrWhiteSpace(track.ContentType) ? "music" : track.ContentType,
-            destinationFolderId = track.DestinationFolderId,
-            expectedFinalPath = track.ExpectedFinalPath,
-            reason = track.Reason,
-            firstUnavailableAtUtc = track.FirstUnavailableAtUtc,
-            addedAtUtc = track.AddedAtUtc,
-            nextRetryAtUtc = track.NextRetryAtUtc,
-            retryInUtc = track.NextRetryAtUtc
-        };
     }
 
     private PlaylistWatchlistDto HydratePlaylistVisual(PlaylistWatchlistDto item)
@@ -314,10 +265,9 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             "info",
             $"Playlist watchlist added: {request.Name}."));
 
-        if (_playlistWatchHostedService != null)
+        if (_watchlistCoordinator != null)
         {
-            await SetPlaylistWatchSchedulerFocusAsync(added.Source, added.SourceId, cancellationToken);
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+            await _watchlistCoordinator.TriggerPlaylistOnceAsync(added.Source, added.SourceId, cancellationToken);
         }
 
         return Ok(added);
@@ -374,10 +324,12 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         await _repository.UpdatePlaylistWatchlistPrioritiesAsync(priorities, cancellationToken);
         var updated = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        _playlistWatchHostedService?.ResetPlaylistRuntimeStateForAll(updated);
+        _watchlistCoordinator?.ResetPlaylistRuntimeStateForAll(updated);
         var first = priorities[0];
-        await SetPlaylistWatchSchedulerFocusAsync(first.Source, first.SourceId, cancellationToken);
-        _ = _playlistWatchHostedService?.TriggerRunOnceAsync(CancellationToken.None);
+        if (_watchlistCoordinator != null)
+        {
+            await _watchlistCoordinator.TriggerPlaylistOnceAsync(first.Source, first.SourceId, cancellationToken);
+        }
         return Ok(new
         {
             updated = priorities.Count
@@ -521,6 +473,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var removed = await _repository.RemovePlaylistWatchlistAsync(normalizedSource, sourceId, cancellationToken);
+        if (removed)
+        {
+            _watchlistCoordinator?.ResetPlaylistRuntimeState(normalizedSource, sourceId);
+            _playlistVisualService.DeleteStoredVisuals(normalizedSource, sourceId);
+        }
         return Ok(new { removed });
     }
 
@@ -533,14 +490,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        var queued = false;
-        if (_playlistWatchHostedService != null)
-        {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
-            queued = true;
-        }
+        var trigger = _watchlistCoordinator == null
+            ? null
+            : await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
 
-        return Ok(new { queued, pending = items.Count });
+        return Ok(new { queued = trigger?.Scheduled == true, pending = items.Count, status = trigger?.Status.ToString() });
     }
 
     [HttpPost("trigger-check/{source}/{sourceId}")]
@@ -557,14 +511,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
-        await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
-        var triggered = _playlistWatchHostedService != null;
-        if (_playlistWatchHostedService != null)
-        {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
-        }
+        var trigger = _watchlistCoordinator == null
+            ? null
+            : await _watchlistCoordinator.TriggerPlaylistOnceAsync(item.Source, item.SourceId, cancellationToken);
 
-        return Ok(new { triggered = triggered ? 1 : 0 });
+        return Ok(new { triggered = trigger?.Scheduled == true ? 1 : 0, status = trigger?.Status.ToString() });
     }
 
     [HttpPost("reset-runtime")]
@@ -595,24 +546,18 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         foreach (var source in distinctSources)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await ResetSourceCircuitAsync(source, cancellationToken);
+            if (_watchlistCoordinator != null)
+            {
+                await _watchlistCoordinator.ResetSourceCircuitAsync(source, cancellationToken);
+            }
             circuitsReset++;
         }
 
-        await _repository.UpsertWatchlistSchedulerStateAsync(
-            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
-                WatchType: PlaylistWatchType,
-                ActiveSource: null,
-                ActiveSourceId: null,
-                ActiveStartedUtc: null,
-                LastProgressUtc: DateTimeOffset.UtcNow,
-                ZeroQueueStreak: 0),
-            cancellationToken);
-
-        _playlistWatchHostedService?.ResetPlaylistRuntimeStateForAll(watchlist);
-        if (_playlistWatchHostedService != null)
+        _watchlistCoordinator?.ResetPlaylistRuntimeStateForAll(watchlist);
+        if (_watchlistCoordinator != null)
         {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+            await _watchlistCoordinator.ResetSchedulerStateAsync(cancellationToken);
+            await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
         }
 
         return Ok(new
@@ -620,7 +565,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             reset = true,
             playlistsReset,
             circuitsReset,
-            triggered = _playlistWatchHostedService != null
+            triggered = _watchlistCoordinator != null
         });
     }
 
@@ -639,12 +584,15 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
-        await ResetSourceCircuitAsync(item.Source, cancellationToken);
-        _playlistWatchHostedService?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
-
-        if (_playlistWatchHostedService != null)
+        if (_watchlistCoordinator != null)
         {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+            await _watchlistCoordinator.ResetSourceCircuitAsync(item.Source, cancellationToken);
+        }
+        _watchlistCoordinator?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
+
+        if (_watchlistCoordinator != null)
+        {
+            await _watchlistCoordinator.TriggerPlaylistOnceAsync(item.Source, item.SourceId, cancellationToken);
         }
 
         return Ok(new
@@ -652,7 +600,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             reset = true,
             source = item.Source,
             sourceId = item.SourceId,
-            triggered = _playlistWatchHostedService != null
+            triggered = _watchlistCoordinator != null
         });
     }
 
@@ -677,8 +625,11 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
 
         await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
-        await ResetSourceCircuitAsync(item.Source, cancellationToken);
-        _playlistWatchHostedService?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
+        if (_watchlistCoordinator != null)
+        {
+            await _watchlistCoordinator.ResetSourceCircuitAsync(item.Source, cancellationToken);
+        }
+        _watchlistCoordinator?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(item.Source);
         var currentIndex = -1;
@@ -704,26 +655,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             }
         }
 
-        if (next != null)
+        if (_watchlistCoordinator != null)
         {
-            await SetPlaylistWatchSchedulerFocusAsync(next.Source, next.SourceId, cancellationToken);
-        }
-        else
-        {
-            await _repository.UpsertWatchlistSchedulerStateAsync(
-                new LibraryRepository.WatchlistSchedulerStateUpsertInput(
-                    WatchType: PlaylistWatchType,
-                    ActiveSource: null,
-                    ActiveSourceId: null,
-                    ActiveStartedUtc: null,
-                    LastProgressUtc: DateTimeOffset.UtcNow,
-                    ZeroQueueStreak: 0),
-                cancellationToken);
-        }
-
-        if (_playlistWatchHostedService != null)
-        {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
+            if (next != null)
+            {
+                await _watchlistCoordinator.TriggerPlaylistOnceAsync(next.Source, next.SourceId, cancellationToken);
+            }
+            else
+            {
+                await _watchlistCoordinator.ResetSchedulerStateAsync(cancellationToken);
+                await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
+            }
         }
 
         return Ok(new
@@ -732,7 +674,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             skipped = next != null,
             nextSource = next?.Source,
             nextSourceId = next?.SourceId,
-            triggered = _playlistWatchHostedService != null
+            triggered = _watchlistCoordinator != null
         });
     }
 
@@ -750,13 +692,12 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
-        await SetPlaylistWatchSchedulerFocusAsync(item.Source, item.SourceId, cancellationToken);
         var repairNotifications = _watchlistFinalizationService == null
             ? 0
             : await _watchlistFinalizationService.RepairPlaylistAsync(
                 item,
                 cancellationToken);
-        var reconciliation = await _playlistWatchService.ReconcilePlaylistAsync(
+        var reconciliation = await _playlistWatchReconciler.ReconcilePlaylistAsync(
             item,
             CancellationToken.None,
             forceMediaServerSync: true);
@@ -881,7 +822,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
                 item.Source,
                 item.SourceId,
                 cancellationToken);
-            var candidates = await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
+            var candidates = await _playlistWatchReconciler.GetPlaylistTrackCandidatesAsync(
                 item.Source,
                 item.SourceId,
                 cancellationToken);
@@ -938,7 +879,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
             return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
-        var refreshedItem = await _playlistWatchService.RefreshPlaylistMetadataOnlyAsync(
+        var refreshedItem = await _playlistWatchReconciler.RefreshPlaylistMetadataOnlyAsync(
             item,
             cancellationToken,
             forceArtworkRefresh: true);
@@ -1375,21 +1316,21 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         string Label,
         string Detail);
 
-    private static IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> DeserializeCachedPlaylistCandidates(string? candidatesJson)
+    private static IReadOnlyList<PlaylistTrackCandidate> DeserializeCachedPlaylistCandidates(string? candidatesJson)
     {
         if (string.IsNullOrWhiteSpace(candidatesJson))
         {
-            return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+            return Array.Empty<PlaylistTrackCandidate>();
         }
 
         try
         {
-            var candidates = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(candidatesJson);
-            return candidates ?? (IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>)Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+            var candidates = JsonSerializer.Deserialize<List<PlaylistTrackCandidate>>(candidatesJson);
+            return candidates ?? (IReadOnlyList<PlaylistTrackCandidate>)Array.Empty<PlaylistTrackCandidate>();
         }
         catch (JsonException)
         {
-            return Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>();
+            return Array.Empty<PlaylistTrackCandidate>();
         }
     }
 
@@ -1464,7 +1405,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
 
     private static object MapCachedPlaylistTrack(
         string source,
-        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        PlaylistTrackCandidate candidate,
         int index,
         IReadOnlyDictionary<string, PlaylistWatchTrackStatusDto> statusByTrackId)
     {
@@ -1575,19 +1516,19 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return Ok(rows);
     }
 
-    private static Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate> TryBuildCachedCandidateLookup(string? candidatesJson)
+    private static Dictionary<string, PlaylistTrackCandidate> TryBuildCachedCandidateLookup(string? candidatesJson)
     {
         if (string.IsNullOrWhiteSpace(candidatesJson))
         {
-            return new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
         }
 
         try
         {
-            var cached = JsonSerializer.Deserialize<List<PlaylistWatchService.PlaylistTrackCandidate>>(candidatesJson);
+            var cached = JsonSerializer.Deserialize<List<PlaylistTrackCandidate>>(candidatesJson);
             if (cached is not { Count: > 0 })
             {
-                return new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+                return new Dictionary<string, PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
             }
 
             return cached
@@ -1596,7 +1537,7 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         }
         catch (JsonException)
         {
-            return new Dictionary<string, PlaylistWatchService.PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
+            return new Dictionary<string, PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
         }
     }
 
@@ -1711,36 +1652,17 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
-        var state = await _repository.GetPlaylistWatchStateAsync(normalizedSource, sourceId, cancellationToken);
-        await _repository.UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                normalizedSource,
-                sourceId,
-                state?.SnapshotId,
-                state?.TrackCount,
-                state?.BatchNextOffset,
-                state?.BatchProcessingSnapshotId,
-                state?.LastCheckedUtc,
-                LastRunStatus: "pending",
-                LastRunMessage: "Manual runtime reset.",
-                NextAttemptUtc: null,
-                ConsecutiveFailures: 0),
-            cancellationToken);
-    }
-
-    private async Task ResetSourceCircuitAsync(string source, CancellationToken cancellationToken)
-    {
-        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
-        await _repository.UpsertWatchlistSourceCircuitStateAsync(
-            new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
-                WatchType: PlaylistWatchType,
-                Source: normalizedSource,
-                IsOpen: false,
-                OpenUntilUtc: null,
-                Reason: null,
-                Fingerprint: null,
-                FailureCount: 0),
-            cancellationToken);
+        await _playlistWatchReconciler.UpdatePlaylistStateAsync(
+            normalizedSource,
+            sourceId,
+            trackCount: null,
+            snapshotId: null,
+            state: WatchlistPlaylistState.Pending,
+            lastRunMessage: "Manual runtime reset.",
+            nextAttemptUtc: null,
+            consecutiveFailures: 0,
+            cancellationToken,
+            touchLastChecked: false);
     }
 
     private static (bool UpdateArtwork, bool ReuseSavedArtwork) NormalizeArtworkPreference(bool reuseSavedArtwork)
@@ -1849,25 +1771,4 @@ public class LibraryPlaylistWatchlistApiController : ControllerBase
         return ["plex"];
     }
 
-    private async Task SetPlaylistWatchSchedulerFocusAsync(
-        string source,
-        string sourceId,
-        CancellationToken cancellationToken)
-    {
-        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
-        if (string.IsNullOrWhiteSpace(normalizedSource) || string.IsNullOrWhiteSpace(sourceId))
-        {
-            return;
-        }
-
-        await _repository.UpsertWatchlistSchedulerStateAsync(
-            new LibraryRepository.WatchlistSchedulerStateUpsertInput(
-                WatchType: PlaylistWatchType,
-                ActiveSource: normalizedSource,
-                ActiveSourceId: sourceId.Trim(),
-                ActiveStartedUtc: DateTimeOffset.UtcNow,
-                LastProgressUtc: null,
-                ZeroQueueStreak: 0),
-            cancellationToken);
-    }
 }

@@ -75,7 +75,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var controller = CreatePlaylistWatchlistController();
 
         var addResultOne = await controller.Add(
-            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+            new WatchlistApiController.PlaylistWatchlistRequest(
                 Source: "  SPOTIFY ",
                 SourceId: "  pl-123  ",
                 Name: "Road Mix",
@@ -92,7 +92,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         }
 
         var addResultTwo = await controller.Add(
-            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+            new WatchlistApiController.PlaylistWatchlistRequest(
                 Source: "spotify",
                 SourceId: "pl-123",
                 Name: "Road Mix Updated",
@@ -135,7 +135,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         var controller = CreatePlaylistWatchlistController();
 
         var result = await controller.Add(
-            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+            new WatchlistApiController.PlaylistWatchlistRequest(
                 Source: "",
                 SourceId: "",
                 Name: "",
@@ -152,7 +152,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     {
         var controller = CreatePlaylistWatchlistController();
         var result = await controller.SavePreferences(
-            new List<LibraryPlaylistWatchlistApiController.PlaylistWatchPreferenceRequest>
+            new List<WatchlistApiController.PlaylistWatchPreferenceRequest>
             {
                 new(
                     Source: "spotify",
@@ -181,7 +181,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PlaylistWatchlist_PriorityOrder_RequiresCompleteOrder_And_FocusesFirstPlaylist()
+    public async Task PlaylistWatchlist_PriorityOrder_RequiresCompleteOrder_WithoutControllerOwnedSchedulerFocus()
     {
         var controller = CreatePlaylistWatchlistController();
 
@@ -202,7 +202,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             CancellationToken.None);
 
         var partialResult = await controller.UpdatePriorityOrder(
-            new List<LibraryPlaylistWatchlistApiController.PlaylistWatchlistPriorityRequest>
+            new List<WatchlistApiController.PlaylistWatchlistPriorityRequest>
             {
                 new("spotify", "pl-one"),
                 new("boomplay", "pl-three")
@@ -212,7 +212,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         Assert.Contains("every monitored playlist", Assert.IsType<string>(partialBadRequest.Value), StringComparison.OrdinalIgnoreCase);
 
         var result = await controller.UpdatePriorityOrder(
-            new List<LibraryPlaylistWatchlistApiController.PlaylistWatchlistPriorityRequest>
+            new List<WatchlistApiController.PlaylistWatchlistPriorityRequest>
             {
                 new("spotify", "pl-one"),
                 new("boomplay", "pl-three"),
@@ -244,9 +244,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             });
 
         var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
-        Assert.NotNull(scheduler);
-        Assert.Equal("spotify", scheduler!.ActiveSource);
-        Assert.Equal("pl-one", scheduler.ActiveSourceId);
+        Assert.Null(scheduler);
     }
 
     [Fact]
@@ -266,7 +264,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         Assert.IsType<OkObjectResult>(applyResult);
 
         var addResult = await controller.Add(
-            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+            new WatchlistApiController.PlaylistWatchlistRequest(
                 Source: "spotify",
                 SourceId: "37i9dQZEVXcTTTHAwtPLUs",
                 Name: "Test Playlist",
@@ -322,7 +320,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
                 IgnoreRules: null));
 
         var addResult = await controller.Add(
-            new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+            new WatchlistApiController.PlaylistWatchlistRequest(
                 Source: "spotify",
                 SourceId: "37i9dQZEVXcTTTHAwtPLUs",
                 Name: "Test Playlist",
@@ -345,13 +343,10 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     [Fact]
     public async Task ArtistWatchlist_AddStatusRemove_SpotifyContract_Works()
     {
-        var controller = new LibraryWatchlistApiController(
-            _repository,
-            _configStore,
-            profileResolutionService: CreateProfileResolutionService());
+        var controller = CreatePlaylistWatchlistController();
 
         var addResult = await controller.AddSpotify(
-            new LibraryWatchlistApiController.SpotifyWatchlistRequest(
+            new WatchlistApiController.SpotifyWatchlistRequest(
                 SpotifyId: "  sp-artist-1 ",
                 ArtistName: "Artist One",
                 DeezerId: null),
@@ -383,13 +378,10 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     [Fact]
     public async Task ArtistWatchlist_Add_InvalidRequest_ReturnsBadRequest()
     {
-        var controller = new LibraryWatchlistApiController(
-            _repository,
-            _configStore,
-            profileResolutionService: CreateProfileResolutionService());
+        var controller = CreatePlaylistWatchlistController();
 
         var result = await controller.Add(
-            new LibraryWatchlistApiController.WatchlistRequest(
+            new WatchlistApiController.WatchlistRequest(
                 ArtistId: null,
                 ArtistName: string.Empty),
             CancellationToken.None);
@@ -440,12 +432,12 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
-    private LibraryPlaylistWatchlistApiController CreatePlaylistWatchlistController()
+    private WatchlistApiController CreatePlaylistWatchlistController()
         => new(new LibraryPlaylistWatchlistDependencies
         {
             Repository = _repository,
             ConfigStore = _configStore,
-            PlaylistWatchService = null!,
+            PlaylistWatchReconciler = null!,
             PlaylistSyncService = null!,
             PlaylistVisualService = _playlistVisualService,
             QueueRepository = null!,

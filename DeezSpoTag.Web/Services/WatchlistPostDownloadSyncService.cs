@@ -52,11 +52,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         IReadOnlyList<string>? finalFilePaths = null,
         CancellationToken cancellationToken = default)
     {
-        if (!IsWatchlistEnabled())
-        {
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(source)
             || string.IsNullOrWhiteSpace(playlistId)
             || string.IsNullOrWhiteSpace(trackId))
@@ -83,6 +78,16 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         await _queue.Writer.WriteAsync(request, cancellationToken);
     }
 
+    public async Task ResumePendingJobsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsWatchlistEnabled())
+        {
+            return;
+        }
+
+        await RecoverDurableJobsAsync(cancellationToken);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await RecoverDurableJobsAsync(stoppingToken);
@@ -90,6 +95,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         {
             if (!IsWatchlistEnabled())
             {
+                await PersistDeferredWhileDisabledAsync(request, stoppingToken);
                 continue;
             }
 
@@ -105,6 +111,22 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         foreach (var job in await repository.GetDueWatchlistSyncJobsAsync(100, cancellationToken))
             await _queue.Writer.WriteAsync(new SyncRequest(job.Id, job.Source, job.PlaylistId, job.TrackId,
                 job.DestinationFolderId, job.FinalFilePaths, job.AttemptCount), cancellationToken);
+    }
+
+    private async Task PersistDeferredWhileDisabledAsync(SyncRequest request, CancellationToken cancellationToken)
+    {
+        if (request.JobId <= 0)
+        {
+            return;
+        }
+
+        using var scope = _serviceProvider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<LibraryRepository>().RetryWatchlistSyncJobAsync(
+            request.JobId,
+            request.FollowUpPass,
+            DateTimeOffset.UtcNow,
+            "Watchlist disabled; durable synchronization suspended.",
+            cancellationToken);
     }
 
     private bool IsWatchlistEnabled()
@@ -294,32 +316,45 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             }
             await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
 
-            var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchService>();
+            var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
             var reconciliationResult = await watcher.ReconcilePlaylistAsync(
                 playlist,
                 cancellationToken,
                 forceMediaServerSync: true,
-                mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly);
+                mode: PlaylistReconciliationMode.SyncOnly);
 
             if (await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, cancellationToken))
             {
-                await AddPlaylistSyncHistoryAsync(
-                    repository,
+                await TransitionPlaylistStateAsync(
+                    scope.ServiceProvider,
                     playlist,
-                    "media_sync_completed",
+                    WatchlistPlaylistState.MediaSyncCompleted,
+                    "Monitored playlist synchronization completed.",
+                    cancellationToken);
+                await AddPlaylistSyncHistoryAsync(
+                    scope.ServiceProvider,
+                    playlist,
+                    WatchlistHistoryStatus.MediaSyncCompleted,
                     cancellationToken);
                 LogSyncCompleted(request, attempt, reconciliationResult.SyncResult?.SyncedTracks ?? 0);
                 return true;
             }
 
             var syncResult = reconciliationResult.SyncResult;
-            await AddPlaylistSyncHistoryAsync(
-                repository,
+            var terminalFailure = syncResult is not null && IsTerminalSyncFailure(syncResult);
+            await TransitionPlaylistStateAsync(
+                scope.ServiceProvider,
                 playlist,
-                syncResult is not null && IsTerminalSyncFailure(syncResult) ? "media_sync_blocked" : "media_sync_waiting",
+                terminalFailure ? WatchlistPlaylistState.MediaSyncBlocked : WatchlistPlaylistState.MediaSyncWaiting,
+                syncResult?.Message ?? reconciliationResult.Message,
+                cancellationToken);
+            await AddPlaylistSyncHistoryAsync(
+                scope.ServiceProvider,
+                playlist,
+                terminalFailure ? WatchlistHistoryStatus.MediaSyncBlocked : WatchlistHistoryStatus.MediaSyncWaiting,
                 cancellationToken);
             LogSyncNotReady(request, attempt, syncResult?.Message ?? reconciliationResult.Message);
-            return syncResult is not null && IsTerminalSyncFailure(syncResult);
+            return terminalFailure;
         }
         catch (OperationCanceledException)
         {
@@ -368,16 +403,17 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     }
 
     private static async Task AddPlaylistSyncHistoryAsync(
-        LibraryRepository repository,
+        IServiceProvider serviceProvider,
         PlaylistWatchlistDto playlist,
-        string status,
+        WatchlistHistoryStatus status,
         CancellationToken cancellationToken)
     {
-        await repository.AddWatchlistHistoryAsync(
-            new WatchlistHistoryInsert(
+        await serviceProvider.GetRequiredService<WatchlistHistoryService>().RecordAsync(
+            new WatchlistHistoryWrite(
                 playlist.Source,
                 "playlist",
                 playlist.SourceId,
+                WatchlistHistoryService.PlaylistItemKey(playlist.Source, playlist.SourceId),
                 playlist.Name,
                 "playlist",
                 playlist.TrackCount ?? 0,
@@ -385,6 +421,25 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 null),
             cancellationToken);
     }
+
+    private static Task TransitionPlaylistStateAsync(
+        IServiceProvider serviceProvider,
+        PlaylistWatchlistDto playlist,
+        WatchlistPlaylistState state,
+        string? message,
+        CancellationToken cancellationToken)
+        => serviceProvider.GetRequiredService<WatchlistStateService>().TransitionPlaylistAsync(
+            new WatchlistPlaylistStateTransition(
+                playlist.Source,
+                playlist.SourceId,
+                state,
+                message,
+                playlist.TrackCount,
+                playlist.SnapshotId,
+                NextAttemptUtc: null,
+                ConsecutiveFailures: state == WatchlistPlaylistState.MediaSyncBlocked ? 1 : 0,
+                TouchLastChecked: false),
+            cancellationToken);
 
     private void LogPlaylistMissing(SyncRequest request)
     {
@@ -531,4 +586,111 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         long? DestinationFolderId,
         IReadOnlyList<string> ChangedFilePaths,
         int FollowUpPass);
+}
+
+public enum WatchlistHistoryStatus
+{
+    Queued,
+    Completed,
+    Failed,
+    Unavailable,
+    Deferred,
+    MetadataRefreshed,
+    SourceUpdated,
+    MediaSyncSkippedSyncServiceUnavailable,
+    MediaSyncCompleted,
+    MediaSyncWaiting,
+    MediaSyncBlocked,
+    MissingTracksQueued,
+    DuplicateSharedTrackLinked,
+    WatchlistDisabled,
+    MediaSyncDeferredQueueActive,
+    QueueDeferredPreviousWatchlistActive,
+    QueueBudgetReached,
+    TrackQueueDeferred,
+    SourceFailure
+}
+
+public sealed record WatchlistHistoryWrite(
+    string Source,
+    string WatchType,
+    string SourceId,
+    string ItemKey,
+    string Name,
+    string CollectionType,
+    int TrackCount,
+    WatchlistHistoryStatus Status,
+    string? ArtistName);
+
+public sealed class WatchlistHistoryService
+{
+    private readonly LibraryRepository _repository;
+    private readonly ActivitiesRealtimeService? _activitiesRealtime;
+
+    public WatchlistHistoryService(
+        LibraryRepository repository,
+        ActivitiesRealtimeService? activitiesRealtime)
+    {
+        _repository = repository;
+        _activitiesRealtime = activitiesRealtime;
+    }
+
+    public async Task<WatchlistHistoryDto?> RecordAsync(
+        WatchlistHistoryWrite write,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(write.ItemKey))
+        {
+            throw new ArgumentException("A stable Watchlist item key is required.", nameof(write));
+        }
+
+        var entry = await _repository.AddWatchlistHistoryAsync(
+            new WatchlistHistoryInsert(
+                write.Source,
+                write.WatchType,
+                write.SourceId,
+                write.Name,
+                write.CollectionType,
+                Math.Max(0, write.TrackCount),
+                ToPersistedStatus(write.Status),
+                write.ArtistName,
+                write.ItemKey),
+            cancellationToken);
+        if (entry != null)
+        {
+            _activitiesRealtime?.PublishWatchlistHistoryChanged(entry);
+        }
+
+        return entry;
+    }
+
+    public static string PlaylistItemKey(string source, string sourceId)
+        => $"playlist:{source.Trim().ToLowerInvariant()}:{sourceId.Trim()}";
+
+    public static string ArtistItemKey(long artistId)
+        => $"artist:{artistId}";
+
+    public static WatchlistHistoryStatus ParseStatus(string status)
+        => Enum.TryParse<WatchlistHistoryStatus>(
+            string.Concat(status.Split('_', StringSplitOptions.RemoveEmptyEntries).Select(part => char.ToUpperInvariant(part[0]) + part[1..])),
+            ignoreCase: true,
+            out var parsed)
+            ? parsed
+            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown Watchlist history status.");
+
+    public static string ToPersistedStatus(WatchlistHistoryStatus status)
+    {
+        var value = status.ToString();
+        var builder = new System.Text.StringBuilder(value.Length + 8);
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (char.IsUpper(character) && index > 0)
+            {
+                builder.Append('_');
+            }
+            builder.Append(char.ToLowerInvariant(character));
+        }
+        return builder.ToString();
+    }
 }

@@ -161,9 +161,9 @@ public sealed class ArtistPopularSongsSyncService
             UpdatedAt: now);
     }
 
-    private static List<PlaylistWatchService.PlaylistTrackCandidate> BuildTrackCandidates(SpotifyArtistPageResult artistPage)
+    private static List<PlaylistTrackCandidate> BuildTrackCandidates(SpotifyArtistPageResult artistPage)
     {
-        var candidates = new List<PlaylistWatchService.PlaylistTrackCandidate>();
+        var candidates = new List<PlaylistTrackCandidate>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var track in artistPage.TopTracks)
         {
@@ -173,7 +173,7 @@ public sealed class ArtistPopularSongsSyncService
                 continue;
             }
 
-            candidates.Add(new PlaylistWatchService.PlaylistTrackCandidate(
+            candidates.Add(new PlaylistTrackCandidate(
                 spotifyTrackId,
                 string.IsNullOrWhiteSpace(track.Isrc) ? null : track.Isrc.Trim(),
                 track.Name?.Trim() ?? string.Empty,

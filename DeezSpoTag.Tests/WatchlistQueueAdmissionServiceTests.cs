@@ -5,12 +5,12 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class WatchlistRunQueueBudgetServiceTests
+public sealed class WatchlistQueueAdmissionServiceTests
 {
     [Fact]
     public void GetRemaining_WhenNoRunActive_DeniesWatchlistQueueing()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
 
         Assert.Equal(0, service.GetRemaining());
         Assert.False(service.TryReserve(1));
@@ -19,7 +19,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void BeginRun_TracksRemainingBudget()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
         var token = service.BeginRun(5);
 
         Assert.Equal(5, service.GetRemaining());
@@ -33,7 +33,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void Release_ReturnsUnusedReservationWithoutExceedingRunLimit()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
         _ = service.BeginRun(3);
 
         Assert.True(service.TryReserve(2));
@@ -46,7 +46,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void TryReserve_DoesNotPartiallyReserveBeyondRemainingBudget()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
         _ = service.BeginRun(2);
 
         Assert.False(service.TryReserve(3));
@@ -56,7 +56,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void TryReserve_ConcurrentCallersCannotExceedRunLimit()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
         _ = service.BeginRun(10);
         var reserved = 0;
 
@@ -78,7 +78,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void EndRun_IgnoresStaleToken()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
         _ = service.BeginRun(4);
         var activeToken = service.BeginRun(6);
 
@@ -90,7 +90,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void BlockReason_IsScopedToActiveRun()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
         var token = service.BeginRun(0, WatchlistQueueBlockReason.PreviousWatchlistRunActive);
 
         Assert.Equal(WatchlistQueueBlockReason.PreviousWatchlistRunActive, service.GetBlockReason());
@@ -103,7 +103,7 @@ public sealed class WatchlistRunQueueBudgetServiceTests
     [Fact]
     public void BeginRunIfInactive_OpensBudgetForDirectReconciliationOnlyWhenNoRunOwnsContext()
     {
-        var service = new WatchlistRunQueueBudgetService();
+        var service = new WatchlistQueueAdmissionService();
 
         var directToken = service.BeginRunIfInactive(2);
 

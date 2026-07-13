@@ -12,7 +12,7 @@ public sealed class StartupBackgroundWorkGuardrailTests
         var root = ResolveRepoRoot();
         var serviceFiles = new[]
         {
-            Path.Join(root, "DeezSpoTag.Web", "Services", "PlaylistWatchHostedService.cs"),
+            Path.Join(root, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"),
             Path.Join(root, "DeezSpoTag.Web", "Services", "SpotifyHomeFeedRefreshHostedService.cs"),
             Path.Join(root, "DeezSpoTag.Web", "Services", "SpotifyAuthWarmupService.cs"),
             Path.Join(root, "DeezSpoTag.Web", "Services", "LyricsRefreshQueueService.cs"),

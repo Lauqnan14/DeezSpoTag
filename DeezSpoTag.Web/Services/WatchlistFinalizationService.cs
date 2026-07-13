@@ -20,23 +20,23 @@ public sealed class WatchlistFinalizationService
 
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
-    private readonly PlaylistWatchService _playlistWatchService;
-    private readonly PlaylistWatchHostedService _playlistWatchHostedService;
+    private readonly PlaylistWatchReconciler _playlistWatchReconciler;
+    private readonly WatchlistRunCoordinator _watchlistCoordinator;
     private readonly IWatchlistPostDownloadSyncNotifier _notifier;
     private readonly ILogger<WatchlistFinalizationService> _logger;
 
     public WatchlistFinalizationService(
         DownloadQueueRepository queueRepository,
         LibraryRepository libraryRepository,
-        PlaylistWatchService playlistWatchService,
-        PlaylistWatchHostedService playlistWatchHostedService,
+        PlaylistWatchReconciler playlistWatchReconciler,
+        WatchlistRunCoordinator watchlistCoordinator,
         IWatchlistPostDownloadSyncNotifier notifier,
         ILogger<WatchlistFinalizationService> logger)
     {
         _queueRepository = queueRepository;
         _libraryRepository = libraryRepository;
-        _playlistWatchService = playlistWatchService;
-        _playlistWatchHostedService = playlistWatchHostedService;
+        _playlistWatchReconciler = playlistWatchReconciler;
+        _watchlistCoordinator = watchlistCoordinator;
         _notifier = notifier;
         _logger = logger;
     }
@@ -112,7 +112,7 @@ public sealed class WatchlistFinalizationService
 
         if (sent > 0)
         {
-            await _playlistWatchHostedService.TriggerRunOnceAsync(cancellationToken);
+            await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
         }
 
         return sent;
@@ -133,7 +133,7 @@ public sealed class WatchlistFinalizationService
                 static group => group.Key,
                 static group => group.First(),
                 StringComparer.OrdinalIgnoreCase);
-        var candidatesByPlaylist = new Dictionary<string, IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>>(
+        var candidatesByPlaylist = new Dictionary<string, IReadOnlyList<PlaylistTrackCandidate>>(
             StringComparer.OrdinalIgnoreCase);
         foreach (var notification in notifications)
         {
@@ -383,13 +383,13 @@ public sealed class WatchlistFinalizationService
             .ToList();
     }
 
-    private async Task<IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>> TryGetPlaylistTrackCandidatesAsync(
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> TryGetPlaylistTrackCandidatesAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await _playlistWatchService.GetPlaylistTrackCandidatesAsync(
+            return await _playlistWatchReconciler.GetPlaylistTrackCandidatesAsync(
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
@@ -432,7 +432,7 @@ public sealed class WatchlistFinalizationService
 
     private static bool IsIdentityMatch(
         string normalizedPlaylistSource,
-        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        PlaylistTrackCandidate candidate,
         FinalizedTrackIdentity identity)
     {
         var sourceTrackId = identity.GetTrackIdForSource(normalizedPlaylistSource);

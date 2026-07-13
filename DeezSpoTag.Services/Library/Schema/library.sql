@@ -561,6 +561,26 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
 CREATE INDEX IF NOT EXISTS idx_playlist_watch_track_playlist
     ON playlist_watch_track (source, source_id);
 
+CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    target_playlist_id TEXT NOT NULL,
+    target_item_id TEXT,
+    local_track_id BIGINT,
+    sync_status TEXT NOT NULL DEFAULT 'waiting_for_target',
+    verified_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id, track_source_id, target_service)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_target_membership_target
+    ON playlist_watch_target_membership (target_service, target_playlist_id);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_target_membership_track
+    ON playlist_watch_target_membership (source, source_id, track_source_id);
+
 CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,
@@ -686,11 +706,15 @@ CREATE TABLE IF NOT EXISTS watchlist_history (
     track_count INTEGER NOT NULL,
     status TEXT NOT NULL,
     artist_name TEXT,
+    item_key TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_history_created
     ON watchlist_history (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_history_item_created
+    ON watchlist_history (item_key, created_at);
 
 CREATE TABLE IF NOT EXISTS download_artist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

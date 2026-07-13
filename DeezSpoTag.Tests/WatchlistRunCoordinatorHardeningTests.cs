@@ -26,7 +26,7 @@ using Xunit;
 namespace DeezSpoTag.Tests;
 
 [Collection("Settings Config Isolation")]
-public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
+public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 {
     private string _tempRoot = string.Empty;
     private TestConfigRootScope _configScope = default!;
@@ -74,14 +74,14 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         settings.WatchDelayBetweenPlaylistsSeconds = 1;
         settings.WatchMaxItemsPerRun = 50;
         _settingsService.SaveSettings(settings);
-        var runQueueBudget = new WatchlistRunQueueBudgetService();
+        var queueAdmission = new WatchlistQueueAdmissionService();
         _queueRepository = new DownloadQueueRepository(
             config,
             NullLogger<DownloadQueueRepository>.Instance);
 
-        var playlistWatchService = new PlaylistWatchService(
+        var playlistWatchService = new WatchlistEngine(
             _repository,
-            new PlaylistWatchService.PlaylistWatchPlatformServices
+            new WatchlistEngine.PlaylistWatchPlatformServices
             {
                 SpotifyMetadataService = null!,
                 SpotifyPathfinderMetadataClient = null!,
@@ -94,16 +94,16 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 HttpClientFactory = new StubHttpClientFactory(),
                 TidalAccessTokenProvider = new StubTidalAccessTokenProvider()
             },
-            new PlaylistWatchService.PlaylistWatchRuntimeServices
+            new WatchlistEngine.PlaylistWatchRuntimeServices
             {
                 PlaylistSyncService = null!,
                 PlaylistVisualService = null!,
-                WatchlistRunQueueBudgetService = runQueueBudget,
+                WatchlistQueueAdmissionService = queueAdmission,
                 ActivitiesRealtimeService = null!
             },
             _settingsService,
             serviceProvider: null!,
-            logger: NullLogger<PlaylistWatchService>.Instance);
+            logger: NullLogger<WatchlistEngine>.Instance);
 
         var artistWatchService = new ArtistWatchService(
             _repository,
@@ -112,7 +112,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 spotifyMetadataService: null!,
                 appleCatalogService: null!,
                 deezerClient: null!),
-            playlistWatchService,
+            new WatchlistQueueService(playlistWatchService),
             _settingsService,
             activitiesRealtime: null!,
             NullLogger<ArtistWatchService>.Instance);
@@ -121,8 +121,9 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         services.AddSingleton(_settingsService);
         services.AddSingleton(_repository);
         services.AddSingleton(_queueRepository);
-        services.AddSingleton(runQueueBudget);
+        services.AddSingleton(queueAdmission);
         services.AddSingleton(playlistWatchService);
+        services.AddSingleton(new PlaylistWatchReconciler(playlistWatchService));
         services.AddSingleton(artistWatchService);
         services.AddSingleton(CreateProfileResolutionService());
         _provider = services.BuildServiceProvider();
@@ -155,7 +156,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         // Successful/no-op source path: unsupported source branch.
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-ok", new PlaylistWatchlistMetadataInput("Noop", null, null, null));
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         var failKey = "playlist:deezer:pl-fail";
 
         await InvokeRunOnceAsync(hosted);
@@ -189,15 +190,15 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 "queued",
                 "{\"WatchlistOrigin\":\"playlist\",\"WatchlistSource\":\"spotify\",\"WatchlistPlaylistId\":\"playlist-1\",\"WatchlistTrackId\":\"track-1\"}"),
             CancellationToken.None);
-        var logger = new ListLogger<PlaylistWatchHostedService>();
-        var hosted = new PlaylistWatchHostedService(_provider, logger);
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var hosted = new WatchlistRunCoordinator(_provider, logger);
 
         await InvokeRunOnceAsync(hosted);
 
         Assert.Contains(
             logger.Entries,
             entry => entry.Message.Contains(
-                "previous watchlist run are still active",
+                "previous Watchlist run to finish",
                 StringComparison.Ordinal));
     }
 
@@ -210,15 +211,15 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 "downloading",
                 "{\"title\":\"Manual Track\",\"artist\":\"Artist\"}"),
             CancellationToken.None);
-        var logger = new ListLogger<PlaylistWatchHostedService>();
-        var hosted = new PlaylistWatchHostedService(_provider, logger);
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var hosted = new WatchlistRunCoordinator(_provider, logger);
 
         await InvokeRunOnceAsync(hosted);
 
         Assert.DoesNotContain(
             logger.Entries,
             entry => entry.Message.Contains(
-                "previous watchlist run are still active",
+                "previous Watchlist run to finish",
                 StringComparison.Ordinal));
     }
 
@@ -227,7 +228,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("deezer", "pl-stale", new PlaylistWatchlistMetadataInput("StaleFailing", null, null, null));
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         var staleKey = "playlist:deezer:pl-stale";
 
         await InvokeRunOnceAsync(hosted);
@@ -246,13 +247,13 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     [Fact]
     public async Task RunOnce_HighVolumePlaylistLoad_FailFastAvoidsNoopFullSweep()
     {
-        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
+        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<WatchlistEngine>());
 
         var total = 220;
         for (var index = 0; index < total; index++)
         {
             var result = await apiController.Add(
-                new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+                new WatchlistApiController.PlaylistWatchlistRequest(
                     Source: "unsupported",
                     SourceId: $"pl-load-{index:D4}",
                     Name: $"Load Playlist {index:D4}",
@@ -263,7 +264,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             Assert.IsType<OkObjectResult>(result);
         }
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         var roundCount = (int)Math.Ceiling(total / 50.0) + 1;
         for (var round = 0; round < roundCount; round++)
         {
@@ -284,7 +285,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-zero-1", new PlaylistWatchlistMetadataInput("Zero One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-zero-2", new PlaylistWatchlistMetadataInput("Zero Two", null, null, null));
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(hosted);
 
         var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-zero-2", CancellationToken.None);
@@ -319,7 +320,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 FailureCount: 3),
             CancellationToken.None);
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(hosted);
 
         var stateOne = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-circuit-1", CancellationToken.None);
@@ -335,12 +336,12 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-cursor-1", new PlaylistWatchlistMetadataInput("Cursor One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-cursor-2", new PlaylistWatchlistMetadataInput("Cursor Two", null, null, null));
 
-        var firstHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var firstHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(firstHosted);
         var schedulerBefore = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
         Assert.NotNull(schedulerBefore?.ActiveSourceId);
 
-        var restartedHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var restartedHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(restartedHosted);
         var schedulerAfter = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
         Assert.Equal(schedulerBefore!.ActiveSourceId, schedulerAfter?.ActiveSourceId);
@@ -365,7 +366,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 0),
             CancellationToken.None);
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(hosted);
 
         var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-priority-first", CancellationToken.None);
@@ -394,7 +395,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 0),
             CancellationToken.None);
 
-        var hosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(hosted);
 
         var firstState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-priority-first", CancellationToken.None);
@@ -409,7 +410,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("spotify", "pl-cache-only", new PlaylistWatchlistMetadataInput("Cache Only", null, null, null));
 
-        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
+        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<WatchlistEngine>());
 
         var rejected = await apiController.GetAll(CancellationToken.None, refreshFromSource: true);
         var badRequest = Assert.IsType<BadRequestObjectResult>(rejected);
@@ -427,7 +428,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("spotify", "pl-trigger-scheduled", new PlaylistWatchlistMetadataInput("Scheduled", null, null, null));
 
-        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
+        var apiController = CreatePlaylistWatchlistController(_provider.GetRequiredService<WatchlistEngine>());
 
         var result = await apiController.TriggerAll(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -465,7 +466,7 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
                 FailureCount: 2),
             CancellationToken.None);
 
-        var controller = CreatePlaylistWatchlistController(_provider.GetRequiredService<PlaylistWatchService>());
+        var controller = CreatePlaylistWatchlistController(_provider.GetRequiredService<WatchlistEngine>());
 
         var result = await controller.GetWatchRuntime(CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(result);
@@ -481,14 +482,14 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
 
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-persisted-delay", new PlaylistWatchlistMetadataInput("Persisted Delay", null, null, null));
 
-        var firstHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var firstHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(firstHosted);
 
         var state = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-persisted-delay", CancellationToken.None);
         Assert.NotNull(state?.LastCheckedUtc);
         var firstLastCheckedUtc = state!.LastCheckedUtc;
 
-        var restartedHosted = new PlaylistWatchHostedService(_provider, NullLogger<PlaylistWatchHostedService>.Instance);
+        var restartedHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(restartedHosted);
 
         var stateAfterRestart = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-persisted-delay", CancellationToken.None);
@@ -504,8 +505,8 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("deezer", "pl-log-threshold", new PlaylistWatchlistMetadataInput("Failing", null, null, null));
 
-        var logger = new ListLogger<PlaylistWatchHostedService>();
-        var hosted = new PlaylistWatchHostedService(_provider, logger);
+        var logger = new ListLogger<WatchlistRunCoordinator>();
+        var hosted = new WatchlistRunCoordinator(_provider, logger);
         var failKey = "playlist:deezer:pl-log-threshold";
 
         for (var run = 0; run < 6; run++)
@@ -527,9 +528,9 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
         Assert.Equal(0, debugCount);
     }
 
-    private static async Task InvokeRunOnceAsync(PlaylistWatchHostedService hosted)
+    private static async Task InvokeRunOnceAsync(WatchlistRunCoordinator hosted)
     {
-        var method = typeof(PlaylistWatchHostedService).GetMethod("RunOnceAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(WatchlistRunCoordinator).GetMethod("RunOnceAsync", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         var result = method!.Invoke(hosted, new object[] { CancellationToken.None });
         Assert.NotNull(result);
@@ -567,13 +568,13 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             CreatedAt: DateTimeOffset.UtcNow,
             UpdatedAt: DateTimeOffset.UtcNow);
 
-    private static ConcurrentDictionary<string, int> GetFailureMap(PlaylistWatchHostedService hosted)
+    private static ConcurrentDictionary<string, int> GetFailureMap(WatchlistRunCoordinator hosted)
         => (ConcurrentDictionary<string, int>)GetPrivateField(hosted, "_consecutiveFailures");
 
-    private static ConcurrentDictionary<string, DateTimeOffset> GetNextAllowedMap(PlaylistWatchHostedService hosted)
+    private static ConcurrentDictionary<string, DateTimeOffset> GetNextAllowedMap(WatchlistRunCoordinator hosted)
         => (ConcurrentDictionary<string, DateTimeOffset>)GetPrivateField(hosted, "_nextAllowedRun");
 
-    private static ConcurrentDictionary<string, DateTimeOffset> GetLastRunMap(PlaylistWatchHostedService hosted)
+    private static ConcurrentDictionary<string, DateTimeOffset> GetLastRunMap(WatchlistRunCoordinator hosted)
         => (ConcurrentDictionary<string, DateTimeOffset>)GetPrivateField(hosted, "_lastRun");
 
     private static object GetPrivateField(object instance, string fieldName)
@@ -593,12 +594,12 @@ public sealed class PlaylistWatchHostedServiceHardeningTests : IAsyncLifetime
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
-    private LibraryPlaylistWatchlistApiController CreatePlaylistWatchlistController(PlaylistWatchService playlistWatchService)
+    private WatchlistApiController CreatePlaylistWatchlistController(WatchlistEngine playlistWatchService)
         => new(new LibraryPlaylistWatchlistDependencies
         {
             Repository = _repository,
             ConfigStore = _configStore,
-            PlaylistWatchService = playlistWatchService,
+            PlaylistWatchReconciler = new PlaylistWatchReconciler(playlistWatchService),
             PlaylistSyncService = null!,
             PlaylistVisualService = _playlistVisualService,
             QueueRepository = null!,

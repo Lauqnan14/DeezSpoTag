@@ -1548,8 +1548,8 @@ public partial class Program
                 SpotifyHomeFeedRuntimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
             });
-        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchPlatformServices>(sp =>
-            new DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchPlatformServices
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices>(sp =>
+            new DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices
             {
                 SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
                 SpotifyPathfinderMetadataClient = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
@@ -1562,34 +1562,44 @@ public partial class Program
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
             });
-        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchRuntimeServices>(sp =>
-            new DeezSpoTag.Web.Services.PlaylistWatchService.PlaylistWatchRuntimeServices
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchRuntimeServices>(sp =>
+            new DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchRuntimeServices
             {
                 PlaylistSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
-                WatchlistRunQueueBudgetService = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunQueueBudgetService>(),
-                ActivitiesRealtimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>()
+                WatchlistQueueAdmissionService = sp.GetService<DeezSpoTag.Web.Services.WatchlistQueueAdmissionService>(),
+                ActivitiesRealtimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>(),
+                WatchlistStateService = sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistStateService>(),
+                WatchlistHistoryService = sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistHistoryService>()
             });
-        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunQueueBudgetService>();
-        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistQueueAdmissionService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistStateService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistHistoryService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine>();
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchReconciler>(sp =>
+            new DeezSpoTag.Web.Services.PlaylistWatchReconciler(
+                sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistQueueService>(sp =>
+            new DeezSpoTag.Web.Services.WatchlistQueueService(
+                sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
-        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchHostedService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunCoordinator>();
         services.AddScoped<DeezSpoTag.Web.Controllers.Api.LibraryPlaylistWatchlistDependencies>(sp =>
             new DeezSpoTag.Web.Controllers.Api.LibraryPlaylistWatchlistDependencies
             {
                 Repository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
                 ConfigStore = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryConfigStore>(),
-                PlaylistWatchService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistWatchService>(),
+                PlaylistWatchReconciler = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistWatchReconciler>(),
                 PlaylistSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 QueueRepository = sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>(),
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
                 WatchlistFinalizationService = sp.GetService<DeezSpoTag.Web.Services.WatchlistFinalizationService>(),
-                PlaylistWatchHostedService = sp.GetService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>()
+                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>()
             });
-        AddDeferredHostedService<DeezSpoTag.Web.Services.PlaylistWatchHostedService>(
+        AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(
             services,
             StartupWorkerCategory.Deferred,
             "Playlist and artist watch polling after HTTP readiness.");

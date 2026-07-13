@@ -64,10 +64,10 @@ public sealed class SpotifyPlaylistMetadataGuardTests
     }
 
     [Fact]
-    public void PlaylistWatchService_ProtectsExistingSpotifyMetadataFromGenericSnapshots()
+    public void WatchlistEngine_ProtectsExistingSpotifyMetadataFromGenericSnapshots()
     {
         var repoRoot = ResolveRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
         Assert.Contains("HasTrustedLivePlaylistMetadata(source, liveSnapshot)", source, StringComparison.Ordinal);
         Assert.Contains("SpotifyMetadataService.IsGenericSpotifyPlaylistName(liveSnapshot.Name)", source, StringComparison.Ordinal);

@@ -43,7 +43,6 @@ public sealed class ArtistWatchService
     private const string AppearsOnGroup = "appears_on";
     private const string TopSongsGroup = "top songs";
     private const string ArtistEntityType = "artist";
-    private const string QueuedStatus = "queued";
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
@@ -56,27 +55,28 @@ public sealed class ArtistWatchService
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly DeezerClient _deezerClient;
-    private readonly PlaylistWatchService _playlistWatchService;
+    private readonly WatchlistQueueService _watchlistQueue;
     private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly ActivitiesRealtimeService _activitiesRealtime;
+    private readonly WatchlistHistoryService _watchlistHistory;
     private readonly ILogger<ArtistWatchService> _logger;
 
     public ArtistWatchService(
         LibraryRepository libraryRepository,
         ArtistWatchPlatformDependencies platformDependencies,
-        PlaylistWatchService playlistWatchService,
+        WatchlistQueueService watchlistQueue,
         DeezSpoTagSettingsService settingsService,
         ActivitiesRealtimeService activitiesRealtime,
-        ILogger<ArtistWatchService> logger)
+        ILogger<ArtistWatchService> logger,
+        WatchlistHistoryService? watchlistHistory = null)
     {
         _libraryRepository = libraryRepository;
         _spotifyArtistService = platformDependencies.SpotifyArtistService;
         _spotifyMetadataService = platformDependencies.SpotifyMetadataService;
         _appleCatalogService = platformDependencies.AppleCatalogService;
         _deezerClient = platformDependencies.DeezerClient;
-        _playlistWatchService = playlistWatchService;
+        _watchlistQueue = watchlistQueue;
         _settingsService = settingsService;
-        _activitiesRealtime = activitiesRealtime;
+        _watchlistHistory = watchlistHistory ?? new WatchlistHistoryService(libraryRepository, activitiesRealtime);
         _logger = logger;
     }
 
@@ -209,7 +209,7 @@ public sealed class ArtistWatchService
         var tracks = await _spotifyMetadataService.FetchAlbumTracksAsync(album.Id, cancellationToken);
         if (tracks.Count > 0)
         {
-            var queuedCount = await _playlistWatchService.QueueSpotifyWatchTracksAsync(
+            var queuedCount = await _watchlistQueue.QueueSpotifyWatchTracksAsync(
                 tracks,
                 BuildArtistQueueOptions(artist, album.Name ?? string.Empty, AlbumGroup),
                 cancellationToken);
@@ -233,6 +233,7 @@ public sealed class ArtistWatchService
         }
 
         await AddArtistAlbumWatchHistoryAsync(
+            artist.ArtistId,
             SpotifySource,
             album.Id,
             album.Name ?? "Album",
@@ -268,12 +269,12 @@ public sealed class ArtistWatchService
 
     private sealed record SpotifyWatchState(int Offset, bool DownloadEntireDiscography, bool TopSongsEnabled);
 
-    private static PlaylistWatchService.ArtistWatchQueueOptions BuildArtistQueueOptions(
+    private static ArtistWatchQueueOptions BuildArtistQueueOptions(
         WatchlistArtistDto artist,
         string collectionName,
         string collectionType)
     {
-        return new PlaylistWatchService.ArtistWatchQueueOptions
+        return new ArtistWatchQueueOptions
         {
             CollectionName = collectionName,
             CollectionType = collectionType,
@@ -330,13 +331,14 @@ public sealed class ArtistWatchService
             .Select(track => MapSpotifyTopTrackSummary(track, artist.ArtistName))
             .ToList();
         var collectionName = $"{artist.ArtistName} - Top Songs";
-        var queuedCount = await _playlistWatchService.QueueSpotifyWatchTracksAsync(
+        var queuedCount = await _watchlistQueue.QueueSpotifyWatchTracksAsync(
             summaries,
             BuildArtistQueueOptions(artist, collectionName, TopSongsGroup),
             cancellationToken);
         if (queuedCount > 0)
         {
             await AddArtistAlbumWatchHistoryAsync(
+                artist.ArtistId,
                 SpotifySource,
                 $"artist-top:{spotifyId}",
                 collectionName,
@@ -532,7 +534,7 @@ public sealed class ArtistWatchService
         List<DownloadIntent> intents,
         CancellationToken cancellationToken)
     {
-        var queuedCount = await _playlistWatchService.QueueAppleWatchIntentsAsync(
+        var queuedCount = await _watchlistQueue.QueueAppleWatchIntentsAsync(
             intents,
             BuildArtistQueueOptions(artist, albumName, AlbumGroup),
             cancellationToken);
@@ -540,6 +542,7 @@ public sealed class ArtistWatchService
         if (queuedCount > 0)
         {
             await AddArtistAlbumWatchHistoryAsync(
+                artist.ArtistId,
                 AppleSource,
                 albumId,
                 albumName,
@@ -613,13 +616,14 @@ public sealed class ArtistWatchService
         var tracks = await _deezerClient.GetAlbumTracksAsync(albumId);
         if (tracks.Count > 0)
         {
-            var queuedCount = await _playlistWatchService.QueueDeezerWatchTracksAsync(
+            var queuedCount = await _watchlistQueue.QueueDeezerWatchTracksAsync(
                 tracks,
                 BuildArtistQueueOptions(artist, albumName, AlbumGroup),
                 cancellationToken);
             if (queuedCount > 0)
             {
                 await AddArtistAlbumWatchHistoryAsync(
+                    artist.ArtistId,
                     DeezerSource,
                     albumId,
                     albumName,
@@ -834,6 +838,7 @@ public sealed class ArtistWatchService
     }
 
     private async Task AddArtistAlbumWatchHistoryAsync(
+        long artistId,
         string source,
         string albumId,
         string albumName,
@@ -847,21 +852,18 @@ public sealed class ArtistWatchService
             return;
         }
 
-        var entry = await _libraryRepository.AddWatchlistHistoryAsync(
-            new WatchlistHistoryInsert(
+        await _watchlistHistory.RecordAsync(
+            new WatchlistHistoryWrite(
                 source,
                 ArtistEntityType,
                 albumId,
+                WatchlistHistoryService.ArtistItemKey(artistId),
                 albumName,
                 collectionType,
                 queuedCount,
-                QueuedStatus,
+                WatchlistHistoryStatus.Queued,
                 artistName),
             cancellationToken);
-        if (entry != null)
-        {
-            _activitiesRealtime.PublishWatchlistHistoryChanged(entry);
-        }
     }
 
     private async Task PersistArtistWatchAlbumsAsync(

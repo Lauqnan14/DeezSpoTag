@@ -1,22 +1,11 @@
 using DeezSpoTag.Services.Library;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Authorization;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
-[Route("api/history/watchlist")]
-[ApiController]
-[Authorize]
-public class WatchlistHistoryApiController : ControllerBase
+public partial class WatchlistApiController
 {
-    private readonly LibraryRepository _repository;
-
-    public WatchlistHistoryApiController(LibraryRepository repository)
-    {
-        _repository = repository;
-    }
-
-    [HttpGet]
+    [HttpGet("~/api/history/watchlist")]
     public async Task<IActionResult> GetHistory(
         [FromQuery] int? limit,
         [FromQuery] int? offset,

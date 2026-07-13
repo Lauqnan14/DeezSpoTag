@@ -2,39 +2,17 @@ using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using System.Linq;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Authorization;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
-[Route("api/library/watchlist")]
-[ApiController]
-[Authorize]
-[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
-public class LibraryWatchlistApiController : ControllerBase
+public partial class WatchlistApiController
 {
     private const string SpotifySource = "spotify";
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string AddWatchlistFailedMessage = "Failed to add watchlist entry.";
-    private readonly LibraryRepository _repository;
-    private readonly LibraryConfigStore _configStore;
-    private readonly AutoTagProfileResolutionService _profileResolutionService;
-    private readonly PlaylistWatchHostedService? _playlistWatchHostedService;
-
-    public LibraryWatchlistApiController(
-        LibraryRepository repository,
-        LibraryConfigStore configStore,
-        AutoTagProfileResolutionService profileResolutionService,
-        PlaylistWatchHostedService? playlistWatchHostedService = null)
-    {
-        _repository = repository;
-        _configStore = configStore;
-        _profileResolutionService = profileResolutionService;
-        _playlistWatchHostedService = playlistWatchHostedService;
-    }
-
-    [HttpGet]
-    public async Task<IActionResult> GetAll(CancellationToken cancellationToken)
+    [HttpGet("~/api/library/watchlist")]
+    public async Task<IActionResult> GetAllArtists(CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -45,7 +23,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(items);
     }
 
-    [HttpGet("{artistId:long}")]
+    [HttpGet("~/api/library/watchlist/{artistId:long}")]
     public async Task<IActionResult> GetStatus(long artistId, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
@@ -57,7 +35,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { watching });
     }
 
-    [HttpGet("spotify/{spotifyId}")]
+    [HttpGet("~/api/library/watchlist/spotify/{spotifyId}")]
     public async Task<IActionResult> GetSpotifyStatus(string spotifyId, CancellationToken cancellationToken)
     {
         var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(spotifyId);
@@ -84,7 +62,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { watching });
     }
 
-    [HttpGet("apple/{appleId}")]
+    [HttpGet("~/api/library/watchlist/apple/{appleId}")]
     public async Task<IActionResult> GetAppleStatus(string appleId, CancellationToken cancellationToken)
     {
         var normalizedAppleId = WatchlistPreferenceNormalizer.IncomingId(appleId);
@@ -103,7 +81,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { watching });
     }
 
-    [HttpGet("deezer/{deezerId}")]
+    [HttpGet("~/api/library/watchlist/deezer/{deezerId}")]
     public async Task<IActionResult> GetDeezerStatus(string deezerId, CancellationToken cancellationToken)
     {
         var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(deezerId);
@@ -139,7 +117,7 @@ public class LibraryWatchlistApiController : ControllerBase
         bool? DownloadDiscographyEnabled,
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
 
-    [HttpPost]
+    [HttpPost("~/api/library/watchlist")]
     public async Task<IActionResult> Add([FromBody] WatchlistRequest request, CancellationToken cancellationToken)
     {
         if (request is null || !request.ArtistId.HasValue || request.ArtistId.Value <= 0 || string.IsNullOrWhiteSpace(request.ArtistName))
@@ -164,7 +142,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return CreateAddedResponse(request.ArtistName, added);
     }
 
-    [HttpPost("spotify")]
+    [HttpPost("~/api/library/watchlist/spotify")]
     public async Task<IActionResult> AddSpotify([FromBody] SpotifyWatchlistRequest request, CancellationToken cancellationToken)
     {
         var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(request?.SpotifyId);
@@ -190,7 +168,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return CreateAddedResponse(normalizedArtistName, added);
     }
 
-    [HttpPost("apple")]
+    [HttpPost("~/api/library/watchlist/apple")]
     public async Task<IActionResult> AddApple([FromBody] AppleWatchlistRequest request, CancellationToken cancellationToken)
     {
         var normalizedAppleId = WatchlistPreferenceNormalizer.IncomingId(request?.AppleId);
@@ -236,7 +214,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return CreateAddedResponse(normalizedArtistName, added);
     }
 
-    [HttpPost("deezer")]
+    [HttpPost("~/api/library/watchlist/deezer")]
     public async Task<IActionResult> AddDeezer([FromBody] DeezerWatchlistRequest request, CancellationToken cancellationToken)
     {
         var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(request?.DeezerId);
@@ -273,7 +251,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return CreateAddedResponse(normalizedArtistName, added);
     }
 
-    [HttpDelete("{artistId:long}")]
+    [HttpDelete("~/api/library/watchlist/{artistId:long}")]
     public async Task<IActionResult> Remove(long artistId, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
@@ -285,7 +263,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { removed });
     }
 
-    [HttpPost("{artistId:long}/preferences")]
+    [HttpPost("~/api/library/watchlist/{artistId:long}/preferences")]
     public async Task<IActionResult> SavePreferences(
         long artistId,
         [FromBody] ArtistWatchlistPreferenceRequest request,
@@ -301,7 +279,7 @@ public class LibraryWatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var validFolderIds = await GetValidFolderIdsAsync(cancellationToken);
+        var validFolderIds = await GetArtistValidFolderIdsAsync(cancellationToken);
 
         if (request.DestinationFolderId is long folderId && !validFolderIds.Contains(folderId))
         {
@@ -370,7 +348,7 @@ public class LibraryWatchlistApiController : ControllerBase
         });
     }
 
-    [HttpDelete("spotify/{spotifyId}")]
+    [HttpDelete("~/api/library/watchlist/spotify/{spotifyId}")]
     public async Task<IActionResult> RemoveSpotify(string spotifyId, CancellationToken cancellationToken)
     {
         var normalizedSpotifyId = WatchlistPreferenceNormalizer.SpotifyId(spotifyId);
@@ -397,7 +375,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { removed });
     }
 
-    [HttpDelete("apple/{appleId}")]
+    [HttpDelete("~/api/library/watchlist/apple/{appleId}")]
     public async Task<IActionResult> RemoveApple(string appleId, CancellationToken cancellationToken)
     {
         var normalizedAppleId = WatchlistPreferenceNormalizer.IncomingId(appleId);
@@ -416,7 +394,7 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { removed });
     }
 
-    [HttpDelete("deezer/{deezerId}")]
+    [HttpDelete("~/api/library/watchlist/deezer/{deezerId}")]
     public async Task<IActionResult> RemoveDeezer(string deezerId, CancellationToken cancellationToken)
     {
         var normalizedDeezerId = WatchlistPreferenceNormalizer.IncomingId(deezerId);
@@ -435,8 +413,8 @@ public class LibraryWatchlistApiController : ControllerBase
         return Ok(new { removed });
     }
 
-    [HttpPost("trigger-check")]
-    public async Task<IActionResult> TriggerAll(CancellationToken cancellationToken)
+    [HttpPost("~/api/library/watchlist/trigger-check")]
+    public async Task<IActionResult> TriggerAllArtists(CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -444,16 +422,14 @@ public class LibraryWatchlistApiController : ControllerBase
         }
 
         var items = await _repository.GetWatchlistAsync(cancellationToken);
-        var queued = _playlistWatchHostedService != null;
-        if (_playlistWatchHostedService != null)
-        {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
-        }
+        var trigger = _watchlistCoordinator == null
+            ? null
+            : await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
 
-        return Ok(new { triggered = queued ? items.Count : 0 });
+        return Ok(new { triggered = trigger?.Scheduled == true ? items.Count : 0, status = trigger?.Status.ToString() });
     }
 
-    [HttpPost("trigger-check/{artistId:long}")]
+    [HttpPost("~/api/library/watchlist/trigger-check/{artistId:long}")]
     public async Task<IActionResult> TriggerOne(long artistId, CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
@@ -468,21 +444,14 @@ public class LibraryWatchlistApiController : ControllerBase
             return NotFound("Artist watchlist entry not found.");
         }
 
-        var triggered = _playlistWatchHostedService != null;
-        if (_playlistWatchHostedService != null)
-        {
-            _ = _playlistWatchHostedService.TriggerRunOnceAsync(CancellationToken.None);
-        }
+        var trigger = _watchlistCoordinator == null
+            ? null
+            : await _watchlistCoordinator.TriggerArtistOnceAsync(artistId, cancellationToken);
 
-        return Ok(new { triggered = triggered ? 1 : 0 });
+        return Ok(new { triggered = trigger?.Scheduled == true ? 1 : 0, status = trigger?.Status.ToString() });
     }
 
-    private ObjectResult DatabaseNotConfigured()
-    {
-        return StatusCode(503, new { error = "Library DB not configured." });
-    }
-
-    private async Task<HashSet<long>> GetValidFolderIdsAsync(CancellationToken cancellationToken)
+    private async Task<HashSet<long>> GetArtistValidFolderIdsAsync(CancellationToken cancellationToken)
         => await WatchlistDestinationFolderResolver.GetValidFolderIdsAsync(_profileResolutionService, cancellationToken);
 
     private IActionResult CreateAddedResponse(string artistName, object? addedEntry)

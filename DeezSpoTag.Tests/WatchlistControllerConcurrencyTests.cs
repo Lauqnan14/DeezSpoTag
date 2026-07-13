@@ -72,14 +72,11 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
     [Fact]
     public async Task ArtistWatchlist_ConcurrentAddAndRemove_SameSpotifyKey_RemainsConsistent()
     {
-        var controller = new LibraryWatchlistApiController(
-            _repository,
-            _configStore,
-            profileResolutionService: CreateProfileResolutionService());
+        var controller = CreatePlaylistWatchlistController();
 
         var addTasks = Enumerable.Range(0, 24)
             .Select(index => controller.AddSpotify(
-                new LibraryWatchlistApiController.SpotifyWatchlistRequest(
+                new WatchlistApiController.SpotifyWatchlistRequest(
                     SpotifyId: index % 2 == 0 ? " sp-concurrent " : "SP-CONCURRENT",
                     ArtistName: "Concurrent Artist",
                     DeezerId: null),
@@ -114,7 +111,7 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
 
         var addTasks = Enumerable.Range(0, 30)
             .Select(index => controller.Add(
-                new LibraryPlaylistWatchlistApiController.PlaylistWatchlistRequest(
+                new WatchlistApiController.PlaylistWatchlistRequest(
                     Source: index % 2 == 0 ? " SPOTIFY " : "spotify",
                     SourceId: index % 3 == 0 ? " pl-race " : "pl-race",
                     Name: "Race Playlist",
@@ -157,12 +154,12 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
-    private LibraryPlaylistWatchlistApiController CreatePlaylistWatchlistController()
+    private WatchlistApiController CreatePlaylistWatchlistController()
         => new(new LibraryPlaylistWatchlistDependencies
         {
             Repository = _repository,
             ConfigStore = _configStore,
-            PlaylistWatchService = null!,
+            PlaylistWatchReconciler = null!,
             PlaylistSyncService = null!,
             PlaylistVisualService = _playlistVisualService,
             QueueRepository = null!,

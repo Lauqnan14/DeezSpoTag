@@ -103,7 +103,7 @@ public sealed class PlaylistSyncService
     public sealed record PlaylistMergeSourceInput(
         PlaylistWatchlistDto Playlist,
         PlaylistWatchPreferenceDto? Preference,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate> TrackCandidates);
+        IReadOnlyList<PlaylistTrackCandidate> TrackCandidates);
 
     public sealed record PlaylistMergeSyncRequest(
         string? PlaylistName,
@@ -481,7 +481,7 @@ public sealed class PlaylistSyncService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var candidates = (source.TrackCandidates ?? Array.Empty<PlaylistWatchService.PlaylistTrackCandidate>())
+            var candidates = (source.TrackCandidates ?? Array.Empty<PlaylistTrackCandidate>())
                 .Select(ToSyncTrackSummary)
                 .ToList();
             candidateTrackCount += candidates.Count;
@@ -590,7 +590,7 @@ public sealed class PlaylistSyncService
     public async Task<PlaylistSyncResult> SyncPlaylistAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
+        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
         bool force,
         CancellationToken cancellationToken)
     {
@@ -643,7 +643,7 @@ public sealed class PlaylistSyncService
     public async Task<PlaylistSyncResult> SyncAvailablePlaylistTracksAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
+        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
         bool force,
         CancellationToken cancellationToken)
     {
@@ -894,7 +894,7 @@ public sealed class PlaylistSyncService
     public async Task<PlaylistAvailabilitySummary> GetPlaylistAvailabilityAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
+        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
         CancellationToken cancellationToken)
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
@@ -1036,7 +1036,7 @@ public sealed class PlaylistSyncService
     public async Task<PlaylistTrackSyncReadiness> CheckTrackReadyForAutomaticSyncAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
-        PlaylistWatchService.PlaylistTrackCandidate candidate,
+        PlaylistTrackCandidate candidate,
         CancellationToken cancellationToken)
     {
         if (playlist == null || candidate == null)
@@ -1103,7 +1103,7 @@ public sealed class PlaylistSyncService
 
     private async Task<(IReadOnlyList<SyncTrackSummary> Tracks, string? ErrorMessage)> LoadTracksForSyncAsync(
         PlaylistWatchlistDto playlist,
-        IReadOnlyList<PlaylistWatchService.PlaylistTrackCandidate>? trackCandidates,
+        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
         CancellationToken cancellationToken)
     {
         var source = NormalizeSource(playlist.Source);
@@ -3193,7 +3193,7 @@ public sealed class PlaylistSyncService
             track.DurationMs);
     }
 
-    private static SyncTrackSummary ToSyncTrackSummary(PlaylistWatchService.PlaylistTrackCandidate track)
+    private static SyncTrackSummary ToSyncTrackSummary(PlaylistTrackCandidate track)
     {
         return new SyncTrackSummary(
             (track.TrackSourceId ?? string.Empty).Trim(),

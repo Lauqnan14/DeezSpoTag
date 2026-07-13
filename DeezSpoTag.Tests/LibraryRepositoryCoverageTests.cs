@@ -590,9 +590,24 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var removedBlock = await _repository.RemoveDownloadBlocklistEntryAsync(blockArtist!.Id);
         Assert.True(removedBlock);
 
+        await _repository.AddPlaylistWatchIgnoredTracksAsync(
+            "spotify",
+            "pl-123",
+            new List<PlaylistWatchIgnoreInsert> { new("dz-song-orphan-check", null) });
+        await _repository.EnqueueWatchlistSyncJobAsync(
+            "spotify",
+            "pl-123",
+            "dz-song-orphan-check",
+            destinationFolderId: null,
+            finalFilePaths: null);
+
         var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync(" Spotify ", " pl-123 ");
         Assert.True(removedWatchlist);
         Assert.False(await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123"));
+        Assert.Empty(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync("spotify", "pl-123"));
+        Assert.DoesNotContain(
+            await _repository.GetDueWatchlistSyncJobsAsync(100),
+            job => job.Source == "spotify" && job.PlaylistId == "pl-123");
     }
 
     [Fact]

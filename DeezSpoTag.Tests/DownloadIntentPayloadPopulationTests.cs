@@ -39,10 +39,10 @@ public sealed class DownloadIntentPayloadPopulationTests
         ?? throw new InvalidOperationException("DownloadIntentService.TryValidateResolvedQueuePayload not found.");
 
     private static readonly MethodInfo CreateManualParityQueueIntentMethod =
-        typeof(PlaylistWatchService).GetMethod(
+        typeof(WatchlistEngine).GetMethod(
             "CreateManualParityQueueIntent",
             BindingFlags.NonPublic | BindingFlags.Static)
-        ?? throw new InvalidOperationException("PlaylistWatchService.CreateManualParityQueueIntent not found.");
+        ?? throw new InvalidOperationException("WatchlistEngine.CreateManualParityQueueIntent not found.");
 
     [Fact]
     public void ManualVisiblePreResolutionQueueItems_AreInsertedAsQueuedNotResolving()

@@ -12,10 +12,10 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void PlaylistWatchQueue_UsesRunBudgetAsTheOnlyQueueItemLimit()
     {
-        var source = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var source = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
 
-        Assert.Contains("_watchlistRunQueueBudget.TryReserve(1)", source, StringComparison.Ordinal);
-        Assert.Contains("_watchlistRunQueueBudget.Release(1)", source, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.TryAdmitTrack()", source, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.Release(1)", source, StringComparison.Ordinal);
         Assert.Contains("result.Queued.Count", source, StringComparison.Ordinal);
         Assert.Contains("allowAutomaticSecondaryQuality: false", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetActiveDownloadCountAsync", source, StringComparison.Ordinal);
@@ -25,7 +25,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void PlaylistWatchQueue_UsesStrictQueueGateAndTracksGateDeferrals()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var intentSource = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
 
         Assert.Contains("EvaluateDownloadGateAsync", watchSource, StringComparison.Ordinal);
@@ -40,17 +40,17 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void PlaylistWatchQueue_DoesNotUseExistingQueueRowsAsRunBudget()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
 
         Assert.DoesNotContain("GetUnfinishedWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetActiveWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
-        Assert.Contains("_watchlistRunQueueBudget.TryReserve(1)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.TryAdmitTrack()", watchSource, StringComparison.Ordinal);
     }
 
     [Fact]
     public void PlaylistWatchQueue_SetsDeferredWhenTrackIsDeferredByDownloadGate()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
 
         Assert.Contains("var deferred = false;", watchSource, StringComparison.Ordinal);
         Assert.Contains("deferred = true;", watchSource, StringComparison.Ordinal);
@@ -61,8 +61,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void PlaylistWatchQueue_DoesNotUseResolutionAttemptBudgetAsQueueGate()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
-        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
 
         Assert.DoesNotContain("attemptedCount >= maxResolutionAttempts", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("watch queue reached resolution-attempt budget", watchSource, StringComparison.Ordinal);
@@ -73,7 +73,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void PlaylistWatchTriggers_DoNotWaitAndStartAnotherBudgetedRun()
     {
-        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
 
         Assert.Contains("Interlocked.Exchange(ref _triggerPending, 1)", hostedSource, StringComparison.Ordinal);
         Assert.Contains("if (!await _runLock.WaitAsync(0, cancellationToken))", hostedSource, StringComparison.Ordinal);
@@ -83,46 +83,51 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void HostedCycle_ChecksExistingWatchlistDownloadsBeforeOpeningRunBudget()
     {
-        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
-        var activeCheckIndex = hostedSource.IndexOf("HasActiveWatchlistDownloadsAsync", StringComparison.Ordinal);
-        var beginRunIndex = hostedSource.IndexOf("runQueueBudget?.BeginRun", StringComparison.Ordinal);
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
+        var activeCheckIndex = admissionSource.IndexOf("HasActiveWatchlistDownloadsAsync", StringComparison.Ordinal);
+        var evaluateIndex = hostedSource.IndexOf("EvaluateBatchAsync", StringComparison.Ordinal);
+        var beginRunIndex = hostedSource.IndexOf("queueAdmission.BeginRun", StringComparison.Ordinal);
 
         Assert.True(activeCheckIndex >= 0);
-        Assert.True(beginRunIndex > activeCheckIndex);
-        Assert.Contains("WatchlistQueueBlockReason.PreviousWatchlistRunActive", hostedSource, StringComparison.Ordinal);
+        Assert.True(evaluateIndex >= 0);
+        Assert.True(beginRunIndex > evaluateIndex);
+        Assert.Contains("WatchQueueStopReason.PreviousWatchlistRunActive", admissionSource, StringComparison.Ordinal);
     }
 
     [Fact]
     public void HostedCycle_BlocksPlaylistProcessingWhenPreviousBatchWorkIsActive()
     {
-        var hostedSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchHostedService.cs");
-        var batchGateIndex = hostedSource.IndexOf("HasActiveWatchlistBatchWorkAsync", StringComparison.Ordinal);
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
+        var batchGateIndex = hostedSource.IndexOf("EvaluateBatchAsync", StringComparison.Ordinal);
         var processPlaylistIndex = hostedSource.IndexOf("var playlistRunResult = await ProcessPlaylistWatchItemsAsync(", StringComparison.Ordinal);
 
         Assert.True(batchGateIndex >= 0);
         Assert.True(processPlaylistIndex > batchGateIndex);
-        Assert.Contains("HasPendingPlaylistWatchBatchWorkAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("previous watchlist download, enrichment, finalization, or claim work is still active", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("HasPendingPlaylistWatchBatchWorkAsync", admissionSource, StringComparison.Ordinal);
+        Assert.Contains("Waiting for Watchlist enrichment, finalization, or synchronization work to finish.", admissionSource, StringComparison.Ordinal);
     }
 
     [Fact]
     public void PlaylistReconciliation_SupportsSyncOnlyModeWithoutQueuePlanning()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
 
         Assert.Contains("SyncOnly", watchSource, StringComparison.Ordinal);
         Assert.Contains("var queuePlanningAllowed = mode == PlaylistReconciliationMode.QueuePlanningAllowed", watchSource, StringComparison.Ordinal);
         Assert.Contains("if (queuePlanningAllowed)", watchSource, StringComparison.Ordinal);
-        Assert.Contains("mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("mode: PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]
     public void PreviousWatchlistRunBlock_HasSpecificNonFailureStatusAndMessage()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
+        var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
 
-        Assert.Contains("Waiting for downloads from the previous watchlist run to finish.", watchSource, StringComparison.Ordinal);
+        Assert.Contains("Waiting for downloads from the previous Watchlist run to finish.", admissionSource, StringComparison.Ordinal);
         Assert.Contains("queue_deferred_previous_watchlist_active", watchSource, StringComparison.Ordinal);
         Assert.Contains("WatchQueueStopReason.PreviousWatchlistRunActive", watchSource, StringComparison.Ordinal);
     }
@@ -130,7 +135,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     [Fact]
     public void TerminalTrackUnavailableFailure_PersistsWatchlistAvailabilityRecheck()
     {
-        var watchSource = ReadSource("DeezSpoTag.Web/Services/PlaylistWatchService.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var downloadSource = ReadSource("DeezSpoTag.Services/Download/Shared/EngineAudioPostDownloadHelper.cs");
         var controllerSource = ReadSource("DeezSpoTag.Web/Controllers/Api/LibraryPlaylistWatchlistApiController.cs");
         var repositorySource = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
@@ -191,7 +196,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     {
         var watchlistSource = ReadSource("DeezSpoTag.Web/wwwroot/js/library-watchlists.js");
         var tracklistSource = ReadSource("DeezSpoTag.Web/Views/Tracklist/Index.cshtml");
-        var apiSource = ReadSource("DeezSpoTag.Web/Controllers/Api/LibraryPlaylistWatchlistApiController.cs");
+        var apiSource = ReadSource("DeezSpoTag.Web/Controllers/ActivitiesController.cs");
 
         Assert.Contains("items.map((item, index) =>", watchlistSource, StringComparison.Ordinal);
         Assert.Contains("}).join('') + manualUnavailableCard", watchlistSource, StringComparison.Ordinal);

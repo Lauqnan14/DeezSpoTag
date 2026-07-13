@@ -296,7 +296,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
     [Fact]
     public void WatchlistSelection_DoesNotUseParallelLibraryLookup()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistWatchService.cs");
+        var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
         var selection = ExtractBetween(
             source,
             "private async Task<PlaylistTrackSelection> SelectMissingPlaylistTracksAsync",

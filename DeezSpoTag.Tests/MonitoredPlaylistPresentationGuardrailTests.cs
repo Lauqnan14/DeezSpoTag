@@ -13,7 +13,7 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
         var source = File.ReadAllText(FindSourceFile(
             "DeezSpoTag.Web",
             "Services",
-            "PlaylistWatchService.cs"));
+            "WatchlistEngine.cs"));
 
         Assert.Contains("var cachedCandidatesComplete = cachedCandidates is not null", source, StringComparison.Ordinal);
         Assert.Contains("if (cachedCandidatesComplete)", source, StringComparison.Ordinal);
@@ -27,7 +27,7 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
         var watchServiceSource = File.ReadAllText(FindSourceFile(
             "DeezSpoTag.Web",
             "Services",
-            "PlaylistWatchService.cs"));
+            "WatchlistEngine.cs"));
         var controllerSource = File.ReadAllText(FindSourceFile(
             "DeezSpoTag.Web",
             "Controllers",

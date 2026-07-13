@@ -6808,7 +6808,10 @@ SELECT id,
        COALESCE(track_summary.verified_sync_count, 0),
        pws.ignored_blocked_track_count,
        pws.rerouted_track_count,
-       pw.owner_name
+       pw.owner_name,
+       COALESCE(claim_summary.pending_count, 0),
+       COALESCE(state_summary.unavailable_count, 0),
+       COALESCE(state_summary.review_count, 0)
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
@@ -6832,6 +6835,25 @@ LEFT JOIN (
 ) track_summary
     ON track_summary.source = pw.source
    AND track_summary.source_id = pw.source_id
+LEFT JOIN (
+    SELECT source,
+           source_id,
+           COUNT(DISTINCT CASE WHEN lower(status) = 'pending' THEN track_source_id END) AS pending_count
+    FROM playlist_watch_download_claim
+    GROUP BY source, source_id
+) claim_summary
+    ON claim_summary.source = pw.source
+   AND claim_summary.source_id = pw.source_id
+LEFT JOIN (
+    SELECT source,
+           source_id,
+           COUNT(DISTINCT CASE WHEN lower(status) = 'unavailable' THEN track_source_id END) AS unavailable_count,
+           COUNT(DISTINCT CASE WHEN lower(COALESCE(identity_status, '')) = 'review' THEN track_source_id END) AS review_count
+    FROM playlist_watch_track
+    GROUP BY source, source_id
+) state_summary
+    ON state_summary.source = pw.source
+   AND state_summary.source_id = pw.source_id
 ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE 0 END,
          pw.sync_priority ASC,
          pw.created_at DESC;";
@@ -6867,7 +6889,14 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                         - reader.GetInt32(15)),
                 IgnoredBlockedTrackCount: await reader.IsDBNullAsync(16, cancellationToken) ? null : reader.GetInt32(16),
                 ReroutedTrackCount: await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetInt32(17),
-                OwnerName: await reader.IsDBNullAsync(18, cancellationToken) ? null : reader.GetString(18)));
+                OwnerName: await reader.IsDBNullAsync(18, cancellationToken) ? null : reader.GetString(18),
+                EligibleTrackCount: await reader.IsDBNullAsync(6, cancellationToken)
+                    ? null
+                    : Math.Max(0, reader.GetInt32(6) - (await reader.IsDBNullAsync(16, cancellationToken) ? 0 : reader.GetInt32(16))),
+                QueuedTrackCount: await reader.IsDBNullAsync(19, cancellationToken) ? 0 : reader.GetInt32(19),
+                DownloadingTrackCount: 0,
+                UnavailableTrackCount: await reader.IsDBNullAsync(20, cancellationToken) ? 0 : reader.GetInt32(20),
+                ReviewTrackCount: await reader.IsDBNullAsync(21, cancellationToken) ? 0 : reader.GetInt32(21)));
         }
 
         return items;
@@ -7125,6 +7154,9 @@ WHERE source = @source AND source_id = @sourceId;";
         const string sql = @"
 	DELETE FROM playlist_watch_track WHERE source = @source AND source_id = @sourceId;
 	DELETE FROM playlist_watch_download_claim WHERE source = @source AND source_id = @sourceId;
+	DELETE FROM playlist_watch_target_membership WHERE source = @source AND source_id = @sourceId;
+	DELETE FROM playlist_watch_ignore WHERE source = @source AND source_id = @sourceId;
+	DELETE FROM watchlist_sync_job WHERE source = @source AND playlist_id = @sourceId;
 	DELETE FROM playlist_watch_state WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_track_candidate_cache WHERE source = @source AND source_id = @sourceId;
 DELETE FROM playlist_watch_preferences WHERE source = @source AND source_id = @sourceId;
@@ -9372,8 +9404,8 @@ LIMIT 1;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, artist_name, created_at)
-VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName, @createdAt)
+INSERT INTO watchlist_history (source, watch_type, source_id, name, collection_type, track_count, status, artist_name, item_key, created_at)
+VALUES (@source, @watchType, @sourceId, @name, @collectionType, @trackCount, @status, @artistName, @itemKey, @createdAt)
 RETURNING id, created_at;";
         await using var command = new SqliteCommand(sql, connection);
         var createdAt = DateTimeOffset.UtcNow;
@@ -9385,6 +9417,7 @@ RETURNING id, created_at;";
         command.Parameters.AddWithValue(TrackCountField, entry.TrackCount);
         command.Parameters.AddWithValue("status", entry.Status);
         command.Parameters.AddWithValue("artistName", (object?)entry.ArtistName ?? DBNull.Value);
+        command.Parameters.AddWithValue("itemKey", (object?)entry.ItemKey ?? DBNull.Value);
         command.Parameters.AddWithValue("createdAt", createdAt.ToString("O", CultureInfo.InvariantCulture));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -9405,7 +9438,8 @@ RETURNING id, created_at;";
             entry.TrackCount,
             entry.Status,
             entry.ArtistName,
-            created);
+            created,
+            entry.ItemKey);
     }
 
     public async Task<int> GetWatchlistHistoryCountAsync(CancellationToken cancellationToken = default)
@@ -9432,6 +9466,7 @@ SELECT id,
        track_count,
        status,
        artist_name,
+       item_key,
        created_at
 FROM watchlist_history
 ORDER BY created_at DESC
@@ -9458,6 +9493,7 @@ SELECT id,
        track_count,
        status,
        artist_name,
+       item_key,
        created_at
 FROM watchlist_history
 WHERE id > @sinceId
@@ -9478,7 +9514,7 @@ LIMIT @limit;";
         var items = new List<WatchlistHistoryDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var created = await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseUtcDateTimeOffsetInvariant(reader.GetString(9));
+            var created = await reader.IsDBNullAsync(10, cancellationToken) ? DateTimeOffset.MinValue : ParseUtcDateTimeOffsetInvariant(reader.GetString(10));
             items.Add(new WatchlistHistoryDto(
                 reader.GetInt64(0),
                 reader.GetString(1),
@@ -9489,7 +9525,8 @@ LIMIT @limit;";
                 reader.GetInt32(6),
                 reader.GetString(7),
                 await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
-                created));
+                created,
+                await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9)));
         }
 
         return items;

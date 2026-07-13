@@ -205,7 +205,7 @@ public sealed class KnownLibraryFileIngestionService
             return;
         }
 
-        var watchlist = _serviceProvider.GetService<PlaylistWatchHostedService>();
+        var watchlist = _serviceProvider.GetService<WatchlistRunCoordinator>();
         if (watchlist is null)
         {
             return;
@@ -214,7 +214,7 @@ public sealed class KnownLibraryFileIngestionService
         _ = TriggerWatchlistAfterLibraryUpdateAsync(watchlist);
     }
 
-    private async Task TriggerWatchlistAfterLibraryUpdateAsync(PlaylistWatchHostedService watchlist)
+    private async Task TriggerWatchlistAfterLibraryUpdateAsync(WatchlistRunCoordinator watchlist)
     {
         try
         {

@@ -630,7 +630,12 @@ public sealed record PlaylistWatchlistDto(
     int? IncompleteTrackCount = null,
     int? IgnoredBlockedTrackCount = null,
     int? ReroutedTrackCount = null,
-    string? OwnerName = null);
+    string? OwnerName = null,
+    int? EligibleTrackCount = null,
+    int? QueuedTrackCount = null,
+    int? DownloadingTrackCount = null,
+    int? UnavailableTrackCount = null,
+    int? ReviewTrackCount = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,
@@ -822,7 +827,8 @@ public sealed record WatchlistHistoryDto(
     int TrackCount,
     string Status,
     string? ArtistName,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    string? ItemKey = null);
 
 public sealed record WatchlistHistoryInsert(
     string Source,
@@ -832,7 +838,8 @@ public sealed record WatchlistHistoryInsert(
     string CollectionType,
     int TrackCount,
     string Status,
-    string? ArtistName);
+    string? ArtistName,
+    string? ItemKey = null);
 
 public sealed record LocalArtistScanDto(string Name, string? ImagePath);
 

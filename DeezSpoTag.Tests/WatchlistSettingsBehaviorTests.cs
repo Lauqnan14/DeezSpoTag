@@ -190,7 +190,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var catalogSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadSourceCatalog.cs"));
         var controllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryPlaylistWatchlistApiController.cs"));
         var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
-        var playlistWatchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var playlistWatchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var downloadIntentSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadIntentService.cs"));
         var intentModelSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "Shared", "Models", "DownloadIntent.cs"));
         var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
@@ -214,8 +214,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var serviceRoot = Path.Join(repoRoot, "DeezSpoTag.Web", "Services");
 
         var artistWatchSource = File.ReadAllText(Path.Join(serviceRoot, "ArtistWatchService.cs"));
-        var playlistWatchSource = File.ReadAllText(Path.Join(serviceRoot, "PlaylistWatchService.cs"));
-        var hostedSource = File.ReadAllText(Path.Join(serviceRoot, "PlaylistWatchHostedService.cs"));
+        var playlistWatchSource = File.ReadAllText(Path.Join(serviceRoot, "WatchlistEngine.cs"));
+        var hostedSource = File.ReadAllText(Path.Join(serviceRoot, "WatchlistRunCoordinator.cs"));
         var repoSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
         var artistControllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryWatchlistApiController.cs"));
         var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
@@ -268,7 +268,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_RefreshesFullSnapshotAndUsesSnapshotCache()
     {
         var repoRoot = ResolveRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
         Assert.Contains("WatchUseSnapshotIdChecking", source, StringComparison.Ordinal);
         Assert.Contains("var maxCandidates = MaxPlaylistCandidateFetchCount;", source, StringComparison.Ordinal);
@@ -301,7 +301,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_UsesSingleQueuePlannerBeforeQueueAdmission()
     {
         var repoRoot = ResolveRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadDedupeService.cs"));
 
         Assert.Contains("selection = await SelectMissingPlaylistTracksAsync(", source, StringComparison.Ordinal);
@@ -334,7 +334,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_DoesNotTreatPartialCachedSnapshotsAsComplete()
     {
         var repoRoot = ResolveRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
         Assert.Contains("var cachedCandidatesComplete = cachedCandidates is not null", source, StringComparison.Ordinal);
         Assert.Contains("cachedCandidates.Count >= liveSnapshot.TrackCount.Value", source, StringComparison.Ordinal);
@@ -346,7 +346,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_FollowGlobalRemainsDistinctFromExplicitAuto()
     {
         var repoRoot = ResolveRepoRoot();
-        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var uiSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
         Assert.Contains("{ value: '', label: 'Follow global download source' }", uiSource, StringComparison.Ordinal);
@@ -358,8 +358,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_ActivePlaylistRetentionCannotOverridePriorityOrder()
     {
         var repoRoot = ResolveRepoRoot();
-        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
-        var hostedSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchHostedService.cs"));
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var hostedSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
 
         Assert.DoesNotContain("ShouldKeepPlaylistActive", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("KeepActivePlaylist", serviceSource, StringComparison.Ordinal);
@@ -381,7 +381,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_StatusesRemainSpecificInsteadOfGenericQueueFailures()
     {
         var repoRoot = ResolveRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
         Assert.Contains("ResolveQueueFailureMessage", source, StringComparison.Ordinal);
         Assert.Contains("ResolveQueueStopStatus", source, StringComparison.Ordinal);
@@ -406,22 +406,22 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         Assert.Equal(
             "downloading",
-            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, synced, "running").Status);
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(false, synced, "running").Status);
         Assert.Equal(
             "synced",
-            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, synced, "failed").Status);
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(false, synced, "failed").Status);
         Assert.Equal(
             "failed",
-            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, "failed").Status);
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, "failed").Status);
         Assert.Equal(
             "library",
-            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, local, "cancelled").Status);
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(false, local, "cancelled").Status);
         Assert.Equal(
             "missing",
-            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, null).Status);
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, null).Status);
         Assert.Equal(
             "blocked",
-            LibraryPlaylistWatchlistApiController.ResolvePlaylistTrackLocationStatus(true, synced, "running").Status);
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(true, synced, "running").Status);
     }
 
     [Fact]
@@ -492,12 +492,12 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             repoRoot,
             "DeezSpoTag.Web",
             "Services",
-            "PlaylistWatchService.cs"));
+            "WatchlistEngine.cs"));
         var hostedSource = File.ReadAllText(Path.Join(
             repoRoot,
             "DeezSpoTag.Web",
             "Services",
-            "PlaylistWatchHostedService.cs"));
+            "WatchlistRunCoordinator.cs"));
         var recoveryPolicySource = File.ReadAllText(Path.Join(
             repoRoot,
             "DeezSpoTag.Services",
@@ -508,7 +508,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' END", repositorySource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                item.QueueUuid,\n                notification.Source,", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", watchSource, StringComparison.Ordinal);
-        Assert.Contains("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", hostedSource, StringComparison.Ordinal);
         Assert.Contains("PostDownloadPendingLease", recoveryPolicySource, StringComparison.Ordinal);
         Assert.Contains("enrichmentStatus == \"running\" || finalizationStatus == \"running\"", recoveryPolicySource, StringComparison.Ordinal);
     }
@@ -517,7 +517,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     public void PlaylistWatch_MirrorSyncDoesNotBlockMissingTrackQueueing()
     {
         var repoRoot = ResolveRepoRoot();
-        var watchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistWatchService.cs"));
+        var watchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
         var postDownloadSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
 
@@ -556,7 +556,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("return remoteUrl;", visualSource, StringComparison.Ordinal);
         Assert.Contains("ResolveActiveFileName", visualSource, StringComparison.Ordinal);
         Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("mode: PlaylistWatchService.PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("mode: PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("VerifyAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
@@ -683,8 +683,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         Assert.DoesNotContain("CheckPlaylistWatchItemAsync", playlistController, StringComparison.Ordinal);
         Assert.DoesNotContain("CheckArtistWatchItemAsync", artistController, StringComparison.Ordinal);
-        Assert.Contains("_playlistWatchHostedService.TriggerRunOnceAsync", playlistController, StringComparison.Ordinal);
-        Assert.Contains("_playlistWatchHostedService.TriggerRunOnceAsync", artistController, StringComparison.Ordinal);
+        Assert.Contains("_watchlistCoordinator.TriggerRunOnceAsync", playlistController, StringComparison.Ordinal);
+        Assert.Contains("_watchlistCoordinator.TriggerRunOnceAsync", artistController, StringComparison.Ordinal);
         Assert.Contains("RefreshPlaylistMetadataOnlyAsync", playlistController, StringComparison.Ordinal);
     }
 
@@ -798,6 +798,50 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("container.dataset.stale = 'true';", watchlistScript, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Watchlist_HasOneControllerType_AndPreservesExistingUiRoutes()
+    {
+        var controllerTypes = typeof(WatchlistApiController).Assembly.GetTypes()
+            .Where(type => typeof(Microsoft.AspNetCore.Mvc.ControllerBase).IsAssignableFrom(type))
+            .Where(type => type.Name.Contains("Watchlist", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Assert.Equal(typeof(WatchlistApiController), Assert.Single(controllerTypes));
+
+        var repoRoot = ResolveRepoRoot();
+        var artistSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryWatchlistApiController.cs"));
+        var playlistSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryPlaylistWatchlistApiController.cs"));
+        var historySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "WatchlistHistoryApiController.cs"));
+        Assert.Contains("~/api/library/watchlist", artistSource, StringComparison.Ordinal);
+        Assert.Contains("[Route(\"api/library/playlists\")]", playlistSource, StringComparison.Ordinal);
+        Assert.Contains("~/api/history/watchlist", historySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Watchlist_UiSettingIsTheOnlyEnablementAuthority()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var hostedSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
+        var settingsControllerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "SettingsApiController.cs"));
+        var appSettingsSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "appsettings.json"));
+        Assert.DoesNotContain("BackgroundAutomationPolicy.IsEnabled(_configuration, \"Watchlist\")", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Watchlist\": { \"Enabled\"", appSettingsSource, StringComparison.Ordinal);
+        Assert.Contains("!persisted.WatchEnabled && settings.WatchEnabled", settingsControllerSource, StringComparison.Ordinal);
+        Assert.Contains("TriggerRunOnceAsync", settingsControllerSource, StringComparison.Ordinal);
+        Assert.Contains("ResumePendingJobsAsync", settingsControllerSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Watchlist_FinalizationPersistsWhileUiAutomationIsDisabled()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
+        var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask NotifyFinalizedAsync(");
+        Assert.DoesNotContain("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistSyncJobAsync", notifyBody, StringComparison.Ordinal);
+        Assert.Contains("PersistDeferredWhileDisabledAsync", syncSource, StringComparison.Ordinal);
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();
@@ -812,6 +856,62 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         {
             // Best-effort cleanup.
         }
+    }
+
+    [Fact]
+    public void WatchlistConsolidation_HasSingleCoordinatorStateHistoryAndAdmissionOwners()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var serviceRoot = Path.Join(repoRoot, "DeezSpoTag.Web", "Services");
+        var coordinator = File.ReadAllText(Path.Join(serviceRoot, "WatchlistRunCoordinator.cs"));
+        var admission = File.ReadAllText(Path.Join(serviceRoot, "WatchlistQueueAdmissionService.cs"));
+        var playlist = File.ReadAllText(Path.Join(serviceRoot, "WatchlistEngine.cs"));
+        var postSync = File.ReadAllText(Path.Join(serviceRoot, "WatchlistPostDownloadSyncService.cs"));
+
+        Assert.False(File.Exists(Path.Join(serviceRoot, "PlaylistWatchHostedService.cs")));
+        Assert.False(File.Exists(Path.Join(serviceRoot, "WatchlistRunQueueBudgetService.cs")));
+        Assert.Contains("WatchlistTriggerRequest", coordinator, StringComparison.Ordinal);
+        Assert.Contains("TriggerPlaylistOnceAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("EvaluateBatchAsync", admission, StringComparison.Ordinal);
+        Assert.Contains("WatchlistStateService", admission, StringComparison.Ordinal);
+        Assert.Contains("WatchlistHistoryService", postSync, StringComparison.Ordinal);
+        Assert.Contains("PlaylistWatchReconciler", playlist, StringComparison.Ordinal);
+        Assert.Contains("WatchlistQueueService", playlist, StringComparison.Ordinal);
+        Assert.Contains("IPlaylistSourceAdapter", playlist, StringComparison.Ordinal);
+        Assert.Contains("WatchlistSelectionPolicy", playlist, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WatchlistHistory_UsesStableItemIdentityAndOneWriter()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var serviceRoot = Path.Join(repoRoot, "DeezSpoTag.Web", "Services");
+        var historyOwner = File.ReadAllText(Path.Join(serviceRoot, "WatchlistPostDownloadSyncService.cs"));
+        var artist = File.ReadAllText(Path.Join(serviceRoot, "ArtistWatchService.cs"));
+        var playlist = File.ReadAllText(Path.Join(serviceRoot, "WatchlistEngine.cs"));
+        var ui = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Contains("ArtistItemKey(long artistId)", historyOwner, StringComparison.Ordinal);
+        Assert.Contains("PlaylistItemKey(string source, string sourceId)", historyOwner, StringComparison.Ordinal);
+        Assert.Contains("_watchlistHistory.RecordAsync", artist, StringComparison.Ordinal);
+        Assert.Contains("_watchlistHistory.RecordAsync", playlist, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddWatchlistHistoryAsync", artist, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddWatchlistHistoryAsync", playlist, StringComparison.Ordinal);
+        Assert.Contains("detectedByItemKey", ui, StringComparison.Ordinal);
+        Assert.DoesNotContain("detectedByName", ui, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualUnavailableApi_IsOutsideWatchlistControllerWithRoutesPreserved()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var watchlistController = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "LibraryPlaylistWatchlistApiController.cs"));
+        var activitiesController = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "ActivitiesController.cs"));
+
+        Assert.DoesNotContain("manual-unavailable", watchlistController, StringComparison.Ordinal);
+        Assert.Contains("~/api/library/playlists/manual-unavailable", activitiesController, StringComparison.Ordinal);
+        Assert.Contains("~/api/library/playlists/manual-unavailable/tracklist", activitiesController, StringComparison.Ordinal);
+        Assert.Contains("~/api/library/playlists/manual-unavailable/{id:long}", activitiesController, StringComparison.Ordinal);
     }
 
     private static PlaylistWatchTrackStatusDto CreatePlaylistTrackStatus(

@@ -203,6 +203,24 @@ public sealed class PlaylistVisualService
             .ToList();
     }
 
+    public void DeleteStoredVisuals(string source, string sourceId)
+    {
+        var visualDir = GetVisualDirectory(source, sourceId);
+        if (!Directory.Exists(visualDir))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(visualDir, recursive: true);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to remove playlist visuals for {Source}:{SourceId}", source, sourceId);
+        }
+    }
+
     public async Task<string?> StoreUploadedVisualAsync(
         string source,
         string sourceId,

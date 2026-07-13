@@ -87,12 +87,12 @@ async function loadWatchlist() {
         }
 
         // Build detected-count map from history
-        const detectedByName = {};
+        const detectedByItemKey = {};
         const historyEntries = normalizeWatchlistHistoryEntries(historyRaw);
         for (const h of historyEntries) {
-            if (h.watchType === 'artist' && h.artistName) {
-                const key = h.artistName.toLowerCase();
-                detectedByName[key] = (detectedByName[key] || 0) + 1;
+            if (h.watchType === 'artist' && h.itemKey) {
+                const key = String(h.itemKey).toLowerCase();
+                detectedByItemKey[key] = (detectedByItemKey[key] || 0) + 1;
             }
         }
 
@@ -110,7 +110,7 @@ async function loadWatchlist() {
                 item.appleId ? `<span class="watchlist-card-badge" title="Apple Music"><i class="fab fa-apple"></i></span>` : ''
             ].filter(Boolean).join('');
 
-            const detectedCount = detectedByName[item.artistName?.toLowerCase()] || 0;
+            const detectedCount = detectedByItemKey[`artist:${item.artistId}`] || 0;
             const lastChecked = formatRelativeTime(item.lastCheckedUtc);
             const statsHtml = [
                 detectedCount > 0 ? `<span class="watchlist-card-stat">${detectedCount} detected</span>` : '',
@@ -1412,7 +1412,11 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     const ignoredBlockedTrackCount = toNonNegativeCount(item.ignoredBlockedTrackCount);
     const totalTrackCount = Math.max(0, sourceTrackCount - ignoredBlockedTrackCount);
     const syncedTrackCount = Math.min(toNonNegativeCount(item.syncedTrackCount), totalTrackCount);
-    const incompleteTrackCount = Math.max(0, totalTrackCount - syncedTrackCount);
+    const hasAuthoritativeIncompleteCount = item.incompleteTrackCount !== null
+        && item.incompleteTrackCount !== undefined;
+    const incompleteTrackCount = hasAuthoritativeIncompleteCount
+        ? Math.min(toNonNegativeCount(item.incompleteTrackCount), totalTrackCount)
+        : Math.max(0, totalTrackCount - syncedTrackCount);
     const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
     const hasIncompleteSync = incompleteTrackCount > 0 && totalTrackCount > syncedTrackCount;
     const syncBadge = hasIncompleteSync ? renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) : '';
