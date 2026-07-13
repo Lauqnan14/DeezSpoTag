@@ -136,6 +136,16 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (103, 104);";
             folderId: folder.Id);
         Assert.Single(entries);
 
+        var localTimeEntries = await _repository.GetPlayHistoryEntriesAsync(
+            userId,
+            folder.LibraryId.Value,
+            playedAt.AddDays(-1),
+            [13],
+            playedAt.AddDays(1),
+            folderId: folder.Id,
+            localUtcOffset: TimeSpan.FromHours(3));
+        Assert.Single(localTimeEntries);
+
         await using var verify = new SqliteConnection($"Data Source={_dbPath}");
         await verify.OpenAsync();
         await using var verifyCommand = verify.CreateCommand();

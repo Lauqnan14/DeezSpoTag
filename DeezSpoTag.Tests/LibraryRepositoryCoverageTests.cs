@@ -1170,9 +1170,17 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
 
         var analysisByTrack = await _repository.GetTrackAnalysisByTrackIdsAsync(new[] { trackOne, trackTwo });
         Assert.Equal(2, analysisByTrack.Count);
+        Assert.Equal(0.4, analysisByTrack[trackOne].Approachability);
+        Assert.Equal(0.6, analysisByTrack[trackOne].Engagement);
+        Assert.Equal(0.65, analysisByTrack[trackOne].ValenceMl);
+        Assert.Equal(0.55, analysisByTrack[trackOne].ArousalMl);
 
         var candidates = await _repository.GetTrackAnalysisCandidatesAsync(seeded.LibraryId, trackOne, limit: 10);
-        Assert.Contains(candidates, item => item.TrackId == trackTwo);
+        var candidate = Assert.Single(candidates, item => item.TrackId == trackTwo);
+        Assert.Equal(0.2, candidate.VoiceInstrumental);
+        Assert.Equal(0.8, candidate.TonalAtonal);
+        Assert.Equal(0.5, candidate.DynamicComplexity);
+        Assert.Equal(-9.0, candidate.LoudnessMl);
 
         var moodMatches = await _repository.GetTrackIdsByMoodTagsAsync(seeded.LibraryId, HappyMoodTags, 10);
         Assert.Contains(trackOne, moodMatches);

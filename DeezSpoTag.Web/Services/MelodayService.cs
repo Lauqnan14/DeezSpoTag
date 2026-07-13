@@ -169,6 +169,7 @@ public sealed class MelodayService
     private static readonly int[] EveningHours = [16, 17, 18];
     private static readonly int[] NightHours = [19, 20, 21];
     private static readonly int[] LateNightHours = [22, 23, 0, 1, 2];
+    private static readonly int[] AllDayHours = Enumerable.Range(0, 24).ToArray();
 
     private static readonly Dictionary<string, MelodayPeriod> DefaultPeriods = new Dictionary<string, MelodayPeriod>
     {
@@ -256,9 +257,7 @@ public sealed class MelodayService
         var configuredFolders = new List<FolderDto>();
         foreach (var folder in await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
         {
-            if (string.IsNullOrWhiteSpace(folder.PlexSectionId)
-                && string.IsNullOrWhiteSpace(folder.JellyfinLibraryId)
-                && string.IsNullOrWhiteSpace(folder.NavidromeLibraryId))
+            if (!FolderSupportsAnyTarget(folder, targets))
             {
                 continue;
             }
@@ -315,7 +314,7 @@ public sealed class MelodayService
                 {
                     var userHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
                         historyUserId, library.Id, lookbackStart, period.Hours, now,
-                        cancellationToken, folder.Id);
+                        cancellationToken, folder.Id, now.Offset);
                     history.AddRange(userHistory);
 
                     var userExcluded = await _libraryRepository.GetPlayedTrackIdsSinceAsync(
@@ -329,6 +328,31 @@ public sealed class MelodayService
                 .Where(id => !excludedTrackIds.Contains(id))
                 .Distinct()
                 .ToList();
+            if (historyTrackIds.Count == 0)
+            {
+                history.Clear();
+                foreach (var historyUserId in historyUserIds)
+                {
+                    foreach (var folder in libraryFolders)
+                    {
+                        var allDayHistory = await _libraryRepository.GetPlayHistoryEntriesAsync(
+                            historyUserId, library.Id, lookbackStart, AllDayHours, now,
+                            cancellationToken, folder.Id, now.Offset);
+                        history.AddRange(allDayHistory);
+                    }
+                }
+
+                historyTrackIds = history
+                    .Select(entry => entry.TrackId)
+                    .Where(id => !excludedTrackIds.Contains(id))
+                    .Distinct()
+                    .ToList();
+                _logger.LogInformation(
+                    "Meloday found no eligible {PeriodName} history for library {LibraryId}; exact-folder all-day fallback resolved {HistoryTrackCount} tracks.",
+                    periodName,
+                    library.Id,
+                    historyTrackIds.Count);
+            }
             var ratingKeyByTrackId = new Dictionary<long, string>();
             var liveMetadataByTrackId = new Dictionary<long, PlexTrackMetadata>();
             var allowedTrackIds = new HashSet<long>();
@@ -337,10 +361,18 @@ public sealed class MelodayService
                 allowedTrackIds.UnionWith(await _libraryRepository.GetTrackIdsForLibraryScopeAsync(
                     library.Id, folder.Id, cancellationToken));
             }
+            var historyAnalyses = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
+                historyTrackIds.Where(allowedTrackIds.Contains).ToList(),
+                cancellationToken);
+            var historyGenresByTrackId = historyAnalyses.Values
+                .Where(IsCompletedAnalysis)
+                .Select(analysis => (analysis.TrackId, Genres: ResolveAnalysisGenres(analysis)))
+                .Where(static entry => entry.Genres.Count > 0)
+                .ToDictionary(static entry => entry.TrackId, static entry => entry.Genres);
             var balancedHistorical = BuildBalancedHistoricalSelection(
                 history,
                 excludedTrackIds,
-                liveMetadataByTrackId,
+                historyGenresByTrackId,
                 effective.MaxTracks);
             var similarContext = new SimilarTrackContext(
                 ratingKeyByTrackId,
@@ -422,13 +454,16 @@ public sealed class MelodayService
 
         var persistedMetadata = (await _libraryRepository.GetPlexTrackMetadataAsync(orderedTrackIds, cancellationToken))
             .ToDictionary(entry => entry.TrackId);
+        var trackAnalyses = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
+            orderedTrackIds,
+            cancellationToken);
 
         var playlistPrefix = string.IsNullOrWhiteSpace(context.SimilarContext.Options.PlaylistPrefix)
             ? "Meloday"
             : context.SimilarContext.Options.PlaylistPrefix.Trim();
         var optionsForTitle = CloneOptionsWithPlaylistPrefix(
             context.SimilarContext.Options,
-            $"{playlistPrefix} {context.Library.Name} {GetModeLabel(mode)}");
+            $"{playlistPrefix} {context.Library.Name} {GetModeLabel(mode)} —");
         var (title, description) = BuildTitleAndDescription(new PlaylistDescriptionContext(
             optionsForTitle,
             context.PeriodName,
@@ -436,6 +471,7 @@ public sealed class MelodayService
             orderedTrackIds,
             context.SimilarContext.LiveMetadataByTrackId,
             persistedMetadata,
+            trackAnalyses,
             context.Username,
             DateTimeOffset.Now));
 
@@ -798,7 +834,17 @@ public sealed class MelodayService
             return null;
         }
 
-        var playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+        var stableTitlePrefix = context.TitleOptions.PlaylistPrefix.Trim();
+        var playlistId = (await _jellyfinApiClient.GetPlaylistsAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                cancellationToken))
+            .FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+                && !string.IsNullOrWhiteSpace(playlist.Name)
+                && playlist.Name.StartsWith(stableTitlePrefix, StringComparison.OrdinalIgnoreCase))?
+            .Id;
+        playlistId ??= await _jellyfinApiClient.FindPlaylistIdByNameAsync(
             jellyfin.Url,
             jellyfin.ApiKey,
             jellyfin.UserId,
@@ -895,13 +941,23 @@ public sealed class MelodayService
             return null;
         }
 
+        var stableTitlePrefix = context.TitleOptions.PlaylistPrefix.Trim();
+        var existingPlaylistId = (await _navidromeApiClient.GetPlaylistsAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                cancellationToken))
+            .FirstOrDefault(playlist => playlist.Name.StartsWith(
+                stableTitlePrefix,
+                StringComparison.OrdinalIgnoreCase))?
+            .Id;
         return await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
             navidrome.Url,
             navidrome.Username,
             navidrome.Password,
             context.Title,
             itemIds,
-            existingPlaylistId: null,
+            existingPlaylistId,
             appendMissingOnly: false,
             cancellationToken);
     }
@@ -1037,33 +1093,14 @@ public sealed class MelodayService
             .ToList();
     }
 
-    private async Task<List<long>> BuildInitialTrackSelectionAsync(
-        IReadOnlyList<long> historyTrackIds,
-        IReadOnlyList<long> balancedHistorical,
-        SimilarTrackContext context)
+    private static bool FolderSupportsAnyTarget(
+        FolderDto folder,
+        IReadOnlyList<MediaServerTarget> targets)
     {
-        var guaranteedCount = Math.Clamp(
-            (int)Math.Round(context.Options.MaxTracks * context.Options.HistoricalRatio),
-            1,
-            context.Options.MaxTracks);
-        var guaranteedHistorical = Sample(balancedHistorical, guaranteedCount).ToList();
-        if (guaranteedHistorical.Count == 0)
-        {
-            guaranteedHistorical = Sample(historyTrackIds, guaranteedCount).ToList();
-        }
-
-        var similarTracks = await FetchSonicSimilarTrackIdsAsync(guaranteedHistorical, context);
-        var candidatePool = guaranteedHistorical
-            .Concat(similarTracks)
-            .Distinct()
-            .ToList();
-
-        if (context.Plex is not null)
-        {
-            await EnsureRatingKeysAsync(candidatePool, context.Plex, context.RatingKeyByTrackId, context.CancellationToken);
-            await EnsurePlexMetadataAsync(context.Plex, candidatePool, context.RatingKeyByTrackId, context.LiveMetadataByTrackId, context.CancellationToken);
-        }
-        return (await ProcessTracksAsync(candidatePool, context.Options, context.LiveMetadataByTrackId, context.CancellationToken)).ToList();
+        return targets.Any(target =>
+            (target.IsPlex && !string.IsNullOrWhiteSpace(folder.PlexSectionId))
+            || (target.IsJellyfin && !string.IsNullOrWhiteSpace(folder.JellyfinLibraryId))
+            || (target.IsNavidrome && !string.IsNullOrWhiteSpace(folder.NavidromeLibraryId)));
     }
 
     private async Task<List<long>> BuildDirectTrackSelectionAsync(
@@ -1072,16 +1109,12 @@ public sealed class MelodayService
         long libraryId,
         SimilarTrackContext context)
     {
-        var finalTracks = Sample(balancedHistorical, context.Options.MaxTracks).ToList();
-        if (finalTracks.Count == 0)
-        {
-            finalTracks = Sample(historyTrackIds, context.Options.MaxTracks).ToList();
-        }
-
-        var processed = await ProcessTracksAsync(finalTracks, context.Options, context.LiveMetadataByTrackId, context.CancellationToken);
-        finalTracks = processed.ToList();
-        await FillWithRandomTracksAsync(libraryId, finalTracks, context);
-        return finalTracks;
+        return await BuildVibeDrivenTrackSelectionAsync(
+            historyTrackIds,
+            balancedHistorical,
+            libraryId,
+            prioritizePlexSonicMatches: false,
+            context);
     }
 
     private async Task<List<long>> BuildSonicTrackSelectionAsync(
@@ -1090,186 +1123,169 @@ public sealed class MelodayService
         long libraryId,
         SimilarTrackContext context)
     {
-        var finalTracks = await BuildInitialTrackSelectionAsync(historyTrackIds, balancedHistorical, context);
-        await ExpandTrackSelectionAsync(finalTracks, balancedHistorical, context);
-        await ExpandWithLocalVibeAnalysisAsync(finalTracks, balancedHistorical, libraryId, context);
-        await FillWithRandomTracksAsync(libraryId, finalTracks, context);
+        return await BuildVibeDrivenTrackSelectionAsync(
+            historyTrackIds,
+            balancedHistorical,
+            libraryId,
+            prioritizePlexSonicMatches: true,
+            context);
+    }
+
+    private async Task<List<long>> BuildVibeDrivenTrackSelectionAsync(
+        IReadOnlyList<long> historyTrackIds,
+        IReadOnlyList<long> balancedHistorical,
+        long libraryId,
+        bool prioritizePlexSonicMatches,
+        SimilarTrackContext context)
+    {
+        var allowedIds = context.AllowedTrackIds.ToList();
+        var analysisByTrackId = await _libraryRepository.GetTrackAnalysisByTrackIdsAsync(
+            allowedIds,
+            context.CancellationToken);
+        var analyzedHistoryTrackIds = ResolveAnalyzedHistoryTrackIds(
+            historyTrackIds,
+            balancedHistorical,
+            analysisByTrackId);
+        var historicalTrackIds = Sample(
+                analyzedHistoryTrackIds,
+                ResolveHistoricalTrackCount(context.Options))
+            .ToList();
+        var vibeSeedTrackIds = historicalTrackIds.Count > 0
+            ? historicalTrackIds.ToList()
+            : Sample(
+                    analyzedHistoryTrackIds,
+                    Math.Max(1, context.Options.SonicSimilarLimit))
+                .ToList();
+
+        var outputExclusions = new HashSet<long>(context.ExcludedTrackIds);
+        outputExclusions.UnionWith(historyTrackIds);
+        outputExclusions.UnionWith(vibeSeedTrackIds);
+        var candidateLimit = Math.Max(context.Options.MaxTracks * 8, context.Options.MaxTracks);
+        var vibeMatches = MelodayVibeSelector.Select(
+            vibeSeedTrackIds,
+            analysisByTrackId.Values.ToList(),
+            context.AllowedTrackIds,
+            outputExclusions,
+            candidateLimit,
+            context.Options.SonicSimilarityDistance);
+
+        var orderedVibeCandidates = await PrioritizePlexSonicVibeMatchesAsync(
+            vibeMatches,
+            vibeSeedTrackIds,
+            prioritizePlexSonicMatches,
+            context);
+        var candidatePool = historicalTrackIds
+            .Concat(orderedVibeCandidates)
+            .Distinct()
+            .ToList();
+        var finalTracks = await ApplyPlexRatingFiltersAsync(candidatePool, context);
+        _logger.LogInformation(
+            "Meloday vibe selection for library {LibraryId}: usableAnalyses={AnalyzedCount}, profileSeeds={ProfileSeedCount}, historicalIncluded={HistoricalTrackCount}, vibeQualified={VibeQualifiedCount}, selected={SelectedCount}.",
+            libraryId,
+            analysisByTrackId.Values.Count(MelodayVibeSelector.IsUsableAnalysis),
+            vibeSeedTrackIds.Count,
+            historicalTrackIds.Count,
+            vibeMatches.Count,
+            finalTracks.Count);
         return finalTracks;
     }
 
-    private async Task ExpandWithLocalVibeAnalysisAsync(
-        List<long> finalTracks,
-        IReadOnlyList<long> balancedHistorical,
-        long libraryId,
+    private async Task<List<long>> ApplyPlexRatingFiltersAsync(
+        IReadOnlyList<long> candidateTracks,
         SimilarTrackContext context)
     {
-        if (finalTracks.Count >= context.Options.MaxTracks)
+        if (candidateTracks.Count == 0)
         {
-            return;
+            return new List<long>();
         }
 
-        var seedTrackIds = finalTracks.Count > 0 ? finalTracks : balancedHistorical.ToList();
-        if (seedTrackIds.Count == 0)
+        if (context.Plex is null)
         {
-            return;
+            return (await ProcessTracksAsync(
+                    candidateTracks.ToList(),
+                    context.Options,
+                    context.LiveMetadataByTrackId,
+                    context.CancellationToken))
+                .Take(context.Options.MaxTracks)
+                .ToList();
         }
 
-        var candidates = await CollectLocalVibeSimilarTrackIdsAsync(
-            seedTrackIds,
-            libraryId,
-            context.Options.MaxTracks - finalTracks.Count,
-            context);
-        if (candidates.Count == 0)
+        var finalTracks = new List<long>();
+        var loadedCandidates = new List<long>();
+        foreach (var candidateBatch in candidateTracks.Chunk(Math.Max(1, context.Options.MaxTracks)))
         {
-            return;
-        }
-
-        var processed = await ProcessTracksAsync(candidates, context.Options, context.LiveMetadataByTrackId, context.CancellationToken);
-        AppendUniqueTracks(finalTracks, processed, context.Options.MaxTracks);
-    }
-
-    private async Task<List<long>> CollectLocalVibeSimilarTrackIdsAsync(
-        IReadOnlyList<long> seedTrackIds,
-        long libraryId,
-        int limit,
-        SimilarTrackContext context)
-    {
-        var selected = new List<(long TrackId, double Score)>();
-        var seen = new HashSet<long>(seedTrackIds);
-        foreach (var seedTrackId in seedTrackIds.Distinct().Take(Math.Max(1, context.Options.SonicSimilarLimit)))
-        {
-            var source = await _libraryRepository.GetTrackAnalysisAsync(seedTrackId, context.CancellationToken);
-            if (source is null || !IsCompletedAnalysis(source))
-            {
-                continue;
-            }
-
-            var candidates = await _libraryRepository.GetTrackAnalysisCandidatesAsync(
-                libraryId,
-                seedTrackId,
-                Math.Clamp(context.Options.SonicSimilarLimit * 8, 25, 250),
+            await EnsureRatingKeysAsync(
+                candidateBatch,
+                context.Plex,
+                context.RatingKeyByTrackId,
                 context.CancellationToken);
-            var sourceVector = BuildLocalVibeVector(source);
-            foreach (var candidate in candidates)
-            {
-                if (!IsCompletedAnalysis(candidate)
-                    || context.ExcludedTrackIds.Contains(candidate.TrackId)
-                    || seen.Contains(candidate.TrackId))
-                {
-                    continue;
-                }
+            await EnsurePlexMetadataAsync(
+                context.Plex,
+                candidateBatch,
+                context.RatingKeyByTrackId,
+                context.LiveMetadataByTrackId,
+                context.CancellationToken);
 
-                selected.Add((candidate.TrackId, CosineSimilarity(sourceVector, BuildLocalVibeVector(candidate))));
-                seen.Add(candidate.TrackId);
-            }
-        }
-
-        return selected
-            .OrderByDescending(static item => item.Score)
-            .Take(Math.Max(0, limit))
-            .Select(static item => item.TrackId)
-            .ToList();
-    }
-
-    private async Task ExpandTrackSelectionAsync(
-        List<long> finalTracks,
-        IReadOnlyList<long> balancedHistorical,
-        SimilarTrackContext context)
-    {
-        var attempts = 0;
-        while (finalTracks.Count < context.Options.MaxTracks)
-        {
-            attempts++;
-            if (attempts > 8)
-            {
-                return;
-            }
-
-            var extraCandidates = await BuildExtraCandidatesAsync(finalTracks, balancedHistorical, context);
-            if (extraCandidates.Count == 0)
-            {
-                return;
-            }
-
-            if (context.Plex is not null)
-            {
-                await EnsureRatingKeysAsync(extraCandidates, context.Plex, context.RatingKeyByTrackId, context.CancellationToken);
-                await EnsurePlexMetadataAsync(context.Plex, extraCandidates, context.RatingKeyByTrackId, context.LiveMetadataByTrackId, context.CancellationToken);
-            }
-            var processedExtra = await ProcessTracksAsync(extraCandidates, context.Options, context.LiveMetadataByTrackId, context.CancellationToken);
-            if (!AppendUniqueTracks(finalTracks, processedExtra, context.Options.MaxTracks))
-            {
-                return;
-            }
-        }
-    }
-
-    private async Task<List<long>> BuildExtraCandidatesAsync(
-        List<long> finalTracks,
-        IReadOnlyList<long> balancedHistorical,
-        SimilarTrackContext context)
-    {
-        var missing = context.Options.MaxTracks - finalTracks.Count;
-        var extraHistorical = Sample(
-                balancedHistorical
-                    .Where(id => !finalTracks.Contains(id))
-                    .ToList(),
-                missing)
-            .ToList();
-        var extraSimilar = await FetchSonicSimilarTrackIdsAsync(finalTracks, context);
-        return extraHistorical
-            .Concat(extraSimilar)
-            .Where(id => !finalTracks.Contains(id))
-            .Distinct()
-            .ToList();
-    }
-
-    private async Task FillWithRandomTracksAsync(
-        long libraryId,
-        List<long> finalTracks,
-        SimilarTrackContext context)
-    {
-        if (finalTracks.Count >= context.Options.MaxTracks)
-        {
-            return;
-        }
-
-        var missing = context.Options.MaxTracks - finalTracks.Count;
-        var randomPool = await _libraryRepository.GetRandomTrackIdsAsync(
-            libraryId,
-            Math.Max(missing * 6, context.Options.MaxTracks * 2),
-            context.CancellationToken);
-        var randomCandidates = randomPool
-            .Where(id => !context.ExcludedTrackIds.Contains(id))
-            .Where(id => !finalTracks.Contains(id))
-            .Distinct()
-            .ToList();
-
-        var processedRandom = await ProcessTracksAsync(randomCandidates, context.Options, context.LiveMetadataByTrackId, context.CancellationToken);
-        AppendUniqueTracks(finalTracks, processedRandom, context.Options.MaxTracks);
-    }
-
-    private static bool AppendUniqueTracks(
-        List<long> destination,
-        IReadOnlyList<long> source,
-        int maxTracks)
-    {
-        var before = destination.Count;
-        foreach (var trackId in source)
-        {
-            if (destination.Contains(trackId))
-            {
-                continue;
-            }
-
-            destination.Add(trackId);
-            if (destination.Count >= maxTracks)
+            loadedCandidates.AddRange(candidateBatch);
+            finalTracks = (await ProcessTracksAsync(
+                    loadedCandidates,
+                    context.Options,
+                    context.LiveMetadataByTrackId,
+                    context.CancellationToken))
+                .Take(context.Options.MaxTracks)
+                .ToList();
+            if (finalTracks.Count >= context.Options.MaxTracks)
             {
                 break;
             }
         }
 
-        return destination.Count > before;
+        return finalTracks;
+    }
+
+    private static IReadOnlyList<long> ResolveAnalyzedHistoryTrackIds(
+        IReadOnlyList<long> historyTrackIds,
+        IReadOnlyList<long> balancedHistorical,
+        IReadOnlyDictionary<long, TrackAnalysisResultDto> analysisByTrackId)
+    {
+        return balancedHistorical
+            .Concat(historyTrackIds)
+            .Where(analysisByTrackId.ContainsKey)
+            .Where(trackId => MelodayVibeSelector.IsUsableAnalysis(analysisByTrackId[trackId]))
+            .Distinct()
+            .ToList();
+    }
+
+    private static int ResolveHistoricalTrackCount(MelodayOptions options)
+        => options.HistoricalRatio <= 0
+            ? 0
+            : Math.Clamp(
+                (int)Math.Round(options.MaxTracks * options.HistoricalRatio),
+                1,
+                options.MaxTracks);
+
+    private async Task<List<long>> PrioritizePlexSonicVibeMatchesAsync(
+        IReadOnlyList<MelodayVibeMatch> vibeMatches,
+        IReadOnlyList<long> seedTrackIds,
+        bool prioritizePlexSonicMatches,
+        SimilarTrackContext context)
+    {
+        if (!prioritizePlexSonicMatches || context.Plex is null || seedTrackIds.Count == 0)
+        {
+            return vibeMatches.Select(static match => match.TrackId).ToList();
+        }
+
+        await EnsureRatingKeysAsync(
+            seedTrackIds,
+            context.Plex,
+            context.RatingKeyByTrackId,
+            context.CancellationToken);
+        var plexSimilarIds = (await FetchSonicSimilarTrackIdsAsync(seedTrackIds.ToList(), context)).ToHashSet();
+        return vibeMatches
+            .OrderByDescending(match => plexSimilarIds.Contains(match.TrackId))
+            .ThenByDescending(static match => match.Similarity)
+            .Select(static match => match.TrackId)
+            .ToList();
     }
 
     public async Task<MelodayStatusDto> GetStatusAsync()
@@ -1372,7 +1388,7 @@ public sealed class MelodayService
     private List<long> BuildBalancedHistoricalSelection(
         IReadOnlyList<PlayHistoryEntryDto> history,
         IReadOnlySet<long> excludedTrackIds,
-        Dictionary<long, PlexTrackMetadata> metadataByTrackId,
+        IReadOnlyDictionary<long, IReadOnlyList<string>> genresByTrackId,
         int maxTracks)
     {
         var filteredHistory = history
@@ -1409,23 +1425,23 @@ public sealed class MelodayService
             balanced = Sample(sortedTracks, Math.Min(maxTracks, sortedTracks.Count)).ToList();
         }
 
-        var genreCount = BuildGenreCount(filteredHistory, metadataByTrackId);
-        return RebalanceDominantGenre(balanced, genreCount, metadataByTrackId, maxTracks);
+        var genreCount = BuildGenreCount(filteredHistory, genresByTrackId);
+        return RebalanceDominantGenre(balanced, genreCount, genresByTrackId, maxTracks);
     }
 
     private static Dictionary<string, int> BuildGenreCount(
         IReadOnlyList<PlayHistoryEntryDto> filteredHistory,
-        Dictionary<long, PlexTrackMetadata> metadataByTrackId)
+        IReadOnlyDictionary<long, IReadOnlyList<string>> genresByTrackId)
     {
         var genreCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in filteredHistory)
         {
-            if (!metadataByTrackId.TryGetValue(entry.TrackId, out var metadata))
+            if (!genresByTrackId.TryGetValue(entry.TrackId, out var genres))
             {
                 continue;
             }
 
-            foreach (var genre in metadata.Genres.Where(genre => !string.IsNullOrWhiteSpace(genre)))
+            foreach (var genre in genres.Where(genre => !string.IsNullOrWhiteSpace(genre)))
             {
                 genreCount[genre] = genreCount.TryGetValue(genre, out var count)
                     ? count + entry.PlayCount
@@ -1439,7 +1455,7 @@ public sealed class MelodayService
     private static List<long> RebalanceDominantGenre(
         List<long> balanced,
         Dictionary<string, int> genreCount,
-        Dictionary<long, PlexTrackMetadata> metadataByTrackId,
+        IReadOnlyDictionary<long, IReadOnlyList<string>> genresByTrackId,
         int maxTracks)
     {
         if (genreCount.Count == 0)
@@ -1449,17 +1465,17 @@ public sealed class MelodayService
 
         var mostCommon = genreCount.OrderByDescending(entry => entry.Value).First();
         var maxGenreLimit = Math.Max(1, (int)(maxTracks * 0.25));
-        if (mostCommon.Value <= maxGenreLimit)
+        var totalGenrePlays = genreCount.Values.Sum();
+        if (mostCommon.Value <= totalGenrePlays * 0.25)
         {
             return balanced;
         }
 
         var nonDominant = balanced
-            .Where(trackId => !TrackHasGenre(metadataByTrackId, trackId, mostCommon.Key))
-            .Take(maxGenreLimit)
+            .Where(trackId => !TrackHasGenre(genresByTrackId, trackId, mostCommon.Key))
             .ToList();
         var dominant = balanced
-            .Where(trackId => TrackHasGenre(metadataByTrackId, trackId, mostCommon.Key))
+            .Where(trackId => TrackHasGenre(genresByTrackId, trackId, mostCommon.Key))
             .Take(maxGenreLimit)
             .ToList();
 
@@ -1471,12 +1487,12 @@ public sealed class MelodayService
     }
 
     private static bool TrackHasGenre(
-        Dictionary<long, PlexTrackMetadata> metadataByTrackId,
+        IReadOnlyDictionary<long, IReadOnlyList<string>> genresByTrackId,
         long trackId,
         string genre)
     {
-        return metadataByTrackId.TryGetValue(trackId, out var metadata)
-               && metadata.Genres.Any(value => string.Equals(value, genre, StringComparison.OrdinalIgnoreCase));
+        return genresByTrackId.TryGetValue(trackId, out var genres)
+               && genres.Any(value => string.Equals(value, genre, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<IReadOnlyList<long>> FetchSonicSimilarTrackIdsAsync(
@@ -1679,14 +1695,7 @@ public sealed class MelodayService
             return false;
         }
 
-        var primaryGenre = GetPrimaryGenre(liveMetadata, persistedMetadata) ?? "Unknown";
-        if (HasReachedLimit(state.GenreCountByName, primaryGenre, state.GenreLimit))
-        {
-            return false;
-        }
-
         IncrementCount(state.ArtistCountByName, artistName);
-        IncrementCount(state.GenreCountByName, primaryGenre);
         return true;
     }
 
@@ -1722,39 +1731,27 @@ public sealed class MelodayService
     {
         if (liveMetadata is not null)
         {
-            if (liveMetadata.ArtistUserRating.HasValue && liveMetadata.ArtistUserRating.Value <= 2)
+            if (IsExplicitLowRating(liveMetadata.ArtistUserRating))
             {
                 return true;
             }
 
-            if (liveMetadata.AlbumUserRating.HasValue && liveMetadata.AlbumUserRating.Value <= 2)
+            if (IsExplicitLowRating(liveMetadata.AlbumUserRating))
             {
                 return true;
             }
 
-            if (liveMetadata.UserRating.HasValue && liveMetadata.UserRating.Value <= 2)
+            if (IsExplicitLowRating(liveMetadata.UserRating))
             {
                 return true;
             }
         }
 
-        return persistedMetadata?.UserRating is <= 2;
+        return IsExplicitLowRating(persistedMetadata?.UserRating);
     }
 
-    private static string? GetPrimaryGenre(PlexTrackMetadata? liveMetadata, PlexTrackMetadataDto? persistedMetadata)
-    {
-        if (liveMetadata?.Genres.Count > 0)
-        {
-            return liveMetadata.Genres[0];
-        }
-
-        if (persistedMetadata?.Genres.Count > 0)
-        {
-            return persistedMetadata.Genres[0];
-        }
-
-        return null;
-    }
+    internal static bool IsExplicitLowRating(int? rating)
+        => rating is > 0 and <= 2;
 
     private static string CleanTitle(string? title)
     {
@@ -1815,67 +1812,6 @@ public sealed class MelodayService
     {
         return string.Equals(analysis.Status, "complete", StringComparison.OrdinalIgnoreCase)
             || string.Equals(analysis.Status, "completed", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static double[] BuildLocalVibeVector(TrackAnalysisResultDto track)
-    {
-        return new[]
-        {
-            track.MoodHappy ?? 0.5,
-            track.MoodSad ?? 0.5,
-            track.MoodRelaxed ?? 0.5,
-            track.MoodAggressive ?? 0.5,
-            track.MoodParty ?? 0.5,
-            track.MoodAcoustic ?? 0.5,
-            track.MoodElectronic ?? 0.5,
-            track.Energy ?? 0.5,
-            track.ValenceMl ?? track.Valence ?? 0.5,
-            track.ArousalMl ?? track.Arousal ?? 0.5,
-            track.DanceabilityMl ?? track.Danceability ?? 0.5,
-            track.Instrumentalness ?? 0.5,
-            NormalizeBpm(track.Bpm ?? 120)
-        };
-    }
-
-    private static double NormalizeBpm(double bpm)
-    {
-        if (bpm <= 0)
-        {
-            return 0.5;
-        }
-
-        while (bpm < 77)
-        {
-            bpm *= 2;
-        }
-
-        while (bpm > 154)
-        {
-            bpm /= 2;
-        }
-
-        return Math.Clamp((bpm - 77d) / 77d, 0d, 1d);
-    }
-
-    private static double CosineSimilarity(double[] left, double[] right)
-    {
-        var dot = 0d;
-        var leftMagnitude = 0d;
-        var rightMagnitude = 0d;
-        var count = Math.Min(left.Length, right.Length);
-        for (var index = 0; index < count; index++)
-        {
-            dot += left[index] * right[index];
-            leftMagnitude += left[index] * left[index];
-            rightMagnitude += right[index] * right[index];
-        }
-
-        if (leftMagnitude <= 0 || rightMagnitude <= 0)
-        {
-            return 0;
-        }
-
-        return dot / (Math.Sqrt(leftMagnitude) * Math.Sqrt(rightMagnitude));
     }
 
     private async Task<IReadOnlyList<long>> OrderTracksAsync(
@@ -2280,16 +2216,22 @@ public sealed class MelodayService
             {
                 genres.AddRange(liveMetadata.Genres.Where(genre => !string.IsNullOrWhiteSpace(genre)));
                 moods.AddRange(liveMetadata.Moods.Where(mood => !string.IsNullOrWhiteSpace(mood)));
-                continue;
+            }
+            else if (context.PersistedMetadataByTrackId.TryGetValue(trackId, out var persistedMetadata))
+            {
+                genres.AddRange(persistedMetadata.Genres.Where(genre => !string.IsNullOrWhiteSpace(genre)));
+                moods.AddRange(persistedMetadata.Moods.Where(mood => !string.IsNullOrWhiteSpace(mood)));
             }
 
-            if (!context.PersistedMetadataByTrackId.TryGetValue(trackId, out var persistedMetadata))
+            if (!context.TrackAnalysesByTrackId.TryGetValue(trackId, out var analysis)
+                || !IsCompletedAnalysis(analysis))
             {
                 continue;
             }
 
-            genres.AddRange(persistedMetadata.Genres.Where(genre => !string.IsNullOrWhiteSpace(genre)));
-            moods.AddRange(persistedMetadata.Moods.Where(mood => !string.IsNullOrWhiteSpace(mood)));
+            moods.AddRange((analysis.MoodTags ?? Array.Empty<string>())
+                .Where(static mood => !string.IsNullOrWhiteSpace(mood)));
+            genres.AddRange(ResolveAnalysisGenres(analysis));
         }
 
         var sortedGenres = SortByFrequency(genres);
@@ -2309,19 +2251,46 @@ public sealed class MelodayService
         {
             title = "Meloday";
         }
+        title = $"{title} {ToDisplayLabel(mostCommonMood)} {descriptor} {ToDisplayLabel(mostCommonGenre)} {dayName} {context.PeriodName}";
 
         var highlights = BuildHighlightStyles(sortedGenres, sortedMoods, mostCommonGenre, mostCommonMood);
         var highlightsText = FormatHighlightStyles(highlights);
 
         var description = secondCommonMood is not null
-            ? $"You listened to {mostCommonMood} and {mostCommonGenre} tracks on {dayName} {context.Period.Phrase}. Here's some {highlightsText} tracks as well."
-            : $"You listened to {mostCommonGenre} and {mostCommonMood} tracks on {dayName} {context.Period.Phrase}. Here's some {highlightsText} tracks as well.";
+            ? $"You listened to {ToDisplayLabel(mostCommonMood)} and {ToDisplayLabel(mostCommonGenre)} tracks on {dayName} {context.Period.Phrase}. Here's some {highlightsText} tracks as well."
+            : $"You listened to {ToDisplayLabel(mostCommonGenre)} and {ToDisplayLabel(mostCommonMood)} tracks on {dayName} {context.Period.Phrase}. Here's some {highlightsText} tracks as well.";
 
         var displayUser = ResolveDisplayUserName(context.Username);
         var nextUpdate = GetNextUpdateTime(context.Now, context.Period.Hours);
         description += $"\n\nMade for {displayUser} • Next update at {nextUpdate}.";
 
         return (title, description);
+    }
+
+    private static string NormalizeVibeGenre(string genre)
+        => MultiWhitespaceRegex.Replace(genre.Replace("---", " ", StringComparison.Ordinal), " ").Trim();
+
+    private static IReadOnlyList<string> ResolveAnalysisGenres(TrackAnalysisResultDto analysis)
+    {
+        var genres = analysis.EssentiaGenres is { Count: > 0 }
+            ? analysis.EssentiaGenres
+            : analysis.LastfmTags ?? Array.Empty<string>();
+        return genres
+            .Where(static genre => !string.IsNullOrWhiteSpace(genre))
+            .Select(NormalizeVibeGenre)
+            .Where(static genre => genre.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string ToDisplayLabel(string value)
+    {
+        var words = value
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static word => word.Length == 0
+                ? word
+                : $"{char.ToUpperInvariant(word[0])}{word[1..]}");
+        return string.Join(' ', words);
     }
 
     private static List<string> SortByFrequency(IReadOnlyList<string> values)
@@ -2615,6 +2584,7 @@ public sealed class MelodayService
         IReadOnlyList<long> TrackIds,
         Dictionary<long, PlexTrackMetadata> LiveMetadataByTrackId,
         Dictionary<long, PlexTrackMetadataDto> PersistedMetadataByTrackId,
+        IReadOnlyDictionary<long, TrackAnalysisResultDto> TrackAnalysesByTrackId,
         string? Username,
         DateTimeOffset Now);
 
@@ -2630,16 +2600,12 @@ public sealed class MelodayService
         {
             Seen = new HashSet<string>(StringComparer.Ordinal);
             ArtistCountByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            GenreCountByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             ArtistLimit = Math.Max(1, (int)Math.Round(maxTracks * 0.05));
-            GenreLimit = Math.Max(1, (int)Math.Round(maxTracks * 0.15));
         }
 
         public HashSet<string> Seen { get; }
         public Dictionary<string, int> ArtistCountByName { get; }
-        public Dictionary<string, int> GenreCountByName { get; }
         public int ArtistLimit { get; }
-        public int GenreLimit { get; }
     }
 
     private sealed record MelodayPeriod(IReadOnlyList<int> Hours, string Phrase);

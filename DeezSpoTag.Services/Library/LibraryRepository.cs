@@ -3020,7 +3020,8 @@ LIMIT @limit;";
         IReadOnlyList<int> allowedHours,
         DateTimeOffset excludeAfterUtc,
         CancellationToken cancellationToken = default,
-        long? folderId = null)
+        long? folderId = null,
+        TimeSpan? localUtcOffset = null)
     {
         if (allowedHours.Count == 0)
         {
@@ -3039,7 +3040,7 @@ WHERE ph.plex_user_id = @plexUserId
   AND ph.track_id IS NOT NULL
   AND ph.played_at_utc >= @lookbackStart
   AND ph.played_at_utc < @excludeAfter
-  AND CAST(strftime('%H', ph.played_at_utc) AS INTEGER) IN (
+  AND CAST(strftime('%H', datetime(ph.played_at_utc, @utcOffsetModifier)) AS INTEGER) IN (
       SELECT CAST(value AS INTEGER)
       FROM json_each(@allowedHoursJson)
   )
@@ -3050,8 +3051,11 @@ LIMIT @historyLimit;";
         command.Parameters.AddWithValue("plexUserId", plexUserId);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
-        command.Parameters.AddWithValue("lookbackStart", lookbackStartUtc.ToString("O"));
-        command.Parameters.AddWithValue("excludeAfter", excludeAfterUtc.ToString("O"));
+        command.Parameters.AddWithValue("lookbackStart", lookbackStartUtc.ToUniversalTime().ToString("O"));
+        command.Parameters.AddWithValue("excludeAfter", excludeAfterUtc.ToUniversalTime().ToString("O"));
+        command.Parameters.AddWithValue(
+            "utcOffsetModifier",
+            $"{(localUtcOffset.GetValueOrDefault() < TimeSpan.Zero ? "-" : "+")}{Math.Abs((int)localUtcOffset.GetValueOrDefault().TotalMinutes)} minutes");
         command.Parameters.AddWithValue("allowedHoursJson", SerializeJsonArray(allowedHours));
         command.Parameters.AddWithValue("historyLimit", 50000);
 
@@ -3086,7 +3090,7 @@ WHERE ph.plex_user_id = @plexUserId
         command.Parameters.AddWithValue("plexUserId", plexUserId);
         command.Parameters.AddWithValue(LibraryIdField, libraryId);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
-        command.Parameters.AddWithValue("sinceUtc", sinceUtc.ToString("O"));
+        command.Parameters.AddWithValue("sinceUtc", sinceUtc.ToUniversalTime().ToString("O"));
 
         var ids = new HashSet<long>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -4566,6 +4570,51 @@ WHERE track_id = @trackId;";
         return await ReadTrackAnalysisResultDtoAsync(reader, offset: 0, cancellationToken, includeVibeMetrics: true);
     }
 
+    public async Task<IReadOnlyList<TrackAnalysisResultDto>> GetTrackAnalysisCandidatesAsync(
+        long? libraryId,
+        long sourceTrackId,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (limit <= 0)
+        {
+            return Array.Empty<TrackAnalysisResultDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var sql = @"
+SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml
+FROM track_analysis
+WHERE track_id <> @sourceTrackId
+  AND status IN ('complete', 'completed')";
+        if (libraryId.HasValue)
+        {
+            sql += "\n  AND library_id = @libraryId";
+        }
+        sql += "\nORDER BY analyzed_at_utc DESC\nLIMIT @limit;";
+
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("sourceTrackId", sourceTrackId);
+        command.Parameters.AddWithValue("limit", limit);
+        if (libraryId.HasValue)
+        {
+            command.Parameters.AddWithValue(LibraryIdField, libraryId.Value);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<TrackAnalysisResultDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(await ReadTrackAnalysisResultDtoAsync(
+                reader,
+                offset: 0,
+                cancellationToken,
+                includeVibeMetrics: true));
+        }
+
+        return results;
+    }
+
     public async Task<LatestTrackAnalysisDto?> GetLatestTrackAnalysisAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -4643,47 +4692,6 @@ LIMIT 1;";
         return new LatestTrackAnalysisDto(track, analysis);
     }
 
-    public async Task<IReadOnlyList<TrackAnalysisResultDto>> GetTrackAnalysisCandidatesAsync(
-        long? libraryId,
-        long sourceTrackId,
-        int limit,
-        CancellationToken cancellationToken = default)
-    {
-        if (limit <= 0)
-        {
-            return Array.Empty<TrackAnalysisResultDto>();
-        }
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        var sql = @"
-SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags
-FROM track_analysis
-WHERE track_id <> @sourceTrackId
-  AND status IN ('complete', 'completed')";
-        if (libraryId.HasValue)
-        {
-            sql += "\n  AND library_id = @libraryId";
-        }
-        sql += "\nORDER BY analyzed_at_utc DESC\nLIMIT @limit;";
-
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("sourceTrackId", sourceTrackId);
-        command.Parameters.AddWithValue("limit", limit);
-        if (libraryId.HasValue)
-        {
-            command.Parameters.AddWithValue(LibraryIdField, libraryId.Value);
-        }
-
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var results = new List<TrackAnalysisResultDto>();
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            results.Add(await ReadTrackAnalysisResultDtoAsync(reader, offset: 0, cancellationToken));
-        }
-
-        return results;
-    }
-
     public async Task<IReadOnlyList<long>> GetTrackIdsByMoodTagsAsync(
         long? libraryId,
         IReadOnlyList<string> tags,
@@ -4740,7 +4748,7 @@ WHERE status IN ('complete', 'completed')
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags
+SELECT track_id, library_id, status, energy, rms, zero_crossing, spectral_centroid, bpm, beats_count, key, key_scale, key_strength, loudness, dynamic_range, danceability, instrumentalness, acousticness, speechiness, danceability_ml, valence, arousal, analyzed_at_utc, error, analysis_mode, analysis_version, mood_tags, mood_happy, mood_sad, mood_relaxed, mood_aggressive, mood_party, mood_acoustic, mood_electronic, essentia_genres, lastfm_tags, approachability, engagement, voice_instrumental, tonal_atonal, valence_ml, arousal_ml, dynamic_complexity, loudness_ml
 FROM track_analysis
 WHERE track_id IN (
     SELECT CAST(value AS INTEGER)
@@ -4754,7 +4762,11 @@ WHERE track_id IN (
         var results = new Dictionary<long, TrackAnalysisResultDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            var dto = await ReadTrackAnalysisResultDtoAsync(reader, offset: 0, cancellationToken);
+            var dto = await ReadTrackAnalysisResultDtoAsync(
+                reader,
+                offset: 0,
+                cancellationToken,
+                includeVibeMetrics: true);
 
             results[dto.TrackId] = dto;
         }

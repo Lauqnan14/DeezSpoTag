@@ -104,9 +104,10 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("folder.LibraryName", resolverBody, StringComparison.Ordinal);
         Assert.Contains("GroupBy(folder => folder.LibraryId", resolverBody, StringComparison.Ordinal);
         Assert.Contains("GetConfiguredEnabledMusicFoldersAsync", runBody, StringComparison.Ordinal);
-        Assert.Contains("folder.PlexSectionId", runBody, StringComparison.Ordinal);
-        Assert.Contains("folder.JellyfinLibraryId", runBody, StringComparison.Ordinal);
-        Assert.Contains("folder.NavidromeLibraryId", runBody, StringComparison.Ordinal);
+        Assert.Contains("folder.PlexSectionId", source, StringComparison.Ordinal);
+        Assert.Contains("folder.JellyfinLibraryId", source, StringComparison.Ordinal);
+        Assert.Contains("folder.NavidromeLibraryId", source, StringComparison.Ordinal);
+        Assert.Contains("FolderSupportsAnyTarget(folder, targets)", runBody, StringComparison.Ordinal);
         Assert.Contains("folder.Id", runBody, StringComparison.Ordinal);
         Assert.Contains("foreach (var library in libraries)", runBody, StringComparison.Ordinal);
         Assert.Contains("BuildMelodayMixId(mode, context.Library.Id)", source, StringComparison.Ordinal);
@@ -141,10 +142,80 @@ public sealed class MelodayGuardrailTests
         Assert.DoesNotContain("ResolveStaticCoverFile", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Meloday_Direct_And_Sonic_Modes_Use_FolderScoped_Vibe_Results()
+    {
+        var service = ReadMelodayService();
+        var selector = ReadMelodayVibeSelector();
+        var directBody = ExtractMethodBody(service, "private async Task<List<long>> BuildDirectTrackSelectionAsync");
+        var sonicBody = ExtractMethodBody(service, "private async Task<List<long>> BuildSonicTrackSelectionAsync");
+        var vibeBody = ExtractMethodBody(service, "private async Task<List<long>> BuildVibeDrivenTrackSelectionAsync");
+
+        Assert.Contains("BuildVibeDrivenTrackSelectionAsync", directBody, StringComparison.Ordinal);
+        Assert.Contains("BuildVibeDrivenTrackSelectionAsync", sonicBody, StringComparison.Ordinal);
+        Assert.Contains("GetTrackAnalysisByTrackIdsAsync", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("context.AllowedTrackIds", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("context.Options.SonicSimilarityDistance", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("historicalTrackIds", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("outputExclusions.UnionWith(historyTrackIds)", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("allowedTrackIds.Contains", selector, StringComparison.Ordinal);
+        Assert.Contains("excludedTrackIds.Contains", selector, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetTrackAnalysisCandidatesAsync", vibeBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetRandomTrackIdsAsync", vibeBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("FillWithRandomTracksAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveFallbackVibeSeedIndex", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveAnalyzedHistoryTrackIds", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("ApplyPlexRatingFiltersAsync(candidatePool", vibeBody, StringComparison.Ordinal);
+        Assert.Contains("HasMeaningfulFeatureCoverage", selector, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Folders_And_History_Are_Scoped_To_Selected_Targets()
+    {
+        var service = ReadMelodayService();
+
+        Assert.Contains("FolderSupportsAnyTarget(folder, targets)", service, StringComparison.Ordinal);
+        Assert.Contains("target.IsPlex && !string.IsNullOrWhiteSpace(folder.PlexSectionId)", service, StringComparison.Ordinal);
+        Assert.Contains("target.IsJellyfin && !string.IsNullOrWhiteSpace(folder.JellyfinLibraryId)", service, StringComparison.Ordinal);
+        Assert.Contains("target.IsNavidrome && !string.IsNullOrWhiteSpace(folder.NavidromeLibraryId)", service, StringComparison.Ordinal);
+        Assert.Contains("AllDayHours", service, StringComparison.Ordinal);
+        Assert.Contains("exact-folder all-day fallback", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Uses_Local_Daypart_And_Vibe_Tags_For_Evolving_Metadata()
+    {
+        var service = ReadMelodayService();
+
+        Assert.Contains("cancellationToken, folder.Id, now.Offset", service, StringComparison.Ordinal);
+        Assert.Contains("context.TrackAnalysesByTrackId", service, StringComparison.Ordinal);
+        Assert.Contains("analysis.MoodTags", service, StringComparison.Ordinal);
+        Assert.Contains("analysis.EssentiaGenres", service, StringComparison.Ordinal);
+        Assert.Contains("context.PeriodName", service, StringComparison.Ordinal);
+        Assert.Contains("ToDisplayLabel(mostCommonMood)", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Vibe_Results_Are_Not_Truncated_By_A_Final_Genre_Quota()
+    {
+        var source = ReadMelodayService();
+        var filterBody = ExtractMethodBody(source, "private static bool TryIncludeTrack");
+
+        Assert.DoesNotContain("GenreCountByName", filterBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GenreLimit", filterBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPrimaryGenre", source, StringComparison.Ordinal);
+    }
+
     private static string ReadMelodayService()
     {
         var repoRoot = ResolveRepoRoot();
         return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodayService.cs"));
+    }
+
+    private static string ReadMelodayVibeSelector()
+    {
+        var repoRoot = ResolveRepoRoot();
+        return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodayVibeSelector.cs"));
     }
 
     private static string ReadTracklistView()
