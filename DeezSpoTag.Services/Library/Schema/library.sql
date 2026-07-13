@@ -713,9 +713,6 @@ CREATE TABLE IF NOT EXISTS watchlist_history (
 CREATE INDEX IF NOT EXISTS idx_watchlist_history_created
     ON watchlist_history (created_at);
 
-CREATE INDEX IF NOT EXISTS idx_watchlist_history_item_created
-    ON watchlist_history (item_key, created_at);
-
 CREATE TABLE IF NOT EXISTS download_artist (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     deezer_id TEXT,

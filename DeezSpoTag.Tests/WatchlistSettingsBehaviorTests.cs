@@ -12,6 +12,7 @@ using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -623,6 +624,32 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public async Task PlaylistVisualService_NeutralizesLineBreaksInLoggedIdentifiers()
+    {
+        var logger = new CaptureLogger<PlaylistVisualService>();
+        var service = new PlaylistVisualService(
+            new StubHttpClientFactory(new FailingHttpMessageHandler()),
+            new StubWebHostEnvironment(_tempRoot),
+            logger);
+
+        var result = await service.ResolveManagedVisualUrlAsync(
+            "spotify\r\nFORGED-SOURCE",
+            "playlist-1\r\nFORGED-ID",
+            "Playlist",
+            "https://example.com/cover.jpg",
+            reuseSavedArtwork: false,
+            CancellationToken.None,
+            forceRefresh: true);
+
+        Assert.Equal("https://example.com/cover.jpg", result);
+        var message = Assert.Single(logger.Messages);
+        Assert.DoesNotContain('\r', message);
+        Assert.DoesNotContain('\n', message);
+        Assert.Contains("FORGED-SOURCE", message, StringComparison.Ordinal);
+        Assert.Contains("FORGED-ID", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistPreferenceApi_NormalizesAndValidatesIncomingSettings()
     {
         var repoRoot = ResolveRepoRoot();
@@ -1005,6 +1032,42 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
     private sealed class StubHttpClientFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new();
+        private readonly HttpMessageHandler? _handler;
+
+        public StubHttpClientFactory(HttpMessageHandler? handler = null)
+        {
+            _handler = handler;
+        }
+
+        public HttpClient CreateClient(string name) => _handler is null
+            ? new HttpClient()
+            : new HttpClient(_handler, disposeHandler: false);
+    }
+
+    private sealed class FailingHttpMessageHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => throw new HttpRequestException("Simulated playlist visual failure.");
+    }
+
+    private sealed class CaptureLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+        }
     }
 }

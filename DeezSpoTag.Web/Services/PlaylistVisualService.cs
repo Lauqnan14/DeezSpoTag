@@ -1,3 +1,4 @@
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Library;
 using System.Buffers;
 using System.Security.Cryptography;
@@ -109,12 +110,20 @@ public sealed class PlaylistVisualService
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "Timed out while materializing playlist visual for {Source}:{SourceId}", source, sourceId);
+            _logger.LogWarning(
+                ex,
+                "Timed out while materializing playlist visual for {Source}:{SourceId}",
+                LogSanitizer.OneLine(source),
+                LogSanitizer.OneLine(sourceId));
             return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to materialize playlist visual for {Source}:{SourceId}", source, sourceId);
+            _logger.LogWarning(
+                ex,
+                "Failed to materialize playlist visual for {Source}:{SourceId}",
+                LogSanitizer.OneLine(source),
+                LogSanitizer.OneLine(sourceId));
             return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
         }
     }
@@ -217,7 +226,11 @@ public sealed class PlaylistVisualService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to remove playlist visuals for {Source}:{SourceId}", source, sourceId);
+            _logger.LogWarning(
+                ex,
+                "Failed to remove playlist visuals for {Source}:{SourceId}",
+                LogSanitizer.OneLine(source),
+                LogSanitizer.OneLine(sourceId));
         }
     }
 

@@ -224,6 +224,52 @@ WHERE queue_uuid = 'legacy-queue';";
     }
 
     [Fact]
+    public async Task EnsureSchema_UpgradesLegacyWatchlistHistoryBeforeCreatingItemKeyIndex()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+CREATE TABLE watchlist_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    watch_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    collection_type TEXT NOT NULL,
+    track_count INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    artist_name TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO watchlist_history (
+    source, watch_type, source_id, name, collection_type, track_count, status)
+VALUES (
+    ' SPOTIFY ', 'playlist', ' legacy-playlist ', 'Legacy Playlist', 'playlist', 3, 'queued');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        Assert.True(await IndexExistsAsync(verifyConnection, "idx_watchlist_history_item_created"));
+
+        await using var verifyCommand = verifyConnection.CreateCommand();
+        verifyCommand.CommandText = @"
+SELECT source, source_id, item_key
+FROM watchlist_history
+WHERE name = 'Legacy Playlist';";
+        await using var reader = await verifyCommand.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("spotify", reader.GetString(0));
+        Assert.Equal("legacy-playlist", reader.GetString(1));
+        Assert.Equal("playlist:spotify:legacy-playlist", reader.GetString(2));
+    }
+
+    [Fact]
     public async Task AddWatchlistHistoryAsync_ReturnsInsertedEntry_And_SinceQueryReturnsNewerRows()
     {
         var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
