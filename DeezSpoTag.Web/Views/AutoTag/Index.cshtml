@@ -758,7 +758,7 @@
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
                     <h5 class="mb-0">
-                        <i class="fas fa-play-circle me-2"></i>Manual Tagging
+                        <i class="fas fa-play-circle me-2"></i>Manual Enrichment
                         <span class="autotag-tooltip-icon ms-1" title="Uses Download/Staging folder as source." aria-label="Uses Download/Staging folder as source.">
                             <i class="fas fa-question-circle"></i>
                         </span>
@@ -766,15 +766,11 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-grid download-grid-2">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="autotag-move-success" />
-                                <label for="autotag-move-success">Move successfully tagged files</label>
-                            </div>
+                        <div class="download-grid download-grid-3 manual-enrichment-controls">
                             <div class="form-group" id="autotag-move-success-library-group">
                                 <label for="autotag-move-success-library">
-                                    Success library destination
-                                    <span class="autotag-tooltip-icon ms-1" title="Choose where enrichment output is moved after tagging." aria-label="Choose where enrichment output is moved after tagging.">
+                                    Library destination
+                                    <span class="autotag-tooltip-icon ms-1" title="The destination folder determines the profile, templates, tags, artwork, lyrics, and sidecar preferences used by this run." aria-label="The destination folder determines the profile, templates, tags, artwork, lyrics, and sidecar preferences used by this run.">
                                         <i class="fas fa-question-circle"></i>
                                     </span>
                                 </label>
@@ -782,24 +778,40 @@
                                     <option value="">Select library folder</option>
                                 </select>
                             </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="autotag-move-failed" />
-                                <label for="autotag-move-failed">Move failed/conflict files to separate folder</label>
-                            </div>
-                            <div class="form-group" id="autotag-move-failed-group">
-                                <label for="autotag-move-failed-path">Failed/Conflict files destination path</label>
-                                <div class="path-picker-input">
-                                    <input type="text" id="autotag-move-failed-path" placeholder="/path/to/conflict" />
-                                    <button type="button" id="browseAutoTagFailedPath" class="path-picker-btn" title="Browse server folders">
-                                        <i class="fas fa-folder-open"></i>
-                                        <span class="visually-hidden">Browse server folders</span>
-                                    </button>
+                            <div class="form-group manual-release-field">
+                                <div class="manual-release-label">
+                                    <span>Release type</span>
+                                    <span class="autotag-tooltip-icon" title="Choose which release metadata Manual Enrichment applies when fingerprinting finds both album and single versions. This choice takes priority over conflicting embedded or compilation metadata." aria-label="Choose which release metadata Manual Enrichment applies when fingerprinting finds both album and single versions. This choice takes priority over conflicting embedded or compilation metadata.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </div>
+                                <div class="manual-release-menu" role="radiogroup" aria-label="Release type">
+                                    <div class="manual-release-choice">
+                                        <div class="source-header">
+                                            <i class="fas fa-compact-disc manual-release-icon"></i>
+                                            <label class="switch-label" for="manualReleaseAlbum">Album</label>
+                                        </div>
+                                        <span class="switch">
+                                            <input type="radio" id="manualReleaseAlbum" name="manualReleasePreference" value="album" checked />
+                                            <span class="slider"></span>
+                                        </span>
+                                    </div>
+                                    <div class="manual-release-choice">
+                                        <div class="source-header">
+                                            <i class="fas fa-music manual-release-icon"></i>
+                                            <label class="switch-label" for="manualReleaseSingle">Single</label>
+                                        </div>
+                                        <span class="switch">
+                                            <input type="radio" id="manualReleaseSingle" name="manualReleasePreference" value="single" />
+                                            <span class="slider"></span>
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                     <div class="autotag-actions manual-tagging-run-actions mt-3">
-                        <button class="action-btn action-btn-sm" id="autotag-start">Run External AutoTag</button>
+                        <button class="action-btn action-btn-sm" id="autotag-start">Run Manual Enrichment</button>
                     </div>
                     <span class="helper mt-2 d-none" id="autotag-external-start-status"></span>
                 </div>
@@ -1967,11 +1979,6 @@ function activatePipelineTab(tabId) {
 
 // Update pipeline visual when tabs change
 document.addEventListener('DOMContentLoaded', function() {
-    // Toggle visibility helpers
-    document.getElementById('autotag-move-failed')?.addEventListener('change', function() {
-        document.getElementById('autotag-move-failed-group').style.display = this.checked ? 'block' : 'none';
-    });
-
     // Enrichment timing radio buttons
     document.querySelectorAll('input[name="enrichmentTiming"]').forEach(radio => {
         radio.addEventListener('change', function() {

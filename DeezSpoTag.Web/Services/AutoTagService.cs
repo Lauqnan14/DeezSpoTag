@@ -49,6 +49,7 @@ internal static class AutoTagLiterals
     internal const string RunIntentDownloadEnrichment = "download_enrichment";
     internal const string RunIntentEnhancementOnly = "enhancement_only";
     internal const string RunIntentEnhancementRecentDownloads = "enhancement_recent_downloads";
+    internal const string RunIntentManualEnrichment = "manual_enrichment";
     internal const string CanceledStatus = "canceled";
     internal const string InterruptedStatus = "interrupted";
     internal const string PausedStatus = "paused";
@@ -86,6 +87,9 @@ internal static class AutoTagLiterals
     internal const string EnhancementFeatureFolderUniformity = "folder-uniformity";
     internal const string EnhancementFeatureQualityChecks = "quality-checks";
     internal const string EnhancementFeatureCoverMaintenance = "cover-maintenance";
+    internal const string EnhancementFeatureManualEnrichment = "manual-enrichment";
+    internal const string ManualReleasePreferenceKey = "manualReleasePreference";
+    internal const string ManualDestinationFolderIdKey = "manualDestinationFolderId";
 }
 
 public abstract class AutoTagRunState
@@ -407,7 +411,7 @@ public partial class AutoTagService
         ["rating"] = "rating",
         [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
     };
-    private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: false, includeConflictResolution: true, includeTargetFiles: true);
+    private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildEnrichmentStageAllowedKeys();
     private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true, includeLibraryWideEnhancementBatchSize: true);
     private static readonly HashSet<string> EligibleAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -434,6 +438,18 @@ public partial class AutoTagService
         ".dff",
         ".mka"
     };
+
+    private static HashSet<string> BuildEnrichmentStageAllowedKeys()
+    {
+        var keys = BuildStageAllowedKeys(
+            includeSkipTagged: false,
+            includeConflictResolution: true,
+            includeTargetFiles: true,
+            includeLibraryWideEnhancementBatchSize: true);
+        keys.Add(AutoTagLiterals.ManualReleasePreferenceKey);
+        keys.Add(AutoTagLiterals.ManualDestinationFolderIdKey);
+        return keys;
+    }
     private const string AutoTagFolderName = "autotag";
     private const string HistoryFolderName = "history";
     private const string TracknameTemplateKey = "tracknameTemplate";
@@ -571,7 +587,8 @@ public partial class AutoTagService
         var activeJobId = _activeJobIds.Keys.FirstOrDefault(activeJobId =>
             _jobs.TryGetValue(activeJobId, out var activeJob)
             && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
-            && IsEnhancementRunIntent(activeJob.RunIntent));
+            && (IsEnhancementRunIntent(activeJob.RunIntent)
+                || IsManualEnrichmentRunIntent(activeJob.RunIntent)));
         if (!string.IsNullOrWhiteSpace(activeJobId))
         {
             jobId = activeJobId;
@@ -589,6 +606,16 @@ public partial class AutoTagService
         if (!string.IsNullOrWhiteSpace(stage.Key))
         {
             jobId = stage.Key;
+            return true;
+        }
+
+        var manualJobId = _activeJobIds.Keys.FirstOrDefault(activeJobId =>
+            _jobs.TryGetValue(activeJobId, out var activeJob)
+            && string.Equals(activeJob.Status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
+            && IsManualEnrichmentRunIntent(activeJob.RunIntent));
+        if (!string.IsNullOrWhiteSpace(manualJobId))
+        {
+            jobId = manualJobId;
             return true;
         }
 
@@ -2043,7 +2070,8 @@ public partial class AutoTagService
 
     private static string ResolveStopStatus(AutoTagJob job, string stopReason)
     {
-        if (!IsEnhancementRunIntent(job.RunIntent))
+        if (!IsEnhancementRunIntent(job.RunIntent)
+            && !IsManualEnrichmentRunIntent(job.RunIntent))
         {
             return AutoTagLiterals.CanceledStatus;
         }
@@ -2071,7 +2099,8 @@ public partial class AutoTagService
 
     private static string BuildStopError(AutoTagJob job, string stopReason)
     {
-        if (!IsEnhancementRunIntent(job.RunIntent))
+        if (!IsEnhancementRunIntent(job.RunIntent)
+            && !IsManualEnrichmentRunIntent(job.RunIntent))
         {
             return stopReason switch
             {
@@ -2287,10 +2316,10 @@ public partial class AutoTagService
             return;
         }
 
-        job.Status = IsEnhancementRunIntent(job.RunIntent)
+        job.Status = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
             ? AutoTagLiterals.InterruptedStatus
             : AutoTagLiterals.CanceledStatus;
-        job.Error = IsEnhancementRunIntent(job.RunIntent)
+        job.Error = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
             ? "Interrupted. Resume is available."
             : "Stopped.";
         job.ExitCode = 1;
@@ -2504,7 +2533,8 @@ public partial class AutoTagService
             return new StageExecutionResult(false);
         }
 
-        var interrupted = IsEnhancementRunIntent(job.RunIntent);
+        var interrupted = IsEnhancementRunIntent(job.RunIntent)
+            || IsManualEnrichmentRunIntent(job.RunIntent);
         job.Status = interrupted
             ? AutoTagLiterals.InterruptedStatus
             : AutoTagLiterals.CanceledStatus;
@@ -2560,36 +2590,37 @@ public partial class AutoTagService
         CancellationToken cancellationToken)
     {
         var autoMove = await RunFinalAutoMoveAsync(job, path, context.ConfigPath, context.FileOutcomes, cancellationToken);
+        if (IsManualEnrichmentRunIntent(job.RunIntent) && !autoMove.Completed)
+        {
+            throw new InvalidOperationException(
+                autoMove.Summary.Error ?? "Manual enrichment finalization did not move every fully enriched file.");
+        }
         await RunIntegratedEnhancementWorkflowsAsync(
             job,
             path,
             context.ConfigPath,
             context.IncludesEnhancementWorkflows,
             cancellationToken);
-        await RunManualEnrichmentArtworkMaintenanceAsync(
-            job,
-            path,
-            context.IncludesEnrichmentStage,
-            context.IncludesEnhancementStage,
-            autoMove.Summary,
-            cancellationToken);
-        var hasEnhancementWork = context.IncludesEnhancementStage || context.IncludesEnhancementWorkflows;
+        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
+        var hasEnhancementWork = context.IncludesEnhancementStage
+            || context.IncludesEnhancementWorkflows
+            || isManualEnrichment;
         await RefreshEnhancementLibraryIndexAsync(
             job,
             context.ConfigPath,
             hasEnhancementWork,
             cancellationToken);
-        await TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(
-            job,
-            hasEnhancementWork,
-            cancellationToken);
-        if (autoMove.Completed)
+        if (autoMove.Completed && !isManualEnrichment)
         {
             await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
         }
         await IngestKnownFilesAfterAutoMoveAsync(
             job,
             autoMove.Summary,
+            cancellationToken);
+        await TriggerConfiguredMediaServerRefreshAfterEnhancementAsync(
+            job,
+            hasEnhancementWork,
             cancellationToken);
     }
 
@@ -2609,7 +2640,8 @@ public partial class AutoTagService
         Dictionary<string, FileTagOutcome> fileOutcomes,
         CancellationToken cancellationToken)
     {
-        if (ConfiguredDownloadRootResolver.TryResolve(
+        if (!IsManualEnrichmentRunIntent(job.RunIntent)
+            && ConfiguredDownloadRootResolver.TryResolve(
                 _settingsService,
                 "download location",
                 "download location is not configured.",
@@ -2649,8 +2681,29 @@ public partial class AutoTagService
         }
 
         var (taggedFiles, failedFiles) = BuildMoveFileSets(fileOutcomes);
+        if (IsManualEnrichmentRunIntent(job.RunIntent))
+        {
+            failedFiles = Array.Empty<string>();
+        }
         AppendLog(job, "tagging completed, auto-move starting");
-        return await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
+        var result = await MoveAfterAutoTagAsync(job, path, configPath, taggedFiles, failedFiles, cancellationToken);
+        if (!IsManualEnrichmentRunIntent(job.RunIntent) || !result.Completed)
+        {
+            return result;
+        }
+
+        var remainingTaggedFiles = taggedFiles
+            .Where(file => !string.IsNullOrWhiteSpace(file) && File.Exists(file))
+            .ToList();
+        if (remainingTaggedFiles.Count == 0)
+        {
+            return result;
+        }
+
+        result.Summary.Error = $"Manual enrichment finalization left {remainingTaggedFiles.Count} enriched file(s) in staging.";
+        ApplyAutoMoveSummary(job, result.Summary);
+        AppendLog(job, result.Summary.Error);
+        return new AutoMoveExecutionResult(false, result.Summary);
     }
 
     private async Task HandleRunJobFailureAsync(
@@ -2667,6 +2720,12 @@ public partial class AutoTagService
         AppendPlatformSummary(job);
         SaveJob(job);
         AppendActivityLog(job.Id, $"autotag failed: {job.Error ?? "unknown error"}");
+
+        if (IsManualEnrichmentRunIntent(job.RunIntent) && job.AutoMoveSummary != null)
+        {
+            NotifyCompleted(job);
+            return;
+        }
 
         AppendLog(job, "tagging failed, evaluating post-failure auto-move");
         var autoMove = await RunFinalAutoMoveAsync(job, path, configPath, fileOutcomes, CancellationToken.None);
@@ -3713,22 +3772,6 @@ public partial class AutoTagService
     {
         var options = LoadOrganizerOptions(configPath);
         await ApplyJobProfileOrganizerOverridesAsync(job, options, CancellationToken.None);
-        if (!string.IsNullOrWhiteSpace(options.MoveUntaggedPath))
-        {
-            return options;
-        }
-
-        if (string.Equals(job.Trigger, AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase))
-        {
-            return options;
-        }
-
-        var manualFailedPath = await TryResolveManualFailedMovePathAsync();
-        if (!string.IsNullOrWhiteSpace(manualFailedPath))
-        {
-            options.MoveUntaggedPath = manualFailedPath;
-        }
-
         return options;
     }
 
@@ -3766,74 +3809,6 @@ public partial class AutoTagService
         }
     }
 
-    private async Task<string?> TryResolveManualFailedMovePathAsync()
-    {
-        try
-        {
-            var prefs = await _userPreferencesStore.LoadAsync();
-            if (!prefs.AutoTagPreferences.HasValue)
-            {
-                return null;
-            }
-
-            var autoTagPrefs = prefs.AutoTagPreferences.Value;
-            if (autoTagPrefs.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            return TryGetCaseInsensitiveStringProperty(autoTagPrefs, "moveFailedPath", out var moveFailedPath)
-                ? moveFailedPath
-                : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed loading manual failed destination from user preferences.");
-            return null;
-        }
-    }
-
-    private static bool TryGetCaseInsensitiveProperty(JsonElement element, string propertyName, out JsonElement value)
-    {
-        value = default;
-        if (element.ValueKind != JsonValueKind.Object || string.IsNullOrWhiteSpace(propertyName))
-        {
-            return false;
-        }
-
-        foreach (var property in element.EnumerateObject())
-        {
-            if (!string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            value = property.Value;
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool TryGetCaseInsensitiveStringProperty(JsonElement element, string propertyName, out string value)
-    {
-        value = string.Empty;
-        if (!TryGetCaseInsensitiveProperty(element, propertyName, out var raw)
-            || raw.ValueKind != JsonValueKind.String)
-        {
-            return false;
-        }
-
-        var resolved = raw.GetString()?.Trim();
-        if (string.IsNullOrWhiteSpace(resolved))
-        {
-            return false;
-        }
-
-        value = resolved;
-        return true;
-    }
-
     private async Task<AutoMoveExecutionResult> MoveAfterAutoTagAsync(
         AutoTagJob job,
         string rootPath,
@@ -3862,6 +3837,12 @@ public partial class AutoTagService
             _logger.LogInformation("AutoTag job JobId: auto-move started for RootPath");
             AppendLog(job, "auto-move started");
             var organizerOptions = await LoadOrganizerOptionsAsync(job, configPath);
+            if (IsManualEnrichmentRunIntent(job.RunIntent))
+            {
+                organizerOptions.BatchScopedFilesOnly = true;
+                organizerOptions.MoveUntaggedPath = null;
+                organizerOptions.OnlyMoveWhenTagged = true;
+            }
             var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
                 rootPath,
                 organizerOptions,
@@ -3922,7 +3903,8 @@ public partial class AutoTagService
         CancellationToken cancellationToken)
     {
         if (!includesEnhancementStage
-            || !ShouldRunEnhancementForIntent(job.RunIntent))
+            || (!ShouldRunEnhancementForIntent(job.RunIntent)
+                && !IsManualEnrichmentRunIntent(job.RunIntent)))
         {
             return;
         }
@@ -4596,6 +4578,7 @@ public partial class AutoTagService
             AutoTagLiterals.RunIntentDownloadEnrichment => AutoTagLiterals.RunIntentDownloadEnrichment,
             AutoTagLiterals.RunIntentEnhancementOnly => AutoTagLiterals.RunIntentEnhancementOnly,
             AutoTagLiterals.RunIntentEnhancementRecentDownloads => AutoTagLiterals.RunIntentEnhancementRecentDownloads,
+            AutoTagLiterals.RunIntentManualEnrichment => AutoTagLiterals.RunIntentManualEnrichment,
             _ => AutoTagLiterals.RunIntentDefault
         };
     }
@@ -4613,6 +4596,7 @@ public partial class AutoTagService
             AutoTagLiterals.EnhancementFeatureFolderUniformity => AutoTagLiterals.EnhancementFeatureFolderUniformity,
             AutoTagLiterals.EnhancementFeatureQualityChecks => AutoTagLiterals.EnhancementFeatureQualityChecks,
             AutoTagLiterals.EnhancementFeatureCoverMaintenance => AutoTagLiterals.EnhancementFeatureCoverMaintenance,
+            AutoTagLiterals.EnhancementFeatureManualEnrichment => AutoTagLiterals.EnhancementFeatureManualEnrichment,
             _ => null
         };
     }
@@ -4626,6 +4610,12 @@ public partial class AutoTagService
             _ => false
         };
     }
+
+    private static bool IsManualEnrichmentRunIntent(string? runIntent)
+        => string.Equals(
+            NormalizeRunIntent(runIntent),
+            AutoTagLiterals.RunIntentManualEnrichment,
+            StringComparison.OrdinalIgnoreCase);
 
     private static bool IsAllowedEnhancementTrigger(string? trigger)
     {
@@ -4645,10 +4635,9 @@ public partial class AutoTagService
 
     private static bool ShouldRunEnhancementForIntent(string? runIntent)
     {
-        return !string.Equals(
-            NormalizeRunIntent(runIntent),
-            AutoTagLiterals.RunIntentDownloadEnrichment,
-            StringComparison.OrdinalIgnoreCase);
+        var normalized = NormalizeRunIntent(runIntent);
+        return !string.Equals(normalized, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(normalized, AutoTagLiterals.RunIntentManualEnrichment, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string InjectRunTrigger(string configJson, string trigger)
@@ -4885,8 +4874,10 @@ public partial class AutoTagService
         job.LastStatus = status;
         job.Progress = ScaleProgress(status.Progress, stageIndex, stageCount);
         job.CurrentPlatform = status.Platform;
-        if (IsEnhancementRunIntent(job.RunIntent)
-            && string.Equals(stageName, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
+        if ((IsEnhancementRunIntent(job.RunIntent)
+             || IsManualEnrichmentRunIntent(job.RunIntent))
+            && (string.Equals(stageName, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(stageName, AutoTagLiterals.EnrichmentStage, StringComparison.OrdinalIgnoreCase))
             && status.FileCount is > 0)
         {
             var fileIndex = Math.Clamp(status.FileIndex ?? 0, 0, status.FileCount.Value - 1);
@@ -4952,13 +4943,18 @@ public partial class AutoTagService
         var statusValue = status.Status;
         if (statusValue == null
             || !string.Equals(statusValue.Status, AutoTagLiterals.ReviewStatus, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(status.Platform, "shazam", StringComparison.OrdinalIgnoreCase)
             || string.IsNullOrWhiteSpace(statusValue.Path))
         {
             return;
         }
 
-        if (!HasShazamReviewCandidate(statusValue))
+        var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
+        if (!isManualEnrichment
+            && !string.Equals(status.Platform, "shazam", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (!isManualEnrichment && !HasShazamReviewCandidate(statusValue))
         {
             AppendLog(
                 job,
@@ -5529,6 +5525,16 @@ public partial class AutoTagService
     private static void TrackFileOutcome(IDictionary<string, FileTagOutcome>? fileOutcomes, TaggingStatusWrap status)
     {
         if (fileOutcomes == null || status.Status == null || string.IsNullOrWhiteSpace(status.Status.Path))
+        {
+            return;
+        }
+
+        var terminalStatus = status.Status.Status;
+        if (terminalStatus is not AutoTagLiterals.OkStatus
+            and not AutoTagLiterals.TaggedStatus
+            and not AutoTagLiterals.SkippedStatus
+            and not AutoTagLiterals.ErrorStatus
+            and not AutoTagLiterals.ReviewStatus)
         {
             return;
         }
@@ -6491,7 +6497,8 @@ public partial class AutoTagService
 
     private static DateTimeOffset? ResolveRunHistoryDate(AutoTagJob job)
     {
-        if (!IsEnhancementRunIntent(job.RunIntent))
+        if (!IsEnhancementRunIntent(job.RunIntent)
+            && !IsManualEnrichmentRunIntent(job.RunIntent))
         {
             return null;
         }

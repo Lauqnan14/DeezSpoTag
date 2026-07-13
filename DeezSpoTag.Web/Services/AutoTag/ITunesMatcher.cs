@@ -27,7 +27,11 @@ public sealed class ItunesMatcher
             var existingTrackId = AutoTagTagValueReader.ReadFirstTagValue(info, TrackIdTagKeys);
             var lookup = await _client.LookupTrackAsync(existingTrackId, itunesConfig.Country, cancellationToken);
             var lookupTrack = lookup?.ToTrackInfo(itunesConfig);
-            if (lookupTrack != null)
+            if (lookupTrack != null
+                && AutoTagReleaseCategory.MatchesPreference(
+                    lookupTrack.ReleaseType,
+                    lookupTrack.TrackTotal,
+                    config.PreferredReleaseType))
             {
                 return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(lookupTrack) };
             }
@@ -44,6 +48,10 @@ public sealed class ItunesMatcher
             .Select(r => r.ToTrackInfo(itunesConfig))
             .Where(r => r != null)
             .Select(r => r!)
+            .Where(track => AutoTagReleaseCategory.MatchesPreference(
+                track.ReleaseType,
+                track.TrackTotal,
+                config.PreferredReleaseType))
             .ToList();
         if (candidates.Count == 0)
         {

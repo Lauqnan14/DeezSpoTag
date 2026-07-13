@@ -19,7 +19,8 @@ public sealed record TrackIdentityResolutionRequest(
     IReadOnlyCollection<string>? TargetPlatforms = null,
     string? Storefront = null,
     string? Language = null,
-    string? MediaUserToken = null);
+    string? MediaUserToken = null,
+    string? PreferredReleaseType = null);
 
 public sealed record PlatformIdentityCandidate(
     string Platform,

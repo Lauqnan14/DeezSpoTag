@@ -698,7 +698,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         var durationBucket = state.DurationMs is > 0
             ? (state.DurationMs.Value / 1000).ToString(CultureInfo.InvariantCulture)
             : string.Empty;
-        return $"apple:identity:{storefront}:{language}:{title}:{artist}:{album}:{isrc}:{durationBucket}";
+        return $"apple:identity:{storefront}:{language}:{title}:{artist}:{album}:{isrc}:{durationBucket}:{state.PreferredReleaseType}";
     }
 
     private async Task<AppleIdentityCandidate?> ResolveAppleCandidateBySearchAsync(
@@ -1173,6 +1173,7 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
         public string? TidalUrl { get; set; }
         public string? AmazonId { get; set; }
         public string? AmazonUrl { get; set; }
+        public string? PreferredReleaseType { get; set; }
 
         public static IdentityState FromRequest(TrackIdentityResolutionRequest request)
             => new()
@@ -1196,7 +1197,8 @@ public sealed class TrackIdentityResolver : ITrackIdentityResolver
                 TidalId = EmptyToNull(request.TidalId),
                 TidalUrl = string.IsNullOrWhiteSpace(request.TidalId) ? null : $"https://tidal.com/browse/track/{request.TidalId.Trim()}",
                 AmazonId = EngineLinkParser.NormalizeAmazonTrackId(request.AmazonId),
-                AmazonUrl = string.IsNullOrWhiteSpace(request.AmazonId) ? null : $"https://music.amazon.com/tracks/{request.AmazonId.Trim()}"
+                AmazonUrl = string.IsNullOrWhiteSpace(request.AmazonId) ? null : $"https://music.amazon.com/tracks/{request.AmazonId.Trim()}",
+                PreferredReleaseType = request.PreferredReleaseType?.Trim().ToLowerInvariant()
             };
 
         public TrackIdentityResolution ToResolution(IReadOnlyList<PlatformIdentityCandidate> candidates)

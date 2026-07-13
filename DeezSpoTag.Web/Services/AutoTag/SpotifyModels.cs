@@ -19,6 +19,7 @@ public sealed class SpotifyTrackInfo : AudioFeaturesBase
     public int? TrackNumber { get; set; }
     public int? DiscNumber { get; set; }
     public int? TrackTotal { get; set; }
+    public string? ReleaseType { get; set; }
     public string? Label { get; set; }
     public List<string> Genres { get; set; } = new();
     public string? Key { get; set; }

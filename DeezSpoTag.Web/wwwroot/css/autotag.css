@@ -112,6 +112,65 @@
     flex: 0 0 auto;
 }
 
+.manual-release-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-weight: 500;
+}
+
+.manual-enrichment-controls #autotag-move-success-library,
+.manual-release-menu {
+    height: 40px;
+}
+
+.manual-release-field {
+    grid-column: span 2;
+}
+
+.manual-release-menu {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    padding: 0;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.manual-release-choice {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 4px 12px;
+}
+
+.manual-release-choice + .manual-release-choice {
+    border-left: 1px solid var(--border-secondary);
+}
+
+.manual-release-choice .source-header {
+    min-width: 0;
+    gap: 8px;
+}
+
+.manual-release-choice .switch-label {
+    margin: 0;
+    font-weight: 500;
+}
+
+.manual-release-icon {
+    color: var(--primary-color);
+}
+
+.manual-release-choice:has(input:checked) {
+    background: color-mix(in srgb, var(--primary-color) 8%, var(--bg-tertiary));
+}
+
 .tag-sources-card .card-body.autotag-card-body {
     display: block;
 }
@@ -2623,6 +2682,20 @@ body.autotag-col-resizing * {
     .autotag-page .form-row,
     .autotag-page .form-row-3 {
         grid-template-columns: 1fr !important;
+    }
+
+    .autotag-page .manual-release-menu {
+        grid-template-columns: 1fr !important;
+        height: auto;
+    }
+
+    .autotag-page .manual-release-field {
+        grid-column: auto !important;
+    }
+
+    .autotag-page .manual-release-choice + .manual-release-choice {
+        border-top: 1px solid var(--border-secondary);
+        border-left: 0;
     }
 
     .autotag-page .download-grid .checkbox-group,

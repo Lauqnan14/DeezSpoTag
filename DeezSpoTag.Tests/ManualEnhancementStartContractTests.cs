@@ -96,6 +96,41 @@ public sealed class ManualEnhancementStartContractTests
         Assert.Contains("_activeJobIds.TryAdd(job.Id, 0)", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ManualEnrichmentClient_UsesCentralEndpointWithDestinationAndReleaseChoice()
+    {
+        var repoRoot = FindRepoRoot();
+        var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var view = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var startFunction = ExtractFunction(script, "async function startAutoTag");
+
+        Assert.Contains("/api/autotag/enhancement/start", startFunction, StringComparison.Ordinal);
+        Assert.Contains("features: [\"manual-enrichment\"]", startFunction, StringComparison.Ordinal);
+        Assert.Contains("folderIds: [destination.id]", startFunction, StringComparison.Ordinal);
+        Assert.Contains("releasePreference", startFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/autotag/start", startFunction, StringComparison.Ordinal);
+        Assert.Contains("id=\"autotag-move-success-library\"", view, StringComparison.Ordinal);
+        Assert.Contains("name=\"manualReleasePreference\" value=\"album\"", view, StringComparison.Ordinal);
+        Assert.Contains("name=\"manualReleasePreference\" value=\"single\"", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("autotag-move-failed", view, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualEnrichmentBackend_ClaimsUnownedStagingFilesAndUsesOneProfilePath()
+    {
+        var repoRoot = FindRepoRoot();
+        var controller = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("Manual enrichment requires exactly one enabled music library destination.", controller, StringComparison.Ordinal);
+        Assert.Contains("GetPipelineOwnedPayloadPathsAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40", controller, StringComparison.Ordinal);
+        Assert.Contains("RunIntent: AutoTagLiterals.RunIntentManualEnrichment", controller, StringComparison.Ordinal);
+        Assert.Contains("ProfileId: selectedProfile.Id", controller, StringComparison.Ordinal);
+        Assert.Contains("organizerOptions.BatchScopedFilesOnly = true", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunManualEnrichmentArtworkMaintenanceAsync", service, StringComparison.Ordinal);
+    }
+
     private static string FindRepoRoot()
     {
         var dir = AppContext.BaseDirectory;

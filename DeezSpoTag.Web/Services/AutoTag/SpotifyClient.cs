@@ -104,6 +104,7 @@ public sealed class SpotifyClient
             TrackNumber = summary.TrackNumber,
             DiscNumber = summary.DiscNumber,
             TrackTotal = summary.TrackTotal,
+            ReleaseType = summary.ReleaseType,
             Label = summary.Label,
             Genres = summary.Genres?.ToList() ?? new List<string>(),
             Danceability = summary.Danceability,
@@ -172,6 +173,11 @@ public sealed class SpotifyClient
         if (string.IsNullOrWhiteSpace(track.AlbumArtist))
         {
             track.AlbumArtist = summary.AlbumArtist;
+        }
+
+        if (!string.IsNullOrWhiteSpace(summary.ReleaseType))
+        {
+            track.ReleaseType = summary.ReleaseType;
         }
 
         if (!string.IsNullOrWhiteSpace(summary.AlbumId))

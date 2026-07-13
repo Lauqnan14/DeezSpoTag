@@ -38,11 +38,8 @@
         includeSubfolders: true,
         multiplatform: false,
         titleRegex: null,
-        moveSuccess: false,
+        manualReleasePreference: "album",
         moveSuccessLibraryFolderId: null,
-        moveSuccessPath: null,
-        moveFailed: false,
-        moveFailedPath: null,
         writeLrc: false,
         capitalizeGenres: false,
         id3CommLang: null,
@@ -1033,15 +1030,6 @@
         return state.libraryFolders.find((folder) => folder.id === id && isMusicEnhancementEligibleFolder(folder)) || null;
     }
 
-    function getSuccessLibraryByPath(path) {
-        const key = normalizePathKey(path);
-        if (!key) {
-            return null;
-        }
-        return state.libraryFolders.find((folder) =>
-            normalizePathKey(folder.rootPath) === key && isMusicEnhancementEligibleFolder(folder)) || null;
-    }
-
     function renderSuccessLibraryOptions() {
         const select = el("autotag-move-success-library");
         if (!select) {
@@ -1489,7 +1477,8 @@
                         rootPath: String(item.rootPath || "").trim(),
                         displayName: String(item.displayName || item.libraryName || "").trim(),
                         libraryName: String(item.libraryName || "").trim(),
-                        desiredQuality: String(item.desiredQuality || "").trim()
+                        desiredQuality: String(item.desiredQuality || "").trim(),
+                        autoTagProfileId: String(item.autoTagProfileId || "").trim() || null
                     };
                 })
                 .filter((item) => item.id > 0 && item.rootPath.length > 0);
@@ -2902,22 +2891,20 @@
         setValue("autotag-styles-id3", state.config.stylesCustomTag.id3);
         setValue("autotag-styles-vorbis", state.config.stylesCustomTag.vorbis);
         setValue("autotag-styles-mp4", state.config.stylesCustomTag.mp4);
-        setChecked("autotag-move-success", state.config.moveSuccess);
         if (!Number.isFinite(state.config.moveSuccessLibraryFolderId)) {
             state.config.moveSuccessLibraryFolderId = null;
-        }
-        if (state.config.moveSuccessLibraryFolderId == null && state.config.moveSuccessPath) {
-            const inferredLibrary = getSuccessLibraryByPath(state.config.moveSuccessPath);
-            if (inferredLibrary) {
-                state.config.moveSuccessLibraryFolderId = inferredLibrary.id;
-            }
         }
         setValue(
             "autotag-move-success-library",
             state.config.moveSuccessLibraryFolderId == null ? "" : String(state.config.moveSuccessLibraryFolderId)
         );
-        setChecked("autotag-move-failed", state.config.moveFailed);
-        setValue("autotag-move-failed-path", state.config.moveFailedPath || "");
+        const releasePreference = String(state.config.manualReleasePreference || "album").toLowerCase() === "single"
+            ? "single"
+            : "album";
+        const releaseControl = document.querySelector(`input[name="manualReleasePreference"][value="${releasePreference}"]`);
+        if (releaseControl instanceof HTMLInputElement) {
+            releaseControl.checked = true;
+        }
         setChecked("enableFolderUniformityWorkflow", state.config.enhancement.folderUniformity.enabled);
         updateGapFillingFolderSummary(state.config.enhancement.gapFilling.folderIds ?? []);
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
@@ -3460,6 +3447,10 @@
         delete config.moveSuccessMode;
         const moveSuccessLibraryId = Number.parseInt(String(config.moveSuccessLibraryFolderId ?? ""), 10);
         config.moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryId) ? moveSuccessLibraryId : null;
+        delete config.moveSuccess;
+        delete config.moveSuccessPath;
+        delete config.moveFailed;
+        delete config.moveFailedPath;
         ensureEffectivePlatforms(config);
         config.tags = normalizeAutoTagSelectionList(Array.isArray(config.tags) ? config.tags : []);
         config.downloadTags = removeLyricsSelectionTags(Array.isArray(config.downloadTags) ? config.downloadTags : []);
@@ -3489,12 +3480,6 @@
         const legacyOrganizer = config.organizer && typeof config.organizer === "object"
             ? config.organizer
             : null;
-        if ((!config.moveFailedPath || !String(config.moveFailedPath).trim()) && legacyOrganizer?.moveUntaggedPath) {
-            config.moveFailedPath = String(legacyOrganizer.moveUntaggedPath).trim();
-        }
-        if (legacyOrganizer?.moveUntaggedPath && config.moveFailed !== true) {
-            config.moveFailed = true;
-        }
         if (config.enhancement?.folderUniformity && typeof config.enhancement.folderUniformity.onlyMoveWhenTagged !== "boolean") {
             config.enhancement.folderUniformity.onlyMoveWhenTagged = legacyOrganizer?.onlyMoveWhenTagged === true;
         }
@@ -3958,16 +3943,19 @@
     }
 
     function readMoveAndFolderUniformityConfig(getChecked, getValue) {
-        state.config.moveSuccess = getChecked("autotag-move-success", state.config.moveSuccess);
         const moveSuccessLibraryRaw = getValue("autotag-move-success-library", state.config.moveSuccessLibraryFolderId ?? "");
         const moveSuccessLibraryIdParsed = Number.parseInt(String(moveSuccessLibraryRaw || "").trim(), 10);
         const moveSuccessLibraryFolderId = Number.isFinite(moveSuccessLibraryIdParsed) ? moveSuccessLibraryIdParsed : null;
         const selectedLibrary = getSuccessLibraryById(moveSuccessLibraryFolderId);
         delete state.config.moveSuccessMode;
         state.config.moveSuccessLibraryFolderId = selectedLibrary?.id ?? null;
-        state.config.moveSuccessPath = selectedLibrary?.rootPath || null;
-        state.config.moveFailed = getChecked("autotag-move-failed", state.config.moveFailed);
-        state.config.moveFailedPath = getValue("autotag-move-failed-path", state.config.moveFailedPath || "").trim() || null;
+        state.config.manualReleasePreference = document.querySelector('input[name="manualReleasePreference"]:checked')?.value === "single"
+            ? "single"
+            : "album";
+        delete state.config.moveSuccess;
+        delete state.config.moveSuccessPath;
+        delete state.config.moveFailed;
+        delete state.config.moveFailedPath;
         delete state.config.organizer;
         const gapFilling = state.config.enhancement.gapFilling;
         gapFilling.folderIds = parseFolderIdList(getValue("enhancementGapFillFolder", (gapFilling.folderIds ?? []).join(",")));
@@ -4969,12 +4957,6 @@
             stylesGroup.style.display = stylesSelect.value === "customTag" ? "block" : "none";
         }
 
-        updateToggleGroupVisibility("autotag-move-success-library-group", "autotag-move-success", {
-            inputId: "autotag-move-success-library"
-        });
-        updateToggleGroupVisibility("autotag-move-failed-group", "autotag-move-failed", {
-            inputId: "autotag-move-failed-path"
-        });
         syncFallbackSourceControls();
         syncMultiArtistHandlingState();
         syncMatchingSettingsState();
@@ -6005,59 +5987,51 @@
     }
 
     async function startAutoTag() {
-        const resolvedProfileId = String(
-            state.activeProfileId
-            || ""
-        ).trim();
-        if (!resolvedProfileId) {
-            const message = "Select and load a profile before running AutoTag.";
+        const destinationId = Number.parseInt(String(el("autotag-move-success-library")?.value || ""), 10);
+        const destination = getSuccessLibraryById(destinationId);
+        if (!destination) {
+            const message = "Select a library destination before running manual enrichment.";
             setExternalStartStatus(message);
             showToast(message, "warning");
             return;
         }
 
-        try {
-            await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
-        } catch (error) {
-            const message = `Failed to save active profile before run: ${error?.message || error}`;
-            setExternalStartStatus(message);
-            showToast(message, "error");
-            return;
+        if (destination.autoTagProfileId
+            && String(state.activeProfileId || "").toLowerCase() !== destination.autoTagProfileId.toLowerCase()) {
+            loadProfile({ profileId: destination.autoTagProfileId, silent: true });
+        }
+        if (destination.autoTagProfileId
+            && String(state.activeProfileId || "").toLowerCase() === destination.autoTagProfileId.toLowerCase()) {
+            try {
+                await upsertProfileFromUi({ silent: true, requireActiveProfile: true, reconcileUi: false });
+            } catch (error) {
+                const message = `Failed to save the destination profile before manual enrichment: ${error?.message || error}`;
+                setExternalStartStatus(message);
+                showToast(message, "error");
+                return;
+            }
         }
 
-        if (!isManualEnrichmentShazamEnabled()) {
-            const message = "Manual enrichment requires Shazam. Enable Shazam in the active AutoTag profile before running manual enrichment.";
-            setExternalStartStatus(message);
-            showToast(message, "warning");
-            return;
-        }
+        const releasePreference = document.querySelector('input[name="manualReleasePreference"]:checked')?.value === "single"
+            ? "single"
+            : "album";
+        setExternalStartStatus("Claiming staged files for manual enrichment...");
 
-        // Manual enrichment runs in the configured download/staging folder only.
-        const defaultStagingPath = String(state.settingsCache?.downloadLocation || "").trim();
-        const targetPath = defaultStagingPath;
-
-        if (!targetPath) {
-            const message = "Set Download/Staging folder in Settings before running AutoTag.";
-            setExternalStartStatus(message);
-            showToast(message, "warning");
-            return;
-        }
-
-        setExternalStartStatus("Starting enrichment in Download/Staging folder...");
-
-        const response = await fetch("/api/autotag/start", {
+        const response = await fetch("/api/autotag/enhancement/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                path: targetPath,
-                profileId: resolvedProfileId
+                scope: "full",
+                features: ["manual-enrichment"],
+                folderIds: [destination.id],
+                releasePreference
             })
         });
 
         if (!response.ok) {
             const message = await response.text();
-            setExternalStartStatus(message || "Failed to start external AutoTag.");
-            showToast(message || "Failed to start AutoTag.", "error");
+            setExternalStartStatus(message || "Failed to start manual enrichment.");
+            showToast(message || "Failed to start manual enrichment.", "error");
             return;
         }
 
@@ -6068,13 +6042,8 @@
         if (hasStatusUI()) {
             schedulePoll();
         }
-        setExternalStartStatus("External AutoTag started.");
-        showToast("External AutoTag started.", "success");
-    }
-
-    function isManualEnrichmentShazamEnabled() {
-        return Array.isArray(state.config?.platforms)
-            && state.config.platforms.some((platform) => String(platform || "").trim().toLowerCase() === "shazam");
+        setExternalStartStatus("Manual enrichment started.");
+        showToast("Manual enrichment started.", "success");
     }
 
     async function fetchJobById(jobId) {
@@ -7014,29 +6983,14 @@
             });
         }
     });
-    ["autotag-move-success-library"].forEach((id) => {
-        const field = el(id);
-        if (field) {
-            field.addEventListener("change", updateConditionalSections);
+    el("autotag-move-success-library")?.addEventListener("change", () => {
+        const destinationId = Number.parseInt(String(el("autotag-move-success-library")?.value || ""), 10);
+        const destination = getSuccessLibraryById(destinationId);
+        if (destination?.autoTagProfileId) {
+            loadProfile({ profileId: destination.autoTagProfileId, silent: true });
         }
+        updateConditionalSections();
     });
-    const autotagMoveFailedPath = el("autotag-move-failed-path");
-    const browseAutoTagFailedPath = el("browseAutoTagFailedPath");
-    if (browseAutoTagFailedPath && autotagMoveFailedPath && globalThis.DeezSpoTag?.ui?.browseServerFolder) {
-        browseAutoTagFailedPath.addEventListener("click", async () => {
-            const selected = await globalThis.DeezSpoTag.ui.browseServerFolder({
-                title: "Failed/Conflict Files Destination",
-                startPath: autotagMoveFailedPath.value || "",
-                apiPath: "/api/library/folders/browse",
-                selectText: "Use This Folder"
-            });
-            if (selected) {
-                autotagMoveFailedPath.value = selected;
-                autotagMoveFailedPath.dispatchEvent(new Event("input", { bubbles: true }));
-                autotagMoveFailedPath.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        });
-    }
     ["createPlaylistFolder", "createArtistFolder", "createAlbumFolder"].forEach((id) => {
         const field = el(id);
         if (field) {

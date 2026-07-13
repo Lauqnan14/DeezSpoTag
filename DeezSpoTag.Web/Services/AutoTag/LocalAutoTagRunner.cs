@@ -21,6 +21,9 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.DependencyInjection;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
 using TagLib;
 using IOFile = System.IO.File;
 using DownloadLyricsService = DeezSpoTag.Services.Download.Utils.LyricsService;
@@ -432,7 +435,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
-            var (runPlan, failure) = await PrepareAutoTagRunPlanAsync(rootPath, configPath, token);
+            var (runPlan, failure) = await PrepareAutoTagRunPlanAsync(jobId, rootPath, configPath, token);
             if (failure != null)
             {
                 return failure;
@@ -473,6 +476,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private async Task<(AutoTagRunPlan? Plan, AutoTagRunResult? Failure)> PrepareAutoTagRunPlanAsync(
+        string jobId,
         string rootPath,
         string configPath,
         CancellationToken token)
@@ -495,13 +499,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             MatchDuration = config.MatchDuration,
             MaxDurationDifferenceSeconds = config.MaxDurationDifference,
             Strictness = config.Strictness,
-            MultipleMatches = config.MultipleMatches
+            MultipleMatches = config.MultipleMatches,
+            PreferredReleaseType = config.ManualReleasePreference
         };
         var settings = LoadRuntimeSettings(config.Technical, config);
         settings.DownloadLocation = targetPath;
         var shazamBehavior = ResolveShazamEnrichmentBehavior(config);
         var plan = new AutoTagRunPlan
         {
+            JobId = jobId,
+            ConfigPath = configPath,
             Config = config,
             TargetPath = targetPath,
             MatchingConfig = matchingConfig,
@@ -740,6 +747,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static bool IsLibraryWideEnhancementBatchingEnabled(AutoTagRunnerConfig config)
         => (config.LibraryWideEnhancementBatchSize ?? 0) > 0;
 
+    private static bool IsManualEnrichment(AutoTagRunnerConfig config)
+        => !string.IsNullOrWhiteSpace(config.ManualReleasePreference)
+           && config.ManualDestinationFolderId is > 0;
+
     private static int CompareLibraryWideEnhancementFiles(string? left, string? right)
     {
         var leftTimestamp = GetLibraryWideEnhancementSortTimestamp(left);
@@ -801,27 +812,51 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var info = BuildAudioInfo(
-            context.File,
-            context.Plan.TargetPath,
-            context.Plan.Config.ParseFilename,
-            context.Plan.Config.TracknameTemplate,
-            context.Plan.Config.TitleRegex);
-        var validationInfo = CloneAudioInfo(info);
-        var shazamResult = TryApplyShazam(
-            context.File,
-            info,
-            context.Plan.EnableShazamFallback,
-            context.Plan.ForceShazamMatch,
-            context.Plan.ShazamCache,
-            context.LogCallback,
-            context.Token);
+        var isManualEnrichment = IsManualEnrichment(context.Plan.Config);
+        AutoTagAudioInfo? cachedManualInfo = null;
+        var firstManualPass = !isManualEnrichment
+            || !context.Plan.ResolvedManualInfo.TryGetValue(context.FileIndex, out cachedManualInfo);
+        var validationInfo = firstManualPass
+            ? BuildAudioInfo(
+                context.File,
+                context.Plan.TargetPath,
+                context.Plan.Config.ParseFilename,
+                context.Plan.Config.TracknameTemplate,
+                context.Plan.Config.TitleRegex)
+            : CloneAudioInfo(context.Plan.OriginalManualInfo[context.FileIndex]);
+        var info = firstManualPass
+            ? CloneAudioInfo(validationInfo)
+            : CloneAudioInfo(cachedManualInfo!);
+        var shazamResult = firstManualPass
+            ? TryApplyShazam(
+                context.File,
+                info,
+                context.Plan.EnableShazamFallback,
+                context.Plan.ForceShazamMatch,
+                context.Plan.ShazamCache,
+                context.LogCallback,
+                context.Token)
+            : new ShazamEnrichmentResult(
+                context.Plan.ShazamIdentifiedFiles.Contains(context.FileIndex),
+                null,
+                false);
         var usedShazamForStatus = shazamResult.UsedShazam
             || string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase);
 
         if (shazamResult.IsFatal)
         {
             throw new AutoTagRunPausedException(shazamResult.Error ?? "Shazam is unavailable.");
+        }
+
+        if (isManualEnrichment && shazamResult.FailureKind == ShazamFailureKind.NoMatch)
+        {
+            EmitReviewStatus(
+                context,
+                "Shazam could not identify the staged audio file.",
+                usedShazamForStatus,
+                AutoTagReviewMetadata.FromSourceOnly(validationInfo));
+            context.Plan.ReviewedFiles.Add(context.File);
+            return;
         }
 
         if (shazamResult.FailureKind == ShazamFailureKind.NoMatch
@@ -831,18 +866,96 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 $"onetagger_autotag: shazam could not identify {Path.GetFileName(context.File)}; continuing with {context.Platform}");
         }
 
+        if (isManualEnrichment && firstManualPass)
+        {
+            context.Plan.OriginalManualInfo[context.FileIndex] = CloneAudioInfo(validationInfo);
+            await ApplyCentralIdentityForManualEnrichmentAsync(info, context.Plan.Config, context.LogCallback, context.Token);
+            context.Plan.ResolvedManualInfo[context.FileIndex] = CloneAudioInfo(info);
+            if (shazamResult.UsedShazam)
+            {
+                context.Plan.ShazamIdentifiedFiles.Add(context.FileIndex);
+            }
+        }
+
         var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
             ? validationInfo
             : info;
         var match = await ResolvePlatformMatchAsync(context, matchInfo, usedShazamForStatus);
         if (match == null)
         {
-            EmitSkippedStatus(context, "no match", usedShazamForStatus);
+            if (isManualEnrichment
+                && IsLastPlatform(context)
+                && !WasTaggedByAnyPlatform(context))
+            {
+                EmitReviewStatus(
+                    context,
+                    $"No {context.Plan.Config.ManualReleasePreference} release could be resolved.",
+                    usedShazamForStatus,
+                    AutoTagReviewMetadata.FromSourceOnly(validationInfo));
+                context.Plan.ReviewedFiles.Add(context.File);
+            }
+            else
+            {
+                EmitSkippedStatus(context, "no match", usedShazamForStatus);
+            }
             return;
         }
 
         await ApplyResolvedMatchAsync(context, info, validationInfo, match, usedShazamForStatus);
     }
+
+    private async Task ApplyCentralIdentityForManualEnrichmentAsync(
+        AutoTagAudioInfo info,
+        AutoTagRunnerConfig config,
+        Action<string> logCallback,
+        CancellationToken token)
+    {
+        var resolution = await _trackIdentityResolver.ResolveAsync(
+            new TrackIdentityResolutionRequest(
+                SourcePlatform: ShazamPlatform,
+                SourceUrl: AutoTagTagValueReader.ReadFirstTagValue(info, "URL", WwwAudioFileTag),
+                Title: info.Title,
+                Artist: info.Artists.FirstOrDefault() ?? info.Artist,
+                Album: info.Album,
+                Isrc: info.Isrc,
+                DurationMs: info.DurationSeconds is > 0 ? info.DurationSeconds.Value * 1000 : null,
+                TargetPlatforms: ["spotify", "deezer", "apple", "qobuz", "tidal", "amazon"],
+                PreferredReleaseType: config.ManualReleasePreference),
+            token);
+
+        info.Title = FirstNonEmpty(resolution.Title, info.Title) ?? info.Title;
+        info.Artist = FirstNonEmpty(resolution.Artist, info.Artist) ?? info.Artist;
+        info.Album = FirstNonEmpty(resolution.Album, info.Album);
+        info.Isrc = FirstNonEmpty(resolution.Isrc, info.Isrc);
+        AddResolvedIdentity(info, "SPOTIFY_TRACK_ID", resolution.SpotifyId);
+        AddResolvedIdentity(info, SpotifyUrlTag, resolution.SpotifyUrl);
+        AddResolvedIdentity(info, DeezerTrackIdTag, resolution.DeezerId);
+        AddResolvedIdentity(info, "DEEZER_URL", resolution.DeezerUrl);
+        AddResolvedIdentity(info, "ITUNES_TRACK_ID", resolution.AppleId);
+        AddResolvedIdentity(info, "APPLE_MUSIC_TRACK_ID", resolution.AppleId);
+        AddResolvedIdentity(info, "APPLE_MUSIC_URL", resolution.AppleUrl);
+        AddResolvedIdentity(info, "QOBUZ_TRACK_ID", resolution.QobuzId);
+        AddResolvedIdentity(info, "TIDAL_TRACK_ID", resolution.TidalId);
+        AddResolvedIdentity(info, "AMAZON_TRACK_ID", resolution.AmazonId);
+        logCallback(
+            $"onetagger_autotag: central identity resolved spotify={HasValue(resolution.SpotifyId)}, deezer={HasValue(resolution.DeezerId)}, apple={HasValue(resolution.AppleId)}, qobuz={HasValue(resolution.QobuzId)}, tidal={HasValue(resolution.TidalId)}, amazon={HasValue(resolution.AmazonId)}");
+    }
+
+    private static void AddResolvedIdentity(AutoTagAudioInfo info, string key, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            info.Tags[key] = [value.Trim()];
+        }
+    }
+
+    private static string HasValue(string? value) => string.IsNullOrWhiteSpace(value) ? "no" : "yes";
+
+    private static bool IsLastPlatform(AutoTagFileRunContext context)
+        => context.PlatformIndex == context.Plan.PlatformCount - 1;
+
+    private static bool WasTaggedByAnyPlatform(AutoTagFileRunContext context)
+        => context.Plan.TaggedFileIndices.Contains(context.FileIndex);
 
     private static bool TryHandlePreSkippedFile(AutoTagFileRunContext context)
     {
@@ -943,6 +1056,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchResult match,
         bool usedShazamForStatus)
     {
+        var isManualEnrichment = IsManualEnrichment(context.Plan.Config);
         if (string.Equals(context.Platform, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
         {
             var boomplayGuardReason = EvaluateBoomplayReliabilityGuard(validationInfo, match, context.Plan.MatchingConfig);
@@ -953,7 +1067,45 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        var mismatchReason = EvaluateGlobalMismatchGuard(validationInfo, match, context.Plan.MatchingConfig);
+        if (isManualEnrichment
+            && !AutoTagReleaseCategory.MatchesPreference(
+                match.Track.ReleaseType,
+                match.Track.TrackTotal,
+                context.Plan.Config.ManualReleasePreference))
+        {
+            HandleRejectedManualRelease(
+                context,
+                info,
+                match.Track,
+                $"Provider returned a {match.Track.ReleaseType ?? "different"} release instead of the requested {context.Plan.Config.ManualReleasePreference} release.",
+                usedShazamForStatus);
+            return;
+        }
+
+        context.Plan.FrozenManualReleases.TryGetValue(context.FileIndex, out var frozenRelease);
+        if (isManualEnrichment && frozenRelease != null)
+        {
+            var frozenMismatch = EvaluateGlobalMismatchGuard(
+                frozenRelease.ToAudioInfo(),
+                match,
+                context.Plan.MatchingConfig);
+            if (!string.IsNullOrWhiteSpace(frozenMismatch)
+                || !AlbumsReferToSameRelease(frozenRelease.Album, match.Track.Album))
+            {
+                EmitSkippedStatus(
+                    context,
+                    frozenMismatch ?? "provider release conflicts with the frozen manual-enrichment release",
+                    usedShazamForStatus);
+                return;
+            }
+
+            frozenRelease.ApplyTo(match.Track);
+        }
+
+        var mismatchReason = EvaluateGlobalMismatchGuard(
+            isManualEnrichment ? info : validationInfo,
+            match,
+            context.Plan.MatchingConfig);
         if (!string.IsNullOrWhiteSpace(mismatchReason))
         {
             if (string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
@@ -977,18 +1129,41 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             var originalFile = context.File;
             PreserveRicherArtistCreditsFromSource(info, match.Track, context.Plan.Settings);
-            context.File = MaterializeFileToTemplatePath(
-                context.File,
-                match.Track,
-                context.Plan.Config,
-                context.Plan.Settings,
-                context.Plan.TagSettings);
+            if (isManualEnrichment && frozenRelease == null)
+            {
+                frozenRelease = ManualReleaseIdentity.FromTrack(match.Track);
+                context.Plan.FrozenManualReleases[context.FileIndex] = frozenRelease;
+            }
+            if (!isManualEnrichment
+                || !context.Plan.MaterializedManualPaths.TryGetValue(context.FileIndex, out var materializedPath))
+            {
+                materializedPath = MaterializeFileToTemplatePath(
+                    context.File,
+                    match.Track,
+                    context.Plan.Config,
+                    context.Plan.Settings,
+                    context.Plan.TagSettings);
+                if (isManualEnrichment)
+                {
+                    context.Plan.MaterializedManualPaths[context.FileIndex] = materializedPath;
+                    PersistManualMaterializedTargetPath(
+                        context.Plan,
+                        context.File,
+                        materializedPath);
+                }
+            }
+            context.File = materializedPath;
             context.Plan.Files[context.FileIndex] = context.File;
             await RunBoundedOptionalStepAsync(
                 context,
                 "artwork fallback",
                 ArtworkFallbackTimeout,
                 stepToken => EnsureArtworkFallbackAsync(context, info, match.Track, stepToken));
+            if (isManualEnrichment && frozenRelease != null)
+            {
+                frozenRelease.Art ??= match.Track.Art;
+                frozenRelease.ApplyTo(match.Track);
+            }
             await RunBoundedOptionalStepAsync(
                 context,
                 "lyrics",
@@ -1000,16 +1175,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context.Plan.Config,
                     context.Plan.Settings,
                     stepToken));
-            await RunBoundedOptionalStepAsync(
-                context,
-                "Apple extras",
-                AppleExtrasTimeout,
-                stepToken => PopulateAppleExtrasAsync(
-                    context.File,
-                    match.Track,
-                    context.Plan.Config,
-                    context.Plan.Settings,
-                    stepToken));
+            ApplyResolvedIdentityTagsToTrack(info, match.Track);
+            if (!isManualEnrichment || context.Plan.AttemptedAppleExtras.Add(context.FileIndex))
+            {
+                await RunBoundedOptionalStepAsync(
+                    context,
+                    "Apple extras",
+                    AppleExtrasTimeout,
+                    stepToken => PopulateAppleExtrasAsync(
+                        context.File,
+                        match.Track,
+                        context.Plan.Config,
+                        context.Plan.Settings,
+                        stepToken));
+            }
             await TagFileAsync(
                 context.File,
                 match.Track,
@@ -1018,8 +1197,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.Settings,
                 context.Platform,
                 context.Token);
+            if (isManualEnrichment)
+            {
+                await EnsureManualArtistArtworkAsync(context, info, match.Track);
+            }
             context.Plan.TaggedByAnyPlatform.Add(originalFile);
             context.Plan.TaggedByAnyPlatform.Add(context.File);
+            context.Plan.TaggedFileIndices.Add(context.FileIndex);
             EmitTaggedStatus(context, match.Accuracy, usedShazamForStatus);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1027,6 +1211,127 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", SanitizeLogValue(context.File), SanitizeLogValue(context.Platform));
             EmitErrorStatus(context, ex.Message, usedShazamForStatus);
         }
+    }
+
+    private static void ApplyResolvedIdentityTagsToTrack(AutoTagAudioInfo identity, AutoTagTrack track)
+    {
+        foreach (var key in new[]
+                 {
+                     SpotifyTrackIdTag,
+                     SpotifyUrlTag,
+                     DeezerTrackIdTag,
+                     "DEEZER_URL",
+                     "ITUNES_TRACK_ID",
+                     "APPLE_MUSIC_TRACK_ID",
+                     "APPLE_MUSIC_URL",
+                     "QOBUZ_TRACK_ID",
+                     "TIDAL_TRACK_ID",
+                     "AMAZON_TRACK_ID"
+                 })
+        {
+            var value = AutoTagTagValueReader.ReadFirstTagValue(identity, key);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                track.Other[key] = [value];
+            }
+        }
+    }
+
+    private async Task EnsureManualArtistArtworkAsync(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo identity,
+        AutoTagTrack track)
+    {
+        if (!context.Plan.Settings.SaveArtworkArtist)
+        {
+            return;
+        }
+
+        var coreTrack = BuildCoreTrack(
+            track,
+            ResolveArtistSeparator(context.Plan.Config, context.File),
+            context.Plan.TagSettings.SingleAlbumArtist,
+            context.Plan.Settings);
+        var artistPath = BuildTemplatePathInfo(coreTrack, context.Plan.Settings).ArtistPath;
+        if (string.IsNullOrWhiteSpace(artistPath))
+        {
+            return;
+        }
+
+        var artworkKey = Path.GetFullPath(artistPath);
+        if (!context.Plan.AttemptedArtistArtworkPaths.Add(artworkKey))
+        {
+            return;
+        }
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var provider = scope.ServiceProvider;
+        var artist = track.Artists.FirstOrDefault();
+        var artistUrl = await DownloadEngineArtworkHelper.ResolveArtistImageUrlAsync(
+            new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
+                _appleMusicCatalogService,
+                _httpClientFactory,
+                context.Plan.Settings,
+                provider.GetService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
+                provider.GetService<DeezSpoTag.Services.Download.ISpotifyArtworkResolver>(),
+                provider.GetService<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(),
+                AutoTagTagValueReader.ReadFirstTagValue(identity, "ITUNES_TRACK_ID", "APPLE_MUSIC_TRACK_ID"),
+                AutoTagTagValueReader.ReadFirstTagValue(identity, DeezerTrackIdTag),
+                AutoTagTagValueReader.ReadFirstTagValue(identity, SpotifyTrackIdTag),
+                artist,
+                _logger),
+            context.Token);
+        if (string.IsNullOrWhiteSpace(artistUrl))
+        {
+            return;
+        }
+
+        await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
+            new DownloadEngineArtworkHelper.SaveArtistArtworkRequest(
+                provider.GetRequiredService<ImageDownloader>(),
+                provider.GetRequiredService<EnhancedPathTemplateProcessor>(),
+                artistPath,
+                artistUrl,
+                context.Plan.Settings,
+                coreTrack,
+                AppleQueueHelpers.GetAppleArtworkSize(context.Plan.Settings),
+                context.Plan.Settings.EmbedMaxQualityCover,
+                _logger),
+            context.Token);
+    }
+
+    private static void HandleRejectedManualRelease(
+        AutoTagFileRunContext context,
+        AutoTagAudioInfo source,
+        AutoTagTrack candidate,
+        string reason,
+        bool usedShazam)
+    {
+        if (IsLastPlatform(context) && !WasTaggedByAnyPlatform(context))
+        {
+            EmitReviewStatus(
+                context,
+                reason,
+                usedShazam,
+                AutoTagReviewMetadata.FromMatch(source, candidate));
+            context.Plan.ReviewedFiles.Add(context.File);
+            return;
+        }
+
+        EmitSkippedStatus(context, reason, usedShazam);
+    }
+
+    private static bool AlbumsReferToSameRelease(string? frozen, string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(frozen) || string.IsNullOrWhiteSpace(candidate))
+        {
+            return true;
+        }
+
+        return string.Equals(
+            AutoTagSimilarity.NormalizeText(frozen),
+            AutoTagSimilarity.NormalizeText(candidate),
+            StringComparison.Ordinal);
     }
 
     private async Task RunBoundedOptionalStepAsync(
@@ -1250,7 +1555,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagTrack track,
         CancellationToken token)
     {
-        if (!HasAnyTags(context.Plan.Config, AlbumArtTag)
+        if (!(HasAnyTags(context.Plan.Config, AlbumArtTag)
+              || (IsManualEnrichment(context.Plan.Config)
+                  && (context.Plan.Settings.SaveArtwork || context.Plan.Settings.EmbedMaxQualityCover)))
             || !string.IsNullOrWhiteSpace(track.Art))
         {
             return;
@@ -1291,6 +1598,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             var fallbackArt = fallbackMatch?.Track?.Art;
             if (string.IsNullOrWhiteSpace(fallbackArt))
+            {
+                continue;
+            }
+            if (IsManualEnrichment(context.Plan.Config)
+                && (!AutoTagReleaseCategory.MatchesPreference(
+                        fallbackMatch!.Track.ReleaseType,
+                        fallbackMatch.Track.TrackTotal,
+                        context.Plan.Config.ManualReleasePreference)
+                    || (context.Plan.FrozenManualReleases.TryGetValue(context.FileIndex, out var frozenRelease)
+                        && !AlbumsReferToSameRelease(frozenRelease.Album, fallbackMatch.Track.Album))))
             {
                 continue;
             }
@@ -1394,7 +1711,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static async Task ApplyPostLoopFallbackAsync(AutoTagRunPlan plan, CancellationToken token)
     {
-        if (plan.ShazamConflictResolution)
+        if (plan.ShazamConflictResolution || IsManualEnrichment(plan.Config))
         {
             return;
         }
@@ -1581,6 +1898,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             settings.SaveArtworkArtist = config.SaveArtworkArtist.Value;
         }
 
+        if (config.SaveAnimatedArtwork.HasValue)
+        {
+            settings.SaveAnimatedArtwork = config.SaveAnimatedArtwork.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.AnimatedArtworkFormats))
+        {
+            settings.AnimatedArtworkFormats = config.AnimatedArtworkFormats.Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(config.CoverImageTemplate))
         {
             settings.CoverImageTemplate = config.CoverImageTemplate.Trim();
@@ -1675,7 +2002,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var itunesConfig = LoadConfig(config.Custom, ItunesPlatform, new ItunesMatchConfig());
         var saveAnimatedArtwork = itunesConfig.AnimatedArtwork ?? settings.SaveAnimatedArtwork;
-        var wantsAnimatedArtwork = saveAnimatedArtwork && HasAnyTags(config, AlbumArtTag);
+        var wantsAnimatedArtwork = saveAnimatedArtwork
+            && (IsManualEnrichment(config) || HasAnyTags(config, AlbumArtTag));
         var wantsAppleLyrics = ShouldRequestAnyLyrics(config, settings);
         if (!wantsAnimatedArtwork && !wantsAppleLyrics)
         {
@@ -1847,6 +2175,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         try
         {
             var artist = track.Artists.FirstOrDefault();
+            var persistedAppleId = track.Other.TryGetValue("APPLE_MUSIC_TRACK_ID", out var appleIds)
+                ? appleIds.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+                : null;
             var identity = await _trackIdentityResolver.ResolveAsync(
                 new TrackIdentityResolutionRequest(
                     SourcePlatform: null,
@@ -1856,7 +2187,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Album: track.Album,
                     Isrc: track.Isrc,
                     DurationMs: track.Duration.HasValue ? (int)Math.Round(track.Duration.Value.TotalMilliseconds) : null,
-                    AppleId: track.TrackId,
+                    AppleId: persistedAppleId,
                     TargetPlatforms: new[] { "apple" },
                     Storefront: storefront,
                     Language: "en-US",
@@ -2655,6 +2986,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
+    private static string? FirstNonEmpty(params string?[] values)
+        => values
+            .Select(value => value?.Trim())
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
     private static AutoTagMatchResult PrepareShazamIdFirstMatch(
         AutoTagMatchResult match,
         string provider,
@@ -2827,6 +3163,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("maxDiff=").Append(matchingConfig.MaxDurationDifferenceSeconds.ToString(CultureInfo.InvariantCulture)).Append(';');
         builder.Append("strictness=").Append(matchingConfig.Strictness.ToString("0.###", CultureInfo.InvariantCulture)).Append(';');
         builder.Append("multiple=").Append(matchingConfig.MultipleMatches).Append(';');
+        builder.Append("preferredRelease=").Append(NormalizeCacheToken(matchingConfig.PreferredReleaseType)).Append(';');
         builder.Append("matchById=").Append(config.MatchById).Append(';');
         builder.Append("enableLyrics=").Append(ShouldRequestAnyLyrics(config, settings)).Append(';');
         builder.Append("lyricsSyncedToggle=").Append(settings.SyncedLyrics).Append(';');
@@ -3147,6 +3484,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SaveArtwork = effectiveSaveArtwork,
             DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
             SaveArtworkArtist = raw.SaveArtworkArtist,
+            SaveAnimatedArtwork = raw.SaveAnimatedArtwork,
+            AnimatedArtworkFormats = raw.AnimatedArtworkFormats,
             CoverImageTemplate = raw.CoverImageTemplate,
             ArtistImageTemplate = raw.ArtistImageTemplate,
             LocalArtworkFormat = raw.LocalArtworkFormat,
@@ -3157,9 +3496,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Technical = raw.Technical,
             ProfileId = raw.ProfileId,
             ProfileName = raw.ProfileName,
-            LibraryWideEnhancementBatchSize = raw.LibraryWideEnhancementBatchSize
+            LibraryWideEnhancementBatchSize = raw.LibraryWideEnhancementBatchSize,
+            ManualReleasePreference = NormalizeManualReleasePreference(raw.ManualReleasePreference),
+            ManualDestinationFolderId = raw.ManualDestinationFolderId
         };
     }
+
+    private static string? NormalizeManualReleasePreference(string? value)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            AutoTagReleaseCategory.Album => AutoTagReleaseCategory.Album,
+            AutoTagReleaseCategory.Single => AutoTagReleaseCategory.Single,
+            _ => null
+        };
 
     private ShazamRecognitionAttempt? RecognizeWithShazamAttempt(string filePath, CancellationToken token)
     {
@@ -3230,7 +3579,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             info.Album = payload.Album.Trim();
         }
 
-        if (string.IsNullOrWhiteSpace(info.Isrc) && !string.IsNullOrWhiteSpace(payload.Isrc))
+        if ((forceShazam || string.IsNullOrWhiteSpace(info.Isrc)) && !string.IsNullOrWhiteSpace(payload.Isrc))
         {
             info.Isrc = payload.Isrc.Trim();
         }
@@ -4043,6 +4392,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             TagSettingsAppliers[tag.Trim()](settings);
         }
+        if (IsManualEnrichment(config)
+            && (runtimeSettings.SaveArtwork || runtimeSettings.EmbedMaxQualityCover))
+        {
+            settings.Cover = true;
+        }
 
         return settings;
     }
@@ -4067,7 +4421,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if ((effectiveTagSettings.Cover || shouldPrepareTemplateArtworkSidecar) && !string.IsNullOrWhiteSpace(track.Art))
         {
-            tempCoverPath = await DownloadCoverAsync(track.Art, token);
+            tempCoverPath = TryResolveExistingCoverSidecar(filePath, track, coreTrack, config, settings)
+                ?? await DownloadCoverAsync(track.Art, token);
         }
 
         if (effectiveTagSettings.Cover &&
@@ -4091,12 +4446,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 TempCoverPath = tempCoverPath
             },
             token);
-        EnsureTemplateFoldersAndArtworkSidecar(
+        await EnsureTemplateFoldersAndArtworkSidecarAsync(
             track,
             coreTrack,
             config,
             settings,
-            tempCoverPath);
+            filePath,
+            tempCoverPath,
+            token);
         if (!IsMp4Family(Path.GetExtension(filePath)))
         {
             await ApplyCustomTagsAsync(
@@ -5217,37 +5574,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyAlbumArt(file, tempCoverPath, context.EffectiveTagSettings.CoverDescriptionUTF8);
         }
 
-        if (!ShouldWriteArtworkSidecar(context.Config))
-        {
-            return;
-        }
-
-        var coverPath = BuildAlbumArtworkSidecarPath(context);
-        if (!IOFile.Exists(coverPath))
-        {
-            IOFile.Copy(tempCoverPath, coverPath, overwrite: false);
-        }
-    }
-
-    private static string BuildAlbumArtworkSidecarPath(TagWriteExecutionContext context)
-    {
-        var baseFileName = BuildAlbumArtworkBaseFileName(context.SourceTrack, context.Settings);
-        if (string.IsNullOrWhiteSpace(baseFileName))
-        {
-            baseFileName = CoverTag;
-        }
-
-        if (context.Config.OrganizeSidecarsIntoTemplateFolders == true)
-        {
-            var pathInfo = BuildTemplatePathInfo(context.CoreTrack, context.Settings);
-            if (!string.IsNullOrWhiteSpace(pathInfo.CoverPath))
-            {
-                Directory.CreateDirectory(pathInfo.CoverPath);
-                return Path.Join(pathInfo.CoverPath, $"{baseFileName}.jpg");
-            }
-        }
-
-        return Path.Join(Path.GetDirectoryName(context.FilePath) ?? "", $"{baseFileName}.jpg");
     }
 
     private static TrackPathInfo BuildTemplatePathInfo(
@@ -5379,25 +5705,127 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
+    private static void PersistManualMaterializedTargetPath(
+        AutoTagRunPlan plan,
+        string previousPath,
+        string materializedPath)
+    {
+        if (PathsReferToSameFile(previousPath, materializedPath))
+        {
+            return;
+        }
+
+        var runtimeDirectory = Path.GetDirectoryName(plan.ConfigPath);
+        if (string.IsNullOrWhiteSpace(runtimeDirectory) || !Directory.Exists(runtimeDirectory))
+        {
+            return;
+        }
+
+        var configPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { plan.ConfigPath };
+        if (!string.IsNullOrWhiteSpace(plan.JobId))
+        {
+            foreach (var path in Directory.EnumerateFiles(runtimeDirectory, $"autotag-{plan.JobId}-*.json"))
+            {
+                configPaths.Add(path);
+            }
+        }
+
+        foreach (var configPath in configPaths)
+        {
+            ReplaceTargetPathInRuntimeConfig(configPath, previousPath, materializedPath);
+        }
+    }
+
+    private static void ReplaceTargetPathInRuntimeConfig(
+        string configPath,
+        string previousPath,
+        string materializedPath)
+    {
+        try
+        {
+            var root = JsonNode.Parse(IOFile.ReadAllText(configPath)) as JsonObject;
+            if (root?["targetFiles"] is not JsonArray targets)
+            {
+                return;
+            }
+
+            var changed = false;
+            for (var index = 0; index < targets.Count; index++)
+            {
+                var existing = targets[index]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(existing) || !PathsReferToSameFile(existing, previousPath))
+                {
+                    continue;
+                }
+
+                targets[index] = materializedPath;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                IOFile.WriteAllText(configPath, root.ToJsonString(CaseInsensitiveJsonOptions), new UTF8Encoding(false));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+        {
+            throw new IOException($"Failed to persist manual enrichment staging path '{materializedPath}'.", ex);
+        }
+    }
+
     private static bool ShouldWriteArtworkSidecar(AutoTagRunnerConfig config)
         => config.SaveArtwork ?? false;
 
     private static bool ShouldPrepareTemplateArtworkSidecar(AutoTagRunnerConfig config)
         => config.OrganizeSidecarsIntoTemplateFolders == true && ShouldWriteArtworkSidecar(config);
 
-    private static void EnsureTemplateFoldersAndArtworkSidecar(
+    private static string? TryResolveExistingCoverSidecar(
+        string filePath,
+        AutoTagTrack track,
+        Track coreTrack,
+        AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings)
+    {
+        if (!ShouldWriteArtworkSidecar(config))
+        {
+            return null;
+        }
+
+        var outputDirectory = config.OrganizeSidecarsIntoTemplateFolders == true
+            ? BuildTemplatePathInfo(coreTrack, settings).CoverPath
+            : Path.GetDirectoryName(filePath);
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+        {
+            return null;
+        }
+
+        var baseFileName = BuildAlbumArtworkBaseFileName(track, settings);
+        if (string.IsNullOrWhiteSpace(baseFileName))
+        {
+            baseFileName = CoverTag;
+        }
+
+        return ResolveLocalArtworkFormats(settings.LocalArtworkFormat)
+            .Select(format => Path.Join(outputDirectory, $"{baseFileName}.{format}"))
+            .FirstOrDefault(IOFile.Exists);
+    }
+
+    private static async Task EnsureTemplateFoldersAndArtworkSidecarAsync(
         AutoTagTrack sourceTrack,
         Track coreTrack,
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
-        string? tempCoverPath)
+        string filePath,
+        string? tempCoverPath,
+        CancellationToken token)
     {
-        if (config.OrganizeSidecarsIntoTemplateFolders != true)
-        {
-            return;
-        }
-
-        var pathInfo = BuildTemplatePathInfo(coreTrack, settings);
+        var pathInfo = config.OrganizeSidecarsIntoTemplateFolders == true
+            ? BuildTemplatePathInfo(coreTrack, settings)
+            : new TrackPathInfo
+            {
+                ArtistPath = Path.GetDirectoryName(filePath),
+                CoverPath = Path.GetDirectoryName(filePath)
+            };
         if (!string.IsNullOrWhiteSpace(pathInfo.ArtistPath))
         {
             Directory.CreateDirectory(pathInfo.ArtistPath);
@@ -5422,11 +5850,40 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             baseFileName = CoverTag;
         }
 
-        var coverPath = Path.Join(pathInfo.CoverPath, $"{baseFileName}.jpg");
-        if (!IOFile.Exists(coverPath))
+        var formats = ResolveLocalArtworkFormats(settings.LocalArtworkFormat);
+        using var image = await Image.LoadAsync(tempCoverPath, token);
+        foreach (var format in formats)
         {
-            IOFile.Copy(tempCoverPath, coverPath, overwrite: false);
+            var coverPath = Path.Join(pathInfo.CoverPath, $"{baseFileName}.{format}");
+            if (IOFile.Exists(coverPath))
+            {
+                continue;
+            }
+
+            if (format == "png")
+            {
+                await image.SaveAsPngAsync(coverPath, new PngEncoder(), token);
+            }
+            else
+            {
+                await image.SaveAsJpegAsync(
+                    coverPath,
+                    new JpegEncoder { Quality = Math.Clamp(settings.JpegImageQuality, 1, 100) },
+                    token);
+            }
         }
+    }
+
+    private static IReadOnlyList<string> ResolveLocalArtworkFormats(string? configured)
+    {
+        var formats = (configured ?? "jpg")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(value => value.TrimStart('.').ToLowerInvariant())
+            .Where(value => value is "jpg" or "jpeg" or "png")
+            .Select(value => value == "jpeg" ? "jpg" : value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return formats.Count == 0 ? ["jpg"] : formats;
     }
 
     private static async Task<LyricsSidecarWriteResult> WriteLyricsSidecarsAsync(
@@ -8476,6 +8933,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private sealed class AutoTagRunPlan
     {
+        public required string JobId { get; init; }
+        public required string ConfigPath { get; init; }
         public required AutoTagRunnerConfig Config { get; init; }
         public required string TargetPath { get; init; }
         public required AutoTagMatchingConfig MatchingConfig { get; init; }
@@ -8490,8 +8949,66 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public HashSet<string> PreSkippedFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> TaggedByAnyPlatform { get; } = new(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> ReviewedFiles { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<int> TaggedFileIndices { get; } = new();
+        public HashSet<int> ShazamIdentifiedFiles { get; } = new();
+        public Dictionary<int, AutoTagAudioInfo> OriginalManualInfo { get; } = new();
+        public Dictionary<int, AutoTagAudioInfo> ResolvedManualInfo { get; } = new();
+        public Dictionary<int, ManualReleaseIdentity> FrozenManualReleases { get; } = new();
+        public Dictionary<int, string> MaterializedManualPaths { get; } = new();
+        public HashSet<string> AttemptedArtistArtworkPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<int> AttemptedAppleExtras { get; } = new();
         public int PlatformCount => EffectivePlatforms.Count;
         public int FileCount => Files.Count;
+    }
+
+    private sealed class ManualReleaseIdentity
+    {
+        public string Title { get; init; } = string.Empty;
+        public List<string> Artists { get; init; } = new();
+        public List<string> AlbumArtists { get; init; } = new();
+        public string? Album { get; init; }
+        public string? Isrc { get; init; }
+        public string? ReleaseType { get; init; }
+        public int? TrackTotal { get; init; }
+        public string? Art { get; set; }
+
+        public static ManualReleaseIdentity FromTrack(AutoTagTrack track)
+            => new()
+            {
+                Title = track.Title,
+                Artists = track.Artists.ToList(),
+                AlbumArtists = track.AlbumArtists.ToList(),
+                Album = track.Album,
+                Isrc = track.Isrc,
+                ReleaseType = track.ReleaseType,
+                TrackTotal = track.TrackTotal,
+                Art = track.Art
+            };
+
+        public AutoTagAudioInfo ToAudioInfo()
+            => new()
+            {
+                Title = Title,
+                Artist = Artists.FirstOrDefault() ?? string.Empty,
+                Artists = Artists.ToList(),
+                Album = Album,
+                Isrc = Isrc
+            };
+
+        public void ApplyTo(AutoTagTrack track)
+        {
+            track.Title = Title;
+            track.Artists = Artists.ToList();
+            track.AlbumArtists = AlbumArtists.ToList();
+            track.Album = Album;
+            track.Isrc = Isrc;
+            track.ReleaseType = ReleaseType;
+            track.TrackTotal = TrackTotal;
+            if (!string.IsNullOrWhiteSpace(Art))
+            {
+                track.Art = Art;
+            }
+        }
     }
 
     private sealed class AutoTagFileRunContext
@@ -8592,6 +9109,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool? SaveArtwork { get; set; }
         public bool? DlAlbumcoverForPlaylist { get; set; }
         public bool? SaveArtworkArtist { get; set; }
+        public bool? SaveAnimatedArtwork { get; set; }
+        public string? AnimatedArtworkFormats { get; set; }
         public string? CoverImageTemplate { get; set; }
         public string? ArtistImageTemplate { get; set; }
         public string? LocalArtworkFormat { get; set; }
@@ -8603,6 +9122,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public string? ProfileId { get; set; }
         public string? ProfileName { get; set; }
         public int? LibraryWideEnhancementBatchSize { get; set; }
+        public string? ManualReleasePreference { get; set; }
+        public long? ManualDestinationFolderId { get; set; }
     }
 
     private sealed record ShazamEnrichmentResult(bool UsedShazam, string? Error, bool IsFatal, ShazamFailureKind FailureKind = ShazamFailureKind.None);

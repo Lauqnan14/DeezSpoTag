@@ -405,6 +405,32 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         return items;
     }
 
+    public async Task<IReadOnlyList<string>> GetPipelineOwnedPayloadPathsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT payload
+FROM download_task
+WHERE lower(status) IN ('resolving', 'queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+   OR (
+        lower(status) IN ('completed', 'complete')
+        AND (
+            lower(COALESCE(enrichment_status, '')) NOT IN ('completed', 'not_required')
+            OR lower(COALESCE(move_status, '')) NOT IN ('moved', 'not_required')
+        )
+   );";
+        await using var command = new SqliteCommand(sql, connection);
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            AddPayloadPaths(GetNullableString(reader, 0), paths);
+        }
+
+        return paths.ToList();
+    }
+
     public async Task MarkProviderWaitingAsync(
         string queueUuid,
         string engine,

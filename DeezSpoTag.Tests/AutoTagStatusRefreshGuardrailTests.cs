@@ -235,7 +235,7 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
-    public void AutoTagService_MovesOnlyEnhancementRunsAcrossHistoryDays()
+    public void AutoTagService_MovesEnhancementAndManualEnrichmentRunsAcrossHistoryDays()
     {
         var repoRoot = ResolveRepoRoot();
         var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
@@ -244,7 +244,8 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         var source = File.ReadAllText(servicePath);
         Assert.Contains("public DateTimeOffset? HistoryDate { get; set; }", source, StringComparison.Ordinal);
         Assert.Contains("HistoryDate = ResolveRunHistoryDate(job)", source, StringComparison.Ordinal);
-        Assert.Contains("if (!IsEnhancementRunIntent(job.RunIntent))", source, StringComparison.Ordinal);
+        Assert.Contains("if (!IsEnhancementRunIntent(job.RunIntent)", source, StringComparison.Ordinal);
+        Assert.Contains("&& !IsManualEnrichmentRunIntent(job.RunIntent))", source, StringComparison.Ordinal);
         Assert.Contains("return null;", source, StringComparison.Ordinal);
         Assert.Contains("public DateTimeOffset LastActivityAt { get; set; }", source, StringComparison.Ordinal);
         Assert.Contains("job.LastActivityAt = DateTimeOffset.UtcNow;", source, StringComparison.Ordinal);

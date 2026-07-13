@@ -22,6 +22,7 @@ public sealed class AutoTagMatchingConfig
     public int MaxDurationDifferenceSeconds { get; set; } = 30;
     public double Strictness { get; set; } = 0.7;
     public MultipleMatchesSort MultipleMatches { get; set; } = MultipleMatchesSort.Default;
+    public string? PreferredReleaseType { get; set; }
 }
 
 public sealed class AutoTagMatchResult

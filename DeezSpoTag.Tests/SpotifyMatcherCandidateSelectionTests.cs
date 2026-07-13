@@ -58,6 +58,51 @@ public sealed class SpotifyMatcherCandidateSelectionTests
         Assert.Null(selected);
     }
 
+    [Fact]
+    public void SelectBestCandidate_UsesRequestedSingleRelease()
+    {
+        var album = new SpotifyTrackInfo
+        {
+            Title = "All Over You",
+            Artists = new List<string> { "Deobi" },
+            Duration = TimeSpan.FromSeconds(145),
+            TrackId = "1111111111111111111111",
+            ReleaseType = "album",
+            TrackTotal = 12
+        };
+        var single = new SpotifyTrackInfo
+        {
+            Title = "All Over You",
+            Artists = new List<string> { "Deobi" },
+            Duration = TimeSpan.FromSeconds(145),
+            TrackId = "2222222222222222222222",
+            ReleaseType = "single",
+            TrackTotal = 1
+        };
+
+        var selected = InvokeSelectBestCandidate(SourceInfo(), new[] { album, single }, "single");
+
+        Assert.Same(single, selected);
+    }
+
+    [Fact]
+    public void SelectBestCandidate_DoesNotUseCompilationForRequestedAlbum()
+    {
+        var compilation = new SpotifyTrackInfo
+        {
+            Title = "All Over You",
+            Artists = new List<string> { "Deobi" },
+            Duration = TimeSpan.FromSeconds(145),
+            TrackId = "1111111111111111111111",
+            ReleaseType = "compilation",
+            TrackTotal = 30
+        };
+
+        var selected = InvokeSelectBestCandidate(SourceInfo(), new[] { compilation }, "album");
+
+        Assert.Null(selected);
+    }
+
     private static AutoTagAudioInfo SourceInfo()
     {
         return new AutoTagAudioInfo
@@ -72,7 +117,8 @@ public sealed class SpotifyMatcherCandidateSelectionTests
 
     private static SpotifyTrackInfo? InvokeSelectBestCandidate(
         AutoTagAudioInfo source,
-        IReadOnlyList<SpotifyTrackInfo> candidates)
+        IReadOnlyList<SpotifyTrackInfo> candidates,
+        string? preferredReleaseType = null)
     {
         var candidateType = typeof(SpotifyMatcher).GetNestedType("SpotifyCandidate", BindingFlags.NonPublic);
         Assert.NotNull(candidateType);
@@ -99,7 +145,8 @@ public sealed class SpotifyMatcherCandidateSelectionTests
             {
                 MatchDuration = true,
                 MaxDurationDifferenceSeconds = 5,
-                Strictness = 0.7
+                Strictness = 0.7,
+                PreferredReleaseType = preferredReleaseType
             }
         });
         if (selection == null)

@@ -347,7 +347,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
         var matcherSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "ShazamMatcher.cs");
 
-        Assert.Contains("var validationInfo = CloneAudioInfo(info);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var validationInfo = firstManualPass", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("? BuildAudioInfo(", runnerSource, StringComparison.Ordinal);
+        Assert.Contains(": CloneAudioInfo(context.Plan.OriginalManualInfo[context.FileIndex]);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var info = firstManualPass", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("? CloneAudioInfo(validationInfo)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);

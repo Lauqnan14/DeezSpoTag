@@ -83,6 +83,10 @@ public sealed class SpotifyMatcher
     {
         var compatibleTracks = candidates
             .Where(candidate => HasCompatibleArtistIdentity(info, candidate.Track.Artists, config))
+            .Where(candidate => AutoTagReleaseCategory.MatchesPreference(
+                candidate.Track.ReleaseType,
+                candidate.Track.TrackTotal,
+                config.PreferredReleaseType))
             .ToList();
         if (compatibleTracks.Count == 0)
         {
@@ -265,7 +269,7 @@ public sealed class SpotifyMatcher
             TrackNumber = track.TrackNumber,
             DiscNumber = track.DiscNumber,
             TrackTotal = track.TrackTotal,
-            ReleaseType = AutoTagReleaseCategory.Resolve(null, track.TrackTotal),
+            ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
             Label = track.Label,
             Genres = track.Genres.ToList(),
             Danceability = track.Danceability,

@@ -30,4 +30,21 @@ public sealed class AutoTagReleaseCategoryTests
     {
         Assert.Null(AutoTagReleaseCategory.Resolve(null, null));
     }
+
+    [Theory]
+    [InlineData("single", 1, "single", true)]
+    [InlineData("album", 12, "album", true)]
+    [InlineData("EP", 5, "album", true)]
+    [InlineData("compilation", 30, "album", false)]
+    [InlineData("album", 12, "single", false)]
+    public void MatchesPreference_EnforcesExplicitManualReleaseChoice(
+        string releaseType,
+        int trackTotal,
+        string preference,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            AutoTagReleaseCategory.MatchesPreference(releaseType, trackTotal, preference));
+    }
 }

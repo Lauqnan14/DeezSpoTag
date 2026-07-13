@@ -334,7 +334,9 @@ public static class DownloadEngineArtworkHelper
             }
         }
 
-        return null;
+        return string.IsNullOrWhiteSpace(request.Artist)
+            ? null
+            : await request.SpotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
     }
 
     private static async Task<string?> TryResolveLastFmArtistImageAsync(

@@ -249,6 +249,10 @@ public partial class AutoTagService
         {
             stageRoot["materializeToTemplatePath"] = true;
         }
+        if (string.Equals(context.RunIntent, AutoTagLiterals.RunIntentManualEnrichment, StringComparison.OrdinalIgnoreCase))
+        {
+            stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
+        }
 
         strippedKeys = ApplyStageSchema(stageRoot, EnrichmentStageAllowedKeys);
 

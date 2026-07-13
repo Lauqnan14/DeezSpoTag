@@ -14,6 +14,11 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
 public class AutoTagJobsController : ControllerBase
 {
+    private static readonly HashSet<string> ManualEnrichmentAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac", ".wav", ".aiff", ".aif", ".alac", ".m4a", ".m4b", ".mp4",
+        ".aac", ".mp3", ".wma", ".ogg", ".oga", ".opus", ".ape", ".wv", ".dsf"
+    };
     private readonly AutoTagService _autoTagService;
     private readonly AutoTagConfigBuilder _autoTagConfigBuilder;
     private readonly TaggingProfileService _profileService;
@@ -105,6 +110,7 @@ public class AutoTagJobsController : ControllerBase
         {
             return BadRequest("Select exactly one enhancement section per job.");
         }
+        var isManualEnrichment = selectedFeatures.Contains(AutoTagLiterals.EnhancementFeatureManualEnrichment);
 
         var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
             _libraryRepository,
@@ -119,6 +125,10 @@ public class AutoTagJobsController : ControllerBase
         if (request.FolderIds is { Count: > 0 } && requestedFolderIds.Count == 0)
         {
             return BadRequest("Selected library folders were not found or are disabled.");
+        }
+        if (isManualEnrichment && requestedFolderIds.Count != 1)
+        {
+            return BadRequest("Manual enrichment requires exactly one enabled music library destination.");
         }
         var scopedFolders = requestedFolderIds.Count > 0
             ? enabledFolders.Where(folder => requestedFolderIds.Contains(folder.Id)).ToList()
@@ -151,6 +161,16 @@ public class AutoTagJobsController : ControllerBase
         if (!TryBuildEffectiveConfigNode(selectedProfile, out var configNode, out var configError))
         {
             return configError!;
+        }
+
+        if (isManualEnrichment)
+        {
+            return await StartManualEnrichmentAsync(
+                request,
+                scopedFolders.Single(),
+                selectedProfile,
+                configNode,
+                cancellationToken);
         }
 
         var targetFiles = NormalizeEnhancementTargetFiles(request.TargetFiles, scopedFolders);
@@ -244,10 +264,166 @@ public class AutoTagJobsController : ControllerBase
             .Where(value => value is AutoTagLiterals.EnhancementFeatureGapFill
                 or AutoTagLiterals.EnhancementFeatureFolderUniformity
                 or AutoTagLiterals.EnhancementFeatureQualityChecks
-                or AutoTagLiterals.EnhancementFeatureCoverMaintenance)
+                or AutoTagLiterals.EnhancementFeatureCoverMaintenance
+                or AutoTagLiterals.EnhancementFeatureManualEnrichment)
             .Select(value => value!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
+
+    private async Task<IActionResult> StartManualEnrichmentAsync(
+        AutoTagEnhancementStartRequest request,
+        DeezSpoTag.Services.Library.FolderDto destinationFolder,
+        DeezSpoTag.Core.Models.Settings.TaggingProfile selectedProfile,
+        JsonObject configNode,
+        CancellationToken cancellationToken)
+    {
+        var releasePreference = NormalizeManualReleasePreference(request.ReleasePreference);
+        if (releasePreference == null)
+        {
+            return BadRequest("Manual enrichment release preference must be 'album' or 'single'.");
+        }
+
+        if (!ContainsConfiguredPlatform(configNode, "shazam"))
+        {
+            return BadRequest("Manual enrichment requires Shazam in the destination folder's profile.");
+        }
+
+        if (!TryResolveConfiguredDownloadRoot(out var stagingRoot, out var stagingError))
+        {
+            return BadRequest(stagingError);
+        }
+
+        var destinationRoot = TryNormalizePath(destinationFolder.RootPath);
+        if (destinationRoot == null)
+        {
+            return BadRequest("The selected library destination path is invalid.");
+        }
+        if (!Directory.Exists(stagingRoot) || !Directory.Exists(destinationRoot))
+        {
+            return BadRequest("The configured staging folder and selected library destination must both be accessible.");
+        }
+        if (AutoTagFolderScopeHelper.IsPathUnderRoot(stagingRoot, destinationRoot)
+            || AutoTagFolderScopeHelper.IsPathUnderRoot(destinationRoot, stagingRoot))
+        {
+            return BadRequest("The staging folder and manual enrichment destination cannot overlap.");
+        }
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return Conflict("Downloads are active. Manual enrichment cannot claim staged files until the queue is idle.");
+        }
+
+        var targetFiles = await ResolveManualEnrichmentTargetFilesAsync(stagingRoot, cancellationToken);
+        if (targetFiles.Count == 0)
+        {
+            return UnprocessableEntity("No unowned audio files are available in the Download/Staging folder.");
+        }
+
+        configNode.Remove("playlistPath");
+        configNode.Remove("isPlaylist");
+        configNode.Remove("moveFailed");
+        configNode.Remove("moveFailedPath");
+        configNode["path"] = stagingRoot;
+        configNode["moveSuccess"] = true;
+        configNode["moveSuccessPath"] = destinationRoot;
+        configNode["includeSubfolders"] = true;
+        configNode["materializeToTemplatePath"] = true;
+        configNode["organizeSidecarsIntoTemplateFolders"] = true;
+        configNode[AutoTagLiterals.ManualReleasePreferenceKey] = releasePreference;
+        configNode[AutoTagLiterals.ManualDestinationFolderIdKey] = destinationFolder.Id;
+        configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
+        configNode[AutoTagLiterals.TargetFilesKey] = new JsonArray(
+            targetFiles.Select(path => JsonValue.Create(path)).ToArray());
+
+        var job = await _autoTagService.StartJob(
+            stagingRoot,
+            SerializeConfig(configNode),
+            new AutoTagService.StartJobOptions(
+                ProfileId: selectedProfile.Id,
+                ProfileName: selectedProfile.Name,
+                RunIntent: AutoTagLiterals.RunIntentManualEnrichment,
+                FolderStructureOverride: selectedProfile.FolderStructure,
+                EnhancementFeature: AutoTagLiterals.EnhancementFeatureManualEnrichment,
+                EnhancementGroupId: request.GroupId));
+        return CreateStartJobResponse(job);
+    }
+
+    private async Task<List<string>> ResolveManualEnrichmentTargetFilesAsync(
+        string stagingRoot,
+        CancellationToken cancellationToken)
+    {
+        var pipelineOwnedPaths = await _queueRepository.GetPipelineOwnedPayloadPathsAsync(cancellationToken);
+        var normalizedOwnedPaths = pipelineOwnedPaths
+            .Select(DeezSpoTag.Services.Download.Utils.DownloadPathResolver.ResolveIoPath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(TryNormalizePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return Directory.EnumerateFiles(stagingRoot, "*", SearchOption.AllDirectories)
+            .Where(path => ManualEnrichmentAudioExtensions.Contains(Path.GetExtension(path)))
+            .Select(Path.GetFullPath)
+            .Where(path => !IsPipelineOwnedPath(path, normalizedOwnedPaths))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool IsPipelineOwnedPath(string candidate, IReadOnlyList<string> ownedPaths)
+    {
+        var candidateWithoutExtension = Path.Combine(
+            Path.GetDirectoryName(candidate) ?? string.Empty,
+            Path.GetFileNameWithoutExtension(candidate));
+        foreach (var ownedPath in ownedPaths)
+        {
+            if (string.Equals(candidate, ownedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (Directory.Exists(ownedPath) && AutoTagFolderScopeHelper.IsPathUnderRoot(candidate, ownedPath))
+            {
+                return true;
+            }
+            var ownedWithoutExtension = Path.Combine(
+                Path.GetDirectoryName(ownedPath) ?? string.Empty,
+                Path.GetFileNameWithoutExtension(ownedPath));
+            if (string.Equals(candidateWithoutExtension, ownedWithoutExtension, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string? TryNormalizePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    private static string? NormalizeManualReleasePreference(string? value)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            "album" => "album",
+            "single" => "single",
+            _ => null
+        };
+
+    private static bool ContainsConfiguredPlatform(JsonObject configNode, string platform)
+        => configNode[AutoTagLiterals.PlatformsKey] is JsonArray platforms
+           && platforms.Any(value => string.Equals(value?.GetValue<string>(), platform, StringComparison.OrdinalIgnoreCase));
 
     private static bool IsMissingCoreMetadataScanEnabled(JsonObject configNode)
     {
@@ -856,4 +1032,5 @@ public sealed class AutoTagEnhancementStartRequest
     public IReadOnlyList<long>? FolderIds { get; set; }
     public IReadOnlyList<string>? TargetFiles { get; set; }
     public string? GroupId { get; set; }
+    public string? ReleasePreference { get; set; }
 }
