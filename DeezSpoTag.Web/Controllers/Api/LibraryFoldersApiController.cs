@@ -14,6 +14,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [Route("api/library/folders")]
 [ApiController]
 [Authorize]
+[AutoValidateAntiforgeryToken]
 public class LibraryFoldersApiController : ControllerBase
 {
     private const string FolderContentMusic = "music";

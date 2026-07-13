@@ -4,6 +4,7 @@ using System.Linq;
 using System.Globalization;
 using System.Xml;
 using System.Xml.Linq;
+using System.Xml.Schema;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
@@ -29,6 +30,7 @@ public sealed class AppleLyricsService
     private const string AppleMusicScheme = "https";
     private const string AppleMusicHost = "music.apple.com";
     private const string AppleMusicCatalogApiHost = "amp-api.music.apple.com";
+    private const string TtmlNamespace = "http://www.w3.org/ns/ttml";
     private const string MediaUserTokenHeader = "Media-User-Token";
     private const string UserAgentHeader = "User-Agent";
     private readonly AppleMusicCatalogService _catalogService;
@@ -38,6 +40,7 @@ public sealed class AppleLyricsService
     {
         Timeout = TimeSpan.FromSeconds(8)
     };
+    private static readonly XmlSchemaSet TtmlSchemas = CreateTtmlSchemas();
 
     public AppleLyricsService(
         AppleMusicCatalogService catalogService,
@@ -442,22 +445,92 @@ public sealed class AppleLyricsService
 
         try
         {
+            var readerSettings = new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                MaxCharactersInDocument = 4 * 1024 * 1024,
+                MaxCharactersFromEntities = 0,
+                ValidationFlags = XmlSchemaValidationFlags.ReportValidationWarnings
+            };
+            readerSettings.ValidationType = ValidationType.Schema;
+            readerSettings.Schemas = TtmlSchemas;
+
             using var reader = XmlReader.Create(
                 new StringReader(ttml),
-                new XmlReaderSettings
-                {
-                    DtdProcessing = DtdProcessing.Prohibit,
-                    XmlResolver = null,
-                    ValidationType = ValidationType.Schema,
-                    MaxCharactersInDocument = 4 * 1024 * 1024
-                });
+                readerSettings);
             document = XDocument.Load(reader, LoadOptions.None);
             return document.Root?.Name.LocalName.Equals("tt", StringComparison.OrdinalIgnoreCase) == true;
         }
-        catch (Exception ex) when (ex is XmlException or InvalidOperationException or ArgumentException)
+        catch (Exception ex) when (ex is XmlException or XmlSchemaException or InvalidOperationException or ArgumentException)
         {
             return false;
         }
+    }
+
+    private static XmlSchemaSet CreateTtmlSchemas()
+    {
+        var schemas = new XmlSchemaSet
+        {
+            XmlResolver = null
+        };
+        AddTtmlSchema(schemas, TtmlNamespace);
+        AddTtmlSchema(schemas, targetNamespace: null);
+        schemas.Compile();
+        return schemas;
+    }
+
+    private static void AddTtmlSchema(XmlSchemaSet schemas, string? targetNamespace)
+    {
+        var namespaceDeclaration = string.IsNullOrEmpty(targetNamespace)
+            ? string.Empty
+            : $"targetNamespace=\"{targetNamespace}\" xmlns:ttml=\"{targetNamespace}\"";
+        var typePrefix = string.IsNullOrEmpty(targetNamespace) ? string.Empty : "ttml:";
+        var schemaXml = $$"""
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                       {{namespaceDeclaration}}
+                       elementFormDefault="qualified"
+                       attributeFormDefault="unqualified">
+              <xs:element name="tt" type="{{typePrefix}}TtmlRootType" />
+
+              <xs:complexType name="TtmlRootType">
+                <xs:sequence>
+                  <xs:element name="head" type="{{typePrefix}}TtmlContentType" minOccurs="0" />
+                  <xs:element name="body" type="{{typePrefix}}TtmlContentType" minOccurs="0" />
+                </xs:sequence>
+                <xs:anyAttribute namespace="##any" processContents="skip" />
+              </xs:complexType>
+
+              <xs:complexType name="TtmlContentType" mixed="true">
+                <xs:choice minOccurs="0" maxOccurs="unbounded">
+                  <xs:element name="body" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="div" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="p" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="span" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="br" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="metadata" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="styling" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="style" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="layout" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="region" type="{{typePrefix}}TtmlContentType" />
+                  <xs:element name="set" type="{{typePrefix}}TtmlContentType" />
+                  <xs:any namespace="##other" processContents="skip" />
+                </xs:choice>
+                <xs:anyAttribute namespace="##any" processContents="skip" />
+              </xs:complexType>
+            </xs:schema>
+            """;
+
+        using var schemaReader = XmlReader.Create(
+            new StringReader(schemaXml),
+            new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null
+            });
+        var schema = XmlSchema.Read(schemaReader, validationEventHandler: null)
+            ?? throw new InvalidOperationException("The built-in TTML schema could not be loaded.");
+        schemas.Add(schema);
     }
 
     private static bool HasAppleTimestamp(XElement element, string attributeName)

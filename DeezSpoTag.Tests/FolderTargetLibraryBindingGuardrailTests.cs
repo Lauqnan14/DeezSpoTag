@@ -1,11 +1,23 @@
 using System;
 using System.IO;
+using DeezSpoTag.Web.Controllers.Api;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
 
 public sealed class FolderTargetLibraryBindingGuardrailTests
 {
+    [Fact]
+    public void Folder_Mutation_Endpoints_Require_Antiforgery_Validation()
+    {
+        var attributes = typeof(LibraryFoldersApiController).GetCustomAttributes(inherit: true);
+        var tokenAwareFilter = Read("DeezSpoTag.Web", "Filters", "ApiTokenAwareAntiforgeryFilter.cs");
+
+        Assert.Contains(attributes, attribute => attribute is AutoValidateAntiforgeryTokenAttribute);
+        Assert.Contains("AutoValidateAntiforgeryTokenOrder + 1", tokenAwareFilter, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void AutoTag_Folder_Modal_Maps_All_Meloday_Target_Libraries()
     {

@@ -7,6 +7,7 @@ namespace DeezSpoTag.Web.Filters;
 
 public sealed class ApiTokenAwareAntiforgeryFilter : IAsyncAuthorizationFilter, IAntiforgeryPolicy, IOrderedFilter
 {
+    private const int AutoValidateAntiforgeryTokenOrder = 1000;
     private readonly IAntiforgery _antiforgery;
 
     public ApiTokenAwareAntiforgeryFilter(IAntiforgery antiforgery)
@@ -14,7 +15,9 @@ public sealed class ApiTokenAwareAntiforgeryFilter : IAsyncAuthorizationFilter, 
         _antiforgery = antiforgery;
     }
 
-    public int Order => 1000;
+    // Run after MVC's AutoValidateAntiforgeryToken filter so this token-aware
+    // policy is the effective IAntiforgeryPolicy and API-token requests remain exempt.
+    public int Order => AutoValidateAntiforgeryTokenOrder + 1;
 
     public async Task OnAuthorizationAsync(AuthorizationFilterContext context)
     {

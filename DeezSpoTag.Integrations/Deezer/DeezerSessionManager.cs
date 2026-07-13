@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Core.Security;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Net;
@@ -257,9 +258,9 @@ public sealed class DeezerSessionManager : IDisposable
                 lastFailure = ex;
                 _logger.LogInformation(
                     "Deezer public endpoint {Endpoint} was unavailable for country {Country}; retrying country {FallbackCountry}.",
-                    endpoint,
-                    countries[index],
-                    countries[index + 1]);
+                    LogSanitizer.OneLine(endpoint),
+                    LogSanitizer.OneLine(countries[index]),
+                    LogSanitizer.OneLine(countries[index + 1]));
             }
         }
 

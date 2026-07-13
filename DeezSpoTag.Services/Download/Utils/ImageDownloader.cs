@@ -1,5 +1,6 @@
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Download;
+using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Download;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Core.Enums;
@@ -76,7 +77,10 @@ public class ImageDownloader
     {
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Starting image download: {Url} to {Path}", url, path);
+            _logger.LogDebug(
+                "Starting image download: {Url} to {Path}",
+                LogSanitizer.OneLine(url),
+                LogSanitizer.OneLine(path));
         }
 
         var existingPath = TryReuseExistingImagePath(path, overwrite);
@@ -136,7 +140,10 @@ public class ImageDownloader
 
             if (_logger.IsEnabled(LogLevel.Information))
             {
-                _logger.LogInformation("Successfully downloaded image: {Url} to {Path}", downloadUrl, path);
+                _logger.LogInformation(
+                    "Successfully downloaded image: {Url} to {Path}",
+                    LogSanitizer.OneLine(downloadUrl),
+                    LogSanitizer.OneLine(path));
             }
 
             return DownloadAttemptResult.Success;
@@ -168,7 +175,10 @@ public class ImageDownloader
         TryDeletePartialFile(path);
         if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
         {
-            _logger.LogWarning(ex, "Image download timed out or was canceled internally: {Url}", url);
+            _logger.LogWarning(
+                ex,
+                "Image download timed out or was canceled internally: {Url}",
+                LogSanitizer.OneLine(url));
             return DownloadAttemptOutcome.Fail;
         }
 
@@ -194,7 +204,7 @@ public class ImageDownloader
         TryDeletePartialFile(path);
         if (ex is HttpRequestException httpError && IsHttpError(httpError))
         {
-            _logger.LogWarning(ex, "Image not found: {Url}", url);
+            _logger.LogWarning(ex, "Image not found: {Url}", LogSanitizer.OneLine(url));
             return DownloadAttemptOutcome.Fail;
         }
 
@@ -202,7 +212,10 @@ public class ImageDownloader
         {
             if (attempt >= MAX_DOWNLOAD_RETRY_ATTEMPTS)
             {
-                _logger.LogWarning(ex, "Image download failed after retry attempts: {Url}", url);
+                _logger.LogWarning(
+                    ex,
+                    "Image download failed after retry attempts: {Url}",
+                    LogSanitizer.OneLine(url));
                 return DownloadAttemptOutcome.Fail;
             }
 
@@ -219,7 +232,11 @@ public class ImageDownloader
             return DownloadAttemptOutcome.Retry;
         }
 
-        _logger.LogError(ex, "Failed to download image from {Url} to {Path}", url, path);
+        _logger.LogError(
+            ex,
+            "Failed to download image from {Url} to {Path}",
+            LogSanitizer.OneLine(url),
+            LogSanitizer.OneLine(path));
         return DownloadAttemptOutcome.Fail;
     }
 
@@ -239,7 +256,9 @@ public class ImageDownloader
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Image already exists and not overwriting: {Path}", path);
+            _logger.LogDebug(
+                "Image already exists and not overwriting: {Path}",
+                LogSanitizer.OneLine(path));
         }
 
         return path;
@@ -264,7 +283,10 @@ public class ImageDownloader
         var rewritten = await TryGetMaxSpotifyCoverUrlAsync(httpClient, url, cancellationToken);
         if (!string.Equals(rewritten, url, StringComparison.Ordinal) && _logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Spotify image max-res rewrite: {OriginalUrl} -> {MaxUrl}", url, rewritten);
+            _logger.LogInformation(
+                "Spotify image max-res rewrite: {OriginalUrl} -> {MaxUrl}",
+                LogSanitizer.OneLine(url),
+                LogSanitizer.OneLine(rewritten));
         }
 
         return rewritten;
@@ -281,7 +303,7 @@ public class ImageDownloader
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Sending HTTP request for image: {Url}", downloadUrl);
+            _logger.LogDebug("Sending HTTP request for image: {Url}", LogSanitizer.OneLine(downloadUrl));
         }
 
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -320,7 +342,10 @@ public class ImageDownloader
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug("Spotify max-res image verified via HEAD: {MaxUrl}", maxUrl);                }
+                    _logger.LogDebug(
+                        "Spotify max-res image verified via HEAD: {MaxUrl}",
+                        LogSanitizer.OneLine(maxUrl));
+                }
                 return maxUrl;
             }
         }
@@ -329,19 +354,30 @@ public class ImageDownloader
             // Head probe timed out; fall back to original URL.
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Timed out probing Spotify max-res image URL {MaxUrl}", maxUrl);            }
+                _logger.LogDebug(
+                    ex,
+                    "Timed out probing Spotify max-res image URL {MaxUrl}",
+                    LogSanitizer.OneLine(maxUrl));
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Fall back to original URL on any HEAD failure.
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to probe Spotify max-res image URL {MaxUrl}", maxUrl);            }
+                _logger.LogDebug(
+                    ex,
+                    "Failed to probe Spotify max-res image URL {MaxUrl}",
+                    LogSanitizer.OneLine(maxUrl));
+            }
         }
 
         if (_logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogDebug("Spotify max-res image not available, using original URL: {OriginalUrl}", url);        }
+            _logger.LogDebug(
+                "Spotify max-res image not available, using original URL: {OriginalUrl}",
+                LogSanitizer.OneLine(url));
+        }
         return url;
     }
 
@@ -392,13 +428,21 @@ public class ImageDownloader
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Failed to delete partial image file {Path}", path);            }
+                _logger.LogDebug(
+                    ex,
+                    "Failed to delete partial image file {Path}",
+                    LogSanitizer.OneLine(path));
+            }
         }
         catch (UnauthorizedAccessException ex)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Access denied while deleting partial image file {Path}", path);            }
+                _logger.LogDebug(
+                    ex,
+                    "Access denied while deleting partial image file {Path}",
+                    LogSanitizer.OneLine(path));
+            }
         }
     }
 

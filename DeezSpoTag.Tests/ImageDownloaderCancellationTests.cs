@@ -2,9 +2,11 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Utils;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -12,6 +14,36 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ImageDownloaderCancellationTests
 {
+    [Fact]
+    public async Task DownloadImageAsync_NeutralizesLineBreaksInLoggedInput()
+    {
+        var logger = new CaptureLogger<ImageDownloader>();
+        var downloader = new ImageDownloader(
+            logger,
+            new StubHttpClientFactory(new TimeoutHandler()));
+        var targetPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.jpg");
+        await File.WriteAllTextAsync(targetPath, "existing image");
+
+        try
+        {
+            var result = await downloader.DownloadImageAsync(
+                "https://example.com/cover.jpg\r\nFORGED-ENTRY",
+                targetPath);
+
+            Assert.Equal(targetPath, result);
+            Assert.NotEmpty(logger.Messages);
+            Assert.All(logger.Messages, message =>
+            {
+                Assert.DoesNotContain('\r', message);
+                Assert.DoesNotContain('\n', message);
+            });
+        }
+        finally
+        {
+            File.Delete(targetPath);
+        }
+    }
+
     [Fact]
     public async Task DownloadImageAsync_ReturnsNull_WhenHttpRequestTimesOut()
     {
@@ -63,6 +95,25 @@ public sealed class ImageDownloaderCancellationTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class CaptureLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
         }
     }
 }

@@ -535,6 +535,35 @@ public sealed class LyricsServicePrivateHelpersTests
         Assert.True(DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(ttml));
     }
 
+    [Theory]
+    [InlineData("<tt xmlns='http://www.w3.org/ns/ttml'><body><script /><p begin='1.0'>Line</p></body></tt>")]
+    [InlineData("<tt><body><script /><p begin='1.0'>Line</p></body></tt>")]
+    [InlineData("<!DOCTYPE tt [<!ENTITY forged 'Line'>]><tt><body><div><p begin='1.0'>&forged;</p></div></body></tt>")]
+    public void AppleTtmlTiming_RejectsPayloadsOutsideBuiltInSchema(string ttml)
+    {
+        Assert.False(DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(ttml));
+        Assert.False(DeezSpoTag.Services.Apple.AppleLyricsService.TryExtractPlainLyrics(ttml, out _));
+    }
+
+    [Fact]
+    public void AppleTtmlTiming_AcceptsStandardHeadAndExtensionMetadata()
+    {
+        const string ttml = """
+            <tt xmlns="http://www.w3.org/ns/ttml"
+                xmlns:itunes="http://music.apple.com/lyric-ttml-internal"
+                itunes:timing="Line">
+              <head>
+                <metadata><itunes:songWriter>Artist</itunes:songWriter></metadata>
+                <styling><style xml:id="defaultStyle" /></styling>
+                <layout><region xml:id="lyrics" /></layout>
+              </head>
+              <body><div><p begin="00:00:01.000" end="00:00:02.000">Line</p></div></body>
+            </tt>
+            """;
+
+        Assert.True(DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(ttml));
+    }
+
     [Fact]
     public void ShouldSaveTtml_RejectsUntimedApplePayload()
     {

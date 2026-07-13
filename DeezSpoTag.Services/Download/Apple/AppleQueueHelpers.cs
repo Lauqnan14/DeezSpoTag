@@ -962,8 +962,8 @@ public static class AppleQueueHelpers
         {
             request.Logger.LogDebug(
                 "Downloading iTunes artwork with configured size preference: {Url} (target: {Path})",
-                preferredUrl,
-                effectivePath);
+                LogSanitizer.OneLine(preferredUrl),
+                LogSanitizer.OneLine(effectivePath));
         }
 
         return await downloader.DownloadImageAsync(
