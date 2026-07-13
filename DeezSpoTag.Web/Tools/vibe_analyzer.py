@@ -372,11 +372,6 @@ class AudioAnalyzer:
             return (None, str(exc))
 
     def load_audio_pair(self, file_path: str) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
-        audio_44k = self.load_audio(file_path, 44100)
-        audio_16k = self.load_audio(file_path, 16000)
-        if audio_44k is not None and audio_16k is not None:
-            return (audio_44k, audio_16k, None)
-
         temp_path, error = self._transcode_to_temp_wav(file_path)
         if temp_path is None:
             return (None, None, error or "Unable to decode audio")

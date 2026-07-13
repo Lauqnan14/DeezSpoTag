@@ -3805,6 +3805,10 @@ WITH candidate_files AS (
     JOIN folder f ON f.id = af.folder_id
     LEFT JOIN track_analysis ta ON ta.track_id = t.id
     WHERE f.enabled = 1
+      AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+      AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+      AND coalesce(af.size, 0) > 0
+      AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
       AND (
           NOT EXISTS (SELECT 1 FROM temp_analysis_library_scope)
           OR EXISTS (
@@ -3937,6 +3941,11 @@ JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE t.id = @trackId
+  AND f.enabled = 1
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+  AND coalesce(af.size, 0) > 0
+  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
 ORDER BY f.enabled DESC,
          CASE
              WHEN lower(coalesce(af.codec, '')) LIKE '%eac3%'
@@ -4081,7 +4090,11 @@ FROM track t
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
-WHERE f.enabled = 1;";
+WHERE f.enabled = 1
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+  AND coalesce(af.size, 0) > 0
+  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0);";
         const string analyzedSql = @"
 SELECT COUNT(DISTINCT ta.track_id)
 FROM track_analysis ta
@@ -4089,7 +4102,12 @@ JOIN track t ON t.id = ta.track_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
-WHERE f.enabled = 1 AND ta.status IN ('complete', 'completed');";
+WHERE f.enabled = 1
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+  AND coalesce(af.size, 0) > 0
+  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
+  AND ta.status IN ('complete', 'completed');";
         const string errorSql = @"
 SELECT COUNT(DISTINCT ta.track_id)
 FROM track_analysis ta
@@ -4097,7 +4115,12 @@ JOIN track t ON t.id = ta.track_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
-WHERE f.enabled = 1 AND ta.status IN ('error', 'failed');";
+WHERE f.enabled = 1
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+  AND coalesce(af.size, 0) > 0
+  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
+  AND ta.status IN ('error', 'failed');";
         const string lastRunSql = @"
 SELECT MAX(ta.analyzed_at_utc)
 FROM track_analysis ta
@@ -4105,7 +4128,12 @@ JOIN track t ON t.id = ta.track_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
-WHERE f.enabled = 1 AND ta.analyzed_at_utc IS NOT NULL;";
+WHERE f.enabled = 1
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%video%'
+  AND lower(coalesce(f.desired_quality_value, '')) NOT LIKE '%podcast%'
+  AND coalesce(af.size, 0) > 0
+  AND (coalesce(af.duration_ms, 0) > 0 OR coalesce(af.sample_rate_hz, 0) > 0 OR coalesce(af.channels, 0) > 0)
+  AND ta.analyzed_at_utc IS NOT NULL;";
 
         var total = await ExecuteCountScalarAsync(connection, totalSql, cancellationToken);
         var analyzed = await ExecuteCountScalarAsync(connection, analyzedSql, cancellationToken);

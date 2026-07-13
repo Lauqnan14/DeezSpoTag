@@ -2855,7 +2855,7 @@
                                     <span class="tool-help-tooltip">Learn more about this tool</span>
                                 </button>
                             </div>
-                            <p class="tool-card-info mb-0">Analyze tracks in enabled folders to generate vibe metrics.</p>
+                            <p class="tool-card-info mb-0">Analyze tracks in enabled music and Atmos libraries to generate vibe metrics.</p>
                             <div class="section-divider"></div>
                             <div class="section-label">Recent files</div>
                             <ul id="analysisRecentList" class="analysis-recent-list">
@@ -3037,7 +3037,7 @@
                                                 <input id="analysis-use-library-order" type="checkbox">
                                                 <span>
                                                     <strong>Use custom library order</strong>
-                                                    <span class="analysis-setting-tooltip" title="Analyze only the selected enabled folders, in this order." aria-label="Analyze only the selected enabled folders, in this order.">?</span>
+                                                    <span class="analysis-setting-tooltip" title="Analyze only the selected enabled music and Atmos libraries, in this order." aria-label="Analyze only the selected enabled music and Atmos libraries, in this order.">?</span>
                                                 </span>
                                             </label>
                                             <button class="action-btn action-btn-sm analysis-folder-order-edit" type="button" id="analysis-folder-order-edit-toggle" aria-expanded="false" hidden>Edit order</button>
@@ -3046,7 +3046,7 @@
                                         <div id="analysis-folder-order-panel" hidden>
                                             <ul class="analysis-folder-order-list" id="analysis-folder-order-list"></ul>
                                             <div class="analysis-folder-order-footer">
-                                                <span class="analysis-folder-order-copy">Drag folders into vibe analysis priority order.</span>
+                                                <span class="analysis-folder-order-copy">Drag audio libraries into vibe analysis priority order.</span>
                                                 <button class="action-btn action-btn-sm" type="button" id="analysis-reset-folder-order">Reset order</button>
                                             </div>
                                         </div>
@@ -7585,7 +7585,7 @@ async function loadAnalysisFolders() {
     }
     const folders = await response.json();
     analysisAvailableFolders = (Array.isArray(folders) ? folders : [])
-        .filter(folder => folder?.enabled !== false && folder?.id != null)
+        .filter(folder => folder?.enabled !== false && folder?.id != null && isVibeAudioFolder(folder))
         .map(folder => ({
             id: Number(folder.id),
             displayName: folder.displayName || folder.libraryName || folder.rootPath || `Folder ${folder.id}`,
@@ -7593,6 +7593,20 @@ async function loadAnalysisFolders() {
             libraryName: folder.libraryName || ''
         }));
     analysisSettingsState.libraryOrder = normalizeAnalysisFolderOrder(analysisSettingsState.libraryOrder);
+}
+
+function isVibeAudioFolder(folder) {
+    const desiredQuality = String(folder?.desiredQuality ?? folder?.DesiredQuality ?? '').trim().toLowerCase();
+    if (desiredQuality.includes('video') || desiredQuality.includes('podcast')) {
+        return false;
+    }
+
+    if (desiredQuality !== '0') {
+        return true;
+    }
+
+    const fallback = `${folder?.displayName || ''} ${folder?.rootPath || ''}`.toLowerCase();
+    return !fallback.includes('video') && !fallback.includes('podcast');
 }
 
 function normalizeAnalysisFolderOrder(order) {
@@ -7628,8 +7642,8 @@ function renderAnalysisFolderOrder() {
     editToggle.setAttribute('aria-expanded', analysisFolderOrderExpanded ? 'true' : 'false');
     summary.hidden = !isEnabled;
     summary.textContent = selectedCount === 1
-        ? `1 enabled folder selected from ${totalCount}.`
-        : `${selectedCount} enabled folders selected from ${totalCount}.`;
+        ? `1 audio library selected from ${totalCount}.`
+        : `${selectedCount} audio libraries selected from ${totalCount}.`;
     panel.hidden = !isEnabled || !analysisFolderOrderExpanded;
 
     const byId = new Map(analysisAvailableFolders.map(folder => [folder.id, folder]));

@@ -1,7 +1,4 @@
 using DeezSpoTag.Services.Library;
-using NAudio.Vorbis;
-using NAudio.Wave;
-using NLayer;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -12,7 +9,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private readonly record struct AnalysisBatchOutcome(int Processed, int Completed);
 
     private const string StandardAnalysisMode = "standard";
-    private const string StandardAnalysisVersion = "naudio-basic-1";
+    private const string StandardAnalysisVersion = "ffmpeg-basic-2";
     private const string EnhancedAnalysisMode = "enhanced";
     private const string EnhancedAnalysisVersion = "musicnn-1";
     private const string FailedAnalysisStatus = "failed";
@@ -1105,11 +1102,6 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     }
 
 
-    private static bool IsFfmpegHandledExtension(string? extension)
-    {
-        return extension is ".flac" or ".m4a" or ".m4b" or ".aac" or ".opus" or ".wma" or ".ape" or ".ogg" or ".oga";
-    }
-
     private static bool TryLoadTrackSamples(
         TrackAnalysisInputDto track,
         out float[] samples,
@@ -1125,38 +1117,20 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             return false;
         }
 
-        var extension = Path.GetExtension(track.FilePath)?.ToLowerInvariant();
-        if (string.Equals(extension, ".mp3", StringComparison.OrdinalIgnoreCase))
+        if (new FileInfo(track.FilePath).Length <= 0)
         {
-            if (!TryReadMp3Samples(track.FilePath, 30, out samples, out sampleRate, out var mp3Error))
-            {
-                failure = CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, mp3Error ?? "Unable to decode mp3.");
-                return false;
-            }
-
-            return true;
-        }
-
-        if (IsFfmpegHandledExtension(extension))
-        {
-            if (!TryReadWithFfmpeg(track.FilePath, 30, out samples, out sampleRate, out var ffmpegError))
-            {
-                failure = CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ffmpegError ?? $"Unable to decode {extension}.");
-                return false;
-            }
-
-            return true;
-        }
-
-        using var reader = OpenAudioStream(track.FilePath, out var errorMessage);
-        if (reader is null)
-        {
-            failure = CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, errorMessage ?? "Unsupported audio format.");
+            failure = CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, "Audio file is empty.");
             return false;
         }
 
-        sampleRate = reader.WaveFormat.SampleRate;
-        samples = ReadSamples(reader.ToSampleProvider(), 30);
+        if (!TryReadWithFfmpeg(track.FilePath, 30, out samples, out sampleRate, out var ffmpegError))
+        {
+            var extension = Path.GetExtension(track.FilePath)?.ToLowerInvariant();
+            var format = string.IsNullOrWhiteSpace(extension) ? "audio file" : extension;
+            failure = CreateFailure(track.TrackId, track.LibraryId, FailedAnalysisStatus, ffmpegError ?? $"Unable to decode {format}.");
+            return false;
+        }
+
         return true;
     }
 
@@ -2498,6 +2472,8 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             startInfo.ArgumentList.Add("-nostdin");
             startInfo.ArgumentList.Add("-i");
             startInfo.ArgumentList.Add(path);
+            startInfo.ArgumentList.Add("-map");
+            startInfo.ArgumentList.Add("0:a:0");
             startInfo.ArgumentList.Add("-t");
             startInfo.ArgumentList.Add(seconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
             startInfo.ArgumentList.Add("-f");
@@ -2506,6 +2482,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             startInfo.ArgumentList.Add(channels.ToString(System.Globalization.CultureInfo.InvariantCulture));
             startInfo.ArgumentList.Add("-ar");
             startInfo.ArgumentList.Add(sampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("-vn");
             startInfo.ArgumentList.Add("-");
 
             using var process = Process.Start(startInfo);
@@ -2549,112 +2526,6 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             errorMessage = ex.Message;
             return false;
-        }
-    }
-
-    private static float[] ReadSamples(ISampleProvider provider, int seconds)
-    {
-        var sampleRate = provider.WaveFormat.SampleRate;
-        var channels = provider.WaveFormat.Channels;
-        var sampleCount = sampleRate * seconds * channels;
-        var buffer = new float[sampleCount];
-        var read = provider.Read(buffer, 0, buffer.Length);
-        if (read <= 0)
-        {
-            return Array.Empty<float>();
-        }
-        if (read == buffer.Length)
-        {
-            return buffer;
-        }
-        var trimmed = new float[read];
-        Array.Copy(buffer, trimmed, read);
-        return trimmed;
-    }
-
-    private static bool TryReadMp3Samples(string path, int seconds, out float[] samples, out int sampleRate, out string? errorMessage)
-    {
-        samples = Array.Empty<float>();
-        sampleRate = 0;
-        errorMessage = null;
-        try
-        {
-            using var mpeg = new MpegFile(path);
-            sampleRate = mpeg.SampleRate;
-            var channels = mpeg.Channels;
-            if (sampleRate <= 0 || channels <= 0)
-            {
-                errorMessage = "Invalid mp3 format metadata.";
-                return false;
-            }
-            var sampleCount = sampleRate * seconds * channels;
-            var buffer = new float[sampleCount];
-            var read = mpeg.ReadSamples(buffer, 0, buffer.Length);
-            if (read <= 0)
-            {
-                errorMessage = "No mp3 samples decoded.";
-                return false;
-            }
-            if (read == buffer.Length)
-            {
-                samples = buffer;
-                return true;
-            }
-            var trimmed = new float[read];
-            Array.Copy(buffer, trimmed, read);
-            samples = trimmed;
-            return true;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            errorMessage = ex.Message;
-            return false;
-        }
-    }
-
-    private static WaveStream? OpenAudioStream(string path, out string? errorMessage)
-    {
-        errorMessage = null;
-        var extension = Path.GetExtension(path)?.ToLowerInvariant();
-        try
-        {
-            WaveStream? reader = null;
-            switch (extension)
-            {
-                case ".wav":
-                    reader = new WaveFileReader(path);
-                    break;
-                case ".aiff":
-                case ".aif":
-                    reader = new AiffFileReader(path);
-                    break;
-                case ".ogg":
-                case ".oga":
-                    reader = new VorbisWaveReader(path);
-                    break;
-                case ".m4a":
-                case ".m4b":
-                case ".aac":
-                    if (OperatingSystem.IsWindows())
-                    {
-                        reader = new MediaFoundationReader(path);
-                    }
-                    break;
-            }
-
-            if (reader is null)
-            {
-                errorMessage = string.IsNullOrWhiteSpace(extension)
-                    ? "Unsupported format"
-                    : $"Unsupported format {extension}";
-            }
-
-            return reader;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            errorMessage = ex.Message;
-            return null;
         }
     }
 
