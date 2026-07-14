@@ -1968,23 +1968,8 @@ globalThis.DeezSpoTag = {
         this.applyConnectedFlagState(authData.spotifyConnected === true, connected, platformStates, 'spotify', 'librespot-blob', 'missing');
         this.applyConnectedFlagState(authData.appleMusic?.wrapperReady === true, connected, platformStates, 'applemusic', 'wrapper', 'wrapper');
         this.applyConnectedFlagState(authData.qobuz?.connected === true, connected, platformStates, 'qobuz', 'official-api', 'offline');
-        this.setPlatformPublicApiStatus(
-            platformStates,
-            'qobuz',
-            authData.qobuz?.publicApiStatus,
-            authData.qobuz?.publicApiOnlineCount);
         this.applyConnectedFlagState(authData.tidal?.connected === true, connected, platformStates, 'tidal', 'official-api', 'offline');
-        this.setPlatformPublicApiStatus(
-            platformStates,
-            'tidal',
-            authData.tidal?.publicApiStatus,
-            authData.tidal?.publicApiOnlineCount);
         this.applyConnectedFlagState(authData.amazonMusic?.connected === true, connected, platformStates, 'amazonmusic', 'session', 'offline');
-        this.setPlatformPublicApiStatus(
-            platformStates,
-            'amazonmusic',
-            authData.amazonMusic?.publicApiStatus,
-            authData.amazonMusic?.publicApiOnlineCount);
         this.applyConnectedFlagState(
             authData.soulseek?.connected === true,
             connected,

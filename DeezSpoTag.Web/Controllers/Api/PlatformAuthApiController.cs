@@ -89,9 +89,7 @@ public class PlatformAuthApiController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get(
-        [FromQuery] bool refresh,
-        CancellationToken cancellationToken)
+    public async Task<IActionResult> Get()
     {
         var gate = EnsureAccess();
         if (gate != null)
@@ -100,16 +98,6 @@ public class PlatformAuthApiController : ControllerBase
         }
 
         var state = await _authService.LoadAsync();
-        if (refresh)
-        {
-            state = await RefreshAppleWrapperStateAsync(state);
-            state = await RefreshQobuzAccountAsync(state, cancellationToken);
-            state = await RefreshSoulseekConnectionAsync(state, cancellationToken);
-        }
-        var amazonProviders = await GetPublicAmazonProvidersAsync(cancellationToken);
-        var qobuzProviders = await GetPublicQobuzProvidersAsync(cancellationToken);
-        var tidalProviders = await GetPublicTidalProvidersAsync(cancellationToken);
-
         return Ok(new
         {
             spotify = state.Spotify is null ? null : new { state.Spotify.ActiveAccount, accounts = state.Spotify.Accounts?.Select(a => new { a.Name, a.Region, a.CreatedAt, a.UpdatedAt }) },
@@ -122,9 +110,9 @@ public class PlatformAuthApiController : ControllerBase
             jellyfin = state.Jellyfin is null ? null : new { state.Jellyfin.Url, state.Jellyfin.Username, state.Jellyfin.UserId, state.Jellyfin.ServerName, state.Jellyfin.Version, state.Jellyfin.AvatarUrl, apiKeySaved = !string.IsNullOrWhiteSpace(state.Jellyfin.ApiKey) },
             navidrome = ToPublicNavidrome(state.Navidrome),
             appleMusic = state.AppleMusic is null ? null : new { state.AppleMusic.Email, mediaUserTokenSaved = !string.IsNullOrWhiteSpace(state.AppleMusic.MediaUserToken), authorizationTokenSaved = !string.IsNullOrWhiteSpace(state.AppleMusic.AuthorizationToken), state.AppleMusic.WrapperReady, state.AppleMusic.WrapperLoggedInAt },
-            qobuz = ToPublicQobuz(state.Qobuz, qobuzProviders),
-            tidal = ToPublicTidal(state.Tidal, tidalProviders),
-            amazonMusic = ToPublicAmazonMusic(state.AmazonMusic, amazonProviders),
+            qobuz = ToPublicQobuz(state.Qobuz),
+            tidal = ToPublicTidal(state.Tidal),
+            amazonMusic = ToPublicAmazonMusic(state.AmazonMusic),
             soulseek = ToPublicSoulseek(state.Soulseek),
             boomplay = ToPublicBoomplay(state.Boomplay)
         });
@@ -162,31 +150,6 @@ public class PlatformAuthApiController : ControllerBase
         if (gate != null) return gate;
         await _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
         return Ok(await GetPublicAmazonProvidersAsync(cancellationToken));
-    }
-
-    private async Task<PlatformAuthState> RefreshAppleWrapperStateAsync(PlatformAuthState state)
-    {
-        var wrapperStatus = _appleWrapperService.GetStatus();
-        state.AppleMusic ??= new AppleMusicAuth();
-        var apple = state.AppleMusic;
-        if (apple.WrapperReady == wrapperStatus.WrapperReady
-            && string.Equals(apple.Email, wrapperStatus.Email, StringComparison.Ordinal)
-            && (wrapperStatus.WrapperReady || apple.WrapperLoggedInAt is null))
-        {
-            return state;
-        }
-
-        return await _authService.UpdateAsync(current =>
-        {
-            current.AppleMusic ??= new AppleMusicAuth();
-            current.AppleMusic.WrapperReady = wrapperStatus.WrapperReady;
-            current.AppleMusic.Email = wrapperStatus.Email;
-            if (!wrapperStatus.WrapperReady)
-            {
-                current.AppleMusic.WrapperLoggedInAt = null;
-            }
-            return current;
-        });
     }
 
     private static bool HasSpotifyRuntimeCredentials(SpotifyConfig? spotify)
@@ -276,6 +239,24 @@ public class PlatformAuthApiController : ControllerBase
         if (gate != null) return gate;
         await _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
         return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
+    }
+
+    [HttpGet("qobuz/account")]
+    public async Task<IActionResult> GetQobuzAccount(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        var state = await RefreshQobuzAccountAsync(await _authService.LoadAsync(), cancellationToken);
+        return Ok(ToPublicQobuz(state.Qobuz));
+    }
+
+    [HttpGet("soulseek/connection")]
+    public async Task<IActionResult> GetSoulseekConnection(CancellationToken cancellationToken)
+    {
+        var gate = EnsureAccess();
+        if (gate != null) return gate;
+        var state = await RefreshSoulseekConnectionAsync(await _authService.LoadAsync(), cancellationToken);
+        return Ok(ToPublicSoulseek(state.Soulseek));
     }
 
     [HttpGet("public-providers/status")]
@@ -420,8 +401,7 @@ public class PlatformAuthApiController : ControllerBase
             return state.Qobuz;
         });
 
-        var providers = await GetPublicQobuzProvidersAsync(cancellationToken);
-        return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz, providers) });
+        return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz) });
     }
 
     [HttpPost("tidal")]
@@ -471,7 +451,7 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest($"Tidal credentials were rejected: {ex.Message}");
         }
 
-        return Ok(new { saved = true, tidal = ToPublicTidal(tidal, await GetPublicTidalProvidersAsync(cancellationToken)) });
+        return Ok(new { saved = true, tidal = ToPublicTidal(tidal) });
     }
 
     [HttpPost("soulseek")]
@@ -579,8 +559,7 @@ public class PlatformAuthApiController : ControllerBase
             return state.AmazonMusic;
         });
 
-        var amazonProviders = await GetPublicAmazonProvidersAsync(cancellationToken);
-        return Ok(new { saved = true, amazonMusic = ToPublicAmazonMusic(amazonMusic, amazonProviders) });
+        return Ok(new { saved = true, amazonMusic = ToPublicAmazonMusic(amazonMusic) });
     }
 
     [HttpPost("lastfm")]
@@ -872,7 +851,7 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
-    private static object ToPublicQobuz(QobuzAuth? auth, QobuzProviderSummary providers)
+    private static object ToPublicQobuz(QobuzAuth? auth)
     {
         var hasAppSecret = !string.IsNullOrWhiteSpace(auth?.AppSecret) || !string.IsNullOrWhiteSpace(auth?.DownloadSecret);
         var hasAuthToken = !string.IsNullOrWhiteSpace(auth?.AuthToken);
@@ -892,16 +871,11 @@ public class PlatformAuthApiController : ControllerBase
             subscriptionOffer = auth?.SubscriptionOffer,
             authTokenValid = auth?.AuthTokenValid,
             accountRefreshedAt = auth?.AccountRefreshedAt,
-            publicApiOnline = providers.Online,
-            publicApiStatus = providers.Status,
-            publicApiOnlineCount = providers.OnlineCount,
-            publicApiSessionValid = providers.SessionValid,
-            connected,
-            providers = providers.Providers
+            connected
         };
     }
 
-    private static object ToPublicTidal(TidalAuth? auth, TidalProviderSummary providers) => new
+    private static object ToPublicTidal(TidalAuth? auth) => new
     {
         clientId = auth?.ClientId,
         clientSecretSaved = !string.IsNullOrWhiteSpace(auth?.ClientSecret),
@@ -911,12 +885,7 @@ public class PlatformAuthApiController : ControllerBase
         countryCode = auth?.CountryCode ?? "US",
         credentialsValid = auth?.CredentialsValid == true,
         validatedAt = auth?.ValidatedAt,
-        publicApiOnline = providers.Online,
-        publicApiStatus = providers.Status,
-        publicApiOnlineCount = providers.OnlineCount,
-        publicApiSessionValid = providers.SessionValid,
-        connected = auth?.CredentialsValid == true,
-        providers = providers.Providers
+        connected = auth?.CredentialsValid == true
     };
 
     private static object ToPublicSoulseek(SoulseekAuth? auth)
@@ -1067,12 +1036,7 @@ public class PlatformAuthApiController : ControllerBase
         var result = await _qobuzAccountProfileService.FetchAsync(qobuz.AppId, qobuz.AuthToken, cancellationToken);
         return await _authService.UpdateAsync(current =>
         {
-            if (current.Qobuz is null)
-            {
-                return current;
-            }
-
-            if (result.Status == QobuzAccountProfileStatus.Unavailable)
+            if (current.Qobuz is null || result.Status == QobuzAccountProfileStatus.Unavailable)
             {
                 return current;
             }
@@ -1245,7 +1209,7 @@ public class PlatformAuthApiController : ControllerBase
     private static bool IsChecked(AmazonProviderView provider)
         => provider.LastCheckedAt.HasValue && provider.Status != "unknown";
 
-    private static object ToPublicAmazonMusic(AmazonMusicAuth? auth, AmazonProviderSummary providers)
+    private static object ToPublicAmazonMusic(AmazonMusicAuth? auth)
     {
         var configured = auth is not null
             && (!string.IsNullOrWhiteSpace(auth.Host) || !string.IsNullOrWhiteSpace(auth.Cookie));
@@ -1256,12 +1220,7 @@ public class PlatformAuthApiController : ControllerBase
             cookieSaved = !string.IsNullOrWhiteSpace(auth?.Cookie),
             configured,
             connected = configured,
-            savedAt = auth?.SavedAt,
-            publicApiOnline = providers.Online,
-            publicApiStatus = providers.Status,
-            publicApiOnlineCount = providers.OnlineCount,
-            publicApiSessionValid = providers.SessionValid,
-            providers = providers.Providers
+            savedAt = auth?.SavedAt
         };
     }
 

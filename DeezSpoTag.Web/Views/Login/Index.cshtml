@@ -363,21 +363,19 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "qobuzLoggedInInfo", ImageAlt = "Qobuz", ImageSrc = "/images/icons/qobuz.png", ImageCssClass = "h-20 w-20", ButtonId = "qobuzDisconnectBtn", NameId = "qobuzLoggedInName", NameFallback = initialQobuzName, DetailId = "qobuzLoggedInStatus", DetailText = initialQobuzStatus, WrapperCssClass = initialQobuzConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="qobuz-provider-panel" aria-labelledby="qobuzProviderHeading">
-                    <div class="qobuz-provider-panel__header">
+                <section class="public-api-provider-panel" aria-labelledby="qobuzProviderHeading">
+                    <div class="public-api-provider-panel__header">
                         <div>
                             <h4 id="qobuzProviderHeading">Public API Providers</h4>
-                            <p class="text-muted" id="qobuzProviderSummary">Provider status has not been loaded.</p>
                         </div>
-                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="qobuzProviderToggle" type="button" aria-expanded="false">Edit providers</button>
+                        <button class="btn btn-secondary action-btn action-btn-sm public-api-provider-toggle" id="qobuzProviderToggle" type="button" aria-expanded="false">Edit providers</button>
                     </div>
-                    <div class="qobuz-provider-editor" id="qobuzProviderEditor" hidden>
-                        <div class="qobuz-provider-actions">
+                    <div class="public-api-provider-editor" id="qobuzProviderEditor" hidden>
+                        <div class="public-api-provider-actions">
                             <button class="btn btn-primary action-btn" id="qobuzCheckProvidersBtn" type="button">Check now</button>
-                            <button class="btn btn-secondary action-btn" id="qobuzVerifyPublicDownloadsBtn" type="button">Verify public downloads</button>
                         </div>
                         <p class="text-muted" id="qobuzPublicDownloadSessionStatus">Public download verification has not been checked.</p>
-                        <div id="qobuzProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                        <div id="qobuzProviderRows" class="public-api-provider-list" aria-live="polite"></div>
                     </div>
                 </section>
             </div>
@@ -400,21 +398,19 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "tidalLoggedInInfo", ImageAlt = "Tidal", ImageSrc = "/images/icons/tidal-light.png", ImageCssClass = "h-20 w-20", ButtonId = "tidalDisconnectBtn", NameId = "tidalLoggedInName", NameFallback = initialTidalName, DetailId = "tidalLoggedInStatus", DetailText = initialTidalStatus, WrapperCssClass = initialTidalConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="qobuz-provider-panel" aria-labelledby="tidalProviderHeading">
-                    <div class="qobuz-provider-panel__header">
+                <section class="public-api-provider-panel" aria-labelledby="tidalProviderHeading">
+                    <div class="public-api-provider-panel__header">
                         <div>
                             <h4 id="tidalProviderHeading">Public API Providers</h4>
-                            <p class="text-muted" id="tidalProviderSummary">Provider status has not been loaded.</p>
                         </div>
-                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="tidalProviderToggle" type="button" aria-expanded="false">Edit providers</button>
+                        <button class="btn btn-secondary action-btn action-btn-sm public-api-provider-toggle" id="tidalProviderToggle" type="button" aria-expanded="false">Edit providers</button>
                     </div>
-                    <div class="qobuz-provider-editor" id="tidalProviderEditor" hidden>
-                        <div class="qobuz-provider-actions">
+                    <div class="public-api-provider-editor" id="tidalProviderEditor" hidden>
+                        <div class="public-api-provider-actions">
                             <button class="btn btn-primary action-btn" id="tidalCheckProvidersBtn" type="button">Check now</button>
-                            <button class="btn btn-secondary action-btn" id="tidalVerifyPublicDownloadsBtn" type="button">Verify public downloads</button>
                         </div>
                         <p class="text-muted" id="tidalPublicDownloadSessionStatus">Public download verification has not been checked.</p>
-                        <div id="tidalProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                        <div id="tidalProviderRows" class="public-api-provider-list" aria-live="polite"></div>
                     </div>
                 </section>
             </div>
@@ -545,21 +541,19 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "amazonMusicLoggedInInfo", ImageAlt = "Amazon Music", ImageSrc = "/images/icons/amazon-music.png", ImageCssClass = "h-20 w-20", ButtonId = "amazonMusicDisconnectBtn", NameId = "amazonMusicLoggedInName", NameFallback = initialAmazonMusicName, DetailId = "amazonMusicLoggedInStatus", DetailText = initialAmazonMusicStatus, WrapperCssClass = initialAmazonMusicConnected ? "settings-group mt-6" : "settings-group mt-6 hidden" })
-                <section class="qobuz-provider-panel" aria-labelledby="amazonMusicProviderHeading">
-                    <div class="qobuz-provider-panel__header">
+                <section class="public-api-provider-panel" aria-labelledby="amazonMusicProviderHeading">
+                    <div class="public-api-provider-panel__header">
                         <div>
                             <h4 id="amazonMusicProviderHeading">Public API Providers</h4>
-                            <p class="text-muted" id="amazonMusicProviderSummary">Provider status has not been loaded.</p>
                         </div>
-                        <button class="btn btn-secondary action-btn action-btn-sm qobuz-provider-toggle" id="amazonMusicProviderToggle" type="button" aria-expanded="false">Edit providers</button>
+                        <button class="btn btn-secondary action-btn action-btn-sm public-api-provider-toggle" id="amazonMusicProviderToggle" type="button" aria-expanded="false">Edit providers</button>
                     </div>
-                    <div class="qobuz-provider-editor" id="amazonMusicProviderEditor" hidden>
-                        <div class="qobuz-provider-actions">
+                    <div class="public-api-provider-editor" id="amazonMusicProviderEditor" hidden>
+                        <div class="public-api-provider-actions">
                             <button class="btn btn-primary action-btn" id="amazonMusicCheckProvidersBtn" type="button">Check now</button>
-                            <button class="btn btn-secondary action-btn" id="amazonMusicVerifyPublicDownloadsBtn" type="button">Verify public downloads</button>
                         </div>
                         <p class="text-muted" id="amazonMusicPublicDownloadSessionStatus">Public download verification has not been checked.</p>
-                        <div id="amazonMusicProviderRows" class="qobuz-provider-list" aria-live="polite"></div>
+                        <div id="amazonMusicProviderRows" class="public-api-provider-list" aria-live="polite"></div>
                     </div>
                 </section>
             </div>
@@ -756,184 +750,146 @@ body {
     object-fit: contain;
 }
 
-.qobuz-provider-panel {
+.public-api-provider-panel {
     border-top: 1px solid var(--border-primary);
     margin-top: 2rem;
     padding-top: 2rem;
 }
 
-.qobuz-provider-panel__header,
-.qobuz-provider-row {
+.public-api-provider-panel__header,
+.public-api-provider-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
 }
 
-.qobuz-provider-panel__header h4 {
+.public-api-provider-panel__header h4 {
     margin: 0;
     color: var(--text-primary);
 }
 
-.qobuz-provider-toggle {
+.public-api-provider-toggle {
     white-space: nowrap;
 }
 
-.qobuz-provider-editor {
+.public-api-provider-editor {
     margin-top: 1rem;
 }
 
-.qobuz-provider-editor[hidden] {
+.public-api-provider-editor[hidden] {
     display: none;
 }
 
-.qobuz-provider-actions {
+.public-api-provider-actions {
     display: flex;
     justify-content: flex-end;
 }
 
-.qobuz-provider-list {
+.public-api-provider-list {
     display: grid;
     gap: .75rem;
     margin-top: 1rem;
 }
 
-.qobuz-provider-row {
+.public-api-provider-row {
     min-height: 58px;
     padding: .75rem 1rem;
     border: 1px solid var(--border-primary);
     border-radius: 6px;
 }
 
-.qobuz-provider-row__identity {
+.public-api-provider-row__identity {
     min-width: 0;
 }
 
-.qobuz-provider-row__name,
-.qobuz-provider-row__detail {
+.public-api-provider-row__name,
+.public-api-provider-row__detail {
     display: block;
 }
 
-.qobuz-provider-row__detail {
+.public-api-provider-row__detail {
     color: var(--text-muted);
     font-size: .85rem;
 }
 
-.qobuz-provider-row__controls {
+.public-api-provider-row__controls {
     display: flex;
     align-items: center;
     gap: .75rem;
 }
 
-.qobuz-provider-state {
+.public-api-provider-badges {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: .45rem;
+    flex-wrap: wrap;
+}
+
+.public-api-provider-badge {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: .65rem;
-    min-width: 150px;
-    padding: .35rem .8rem;
-    border: 1px solid currentColor;
+    gap: .3rem;
+    padding: .3rem .55rem;
+    border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
     border-radius: 999px;
     background: var(--bg-secondary);
-    font-size: .78rem;
-}
-
-.qobuz-provider-state--online {
-    color: var(--success-color, #00d084);
-    background: color-mix(in srgb, var(--success-color, #00d084) 10%, var(--bg-secondary));
-}
-
-.qobuz-provider-state--degraded,
-.qobuz-provider-state--rate_limited,
-.qobuz-provider-state--captcha_required {
-    color: var(--warning-color, #f5c542);
-    background: color-mix(in srgb, var(--warning-color, #f5c542) 10%, var(--bg-secondary));
-}
-
-.qobuz-provider-state--offline {
-    color: var(--danger-color, #ff3860);
-    background: color-mix(in srgb, var(--danger-color, #ff3860) 10%, var(--bg-secondary));
-}
-
-.qobuz-provider-state--disabled,
-.qobuz-provider-state--unknown {
     color: var(--text-muted);
+    font-size: .74rem;
+    white-space: nowrap;
 }
 
-.qobuz-provider-status {
-    display: inline-flex;
-    align-items: center;
-    padding-left: .65rem;
-    border-left: 1px solid color-mix(in srgb, var(--text-muted) 40%, transparent);
-    text-transform: capitalize;
+.public-api-provider-badge__label { color: var(--text-muted); }
+.public-api-provider-badge--enabled,
+.public-api-provider-badge--online,
+.public-api-provider-badge--verified { color: var(--success-color, #00d084); }
+.public-api-provider-badge--checking,
+.public-api-provider-badge--degraded,
+.public-api-provider-badge--rate_limited,
+.public-api-provider-badge--captcha_required,
+.public-api-provider-badge--unverified { color: var(--warning-color, #f5c542); }
+.public-api-provider-badge--offline { color: var(--danger-color, #ff3860); }
+
+.public-api-provider-verify {
+    flex: 0 0 auto;
 }
 
-.qobuz-provider-status--online { color: var(--success-color, #00d084); }
-.qobuz-provider-status--degraded,
-.qobuz-provider-status--rate_limited,
-.qobuz-provider-status--captcha_required { color: var(--warning-color, #f5c542); }
-.qobuz-provider-status--offline { color: var(--danger-color, #ff3860); }
-.qobuz-provider-status--disabled,
-.qobuz-provider-status--unknown { color: var(--text-muted); }
-
-.qobuz-provider-activity {
-    display: inline-flex;
-    align-items: center;
-    gap: .45rem;
-    color: inherit;
-}
-
-.qobuz-provider-activity::before {
-    content: '';
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: currentColor;
-}
-
-.qobuz-provider-activity.is-active {
-    color: inherit;
-}
-
-.qobuz-provider-activity.is-active::before {
-    background: currentColor;
-}
-
-.qobuz-provider-row .switch {
+.public-api-provider-row .switch {
     width: 52px;
     height: 28px;
 }
 
-.qobuz-provider-row .slider::before {
+.public-api-provider-row .slider::before {
     width: 22px;
     height: 22px;
     left: 2px;
     top: 2px;
 }
 
-.qobuz-provider-row .switch input:checked + .slider::before {
+.public-api-provider-row .switch input:checked + .slider::before {
     transform: translateX(24px);
 }
 
 @@media (max-width: 640px) {
-    .qobuz-provider-row {
+    .public-api-provider-row {
         align-items: flex-start;
         flex-direction: column;
     }
 
-    .qobuz-provider-row__controls {
+    .public-api-provider-row__controls {
         width: 100%;
         justify-content: space-between;
         flex-wrap: wrap;
     }
 
-    .qobuz-provider-panel__header {
+    .public-api-provider-panel__header {
         align-items: flex-start;
         flex-direction: column;
     }
 
-    .qobuz-provider-toggle,
-    .qobuz-provider-actions .action-btn {
+    .public-api-provider-toggle,
+    .public-api-provider-actions .action-btn {
         width: 100%;
     }
 }
@@ -1571,8 +1527,70 @@ let spotifyConfigRequested = false;
 let spotifyConfigLoadSequence = 0;
 let spotifyBlobGenerationInFlight = false;
 let deezerStatusRequested = false;
-let platformAuthStateRequested = false;
+let platformAuthLoadState = 'idle';
+let platformAuthLoadPromise = null;
 let appleMusicBootstrapRequested = false;
+const PUBLIC_API_PROVIDER_CONFIG = Object.freeze({
+    qobuz: Object.freeze({
+        platformId: 'qobuz',
+        tabId: 'qobuz-login',
+        label: 'Qobuz',
+        endpoint: '/api/platform-auth/qobuz/providers',
+        rowsId: 'qobuzProviderRows',
+        toggleButtonId: 'qobuzProviderToggle',
+        editorId: 'qobuzProviderEditor',
+        checkButtonId: 'qobuzCheckProvidersBtn',
+        verifyButtonId: 'qobuzVerifyPublicDownloadsBtn',
+        verificationProviderId: 'zarz-v2',
+        sessionStatusId: 'qobuzPublicDownloadSessionStatus',
+        sessionEndpoint: '/api/qobuz/download/public-session',
+        popupName: 'qobuz-public-download-verification'
+    }),
+    tidal: Object.freeze({
+        platformId: 'tidal',
+        tabId: 'tidal-login',
+        label: 'Tidal',
+        endpoint: '/api/platform-auth/tidal/providers',
+        rowsId: 'tidalProviderRows',
+        toggleButtonId: 'tidalProviderToggle',
+        editorId: 'tidalProviderEditor',
+        checkButtonId: 'tidalCheckProvidersBtn',
+        verifyButtonId: 'tidalVerifyPublicDownloadsBtn',
+        verificationProviderId: 'zarz',
+        sessionStatusId: 'tidalPublicDownloadSessionStatus',
+        sessionEndpoint: '/api/tidal/download/public-session',
+        popupName: 'tidal-public-download-verification'
+    }),
+    amazonmusic: Object.freeze({
+        platformId: 'amazonmusic',
+        tabId: 'amazon-music-login',
+        label: 'Amazon Music',
+        endpoint: '/api/platform-auth/amazonmusic/providers',
+        rowsId: 'amazonMusicProviderRows',
+        toggleButtonId: 'amazonMusicProviderToggle',
+        editorId: 'amazonMusicProviderEditor',
+        checkButtonId: 'amazonMusicCheckProvidersBtn',
+        verifyButtonId: 'amazonMusicVerifyPublicDownloadsBtn',
+        verificationProviderId: 'zarz-api',
+        sessionStatusId: 'amazonMusicPublicDownloadSessionStatus',
+        sessionEndpoint: '/api/amazon/download/public-session',
+        popupName: 'amazon-public-download-verification'
+    })
+});
+const publicApiProviderStates = new Map(
+    Object.keys(PUBLIC_API_PROVIDER_CONFIG).map(platformId => [platformId, {
+        loadState: 'idle',
+        providers: [],
+        summary: null,
+        requestSequence: 0,
+        requestController: null,
+        requestPromise: null,
+        mutationSequences: new Map(),
+        pendingMutations: new Set(),
+        sessionLoadState: 'idle',
+        sessionPromise: null
+    }])
+);
 
 function isTabPreferenceEnabled() {
     try {
@@ -1746,6 +1764,45 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    function bindPublicApiProviderPanel(platformId) {
+        const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+        if (!config) {
+            return;
+        }
+
+        bindProviderPanelToggle(config.toggleButtonId, config.editorId);
+        bindAsyncClick(config.checkButtonId, () => checkPublicApiProviders(platformId));
+
+        const editorToggle = document.getElementById(config.toggleButtonId);
+        const editor = document.getElementById(config.editorId);
+        editorToggle?.addEventListener('click', () => {
+            if (editor && !editor.hidden) {
+                void ensurePublicApiProvidersLoaded(platformId);
+                void ensurePublicDownloadSessionLoaded(platformId);
+            }
+        });
+
+        const rows = document.getElementById(config.rowsId);
+        rows?.addEventListener('change', event => {
+            const toggle = event.target.closest('[data-public-api-provider-id]');
+            if (!toggle) {
+                return;
+            }
+            void setPublicApiProviderEnabled(platformId, toggle.dataset.publicApiProviderId, toggle.checked, toggle);
+        });
+        rows?.addEventListener('click', event => {
+            const verify = event.target.closest('[data-public-api-provider-verify]');
+            if (verify) {
+                void startPublicDownloadVerification(config);
+                return;
+            }
+            const retry = event.target.closest('[data-public-api-provider-retry]');
+            if (retry) {
+                void loadPublicApiProviders(platformId, { force: true });
+            }
+        });
+    }
+
     function initializeLoginDropdowns() {
         const dropdowns = document.querySelectorAll('.login-dropdown');
         dropdowns.forEach(dropdown => {
@@ -1890,44 +1947,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     bindPlatformDisconnect('qobuzDisconnectBtn', '/api/platform-auth/qobuz/disconnect', 'qobuzStatus');
 
-    bindProviderPanelToggle('qobuzProviderToggle', 'qobuzProviderEditor');
-    bindAsyncClick('qobuzCheckProvidersBtn', checkQobuzProviders);
-    bindAsyncClick('qobuzVerifyPublicDownloadsBtn', startQobuzPublicDownloadVerification);
-    loadQobuzPublicDownloadSession();
-    const qobuzProviderRows = document.getElementById('qobuzProviderRows');
-    if (qobuzProviderRows) {
-        qobuzProviderRows.addEventListener('change', async function(event) {
-            const toggle = event.target.closest('[data-qobuz-provider-id]');
-            if (!toggle) return;
-            await setQobuzProviderEnabled(toggle.dataset.qobuzProviderId, toggle.checked, toggle);
-        });
-    }
-
-    bindProviderPanelToggle('tidalProviderToggle', 'tidalProviderEditor');
-    bindAsyncClick('tidalCheckProvidersBtn', checkTidalProviders);
-    bindAsyncClick('tidalVerifyPublicDownloadsBtn', startTidalPublicDownloadVerification);
-    loadTidalPublicDownloadSession();
-    const tidalProviderRows = document.getElementById('tidalProviderRows');
-    if (tidalProviderRows) {
-        tidalProviderRows.addEventListener('change', async function(event) {
-            const toggle = event.target.closest('[data-tidal-provider-id]');
-            if (!toggle) return;
-            await setTidalProviderEnabled(toggle.dataset.tidalProviderId, toggle.checked, toggle);
-        });
-    }
-
-    bindProviderPanelToggle('amazonMusicProviderToggle', 'amazonMusicProviderEditor');
-    bindAsyncClick('amazonMusicCheckProvidersBtn', checkAmazonMusicProviders);
-    bindAsyncClick('amazonMusicVerifyPublicDownloadsBtn', startAmazonMusicPublicDownloadVerification);
-    loadAmazonMusicPublicDownloadSession();
-    const amazonMusicProviderRows = document.getElementById('amazonMusicProviderRows');
-    if (amazonMusicProviderRows) {
-        amazonMusicProviderRows.addEventListener('change', async function(event) {
-            const toggle = event.target.closest('[data-amazon-music-provider-id]');
-            if (!toggle) return;
-            await setAmazonMusicProviderEnabled(toggle.dataset.amazonMusicProviderId, toggle.checked, toggle);
-        });
-    }
+    Object.keys(PUBLIC_API_PROVIDER_CONFIG).forEach(bindPublicApiProviderPanel);
 
     const tidalForm = document.getElementById('tidalLoginForm');
     if (tidalForm) {
@@ -2093,10 +2113,12 @@ function setProviderPanelExpanded(toggle, editor, expanded) {
 }
 
 async function initializeLoginPageState() {
-    const tasks = [ensurePlatformAuthStateLoaded()];
+    const tasks = [];
     const activeTabId = getActiveLoginTabId();
     if (activeTabId) {
         tasks.push(bootstrapLoginTab(activeTabId));
+    } else {
+        tasks.push(ensurePlatformAuthStateLoaded());
     }
 
     const results = await Promise.allSettled(tasks);
@@ -2455,18 +2477,16 @@ async function validatePersistentLoginState() {
 }
 
 async function loadPlatformAuthState() {
-    try {
-        const response = await fetch('/api/platform-auth?refresh=true', {
+    const response = await fetch('/api/platform-auth', {
             cache: 'no-store',
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         });
         if (isAuthRedirectResponse(response)) {
-            showToast('Login required to load platform credentials', 'error');
-            return;
+            throw new Error('Login required to load platform credentials');
         }
         if (!response.ok) {
-            return;
+            throw new Error(await getApiErrorMessage(response, 'Failed to load platform credentials'));
         }
 
         const data = await response.json();
@@ -2525,17 +2545,7 @@ async function loadPlatformAuthState() {
             }
         }
         if (data.qobuz) {
-            document.getElementById('qobuzAppId').value = data.qobuz.appId || '712109809';
-            document.getElementById('qobuzAuthToken').placeholder = data.qobuz.authTokenSaved
-                ? 'Saved - leave blank to keep current token'
-                : 'Qobuz user auth token';
-            document.getElementById('qobuzAppSecret').placeholder = data.qobuz.appSecretSaved
-                ? 'Saved - leave blank to keep current secret'
-                : 'Qobuz App Secret';
-            const qobuzConnected = isQobuzLoggedIn(data.qobuz);
-            setStatus('qobuzStatus', qobuzConnected);
-            renderQobuzInfo(data.qobuz);
-            togglePlatformLoginState('qobuz', qobuzConnected);
+            applyQobuzAccountState(data.qobuz);
         }
         if (data.tidal) {
             document.getElementById('tidalClientId').value = data.tidal.clientId || '';
@@ -2550,13 +2560,7 @@ async function loadPlatformAuthState() {
             togglePlatformLoginState('tidal', tidalConnected);
         }
         if (data.soulseek) {
-            document.getElementById('soulseekBaseUrl').value = data.soulseek.baseUrl || '';
-            document.getElementById('soulseekApiKey').placeholder = data.soulseek.apiKeySaved
-                ? 'Saved - leave blank to keep current API key'
-                : 'slskd API key';
-            setSoulseekFormStatus(data.soulseek, 'soulseekStatus');
-            renderSoulseekInfo(data.soulseek);
-            togglePlatformLoginState('soulseek', Boolean(data.soulseek.connected));
+            applySoulseekConnectionState(data.soulseek);
         }
         if (data.boomplay) {
             document.getElementById('boomplayCookie').placeholder = data.boomplay.cookieSaved
@@ -2576,17 +2580,32 @@ async function loadPlatformAuthState() {
             renderAmazonMusicInfo(data.amazonMusic);
             togglePlatformLoginState('amazonMusic', Boolean(data.amazonMusic.connected));
         }
-    } catch (error) {
-        console.warn('Failed to load platform auth state', error);
-    }
+    return true;
 }
 
 async function ensurePlatformAuthStateLoaded() {
-    if (platformAuthStateRequested) {
-        return;
+    if (platformAuthLoadState === 'loaded') {
+        return true;
     }
-    platformAuthStateRequested = true;
-    await loadPlatformAuthState();
+    if (platformAuthLoadState === 'loading' && platformAuthLoadPromise) {
+        return platformAuthLoadPromise;
+    }
+
+    platformAuthLoadState = 'loading';
+    platformAuthLoadPromise = loadPlatformAuthState()
+        .then(() => {
+            platformAuthLoadState = 'loaded';
+            return true;
+        })
+        .catch(error => {
+            platformAuthLoadState = 'failed';
+            console.warn('Failed to load platform auth state', error);
+            throw error;
+        })
+        .finally(() => {
+            platformAuthLoadPromise = null;
+        });
+    return platformAuthLoadPromise;
 }
 
 async function ensureDeezerStatusLoaded() {
@@ -2629,19 +2648,39 @@ async function bootstrapLoginTab(tabId) {
         return;
     }
 
+    const platformAuthTask = ensurePlatformAuthStateLoaded();
+    const tasks = [platformAuthTask];
+    const providerConfig = Object.values(PUBLIC_API_PROVIDER_CONFIG)
+        .find(config => config.tabId === tabId);
+    if (providerConfig) {
+        tasks.push(ensurePublicApiProvidersLoaded(providerConfig.platformId));
+        tasks.push(ensurePublicDownloadSessionLoaded(providerConfig.platformId));
+    }
+    if (tabId === 'qobuz-login') {
+        tasks.push(platformAuthTask.then(refreshQobuzAccountState));
+    }
+    if (tabId === 'soulseek-login') {
+        tasks.push(platformAuthTask.then(refreshSoulseekConnectionState));
+    }
+
     if (tabId === 'deezer-login') {
-        await ensureDeezerStatusLoaded();
-        return;
+        tasks.push(ensureDeezerStatusLoaded());
     }
 
     if (tabId === 'spotify-login') {
         ensureSpotifyConfigLoaded();
-        return;
     }
 
     if (tabId === 'apple-music-login') {
-        await ensureAppleMusicBootstrapLoaded();
+        tasks.push(ensureAppleMusicBootstrapLoaded());
     }
+
+    const results = await Promise.allSettled(tasks);
+    results.forEach(result => {
+        if (result.status === 'rejected') {
+            console.warn(`Failed to bootstrap ${tabId}`, result.reason);
+        }
+    });
 }
 
 function isAuthRedirectResponse(response) {
@@ -3023,10 +3062,8 @@ function renderQobuzInfo(auth) {
         nameLabel.textContent = auth?.displayName || 'Official Qobuz API';
     }
     if (statusLabel) {
-        if (auth?.connected && !auth?.configured) {
-            statusLabel.textContent = 'Public Qobuz API online';
-        } else if (!auth?.configured) {
-            statusLabel.textContent = 'No Qobuz API is currently online';
+        if (!auth?.configured) {
+            statusLabel.textContent = 'Official Qobuz credentials are not configured.';
         } else if (auth?.authTokenValid === true) {
             const country = auth.country || auth.zone || 'Country unavailable';
             const subscription = auth.credentialLabel || auth.subscriptionOffer;
@@ -3037,79 +3074,431 @@ function renderQobuzInfo(auth) {
             statusLabel.textContent = 'App credentials saved | country requires a valid User Auth Token';
         }
     }
-    renderQobuzProviders(auth?.providers || [], auth?.publicApiOnline === true, auth?.publicApiSessionValid === true);
 }
 
-function renderQobuzProviders(providers, publicApiOnline, sessionValid = false) {
-    const container = document.getElementById('qobuzProviderRows');
-    const summary = document.getElementById('qobuzProviderSummary');
-    if (!container || !summary) return;
-
-    const rows = Array.isArray(providers) ? providers : [];
-    const enabledCount = rows.filter(provider => provider?.enabled).length;
-    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
-    summary.textContent = publicApiOnline
-        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
-        : enabledCount === 0
-            ? 'All public API providers are disabled.'
-            : onlineCount > 0 && !sessionValid
-                ? 'Public download session is not verified.'
-                : 'No enabled public API provider is currently confirmed online.';
-
-    container.replaceChildren(...rows.map(createQobuzProviderRow));
+function applyQobuzAccountState(auth) {
+    document.getElementById('qobuzAppId').value = auth?.appId || '712109809';
+    document.getElementById('qobuzAuthToken').placeholder = auth?.authTokenSaved
+        ? 'Saved - leave blank to keep current token'
+        : 'Qobuz user auth token';
+    document.getElementById('qobuzAppSecret').placeholder = auth?.appSecretSaved
+        ? 'Saved - leave blank to keep current secret'
+        : 'Qobuz App Secret';
+    const connected = isQobuzLoggedIn(auth);
+    setStatus('qobuzStatus', connected);
+    renderQobuzInfo(auth);
+    togglePlatformLoginState('qobuz', connected);
 }
 
-function createQobuzProviderRow(provider) {
+function applySoulseekConnectionState(auth) {
+    document.getElementById('soulseekBaseUrl').value = auth?.baseUrl || '';
+    document.getElementById('soulseekApiKey').placeholder = auth?.apiKeySaved
+        ? 'Saved - leave blank to keep current API key'
+        : 'slskd API key';
+    setSoulseekFormStatus(auth, 'soulseekStatus');
+    renderSoulseekInfo(auth);
+    togglePlatformLoginState('soulseek', auth?.connected === true);
+}
+
+async function refreshPlatformAuthSection(endpoint, label, applyState) {
+    const response = await fetch(endpoint, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) {
+        throw new Error(await getApiErrorMessage(response, `Failed to refresh ${label}`));
+    }
+    const state = await response.json();
+    applyState(state);
+    return state;
+}
+
+function refreshQobuzAccountState() {
+    return refreshPlatformAuthSection('/api/platform-auth/qobuz/account', 'Qobuz account', applyQobuzAccountState);
+}
+
+function refreshSoulseekConnectionState() {
+    return refreshPlatformAuthSection('/api/platform-auth/soulseek/connection', 'Soulseek connection', applySoulseekConnectionState);
+}
+
+function getPublicApiProviderState(platformId) {
+    const state = publicApiProviderStates.get(platformId);
+    if (!state) {
+        throw new Error(`Unknown public API provider platform: ${platformId}`);
+    }
+    return state;
+}
+
+function normalizePublicApiProviderSummary(summary, providers = null) {
+    const normalizedProviders = Array.isArray(providers)
+        ? providers
+        : Array.isArray(summary?.providers) ? summary.providers : [];
+    const enabledProviders = normalizedProviders.filter(provider => provider?.enabled === true);
+    const onlineCount = enabledProviders.filter(provider => String(provider?.status || '').toLowerCase() === 'online').length;
+    const sessionValid = summary?.sessionValid === true;
+    const online = onlineCount > 0 && sessionValid;
+    const allChecked = enabledProviders.length > 0 && enabledProviders.every(provider =>
+        Boolean(provider?.lastCheckedAt) && String(provider?.status || 'unknown').toLowerCase() !== 'unknown');
+    const status = online
+        ? 'online'
+        : enabledProviders.length > 0 && (!sessionValid || allChecked) ? 'offline' : 'unknown';
+
+    return {
+        online,
+        onlineCount: online ? onlineCount : 0,
+        status,
+        sessionValid,
+        providers: normalizedProviders
+    };
+}
+
+function beginPublicApiProviderRequest(state) {
+    state.requestController?.abort();
+    state.requestController = new AbortController();
+    state.requestSequence += 1;
+    return {
+        controller: state.requestController,
+        sequence: state.requestSequence
+    };
+}
+
+function isCurrentPublicApiProviderRequest(state, sequence) {
+    return state.requestSequence === sequence;
+}
+
+async function ensurePublicApiProvidersLoaded(platformId) {
+    const state = getPublicApiProviderState(platformId);
+    if (state.loadState === 'loaded') {
+        return state.summary;
+    }
+    if (state.loadState === 'loading' && state.requestPromise) {
+        return state.requestPromise;
+    }
+    return loadPublicApiProviders(platformId, { force: true });
+}
+
+async function loadPublicApiProviders(platformId, options = {}) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const state = getPublicApiProviderState(platformId);
+    if (!config) {
+        throw new Error(`Unknown public API provider platform: ${platformId}`);
+    }
+    if (!options.force && state.loadState === 'loaded') {
+        return state.summary;
+    }
+    if (!options.force && state.loadState === 'loading' && state.requestPromise) {
+        return state.requestPromise;
+    }
+
+    const request = beginPublicApiProviderRequest(state);
+    state.loadState = 'loading';
+    renderPublicApiProviderLoading(platformId, state.providers.length === 0);
+
+    const promise = (async () => {
+        try {
+            const response = await fetch(config.endpoint, {
+                cache: 'no-store',
+                credentials: 'same-origin',
+                headers: { Accept: 'application/json' },
+                signal: request.controller.signal
+            });
+            if (!response.ok) {
+                throw new Error(await getApiErrorMessage(response, `Failed to load ${config.label} providers`));
+            }
+
+            const summary = normalizePublicApiProviderSummary(await response.json());
+            if (!isCurrentPublicApiProviderRequest(state, request.sequence)) {
+                return state.summary;
+            }
+
+            state.summary = summary;
+            state.providers = summary.providers;
+            state.loadState = 'loaded';
+            renderPublicApiProviderPanel(platformId);
+            return summary;
+        } catch (error) {
+            if (error?.name === 'AbortError' || !isCurrentPublicApiProviderRequest(state, request.sequence)) {
+                return state.summary;
+            }
+
+            state.loadState = 'failed';
+            renderPublicApiProviderError(platformId, error);
+            throw error;
+        } finally {
+            if (isCurrentPublicApiProviderRequest(state, request.sequence)) {
+                state.requestController = null;
+                state.requestPromise = null;
+            }
+        }
+    })();
+
+    state.requestPromise = promise;
+    return promise;
+}
+
+function renderPublicApiProviderLoading(platformId, clearRows) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const container = document.getElementById(config.rowsId);
+    if (clearRows && container) {
+        container.replaceChildren();
+    }
+}
+
+function renderPublicApiProviderError(platformId, error) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const container = document.getElementById(config.rowsId);
+    if (!container) {
+        return;
+    }
+
+    const message = document.createElement('p');
+    message.className = 'text-muted';
+    message.textContent = error?.message || `Failed to load ${config.label} public API providers.`;
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn btn-secondary action-btn action-btn-sm';
+    retry.dataset.publicApiProviderRetry = platformId;
+    retry.textContent = 'Retry';
+    container.replaceChildren(message, retry);
+}
+
+function renderPublicApiProviderPanel(platformId, options = {}) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const state = getPublicApiProviderState(platformId);
+    const container = document.getElementById(config.rowsId);
+    if (!container) {
+        return;
+    }
+
+    const summary = normalizePublicApiProviderSummary(state.summary, state.providers);
+    state.summary = summary;
+    container.replaceChildren(...summary.providers.map(provider =>
+        createPublicApiProviderRow(
+            config,
+            provider,
+            summary.sessionValid,
+            options.checking === true,
+            state.pendingMutations.has(provider?.id))));
+}
+
+function createPublicApiProviderRow(config, provider, sessionValid, checking, mutationPending) {
     const row = document.createElement('div');
-    row.className = 'qobuz-provider-row';
+    row.className = 'public-api-provider-row';
 
     const identity = document.createElement('div');
-    identity.className = 'qobuz-provider-row__identity';
+    identity.className = 'public-api-provider-row__identity';
     const name = document.createElement('strong');
-    name.className = 'qobuz-provider-row__name';
-    name.textContent = provider?.name || 'Qobuz provider';
+    name.className = 'public-api-provider-row__name';
+    name.textContent = provider?.name || `${config.label} provider`;
     const detail = document.createElement('span');
-    detail.className = 'qobuz-provider-row__detail';
-    detail.textContent = formatQobuzProviderDetail(provider);
+    detail.className = 'public-api-provider-row__detail';
+    detail.textContent = formatPublicApiProviderDetail(provider);
     identity.append(name, detail);
 
     const controls = document.createElement('div');
-    controls.className = 'qobuz-provider-row__controls';
-    const state = document.createElement('span');
-    const activity = document.createElement('span');
+    controls.className = 'public-api-provider-row__controls';
     const enabled = provider?.enabled === true;
-    const normalizedStatus = String(provider?.status || 'unknown').toLowerCase();
-    state.className = `qobuz-provider-state qobuz-provider-state--${normalizedStatus}${enabled ? ' is-active' : ''}`;
-    activity.className = `qobuz-provider-activity${enabled ? ' is-active' : ''}`;
-    activity.textContent = enabled ? 'Active' : 'Inactive';
-    const status = document.createElement('span');
-    status.className = `qobuz-provider-status qobuz-provider-status--${normalizedStatus}`;
-    status.textContent = normalizedStatus.replaceAll('_', ' ');
+    const providerStatus = String(provider?.status || 'unknown').toLowerCase();
+    const healthStatus = checking && enabled ? 'checking' : providerStatus === 'disabled' ? 'unknown' : providerStatus;
+    const badges = document.createElement('div');
+    badges.className = 'public-api-provider-badges';
+    badges.append(
+        createPublicApiProviderBadge('configuration', enabled ? 'Enabled' : 'Disabled', enabled ? 'enabled' : 'disabled'),
+        createPublicApiProviderBadge('health', formatPublicApiProviderHealth(healthStatus), healthStatus),
+        createPublicApiProviderBadge('session', sessionValid ? 'Verified' : 'Not verified', sessionValid ? 'verified' : 'unverified')
+    );
 
     const switchControl = document.createElement('label');
     switchControl.className = 'switch';
     const toggle = document.createElement('input');
     toggle.type = 'checkbox';
     toggle.checked = enabled;
-    toggle.dataset.qobuzProviderId = provider?.id || '';
-    toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Qobuz provider'}`);
+    toggle.disabled = mutationPending;
+    toggle.dataset.publicApiProviderId = provider?.id || '';
+    toggle.setAttribute('aria-label', `${enabled ? 'Disable' : 'Enable'} ${provider?.name || `${config.label} provider`}`);
     const slider = document.createElement('span');
     slider.className = 'slider';
     slider.setAttribute('aria-hidden', 'true');
     switchControl.append(toggle, slider);
 
-    state.append(activity, status);
-    controls.append(state, switchControl);
+    controls.append(badges, switchControl);
+    if (!sessionValid && provider?.id === config.verificationProviderId) {
+        const verify = document.createElement('button');
+        verify.type = 'button';
+        verify.id = config.verifyButtonId;
+        verify.className = 'btn btn-secondary action-btn action-btn-sm public-api-provider-verify';
+        verify.dataset.publicApiProviderVerify = provider.id;
+        verify.textContent = 'Verify';
+        controls.append(verify);
+    }
     row.append(identity, controls);
     return row;
 }
 
-function formatQobuzProviderDetail(provider) {
+function createPublicApiProviderBadge(kind, value, state) {
+    const badge = document.createElement('span');
+    badge.className = `public-api-provider-badge public-api-provider-badge--${kind} public-api-provider-badge--${state}`;
+    const label = document.createElement('span');
+    label.className = 'public-api-provider-badge__label';
+    label.textContent = `${kind[0].toUpperCase()}${kind.slice(1)}:`;
+    const status = document.createElement('span');
+    status.textContent = value;
+    badge.append(label, status);
+    return badge;
+}
+
+function formatPublicApiProviderHealth(status) {
+    const labels = {
+        checking: 'Checking',
+        online: 'Online',
+        offline: 'Offline',
+        degraded: 'Degraded',
+        rate_limited: 'Rate limited',
+        captcha_required: 'Captcha required',
+        unknown: 'Unknown'
+    };
+    return labels[status] || status.replaceAll('_', ' ');
+}
+
+function formatPublicApiProviderDetail(provider) {
     const parts = [];
-    if (Number.isFinite(provider?.responseTimeMs)) parts.push(`${provider.responseTimeMs} ms`);
-    if (provider?.lastCheckedAt) parts.push(`checked ${new Date(provider.lastCheckedAt).toLocaleString()}`);
-    if (provider?.failureMessage && provider?.status !== 'online') parts.push(provider.failureMessage);
+    if (Number.isFinite(provider?.responseTimeMs)) {
+        parts.push(`${provider.responseTimeMs} ms`);
+    }
+    if (provider?.lastCheckedAt) {
+        parts.push(`checked ${new Date(provider.lastCheckedAt).toLocaleString()}`);
+    }
+    if (provider?.failureMessage && String(provider?.status || '').toLowerCase() !== 'online') {
+        parts.push(provider.failureMessage);
+    }
     return parts.join(' | ') || 'Not checked yet';
+}
+
+function refreshPublicApiProviderSidebar() {
+    try {
+        if (typeof window.DeezSpoTag?.refreshPublicApiSidebarStatus === 'function') {
+            void window.DeezSpoTag.refreshPublicApiSidebarStatus();
+        }
+    } catch (error) {
+        console.warn('Failed to refresh public API sidebar status', error);
+    }
+}
+
+async function setPublicApiProviderEnabled(platformId, providerId, enabled, toggle) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const state = getPublicApiProviderState(platformId);
+    const providerIndex = state.providers.findIndex(provider => provider?.id === providerId);
+    if (providerIndex < 0) {
+        toggle.checked = !enabled;
+        showToast(`${config.label} provider ${providerId} is no longer available.`, 'error');
+        return;
+    }
+    const previousProvider = state.providers[providerIndex];
+    const mutationSequence = (state.mutationSequences.get(providerId) || 0) + 1;
+    state.mutationSequences.set(providerId, mutationSequence);
+    state.requestController?.abort();
+    state.requestSequence += 1;
+    state.requestController = null;
+    state.requestPromise = null;
+    const checkButton = document.getElementById(config.checkButtonId);
+    if (checkButton) {
+        checkButton.disabled = false;
+        delete checkButton.dataset.publicApiRequestSequence;
+    }
+    state.pendingMutations.add(providerId);
+    state.providers = state.providers.map((provider, index) => index === providerIndex
+        ? { ...provider, enabled, status: enabled ? 'unknown' : 'disabled' }
+        : provider);
+    state.summary = normalizePublicApiProviderSummary(state.summary, state.providers);
+    renderPublicApiProviderPanel(platformId);
+
+    try {
+        const response = await fetch(`${config.endpoint}/${encodeURIComponent(providerId)}/enabled`, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: buildLoginApiHeaders(true),
+            body: JSON.stringify({ enabled })
+        });
+        if (!response.ok) {
+            throw new Error(await getApiErrorMessage(response, `Failed to update ${config.label} provider`));
+        }
+
+        const updatedProvider = await response.json();
+        if (state.mutationSequences.get(providerId) !== mutationSequence) {
+            return;
+        }
+
+        state.pendingMutations.delete(providerId);
+        state.providers = state.providers.map(provider => provider?.id === providerId ? updatedProvider : provider);
+        state.summary = normalizePublicApiProviderSummary(state.summary, state.providers);
+        state.loadState = 'loaded';
+        renderPublicApiProviderPanel(platformId);
+        refreshPublicApiProviderSidebar();
+        if (updatedProvider?.enabled === true) {
+            void checkPublicApiProviders(platformId, { background: true });
+        }
+    } catch (error) {
+        if (state.mutationSequences.get(providerId) !== mutationSequence) {
+            return;
+        }
+        state.pendingMutations.delete(providerId);
+        state.providers = state.providers.map(provider => provider?.id === providerId ? previousProvider : provider);
+        state.summary = normalizePublicApiProviderSummary(state.summary, state.providers);
+        renderPublicApiProviderPanel(platformId);
+        showToast(error.message || `Failed to update ${config.label} provider`, 'error');
+    }
+}
+
+async function checkPublicApiProviders(platformId, options = {}) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const state = getPublicApiProviderState(platformId);
+    const button = document.getElementById(config.checkButtonId);
+    const request = beginPublicApiProviderRequest(state);
+    if (button) {
+        button.disabled = true;
+        button.dataset.publicApiRequestSequence = String(request.sequence);
+    }
+    renderPublicApiProviderPanel(platformId, { checking: true });
+
+    try {
+        const response = await fetch(`${config.endpoint}/check`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: buildLoginApiHeaders(),
+            signal: request.controller.signal
+        });
+        if (!response.ok) {
+            throw new Error(await getApiErrorMessage(response, `${config.label} provider check failed`));
+        }
+
+        const summary = normalizePublicApiProviderSummary(await response.json());
+        if (!isCurrentPublicApiProviderRequest(state, request.sequence)) {
+            return;
+        }
+        state.summary = summary;
+        state.providers = summary.providers;
+        state.loadState = 'loaded';
+        renderPublicApiProviderPanel(platformId);
+        refreshPublicApiProviderSidebar();
+    } catch (error) {
+        if (error?.name === 'AbortError' || !isCurrentPublicApiProviderRequest(state, request.sequence)) {
+            return;
+        }
+        renderPublicApiProviderPanel(platformId);
+        if (!options.background) {
+            showToast(error.message || `${config.label} provider check failed`, 'error');
+        }
+    } finally {
+        if (isCurrentPublicApiProviderRequest(state, request.sequence)) {
+            state.requestController = null;
+            state.requestPromise = null;
+            if (button?.dataset.publicApiRequestSequence === String(request.sequence)) {
+                button.disabled = false;
+                delete button.dataset.publicApiRequestSequence;
+            }
+        }
+    }
 }
 
 function buildLoginApiHeaders(includeJson = false) {
@@ -3124,148 +3513,12 @@ function buildLoginApiHeaders(includeJson = false) {
     return headers;
 }
 
-async function setQobuzProviderEnabled(providerId, enabled, toggle) {
-    toggle.disabled = true;
-    try {
-        const response = await fetch(`/api/platform-auth/qobuz/providers/${encodeURIComponent(providerId)}/enabled`, {
-            method: 'PUT',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders(true),
-            body: JSON.stringify({ enabled })
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Qobuz provider'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        toggle.checked = !enabled;
-        showToast(error.message || 'Failed to update Qobuz provider', 'error');
-    } finally {
-        toggle.disabled = false;
-    }
-}
-
-async function checkQobuzProviders() {
-    const button = document.getElementById('qobuzCheckProvidersBtn');
-    if (button) button.disabled = true;
-    try {
-        const response = await fetch('/api/platform-auth/qobuz/providers/check', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders()
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Qobuz provider check failed'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        showToast(error.message || 'Qobuz provider check failed', 'error');
-    } finally {
-        if (button) button.disabled = false;
-    }
-}
-
-function renderTidalProviders(providers, publicApiOnline, sessionValid = false) {
-    const container = document.getElementById('tidalProviderRows');
-    const summary = document.getElementById('tidalProviderSummary');
-    if (!container || !summary) return;
-
-    const rows = Array.isArray(providers) ? providers : [];
-    const enabledCount = rows.filter(provider => provider?.enabled).length;
-    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
-    summary.textContent = publicApiOnline
-        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
-        : enabledCount === 0
-            ? 'All public API providers are disabled.'
-            : onlineCount > 0 && !sessionValid
-                ? 'Public download session is not verified.'
-                : 'No enabled public API provider is currently confirmed online.';
-
-    container.replaceChildren(...rows.map(createTidalProviderRow));
-}
-
-function createTidalProviderRow(provider) {
-    const row = createQobuzProviderRow(provider);
-    const toggle = row.querySelector('[data-qobuz-provider-id]');
-    if (toggle) {
-        toggle.dataset.tidalProviderId = provider?.id || '';
-        delete toggle.dataset.qobuzProviderId;
-        toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Tidal provider'}`);
-    }
-    return row;
-}
-
-async function setTidalProviderEnabled(providerId, enabled, toggle) {
-    toggle.disabled = true;
-    try {
-        const response = await fetch(`/api/platform-auth/tidal/providers/${encodeURIComponent(providerId)}/enabled`, {
-            method: 'PUT',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders(true),
-            body: JSON.stringify({ enabled })
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Tidal provider'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        toggle.checked = !enabled;
-        showToast(error.message || 'Failed to update Tidal provider', 'error');
-    } finally {
-        toggle.disabled = false;
-    }
-}
-
-async function checkTidalProviders() {
-    const button = document.getElementById('tidalCheckProvidersBtn');
-    if (button) button.disabled = true;
-    try {
-        const response = await fetch('/api/platform-auth/tidal/providers/check', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders()
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Tidal provider check failed'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        showToast(error.message || 'Tidal provider check failed', 'error');
-    } finally {
-        if (button) button.disabled = false;
-    }
-}
-
-async function loadTidalPublicDownloadSession() {
-    return loadPublicDownloadSession({
-        endpoint: '/api/tidal/download/public-session',
-        statusId: 'tidalPublicDownloadSessionStatus',
-        buttonId: 'tidalVerifyPublicDownloadsBtn',
-        label: 'Tidal'
-    });
-}
-
-async function loadQobuzPublicDownloadSession() {
-    return loadPublicDownloadSession({
-        endpoint: '/api/qobuz/download/public-session',
-        statusId: 'qobuzPublicDownloadSessionStatus',
-        buttonId: 'qobuzVerifyPublicDownloadsBtn',
-        label: 'Qobuz'
-    });
-}
-
-async function loadAmazonMusicPublicDownloadSession() {
-    return loadPublicDownloadSession({
-        endpoint: '/api/amazon/download/public-session',
-        statusId: 'amazonMusicPublicDownloadSessionStatus',
-        buttonId: 'amazonMusicVerifyPublicDownloadsBtn',
-        label: 'Amazon Music'
-    });
-}
-
 async function loadPublicDownloadSession(config) {
-    const status = document.getElementById(config.statusId);
-    const button = document.getElementById(config.buttonId);
-    if (!status || !button) return;
+    const status = document.getElementById(config.sessionStatusId);
+    if (!status) return;
 
     try {
-        const response = await fetch(config.endpoint, {
+        const response = await fetch(config.sessionEndpoint, {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         });
@@ -3275,48 +3528,69 @@ async function loadPublicDownloadSession(config) {
         status.textContent = authenticated
             ? `Public ${config.label} downloads are verified.`
             : `Public ${config.label} downloads require verification.`;
-        button.hidden = authenticated;
+        updatePublicDownloadSessionValidity(config.platformId, authenticated);
     } catch (error) {
         status.textContent = error.message || `${config.label} public download verification status failed.`;
-        button.hidden = false;
+        updatePublicDownloadSessionValidity(config.platformId, false);
+        throw error;
     }
 }
 
-async function startTidalPublicDownloadVerification() {
-    return startPublicDownloadVerification({
-        endpoint: '/api/tidal/download/public-session',
-        buttonId: 'tidalVerifyPublicDownloadsBtn',
-        popupName: 'tidal-public-download-verification',
-        label: 'Tidal',
-        reload: loadTidalPublicDownloadSession
-    });
+function updatePublicDownloadSessionValidity(platformId, sessionValid) {
+    const state = getPublicApiProviderState(platformId);
+    state.summary = normalizePublicApiProviderSummary(
+        { ...state.summary, sessionValid: sessionValid === true },
+        state.providers);
+    if (state.loadState === 'loaded') {
+        renderPublicApiProviderPanel(platformId);
+    }
 }
 
-async function startQobuzPublicDownloadVerification() {
-    return startPublicDownloadVerification({
-        endpoint: '/api/qobuz/download/public-session',
-        buttonId: 'qobuzVerifyPublicDownloadsBtn',
-        popupName: 'qobuz-public-download-verification',
-        label: 'Qobuz',
-        reload: loadQobuzPublicDownloadSession
-    });
+async function ensurePublicDownloadSessionLoaded(platformId) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const state = getPublicApiProviderState(platformId);
+    if (state.sessionLoadState === 'loaded') {
+        return;
+    }
+    if (state.sessionLoadState === 'loading' && state.sessionPromise) {
+        return state.sessionPromise;
+    }
+
+    state.sessionLoadState = 'loading';
+    state.sessionPromise = loadPublicDownloadSession(config)
+        .then(() => {
+            state.sessionLoadState = 'loaded';
+        })
+        .catch(error => {
+            state.sessionLoadState = 'failed';
+            throw error;
+        })
+        .finally(() => {
+            state.sessionPromise = null;
+        });
+    return state.sessionPromise;
 }
 
-async function startAmazonMusicPublicDownloadVerification() {
-    return startPublicDownloadVerification({
-        endpoint: '/api/amazon/download/public-session',
-        buttonId: 'amazonMusicVerifyPublicDownloadsBtn',
-        popupName: 'amazon-public-download-verification',
-        label: 'Amazon Music',
-        reload: loadAmazonMusicPublicDownloadSession
-    });
+async function reloadPublicDownloadSession(platformId) {
+    const config = PUBLIC_API_PROVIDER_CONFIG[platformId];
+    const state = getPublicApiProviderState(platformId);
+    state.sessionLoadState = 'loading';
+    try {
+        await loadPublicDownloadSession(config);
+        state.sessionLoadState = 'loaded';
+        await loadPublicApiProviders(platformId, { force: true });
+        refreshPublicApiProviderSidebar();
+    } catch (error) {
+        state.sessionLoadState = 'failed';
+        throw error;
+    }
 }
 
 async function startPublicDownloadVerification(config) {
-    const button = document.getElementById(config.buttonId);
+    const button = document.getElementById(config.verifyButtonId);
     if (button) button.disabled = true;
     try {
-        const response = await fetch(`${config.endpoint}/start`, {
+        const response = await fetch(`${config.sessionEndpoint}/start`, {
             method: 'POST',
             credentials: 'same-origin',
             headers: buildLoginApiHeaders()
@@ -3324,7 +3598,7 @@ async function startPublicDownloadVerification(config) {
         if (!response.ok) throw new Error(await getApiErrorMessage(response, `${config.label} public download verification failed`));
         const result = await response.json();
         if (result?.authenticated === true) {
-            await config.reload();
+            await reloadPublicDownloadSession(config.platformId);
             return;
         }
         if (!result?.verificationUrl) {
@@ -3373,7 +3647,7 @@ function waitForPublicDownloadGrant(verificationWindow, config) {
 
             cleanup();
             try {
-                const response = await fetch(`${config.endpoint}/complete`, {
+                const response = await fetch(`${config.sessionEndpoint}/complete`, {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: buildLoginApiHeaders(true),
@@ -3384,7 +3658,7 @@ function waitForPublicDownloadGrant(verificationWindow, config) {
                 }
 
                 verificationWindow.close();
-                await config.reload();
+                await reloadPublicDownloadSession(config.platformId);
                 showToast(`Public ${config.label} downloads verified.`, 'success');
                 resolve();
             } catch (error) {
@@ -3394,75 +3668,6 @@ function waitForPublicDownloadGrant(verificationWindow, config) {
 
         window.addEventListener('message', onMessage);
     });
-}
-
-function renderAmazonMusicProviders(providers, publicApiOnline, sessionValid = false) {
-    const container = document.getElementById('amazonMusicProviderRows');
-    const summary = document.getElementById('amazonMusicProviderSummary');
-    if (!container || !summary) return;
-
-    const rows = Array.isArray(providers) ? providers : [];
-    const enabledCount = rows.filter(provider => provider?.enabled).length;
-    const onlineCount = rows.filter(provider => provider?.enabled && provider?.status === 'online').length;
-    summary.textContent = publicApiOnline
-        ? `${onlineCount} public API provider${onlineCount === 1 ? '' : 's'} online.`
-        : enabledCount === 0
-            ? 'All public API providers are disabled.'
-            : onlineCount > 0 && !sessionValid
-                ? 'Public download session is not verified.'
-                : 'No enabled public API provider is currently confirmed online.';
-
-    container.replaceChildren(...rows.map(createAmazonMusicProviderRow));
-}
-
-function createAmazonMusicProviderRow(provider) {
-    const row = createQobuzProviderRow(provider);
-    const toggle = row.querySelector('[data-qobuz-provider-id]');
-    if (toggle) {
-        toggle.dataset.amazonMusicProviderId = provider?.id || '';
-        delete toggle.dataset.qobuzProviderId;
-        toggle.setAttribute('aria-label', `${toggle.checked ? 'Disable' : 'Enable'} ${provider?.name || 'Amazon provider'}`);
-    }
-    return row;
-}
-
-async function setAmazonMusicProviderEnabled(providerId, enabled, toggle) {
-    toggle.disabled = true;
-    try {
-        const response = await fetch(`/api/platform-auth/amazonmusic/providers/${encodeURIComponent(providerId)}/enabled`, {
-            method: 'PUT',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders(true),
-            body: JSON.stringify({ enabled })
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Failed to update Amazon provider'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        toggle.checked = !enabled;
-        showToast(error.message || 'Failed to update Amazon provider', 'error');
-    } finally {
-        toggle.disabled = false;
-    }
-}
-
-async function checkAmazonMusicProviders() {
-    const button = document.getElementById('amazonMusicCheckProvidersBtn');
-    if (button) button.disabled = true;
-    try {
-        const response = await fetch('/api/platform-auth/amazonmusic/providers/check', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: buildLoginApiHeaders()
-        });
-        if (!response.ok) throw new Error(await getApiErrorMessage(response, 'Amazon provider check failed'));
-        await loadPlatformAuthState();
-        refreshConnectedPlatformsSidebar();
-    } catch (error) {
-        showToast(error.message || 'Amazon provider check failed', 'error');
-    } finally {
-        if (button) button.disabled = false;
-    }
 }
 
 function renderTidalInfo(auth) {
@@ -3479,7 +3684,6 @@ function renderTidalInfo(auth) {
             ? `${auth.countryCode || 'US'} | official credentials validated`
             : 'Tidal credentials are not connected.';
     }
-    renderTidalProviders(auth?.providers || [], auth?.publicApiOnline === true, auth?.publicApiSessionValid === true);
 }
 
 function renderSoulseekInfo(auth) {
@@ -3519,7 +3723,6 @@ function renderAmazonMusicInfo(auth) {
             ? `${auth.host || 'music.amazon.com'} | ${auth.locale || 'en_US'}`
             : 'Amazon Music is not configured.';
     }
-    renderAmazonMusicProviders(auth?.providers || [], auth?.publicApiOnline === true, auth?.publicApiSessionValid === true);
 }
 
 function setSoulseekFormStatus(auth, statusElementId = 'soulseekStatus') {
