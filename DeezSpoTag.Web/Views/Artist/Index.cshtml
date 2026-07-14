@@ -695,7 +695,6 @@ const artistDeezerPlaybackContextCache = new Map();
 const artistDeezerPlaybackContextRequests = new Map();
 const artistPlaybackState = window.DeezerPlaybackState;
 let artistTopTracksHandlersBound = false;
-let artistTopTrackPreviewWarmupTimer = 0;
 let artistTopTrackMatcher = null;
 const artistTopTrackQueueState = {
     queueButtons: [],
@@ -1012,13 +1011,7 @@ async function primeArtistTopTrackPreviews(options = {}) {
         return;
     }
 
-    const limit = Number(options?.limit || 0);
     const visibleFirst = options?.visibleFirst !== false;
-    const visibleFirstOnly = options?.visibleFirstOnly === true;
-    const requestedConcurrency = Number(options?.concurrency || 4);
-    const concurrency = Number.isFinite(requestedConcurrency)
-        ? Math.max(1, Math.min(10, Math.trunc(requestedConcurrency)))
-        : 4;
     const buttons = Array.from(list.querySelectorAll('button.track-play[data-spotify-url]'));
     if (!buttons.length) {
         return;
@@ -1030,7 +1023,9 @@ async function primeArtistTopTrackPreviews(options = {}) {
             url: normalizeArtistSpotifyTrackSourceUrl(String(button.dataset.spotifyUrl || '').trim()),
             isVisible: isArtistTopTrackButtonVisible(button)
         }))
-        .filter((entry) => entry.url && !entry.button.dataset.deezerId);
+        .filter((entry) => entry.url
+            && !entry.button.dataset.deezerId
+            && entry.button.dataset.mappingState !== 'mapping');
     if (!queue.length) {
         return;
     }
@@ -1039,35 +1034,11 @@ async function primeArtistTopTrackPreviews(options = {}) {
         queue.sort((left, right) => Number(right.isVisible) - Number(left.isVisible));
     }
 
-    let pending = queue;
-    if (visibleFirstOnly) {
-        pending = pending.filter((entry) => entry.isVisible);
-    }
-    const visibleCount = pending.reduce((count, entry) => count + (entry.isVisible ? 1 : 0), 0);
-    const adaptiveVisibleLimit = Math.max(16, Math.min(24, visibleCount + 4));
-    const effectiveLimit = visibleFirstOnly
-        ? (limit > 0 ? Math.max(Math.trunc(limit), adaptiveVisibleLimit) : adaptiveVisibleLimit)
-        : (limit > 0 ? Math.max(1, Math.trunc(limit)) : 0);
-    if (effectiveLimit > 0) {
-        pending = pending.slice(0, effectiveLimit);
-    }
-    if (!pending.length) {
-        return;
-    }
-
-    await startArtistTopTrackPlaylistStyleMatching(pending);
+    await startArtistTopTrackPlaylistStyleMatching(queue);
 }
 
 function scheduleArtistTopTrackPreviewWarmup() {
-    if (artistTopTrackPreviewWarmupTimer) {
-        clearTimeout(artistTopTrackPreviewWarmupTimer);
-    }
-
-    void primeArtistTopTrackPreviews({ visibleFirst: true, visibleFirstOnly: true, concurrency: 10, limit: 16 });
-    artistTopTrackPreviewWarmupTimer = setTimeout(() => {
-        artistTopTrackPreviewWarmupTimer = 0;
-        void primeArtistTopTrackPreviews({ visibleFirst: true, concurrency: 4 });
-    }, 220);
+    void primeArtistTopTrackPreviews({ visibleFirst: true });
 }
 
 function getArtistTopTrackMatcher() {
@@ -1255,6 +1226,9 @@ async function resolveAmazonTopTrackDeezerIds() {
     if (buttons.length === 0) {
         return;
     }
+    buttons.forEach((button) => {
+        button.dataset.mappingState = 'mapping';
+    });
 
     const tracks = buttons.map((button) => ({
         amazonId: String(button.dataset.amazonId || '').trim(),
@@ -1298,7 +1272,17 @@ async function resolveAmazonTopTrackDeezerIds() {
                 });
             }
         });
+        buttons.forEach((button) => {
+            if (!/^\d+$/.test(String(button.dataset.deezerId || '').trim())) {
+                button.dataset.mappingState = 'unmapped';
+            }
+        });
     } catch (error) {
+        buttons.forEach((button) => {
+            if (!/^\d+$/.test(String(button.dataset.deezerId || '').trim())) {
+                button.dataset.mappingState = 'unmapped';
+            }
+        });
         console.warn('Amazon top-song Deezer ID mapping failed', error);
     }
 }
@@ -1604,7 +1588,7 @@ async function playArtistTrackInApp(button) {
         return;
     }
 
-    const ready = await ensureArtistTopTrackButtonReadyForPlayback(button, {
+    const ready = ensureArtistTopTrackButtonReadyForPlayback(button, {
         notifyOnUnmatched: true
     });
     if (!ready) {
@@ -1630,7 +1614,7 @@ async function playArtistTrackInApp(button) {
     await player.play(request);
 }
 
-async function ensureArtistTopTrackButtonReadyForPlayback(button, options = {}) {
+function ensureArtistTopTrackButtonReadyForPlayback(button, options = {}) {
     if (!button) {
         return false;
     }
@@ -1649,13 +1633,19 @@ async function ensureArtistTopTrackButtonReadyForPlayback(button, options = {}) 
     const previewUrl = String(button.dataset.previewUrl || '').trim();
     if (!spotifyUrl) {
         if (!previewUrl && notifyOnUnmatched) {
-            showArtistPlaybackMessage('No Deezer match available yet for this track.');
+            const mappingState = String(button.dataset.mappingState || '').trim().toLowerCase();
+            showArtistPlaybackMessage(mappingState === 'mapping'
+                ? 'This track is still being prepared for playback.'
+                : 'No Deezer match is available for this track.');
         }
         return Boolean(previewUrl);
     }
 
     if (notifyOnUnmatched) {
-        showArtistPlaybackMessage('No Deezer match available yet for this track.');
+        const mappingState = String(button.dataset.mappingState || '').trim().toLowerCase();
+        showArtistPlaybackMessage(mappingState === 'mapping'
+            ? 'This track is still being prepared for playback.'
+            : 'No Deezer match is available for this track.');
     }
     return false;
 }

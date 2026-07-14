@@ -51,7 +51,6 @@ const SEARCH_TABLIST_ID = 'searchSourceTabs';
 const SEARCH_SOURCE_TARGET_PREFIX = '#search-source-';
 const VALID_SEARCH_SOURCES = new Set(['spotify', 'deezer', 'apple']);
 const homeTrendingUnmappedCooldownUntil = new Map();
-let homeTrendingMatchWarmupTimer = 0;
 const HOME_TRENDING_UNMAPPED_RETRY_COOLDOWN_MS = 20000;
 const HOME_TRENDING_MATCH_SECTION_KEY = 'home-trending-songs';
 let homeTrendingMatcher = null;
@@ -95,9 +94,7 @@ function getSpotifyUrlHelpers() {
         buildSpotifyWebUrl: () => '',
         parseSpotifyUrl: () => null,
         createDeezerSectionMatcher: () => ({
-            start: async () => {},
-            waitForCurrent: async () => {},
-            isRunning: () => false
+            start: async () => {}
         })
     };
 }
@@ -591,15 +588,7 @@ async function primeHomeTrendingTrackMappings(options = {}) {
 }
 
 function scheduleHomeTrendingTrackMappingWarmup() {
-    if (homeTrendingMatchWarmupTimer) {
-        clearTimeout(homeTrendingMatchWarmupTimer);
-    }
-
-    void primeHomeTrendingTrackMappings({ visibleFirst: true, visibleFirstOnly: true, concurrency: 10, limit: 16 });
-    homeTrendingMatchWarmupTimer = setTimeout(() => {
-        homeTrendingMatchWarmupTimer = 0;
-        void primeHomeTrendingTrackMappings({ visibleFirst: true, concurrency: 4 });
-    }, 220);
+    void primeHomeTrendingTrackMappings({ visibleFirst: true });
 }
 
 function buildHomeTrendingPlaybackRequest(playButton) {
@@ -672,36 +661,7 @@ function getValidHomeTrendingDeezerId(button) {
     return /^\d+$/.test(deezerId) ? deezerId : '';
 }
 
-async function resolveClickedHomeTrendingButtonToDeezer(playButton, spotifyUrl) {
-    const link = String(spotifyUrl || '').trim();
-    if (!playButton || !link) {
-        return false;
-    }
-
-    const resolveKey = buildHomeTrendingResolveKey(playButton);
-    playButton.dataset.mappingState = 'mapping';
-
-    await startHomeTrendingPlaylistStyleMatching([{
-        button: playButton,
-        url: link,
-        isVisible: true,
-        resolveKey
-    }]);
-    if (getValidHomeTrendingDeezerId(playButton)) {
-        return true;
-    }
-
-    playButton.dataset.mappingState = 'unmapped';
-    if (resolveKey) {
-        homeTrendingUnmappedCooldownUntil.set(
-            resolveKey,
-            Date.now() + HOME_TRENDING_UNMAPPED_RETRY_COOLDOWN_MS
-        );
-    }
-    return false;
-}
-
-async function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}) {
+function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}) {
     if (!playButton) {
         return false;
     }
@@ -719,27 +679,17 @@ async function ensureHomeTrendingButtonReadyForPlayback(playButton, options = {}
 
     if (!spotifyUrl) {
         if (!previewUrl && notifyOnUnmatched) {
-            showHomeTrendingPlaybackMessage('No Deezer match available yet for this track.');
+            showHomeTrendingPlaybackMessage('No Deezer match is available for this track.');
         }
         // Keep non-spotify, preview-only rows playable as a fallback.
         return Boolean(previewUrl);
     }
 
-    const matcher = getHomeTrendingMatcher();
-    if (matcher.isRunning()) {
-        await matcher.waitForCurrent();
-        if (getValidHomeTrendingDeezerId(playButton)) {
-            return true;
-        }
-    }
-
-    const resolvedOnDemand = await resolveClickedHomeTrendingButtonToDeezer(playButton, spotifyUrl);
-    if (resolvedOnDemand) {
-        return true;
-    }
-
     if (notifyOnUnmatched) {
-        showHomeTrendingPlaybackMessage('No Deezer match available yet for this track.');
+        const mappingState = String(playButton.dataset.mappingState || '').trim().toLowerCase();
+        showHomeTrendingPlaybackMessage(mappingState === 'mapping'
+            ? 'This track is still being prepared for playback.'
+            : 'No Deezer match is available for this track.');
     }
     return false;
 }
@@ -755,7 +705,7 @@ async function playHomeTrendingTrackInApp(button) {
         return;
     }
 
-    const ready = await ensureHomeTrendingButtonReadyForPlayback(playButton, {
+    const ready = ensureHomeTrendingButtonReadyForPlayback(playButton, {
         notifyOnUnmatched: true
     });
     if (!ready) {

@@ -131,7 +131,6 @@ const ARTIST_MEDIA_SOURCE_VALUES = new Set(['apple', 'tidal']);
 
 const libraryTrackSummaryCache = new Map();
 let spotifyTopTrackMatchRequestId = 0;
-let spotifyTopTrackPreviewWarmupTimer = 0;
 let spotifyTopTrackMatcher = null;
 const LIBRARY_VIEW_SESSION_KEY = 'libraryViewFolderId';
 const LIBRARY_RETURN_STATE_SESSION_KEY = 'library:return:state';
@@ -1021,9 +1020,7 @@ function getSpotifyUrlHelpers() {
         buildSpotifyWebUrl: () => '',
         parseSpotifyUrl: () => null,
         createDeezerSectionMatcher: () => ({
-            start: async () => {},
-            waitForCurrent: async () => {},
-            isRunning: () => false
+            start: async () => {}
         })
     };
 }
@@ -2458,7 +2455,7 @@ function buildLibraryPlaybackStateHandler(button, fallbackKey) {
     };
 }
 
-async function ensureLibrarySpotifyButtonReadyForPlayback(button, url, options = {}) {
+function ensureLibrarySpotifyButtonReadyForPlayback(button, url, options = {}) {
     if (!button) {
         return false;
     }
@@ -2480,13 +2477,19 @@ async function ensureLibrarySpotifyButtonReadyForPlayback(button, url, options =
     const previewUrl = String(button.dataset.previewUrl || '').trim();
     if (!spotifyUrl) {
         if (!previewUrl && notifyOnUnmatched) {
-            showToast('No Deezer match available yet for this track.', true);
+            const mappingState = String(button.dataset.mappingState || '').trim().toLowerCase();
+            showToast(mappingState === 'mapping'
+                ? 'This track is still being prepared for playback.'
+                : 'No Deezer match is available for this track.', true);
         }
         return Boolean(previewUrl);
     }
 
     if (notifyOnUnmatched) {
-        showToast('No Deezer match available yet for this track.', true);
+        const mappingState = String(button.dataset.mappingState || '').trim().toLowerCase();
+        showToast(mappingState === 'mapping'
+            ? 'This track is still being prepared for playback.'
+            : 'No Deezer match is available for this track.', true);
     }
     return false;
 }
@@ -2570,7 +2573,7 @@ async function playSpotifyTrackInApp(url, button) {
         return;
     }
 
-    const ready = await ensureLibrarySpotifyButtonReadyForPlayback(button, url, {
+    const ready = ensureLibrarySpotifyButtonReadyForPlayback(button, url, {
         notifyOnUnmatched: true
     });
     if (!ready) {
@@ -5290,17 +5293,8 @@ function buildArtistPageDiscographyAvailabilityId(album) {
 }
 
 function scheduleSpotifyTopTrackPreviewWarmup() {
-    if (spotifyTopTrackPreviewWarmupTimer) {
-        globalThis.clearTimeout(spotifyTopTrackPreviewWarmupTimer);
-    }
-
-    primeSpotifyTopTrackPlaybackContexts({ visibleFirst: true, limit: 24 });
-    void primeSpotifyTrackPreviews({ visibleFirst: true, visibleFirstOnly: true, concurrency: 10, limit: 16 });
-    spotifyTopTrackPreviewWarmupTimer = globalThis.setTimeout(() => {
-        spotifyTopTrackPreviewWarmupTimer = 0;
-        primeSpotifyTopTrackPlaybackContexts({ visibleFirst: true, limit: 64 });
-        void primeSpotifyTrackPreviews({ visibleFirst: true, concurrency: 4 });
-    }, 220);
+    primeSpotifyTopTrackPlaybackContexts({ visibleFirst: true, limit: 64 });
+    void primeSpotifyTrackPreviews({ visibleFirst: true });
 }
 
 function getSpotifyTopTrackMatcher() {

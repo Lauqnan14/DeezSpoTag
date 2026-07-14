@@ -79,13 +79,7 @@
     }
 
     function createDeezerSectionMatcher(options) {
-        const state = {
-            token: '',
-            pollTimer: 0,
-            startPromise: null,
-            buttonsByIndex: new Map(),
-            buttonsBySpotifyId: new Map()
-        };
+        let matchQueue = Promise.resolve();
 
         const fetchJson = typeof options?.fetchJson === 'function'
             ? options.fetchJson
@@ -97,21 +91,11 @@
             ? options.buildRequest
             : ((button, url) => ({ link: url || String(button?.dataset?.spotifyUrl || '').trim() }));
 
-        function clearPollTimer() {
-            if (state.pollTimer) {
-                clearInterval(state.pollTimer);
-                state.pollTimer = 0;
-            }
-        }
-
-        function resetMaps() {
-            state.buttonsByIndex.clear();
-            state.buttonsBySpotifyId.clear();
-        }
-
         function markTouchedUnavailable(buttons) {
             buttons.forEach((button) => {
-                if (button instanceof HTMLElement && !button.dataset.deezerId) {
+                if (button instanceof HTMLElement
+                    && !button.dataset.deezerId
+                    && button.dataset.mappingState !== 'unmapped') {
                     button.dataset.mappingState = 'unmapped';
                     if (typeof options?.onUnmatched === 'function') {
                         options.onUnmatched(button, null);
@@ -120,7 +104,7 @@
             });
         }
 
-        function applyMatches(matches) {
+        function applyMatches(matches, buttonsByIndex, buttonsBySpotifyId) {
             if (!Array.isArray(matches) || matches.length === 0) {
                 return;
             }
@@ -130,8 +114,8 @@
                 const spotifyId = String(match?.spotifyId || '').trim();
                 const status = String(match?.status || '').trim().toLowerCase();
                 const index = Number.isFinite(Number(match?.index)) ? Number(match.index) : -1;
-                const button = (spotifyId && state.buttonsBySpotifyId.get(spotifyId))
-                    || (index >= 0 ? state.buttonsByIndex.get(index) : null);
+                const button = (spotifyId && buttonsBySpotifyId.get(spotifyId))
+                    || (index >= 0 ? buttonsByIndex.get(index) : null);
                 if (!(button instanceof HTMLElement)) {
                     return;
                 }
@@ -154,24 +138,104 @@
             });
         }
 
-        async function poll(token) {
-            if (!token) {
+        function waitForNextPoll() {
+            const intervalMs = Number(options?.pollIntervalMs || 1000);
+            return new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+
+        async function pollUntilTerminal(token, initialPending, buttonsByIndex, buttonsBySpotifyId) {
+            let pending = Math.max(0, Number(initialPending || 0));
+            while (pending > 0) {
+                try {
+                    const payload = await fetchJson(`/api/spotify/tracklist/matches?token=${encodeURIComponent(token)}`);
+                    if (payload?.available === true) {
+                        applyMatches(payload.matches, buttonsByIndex, buttonsBySpotifyId);
+                        pending = Math.max(0, Number(payload.pending || 0));
+                        if (pending <= 0) {
+                            return;
+                        }
+                    }
+                } catch {
+                    // Keep the render-time match alive through transient polling failures.
+                }
+                await waitForNextPoll();
+            }
+        }
+
+        async function matchEntries(entries) {
+            const buttonsByIndex = new Map();
+            const buttonsBySpotifyId = new Map();
+            const tracks = [];
+            const touchedButtons = [];
+
+            for (const entry of entries) {
+                const button = entry?.button;
+                if (!(button instanceof HTMLElement)) {
+                    continue;
+                }
+                if (/^\d+$/.test(String(button.dataset.deezerId || '').trim())) {
+                    continue;
+                }
+                const mappingState = String(button.dataset.mappingState || '').trim().toLowerCase();
+                if (mappingState === 'mapped' || mappingState === 'context-ready' || mappingState === 'unmapped') {
+                    continue;
+                }
+
+                const request = buildRequest(button, entry?.url) || { link: entry?.url };
+                const link = normalizeUrl(String(request?.link || entry?.url || '').trim());
+                if (!link) {
+                    continue;
+                }
+
+                const trackIndex = tracks.length;
+                button.dataset.mappingState = 'mapping';
+                touchedButtons.push(button);
+                buttonsByIndex.set(trackIndex, button);
+
+                const parsedSpotify = parseSpotifyUrl(link);
+                const spotifyId = parsedSpotify?.type === 'track'
+                    ? String(parsedSpotify.id || '').trim()
+                    : '';
+                if (spotifyId && !buttonsBySpotifyId.has(spotifyId)) {
+                    buttonsBySpotifyId.set(spotifyId, button);
+                }
+
+                tracks.push(buildSpotifyTrackMatchPayload(link, request));
+            }
+
+            if (tracks.length === 0) {
                 return;
             }
 
             try {
-                const payload = await fetchJson(`/api/spotify/tracklist/matches?token=${encodeURIComponent(token)}`);
+                const sectionKey = typeof options?.sectionKey === 'function'
+                    ? options.sectionKey()
+                    : options?.sectionKey;
+                const payload = await fetchJson('/api/spotify/tracklist/section/match', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        sectionKey: String(sectionKey || 'spotify-section').trim(),
+                        tracks
+                    })
+                });
+
                 if (payload?.available !== true) {
+                    markTouchedUnavailable(touchedButtons);
                     return;
                 }
 
-                applyMatches(payload.matches);
-                const pending = Number(payload.pending || 0);
-                if (pending <= 0 && token === state.token) {
-                    clearPollTimer();
+                applyMatches(payload.matches, buttonsByIndex, buttonsBySpotifyId);
+                const token = String(payload?.matching?.token || '').trim();
+                const pendingCount = Math.max(0, Number(payload?.matching?.pending || 0));
+                if (token && pendingCount > 0) {
+                    await pollUntilTerminal(token, pendingCount, buttonsByIndex, buttonsBySpotifyId);
                 }
+                markTouchedUnavailable(touchedButtons);
             } catch {
-                // Best-effort polling.
+                markTouchedUnavailable(touchedButtons);
             }
         }
 
@@ -180,105 +244,12 @@
                 return;
             }
 
-            if (state.startPromise) {
-                await state.startPromise;
-                return;
-            }
-
-            const startPromise = (async () => {
-                resetMaps();
-                const tracks = [];
-                const touchedButtons = [];
-
-                for (let index = 0; index < entries.length; index += 1) {
-                    const entry = entries[index];
-                    const button = entry?.button;
-                    const request = buildRequest(button, entry?.url) || { link: entry?.url };
-                    const link = normalizeUrl(String(request?.link || entry?.url || '').trim());
-                    if (!link || !(button instanceof HTMLElement)) {
-                        continue;
-                    }
-
-                    button.dataset.mappingState = 'mapping';
-                    touchedButtons.push(button);
-                    state.buttonsByIndex.set(index, button);
-
-                    const parsedSpotify = parseSpotifyUrl(link);
-                    const spotifyId = parsedSpotify?.type === 'track'
-                        ? String(parsedSpotify.id || '').trim()
-                        : '';
-                    if (spotifyId && !state.buttonsBySpotifyId.has(spotifyId)) {
-                        state.buttonsBySpotifyId.set(spotifyId, button);
-                    }
-
-                    tracks.push(buildSpotifyTrackMatchPayload(link, request));
-                }
-
-                if (tracks.length === 0) {
-                    return;
-                }
-
-                try {
-                    const sectionKey = typeof options?.sectionKey === 'function'
-                        ? options.sectionKey()
-                        : options?.sectionKey;
-                    const payload = await fetchJson('/api/spotify/tracklist/section/match', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            sectionKey: String(sectionKey || 'spotify-section').trim(),
-                            tracks
-                        })
-                    });
-
-                    if (payload?.available !== true) {
-                        markTouchedUnavailable(touchedButtons);
-                        return;
-                    }
-
-                    applyMatches(payload.matches);
-                    const token = String(payload?.matching?.token || '').trim();
-                    const pendingCount = Number(payload?.matching?.pending || 0);
-                    if (!token || pendingCount <= 0) {
-                        return;
-                    }
-
-                    state.token = token;
-                    clearPollTimer();
-                    await poll(token);
-                    state.pollTimer = setInterval(() => {
-                        void poll(token);
-                    }, Number(options?.pollIntervalMs || 1000));
-                } catch {
-                    markTouchedUnavailable(touchedButtons);
-                }
-            })();
-
-            state.startPromise = startPromise;
-            try {
-                await startPromise;
-            } finally {
-                state.startPromise = null;
-            }
+            const queuedMatch = matchQueue.then(() => matchEntries(entries));
+            matchQueue = queuedMatch.catch(() => {});
+            await queuedMatch;
         }
 
-        return Object.freeze({
-            start,
-            applyMatches,
-            waitForCurrent: async () => {
-                if (state.startPromise) {
-                    await state.startPromise;
-                }
-            },
-            isRunning: () => Boolean(state.startPromise),
-            stop: () => {
-                clearPollTimer();
-                state.token = '';
-                resetMaps();
-            }
-        });
+        return Object.freeze({ start });
     }
 
     globalObj.SpotifyUrlHelpers = Object.freeze({
