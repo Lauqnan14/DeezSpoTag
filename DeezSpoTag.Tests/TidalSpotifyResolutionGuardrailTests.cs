@@ -149,6 +149,60 @@ public sealed class TidalSpotifyResolutionGuardrailTests
         Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "imageUrl"));
         Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "coverUrl"));
         Assert.Equal("https://i.scdn.co/image/track", ReadAnonymousProperty<string>(mapped, "cover"));
+        Assert.Equal(string.Empty, ReadAnonymousProperty<string>(mapped, "isrc"));
+    }
+
+    [Fact]
+    public void BrowserSearch_IsDiscoveryOnlyAndTrackClickCreatesTracklist()
+    {
+        var service = ReadSource("DeezSpoTag.Web", "Services", "DeezSpoTagSearchService.cs");
+        var view = ReadSource("DeezSpoTag.Web", "Views", "Search", "Index.cshtml");
+
+        Assert.Contains("hydrateTrackIsrcs: false", service, StringComparison.Ordinal);
+        Assert.Contains("isrc = string.Empty", service, StringComparison.Ordinal);
+        Assert.Contains("navigateToTracklist(id, type, source);", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("playSearchPreview(", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("audio-preview-btn", view, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlayableTracklistsHydrateIsrcWithPathfinderThenUnresolvedLibrespotFallback()
+    {
+        var tracklist = ReadSource("DeezSpoTag.Web", "Services", "SpotifyTracklistService.cs");
+        var metadata = ReadSource("DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs");
+
+        Assert.Contains("contentType is SpotifyContentType.Track or SpotifyContentType.Album", tracklist, StringComparison.Ordinal);
+        Assert.Contains("tracks.All(HasIsrcIdentity)", tracklist, StringComparison.Ordinal);
+        Assert.Contains("FetchTrackIsrcsAsync", metadata, StringComparison.Ordinal);
+        Assert.Contains("var unresolved = missing", metadata, StringComparison.Ordinal);
+        Assert.Contains("FetchLibrespotTracksAsync(unresolved", metadata, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PathfinderAuth_IsSingleFlightWithBackoffAndCredentialInvalidation()
+    {
+        var pathfinder = ReadSource("DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs");
+        var credentials = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "SpotifyCredentialsApiController.cs");
+
+        Assert.Contains("_blobAuthStates", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("state.BuildTask", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("AuthFailureBackoffBase", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("buildTask.WaitAsync(cancellationToken)", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("public void InvalidateAuthContext()", pathfinder, StringComparison.Ordinal);
+        Assert.DoesNotContain("_authGate", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("_pathfinderMetadataClient.InvalidateAuthContext();", credentials, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HomePage_RendersBaseSectionsBeforeIndependentSpotifyEnhancement()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "ApiController.cs");
+        var home = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "home-index.js");
+
+        Assert.DoesNotContain("_spotifyHomeFeedRuntimeService", controller, StringComparison.Ordinal);
+        Assert.Contains("renderHomeSectionsWithLazyImages(sections);", home, StringComparison.Ordinal);
+        Assert.Contains("void loadSpotifyHomeEnhancements(sections, requestId, refreshEnabled);", home, StringComparison.Ordinal);
+        Assert.Contains("Promise.allSettled", home, StringComparison.Ordinal);
     }
 
     [Fact]

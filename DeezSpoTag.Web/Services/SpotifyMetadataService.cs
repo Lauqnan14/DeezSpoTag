@@ -1751,7 +1751,31 @@ public sealed class SpotifyMetadataService
         }
 
         var isrcMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var librespotTracks = await FetchLibrespotTracksAsync(missing, cancellationToken);
+        try
+        {
+            var pathfinderIsrcs = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(
+                missing,
+                cancellationToken,
+                maxConcurrency: 8);
+            foreach (var pair in pathfinderIsrcs)
+            {
+                if (!string.IsNullOrWhiteSpace(pair.Key) && IsValidIsrc(pair.Value))
+                {
+                    isrcMap[pair.Key] = pair.Value;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Spotify Pathfinder ISRC hydration failed; falling back to librespot.");
+        }
+
+        var unresolved = missing
+            .Where(id => !isrcMap.ContainsKey(id))
+            .ToList();
+        var librespotTracks = unresolved.Count == 0
+            ? new List<SpotifyTrackSummary>()
+            : await FetchLibrespotTracksAsync(unresolved, cancellationToken);
         foreach (var track in librespotTracks)
         {
             if (!string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc))

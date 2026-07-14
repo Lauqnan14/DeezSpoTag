@@ -376,7 +376,7 @@ public sealed class SpotifyBlobService
             return null;
         }
 
-        var client = CreateCookieClient(payload);
+        using var client = CreateCookieClient(payload);
         if (client is null)
         {
             return null;
@@ -398,7 +398,7 @@ public sealed class SpotifyBlobService
             return null;
         }
 
-        var client = CreateCookieClient(payload);
+        using var client = CreateCookieClient(payload);
         if (client is null)
         {
             return null;

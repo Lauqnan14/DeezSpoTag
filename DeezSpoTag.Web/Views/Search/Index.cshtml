@@ -143,7 +143,6 @@
     display: none;
 }
 
-.result-card--apple-audio .audio-preview-btn,
 .results-grid.artist-video-style .video-overlay-btn {
     position: absolute;
     bottom: 10px;
@@ -163,27 +162,22 @@
     z-index: 2;
 }
 
-.result-card--apple-audio .audio-preview-btn,
 .results-grid.artist-video-style .video-overlay-btn--play {
     left: 10px;
 }
 
-.result-card--apple-audio .result-image:hover .audio-preview-btn,
 .results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:hover .video-overlay-btn,
-.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:focus-within .video-overlay-btn,
-.result-card--apple-audio .result-image:focus-within .audio-preview-btn {
+.results-grid.artist-video-style .result-card.video.apple-card .apple-thumb:focus-within .video-overlay-btn {
     opacity: 1;
     transform: translateY(0);
 }
 
-.result-card--apple-audio .audio-preview-btn:hover,
 .results-grid.artist-video-style .video-overlay-btn:hover {
     background: var(--primary-color);
     border-color: var(--primary-color);
     color: var(--bg-primary);
 }
 
-.result-card--apple-audio .audio-preview-btn:active,
 .results-grid.artist-video-style .video-overlay-btn:active {
     transform: translateY(0) scale(0.92);
 }
@@ -2407,8 +2401,6 @@ function renderResultCard(item, type) {
     let artist = '';
     let meta = '';
     let clickAction = '';
-    let previewUrl = '';
-    let appleUrl = '';
     let videoKey = '';
     let qobuzQualityHtml = '';
     let effectiveType = type;
@@ -2432,10 +2424,6 @@ function renderResultCard(item, type) {
                 artist = itemArtist;
                 meta = itemAlbum;
                 clickAction = buildUnifiedClick(item, 'track');
-                if (currentSearchSource === 'apple' || currentSearchSource === 'tidal') {
-                    previewUrl = item.previewUrl || '';
-                    appleUrl = item.appleUrl || '';
-                }
             }
             if (currentSearchSource === 'qobuz') {
                 qobuzQualityHtml = renderQobuzQuality(item);
@@ -2506,8 +2494,6 @@ function renderResultCard(item, type) {
             artist = itemArtist;
             videoKey = getVideoKey(item);
             clickAction = videoKey ? `toggleVideoSelection('${escapeJsString(videoKey)}')` : '';
-            previewUrl = item.previewUrl || '';
-            appleUrl = item.appleUrl || '';
             break;
     }
     
@@ -2527,18 +2513,6 @@ function renderResultCard(item, type) {
     const extraClass = resolvedType === 'video' ? ' video' : '';
     const tidalUrl = item.tidalUrl || item.externalUrl || '';
     const tidalId = item.tidalId || '';
-    const isAppleAudioTrackCard = currentSearchSource === 'apple' && effectiveType === 'track' && resolvedType !== 'video';
-    const isTidalAudioTrackCard = currentSearchSource === 'tidal' && effectiveType === 'track' && resolvedType !== 'video';
-    const audioPreviewButton = isAppleAudioTrackCard && previewUrl
-        ? `<button class="audio-preview-btn" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playSearchPreview('', '', '${escapeJsString(appleUrl)}', '${escapeJsString(item.appleId || '')}', '${escapeJsString(previewUrl)}', 'apple')">
-               <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-           </button>`
-        : isTidalAudioTrackCard && previewUrl
-            ? `<button class="audio-preview-btn" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playSearchPreview('', '', '', '', '${escapeJsString(previewUrl)}', 'tidal')">
-                   <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-               </button>`
-        : '';
-
     const libKeyRaw = (resolvedType === 'track' || resolvedType === 'atmos') ? buildLibraryCheckKey(item) : '';
     const libKeyAttr = libKeyRaw ? ` data-lib-key="${escapeHtml(libKeyRaw).replace(/"/g, '&quot;')}"` : '';
 
@@ -2567,7 +2541,7 @@ function renderResultCard(item, type) {
         const source = String(item.source || currentSearchSource || '').trim().toLowerCase();
         const playablePreviewUrl = source === 'tidal' && tidalId
             ? `/api/tidal/download/videos/preview?id=${encodeURIComponent(tidalId)}`
-            : previewUrl;
+            : (item.previewUrl || '');
         const previewButton = playablePreviewUrl
             ? `<button class="video-overlay-btn video-overlay-btn--play" type="button" aria-label="Play preview" onclick="event.stopPropagation(); playVideoPreview('${escapeJsString(playablePreviewUrl)}')">
                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
@@ -2578,8 +2552,8 @@ function renderResultCard(item, type) {
             ? (tidalUrl
                 ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadTidalVideoFromSearch('${escapeJsString(tidalUrl)}', '${escapeJsString(tidalId)}', '${escapeJsString(title)}', '${escapeJsString(artist)}', '${escapeJsString(imageUrl)}')">${downloadIcon}</button>`
                 : '')
-            : (appleUrl
-                ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadAppleVideo('${escapeJsString(appleUrl)}', ${hasAtmosCapability ? 'true' : 'false'})">${downloadIcon}</button>`
+            : (item.appleUrl
+                ? `<button class="video-overlay-btn video-overlay-btn--download" type="button" aria-label="Download" onclick="event.stopPropagation(); downloadAppleVideo('${escapeJsString(item.appleUrl)}', ${hasAtmosCapability ? 'true' : 'false'})">${downloadIcon}</button>`
                 : '');
         return `
             <div class="result-card video apple-card${selectedClass}"${cardClickAttr}>
@@ -2598,11 +2572,10 @@ function renderResultCard(item, type) {
 
     const cardClickAttr = clickAction ? ` onclick="${clickAction}"` : '';
     return `
-        <div class="result-card${extraClass}${selectedClass}${(isAppleAudioTrackCard || isTidalAudioTrackCard) ? ' result-card--apple-audio' : ''}"${libKeyAttr}${cardClickAttr}>
+        <div class="result-card${extraClass}${selectedClass}"${libKeyAttr}${cardClickAttr}>
             <div class="result-image ${imageUrl ? '' : 'no-img'}">
                 ${imgHtml}
                 <span class="result-image-placeholder">${defaultIcon}</span>
-                ${audioPreviewButton}
             </div>
             <div class="result-title">${escapeHtml(title)}</div>
             ${artist ? `<div class="result-artist">${escapeHtml(artist)}</div>` : ''}
@@ -3005,102 +2978,6 @@ function buildTidalUrlForItem(id, type) {
         return `https://tidal.com/browse/playlist/${encodeURIComponent(normalizedId)}`;
     }
     return `https://tidal.com/browse/track/${encodeURIComponent(normalizedId)}`;
-}
-
-async function playSearchPreview(deezerId, spotifyId, appleUrl, appleId, nativePreviewUrl = '', source = '') {
-    const player = window.DeezerUnifiedPlayback;
-    if (!player || typeof player.play !== 'function') {
-        return;
-    }
-
-    const normalizedSource = String(source || '').trim().toLowerCase();
-    const normalizedPreviewUrl = String(nativePreviewUrl || '').trim();
-    if (normalizedSource === 'apple' || normalizedSource === 'tidal') {
-        if (!normalizedPreviewUrl) {
-            if (window.DeezSpoTag?.ui?.showToast) {
-                window.DeezSpoTag.ui.showToast(normalizedSource === 'tidal' ? 'No Tidal preview available.' : 'No Apple preview available.', { type: 'warning' });
-            }
-            return;
-        }
-        await player.play({
-            page: 'search',
-            sourceKey: normalizedPreviewUrl,
-            previewUrl: normalizedPreviewUrl,
-            unavailableMessage: normalizedSource === 'tidal' ? 'No Tidal preview available.' : 'No Apple preview available.',
-            startFailedMessage: 'Unable to start playback.',
-            interruptedMessage: 'Playback interrupted.'
-        });
-        return;
-    }
-
-    const resolvedId = String(deezerId || '').trim();
-    const spotifyTrackUrl = spotifyId ? `https://open.spotify.com/track/${spotifyId}` : '';
-    const appleTrackUrl = appleUrl || (appleId ? `https://music.apple.com/us/track/${appleId}` : '');
-    if (!resolvedId && !spotifyTrackUrl && !appleTrackUrl) {
-        if (window.DeezSpoTag?.ui?.showToast) {
-            window.DeezSpoTag.ui.showToast('No Deezer match for preview.', { type: 'warning' });
-        }
-        return;
-    }
-
-    await player.play({
-        page: 'search',
-        deezerId: resolvedId,
-        resolveUrl: resolvedId ? '' : (spotifyTrackUrl || appleTrackUrl),
-        resolverSource: resolvedId ? '' : (spotifyTrackUrl ? 'spotify' : 'apple'),
-        sourceKey: resolvedId || spotifyTrackUrl || appleTrackUrl,
-        unavailableMessage: 'Preview unavailable.',
-        startFailedMessage: 'Unable to start playback.',
-        interruptedMessage: 'Playback interrupted.'
-    });
-}
-
-function getAppleStorefront() {
-    return document.getElementById('appleStorefront')?.value || 'us';
-}
-
-async function queueSearchItem(spotifyId, appleId, appleUrl, title, artist, album, durationMs, isrc, cover, hasAtmos) {
-    const downloader = window.DeezSpoTagDownload;
-    if (!downloader) {
-        if (window.DeezSpoTag?.ui?.showToast) {
-            window.DeezSpoTag.ui.showToast('Download system not ready.', { type: 'error' });
-        }
-        return;
-    }
-
-    let url = '';
-    if (spotifyId) {
-        url = `https://open.spotify.com/track/${spotifyId}`;
-    } else if (appleUrl) {
-        url = appleUrl;
-    } else if (appleId) {
-        url = `https://music.apple.com/${getAppleStorefront()}/track/${appleId}`;
-    }
-
-    if (!url) {
-        if (window.DeezSpoTag?.ui?.showToast) {
-            window.DeezSpoTag.ui.showToast('No source URL available for download.', { type: 'warning' });
-        }
-        return;
-    }
-
-    const metadata = {
-        title: title || '',
-        artist: artist || '',
-        album: album || '',
-        durationMs: Number(durationMs || 0) || 0,
-        isrc: isrc || '',
-        cover: cover || '',
-        hasAtmos: Boolean(hasAtmos)
-    };
-
-    try {
-        await downloader.addToQueue(url, 0, null, { metadata });
-    } catch (err) {
-        if (window.DeezSpoTag?.ui?.showToast) {
-            window.DeezSpoTag.ui.showToast(err?.message || 'Failed to queue download', { type: 'error' });
-        }
-    }
 }
 
 function showAppleResult(url) {

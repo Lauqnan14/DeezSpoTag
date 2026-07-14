@@ -261,6 +261,11 @@ public sealed class SpotifyTracklistService
             tracks = await _metadataService.FetchAlbumTracksAsync(metadata.Id, cancellationToken);
         }
 
+        if (contentType is SpotifyContentType.Track or SpotifyContentType.Album)
+        {
+            tracks = await _metadataService.HydrateTrackIsrcsAsync(tracks, cancellationToken);
+        }
+
         return (metadata, tracks);
     }
 
@@ -354,7 +359,7 @@ public sealed class SpotifyTracklistService
         List<SpotifyTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        if (tracks.Count == 0 || tracks.All(HasStrongResolveIdentity))
+        if (tracks.Count == 0 || tracks.All(HasIsrcIdentity))
         {
             return tracks;
         }
@@ -376,17 +381,8 @@ public sealed class SpotifyTracklistService
         }
     }
 
-    private static bool HasStrongResolveIdentity(SpotifyTrackSummary track)
-    {
-        if (!string.IsNullOrWhiteSpace(track.Isrc))
-        {
-            return true;
-        }
-
-        return !string.IsNullOrWhiteSpace(track.Name)
-            && !string.IsNullOrWhiteSpace(track.Artists)
-            && track.DurationMs is > 0;
-    }
+    private static bool HasIsrcIdentity(SpotifyTrackSummary track)
+        => !string.IsNullOrWhiteSpace(track.Isrc);
 
     public async Task<List<SpotifyTracklistTrack>> ResolveVisibleTracksAsync(
         IReadOnlyList<SpotifyTrackSummary> tracks,

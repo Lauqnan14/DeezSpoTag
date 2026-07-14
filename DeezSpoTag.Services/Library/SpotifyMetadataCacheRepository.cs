@@ -59,6 +59,63 @@ LIMIT 1;";
         }
     }
 
+    public async Task<IReadOnlyDictionary<string, SpotifyMetadataCacheEntry>> TryGetManyAsync(
+        string type,
+        IReadOnlyCollection<string> sourceIds,
+        CancellationToken cancellationToken)
+    {
+        var results = new Dictionary<string, SpotifyMetadataCacheEntry>(StringComparer.OrdinalIgnoreCase);
+        var connectionString = GetConnectionString();
+        var ids = sourceIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (string.IsNullOrWhiteSpace(connectionString) || ids.Count == 0)
+        {
+            return results;
+        }
+
+        try
+        {
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            foreach (var batch in ids.Chunk(400))
+            {
+                await using var command = connection.CreateCommand();
+                var parameterNames = new List<string>(batch.Length);
+                command.Parameters.AddWithValue(TypeParameter, type);
+                for (var index = 0; index < batch.Length; index++)
+                {
+                    var parameterName = $"$source_id_{index}";
+                    parameterNames.Add(parameterName);
+                    command.Parameters.AddWithValue(parameterName, batch[index]);
+                }
+
+                command.CommandText = $@"
+SELECT source_id, payload_json, fetched_utc
+FROM spotify_metadata_cache
+WHERE type = $type AND source_id IN ({string.Join(", ", parameterNames)});";
+                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var sourceId = reader.GetString(0);
+                    var payloadJson = reader.GetString(1);
+                    var fetchedRaw = reader.GetString(2);
+                    if (DateTimeOffset.TryParse(fetchedRaw, out var fetchedUtc))
+                    {
+                        results[sourceId] = new SpotifyMetadataCacheEntry(payloadJson, fetchedUtc);
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Spotify metadata batch cache lookup failed (type={Type})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type));
+        }
+
+        return results;
+    }
+
     public async Task UpsertAsync(string type, string sourceId, string payloadJson, DateTimeOffset fetchedUtc, CancellationToken cancellationToken)
     {
         var connectionString = GetConnectionString();
@@ -89,6 +146,49 @@ ON CONFLICT(type, source_id) DO UPDATE SET
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Spotify metadata cache upsert failed (type={Type}, id={Id})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type), DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceId));
+        }
+    }
+
+    public async Task UpsertManyAsync(
+        string type,
+        IReadOnlyDictionary<string, string> payloads,
+        DateTimeOffset fetchedUtc,
+        CancellationToken cancellationToken)
+    {
+        var connectionString = GetConnectionString();
+        if (string.IsNullOrWhiteSpace(connectionString) || payloads.Count == 0)
+        {
+            return;
+        }
+
+        const string sql = @"
+INSERT INTO spotify_metadata_cache (type, source_id, payload_json, fetched_utc, created_at, updated_at)
+VALUES ($type, $source_id, $payload_json, $fetched_utc, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(type, source_id) DO UPDATE SET
+    payload_json = excluded.payload_json,
+    fetched_utc = excluded.fetched_utc,
+    updated_at = CURRENT_TIMESTAMP;";
+
+        try
+        {
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            foreach (var pair in payloads)
+            {
+                await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
+                command.Parameters.AddWithValue(TypeParameter, type);
+                command.Parameters.AddWithValue("$source_id", pair.Key);
+                command.Parameters.AddWithValue("$payload_json", pair.Value);
+                command.Parameters.AddWithValue("$fetched_utc", fetchedUtc.ToUniversalTime().ToString("O"));
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Spotify metadata batch cache upsert failed (type={Type})", DeezSpoTag.Core.Security.LogSanitizer.OneLine(type));
         }
     }
 

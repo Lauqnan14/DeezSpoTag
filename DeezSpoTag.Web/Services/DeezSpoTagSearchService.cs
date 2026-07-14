@@ -135,7 +135,13 @@ public sealed class DeezSpoTagSearchService
         int offset,
         CancellationToken cancellationToken)
     {
-        var result = await _spotifySearch.SearchByTypeAsync(query, type, Math.Clamp(limit, 1, 50), Math.Max(0, offset), cancellationToken);
+        var result = await _spotifySearch.SearchByTypeAsync(
+            query,
+            type,
+            Math.Clamp(limit, 1, 50),
+            Math.Max(0, offset),
+            cancellationToken,
+            hydrateTrackIsrcs: false);
         if (result == null)
         {
             return null;
@@ -176,7 +182,7 @@ public sealed class DeezSpoTagSearchService
             trackCount,
             release_date = string.Empty,
             durationMs = item.DurationMs,
-            isrc = item.Isrc ?? string.Empty
+            isrc = string.Empty
         };
     }
 

@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Runtime;
 using System.Linq;
 
 namespace DeezSpoTag.Web.Services;
@@ -72,6 +73,7 @@ public sealed class SpotifyArtistService
     private readonly SpotifyMetadataService _metadataService;
     private readonly SpotifyDeezerLinkService _deezerLinkService;
     private readonly ShazamRecognitionService _shazamRecognitionService;
+    private readonly BackgroundWorkCoordinator _backgroundWorkCoordinator;
     private readonly TaggingProfileService _taggingProfileService;
     private readonly ILogger<SpotifyArtistService> _logger;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
@@ -109,6 +111,7 @@ public sealed class SpotifyArtistService
         _metadataService = dependencies.MetadataService;
         _deezerLinkService = dependencies.DeezerLinkService;
         _shazamRecognitionService = dependencies.ShazamRecognitionService;
+        _backgroundWorkCoordinator = dependencies.BackgroundWorkCoordinator;
         _taggingProfileService = taggingProfileService;
         _logger = logger;
     }
@@ -1418,19 +1421,23 @@ public sealed class SpotifyArtistService
         string artistName,
         SpotifyArtistPageResult baseResult)
     {
-        _ = QueueArtistTopTrackIsrcEnrichmentCoreAsync(spotifyId, artistName, baseResult);
+        _ = _backgroundWorkCoordinator.RunHeavyWorkAsync(
+            token => QueueArtistTopTrackIsrcEnrichmentCoreAsync(spotifyId, artistName, baseResult, token),
+            CancellationToken.None,
+            operation: "spotify-artist-top-track-isrc");
     }
 
     private async Task QueueArtistTopTrackIsrcEnrichmentCoreAsync(
         string spotifyId,
         string artistName,
-        SpotifyArtistPageResult baseResult)
+        SpotifyArtistPageResult baseResult,
+        CancellationToken cancellationToken)
     {
         try
         {
             var enrichedTopTracks = await EnrichTopTracksWithIsrcsAsync(
                 baseResult.TopTracks,
-                CancellationToken.None);
+                cancellationToken);
             if (enrichedTopTracks.Count == 0 || !HaveTopTrackIsrcsChanged(baseResult.TopTracks, enrichedTopTracks))
             {
                 return;
@@ -1445,7 +1452,7 @@ public sealed class SpotifyArtistService
                 spotifyId,
                 payloadJson,
                 DateTimeOffset.UtcNow,
-                CancellationToken.None);
+                cancellationToken);
             AddActivity("info", $"[spotify] top-track ISRCs cached lazily: {artistName}.");
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -3730,7 +3737,8 @@ public sealed record SpotifyArtistServiceDependencies(
     SpotifyPathfinderMetadataClient PathfinderMetadataClient,
     SpotifyMetadataService MetadataService,
     SpotifyDeezerLinkService DeezerLinkService,
-    ShazamRecognitionService ShazamRecognitionService);
+    ShazamRecognitionService ShazamRecognitionService,
+    BackgroundWorkCoordinator BackgroundWorkCoordinator);
 
 public sealed record SpotifyArtistMatchSuggestion(
     string SpotifyId,

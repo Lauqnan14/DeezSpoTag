@@ -6,15 +6,18 @@ public class SpotifyAuthWarmupService : BackgroundService
 {
     private static readonly TimeSpan WarmupTimeout = TimeSpan.FromSeconds(15);
     private readonly SpotifyBlobService _blobService;
+    private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly ILogger<SpotifyAuthWarmupService> _logger;
 
     public SpotifyAuthWarmupService(
         SpotifyBlobService blobService,
+        SpotifyPathfinderMetadataClient pathfinderMetadataClient,
         BackgroundWorkCoordinator workCoordinator,
         ILogger<SpotifyAuthWarmupService> logger)
     {
         _blobService = blobService;
+        _pathfinderMetadataClient = pathfinderMetadataClient;
         _workCoordinator = workCoordinator;
         _logger = logger;
     }
@@ -33,7 +36,12 @@ public class SpotifyAuthWarmupService : BackgroundService
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 timeout.CancelAfter(WarmupTimeout);
                 await _blobService.EnsureSpotifyAuthEnvironmentAsync(timeout.Token);
-                _logger.LogInformation("Spotify auth environment warmup completed.");
+                if (!await _pathfinderMetadataClient.HasPathfinderAuthContextAsync(timeout.Token))
+                {
+                    throw new InvalidOperationException("Spotify Pathfinder auth context is not available.");
+                }
+
+                _logger.LogInformation("Spotify auth and Pathfinder context warmup completed.");
                 return;
             }
             catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)

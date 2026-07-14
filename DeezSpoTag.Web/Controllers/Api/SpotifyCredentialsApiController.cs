@@ -2195,6 +2195,7 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
         finally
         {
+            _pathfinderMetadataClient.InvalidateAuthContext();
             SpotifyHomeFeedApiController.ClearRuntimeAndPersistedCaches();
         }
     }

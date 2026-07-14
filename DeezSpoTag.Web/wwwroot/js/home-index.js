@@ -37,6 +37,7 @@ const homeTrendingWatchMetaCache = new Map();
 let spotifyHomeItemSeq = 0;
 let homeTrendingWatchSeq = 0;
 let homeLoadRequestSeq = 0;
+let spotifyHomeCategories = [];
 const homeTrendingPreviewState = {
     trackKey: null,
     button: null,
@@ -1298,7 +1299,11 @@ async function loadHomeData() {
         }
         console.log('Home data received:', { sectionsCount: sections.length });
 
+        spotifyHomeCategories = [];
         renderHomeSectionsWithLazyImages(sections);
+        if (!channel) {
+            void loadSpotifyHomeEnhancements(sections, requestId, refreshEnabled);
+        }
     } catch (error) {
         console.error('Error loading home data:', error);
         const container = document.getElementById('home-sections');
@@ -1306,6 +1311,77 @@ async function loadHomeData() {
             container.innerHTML = '<div class="empty-section">Failed to load home sections</div>';
         }
     }
+}
+
+async function fetchSpotifyHomeJson(path) {
+    const response = await fetch(path, { cache: 'no-store' });
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    return response.json();
+}
+
+function mapSpotifyHomeCategories(categories) {
+    if (!Array.isArray(categories)) {
+        return [];
+    }
+
+    return categories.map((category) => {
+        const id = String(category?.id || '').trim();
+        const name = String(category?.name || category?.title || '').trim();
+        if (!id || !name) {
+            return null;
+        }
+        return {
+            source: 'spotify',
+            type: 'category',
+            id,
+            categoryId: id,
+            uri: category?.uri || `spotify:genre:${id}`,
+            title: name,
+            name,
+            coverUrl: category?.image_url || category?.imageUrl || category?.coverUrl || '',
+            background_color: category?.background_color || category?.backgroundColor || ''
+        };
+    }).filter(Boolean);
+}
+
+async function loadSpotifyHomeEnhancements(baseSections, requestId, refreshEnabled) {
+    const sectionsUrl = new URL('/api/spotify/home-feed/sections', globalThis.location.origin);
+    sectionsUrl.searchParams.set('timeZone', getBrowserTimeZone());
+    const browseUrl = new URL('/api/spotify/home-feed/browse', globalThis.location.origin);
+    if (refreshEnabled) {
+        browseUrl.searchParams.set('refresh', 'true');
+    }
+
+    const [sectionsResult, categoriesResult] = await Promise.allSettled([
+        fetchSpotifyHomeJson(sectionsUrl.toString()),
+        fetchSpotifyHomeJson(browseUrl.toString())
+    ]);
+    if (requestId !== homeLoadRequestSeq) {
+        return;
+    }
+
+    if (sectionsResult.status === 'rejected') {
+        console.warn('Spotify Home sections could not be loaded:', sectionsResult.reason);
+    }
+    if (categoriesResult.status === 'rejected') {
+        console.warn('Spotify Home categories could not be loaded:', categoriesResult.reason);
+    }
+
+    const spotifySections = sectionsResult.status === 'fulfilled' && Array.isArray(sectionsResult.value?.sections)
+        ? sectionsResult.value.sections
+        : [];
+    spotifyHomeCategories = categoriesResult.status === 'fulfilled'
+        ? mapSpotifyHomeCategories(categoriesResult.value?.categories)
+        : [];
+
+    if (spotifySections.length === 0 && spotifyHomeCategories.length === 0) {
+        return;
+    }
+
+    const mergedSections = mergeSpotifySectionsIntoHomeSections(baseSections, spotifySections);
+    renderHomeSectionsWithLazyImages(mergedSections);
 }
 
 function dedupeExactHomeArtistItems(items, helpers) {
@@ -2960,8 +3036,33 @@ function buildDiscoverClick(item, avatarImage, heroImage) {
 }
 
 function mergeSpotifyCategories(deezerItems, limit) {
-    const baseItems = Array.isArray(deezerItems) ? deezerItems.slice() : [];
-    return limit ? baseItems.slice(0, limit) : baseItems;
+    const baseItems = Array.isArray(deezerItems) ? deezerItems : [];
+    if (spotifyHomeCategories.length === 0) {
+        return limit ? baseItems.slice(0, limit) : baseItems.slice();
+    }
+
+    const spotifyLimit = limit
+        ? Math.min(spotifyHomeCategories.length, 7, Math.max(1, Math.floor(limit / 2)))
+        : spotifyHomeCategories.length;
+    const deezerLimit = limit ? Math.max(0, limit - spotifyLimit) : baseItems.length;
+    const combined = [
+        ...baseItems.slice(0, deezerLimit),
+        ...spotifyHomeCategories.slice(0, spotifyLimit)
+    ];
+    const seen = new Set();
+    const deduped = combined.filter((item) => {
+        const key = [
+            item?.source || 'deezer',
+            item?.type || 'category',
+            item?.id || item?.categoryId || item?.name || item?.title || ''
+        ].map((value) => String(value).trim().toLowerCase()).join(':');
+        if (seen.has(key)) {
+            return false;
+        }
+        seen.add(key);
+        return true;
+    });
+    return limit ? deduped.slice(0, limit) : deduped;
 }
 
 function openTracklist(id, type) {

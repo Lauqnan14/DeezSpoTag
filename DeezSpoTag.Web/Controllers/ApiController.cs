@@ -136,7 +136,6 @@ namespace DeezSpoTag.Web.Controllers
         private readonly DeezSpoTag.Web.Services.AmazonMusicMetadataService _amazonMusicMetadataService;
         private readonly TracklistSongCacheStore _tracklistSongCacheStore;
         private readonly CrossDeviceSyncService _crossDeviceSyncService;
-        private readonly SpotifyHomeFeedRuntimeService _spotifyHomeFeedRuntimeService;
         private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
 
         public sealed class ApiControllerMusicServices
@@ -177,7 +176,6 @@ namespace DeezSpoTag.Web.Controllers
             public required ApiControllerMusicServices MusicServices { get; init; }
             public required TracklistSongCacheStore TracklistSongCacheStore { get; init; }
             public required CrossDeviceSyncService CrossDeviceSyncService { get; init; }
-            public required SpotifyHomeFeedRuntimeService SpotifyHomeFeedRuntimeService { get; init; }
             public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
         }
 
@@ -198,7 +196,6 @@ namespace DeezSpoTag.Web.Controllers
             _amazonMusicMetadataService = dependencies.MusicServices.AmazonMusicMetadataService;
             _tracklistSongCacheStore = dependencies.TracklistSongCacheStore;
             _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
-            _spotifyHomeFeedRuntimeService = dependencies.SpotifyHomeFeedRuntimeService;
             _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
         }
 
@@ -820,21 +817,7 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var deezerLanguage = ResolveDeezerLanguage();
-                var pageTask = FetchHomePageAsync(channel, deezerLanguage);
-                Task<IReadOnlyList<object>>? spotifySectionsTask = null;
-                Task<IReadOnlyList<object>>? spotifyCategoriesTask = null;
-                if (!rawEnabled && string.IsNullOrWhiteSpace(channel))
-                {
-                    spotifySectionsTask = _spotifyHomeFeedRuntimeService.GetMappedSectionsAsync(
-                        timeZone,
-                        refreshEnabled,
-                        HttpContext.RequestAborted);
-                    spotifyCategoriesTask = _spotifyHomeFeedRuntimeService.GetBrowseCategoriesAsync(
-                        refreshEnabled,
-                        HttpContext.RequestAborted);
-                }
-
-                var page = await pageTask;
+                var page = await FetchHomePageAsync(channel, deezerLanguage);
 
                 if (rawEnabled)
                 {
@@ -842,14 +825,6 @@ namespace DeezSpoTag.Web.Controllers
                 }
 
                 var result = await MapHomePageAsync(page, HttpContext.RequestAborted);
-                if (string.IsNullOrWhiteSpace(channel))
-                {
-                    var deezerSections = ExtractHomeSections(result);
-                    var spotifySections = await spotifySectionsTask!;
-                    var spotifyCategories = await spotifyCategoriesTask!;
-                    var categorizedSections = MergeSpotifyCategoriesIntoHomeCategories(deezerSections, spotifyCategories);
-                    result = BuildHomeSectionsResponse(MergeSpotifySectionsIntoHomeSections(categorizedSections, spotifySections));
-                }
                 StoreHomeCacheResult(cacheKey, allowCache, result);
                 return Ok(result);
             }
@@ -908,141 +883,6 @@ namespace DeezSpoTag.Web.Controllers
                 IEnumerable<object> enumerable => enumerable.ToList(),
                 System.Collections.IEnumerable enumerable => enumerable.Cast<object>().ToList(),
                 _ => Array.Empty<object>()
-            };
-        }
-
-        private static IReadOnlyList<object> MergeSpotifySectionsIntoHomeSections(
-            IReadOnlyList<object> deezerSections,
-            IReadOnlyList<object> spotifySections)
-        {
-            if (spotifySections.Count == 0)
-            {
-                return deezerSections;
-            }
-
-            if (deezerSections.Count == 0)
-            {
-                return spotifySections;
-            }
-
-            var merged = deezerSections.ToList();
-            var discoverIndex = merged.FindIndex(section =>
-                string.Equals(TryReadAnonymousString(section, TitleField), "discover", StringComparison.OrdinalIgnoreCase));
-            var insertIndex = discoverIndex >= 0 ? discoverIndex + 1 : merged.Count;
-            merged.InsertRange(insertIndex, spotifySections);
-            return merged;
-        }
-
-        private static IReadOnlyList<object> MergeSpotifyCategoriesIntoHomeCategories(
-            IReadOnlyList<object> sections,
-            IReadOnlyList<object> spotifyCategories)
-        {
-            if (sections.Count == 0 || spotifyCategories.Count == 0)
-            {
-                return sections;
-            }
-
-            var categoryIndex = sections.ToList().FindIndex(IsHomeCategoriesSection);
-            if (categoryIndex < 0)
-            {
-                return sections;
-            }
-
-            var existingSection = sections[categoryIndex];
-            var deezerItems = TryReadAnonymousItems(existingSection)
-                .Where(item => !string.Equals(TryReadAnonymousString(item, SourceField), SpotifySource, StringComparison.OrdinalIgnoreCase))
-                .Take(7)
-                .ToList();
-            var spotifyItems = spotifyCategories
-                .Select(BuildSpotifyHomeCategoryItem)
-                .Where(item => item != null)
-                .Cast<object>()
-                .Take(7)
-                .ToList();
-            if (spotifyItems.Count == 0)
-            {
-                return sections;
-            }
-
-            var next = sections.ToList();
-            next[categoryIndex] = new
-            {
-                title = TryReadAnonymousString(existingSection, TitleField) ?? "Categories",
-                layout = TryReadAnonymousString(existingSection, "layout") ?? "grid",
-                pagePath = TryReadAnonymousString(existingSection, "pagePath") ?? string.Empty,
-                hasMore = TryReadAnonymousBool(existingSection, "hasMore") ?? false,
-                filter = TryReadAnonymousObject(existingSection, "filter"),
-                items = deezerItems.Concat(spotifyItems).ToList(),
-                related = TryReadAnonymousObject(existingSection, RelatedField)
-            };
-            return next;
-        }
-
-        private static bool IsHomeCategoriesSection(object section)
-        {
-            var title = TryReadAnonymousString(section, TitleField);
-            return string.Equals(title, "categories", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(title, "your top genres", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static object? BuildSpotifyHomeCategoryItem(object category)
-        {
-            var id = TryReadAnonymousString(category, "id");
-            var name = TryReadAnonymousString(category, NameField) ?? TryReadAnonymousString(category, TitleField);
-            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(name))
-            {
-                return null;
-            }
-
-            return new
-            {
-                source = SpotifySource,
-                type = "category",
-                id,
-                categoryId = id,
-                uri = TryReadAnonymousString(category, "uri"),
-                title = name,
-                name,
-                coverUrl = TryReadAnonymousString(category, "image_url")
-                           ?? TryReadAnonymousString(category, "imageUrl")
-                           ?? TryReadAnonymousString(category, "coverUrl")
-                           ?? string.Empty,
-                background_color = TryReadAnonymousString(category, "background_color")
-                                   ?? TryReadAnonymousString(category, "backgroundColor")
-            };
-        }
-
-        private static IReadOnlyList<object> TryReadAnonymousItems(object value)
-        {
-            var itemsValue = TryReadAnonymousObject(value, ItemsField);
-            return itemsValue switch
-            {
-                IReadOnlyList<object> list => list,
-                IEnumerable<object> enumerable => enumerable.ToList(),
-                System.Collections.IEnumerable enumerable => enumerable.Cast<object>().ToList(),
-                _ => Array.Empty<object>()
-            };
-        }
-
-        private static object? TryReadAnonymousObject(object value, string propertyName)
-        {
-            try
-            {
-                return value.GetType().GetProperty(propertyName)?.GetValue(value);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                return null;
-            }
-        }
-
-        private static bool? TryReadAnonymousBool(object value, string propertyName)
-        {
-            var raw = TryReadAnonymousObject(value, propertyName);
-            return raw switch
-            {
-                bool boolean => boolean,
-                _ => null
             };
         }
 

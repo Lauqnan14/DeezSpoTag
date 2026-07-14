@@ -1427,7 +1427,8 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyPathfinderMetadataClient>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyDeezerLinkService>(),
-                sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>()));
+                sp.GetRequiredService<DeezSpoTag.Web.Services.ShazamRecognitionService>(),
+                sp.GetRequiredService<BackgroundWorkCoordinator>()));
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyDeezerAlbumResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyCentralMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistService>();
@@ -1545,7 +1546,6 @@ public partial class Program
                 MusicServices = sp.GetRequiredService<DeezSpoTag.Web.Controllers.ApiController.ApiControllerMusicServices>(),
                 TracklistSongCacheStore = sp.GetRequiredService<DeezSpoTag.Web.Services.TracklistSongCacheStore>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
-                SpotifyHomeFeedRuntimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyHomeFeedRuntimeService>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchPlatformServices>(sp =>
