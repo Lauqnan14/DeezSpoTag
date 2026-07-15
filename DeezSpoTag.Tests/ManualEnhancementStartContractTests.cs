@@ -108,10 +108,13 @@ public sealed class ManualEnhancementStartContractTests
         Assert.Contains("features: [\"manual-enrichment\"]", startFunction, StringComparison.Ordinal);
         Assert.Contains("folderIds: [destination.id]", startFunction, StringComparison.Ordinal);
         Assert.Contains("releasePreference", startFunction, StringComparison.Ordinal);
+        Assert.Contains("forceFingerprint", startFunction, StringComparison.Ordinal);
         Assert.DoesNotContain("/api/autotag/start", startFunction, StringComparison.Ordinal);
         Assert.Contains("id=\"autotag-move-success-library\"", view, StringComparison.Ordinal);
         Assert.Contains("name=\"manualReleasePreference\" value=\"album\"", view, StringComparison.Ordinal);
         Assert.Contains("name=\"manualReleasePreference\" value=\"single\"", view, StringComparison.Ordinal);
+        Assert.Contains("name=\"manualRecognitionMethod\" value=\"id-first\"", view, StringComparison.Ordinal);
+        Assert.Contains("name=\"manualRecognitionMethod\" value=\"fingerprint\"", view, StringComparison.Ordinal);
         Assert.DoesNotContain("autotag-move-failed", view, StringComparison.Ordinal);
     }
 

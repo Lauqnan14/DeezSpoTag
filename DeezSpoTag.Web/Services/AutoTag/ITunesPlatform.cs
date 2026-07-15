@@ -69,7 +69,7 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
                         Id = "match_by_id",
                         Label = "Match by existing iTunes ID first",
                         Value = new PlatformCustomOptionBoolean { Value = true },
-                        Tooltip = "Uses existing ITUNES_TRACK_ID/ITUNESCATALOGID tags before text search."
+                        Tooltip = "Uses existing APPLE_TRACK_ID, Apple Music, or iTunes track ID tags. Text search is used only when no valid ID is present."
                     }
                 }
             }
@@ -108,6 +108,10 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
             SupportedTag.ReleaseDate,
             SupportedTag.Genre,
             SupportedTag.Label,
+            SupportedTag.Copyright,
+            SupportedTag.Composer,
+            SupportedTag.InvolvedPeople,
+            SupportedTag.OtherTags,
             SupportedTag.Explicit
         };
     }

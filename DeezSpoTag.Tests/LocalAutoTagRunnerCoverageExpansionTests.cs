@@ -354,7 +354,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("? CloneAudioInfo(validationInfo)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
-        Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo);", runnerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("Isrc = recognized.Isrc,", matcherSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Isrc = FirstNonEmpty(recognized.Isrc, info.Isrc)", matcherSource, StringComparison.Ordinal);

@@ -380,6 +380,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly PlatformCapabilitiesStore _capabilitiesStore;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ITrackIdentityResolver _trackIdentityResolver;
+    private readonly PortedPlatformRegistry? _platformRegistry;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -415,6 +416,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _capabilitiesStore = collaborators.CapabilitiesStore;
         _serviceScopeFactory = collaborators.ServiceScopeFactory;
         _trackIdentityResolver = collaborators.TrackIdentityResolver;
+        _platformRegistry = collaborators.PlatformRegistry;
     }
 
     public async Task<AutoTagRunResult> RunAsync(
@@ -513,6 +515,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             TargetPath = targetPath,
             MatchingConfig = matchingConfig,
             EffectivePlatforms = BuildEffectivePlatforms(config),
+            PlatformSupportedTags = BuildPlatformSupportedTags(),
             Settings = settings,
             TagSettings = BuildTagSettings(config, settings),
             Files = ResolveTargetFiles(targetPath, config).ToList(),
@@ -805,10 +808,145 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return null;
     }
 
+    private static ProviderTagPlan BuildProviderTagPlan(AutoTagFileRunContext context)
+    {
+        var configured = context.Plan.Config.Tags
+            .Select(tag => tag?.Trim())
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => SupportedTagMap.TryGetValue(tag!, out var mapped) ? (SupportedTag?)mapped : null)
+            .Where(tag => tag.HasValue)
+            .Select(tag => tag!.Value)
+            .ToHashSet();
+
+        if (context.Plan.PlatformSupportedTags.TryGetValue(context.Platform, out var supported))
+        {
+            configured.IntersectWith(supported);
+        }
+
+        var retained = new HashSet<SupportedTag>();
+        var eligible = new HashSet<SupportedTag>();
+        try
+        {
+            using var file = TagLib.File.Create(context.File);
+            var extension = Path.GetExtension(context.File);
+            foreach (var tag in configured)
+            {
+                if (!ShouldOverwriteTag(context.Plan.Config, tag)
+                    && HasTag(file, extension, tag, context.Plan.Config, context.Platform))
+                {
+                    retained.Add(tag);
+                }
+                else
+                {
+                    eligible.Add(tag);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            eligible.UnionWith(configured);
+        }
+
+        return new ProviderTagPlan(configured, eligible, retained);
+    }
+
+    private static HashSet<SupportedTag> CapturePresentTags(
+        string filePath,
+        AutoTagRunnerConfig config,
+        string platformId,
+        IEnumerable<SupportedTag> tags)
+    {
+        var present = new HashSet<SupportedTag>();
+        using var file = TagLib.File.Create(filePath);
+        var extension = Path.GetExtension(filePath);
+        foreach (var tag in tags)
+        {
+            if (HasTag(file, extension, tag, config, platformId))
+            {
+                present.Add(tag);
+            }
+        }
+
+        return present;
+    }
+
+    private static HashSet<SupportedTag> ResolveReturnedEligibleTags(AutoTagTrack track, ProviderTagPlan plan)
+    {
+        return CollectAutoTagTags(track)
+            .Select(tag => SupportedTagMap.TryGetValue(tag, out var mapped) ? (SupportedTag?)mapped : null)
+            .Where(tag => tag.HasValue && plan.Eligible.Contains(tag.Value))
+            .Select(tag => tag!.Value)
+            .ToHashSet();
+    }
+
+    private static HashSet<SupportedTag> VerifyPersistedTags(
+        string filePath,
+        AutoTagRunnerConfig config,
+        string platformId,
+        AutoTagTrack track,
+        IEnumerable<SupportedTag> expectedTags)
+    {
+        var missing = new HashSet<SupportedTag>();
+        using var file = TagLib.File.Create(filePath);
+        var extension = Path.GetExtension(filePath);
+        foreach (var tag in expectedTags)
+        {
+            var persisted = tag switch
+            {
+                SupportedTag.OtherTags => VerifyOtherTagsPersisted(file, extension, track),
+                SupportedTag.TtmlLyrics => IOFile.Exists(Path.ChangeExtension(filePath, TtmlExtension)),
+                _ => HasTag(file, extension, tag, config, platformId)
+            };
+            if (!persisted)
+            {
+                missing.Add(tag);
+            }
+        }
+
+        return missing;
+    }
+
+    private static bool VerifyOtherTagsPersisted(TagLib.File file, string extension, AutoTagTrack track)
+    {
+        var expectedRawTags = track.Other
+            .Where(pair => pair.Value.Count > 0)
+            .Where(pair => !FirstClassRawOtherTags.Contains(pair.Key))
+            .Where(pair => !pair.Key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase))
+            .Where(pair => !IsLyricsPayloadKey(pair.Key))
+            .Select(pair => pair.Key)
+            .ToList();
+        return expectedRawTags.Count > 0
+            && expectedRawTags.All(rawTag => HasRawTag(file, extension, rawTag));
+    }
+
+    private static string ToTagKey(SupportedTag tag)
+    {
+        return tag switch
+        {
+            SupportedTag.AlbumArt => AlbumArtTag,
+            SupportedTag.BPM => BpmTag,
+            SupportedTag.ISRC => IsrcTag,
+            SupportedTag.URL => UrlTag,
+            SupportedTag.TtmlLyrics => TtmlLyricsTag,
+            _ => char.ToLowerInvariant(tag.ToString()[0]) + tag.ToString()[1..]
+        };
+    }
+
     private async Task ProcessPlatformFileAsync(AutoTagFileRunContext context)
     {
         if (TryHandlePreSkippedFile(context))
         {
+            return;
+        }
+
+        var tagPlan = BuildProviderTagPlan(context);
+        if (tagPlan.Eligible.Count == 0)
+        {
+            EmitSkippedStatus(
+                context,
+                "provider has no eligible configured fields for this file",
+                outcome: "no_eligible_tags",
+                tagPlan: tagPlan);
             return;
         }
 
@@ -880,9 +1018,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)
             ? validationInfo
             : info;
-        var match = await ResolvePlatformMatchAsync(context, matchInfo, usedShazamForStatus);
+        var match = await ResolvePlatformMatchAsync(context, matchInfo);
         if (match == null)
         {
+            if (string.Equals(context.MatchFailureOutcome, "provider_error", StringComparison.Ordinal))
+            {
+                EmitErrorStatus(
+                    context,
+                    context.MatchFailureMessage ?? "provider request failed",
+                    usedShazamForStatus,
+                    "provider_error",
+                    tagPlan);
+                return;
+            }
+
             if (isManualEnrichment
                 && IsLastPlatform(context)
                 && !WasTaggedByAnyPlatform(context))
@@ -891,17 +1040,24 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context,
                     $"No {context.Plan.Config.ManualReleasePreference} release could be resolved.",
                     usedShazamForStatus,
-                    AutoTagReviewMetadata.FromSourceOnly(validationInfo));
+                    AutoTagReviewMetadata.FromSourceOnly(validationInfo),
+                    context.MatchFailureOutcome ?? "not_in_catalog",
+                    tagPlan);
                 context.Plan.ReviewedFiles.Add(context.File);
             }
             else
             {
-                EmitSkippedStatus(context, "no match", usedShazamForStatus);
+                EmitSkippedStatus(
+                    context,
+                    context.MatchFailureMessage ?? "no match",
+                    usedShazamForStatus,
+                    context.MatchFailureOutcome ?? "not_in_catalog",
+                    tagPlan);
             }
             return;
         }
 
-        await ApplyResolvedMatchAsync(context, info, validationInfo, match, usedShazamForStatus);
+        await ApplyResolvedMatchAsync(context, info, validationInfo, match, usedShazamForStatus, tagPlan);
     }
 
     private async Task ApplyCentralIdentityForManualEnrichmentAsync(
@@ -974,8 +1130,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private async Task<AutoTagMatchResult?> ResolvePlatformMatchAsync(
         AutoTagFileRunContext context,
-        AutoTagAudioInfo info,
-        bool usedShazamForStatus)
+        AutoTagAudioInfo info)
     {
         var useMatchCache = CanUseMatchCache(info);
         var matchCacheKey = useMatchCache
@@ -987,6 +1142,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         AutoTagMatchResult? match;
+        context.MatchFailureOutcome = null;
+        context.MatchFailureMessage = null;
         try
         {
             match = await RunPlatformMatchWithTimeoutAsync(
@@ -1008,7 +1165,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "AutoTag platform {Platform} failed for {File}", SanitizeLogValue(context.Platform), SanitizeLogValue(context.File));
-            EmitErrorStatus(context, ex.Message, usedShazamForStatus);
+            context.MatchFailureOutcome = IsProviderNotConfigured(ex) ? "not_configured" : "provider_error";
+            context.MatchFailureMessage = ex.Message;
             return null;
         }
 
@@ -1043,10 +1201,33 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             timeoutSource.Cancel();
             ObserveBackgroundTask(matchTask);
+            context.MatchFailureOutcome = "provider_error";
+            context.MatchFailureMessage = $"provider timed out after {PlatformMatchTimeout.TotalSeconds:0}s";
             context.LogCallback(
                 $"onetagger_autotag: {context.Platform} match timed out after {PlatformMatchTimeout.TotalSeconds:0}s; skipping");
             return null;
         }
+    }
+
+    private static bool IsProviderNotConfigured(Exception exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException)
+        {
+            if (current is not InvalidOperationException)
+            {
+                continue;
+            }
+
+            var message = current.Message;
+            if (message.Contains("not configured", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("must be connected", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("credentials are required", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task ApplyResolvedMatchAsync(
@@ -1054,7 +1235,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagAudioInfo info,
         AutoTagAudioInfo validationInfo,
         AutoTagMatchResult match,
-        bool usedShazamForStatus)
+        bool usedShazamForStatus,
+        ProviderTagPlan tagPlan)
     {
         var isManualEnrichment = IsManualEnrichment(context.Plan.Config);
         if (string.Equals(context.Platform, BoomplayPlatform, StringComparison.OrdinalIgnoreCase))
@@ -1062,7 +1244,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var boomplayGuardReason = EvaluateBoomplayReliabilityGuard(validationInfo, match, context.Plan.MatchingConfig);
             if (!string.IsNullOrWhiteSpace(boomplayGuardReason))
             {
-                EmitSkippedStatus(context, boomplayGuardReason, usedShazamForStatus);
+                EmitSkippedStatus(context, boomplayGuardReason, usedShazamForStatus, "rejected", tagPlan);
                 return;
             }
         }
@@ -1078,7 +1260,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 info,
                 match.Track,
                 $"Provider returned a {match.Track.ReleaseType ?? "different"} release instead of the requested {context.Plan.Config.ManualReleasePreference} release.",
-                usedShazamForStatus);
+                usedShazamForStatus,
+                tagPlan,
+                match);
             return;
         }
 
@@ -1095,7 +1279,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 EmitSkippedStatus(
                     context,
                     frozenMismatch ?? "provider release conflicts with the frozen manual-enrichment release",
-                    usedShazamForStatus);
+                    usedShazamForStatus,
+                    outcome: "rejected",
+                    tagPlan: tagPlan);
                 return;
             }
 
@@ -1114,12 +1300,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context,
                     mismatchReason,
                     usedShazamForStatus,
-                    AutoTagReviewMetadata.FromMatch(validationInfo, match.Track));
+                    AutoTagReviewMetadata.FromMatch(validationInfo, match.Track),
+                    "rejected",
+                    tagPlan,
+                    match);
                 context.Plan.ReviewedFiles.Add(context.File);
                 return;
             }
 
-            EmitSkippedStatus(context, mismatchReason, usedShazamForStatus);
+            EmitSkippedStatus(context, mismatchReason, usedShazamForStatus, "rejected", tagPlan);
             return;
         }
 
@@ -1154,6 +1343,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
             context.File = materializedPath;
             context.Plan.Files[context.FileIndex] = context.File;
+            var presentBefore = CapturePresentTags(context.File, context.Plan.Config, context.Platform, tagPlan.Eligible);
             await RunBoundedOptionalStepAsync(
                 context,
                 "artwork fallback",
@@ -1183,6 +1373,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     "Apple extras",
                     AppleExtrasTimeout,
                     stepToken => PopulateAppleExtrasAsync(
+                        context.Platform,
                         context.File,
                         match.Track,
                         context.Plan.Config,
@@ -1197,6 +1388,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Plan.Settings,
                 context.Platform,
                 context.Token);
+            var returnedTags = ResolveReturnedEligibleTags(match.Track, tagPlan);
+            var persistenceFailures = VerifyPersistedTags(
+                context.File,
+                context.Plan.Config,
+                context.Platform,
+                match.Track,
+                returnedTags);
+            if (persistenceFailures.Count > 0)
+            {
+                throw new IOException($"Metadata persistence verification failed for: {string.Join(", ", persistenceFailures.Select(ToTagKey))}.");
+            }
             if (isManualEnrichment)
             {
                 await EnsureManualArtistArtworkAsync(context, info, match.Track);
@@ -1204,12 +1406,28 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.Plan.TaggedByAnyPlatform.Add(originalFile);
             context.Plan.TaggedByAnyPlatform.Add(context.File);
             context.Plan.TaggedFileIndices.Add(context.FileIndex);
-            EmitTaggedStatus(context, match.Accuracy, usedShazamForStatus);
+            var writtenTags = returnedTags
+                .Where(tag => ShouldOverwriteTag(context.Plan.Config, tag) || !presentBefore.Contains(tag))
+                .ToHashSet();
+            var missingTags = tagPlan.Eligible
+                .Where(tag => !returnedTags.Contains(tag))
+                .ToHashSet();
+            var outcome = writtenTags.Count > 0 ? "tagged" : "matched_no_changes";
+            EmitTaggedStatus(
+                context,
+                match.Accuracy,
+                usedShazamForStatus,
+                outcome,
+                tagPlan,
+                match,
+                returnedTags,
+                writtenTags,
+                missingTags);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", SanitizeLogValue(context.File), SanitizeLogValue(context.Platform));
-            EmitErrorStatus(context, ex.Message, usedShazamForStatus);
+            EmitErrorStatus(context, ex.Message, usedShazamForStatus, "provider_error", tagPlan, match);
         }
     }
 
@@ -1221,8 +1439,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                      SpotifyUrlTag,
                      DeezerTrackIdTag,
                      "DEEZER_URL",
-                     "ITUNES_TRACK_ID",
-                     "APPLE_MUSIC_TRACK_ID",
+                     AutoTagIdentityTags.AppleTrackId,
+                     AutoTagIdentityTags.ItunesTrackId,
+                     AutoTagIdentityTags.AppleMusicTrackId,
                      "APPLE_MUSIC_URL",
                      "QOBUZ_TRACK_ID",
                      "TIDAL_TRACK_ID",
@@ -1275,7 +1494,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 provider.GetService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 provider.GetService<DeezSpoTag.Services.Download.ISpotifyArtworkResolver>(),
                 provider.GetService<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(),
-                AutoTagTagValueReader.ReadFirstTagValue(identity, "ITUNES_TRACK_ID", "APPLE_MUSIC_TRACK_ID"),
+                AutoTagIdentityTags.ReadAppleTrackId(identity),
                 AutoTagTagValueReader.ReadFirstTagValue(identity, DeezerTrackIdTag),
                 AutoTagTagValueReader.ReadFirstTagValue(identity, SpotifyTrackIdTag),
                 artist,
@@ -1305,7 +1524,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagAudioInfo source,
         AutoTagTrack candidate,
         string reason,
-        bool usedShazam)
+        bool usedShazam,
+        ProviderTagPlan tagPlan,
+        AutoTagMatchResult match)
     {
         if (IsLastPlatform(context) && !WasTaggedByAnyPlatform(context))
         {
@@ -1313,12 +1534,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context,
                 reason,
                 usedShazam,
-                AutoTagReviewMetadata.FromMatch(source, candidate));
+                AutoTagReviewMetadata.FromMatch(source, candidate),
+                "rejected",
+                tagPlan,
+                match);
             context.Plan.ReviewedFiles.Add(context.File);
             return;
         }
 
-        EmitSkippedStatus(context, reason, usedShazam);
+        EmitSkippedStatus(context, reason, usedShazam, "rejected", tagPlan, match);
     }
 
     private static bool AlbumsReferToSameRelease(string? frozen, string? candidate)
@@ -1642,23 +1866,38 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
-    private static void EmitSkippedStatus(AutoTagFileRunContext context, string message, bool usedShazam = false)
+    private static void EmitSkippedStatus(
+        AutoTagFileRunContext context,
+        string message,
+        bool usedShazam = false,
+        string? outcome = null,
+        ProviderTagPlan? tagPlan = null,
+        AutoTagMatchResult? match = null)
     {
-        EmitStatus(context, "skipped", message, null, usedShazam);
+        EmitStatus(context, "skipped", message, null, usedShazam, outcome: outcome, tagPlan: tagPlan, match: match);
     }
 
-    private static void EmitErrorStatus(AutoTagFileRunContext context, string message, bool usedShazam)
+    private static void EmitErrorStatus(
+        AutoTagFileRunContext context,
+        string message,
+        bool usedShazam,
+        string? outcome = null,
+        ProviderTagPlan? tagPlan = null,
+        AutoTagMatchResult? match = null)
     {
-        EmitStatus(context, "error", message, null, usedShazam);
+        EmitStatus(context, "error", message, null, usedShazam, outcome: outcome, tagPlan: tagPlan, match: match);
     }
 
     private static void EmitReviewStatus(
         AutoTagFileRunContext context,
         string message,
         bool usedShazam,
-        AutoTagReviewMetadata? review)
+        AutoTagReviewMetadata? review,
+        string? outcome = null,
+        ProviderTagPlan? tagPlan = null,
+        AutoTagMatchResult? match = null)
     {
-        EmitStatus(context, "review", message, null, usedShazam, review);
+        EmitStatus(context, "review", message, null, usedShazam, review, outcome, tagPlan, match);
     }
 
     private static void EmitTaggingStatus(AutoTagFileRunContext context, double? accuracy, bool usedShazam)
@@ -1666,9 +1905,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         EmitStatus(context, "tagging", null, accuracy, usedShazam);
     }
 
-    private static void EmitTaggedStatus(AutoTagFileRunContext context, double? accuracy, bool usedShazam)
+    private static void EmitTaggedStatus(
+        AutoTagFileRunContext context,
+        double? accuracy,
+        bool usedShazam,
+        string? outcome = null,
+        ProviderTagPlan? tagPlan = null,
+        AutoTagMatchResult? match = null,
+        IReadOnlyCollection<SupportedTag>? returnedTags = null,
+        IReadOnlyCollection<SupportedTag>? writtenTags = null,
+        IReadOnlyCollection<SupportedTag>? missingTags = null)
     {
-        EmitStatus(context, "tagged", null, accuracy, usedShazam);
+        EmitStatus(
+            context,
+            "tagged",
+            outcome == "matched_no_changes" ? "provider matched but supplied no new eligible values" : null,
+            accuracy,
+            usedShazam,
+            outcome: outcome,
+            tagPlan: tagPlan,
+            match: match,
+            returnedTags: returnedTags,
+            writtenTags: writtenTags,
+            missingTags: missingTags);
     }
 
     private static void EmitStatus(
@@ -1677,7 +1936,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string? message,
         double? accuracy,
         bool usedShazam,
-        AutoTagReviewMetadata? review = null)
+        AutoTagReviewMetadata? review = null,
+        string? outcome = null,
+        ProviderTagPlan? tagPlan = null,
+        AutoTagMatchResult? match = null,
+        IReadOnlyCollection<SupportedTag>? returnedTags = null,
+        IReadOnlyCollection<SupportedTag>? writtenTags = null,
+        IReadOnlyCollection<SupportedTag>? missingTags = null)
     {
         context.StatusCallback(new TaggingStatusWrap
         {
@@ -1696,6 +1961,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 Message = message,
                 Accuracy = accuracy,
                 UsedShazam = usedShazam,
+                Outcome = outcome,
+                RecognitionStrategy = ResolveRecognitionStrategy(match),
+                RequestedTags = (tagPlan?.Requested.AsEnumerable() ?? Enumerable.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
+                ReturnedTags = (returnedTags ?? Array.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
+                WrittenTags = (writtenTags ?? Array.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
+                RetainedTags = (tagPlan?.Retained.AsEnumerable() ?? Enumerable.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
+                MissingTags = (missingTags?.AsEnumerable() ?? tagPlan?.Eligible.AsEnumerable() ?? Enumerable.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
                 ReviewReason = review?.Reason ?? message,
                 SourceTitle = review?.SourceTitle,
                 SourceArtist = review?.SourceArtist,
@@ -1707,6 +1979,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 CandidateDurationSeconds = review?.CandidateDurationSeconds
             }
         });
+    }
+
+    private static string? ResolveRecognitionStrategy(AutoTagMatchResult? match)
+    {
+        if (!string.IsNullOrWhiteSpace(match?.MatchStrategy))
+        {
+            return match.MatchStrategy;
+        }
+
+        return match?.Track.Other.TryGetValue("SHAZAM_MATCH_STRATEGY", out var strategies) == true
+            ? strategies.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim().ToLowerInvariant()
+            : null;
     }
 
     private static async Task ApplyPostLoopFallbackAsync(AutoTagRunPlan plan, CancellationToken token)
@@ -1994,6 +2278,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private async Task PopulateAppleExtrasAsync(
+        string platform,
         string filePath,
         AutoTagTrack track,
         AutoTagRunnerConfig config,
@@ -2005,7 +2290,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var wantsAnimatedArtwork = saveAnimatedArtwork
             && (IsManualEnrichment(config) || HasAnyTags(config, AlbumArtTag));
         var wantsAppleLyrics = ShouldRequestAnyLyrics(config, settings);
-        if (!wantsAnimatedArtwork && !wantsAppleLyrics)
+        var wantsCatalogMetadata = string.Equals(platform, ItunesPlatform, StringComparison.OrdinalIgnoreCase)
+            && HasAnyTags(
+                config,
+                GenreTag,
+                IsrcTag,
+                LabelTag,
+                CopyrightTag,
+                ComposerTag,
+                InvolvedPeopleTag,
+                OtherTagsTag,
+                ExplicitTag);
+        if (!wantsAnimatedArtwork && !wantsAppleLyrics && !wantsCatalogMetadata)
         {
             return;
         }
@@ -2014,6 +2310,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ? "us"
             : settings.AppleMusic.Storefront;
         var appleIdentity = await ResolveAppleIdentityForExtrasAsync(track, storefront, settings, token);
+
+        if (wantsCatalogMetadata && !string.IsNullOrWhiteSpace(appleIdentity?.AppleId))
+        {
+            await PopulateAppleCatalogMetadataAsync(
+                track,
+                config,
+                appleIdentity.AppleId,
+                storefront,
+                settings.AppleMusic?.MediaUserToken,
+                token);
+        }
 
         if (wantsAppleLyrics)
         {
@@ -2044,6 +2351,121 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             settings,
             token);
     }
+
+    private async Task PopulateAppleCatalogMetadataAsync(
+        AutoTagTrack track,
+        AutoTagRunnerConfig config,
+        string appleTrackId,
+        string storefront,
+        string? mediaUserToken,
+        CancellationToken token)
+    {
+        using var payload = await _appleMusicCatalogService.GetSongAsync(
+            appleTrackId,
+            storefront,
+            "en-US",
+            token,
+            mediaUserToken);
+        if (!payload.RootElement.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array
+            || data.GetArrayLength() == 0
+            || !data[0].TryGetProperty("attributes", out var attributes))
+        {
+            return;
+        }
+
+        ApplyAppleCatalogMetadata(track, config, attributes);
+    }
+
+    private static void ApplyAppleCatalogMetadata(
+        AutoTagTrack track,
+        AutoTagRunnerConfig config,
+        JsonElement attributes)
+    {
+        if (HasAnyTags(config, GenreTag)
+            && attributes.TryGetProperty("genreNames", out var genreNames)
+            && genreNames.ValueKind == JsonValueKind.Array)
+        {
+            var genres = genreNames.EnumerateArray()
+                .Select(value => value.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim())
+                .Where(value => !string.Equals(value, "Music", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (genres.Count > 0)
+            {
+                track.Genres = track.Genres
+                    .Concat(genres)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+        }
+
+        var isrc = TryGetJsonString(attributes, "isrc");
+        if (HasAnyTags(config, IsrcTag) && !string.IsNullOrWhiteSpace(isrc))
+        {
+            track.Isrc = isrc;
+        }
+
+        var recordLabel = TryGetJsonString(attributes, "recordLabel");
+        if (HasAnyTags(config, LabelTag) && !string.IsNullOrWhiteSpace(recordLabel))
+        {
+            track.Label = recordLabel;
+        }
+
+        var composer = TryGetJsonString(attributes, "composerName");
+        if (HasAnyTags(config, ComposerTag) && !string.IsNullOrWhiteSpace(composer))
+        {
+            track.Other[ComposerTag] = SplitCompositeRawValues(composer).ToList();
+        }
+        if (HasAnyTags(config, InvolvedPeopleTag) && !string.IsNullOrWhiteSpace(composer))
+        {
+            track.Other[InvolvedPeopleTag] = [.. SplitCompositeRawValues(composer).Select(name => $"Composer: {name}")];
+        }
+
+        var copyright = TryGetJsonString(attributes, "copyright");
+        if (HasAnyTags(config, CopyrightTag) && !string.IsNullOrWhiteSpace(copyright))
+        {
+            track.Other[CopyrightTag] = [copyright];
+        }
+
+        if (HasAnyTags(config, ExplicitTag)
+            && attributes.TryGetProperty("contentRating", out var rating)
+            && rating.ValueKind == JsonValueKind.String)
+        {
+            track.Explicit = string.Equals(rating.GetString(), "explicit", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (!HasAnyTags(config, OtherTagsTag)
+            || !attributes.TryGetProperty("audioTraits", out var audioTraits)
+            || audioTraits.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        var traits = audioTraits.EnumerateArray()
+            .Select(value => value.GetString())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (traits.Count == 0)
+        {
+            return;
+        }
+
+        track.Other["APPLE_AUDIO_TRAITS"] = traits;
+        track.Other["APPLE_IS_ATMOS"] =
+        [
+            traits.Any(trait => AppleAtmosHeuristics.ContainsAtmosToken(trait)) ? "1" : "0"
+        ];
+    }
+
+    private static string? TryGetJsonString(JsonElement element, string propertyName)
+        => element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()?.Trim()
+            : null;
 
     private async Task TryPopulateAppleAnimatedArtworkAsync(
         AutoTagTrack track,
@@ -2175,9 +2597,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         try
         {
             var artist = track.Artists.FirstOrDefault();
-            var persistedAppleId = track.Other.TryGetValue("APPLE_MUSIC_TRACK_ID", out var appleIds)
-                ? appleIds.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
-                : null;
+            var persistedAppleId = TryGetFirstOtherValue(track.Other, AutoTagIdentityTags.AppleTrackIdAliases)
+                ?? (track.Other.ContainsKey(AutoTagIdentityTags.AppleTrackId) ? track.TrackId : null);
             var identity = await _trackIdentityResolver.ResolveAsync(
                 new TrackIdentityResolutionRequest(
                     SourcePlatform: null,
@@ -2738,6 +3159,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             .ToList();
     }
 
+    private Dictionary<string, HashSet<SupportedTag>> BuildPlatformSupportedTags()
+    {
+        return (_platformRegistry?.DescribeAll() ?? Array.Empty<AutoTagPlatformDescriptor>())
+            .Where(descriptor => !string.IsNullOrWhiteSpace(descriptor.Id))
+            .GroupBy(descriptor => descriptor.Id.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.SelectMany(descriptor => descriptor.SupportedTags).ToHashSet(),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
     private sealed class PlatformMatchContext
     {
         public required string FilePath { get; init; }
@@ -3003,6 +3435,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         match.Track.Other["SHAZAM_MATCH_STRATEGY"] = new List<string> { "ID_FIRST" };
         match.Track.Other["SHAZAM_MATCH_PROVIDER"] = new List<string> { provider.ToUpperInvariant() };
+        match.MatchStrategy = "id_first";
 
         if (provider.Equals(DeezerPlatform, StringComparison.OrdinalIgnoreCase))
         {
@@ -3751,9 +4184,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         AddTagIfAny(tags, "BEATPORT_TRACK_ID", ReadRawTagValues(file, extension, "BEATPORT_TRACK_ID"));
         AddTagIfAny(tags, "DISCOGS_RELEASE_ID", ReadRawTagValues(file, extension, "DISCOGS_RELEASE_ID"));
-        AddTagIfAny(tags, "ITUNES_TRACK_ID", ReadRawTagValuesAny(file, extension, "ITUNES_TRACK_ID", "ITUNESCATALOGID", "ITUNES_TRACKID"));
-        AddTagIfAny(tags, "ITUNES_RELEASE_ID", ReadRawTagValuesAny(file, extension, "ITUNES_RELEASE_ID", "ITUNESALBUMID", "ITUNES_ALBUM_ID"));
-        AddTagIfAny(tags, "ITUNES_ARTIST_ID", ReadRawTagValuesAny(file, extension, "ITUNES_ARTIST_ID", "ITUNESARTISTID"));
+        AddTagIfAny(tags, AutoTagIdentityTags.ItunesTrackId, ReadRawTagValuesAny(file, extension, AutoTagIdentityTags.AppleTrackIdAliases));
+        AddTagIfAny(tags, AutoTagIdentityTags.AppleTrackId, ReadRawTagValuesAny(file, extension, AutoTagIdentityTags.AppleTrackIdAliases));
+        AddTagIfAny(tags, "ITUNES_RELEASE_ID", ReadRawTagValuesAny(file, extension, AutoTagIdentityTags.AppleReleaseIdAliases));
+        AddTagIfAny(tags, "ITUNES_ARTIST_ID", ReadRawTagValuesAny(file, extension, AutoTagIdentityTags.AppleArtistIdAliases));
         AddTagIfAny(tags, DeezerTrackIdTag, ReadRawTagValuesAny(file, extension, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID"));
         AddTagIfAny(tags, "DEEZER_RELEASE_ID", ReadRawTagValuesAny(file, extension, "DEEZER_RELEASE_ID"));
         AddTagIfAny(tags, SpotifyTrackIdTag, ReadRawTagValuesAny(file, extension, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag));
@@ -6176,6 +6610,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             [TitleTag] = SupportedTag.Title,
             [ArtistTag] = SupportedTag.Artist,
+            [ArtistsTag] = SupportedTag.Artist,
             [AlbumArtistTag] = SupportedTag.AlbumArtist,
             [AlbumTag] = SupportedTag.Album,
             [AlbumArtTag] = SupportedTag.AlbumArt,
@@ -6194,7 +6629,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             [ReleaseStatusTag] = SupportedTag.ReleaseStatus,
             [ReleaseCountryTag] = SupportedTag.ReleaseCountry,
             [BarcodeTag] = SupportedTag.Barcode,
-            [MediaTag] = SupportedTag.Media
+            [MediaTag] = SupportedTag.Media,
+            [CopyrightTag] = SupportedTag.Copyright,
+            [ComposerTag] = SupportedTag.Composer,
+            [InvolvedPeopleTag] = SupportedTag.InvolvedPeople
         };
 
         SupportedTagFeatureMappings.AddAudioFeatureTags(map);
@@ -6490,6 +6928,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Genre => tag.Genres?.Length > 0,
             SupportedTag.Style => TagRawProbe.HasId3Raw(tag, ResolveStylesTagName(config, ".mp3")),
             SupportedTag.Label => TagRawProbe.HasId3Raw(tag, "TPUB"),
+            SupportedTag.Copyright => TagRawProbe.HasId3Raw(tag, CopyrightRawTag),
+            SupportedTag.Composer => TagRawProbe.HasId3Raw(tag, "TCOM"),
+            SupportedTag.InvolvedPeople => TagRawProbe.HasId3Raw(tag, InvolvedPeopleRawTag),
             SupportedTag.ISRC => TagRawProbe.HasId3Raw(tag, "TSRC"),
             SupportedTag.CatalogNumber => TagRawProbe.HasId3Raw(tag, CatalogNumberUpperTag),
             SupportedTag.Version => TagRawProbe.HasId3Raw(tag, "TIT3"),
@@ -6548,6 +6989,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Genre => tag.GetField(Mp4GenreTag).Length > 0,
             SupportedTag.Style => tag.GetField(ResolveStylesTagName(config, FlacExtension)).Length > 0,
             SupportedTag.Label => tag.GetField(LabelUpperTag).Length > 0,
+            SupportedTag.Copyright => tag.GetField(CopyrightRawTag).Length > 0,
+            SupportedTag.Composer => tag.GetField(ComposerUpperTag).Length > 0,
+            SupportedTag.InvolvedPeople => tag.GetField(InvolvedPeopleRawTag).Length > 0,
             SupportedTag.ISRC => tag.GetField("ISRC").Length > 0,
             SupportedTag.CatalogNumber => tag.GetField(CatalogNumberUpperTag).Length > 0,
             SupportedTag.Version => tag.GetField("SUBTITLE").Length > 0,
@@ -6607,6 +7051,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.TimeSignature => Mp4TagHelper.HasRaw(file, TimeSignatureTag),
             SupportedTag.Liveness => Mp4TagHelper.HasRaw(file, LivenessTag),
             SupportedTag.Label => Mp4TagHelper.HasRaw(file, LabelUpperTag),
+            SupportedTag.Copyright => Mp4TagHelper.HasRaw(file, CopyrightRawTag),
+            SupportedTag.Composer => Mp4TagHelper.HasRaw(file, "©wrt"),
+            SupportedTag.InvolvedPeople => Mp4TagHelper.HasRaw(file, InvolvedPeopleRawTag),
             SupportedTag.ISRC => Mp4TagHelper.HasRaw(file, "ISRC"),
             SupportedTag.CatalogNumber => Mp4TagHelper.HasRaw(file, CatalogNumberUpperTag),
             SupportedTag.Version => Mp4TagHelper.HasRaw(file, "desc"),
@@ -6905,6 +7352,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required PlatformCapabilitiesStore CapabilitiesStore { get; init; }
         public required IServiceScopeFactory ServiceScopeFactory { get; init; }
         public required ITrackIdentityResolver TrackIdentityResolver { get; init; }
+        public PortedPlatformRegistry? PlatformRegistry { get; init; }
     }
 
     private readonly record struct TagWriteContext(
@@ -8939,6 +9387,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required string TargetPath { get; init; }
         public required AutoTagMatchingConfig MatchingConfig { get; init; }
         public required List<string> EffectivePlatforms { get; init; }
+        public required Dictionary<string, HashSet<SupportedTag>> PlatformSupportedTags { get; init; }
         public required DeezSpoTagSettings Settings { get; init; }
         public required TagSettings TagSettings { get; init; }
         public required List<string> Files { get; init; }
@@ -9025,6 +9474,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required Action<TaggingStatusWrap> StatusCallback { get; init; }
         public required Action<string> LogCallback { get; init; }
         public required CancellationToken Token { get; init; }
+        public string? MatchFailureOutcome { get; set; }
+        public string? MatchFailureMessage { get; set; }
     }
 
     private sealed class JobMatchCacheState
@@ -9034,6 +9485,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public Dictionary<string, MatchCacheEntry> Entries { get; } = new(StringComparer.Ordinal);
     }
     private sealed record MatchCacheEntry(AutoTagMatchResult? Match);
+    private sealed record ProviderTagPlan(
+        HashSet<SupportedTag> Requested,
+        HashSet<SupportedTag> Eligible,
+        HashSet<SupportedTag> Retained);
     private sealed record LyricsPopulationRequest(
         bool WantsSynced,
         bool WantsUnsynced,

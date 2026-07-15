@@ -283,9 +283,9 @@ public class AutoTagJobsController : ControllerBase
             return BadRequest("Manual enrichment release preference must be 'album' or 'single'.");
         }
 
-        if (!ContainsConfiguredPlatform(configNode, "shazam"))
+        if (request.ForceFingerprint && !ContainsConfiguredPlatform(configNode, "shazam"))
         {
-            return BadRequest("Manual enrichment requires Shazam in the destination folder's profile.");
+            return BadRequest("Manual fingerprint recognition requires Shazam in the destination folder's profile.");
         }
 
         if (!TryResolveConfiguredDownloadRoot(out var stagingRoot, out var stagingError))
@@ -330,6 +330,7 @@ public class AutoTagJobsController : ControllerBase
         configNode["organizeSidecarsIntoTemplateFolders"] = true;
         configNode[AutoTagLiterals.ManualReleasePreferenceKey] = releasePreference;
         configNode[AutoTagLiterals.ManualDestinationFolderIdKey] = destinationFolder.Id;
+        configNode[AutoTagLiterals.ManualForceFingerprintKey] = request.ForceFingerprint;
         configNode[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
         configNode[AutoTagLiterals.TargetFilesKey] = new JsonArray(
             targetFiles.Select(path => JsonValue.Create(path)).ToArray());
@@ -1033,4 +1034,5 @@ public sealed class AutoTagEnhancementStartRequest
     public IReadOnlyList<string>? TargetFiles { get; set; }
     public string? GroupId { get; set; }
     public string? ReleasePreference { get; set; }
+    public bool ForceFingerprint { get; set; }
 }

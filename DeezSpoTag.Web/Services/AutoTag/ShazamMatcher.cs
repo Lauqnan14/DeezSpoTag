@@ -108,7 +108,8 @@ public sealed class ShazamMatcher
         return Task.FromResult<AutoTagMatchResult?>(new AutoTagMatchResult
         {
             Accuracy = compositeAccuracy,
-            Track = track
+            Track = track,
+            MatchStrategy = "fingerprint"
         });
     }
 

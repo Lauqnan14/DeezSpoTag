@@ -59,16 +59,19 @@ public partial class AutoTagService
         strippedKeys = new List<string>();
 
         var plan = BuildManualEnrichmentStagePlan(baseRoot, eligiblePlatforms);
-        if (!plan.Platforms.Any(platform => string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase)))
+        if (plan.ForceShazamFingerprint
+            && !plan.Platforms.Any(platform => string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase)))
         {
-            skipReason = "manual enrichment requires Shazam to be enabled";
+            skipReason = "manual fingerprint recognition requires Shazam to be enabled";
             return false;
         }
 
-        var enrichmentPlatforms = plan.Platforms
-            .Where(platform => !string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (enrichmentPlatforms.Count == 0)
+        var enrichmentPlatforms = plan.ForceShazamFingerprint
+            ? plan.Platforms
+                .Where(platform => !string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase))
+                .ToList()
+            : plan.Platforms.ToList();
+        if (plan.ForceShazamFingerprint && enrichmentPlatforms.Count == 0)
         {
             enrichmentPlatforms.Add(ShazamPlatformId);
         }
@@ -76,7 +79,7 @@ public partial class AutoTagService
         var manualPlan = plan with
         {
             Platforms = enrichmentPlatforms,
-            ForceShazamFingerprint = true
+            ForceShazamFingerprint = plan.ForceShazamFingerprint
         };
         if (!TryBuildEnrichmentStageFromPlan(
             baseRoot,
@@ -124,6 +127,7 @@ public partial class AutoTagService
             RequestedTags: ResolveEnrichmentRequestedTags(baseRoot),
             Platforms: eligiblePlatforms.ToList(),
             ExcludedPlatform: null,
+            ForceShazamFingerprint: ReadBool(baseRoot, AutoTagLiterals.ManualForceFingerprintKey) ?? false,
             OrganizeSidecarsIntoTemplateFolders: true,
             MaterializeToTemplatePath: true);
     }

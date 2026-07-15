@@ -29,8 +29,8 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
 
         Assert.Contains("OrganizeSidecarsIntoTemplateFolders: true", source, StringComparison.Ordinal);
         Assert.Contains("MaterializeToTemplatePath: true", source, StringComparison.Ordinal);
-        Assert.Contains("ForceShazamFingerprint = true", source, StringComparison.Ordinal);
-        Assert.Contains("enrichmentPlatforms.Add(ShazamPlatformId)", source, StringComparison.Ordinal);
+        Assert.Contains("ForceShazamFingerprint = plan.ForceShazamFingerprint", source, StringComparison.Ordinal);
+        Assert.Contains("ManualForceFingerprintKey", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ManualShazamBootstrapTags", source, StringComparison.Ordinal);
         Assert.DoesNotContain("manual enrichment Shazam bootstrap", source, StringComparison.Ordinal);
         Assert.Contains("stageRoot[\"organizeSidecarsIntoTemplateFolders\"] = true", source, StringComparison.Ordinal);

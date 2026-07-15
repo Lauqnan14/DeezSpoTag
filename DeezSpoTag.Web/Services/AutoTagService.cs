@@ -90,6 +90,7 @@ internal static class AutoTagLiterals
     internal const string EnhancementFeatureManualEnrichment = "manual-enrichment";
     internal const string ManualReleasePreferenceKey = "manualReleasePreference";
     internal const string ManualDestinationFolderIdKey = "manualDestinationFolderId";
+    internal const string ManualForceFingerprintKey = "manualForceFingerprint";
 }
 
 public abstract class AutoTagRunState
@@ -193,6 +194,13 @@ public class TaggingStatus
     public string? Message { get; set; }
     public double? Accuracy { get; set; }
     public bool UsedShazam { get; set; }
+    public string? Outcome { get; set; }
+    public string? RecognitionStrategy { get; set; }
+    public List<string> RequestedTags { get; set; } = new();
+    public List<string> ReturnedTags { get; set; } = new();
+    public List<string> WrittenTags { get; set; } = new();
+    public List<string> RetainedTags { get; set; } = new();
+    public List<string> MissingTags { get; set; } = new();
     public string? ReviewReason { get; set; }
     public string? ReviewDestinationPath { get; set; }
     public string? ReviewReportPath { get; set; }
@@ -448,6 +456,7 @@ public partial class AutoTagService
             includeLibraryWideEnhancementBatchSize: true);
         keys.Add(AutoTagLiterals.ManualReleasePreferenceKey);
         keys.Add(AutoTagLiterals.ManualDestinationFolderIdKey);
+        keys.Add(AutoTagLiterals.ManualForceFingerprintKey);
         return keys;
     }
     private const string AutoTagFolderName = "autotag";
@@ -485,7 +494,7 @@ public partial class AutoTagService
     {
         public bool Seen { get; set; }
         public bool Tagged { get; set; }
-        public bool SkippedAlreadyTagged { get; set; }
+        public bool CompletedWithoutChanges { get; set; }
     }
 
     public sealed class AutoTagServiceCollaborators
@@ -5563,10 +5572,11 @@ public partial class AutoTagService
                 outcome.Tagged = true;
                 break;
             case AutoTagLiterals.SkippedStatus:
-                if (!string.IsNullOrWhiteSpace(status.Status.Message)
-                    && status.Status.Message.Contains("already tagged", StringComparison.OrdinalIgnoreCase))
+                if ((!string.IsNullOrWhiteSpace(status.Status.Message)
+                     && status.Status.Message.Contains("already tagged", StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(status.Status.Outcome, "no_eligible_tags", StringComparison.Ordinal))
                 {
-                    outcome.SkippedAlreadyTagged = true;
+                    outcome.CompletedWithoutChanges = true;
                 }
                 break;
         }
@@ -5591,7 +5601,7 @@ public partial class AutoTagService
                 continue;
             }
 
-            if (outcome.Tagged || outcome.SkippedAlreadyTagged)
+            if (outcome.Tagged || outcome.CompletedWithoutChanges)
             {
                 tagged.Add(pair.Key);
                 continue;

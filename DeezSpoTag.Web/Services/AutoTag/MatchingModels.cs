@@ -29,6 +29,7 @@ public sealed class AutoTagMatchResult
 {
     public double Accuracy { get; set; }
     public AutoTagTrack Track { get; set; } = new();
+    public string? MatchStrategy { get; set; }
 }
 
 public sealed class AutoTagTrack : AudioFeaturesBase

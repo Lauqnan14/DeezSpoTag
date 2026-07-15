@@ -39,6 +39,7 @@
         multiplatform: false,
         titleRegex: null,
         manualReleasePreference: "album",
+        manualForceFingerprint: false,
         moveSuccessLibraryFolderId: null,
         writeLrc: false,
         capitalizeGenres: false,
@@ -2905,6 +2906,11 @@
         if (releaseControl instanceof HTMLInputElement) {
             releaseControl.checked = true;
         }
+        const recognitionMethod = state.config.manualForceFingerprint ? "fingerprint" : "id-first";
+        const recognitionControl = document.querySelector(`input[name="manualRecognitionMethod"][value="${recognitionMethod}"]`);
+        if (recognitionControl instanceof HTMLInputElement) {
+            recognitionControl.checked = true;
+        }
         setChecked("enableFolderUniformityWorkflow", state.config.enhancement.folderUniformity.enabled);
         updateGapFillingFolderSummary(state.config.enhancement.gapFilling.folderIds ?? []);
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
@@ -3952,6 +3958,7 @@
         state.config.manualReleasePreference = document.querySelector('input[name="manualReleasePreference"]:checked')?.value === "single"
             ? "single"
             : "album";
+        state.config.manualForceFingerprint = document.querySelector('input[name="manualRecognitionMethod"]:checked')?.value === "fingerprint";
         delete state.config.moveSuccess;
         delete state.config.moveSuccessPath;
         delete state.config.moveFailed;
@@ -6015,6 +6022,7 @@
         const releasePreference = document.querySelector('input[name="manualReleasePreference"]:checked')?.value === "single"
             ? "single"
             : "album";
+        const forceFingerprint = document.querySelector('input[name="manualRecognitionMethod"]:checked')?.value === "fingerprint";
         setExternalStartStatus("Claiming staged files for manual enrichment...");
 
         const response = await fetch("/api/autotag/enhancement/start", {
@@ -6024,7 +6032,8 @@
                 scope: "full",
                 features: ["manual-enrichment"],
                 folderIds: [destination.id],
-                releasePreference
+                releasePreference,
+                forceFingerprint
             })
         });
 

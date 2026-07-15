@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Cryptography;
 
 namespace DeezSpoTag.Services.Download.Utils;
 
@@ -6,8 +7,7 @@ public static class FileMoveFallbackHelper
 {
     public static void MoveWithFallback(string sourcePath, string destinationPath)
     {
-        var allowCopyFallback = ShouldUseCopyFallback(sourcePath, destinationPath);
-        const int maxMoveAttempts = 6;
+        var maxMoveAttempts = ShouldUseCopyFallback(sourcePath, destinationPath) ? 1 : 6;
         for (var attempt = 1; attempt <= maxMoveAttempts; attempt++)
         {
             try
@@ -19,7 +19,7 @@ public static class FileMoveFallbackHelper
             {
                 System.Threading.Thread.Sleep(50 * attempt);
             }
-            catch (IOException) when (allowCopyFallback)
+            catch (IOException)
             {
                 MoveByCopyWithDeleteGuard(sourcePath, destinationPath);
                 return;
@@ -79,6 +79,12 @@ public static class FileMoveFallbackHelper
     private static void MoveByCopyWithDeleteGuard(string sourcePath, string destinationPath)
     {
         File.Copy(sourcePath, destinationPath, overwrite: true);
+        if (!HaveIdenticalContent(sourcePath, destinationPath))
+        {
+            TryDeleteSilently(destinationPath);
+            throw new IOException($"Move fallback verification failed after copying file: {sourcePath}");
+        }
+
         if (TryDeleteWithRetries(sourcePath))
         {
             return;
@@ -86,6 +92,22 @@ public static class FileMoveFallbackHelper
 
         TryDeleteSilently(destinationPath);
         throw new IOException($"Move fallback copied file but could not delete source: {sourcePath}");
+    }
+
+    private static bool HaveIdenticalContent(string sourcePath, string destinationPath)
+    {
+        var sourceInfo = new FileInfo(sourcePath);
+        var destinationInfo = new FileInfo(destinationPath);
+        if (sourceInfo.Length != destinationInfo.Length)
+        {
+            return false;
+        }
+
+        using var source = File.OpenRead(sourcePath);
+        using var destination = File.OpenRead(destinationPath);
+        var sourceHash = SHA256.HashData(source);
+        var destinationHash = SHA256.HashData(destination);
+        return CryptographicOperations.FixedTimeEquals(sourceHash, destinationHash);
     }
 
     private static bool TryDeleteWithRetries(string path)

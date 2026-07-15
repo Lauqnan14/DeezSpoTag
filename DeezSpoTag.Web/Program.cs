@@ -1302,7 +1302,8 @@ public partial class Program
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
                 CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>(),
                 ServiceScopeFactory = sp.GetRequiredService<IServiceScopeFactory>(),
-                TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>()
+                TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>(),
+                PlatformRegistry = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.PortedPlatformRegistry>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagRunIndexWarmupHostedService>();

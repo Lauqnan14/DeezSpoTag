@@ -3,18 +3,6 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 public sealed class ItunesMatcher
 {
     private readonly ItunesClient _client;
-    private static readonly string[] TrackIdTagKeys =
-    {
-        "ITUNES_TRACK_ID",
-        "ITUNESCATALOGID",
-        "ITUNES_TRACKID"
-    };
-    private static readonly string[] ArtistIdTagKeys =
-    {
-        "ITUNES_ARTIST_ID",
-        "ITUNESARTISTID"
-    };
-
     public ItunesMatcher(ItunesClient client)
     {
         _client = client;
@@ -24,16 +12,28 @@ public sealed class ItunesMatcher
     {
         if (itunesConfig.MatchById)
         {
-            var existingTrackId = AutoTagTagValueReader.ReadFirstTagValue(info, TrackIdTagKeys);
-            var lookup = await _client.LookupTrackAsync(existingTrackId, itunesConfig.Country, cancellationToken);
-            var lookupTrack = lookup?.ToTrackInfo(itunesConfig);
-            if (lookupTrack != null
-                && AutoTagReleaseCategory.MatchesPreference(
-                    lookupTrack.ReleaseType,
-                    lookupTrack.TrackTotal,
-                    config.PreferredReleaseType))
+            var existingTrackId = AutoTagIdentityTags.ReadAppleTrackId(info);
+            if (long.TryParse(existingTrackId, out var numericTrackId) && numericTrackId > 0)
             {
-                return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(lookupTrack) };
+                var lookup = await _client.LookupTrackAsync(existingTrackId, itunesConfig.Country, cancellationToken);
+                var lookupTrack = lookup?.ToTrackInfo(itunesConfig);
+                if (lookupTrack != null
+                    && AutoTagReleaseCategory.MatchesPreference(
+                        lookupTrack.ReleaseType,
+                        lookupTrack.TrackTotal,
+                        config.PreferredReleaseType))
+                {
+                    return new AutoTagMatchResult
+                    {
+                        Accuracy = 1.0,
+                        Track = ToAutoTagTrack(lookupTrack),
+                        MatchStrategy = "id"
+                    };
+                }
+
+                // A usable Apple/iTunes track ID is authoritative. Do not silently
+                // replace an unresolved ID match with a potentially different text match.
+                return null;
             }
         }
 
@@ -58,7 +58,7 @@ public sealed class ItunesMatcher
             return null;
         }
 
-        var existingArtistId = AutoTagTagValueReader.ReadFirstTagValue(info, ArtistIdTagKeys);
+        var existingArtistId = AutoTagIdentityTags.ReadAppleArtistId(info);
         if (!string.IsNullOrWhiteSpace(existingArtistId))
         {
             var artistIdMatches = candidates
@@ -70,7 +70,7 @@ public sealed class ItunesMatcher
             }
         }
 
-        return AutoTagMatchSelection.BuildMatchResult(
+        var match = AutoTagMatchSelection.BuildMatchResult(
             info,
             candidates,
             config,
@@ -82,6 +82,12 @@ public sealed class ItunesMatcher
                 track => track.ReleaseDate),
             ToAutoTagTrack,
             matchArtist: true);
+        if (match != null)
+        {
+            match.MatchStrategy = "text";
+        }
+
+        return match;
     }
 
     private static AutoTagTrack ToAutoTagTrack(ItunesTrackInfo track)
@@ -90,6 +96,19 @@ public sealed class ItunesMatcher
         if (!string.IsNullOrWhiteSpace(track.ArtistId))
         {
             other["ITUNES_ARTIST_ID"] = new List<string> { track.ArtistId };
+        }
+        if (!string.IsNullOrWhiteSpace(track.TrackId))
+        {
+            other[AutoTagIdentityTags.AppleTrackId] = new List<string> { track.TrackId };
+            other[AutoTagIdentityTags.ItunesTrackId] = new List<string> { track.TrackId };
+        }
+        if (!string.IsNullOrWhiteSpace(track.ReleaseId))
+        {
+            other["APPLE_ALBUM_ID"] = new List<string> { track.ReleaseId };
+        }
+        if (!string.IsNullOrWhiteSpace(track.Copyright))
+        {
+            other["copyright"] = new List<string> { track.Copyright };
         }
 
         return new AutoTagTrack

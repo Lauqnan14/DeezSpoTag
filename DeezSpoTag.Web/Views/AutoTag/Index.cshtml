@@ -838,6 +838,36 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="form-group manual-release-field">
+                                <div class="manual-release-label">
+                                    <span>Recognition method</span>
+                                    <span class="autotag-tooltip-icon" title="ID first uses embedded platform IDs when available and falls back according to the destination profile. Fingerprint forces audio recognition before provider enrichment." aria-label="Choose ID-first or forced fingerprint recognition.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </div>
+                                <div class="manual-release-menu" role="radiogroup" aria-label="Recognition method">
+                                    <div class="manual-release-choice">
+                                        <div class="source-header">
+                                            <i class="fas fa-fingerprint manual-release-icon"></i>
+                                            <label class="switch-label" for="manualRecognitionIdFirst">ID first</label>
+                                        </div>
+                                        <span class="switch">
+                                            <input type="radio" id="manualRecognitionIdFirst" name="manualRecognitionMethod" value="id-first" checked />
+                                            <span class="slider"></span>
+                                        </span>
+                                    </div>
+                                    <div class="manual-release-choice">
+                                        <div class="source-header">
+                                            <i class="fas fa-wave-square manual-release-icon"></i>
+                                            <label class="switch-label" for="manualRecognitionFingerprint">Fingerprint</label>
+                                        </div>
+                                        <span class="switch">
+                                            <input type="radio" id="manualRecognitionFingerprint" name="manualRecognitionMethod" value="fingerprint" />
+                                            <span class="slider"></span>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="autotag-actions manual-tagging-run-actions mt-3">

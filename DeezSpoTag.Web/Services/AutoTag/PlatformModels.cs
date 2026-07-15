@@ -57,7 +57,10 @@ public enum SupportedTag
     [JsonPropertyName("url")]
     URL,
     [JsonPropertyName("isrc")]
-    ISRC
+    ISRC,
+    Copyright,
+    Composer,
+    InvolvedPeople
 }
 
 public sealed class PlatformInfo

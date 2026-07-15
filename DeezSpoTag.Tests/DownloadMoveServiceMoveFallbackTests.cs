@@ -69,6 +69,45 @@ public sealed class DownloadMoveServiceMoveFallbackTests
     }
 
     [Fact]
+    public void MoveWithFallback_VerifiesAndCompletesCrossDeviceCopy()
+    {
+        const string crossDeviceRoot = "/dev/shm";
+        if (!OperatingSystem.IsLinux() || !Directory.Exists(crossDeviceRoot))
+        {
+            return;
+        }
+
+        var sourceRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-cross-device-source-{Guid.NewGuid():N}");
+        var destinationRoot = Path.Combine(crossDeviceRoot, $"deezspotag-cross-device-destination-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(sourceRoot);
+        Directory.CreateDirectory(destinationRoot);
+        var sourcePath = Path.Combine(sourceRoot, "track.bin");
+        var destinationPath = Path.Combine(destinationRoot, "track.bin");
+        var content = new byte[128 * 1024];
+        new Random(173).NextBytes(content);
+        File.WriteAllBytes(sourcePath, content);
+
+        try
+        {
+            FileMoveFallbackHelper.MoveWithFallback(sourcePath, destinationPath);
+
+            Assert.False(File.Exists(sourcePath));
+            Assert.Equal(content, File.ReadAllBytes(destinationPath));
+        }
+        finally
+        {
+            if (Directory.Exists(sourceRoot))
+            {
+                Directory.Delete(sourceRoot, recursive: true);
+            }
+            if (Directory.Exists(destinationRoot))
+            {
+                Directory.Delete(destinationRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void MoveFiles_SkipsUntrackedAudioFiles()
     {
         var method = GetPrivateStaticMethod("MoveFiles");

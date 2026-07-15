@@ -156,6 +156,7 @@ public sealed class ItunesSearchResult
             DiscNumber = DiscNumber,
             Isrc = Isrc,
             Label = string.IsNullOrWhiteSpace(RecordLabel) ? null : RecordLabel,
+            Copyright = string.IsNullOrWhiteSpace(Copyright) ? null : Copyright,
             Explicit = ParseExplicitness(TrackExplicitness, CollectionExplicitness),
             Art = art
         };
@@ -239,6 +240,7 @@ public sealed class ItunesTrackInfo
     public short? DiscNumber { get; set; }
     public string? Isrc { get; set; }
     public string? Label { get; set; }
+    public string? Copyright { get; set; }
     public bool? Explicit { get; set; }
     public string? Art { get; set; }
 }
