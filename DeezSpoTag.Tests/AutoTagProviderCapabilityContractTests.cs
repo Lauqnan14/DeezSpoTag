@@ -99,6 +99,32 @@ public sealed class AutoTagProviderCapabilityContractTests
     }
 
     [Fact]
+    public void AutoTag_UsesStoredSpotifyAuthBeforeBackgroundLiveValidation()
+    {
+        var script = File.ReadAllText(Path.Combine(
+            ResolveRepoRoot(),
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag.js"));
+
+        Assert.Contains("function applyStoredPlatformAuthReadiness()", script, StringComparison.Ordinal);
+        Assert.Contains("state.platformAuth?.spotifyConnected === true", script, StringComparison.Ordinal);
+        Assert.Contains("connected: hasSpotifyAuthFromPlatformState()", script, StringComparison.Ordinal);
+        Assert.Contains("state.authReady = true;", script, StringComparison.Ordinal);
+
+        var storedAuthIndex = script.IndexOf("const authData = await loadStoredAuth();", StringComparison.Ordinal);
+        var readinessIndex = script.IndexOf("applyStoredPlatformAuthReadiness();", storedAuthIndex, StringComparison.Ordinal);
+        var liveValidationIndex = script.IndexOf("const spotifyStatusRefresh = loadSpotifyStatus()", storedAuthIndex, StringComparison.Ordinal);
+        var initialRenderIndex = script.IndexOf("loadConfigToUI();", storedAuthIndex, StringComparison.Ordinal);
+
+        Assert.True(storedAuthIndex >= 0);
+        Assert.True(readinessIndex > storedAuthIndex);
+        Assert.True(liveValidationIndex > readinessIndex);
+        Assert.True(initialRenderIndex > liveValidationIndex);
+    }
+
+    [Fact]
     public void AutoTagTrack_RawTagLookupIsCaseInsensitive()
     {
         var track = new AutoTagTrack();

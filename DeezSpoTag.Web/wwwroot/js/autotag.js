@@ -3613,6 +3613,10 @@
     }
 
     function hasSpotifyAuthFromPlatformState() {
+        if (state.platformAuth?.spotifyConnected === true) {
+            return true;
+        }
+
         const spotify = state.platformAuth?.spotify;
         if (!spotify || typeof spotify !== "object") {
             return false;
@@ -3646,6 +3650,16 @@
             String(spotify.clientId || "").trim()
             && String(spotify.clientSecret || "").trim()
         );
+    }
+
+    function applyStoredPlatformAuthReadiness() {
+        const activeAccount = String(state.platformAuth?.spotify?.activeAccount || "").trim() || null;
+        state.spotifyStatus = {
+            ...state.spotifyStatus,
+            connected: hasSpotifyAuthFromPlatformState(),
+            activeAccount: activeAccount || state.spotifyStatus.activeAccount || null
+        };
+        state.authReady = true;
     }
 
     function buildAuthFetchOptions() {
@@ -3755,8 +3769,6 @@
             };
         } catch (error) {
             console.warn("Failed to load Spotify config status", error);
-        } finally {
-            state.authReady = true;
         }
     }
 
@@ -7056,6 +7068,7 @@
     Promise.all([loadPlatforms(), loadEnrichmentLibraryFolders(), loadLyricsSettings()]).then(async () => {
         const authData = await loadStoredAuth();
         mergeStoredAuth(state.config, authData);
+        applyStoredPlatformAuthReadiness();
         const spotifyStatusRefresh = loadSpotifyStatus().finally(() => {
             // Keep Spotify auth checks off the profile-loading critical path, then
             // refresh only auth-dependent platform UI when the status call completes.
