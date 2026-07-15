@@ -351,12 +351,12 @@ public static class DownloadEngineArtworkHelper
         return await request.LastFmArtistImageResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
     }
 
-    public static async Task<bool> SaveArtistArtworkAsync(
+    public static async Task<IReadOnlyList<string>> SaveArtistArtworkAsync(
         SaveArtistArtworkRequest request,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.ArtistPath);
-        var anySaved = false;
+        var savedPaths = new List<string>();
         var artistName = request.PathProcessor.GenerateArtistName(
             request.Settings.ArtistImageTemplate,
             request.Track.MainArtist,
@@ -386,10 +386,13 @@ public static class DownloadEngineArtworkHelper
                         Logger = request.Logger
                     },
                     cancellationToken);
-                anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
+                if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+                {
+                    savedPaths.Add(downloaded);
+                }
             }
 
-            return anySaved;
+            return savedPaths;
         }
 
         if (request.SingleJpegForNonApple)
@@ -401,7 +404,12 @@ public static class DownloadEngineArtworkHelper
                 request.Settings.OverwriteFile,
                 request.PreferMaxQualityCover,
                 cancellationToken);
-            return !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
+            if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+            {
+                savedPaths.Add(downloaded);
+            }
+
+            return savedPaths;
         }
 
         var formats = (request.Settings.LocalArtworkFormat ?? "jpg")
@@ -417,9 +425,12 @@ public static class DownloadEngineArtworkHelper
                 request.Settings.OverwriteFile,
                 request.PreferMaxQualityCover,
                 cancellationToken);
-            anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
+            if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+            {
+                savedPaths.Add(downloaded);
+            }
         }
 
-        return anySaved;
+        return savedPaths;
     }
 }

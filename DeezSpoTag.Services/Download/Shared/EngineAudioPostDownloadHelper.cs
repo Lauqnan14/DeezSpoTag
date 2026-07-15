@@ -170,7 +170,7 @@ public static partial class EngineAudioPostDownloadHelper
     private sealed record PrefetchArtworkResult(
         bool Success,
         string? FailureReason = null,
-        IReadOnlyList<string>? AnimatedArtworkPaths = null);
+        IReadOnlyList<string>? GeneratedSidecarPaths = null);
 
     private sealed record PrefetchCompletionResult(
         bool ShouldValidateArtwork,
@@ -1351,15 +1351,22 @@ public static partial class EngineAudioPostDownloadHelper
 
         EnsureLyricsForTagging(request);
 
-        await DownloadEngineArtworkHelper.TagAudioWithResolvedCoverAsync(
-            new DownloadEngineArtworkHelper.AudioTagWithCoverRequest(
-                request.OutputPath,
-                request.Context.Track,
-                request.Settings,
-                request.Engine,
-                audioTagger,
-                request.Logger),
-            cancellationToken);
+        try
+        {
+            await DownloadEngineArtworkHelper.TagAudioWithResolvedCoverAsync(
+                new DownloadEngineArtworkHelper.AudioTagWithCoverRequest(
+                    request.OutputPath,
+                    request.Context.Track,
+                    request.Settings,
+                    request.Engine,
+                    audioTagger,
+                    request.Logger),
+                cancellationToken);
+        }
+        finally
+        {
+            CleanupTemporaryEmbeddedArtwork(request.Context.Track.Album?.EmbeddedCoverPath);
+        }
 
         UpdateAudioPayloadFiles(request.Payload, request.Context.PathResult, request.OutputPath);
         return request.OutputPath;
@@ -1474,6 +1481,12 @@ public static partial class EngineAudioPostDownloadHelper
         EnhancedPathTemplateProcessor pathProcessor)
     {
         if (request.Context.Track.Album == null || request.Settings.Tags?.Cover != true)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Context.Track.Album.EmbeddedCoverPath)
+            && File.Exists(request.Context.Track.Album.EmbeddedCoverPath))
         {
             return;
         }
@@ -2094,7 +2107,7 @@ public static partial class EngineAudioPostDownloadHelper
             var result = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
             AddGeneratedSidecars(
                 result.Files,
-                runState.ArtworkResult.AnimatedArtworkPaths,
+                runState.ArtworkResult.GeneratedSidecarPaths,
                 execution.Request.Context.PathResult);
             execution.Request.Payload.Files = result.Files;
             execution.Request.Payload.LyricsStatus = result.LyricsStatus;
@@ -2156,7 +2169,8 @@ public static partial class EngineAudioPostDownloadHelper
             {
                 ["path"] = displayPath,
                 ["albumPath"] = albumPath,
-                ["artistPath"] = artistPath
+                ["artistPath"] = artistPath,
+                ["type"] = "artwork"
             });
         }
     }
@@ -2207,6 +2221,7 @@ public static partial class EngineAudioPostDownloadHelper
         bool preferMaxQualityCover,
         CancellationToken token)
     {
+        var generatedSidecarPaths = new List<string>();
         if (execution.Requirements.ShouldFetchPrimaryArtwork)
         {
             var primaryResult = await TrySavePrimaryArtworkAsync(
@@ -2220,17 +2235,26 @@ public static partial class EngineAudioPostDownloadHelper
             {
                 return primaryResult;
             }
+
+            if (primaryResult.GeneratedSidecarPaths != null)
+            {
+                generatedSidecarPaths.AddRange(primaryResult.GeneratedSidecarPaths);
+            }
         }
 
-        IReadOnlyList<string>? animatedPaths = null;
         if (execution.Requirements.ShouldFetchAnimatedArtwork && runtime.AppleCatalog != null && runtime.HttpClientFactory != null)
         {
-            animatedPaths = await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token);
+            generatedSidecarPaths.AddRange(
+                await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token));
         }
 
         if (execution.Requirements.ShouldFetchArtistArtwork)
         {
             var artistResult = await TrySaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
+            if (artistResult.GeneratedSidecarPaths != null)
+            {
+                generatedSidecarPaths.AddRange(artistResult.GeneratedSidecarPaths);
+            }
             if (!artistResult.Success && execution.Request.Logger.IsEnabled(LogLevel.Debug))
             {
                 execution.Request.Logger.LogDebug(
@@ -2241,7 +2265,7 @@ public static partial class EngineAudioPostDownloadHelper
             }
         }
 
-        return new PrefetchArtworkResult(true, AnimatedArtworkPaths: animatedPaths);
+        return new PrefetchArtworkResult(true, GeneratedSidecarPaths: generatedSidecarPaths);
     }
 
     private static AppleArtworkIdentity? ResolveAppleArtworkIdentity(PrefetchExecutionContext execution)
@@ -2299,7 +2323,7 @@ public static partial class EngineAudioPostDownloadHelper
         foreach (var coverUrl in coverUrls)
         {
             var isAppleCover = coverUrl.Contains(MzStaticHost, StringComparison.OrdinalIgnoreCase);
-            var primarySaved = await SavePrimaryArtworkAsync(
+            var savedPaths = await SavePrimaryArtworkAsync(
                 execution,
                 runtime,
                 coverUrl,
@@ -2307,9 +2331,13 @@ public static partial class EngineAudioPostDownloadHelper
                 appleArtworkSize,
                 preferMaxQualityCover,
                 token);
-            if (primarySaved)
+            if (savedPaths.Count > 0)
             {
-                return new PrefetchArtworkResult(true);
+                return new PrefetchArtworkResult(
+                    true,
+                    GeneratedSidecarPaths: execution.Request.Settings.SaveArtwork
+                        ? savedPaths
+                        : Array.Empty<string>());
             }
         }
 
@@ -2341,13 +2369,13 @@ public static partial class EngineAudioPostDownloadHelper
         bool preferMaxQualityCover,
         CancellationToken token)
     {
-        var artistSaved = await SaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
-        return artistSaved
-            ? new PrefetchArtworkResult(true)
+        var savedPaths = await SaveArtistArtworkAsync(execution, runtime, appleArtworkSize, preferMaxQualityCover, token);
+        return savedPaths.Count > 0
+            ? new PrefetchArtworkResult(true, GeneratedSidecarPaths: savedPaths)
             : new PrefetchArtworkResult(false, "Artist artwork download failed.");
     }
 
-    private static async Task<bool> SavePrimaryArtworkAsync(
+    private static async Task<IReadOnlyList<string>> SavePrimaryArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         string coverUrl,
@@ -2357,8 +2385,11 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken token)
     {
         var settings = execution.Request.Settings;
-        Directory.CreateDirectory(execution.Paths.CoverPath);
-        var anySaved = false;
+        var outputDirectory = settings.SaveArtwork
+            ? execution.Paths.CoverPath
+            : BuildTemporaryEmbeddedArtworkDirectory(execution.Paths.QueueUuid);
+        Directory.CreateDirectory(outputDirectory);
+        var savedPaths = new List<string>();
         var coverName = runtime.PathProcessor.GenerateAlbumName(
             settings.CoverImageTemplate,
             execution.Request.Context.Track.Album,
@@ -2368,7 +2399,7 @@ public static partial class EngineAudioPostDownloadHelper
         {
             foreach (var format in AppleQueueHelpers.GetArtworkOutputFormats(settings))
             {
-                var targetPath = Path.Join(execution.Paths.CoverPath, $"{coverName}.{format}");
+                var targetPath = Path.Join(outputDirectory, $"{coverName}.{format}");
                 var downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
                     runtime.ImageDownloader,
                     new AppleQueueHelpers.AppleArtworkDownloadRequest
@@ -2382,9 +2413,13 @@ public static partial class EngineAudioPostDownloadHelper
                         Logger = execution.Request.Logger
                     },
                     token);
-                anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
+                if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+                {
+                    savedPaths.Add(downloaded);
+                }
             }
-            return anySaved;
+            ApplyTemporaryEmbeddedArtworkPath(execution, savedPaths);
+            return savedPaths;
         }
 
         var formats = (settings.LocalArtworkFormat ?? "jpg")
@@ -2392,17 +2427,80 @@ public static partial class EngineAudioPostDownloadHelper
         foreach (var format in formats)
         {
             var ext = format.Equals("png", StringComparison.OrdinalIgnoreCase) ? "png" : "jpg";
-            var targetPath = Path.Join(execution.Paths.CoverPath, $"{coverName}.{ext}");
+            var targetPath = Path.Join(outputDirectory, $"{coverName}.{ext}");
             var downloaded = await runtime.ImageDownloader.DownloadImageAsync(
                 coverUrl,
                 targetPath,
                 settings.OverwriteFile,
                 preferMaxQualityCover,
                 token);
-            anySaved |= !string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded);
+            if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+            {
+                savedPaths.Add(downloaded);
+            }
         }
 
-        return anySaved;
+        ApplyTemporaryEmbeddedArtworkPath(execution, savedPaths);
+        return savedPaths;
+    }
+
+    private static void ApplyTemporaryEmbeddedArtworkPath(
+        PrefetchExecutionContext execution,
+        IReadOnlyList<string> savedPaths)
+    {
+        if (execution.Request.Settings.SaveArtwork
+            || execution.Request.Settings.Tags?.Cover != true
+            || execution.Request.Context.Track.Album == null
+            || savedPaths.Count == 0)
+        {
+            return;
+        }
+
+        execution.Request.Context.Track.Album.EmbeddedCoverPath = savedPaths[0];
+    }
+
+    private static string BuildTemporaryEmbeddedArtworkDirectory(string queueUuid)
+    {
+        var safeQueueUuid = new string((queueUuid ?? string.Empty)
+            .Where(character => char.IsLetterOrDigit(character) || character is '-' or '_')
+            .Take(96)
+            .ToArray());
+        if (string.IsNullOrWhiteSpace(safeQueueUuid))
+        {
+            safeQueueUuid = Guid.NewGuid().ToString("N");
+        }
+
+        return Path.Join(Path.GetTempPath(), "deezspotag", "embedded-artwork", safeQueueUuid);
+    }
+
+    private static void CleanupTemporaryEmbeddedArtwork(string? embeddedCoverPath)
+    {
+        if (string.IsNullOrWhiteSpace(embeddedCoverPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var temporaryRoot = Path.GetFullPath(Path.Join(Path.GetTempPath(), "deezspotag", "embedded-artwork"));
+            var candidate = Path.GetFullPath(embeddedCoverPath);
+            var rootPrefix = temporaryRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (!candidate.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var queueDirectory = Path.GetDirectoryName(candidate);
+            if (!string.IsNullOrWhiteSpace(queueDirectory) && Directory.Exists(queueDirectory))
+            {
+                Directory.Delete(queueDirectory, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            // Temporary embedded artwork cleanup must not fail an otherwise successful download.
+        }
     }
 
     private static async Task<IReadOnlyList<string>> SaveAnimatedArtworkAsync(
@@ -2468,7 +2566,7 @@ public static partial class EngineAudioPostDownloadHelper
         return animatedPaths;
     }
 
-    private static async Task<bool> SaveArtistArtworkAsync(
+    private static async Task<IReadOnlyList<string>> SaveArtistArtworkAsync(
         PrefetchExecutionContext execution,
         PrefetchRuntimeServices runtime,
         int appleArtworkSize,
@@ -2478,7 +2576,7 @@ public static partial class EngineAudioPostDownloadHelper
         var settings = execution.Request.Settings;
         if (!settings.SaveArtworkArtist)
         {
-            return true;
+            return Array.Empty<string>();
         }
 
         var artistImageUrl = await DownloadEngineArtworkHelper.ResolveArtistImageUrlAsync(
@@ -2497,7 +2595,7 @@ public static partial class EngineAudioPostDownloadHelper
             token);
         if (string.IsNullOrWhiteSpace(artistImageUrl))
         {
-            return false;
+            return Array.Empty<string>();
         }
 
         return await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
@@ -2581,9 +2679,45 @@ public static partial class EngineAudioPostDownloadHelper
 
     public static void UpdateAudioPayloadFiles(EngineQueueItemBase payload, PathGenerationResult pathResult, string outputPath)
     {
+        var generatedArtworkFiles = payload.Files
+            .Where(IsGeneratedArtworkFile)
+            .Select(file => new Dictionary<string, object>(file, StringComparer.OrdinalIgnoreCase))
+            .ToList();
         var result = QueuePayloadFileHelper.BuildAudioFiles(pathResult, outputPath);
+        AddGeneratedArtworkFiles(result.Files, generatedArtworkFiles);
         payload.Files = result.Files;
         payload.LyricsStatus = result.LyricsStatus;
+    }
+
+    private static bool IsGeneratedArtworkFile(IReadOnlyDictionary<string, object> file)
+    {
+        return file.TryGetValue("type", out var typeValue)
+            && string.Equals(typeValue?.ToString(), "artwork", StringComparison.OrdinalIgnoreCase)
+            && file.TryGetValue("path", out var pathValue)
+            && !string.IsNullOrWhiteSpace(pathValue?.ToString())
+            && File.Exists(DownloadPathResolver.ResolveIoPath(pathValue.ToString()!));
+    }
+
+    private static void AddGeneratedArtworkFiles(
+        List<Dictionary<string, object>> files,
+        IReadOnlyList<Dictionary<string, object>> generatedArtworkFiles)
+    {
+        var existing = files
+            .Select(file => file.TryGetValue("path", out var value) ? value?.ToString() : null)
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => DownloadPathResolver.NormalizeDisplayPath(path!))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var artworkFile in generatedArtworkFiles)
+        {
+            var path = artworkFile["path"].ToString();
+            if (string.IsNullOrWhiteSpace(path)
+                || !existing.Add(DownloadPathResolver.NormalizeDisplayPath(path)))
+            {
+                continue;
+            }
+
+            files.Add(artworkFile);
+        }
     }
 
     public static bool ShouldSaveLyrics(DeezSpoTagSettings settings) => LyricsSettingsPolicy.CanFetchLyrics(settings);
@@ -3132,12 +3266,15 @@ public static partial class EngineAudioPostDownloadHelper
     private static PrefetchRequirements BuildPrefetchRequirements(PrefetchRequest request)
     {
         var allowPlaylistCover = ShouldAllowPlaylistCover(request.Payload, request.Settings);
+        var shouldRequirePrefetchedEmbeddedArtwork = allowPlaylistCover
+            && request.Settings.Tags?.Cover == true
+            && !string.Equals(request.Engine, "deezer", StringComparison.OrdinalIgnoreCase);
         return new PrefetchRequirements(
-            allowPlaylistCover && (request.Settings.SaveArtwork || request.Settings.Tags?.Cover == true),
+            allowPlaylistCover && (request.Settings.SaveArtwork || shouldRequirePrefetchedEmbeddedArtwork),
             allowPlaylistCover && request.Settings.SaveAnimatedArtwork,
             request.Settings.SaveArtworkArtist,
             ShouldSaveLyrics(request.Settings),
-            allowPlaylistCover && request.Settings.Tags?.Cover == true);
+            shouldRequirePrefetchedEmbeddedArtwork);
     }
 
     private static bool ShouldAllowPlaylistCover(EngineQueueItemBase payload, DeezSpoTagSettings settings)

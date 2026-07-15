@@ -1482,7 +1482,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
+        _ = await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.SaveArtistArtworkRequest(
                 provider.GetRequiredService<ImageDownloader>(),
                 provider.GetRequiredService<EnhancedPathTemplateProcessor>(),

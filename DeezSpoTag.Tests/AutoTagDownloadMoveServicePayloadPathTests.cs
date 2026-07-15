@@ -164,6 +164,52 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     }
 
     [Fact]
+    public void CollectPayloadPaths_AddsConfiguredAlbumArtworkFromGeneratedFiles()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-album-art-map-{Guid.NewGuid():N}");
+        var rootPath = Path.Combine(tempRoot, "Downs");
+        var albumPath = Path.Combine(rootPath, "Artist", "Album");
+        var sourcePath = Path.Combine(albumPath, "Track.flac");
+        var artworkPath = Path.Combine(albumPath, "Artist - Album.png");
+        Directory.CreateDirectory(albumPath);
+        File.WriteAllText(sourcePath, "audio");
+        File.WriteAllText(artworkPath, "artwork");
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                $$"""
+                  {
+                    "filePath": {{JsonSerializer.Serialize(sourcePath)}},
+                    "files": [
+                      {
+                        "path": {{JsonSerializer.Serialize(sourcePath)}},
+                        "albumPath": {{JsonSerializer.Serialize(albumPath)}}
+                      },
+                      {
+                        "path": {{JsonSerializer.Serialize(artworkPath)}},
+                        "albumPath": {{JsonSerializer.Serialize(albumPath)}},
+                        "type": "artwork"
+                      }
+                    ]
+                  }
+                  """);
+
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            GetPrivateStaticMethod("CollectPayloadPaths").Invoke(
+                null,
+                new object[] { rootPath, document.RootElement, files, roots });
+
+            Assert.Contains(DownloadPathResolver.NormalizeDisplayPath(artworkPath), files);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
     public void ResolveRoutingFolderId_MatchesYearRule_BeforeDefault()
     {
         var metadata = CreateRoutingMetadata(
