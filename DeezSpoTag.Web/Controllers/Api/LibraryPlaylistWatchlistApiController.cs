@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.Mvc;
 using System;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Net.Http.Headers;
-using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Queue;
@@ -1234,8 +1233,10 @@ public partial class WatchlistApiController : ControllerBase
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
         var normalizedSourceId = sourceId.Trim();
-        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, normalizedSourceId, cancellationToken);
-        var candidates = DeserializeCachedPlaylistCandidates(cache?.CandidatesJson);
+        var candidates = await _playlistWatchReconciler.GetCachedPlaylistTrackCandidatesAsync(
+            normalizedSource,
+            normalizedSourceId,
+            cancellationToken);
         var playlist = (await _repository.GetPlaylistWatchlistAsync(cancellationToken))
             .FirstOrDefault(item =>
                 string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
@@ -1288,6 +1289,7 @@ public partial class WatchlistApiController : ControllerBase
                 candidate.DeezerId,
                 candidate.MappingStatus,
                 candidate.MappingError,
+                Resolvable = PlaylistCandidateContract.IsResolvable(normalizedSource, candidate),
                 LocationStatus = locationStatus.Status,
                 LocationStatusLabel = locationStatus.Label,
                 LocationStatusDetail = locationStatus.Detail,
@@ -1381,24 +1383,6 @@ public partial class WatchlistApiController : ControllerBase
         string Status,
         string Label,
         string Detail);
-
-    private static IReadOnlyList<PlaylistTrackCandidate> DeserializeCachedPlaylistCandidates(string? candidatesJson)
-    {
-        if (string.IsNullOrWhiteSpace(candidatesJson))
-        {
-            return Array.Empty<PlaylistTrackCandidate>();
-        }
-
-        try
-        {
-            var candidates = JsonSerializer.Deserialize<List<PlaylistTrackCandidate>>(candidatesJson);
-            return candidates ?? (IReadOnlyList<PlaylistTrackCandidate>)Array.Empty<PlaylistTrackCandidate>();
-        }
-        catch (JsonException)
-        {
-            return Array.Empty<PlaylistTrackCandidate>();
-        }
-    }
 
     private static PlaylistTrackLocationStatus ResolveCachedTrackLocationStatus(PlaylistWatchTrackStatusDto? status)
     {
@@ -1564,8 +1548,11 @@ public partial class WatchlistApiController : ControllerBase
             return Ok(Array.Empty<object>());
         }
 
-        var cache = await _repository.GetPlaylistTrackCandidateCacheAsync(normalizedSource, sourceId, cancellationToken);
-        var candidates = TryBuildCachedCandidateLookup(cache?.CandidatesJson);
+        var candidates = (await _playlistWatchReconciler.GetCachedPlaylistTrackCandidatesAsync(
+                normalizedSource,
+                sourceId,
+                cancellationToken))
+            .ToDictionary(candidate => candidate.TrackSourceId, StringComparer.OrdinalIgnoreCase);
 
         var rows = ignored.Select(trackSourceId =>
         {
@@ -1580,31 +1567,6 @@ public partial class WatchlistApiController : ControllerBase
             };
         }).ToList();
         return Ok(rows);
-    }
-
-    private static Dictionary<string, PlaylistTrackCandidate> TryBuildCachedCandidateLookup(string? candidatesJson)
-    {
-        if (string.IsNullOrWhiteSpace(candidatesJson))
-        {
-            return new Dictionary<string, PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        try
-        {
-            var cached = JsonSerializer.Deserialize<List<PlaylistTrackCandidate>>(candidatesJson);
-            if (cached is not { Count: > 0 })
-            {
-                return new Dictionary<string, PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
-            }
-
-            return cached
-                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.TrackSourceId))
-                .ToDictionary(candidate => candidate.TrackSourceId, StringComparer.OrdinalIgnoreCase);
-        }
-        catch (JsonException)
-        {
-            return new Dictionary<string, PlaylistTrackCandidate>(StringComparer.OrdinalIgnoreCase);
-        }
     }
 
     [HttpPost("{source}/{sourceId}/ignore")]

@@ -98,7 +98,17 @@ public sealed class WatchlistStateService
                 ToPersistedStatus(transition.State),
                 transition.Message,
                 transition.NextAttemptUtc,
-                transition.ConsecutiveFailures ?? state?.ConsecutiveFailures),
+                transition.ConsecutiveFailures ?? state?.ConsecutiveFailures,
+                CurrentPhase: ToPersistedStatus(transition.State),
+                CurrentTrackIndex: state?.CurrentTrackIndex,
+                CurrentTrackTotal: transition.TrackCount ?? state?.CurrentTrackTotal,
+                HeartbeatUtc: DateTimeOffset.UtcNow,
+                DeadlineUtc: transition.State is WatchlistPlaylistState.Completed
+                    or WatchlistPlaylistState.Failed
+                    or WatchlistPlaylistState.Backoff
+                    or WatchlistPlaylistState.SourceFailure
+                    ? null
+                    : state?.DeadlineUtc ?? DateTimeOffset.UtcNow.AddMinutes(15)),
             cancellationToken);
     }
 

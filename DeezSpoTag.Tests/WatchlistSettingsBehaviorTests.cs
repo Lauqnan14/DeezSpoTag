@@ -286,18 +286,17 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("GetPlaylistAsync(playlistId, includeTracks:", source, StringComparison.Ordinal);
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
-        Assert.Contains("if (forceMediaServerSync)", source, StringComparison.Ordinal);
-        Assert.Contains("SyncPlaylistAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncPlaylistAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildMediaSyncNotReadyStatus", source, StringComparison.Ordinal);
         Assert.DoesNotContain("media_sync_not_ready_", source, StringComparison.Ordinal);
         Assert.Contains("ShouldKeepSharedQueueClaimPending(result)", source, StringComparison.Ordinal);
         Assert.Contains("UpsertPlaylistWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
-        Assert.Contains("duplicate_shared_track_linked", source, StringComparison.Ordinal);
-        Assert.Contains("metadata_refreshed", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistHistoryStatus.DuplicateSharedTrackLinked", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistHistoryStatus.MetadataRefreshed", source, StringComparison.Ordinal);
         Assert.DoesNotContain("source_unchanged", source, StringComparison.Ordinal);
         Assert.DoesNotContain("pre_sync_run", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryNotifyDuplicateWatchClaimAsync", source, StringComparison.Ordinal);
-        Assert.Contains("media_sync_completed", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -315,7 +314,6 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("HandlePreQueueDedupeDecisionAsync", source, StringComparison.Ordinal);
         Assert.Contains("RecoverInvalidPendingWatchClaimsAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetPlaylistWatchDownloadClaimsForPlaylistAsync", source, StringComparison.Ordinal);
-        Assert.Contains("stale_claim_recovered", source, StringComparison.Ordinal);
         Assert.Contains("TryHandleQueueDuplicateForWatchlistAsync", source, StringComparison.Ordinal);
         Assert.Contains("IsPendingWatchClaimStillOwnedByQueue", source, StringComparison.Ordinal);
         Assert.Contains("queue_duplicate", source, StringComparison.Ordinal);
@@ -325,9 +323,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
         Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
         Assert.True(
-            source.IndexOf("syncResult = await SyncPlaylistAsync(", StringComparison.Ordinal)
-            < source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal),
-            "Playlist sync and local identity reconciliation must finish before missing tracks are selected for queueing.");
+            source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal)
+            < source.IndexOf("EnqueueWatchlistPlaylistSyncJobsAsync", StringComparison.Ordinal),
+            "Missing-track selection and queueing must precede durable remote target refresh work.");
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
         Assert.Contains("public static DownloadDedupeRequest FromDownloadIntent(", dedupeSource, StringComparison.Ordinal);
@@ -339,8 +337,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var repoRoot = ResolveRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
-        Assert.Contains("var cachedCandidatesComplete = cachedCandidates is not null", source, StringComparison.Ordinal);
-        Assert.Contains("cachedCandidates.Count >= liveSnapshot.TrackCount.Value", source, StringComparison.Ordinal);
+        Assert.Contains("PlaylistCandidateContract.IsReusableCache", source, StringComparison.Ordinal);
+        Assert.Contains("existingCandidateCache?.IsComplete == true", source, StringComparison.Ordinal);
         Assert.Contains("if (cachedCandidatesComplete)", source, StringComparison.Ordinal);
         Assert.Contains("cached candidates are incomplete. Refreshing candidates.", source, StringComparison.Ordinal);
     }
@@ -528,9 +526,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("Mirror sync blocked because", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("\"sync_incomplete\"", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("\"sync_failed\"", watchSource, StringComparison.Ordinal);
-        Assert.Contains("\"waiting_for_downloads\"", watchSource, StringComparison.Ordinal);
-        Assert.Contains("\"waiting_for_target_sync\"", watchSource, StringComparison.Ordinal);
-        Assert.Contains("queueResult.FailedCount == 0 && !IsTerminalPlaylistSyncFailure(syncResult)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("var success = queueResult.FailedCount == 0", watchSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsTerminalPlaylistSyncFailure", watchSource, StringComparison.Ordinal);
         Assert.Contains("IsFinalizedTrackSyncedAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("IsPlaylistWatchTrackSyncedToTargetAsync", postDownloadSource, StringComparison.Ordinal);
     }

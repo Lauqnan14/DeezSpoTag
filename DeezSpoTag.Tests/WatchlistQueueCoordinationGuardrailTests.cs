@@ -86,8 +86,9 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var repositorySource = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
 
         Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("GetWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("CompleteWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ClaimDueWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("CompleteClaimedWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("RetryClaimedWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("updated_at=@updatedAt", repositorySource, StringComparison.Ordinal);
         Assert.DoesNotContain("_requestedPlaylistKey", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("_requestedArtistId", hostedSource, StringComparison.Ordinal);
@@ -157,7 +158,6 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("WatchlistUnavailableSettingsFingerprint = BuildUnavailableSettingsFingerprint(options)", watchSource, StringComparison.Ordinal);
         Assert.Contains("UnavailableRecheckDays", watchSource, StringComparison.Ordinal);
         Assert.Contains("IsAvailabilityRecheckWindowActive", watchSource, StringComparison.Ordinal);
-        Assert.Contains("skipped_unavailable_recheck_window", watchSource, StringComparison.Ordinal);
         Assert.Contains("availability recheck scheduled", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("skipped_unavailable_cooldown", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("unavailable from enabled sources; retry scheduled", watchSource, StringComparison.OrdinalIgnoreCase);

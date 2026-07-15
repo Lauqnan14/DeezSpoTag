@@ -1554,6 +1554,7 @@ public partial class Program
                 AppleCatalogService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 BoomplayWatchlistMappingService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayWatchlistMappingService>(),
+                PlatformAuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
                 LibraryRecommendationService = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRecommendationService>(),
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()
@@ -1561,7 +1562,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchRuntimeServices>(sp =>
             new DeezSpoTag.Web.Services.WatchlistEngine.PlaylistWatchRuntimeServices
             {
-                PlaylistSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistSyncService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 WatchlistQueueAdmissionService = sp.GetService<DeezSpoTag.Web.Services.WatchlistQueueAdmissionService>(),
                 ActivitiesRealtimeService = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>(),

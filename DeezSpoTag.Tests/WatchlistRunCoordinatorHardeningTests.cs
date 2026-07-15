@@ -120,7 +120,6 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
             },
             new WatchlistEngine.PlaylistWatchRuntimeServices
             {
-                PlaylistSyncService = null!,
                 PlaylistVisualService = null!,
                 WatchlistQueueAdmissionService = queueAdmission,
                 ActivitiesRealtimeService = null!

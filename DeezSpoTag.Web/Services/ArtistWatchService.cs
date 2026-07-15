@@ -209,12 +209,12 @@ public sealed class ArtistWatchService
         var tracks = await _spotifyMetadataService.FetchAlbumTracksAsync(album.Id, cancellationToken);
         if (tracks.Count > 0)
         {
-            var queuedCount = await _watchlistQueue.QueueSpotifyWatchTracksAsync(
+            var outcome = await _watchlistQueue.QueueSpotifyWatchTracksWithOutcomeAsync(
                 tracks,
                 BuildArtistQueueOptions(artist, album.Name ?? string.Empty, AlbumGroup),
                 cancellationToken);
-            await AddSpotifyAlbumWatchHistoryIfQueuedAsync(artist, album, queuedCount, cancellationToken);
-            if (queuedCount >= tracks.Count)
+            await AddSpotifyAlbumWatchHistoryIfQueuedAsync(artist, album, outcome.Queued, cancellationToken);
+            if (outcome.IsSettled)
             {
                 insertedAlbums.Add(new ArtistWatchAlbumInsert(SpotifySource, album.Id));
             }
@@ -331,24 +331,24 @@ public sealed class ArtistWatchService
             .Select(track => MapSpotifyTopTrackSummary(track, artist.ArtistName))
             .ToList();
         var collectionName = $"{artist.ArtistName} - Top Songs";
-        var queuedCount = await _watchlistQueue.QueueSpotifyWatchTracksAsync(
+        var outcome = await _watchlistQueue.QueueSpotifyWatchTracksWithOutcomeAsync(
             summaries,
             BuildArtistQueueOptions(artist, collectionName, TopSongsGroup),
             cancellationToken);
-        if (queuedCount > 0)
+        if (outcome.Queued > 0)
         {
             await AddArtistAlbumWatchHistoryAsync(
                 artist.ArtistId,
                 SpotifySource,
                 $"artist-top:{spotifyId}",
                 collectionName,
-                queuedCount,
+                outcome.Queued,
                 artist.ArtistName,
                 TopSongsGroup,
                 cancellationToken);
         }
 
-        return queuedCount >= newTracks.Count ? newTracks
+        return outcome.IsSettled ? newTracks
             .Select(track => new ArtistWatchAlbumInsert(SpotifySource, BuildSpotifyTopTrackWatchId(track.Id)))
             .ToList() : [];
     }
@@ -521,37 +521,37 @@ public sealed class ArtistWatchService
         var intents = await BuildAppleAlbumIntentsAsync(albumId, albumName, storefront, cancellationToken);
         if (intents.Count > 0)
         {
-            var queuedCount = await QueueAppleAlbumIntentsAsync(artist, albumId, albumName, intents, cancellationToken);
-            return queuedCount >= intents.Count ? albumId : null;
+            var outcome = await QueueAppleAlbumIntentsAsync(artist, albumId, albumName, intents, cancellationToken);
+            return outcome.IsSettled ? albumId : null;
         }
         return null;
     }
 
-    private async Task<int> QueueAppleAlbumIntentsAsync(
+    private async Task<ArtistWatchQueueOutcome> QueueAppleAlbumIntentsAsync(
         WatchlistArtistDto artist,
         string albumId,
         string albumName,
         List<DownloadIntent> intents,
         CancellationToken cancellationToken)
     {
-        var queuedCount = await _watchlistQueue.QueueAppleWatchIntentsAsync(
+        var outcome = await _watchlistQueue.QueueAppleWatchIntentsWithOutcomeAsync(
             intents,
             BuildArtistQueueOptions(artist, albumName, AlbumGroup),
             cancellationToken);
 
-        if (queuedCount > 0)
+        if (outcome.Queued > 0)
         {
             await AddArtistAlbumWatchHistoryAsync(
                 artist.ArtistId,
                 AppleSource,
                 albumId,
                 albumName,
-                queuedCount,
+                outcome.Queued,
                 artist.ArtistName,
                 AlbumGroup,
                 cancellationToken);
         }
-        return queuedCount;
+        return outcome;
     }
 
     private async Task<JsonDocument?> TryGetAppleAlbumDocumentAsync(
@@ -616,23 +616,23 @@ public sealed class ArtistWatchService
         var tracks = await _deezerClient.GetAlbumTracksAsync(albumId);
         if (tracks.Count > 0)
         {
-            var queuedCount = await _watchlistQueue.QueueDeezerWatchTracksAsync(
+            var outcome = await _watchlistQueue.QueueDeezerWatchTracksWithOutcomeAsync(
                 tracks,
                 BuildArtistQueueOptions(artist, albumName, AlbumGroup),
                 cancellationToken);
-            if (queuedCount > 0)
+            if (outcome.Queued > 0)
             {
                 await AddArtistAlbumWatchHistoryAsync(
                     artist.ArtistId,
                     DeezerSource,
                     albumId,
                     albumName,
-                    queuedCount,
+                    outcome.Queued,
                     artist.ArtistName,
                     AlbumGroup,
                     cancellationToken);
             }
-            return queuedCount >= tracks.Count ? albumId : null;
+            return outcome.IsSettled ? albumId : null;
         }
         return null;
     }

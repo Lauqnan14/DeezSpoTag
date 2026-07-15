@@ -25,6 +25,8 @@ public sealed class LibraryDbService
     private const string MediaServerTrackMetadataTable = "media_server_track_metadata";
     private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
     private const string WatchlistReconciliationRequestTable = "watchlist_reconciliation_request";
+    private const string WatchlistFinalizationOutboxTable = "watchlist_finalization_outbox";
+    private const string PlaylistTrackCandidateCacheTable = "playlist_track_candidate_cache";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string RecommendationRejectionTable = "recommendation_rejection";
@@ -41,6 +43,7 @@ public sealed class LibraryDbService
     private const string BackgroundJobStateTable = "background_job_state";
     private const string PlayHistoryIdentityMigrationId = "play-history-event-identity-v1";
     private const string MelodayAutomaticScopeMigrationId = "meloday-automatic-library-scope-v1";
+    private const string WatchlistReliabilityRepairMigrationId = "watchlist-reliability-repair-v1";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -128,6 +131,8 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_download_claim_status_updated"] = (PlaylistWatchDownloadClaimTable, "status, updated_at", false)
             ,
             ["idx_watchlist_sync_job_due"] = ("watchlist_sync_job", "status, next_attempt_utc, lease_until_utc, id", false)
+            ,
+            ["idx_watchlist_finalization_outbox_due"] = (WatchlistFinalizationOutboxTable, "status, next_attempt_utc, lease_until_utc, id", false)
             ,
             ["idx_watchlist_reconciliation_request_updated"] = (WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", false)
             ,
@@ -387,6 +392,11 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "last_run_message", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "next_attempt_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "consecutive_failures", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "current_phase", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "current_track_index", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "current_track_total", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "heartbeat_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "deadline_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "ignored_blocked_track_count", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "rerouted_track_count", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "presentation_updated_at", TextType, cancellationToken);
@@ -481,6 +491,22 @@ CREATE TABLE IF NOT EXISTS watchlist_sync_job (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (source, playlist_id, track_id, target_service)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_uuid TEXT NOT NULL UNIQUE,
+    payload_json TEXT,
+    final_file_paths_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_finalization_outbox_due", WatchlistFinalizationOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_owner", TextType, cancellationToken);
@@ -491,10 +517,22 @@ CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
     kind TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT '',
     identifier TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    last_error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (kind, source, identifier)
 );", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "status", $"{TextType} NOT NULL DEFAULT 'pending'", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "attempt_count", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "next_attempt_utc", $"{TextType} NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "lease_owner", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "lease_until_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, WatchlistReconciliationRequestTable, "last_error", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_reconciliation_request_updated", WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
@@ -531,6 +569,13 @@ CREATE TABLE IF NOT EXISTS watchlist_source_circuit_state (
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "top_songs_sync_mode", TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_discography_enabled", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "ignore_rules_json", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "last_run_status", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "last_run_message", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "next_attempt_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "consecutive_failures", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "current_phase", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "heartbeat_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "deadline_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchIgnoreTable, SourceIdColumn, TextType, cancellationToken);
@@ -542,9 +587,18 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     source_id TEXT NOT NULL,
     snapshot_id TEXT,
     candidates_json TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 0,
+    identity_revision TEXT,
+    provider_readiness_revision TEXT,
+    is_complete INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "schema_version", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "identity_revision", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "provider_readiness_revision", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "is_complete", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+        await ApplyWatchlistReliabilityRepairAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS boomplay_deezer_track_mapping (
     boomplay_track_id TEXT NOT NULL PRIMARY KEY,
@@ -1317,6 +1371,96 @@ CREATE TABLE library_settings_migrated (
             await renameCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task ApplyWatchlistReliabilityRepairAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var check = new SqliteCommand(
+                         "SELECT 1 FROM app_schema_migration WHERE migration_id=@migrationId LIMIT 1;",
+                         connection))
+        {
+            check.Parameters.AddWithValue("migrationId", WatchlistReliabilityRepairMigrationId);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var clearFalseUnavailable = new SqliteCommand(@"
+UPDATE playlist_watch_track
+SET status='pending',
+    unavailable_reason=NULL,
+    unavailable_since_utc=NULL,
+    unavailable_last_checked_utc=NULL,
+    unavailable_next_retry_utc=NULL,
+    unavailable_settings_fingerprint=NULL,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(status)='unavailable'
+  AND EXISTS (
+      SELECT 1 FROM playlist_track_candidate_cache cache
+      WHERE cache.source=playlist_watch_track.source
+        AND cache.source_id=playlist_watch_track.source_id
+        AND (cache.schema_version < 2 OR cache.is_complete=0)
+  );", connection, transaction))
+        {
+            await clearFalseUnavailable.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var deleteInvalidCaches = new SqliteCommand(
+                         @"DELETE FROM playlist_track_candidate_cache
+WHERE (schema_version < 2 OR is_complete=0)
+  AND EXISTS (
+      SELECT 1 FROM playlist_watchlist watched
+      WHERE watched.source=playlist_track_candidate_cache.source
+        AND watched.source_id=playlist_track_candidate_cache.source_id
+  );",
+                         connection,
+                         transaction))
+        {
+            await deleteInvalidCaches.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var resetParserBackoff = new SqliteCommand(@"
+UPDATE playlist_watch_state
+SET last_run_status='pending',
+    last_run_message='Deployment repair reset a parser-generated Watchlist backoff.',
+    next_attempt_utc=NULL,
+    consecutive_failures=0,
+    current_phase='pending',
+    heartbeat_utc=CURRENT_TIMESTAMP,
+    deadline_utc=NULL,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(COALESCE(last_run_status,''))='backoff'
+  AND lower(COALESCE(last_run_message,'')) LIKE '%watchlist history status%';", connection, transaction))
+        {
+            await resetParserBackoff.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var enqueueGlobal = new SqliteCommand(@"
+INSERT INTO watchlist_reconciliation_request (
+    kind,source,identifier,status,attempt_count,next_attempt_utc,created_at,updated_at)
+SELECT 'all','','','pending',0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+WHERE EXISTS (SELECT 1 FROM playlist_watchlist)
+   OR EXISTS (SELECT 1 FROM artist_watchlist)
+ON CONFLICT(kind,source,identifier) DO UPDATE SET
+    status='pending',attempt_count=0,next_attempt_utc=CURRENT_TIMESTAMP,
+    lease_owner=NULL,lease_until_utc=NULL,last_error=NULL,updated_at=CURRENT_TIMESTAMP;", connection, transaction))
+        {
+            await enqueueGlobal.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var marker = new SqliteCommand(@"
+INSERT INTO app_schema_migration (migration_id,completed_at_utc)
+VALUES (@migrationId,@completedAtUtc);", connection, transaction))
+        {
+            marker.Parameters.AddWithValue("migrationId", WatchlistReliabilityRepairMigrationId);
+            marker.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+            await marker.ExecuteNonQueryAsync(cancellationToken);
+        }
         await transaction.CommitAsync(cancellationToken);
     }
 

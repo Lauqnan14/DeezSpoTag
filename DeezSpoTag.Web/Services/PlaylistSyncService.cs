@@ -1137,9 +1137,7 @@ public sealed class PlaylistSyncService
         var source = NormalizeSource(playlist.Source);
         if (trackCandidates is { Count: > 0 })
         {
-            var candidates = string.Equals(source, "boomplay", StringComparison.OrdinalIgnoreCase)
-                ? trackCandidates.Where(static candidate => !string.IsNullOrWhiteSpace(candidate.DeezerId))
-                : trackCandidates;
+            var candidates = PlaylistCandidateContract.ResolvableCandidates(source, trackCandidates);
             return (candidates.Select(ToSyncTrackSummary).ToList(), null);
         }
 

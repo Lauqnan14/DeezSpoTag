@@ -699,7 +699,12 @@ public sealed record PlaylistWatchStateDto(
     string? LastRunStatus = null,
     string? LastRunMessage = null,
     DateTimeOffset? NextAttemptUtc = null,
-    int? ConsecutiveFailures = null);
+    int? ConsecutiveFailures = null,
+    string? CurrentPhase = null,
+    int? CurrentTrackIndex = null,
+    int? CurrentTrackTotal = null,
+    DateTimeOffset? HeartbeatUtc = null,
+    DateTimeOffset? DeadlineUtc = null);
 
 public sealed record PlaylistWatchTrackStatusSummaryDto(
     int QueuedCount,
@@ -732,7 +737,11 @@ public sealed record PlaylistTrackCandidateCacheDto(
     string SourceId,
     string? SnapshotId,
     string CandidatesJson,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    int SchemaVersion = 0,
+    string? IdentityRevision = null,
+    string? ProviderReadinessRevision = null,
+    bool IsComplete = false);
 
 public sealed record BoomplayDeezerTrackMappingDto(
     string BoomplayTrackId,
@@ -829,12 +838,31 @@ public sealed record WatchlistSyncJobStatusCounts(
     DateTimeOffset? OldestPendingUtc = null,
     string? LastError = null);
 
+public sealed record WatchlistFinalizationOutboxDto(
+    long Id,
+    string QueueUuid,
+    string? PayloadJson,
+    IReadOnlyList<string> FinalFilePaths,
+    string Status,
+    int AttemptCount,
+    DateTimeOffset NextAttemptUtc,
+    string? LeaseOwner,
+    DateTimeOffset? LeaseUntilUtc,
+    string? LastError,
+    DateTimeOffset UpdatedAt);
+
 public sealed record WatchlistReconciliationRequestDto(
     string Kind,
     string Source,
     string Identifier,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string Status = "pending",
+    int AttemptCount = 0,
+    DateTimeOffset? NextAttemptUtc = null,
+    string? LeaseOwner = null,
+    DateTimeOffset? LeaseUntilUtc = null,
+    string? LastError = null);
 
 public sealed record MediaServerTrackMetadataUpsertDto(
     long TrackId,
@@ -848,7 +876,14 @@ public sealed record ArtistWatchStateDto(
     string? SpotifyId,
     int? BatchNextOffset,
     DateTimeOffset? LastCheckedUtc,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? LastRunStatus = null,
+    string? LastRunMessage = null,
+    DateTimeOffset? NextAttemptUtc = null,
+    int? ConsecutiveFailures = null,
+    string? CurrentPhase = null,
+    DateTimeOffset? HeartbeatUtc = null,
+    DateTimeOffset? DeadlineUtc = null);
 
 public sealed record ArtistWatchAlbumInsert(string Source, string AlbumSourceId);
 

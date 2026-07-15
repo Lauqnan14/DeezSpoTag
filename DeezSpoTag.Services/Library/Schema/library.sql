@@ -392,6 +392,13 @@ CREATE TABLE IF NOT EXISTS artist_watch_state (
     spotify_id TEXT,
     batch_next_offset INTEGER,
     last_checked_utc TEXT,
+    last_run_status TEXT,
+    last_run_message TEXT,
+    next_attempt_utc TEXT,
+    consecutive_failures INTEGER,
+    current_phase TEXT,
+    heartbeat_utc TEXT,
+    deadline_utc TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (artist_id)
 );
@@ -455,6 +462,11 @@ CREATE TABLE IF NOT EXISTS playlist_watch_state (
     last_run_message TEXT,
     next_attempt_utc TEXT,
     consecutive_failures INTEGER,
+    current_phase TEXT,
+    current_track_index INTEGER,
+    current_track_total INTEGER,
+    heartbeat_utc TEXT,
+    deadline_utc TEXT,
     ignored_blocked_track_count INTEGER,
     rerouted_track_count INTEGER,
     presentation_updated_at TEXT,
@@ -489,6 +501,10 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     source_id TEXT NOT NULL,
     snapshot_id TEXT,
     candidates_json TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 0,
+    identity_revision TEXT,
+    provider_readiness_revision TEXT,
+    is_complete INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );
@@ -635,6 +651,24 @@ CREATE TABLE IF NOT EXISTS watchlist_sync_job (
     UNIQUE (source, playlist_id, track_id, target_service)
 );
 
+CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    queue_uuid TEXT NOT NULL UNIQUE,
+    payload_json TEXT,
+    final_file_paths_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_finalization_outbox_due
+    ON watchlist_finalization_outbox (status, next_attempt_utc, lease_until_utc, id);
+
 CREATE INDEX IF NOT EXISTS idx_watchlist_sync_job_due
     ON watchlist_sync_job (next_attempt_utc, id);
 
@@ -642,6 +676,12 @@ CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
     kind TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT '',
     identifier TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    last_error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (kind, source, identifier)

@@ -199,7 +199,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
-    private readonly WatchlistFinalizationService _watchlistFinalizationService;
+    private readonly WatchlistPostDownloadSyncService? _watchlistTargetWorker;
     private readonly LibraryConfigStore _configStore;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly DownloadQueueWakeSignal _queueWakeSignal;
@@ -260,7 +260,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
-        _watchlistFinalizationService = serviceProvider.GetRequiredService<WatchlistFinalizationService>();
+        _watchlistTargetWorker = serviceProvider.GetService<WatchlistPostDownloadSyncService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _workCoordinator = serviceProvider.GetRequiredService<BackgroundWorkCoordinator>();
         _queueWakeSignal = serviceProvider.GetRequiredService<DownloadQueueWakeSignal>();
@@ -1415,8 +1415,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     return false;
                 }
 
-                await RefreshConfiguredMediaServersAfterMoveAsync(group, summary.ChangedFilePaths, cancellationToken);
-                await NotifyWatchlistFinalizedItemsAsync(group, summary.ChangedFilePaths, cancellationToken);
+                var postMoveDispatch = await PersistWatchlistFinalizationOutboxAsync(
+                    group,
+                    summary.ChangedFilePaths,
+                    cancellationToken);
+                if (postMoveDispatch.NonWatchlistPresent)
+                {
+                    await RefreshConfiguredMediaServersForNonWatchlistMoveAsync(cancellationToken);
+                }
             }
 
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -1486,96 +1492,57 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return false;
     }
 
-    private async Task NotifyWatchlistFinalizedItemsAsync(
+    private async Task<(bool WatchlistQueued, bool NonWatchlistPresent)> PersistWatchlistFinalizationOutboxAsync(
         PipelineWorkGroup group,
         IReadOnlyList<string> changedFilePaths,
         CancellationToken cancellationToken)
     {
+        var queued = false;
+        var nonWatchlistPresent = false;
         foreach (var item in group.PendingItems)
         {
-            await _watchlistFinalizationService.NotifyQueueItemFinalizedAsync(
-                item,
-                item.PayloadJson,
-                changedFilePaths,
+            var claims = await _libraryRepository.GetPlaylistWatchDownloadClaimsAsync(
+                item.QueueUuid,
+                status: null,
                 cancellationToken);
+            if (claims.Count == 0 && !WatchlistFinalizationService.PayloadHasWatchlistContext(item.PayloadJson))
+            {
+                nonWatchlistPresent = true;
+                continue;
+            }
+            var itemFinalPaths = DownloadQueueRepository.GetExistingMaterializedFilePaths(item);
+            if (itemFinalPaths.Count == 0)
+            {
+                itemFinalPaths = changedFilePaths
+                    .Where(static path => !string.IsNullOrWhiteSpace(path))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            await _libraryRepository.UpsertWatchlistFinalizationOutboxAsync(
+                item.QueueUuid,
+                item.PayloadJson,
+                itemFinalPaths,
+                cancellationToken);
+            queued |= itemFinalPaths.Count > 0;
         }
+        if (queued && _watchlistTargetWorker != null)
+        {
+            await _watchlistTargetWorker.ResumePendingJobsAsync(cancellationToken);
+        }
+        return (queued, nonWatchlistPresent);
     }
 
-    private async Task RefreshConfiguredMediaServersAfterMoveAsync(
-        PipelineWorkGroup group,
-        IReadOnlyCollection<string> changedFilePaths,
-        CancellationToken cancellationToken)
+    private async Task RefreshConfiguredMediaServersForNonWatchlistMoveAsync(CancellationToken cancellationToken)
     {
-        var finalizedAudioPaths = changedFilePaths
-            .Where(IsExistingAudioFile)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (finalizedAudioPaths.Count == 0)
+        var refresh = await _mediaServerLibraryRefreshService.RefreshConfiguredServersAsync(cancellationToken);
+        if (!refresh.IsComplete)
         {
-            var movedFilesByDestination = await GetRecentMovedAudioFilesByDestinationAsync(
-                group.PendingQueueUuids,
-                cancellationToken);
-            finalizedAudioPaths = movedFilesByDestination.Values
-                .SelectMany(static paths => paths)
-                .Where(IsExistingAudioFile)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        if (finalizedAudioPaths.Count == 0)
-        {
-            return;
-        }
-
-        try
-        {
-            var refresh = await _mediaServerLibraryRefreshService.RefreshConfiguredServersAsync(cancellationToken);
-            if (refresh.ConfiguredServerCount == 0)
-            {
-                return;
-            }
-
-            if (refresh.IsComplete)
-            {
-                if (_logger.IsEnabled(LogLevel.Information))
-                {
-                    _logger.LogInformation(
-                        "Post-download media-server refresh requested after finalizing destination folder {DestinationFolderId}: files={FileCount}, refreshedServers={RefreshedServers}.",
-                        group.DestinationFolderId,
-                        finalizedAudioPaths.Count,
-                        refresh.RefreshedServerCount);
-                }
-
-                return;
-            }
-
             _logger.LogWarning(
-                "Post-download media-server refresh was incomplete after finalizing destination folder {DestinationFolderId}: refreshedServers={RefreshedServers}/{ConfiguredServers}, failedServers={FailedServers}.",
-                group.DestinationFolderId,
+                "Post-download media-server refresh was incomplete for a non-Watchlist download: refreshedServers={RefreshedServers}/{ConfiguredServers}, failedServers={FailedServers}.",
                 refresh.RefreshedServerCount,
                 refresh.ConfiguredServerCount,
                 string.Join(',', refresh.FailedServers));
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Post-download media-server refresh failed after finalizing destination folder {DestinationFolderId}.",
-                group.DestinationFolderId);
-        }
-    }
-
-    private static bool IsExistingAudioFile(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(path);
-        return !string.IsNullOrWhiteSpace(ioPath)
-               && File.Exists(ioPath)
-               && StagingAudioExtensions.Contains(Path.GetExtension(ioPath));
     }
 
     private static bool HasExistingGroupSourceFiles(PipelineWorkGroup group)
@@ -1615,14 +1582,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             await _queueRepository.MarkMoveNotRequiredAsync(queueUuid, cancellationToken);
         }
 
-        foreach (var item in group.PendingItems)
-        {
-            await _watchlistFinalizationService.NotifyQueueItemFinalizedAsync(
-                item,
-                item.PayloadJson,
-                finalFilePaths: null,
-                cancellationToken);
-        }
     }
 
     private static bool HasCandidateStagingAudioFiles(IEnumerable<string> sourceFilePaths)

@@ -60,6 +60,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastRun = new();
     private readonly ConcurrentDictionary<string, int> _consecutiveFailures = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _nextAllowedRun = new();
+    private readonly string _reconciliationLeaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
     private int _artistRoundRobinIndex;
     private readonly object _runtimeHealthGate = new();
@@ -311,8 +312,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _logger.LogDebug("Watchlist skipped - library DB not configured.");
             return;
         }
-        var reconciliationRequests = await repository.GetWatchlistReconciliationRequestsAsync(stoppingToken);
-        UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = reconciliationRequests.Count });
+        var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(stoppingToken);
+        if (staleWorkRecovered > 0)
+        {
+            _logger.LogWarning("Recovered {Count} Watchlist items whose persisted execution deadlines expired.", staleWorkRecovered);
+        }
+        var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
+        UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
 
         var playlistReconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
         var recoveredClaims = await playlistReconciler.RecoverInvalidPendingWatchClaimsAsync(stoppingToken);
@@ -329,18 +335,57 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
         try
         {
-            await RunWatchCycleCoreAsync(
-                scope.ServiceProvider,
-                settings,
-                queueAdmission,
-                reconciliationRequests,
+            var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
+                1000,
+                TimeSpan.FromMinutes(15),
+                _reconciliationLeaseOwner,
                 stoppingToken);
+            using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
+            try
+            {
+                await RunWatchCycleCoreAsync(
+                    scope.ServiceProvider,
+                    settings,
+                    queueAdmission,
+                    reconciliationRequests,
+                    stoppingToken);
+            }
+            finally
+            {
+                leaseRenewalCancellation.Cancel();
+                try
+                {
+                    await leaseRenewal;
+                }
+                catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+                {
+                    // Expected after the claimed reconciliation batch leaves processing.
+                }
+            }
         }
         finally
         {
             if (queueAdmissionToken != 0)
             {
                 queueAdmission.EndRun(queueAdmissionToken);
+            }
+        }
+    }
+
+    private async Task RenewReconciliationLeasesAsync(
+        LibraryRepository repository,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
+            if (await repository.RenewClaimedWatchlistReconciliationRequestsAsync(
+                    _reconciliationLeaseOwner,
+                    TimeSpan.FromMinutes(15),
+                    cancellationToken) == 0)
+            {
+                return;
             }
         }
     }
@@ -373,13 +418,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
         var hasGlobalRequest = reconciliationRequests.Any(request => request.Kind == "all");
         var requestedPlaylistKeys = hasGlobalRequest
-            ? new HashSet<string>(StringComparer.Ordinal)
+            ? playlistItems.Select(item => item.Key).ToHashSet(StringComparer.Ordinal)
             : reconciliationRequests
                 .Where(request => request.Kind == PlaylistKind)
                 .Select(request => $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}")
                 .ToHashSet(StringComparer.Ordinal);
         var requestedArtistIds = hasGlobalRequest
-            ? new HashSet<long>()
+            ? artistItems
+                .Where(item => item.Artist is not null)
+                .Select(item => item.Artist!.ArtistId)
+                .ToHashSet()
             : reconciliationRequests
                 .Where(request => request.Kind == ArtistKind)
                 .Select(request => long.TryParse(request.Identifier, out var artistId) ? artistId : 0)
@@ -389,7 +437,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         if (allItems.Count == 0)
         {
             CleanupStaleState(Array.Empty<WatchItem>());
-            await repository.CompleteWatchlistReconciliationRequestsAsync(reconciliationRequests, stoppingToken);
+            await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
+                reconciliationRequests,
+                _reconciliationLeaseOwner,
+                stoppingToken);
             var remainingWhenEmpty = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
             UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingWhenEmpty });
             return;
@@ -417,8 +468,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             queueAdmission,
             requestedArtistIds,
             stoppingToken);
+        var allRequestedItemsSucceeded = playlistRunResult.ProcessedKeys.Count >= playlistItems.Count
+            && processedArtistIds.Count >= artistItems.Count;
         var completedRequests = hasGlobalRequest
-            ? reconciliationRequests
+            ? (allRequestedItemsSucceeded ? reconciliationRequests : [])
             : reconciliationRequests.Where(request =>
                 request.Kind == PlaylistKind
                     ? !playlistItems.Any(item => string.Equals(
@@ -431,7 +484,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                           || !artistItems.Any(item => item.Artist?.ArtistId == artistId)
                           || processedArtistIds.Contains(artistId)
                         : true).ToList();
-        await repository.CompleteWatchlistReconciliationRequestsAsync(completedRequests, stoppingToken);
+        await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
+            completedRequests,
+            _reconciliationLeaseOwner,
+            stoppingToken);
+        var retryRequests = reconciliationRequests.Except(completedRequests).ToList();
+        await repository.RetryClaimedWatchlistReconciliationRequestsAsync(
+            retryRequests,
+            _reconciliationLeaseOwner,
+            "Reconciliation did not reach a successful terminal outcome.",
+            stoppingToken);
         var remainingRequests = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingRequests });
     }
@@ -577,11 +639,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                 continue;
             }
-            processedKeys.Add(activeItem.Key);
-
             processed++;
             if (execution.Outcome == WatchItemRunOutcome.Success)
             {
+                processedKeys.Add(activeItem.Key);
                 succeeded++;
             }
             else
@@ -773,7 +834,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
 
             var execution = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
-            if (execution.Outcome != WatchItemRunOutcome.LockBusy && item.Artist != null)
+            if (execution.Outcome == WatchItemRunOutcome.Success && item.Artist != null)
             {
                 processedArtistIds.Add(item.Artist.ArtistId);
             }
@@ -802,12 +863,34 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         var startedUtc = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
+        using var itemTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        itemTimeout.CancelAfter(TimeSpan.FromMinutes(15));
         try
         {
-            var playlistResult = await RunItemAsync(item, serviceProvider, stoppingToken);
+            await PersistArtistRunStateAsync(
+                item,
+                serviceProvider,
+                "processing",
+                null,
+                null,
+                _consecutiveFailures.GetValueOrDefault(item.Key),
+                "reconciling",
+                startedUtc.AddMinutes(15),
+                stoppingToken);
+            var playlistResult = await RunItemAsync(item, serviceProvider, itemTimeout.Token);
             _lastRun[item.Key] = DateTimeOffset.UtcNow;
             _consecutiveFailures.TryRemove(item.Key, out _);
             _nextAllowedRun.TryRemove(item.Key, out _);
+            await PersistArtistRunStateAsync(
+                item,
+                serviceProvider,
+                "completed",
+                null,
+                null,
+                0,
+                "completed",
+                null,
+                stoppingToken);
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug(
@@ -856,6 +939,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var nextRunUtc = startedUtc.AddSeconds(backoffSeconds);
         _nextAllowedRun[item.Key] = nextRunUtc;
         await PersistPlaylistSchedulerStateAsync(item, serviceProvider, WatchlistPlaylistState.Backoff, ex.Message, nextRunUtc, failures, cancellationToken);
+        await PersistArtistRunStateAsync(
+            item,
+            serviceProvider,
+            "backoff",
+            ex.Message,
+            nextRunUtc,
+            failures,
+            "backoff",
+            null,
+            cancellationToken);
         if (ShouldEmitBackoffWarning(failures))
         {
             _logger.LogWarning(
@@ -935,6 +1028,39 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             touchLastChecked: false);
     }
 
+    private static async Task PersistArtistRunStateAsync(
+        WatchItem item,
+        IServiceProvider serviceProvider,
+        string status,
+        string? message,
+        DateTimeOffset? nextAttemptUtc,
+        int consecutiveFailures,
+        string phase,
+        DateTimeOffset? deadlineUtc,
+        CancellationToken cancellationToken)
+    {
+        if (item.Kind != ArtistKind || item.Artist is null)
+        {
+            return;
+        }
+
+        var repository = serviceProvider.GetService<LibraryRepository>();
+        if (repository?.IsConfigured != true)
+        {
+            return;
+        }
+
+        await repository.UpdateArtistWatchRunStateAsync(
+            item.Artist.ArtistId,
+            status,
+            message,
+            nextAttemptUtc,
+            consecutiveFailures,
+            phase,
+            deadlineUtc,
+            cancellationToken);
+    }
+
     private static List<WatchItem> BuildPlaylistWatchItems(IReadOnlyList<PlaylistWatchlistDto> playlists)
     {
         var items = new List<WatchItem>(playlists.Count);
@@ -980,6 +1106,34 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             if (lastCheckedUtc.HasValue)
             {
                 _lastRun.TryAdd(item.Key, lastCheckedUtc.Value);
+            }
+
+            if (item.Kind == PlaylistKind && item.Playlist != null)
+            {
+                var state = await repository.GetPlaylistWatchStateAsync(
+                    item.Playlist.Source,
+                    item.Playlist.SourceId,
+                    cancellationToken);
+                if (state?.NextAttemptUtc is { } nextAttemptUtc && nextAttemptUtc > DateTimeOffset.UtcNow)
+                {
+                    _nextAllowedRun[item.Key] = nextAttemptUtc;
+                }
+                if (state?.ConsecutiveFailures is > 0)
+                {
+                    _consecutiveFailures[item.Key] = state.ConsecutiveFailures.Value;
+                }
+            }
+            else if (item.Kind == ArtistKind && item.Artist != null)
+            {
+                var state = await repository.GetArtistWatchStateAsync(item.Artist.ArtistId, cancellationToken);
+                if (state?.NextAttemptUtc is { } nextAttemptUtc && nextAttemptUtc > DateTimeOffset.UtcNow)
+                {
+                    _nextAllowedRun[item.Key] = nextAttemptUtc;
+                }
+                if (state?.ConsecutiveFailures is > 0)
+                {
+                    _consecutiveFailures[item.Key] = state.ConsecutiveFailures.Value;
+                }
             }
         }
     }

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -62,26 +64,29 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
         Assert.Contains(original, request => request.Kind == "playlist" && request.Source == "spotify" && request.Identifier == "list-a");
         Assert.Contains(original, request => request.Kind == "playlist" && request.Source == "deezer" && request.Identifier == "list-b");
 
-        var originalListA = Assert.Single(original, request => request.Identifier == "list-a");
+        var initiallyClaimed = await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            2, TimeSpan.FromMinutes(1), "worker-a");
+        var originalListA = Assert.Single(initiallyClaimed, request => request.Identifier == "list-a");
         await Task.Delay(5);
         Assert.False(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "list-a"));
-        Assert.Equal(0, await _repository.CompleteWatchlistReconciliationRequestsAsync([originalListA]));
+        Assert.Equal(0, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([originalListA], "worker-a"));
         Assert.Equal(2, await _repository.GetWatchlistReconciliationRequestCountAsync());
 
-        var refreshedListA = Assert.Single(
-            await _repository.GetWatchlistReconciliationRequestsAsync(),
-            request => request.Identifier == "list-a");
-        Assert.Equal(1, await _repository.CompleteWatchlistReconciliationRequestsAsync([refreshedListA]));
+        var refreshedListA = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(1), "worker-b"));
+        Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([refreshedListA], "worker-b"));
 
         Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null));
-        var global = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        var global = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(1), "worker-c"));
         Assert.Equal("all", global.Kind);
         await Task.Delay(5);
         Assert.False(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
-        Assert.Equal(0, await _repository.CompleteWatchlistReconciliationRequestsAsync([global]));
-        var refreshedGlobal = Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal(0, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([global], "worker-c"));
+        var refreshedGlobal = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(1), "worker-d"));
         Assert.Equal("all", refreshedGlobal.Kind);
-        Assert.Equal(1, await _repository.CompleteWatchlistReconciliationRequestsAsync([refreshedGlobal]));
+        Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([refreshedGlobal], "worker-d"));
         Assert.Equal(0, await _repository.GetWatchlistReconciliationRequestCountAsync());
     }
 
@@ -182,6 +187,233 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
         Assert.Equal("plex", Assert.Single(recreated).TargetService);
     }
 
+    [Fact]
+    public void CandidateContract_RejectsLegacyAndOpaqueBoomplayCandidates()
+    {
+        var opaque = Candidate("boomplay-id", title: string.Empty, artist: string.Empty);
+        var hydrated = opaque with
+        {
+            DeezerId = "12345",
+            MappingStatus = BoomplayWatchlistMappingService.MatchedStatus,
+            Title = "Hydrated title",
+            Artist = "Hydrated artist"
+        };
+
+        Assert.False(PlaylistCandidateContract.IsResolvable("boomplay", opaque));
+        Assert.True(PlaylistCandidateContract.IsResolvable("boomplay", hydrated));
+        Assert.False(PlaylistCandidateContract.IsReusableCache(
+            "boomplay", 0, [hydrated], 1, isComplete: true));
+        Assert.False(PlaylistCandidateContract.IsReusableCache(
+            "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [opaque], 1, isComplete: true));
+        Assert.True(PlaylistCandidateContract.IsReusableCache(
+            "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 1, isComplete: true));
+    }
+
+    [Fact]
+    public void TypedHistoryStatuses_PersistEverySelectionOutcome()
+    {
+        var statuses = new Dictionary<WatchlistHistoryStatus, string>
+        {
+            [WatchlistHistoryStatus.SkippedAlreadyAvailable] = "skipped_already_available",
+            [WatchlistHistoryStatus.SkippedAlreadyQueued] = "skipped_already_queued",
+            [WatchlistHistoryStatus.StaleClaimRecovered] = "stale_claim_recovered",
+            [WatchlistHistoryStatus.SkippedBlocked] = "skipped_blocked",
+            [WatchlistHistoryStatus.SkippedUnavailableRecheckWindow] = "skipped_unavailable_recheck_window"
+        };
+
+        Assert.All(statuses, pair => Assert.Equal(
+            pair.Value,
+            WatchlistHistoryService.ToPersistedStatus(pair.Key)));
+    }
+
+    [Fact]
+    public void SpotifyEmptyPage_IsAcceptedOnlyWithExplicitZeroCountAndSnapshotEvidence()
+    {
+        Assert.True(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, 0, 0, "snapshot-zero"));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, null, null, "snapshot"));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, 0, 0, null));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(50, 0, 0, 0, "snapshot"));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 1, 1, 1, "snapshot"));
+    }
+
+    [Fact]
+    public void ArtistWatchOutcome_SettlesMixedHandledTracksWithoutRequiringEveryTrackToBeNewlyQueued()
+    {
+        var settled = new ArtistWatchQueueOutcome(
+            Requested: 5,
+            Queued: 1,
+            AlreadyHandled: 3,
+            Unavailable: 1,
+            Deferred: 0,
+            Failed: 0);
+        var deferred = settled with { Deferred = 1, Unavailable = 0 };
+
+        Assert.True(settled.IsSettled);
+        Assert.False(deferred.IsSettled);
+    }
+
+    [Fact]
+    public async Task HistoryPersistenceFailure_DoesNotEscapeIntoQueuePlanning()
+    {
+        var unavailableConfiguration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Library"] = "Data Source=/proc/deezspotag-unwritable/library.db"
+            })
+            .Build();
+        var unavailableRepository = new LibraryRepository(
+            unavailableConfiguration,
+            NullLogger<LibraryRepository>.Instance);
+        var history = new WatchlistHistoryService(unavailableRepository, activitiesRealtime: null);
+
+        var result = await history.RecordAsync(
+            new WatchlistHistoryWrite(
+                "spotify", "playlist", "list", "playlist:spotify:list", "List", "playlist", 1,
+                WatchlistHistoryStatus.MissingTracksQueued, null),
+            default);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task CandidateAndProviderRevisionChanges_ClearOnlyStaleUnavailableDecisions()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "revision-list", new PlaylistWatchlistMetadataInput("Revision", null, null, 2));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify", "revision-list", [new PlaylistWatchTrackInsert("track-a", null), new PlaylistWatchTrackInsert("track-b", null)]);
+        await _repository.MarkPlaylistWatchTrackUnavailableAsync(
+            "spotify", "revision-list", "track-a", null, "not found", "old-revision", DateTimeOffset.UtcNow.AddDays(7));
+        await _repository.MarkPlaylistWatchTrackUnavailableAsync(
+            "spotify", "revision-list", "track-b", null, "not found", "current-revision", DateTimeOffset.UtcNow.AddDays(7));
+
+        Assert.Equal(1, await _repository.ClearPlaylistWatchUnavailableStatusesWithDifferentFingerprintAsync(
+            "spotify", "revision-list", "current-revision"));
+        var tracks = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "revision-list");
+        Assert.Equal("pending", Assert.Single(tracks, track => track.TrackSourceId == "track-a").Status);
+        Assert.Equal("unavailable", Assert.Single(tracks, track => track.TrackSourceId == "track-b").Status);
+    }
+
+    [Fact]
+    public async Task FailedAndRefreshedReconciliationClaims_RemainDurableAcrossWorkers()
+    {
+        Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "leased-list"));
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(1), "worker-a"));
+        Assert.Equal(0, await _repository.RenewClaimedWatchlistReconciliationRequestsAsync("worker-b", TimeSpan.FromMinutes(1)));
+        Assert.Equal(1, await _repository.RenewClaimedWatchlistReconciliationRequestsAsync("worker-a", TimeSpan.FromMinutes(1)));
+        Assert.Equal(0, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([claimed], "worker-b"));
+        Assert.Equal(1, await _repository.RetryClaimedWatchlistReconciliationRequestsAsync(
+            [claimed], "worker-a", "injected failure"));
+
+        var retry = Assert.Single(await NewRepository().GetWatchlistReconciliationRequestsAsync());
+        Assert.Equal("retry", retry.Status);
+        Assert.Equal(1, retry.AttemptCount);
+        Assert.Equal("injected failure", retry.LastError);
+
+        await SetReconciliationDueAsync();
+        var refreshedClaim = Assert.Single(await NewRepository().ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(1), "worker-b"));
+        Assert.False(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "leased-list"));
+        Assert.Equal(0, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([refreshedClaim], "worker-b"));
+        Assert.Single(await _repository.GetWatchlistReconciliationRequestsAsync());
+    }
+
+    [Fact]
+    public async Task FinalizationOutbox_IsReclaimedAfterAnInterruptedWorkerLease()
+    {
+        await _repository.UpsertWatchlistFinalizationOutboxAsync(
+            "queue-finalize", "{\"WatchlistOrigin\":\"playlist\"}", ["/music/final.flac"]);
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistFinalizationOutboxAsync(
+            1, TimeSpan.FromMinutes(1), "worker-a"));
+        Assert.Equal("processing", claimed.Status);
+        await ExecuteSqlAsync(@"
+UPDATE watchlist_finalization_outbox
+SET lease_until_utc=@expired
+WHERE id=@id;",
+            ("expired", DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O")),
+            ("id", claimed.Id));
+
+        var reclaimed = Assert.Single(await NewRepository().ClaimDueWatchlistFinalizationOutboxAsync(
+            1, TimeSpan.FromMinutes(1), "worker-b"));
+        Assert.Equal(claimed.Id, reclaimed.Id);
+        Assert.Equal("worker-b", reclaimed.LeaseOwner);
+        Assert.Equal("/music/final.flac", Assert.Single(reclaimed.FinalFilePaths));
+        Assert.True(await _repository.CompleteWatchlistFinalizationOutboxAsync(reclaimed.Id, "worker-b"));
+        Assert.Empty(await _repository.ClaimDueWatchlistFinalizationOutboxAsync(
+            1, TimeSpan.FromMinutes(1), "worker-c"));
+    }
+
+    [Fact]
+    public async Task StalePersistedPlaylistAndArtistWork_IsRecoveredForImmediateRetry()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "stale-list", new PlaylistWatchlistMetadataInput("Stale", null, null, 1));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "stale-list", null, 1, null, null, null,
+            "processing", null, null, 0, "selecting_tracks", 1, 1,
+            DateTimeOffset.UtcNow.AddMinutes(-20), DateTimeOffset.UtcNow.AddMinutes(-5)));
+        await ExecuteSqlAsync("INSERT INTO artist_watch_state(artist_id,current_phase,deadline_utc) VALUES(99,'reconciling',@expired);",
+            ("expired", DateTimeOffset.UtcNow.AddMinutes(-5).ToString("O")));
+
+        Assert.Equal(2, await _repository.RecoverStaleWatchlistWorkAsync());
+        var playlist = await _repository.GetPlaylistWatchStateAsync("spotify", "stale-list");
+        var artist = await _repository.GetArtistWatchStateAsync(99);
+        Assert.NotNull(playlist);
+        Assert.NotNull(artist);
+        Assert.Equal("stale_recovered", playlist!.CurrentPhase);
+        Assert.Equal("stale_recovered", artist!.CurrentPhase);
+        Assert.Null(playlist.DeadlineUtc);
+        Assert.Null(artist.DeadlineUtc);
+        Assert.NotNull(playlist.NextAttemptUtc);
+        Assert.NotNull(artist.NextAttemptUtc);
+    }
+
+    [Fact]
+    public async Task PlaylistRefreshWork_FansOutOnceToEveryConfiguredTarget()
+    {
+        await AddPlaylistWithTargetsAsync("refresh-list", ["plex", "jellyfin", "navidrome"]);
+        var first = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list");
+        var second = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list");
+
+        Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, first.Select(job => job.TargetService).Order().ToArray());
+        Assert.All(first, job => Assert.Equal("__playlist_refresh__", job.TrackId));
+        Assert.Equal(first.Select(job => job.Id).Order(), second.Select(job => job.Id).Order());
+        Assert.Equal(3, (await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "target-worker")).Count);
+    }
+
+    [Fact]
+    public async Task DeploymentRepair_InvalidatesLegacyCacheAndFalseUnavailableStateWithoutDeletingMembership()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "boomplay", "legacy-list", new PlaylistWatchlistMetadataInput("Legacy", null, null, 1));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "boomplay", "legacy-list", [new PlaylistWatchTrackInsert("opaque-id", null)]);
+        await _repository.MarkPlaylistWatchTrackUnavailableAsync(
+            "boomplay", "legacy-list", "opaque-id", null, "not resolvable", "legacy", DateTimeOffset.UtcNow.AddDays(7));
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync(
+            "boomplay", "legacy-list", "snapshot", JsonSerializer.Serialize(new[] { Candidate("opaque-id", "", "") }));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "boomplay", "legacy-list", "snapshot", 1, null, null, DateTimeOffset.UtcNow,
+            "backoff", "Unknown Watchlist history status was rejected.", DateTimeOffset.UtcNow.AddHours(1), 4));
+        await ExecuteSqlAsync("DELETE FROM app_schema_migration WHERE migration_id='watchlist-reliability-repair-v1';");
+
+        await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+
+        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("boomplay", "legacy-list"));
+        var track = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("boomplay", "legacy-list"));
+        Assert.Equal("pending", track.Status);
+        var state = await _repository.GetPlaylistWatchStateAsync("boomplay", "legacy-list");
+        Assert.NotNull(state);
+        Assert.Equal("pending", state!.LastRunStatus);
+        Assert.Null(state.NextAttemptUtc);
+        Assert.Single(await _repository.GetPlaylistWatchlistAsync(), item => item.SourceId == "legacy-list");
+        Assert.Contains(await _repository.GetWatchlistReconciliationRequestsAsync(), request => request.Kind == "all");
+    }
+
+    private static PlaylistTrackCandidate Candidate(string id, string title, string artist)
+        => new(id, null, title, artist, string.Empty, null, null, null, []);
+
     private LibraryRepository NewRepository()
         => new(_configuration, NullLogger<LibraryRepository>.Instance);
 
@@ -217,6 +449,25 @@ SET status='processing', lease_until_utc=@expired, next_attempt_utc=@expired
 WHERE id=@id;";
         command.Parameters.AddWithValue("id", jobId);
         command.Parameters.AddWithValue("expired", DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O"));
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private Task SetReconciliationDueAsync()
+        => ExecuteSqlAsync(@"
+UPDATE watchlist_reconciliation_request
+SET next_attempt_utc=@due
+WHERE identifier='leased-list';", ("due", DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O")));
+
+    private async Task ExecuteSqlAsync(string sql, params (string Name, object Value)[] parameters)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        }
         await command.ExecuteNonQueryAsync();
     }
 }

@@ -15,7 +15,8 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
             "Services",
             "WatchlistEngine.cs"));
 
-        Assert.Contains("var cachedCandidatesComplete = cachedCandidates is not null", source, StringComparison.Ordinal);
+        Assert.Contains("PlaylistCandidateContract.IsReusableCache", source, StringComparison.Ordinal);
+        Assert.Contains("existingCandidateCache?.IsComplete == true", source, StringComparison.Ordinal);
         Assert.Contains("if (cachedCandidatesComplete)", source, StringComparison.Ordinal);
         Assert.Contains("cached candidates are incomplete. Refreshing candidates.", source, StringComparison.Ordinal);
         Assert.Contains("FetchPlaylistTrackPageAsync(", source, StringComparison.Ordinal);

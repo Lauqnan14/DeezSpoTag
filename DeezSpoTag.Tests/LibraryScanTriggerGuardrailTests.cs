@@ -28,23 +28,19 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void DownloadOrchestration_RefreshesConfiguredMediaServersAfterVerifiedIngestion()
+    public void DownloadOrchestration_PersistsFinalizationAfterVerifiedIngestion()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
         var ingestionIndex = source.IndexOf(
             "IngestMovedFilesBeforeWatchlistFinalizationAsync(group, summary.ChangedFilePaths",
             StringComparison.Ordinal);
-        var refreshIndex = source.IndexOf(
-            "RefreshConfiguredMediaServersAfterMoveAsync(group, summary.ChangedFilePaths",
-            StringComparison.Ordinal);
-        var watchlistIndex = source.IndexOf(
-            "NotifyWatchlistFinalizedItemsAsync(group, summary.ChangedFilePaths",
+        var outboxIndex = source.IndexOf(
+            "PersistWatchlistFinalizationOutboxAsync(",
             StringComparison.Ordinal);
 
         Assert.True(ingestionIndex >= 0);
-        Assert.True(refreshIndex > ingestionIndex);
-        Assert.True(watchlistIndex > refreshIndex);
-        Assert.Contains("RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
+        Assert.True(outboxIndex > ingestionIndex);
+        Assert.DoesNotContain("RefreshConfiguredMediaServersAfterMoveAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -266,7 +262,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("RunChangedFoldersAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFilesAsync", source, StringComparison.Ordinal);
         Assert.Contains("selection.MissingTracks", source, StringComparison.Ordinal);
-        Assert.Contains("missing_tracks_queued", source, StringComparison.Ordinal);
+        Assert.Contains("WatchlistHistoryStatus.MissingTracksQueued", source, StringComparison.Ordinal);
         Assert.DoesNotContain("candidates.Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc))", source, StringComparison.Ordinal);
     }
 
@@ -314,7 +310,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("IReadOnlyList<string>? finalFilePaths", interfaceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("UpdateFinalDestinationsAsync", moveSource, StringComparison.Ordinal);
-        Assert.Contains("NotifyWatchlistFinalizedItemsAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
+        Assert.Contains("PersistWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
+        Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"), StringComparison.Ordinal);
         Assert.Contains("await _notifier.NotifyFinalizedAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);
     }

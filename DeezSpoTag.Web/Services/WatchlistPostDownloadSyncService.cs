@@ -17,6 +17,7 @@ public sealed record WatchlistPostDownloadSyncHealth(
 
 public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatchlistPostDownloadSyncNotifier
 {
+    private const string PlaylistRefreshTrackId = "__playlist_refresh__";
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
@@ -29,6 +30,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
     private readonly object _healthGate = new();
     private WatchlistPostDownloadSyncHealth _health = new(false, false, null, null, null, null, null, 0, null);
     private DateTimeOffset _lastRepairAttemptUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastOutboxRepairUtc = DateTimeOffset.MinValue;
 
     public WatchlistPostDownloadSyncService(
         IServiceProvider serviceProvider,
@@ -156,6 +158,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
     private async Task ProcessDueJobsAsync(CancellationToken cancellationToken)
     {
+        await RepairMissingFinalizationOutboxAsync(cancellationToken);
+        await ProcessFinalizationOutboxAsync(cancellationToken);
         await RepairIncompleteJobsIfNeededAsync(cancellationToken);
         for (var processed = 0; processed < 100 && IsWatchlistEnabled(); processed++)
         {
@@ -189,6 +193,113 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 CurrentTarget = null
             });
         }
+    }
+
+    private async Task ProcessFinalizationOutboxAsync(CancellationToken cancellationToken)
+    {
+        for (var processed = 0; processed < 100; processed++)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            var outbox = await repository.ClaimDueWatchlistFinalizationOutboxAsync(
+                1,
+                ProcessingLease,
+                _leaseOwner,
+                cancellationToken);
+            var work = outbox.FirstOrDefault();
+            if (work == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var queueRepository = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>();
+                var item = await queueRepository.GetByUuidAsync(work.QueueUuid, cancellationToken);
+                if (item == null)
+                {
+                    await repository.RetryWatchlistFinalizationOutboxAsync(
+                        work.Id,
+                        _leaseOwner,
+                        work.AttemptCount + 1,
+                        DateTimeOffset.UtcNow.AddMinutes(1),
+                        "Queue item is not currently available.",
+                        cancellationToken);
+                    continue;
+                }
+
+                var sent = await scope.ServiceProvider.GetRequiredService<WatchlistFinalizationService>()
+                    .NotifyQueueItemFinalizedAsync(
+                        item,
+                        work.PayloadJson ?? item.PayloadJson,
+                        work.FinalFilePaths,
+                        cancellationToken);
+                if (sent > 0)
+                {
+                    await repository.CompleteWatchlistFinalizationOutboxAsync(work.Id, _leaseOwner, cancellationToken);
+                    continue;
+                }
+
+                await repository.RetryWatchlistFinalizationOutboxAsync(
+                    work.Id,
+                    _leaseOwner,
+                    work.AttemptCount + 1,
+                    DateTimeOffset.UtcNow.AddMinutes(1),
+                    "Finalized files or Watchlist ownership are not verifiable yet.",
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                await repository.RetryWatchlistFinalizationOutboxAsync(
+                    work.Id,
+                    _leaseOwner,
+                    work.AttemptCount + 1,
+                    DateTimeOffset.UtcNow.AddMinutes(1),
+                    ex.Message,
+                    cancellationToken);
+            }
+        }
+    }
+
+    private async Task RepairMissingFinalizationOutboxAsync(CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow - _lastOutboxRepairUtc < TimeSpan.FromMinutes(5))
+        {
+            return;
+        }
+        _lastOutboxRepairUtc = DateTimeOffset.UtcNow;
+
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        var queueRepository = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>();
+        var completedItems = (await queueRepository.GetTasksAsync(cancellationToken: cancellationToken))
+            .Where(item => string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(item.Status, "complete", StringComparison.OrdinalIgnoreCase));
+        foreach (var item in completedItems)
+        {
+            var claims = await repository.GetPlaylistWatchDownloadClaimsAsync(item.QueueUuid, status: null, cancellationToken);
+            if (claims.Count == 0 && !WatchlistFinalizationService.PayloadHasWatchlistContext(item.PayloadJson))
+            {
+                continue;
+            }
+            var paths = DeezSpoTag.Services.Download.Queue.DownloadQueueRepository.GetExistingMaterializedFilePaths(item);
+            if (paths.Count == 0)
+            {
+                continue;
+            }
+            await repository.UpsertWatchlistFinalizationOutboxAsync(
+                item.QueueUuid,
+                item.PayloadJson,
+                paths,
+                cancellationToken);
+        }
+        await repository.DeleteCompletedWatchlistFinalizationOutboxOlderThanAsync(
+            DateTimeOffset.UtcNow.AddDays(-30),
+            cancellationToken);
     }
 
     private async Task RepairIncompleteJobsIfNeededAsync(CancellationToken cancellationToken)
@@ -362,6 +473,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 return SyncAttemptOutcome.Obsolete("The synchronization target is no longer configured.");
             }
             var effectiveRequest = ResolveEffectiveRequest(request, preference);
+            var isPlaylistRefresh = string.Equals(request.TrackId, PlaylistRefreshTrackId, StringComparison.Ordinal);
 
             if (await repository.HasWatchlistReconciliationRequestAsync(
                     "playlist",
@@ -388,7 +500,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 _coordinatorSignal.Request();
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
-            if (!candidates.Any(candidate => string.Equals(
+            if (!isPlaylistRefresh && !candidates.Any(candidate => string.Equals(
                     candidate.TrackSourceId,
                     request.TrackId,
                     StringComparison.OrdinalIgnoreCase)))
@@ -396,7 +508,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 return SyncAttemptOutcome.Obsolete("The track is no longer present in the monitored source playlist.");
             }
 
-            if (effectiveRequest.DestinationFolderId.HasValue && effectiveRequest.ChangedFilePaths.Count == 0)
+            if (!isPlaylistRefresh
+                && effectiveRequest.DestinationFolderId.HasValue
+                && effectiveRequest.ChangedFilePaths.Count == 0)
             {
                 var repairService = scope.ServiceProvider.GetService<WatchlistFinalizationService>();
                 var repaired = repairService == null
@@ -407,7 +521,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                     : SyncAttemptOutcome.RepairRequired("Finalized download has no recoverable destination file paths.");
             }
 
-            if (!await VerifyLocalLibraryIngestionAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
+            if (!isPlaylistRefresh
+                && !await VerifyLocalLibraryIngestionAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
             {
                 return SyncAttemptOutcome.Retry("Finalized files are not visible in the local library yet.");
             }
@@ -422,7 +537,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 force: false,
                 cancellationToken);
 
-            if (await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, request.TargetService, cancellationToken))
+            if ((isPlaylistRefresh && syncResult.Success)
+                || (!isPlaylistRefresh
+                    && await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, request.TargetService, cancellationToken)))
             {
                 await TransitionPlaylistStateAsync(
                     scope.ServiceProvider,
@@ -726,7 +843,12 @@ public enum WatchlistHistoryStatus
     MediaSyncDeferredQueueActive,
     QueueBudgetReached,
     TrackQueueDeferred,
-    SourceFailure
+    SourceFailure,
+    SkippedAlreadyAvailable,
+    SkippedAlreadyQueued,
+    StaleClaimRecovered,
+    SkippedBlocked,
+    SkippedUnavailableRecheckWindow
 }
 
 public sealed record WatchlistHistoryWrite(
@@ -744,6 +866,7 @@ public sealed class WatchlistHistoryService
 {
     private readonly LibraryRepository _repository;
     private readonly ActivitiesRealtimeService? _activitiesRealtime;
+    private DateTimeOffset _lastPrunedUtc = DateTimeOffset.MinValue;
 
     public WatchlistHistoryService(
         LibraryRepository repository,
@@ -762,21 +885,56 @@ public sealed class WatchlistHistoryService
             throw new ArgumentException("A stable Watchlist item key is required.", nameof(write));
         }
 
-        var entry = await _repository.AddWatchlistHistoryAsync(
-            new WatchlistHistoryInsert(
-                write.Source,
-                write.WatchType,
-                write.SourceId,
-                write.Name,
-                write.CollectionType,
-                Math.Max(0, write.TrackCount),
-                ToPersistedStatus(write.Status),
-                write.ArtistName,
-                write.ItemKey),
-            cancellationToken);
-        if (entry != null)
+        WatchlistHistoryDto? entry;
+        try
         {
-            _activitiesRealtime?.PublishWatchlistHistoryChanged(entry);
+            entry = await _repository.AddWatchlistHistoryAsync(
+                new WatchlistHistoryInsert(
+                    write.Source,
+                    write.WatchType,
+                    write.SourceId,
+                    write.Name,
+                    write.CollectionType,
+                    Math.Max(0, write.TrackCount),
+                    ToPersistedStatus(write.Status),
+                    write.ArtistName,
+                    write.ItemKey),
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // History is an audit projection. It must never become a transaction boundary for
+            // source reconciliation, queue ownership, or post-download synchronization.
+            return null;
+        }
+        try
+        {
+            if (entry != null)
+            {
+                _activitiesRealtime?.PublishWatchlistHistoryChanged(entry);
+            }
+
+            if (DateTimeOffset.UtcNow - _lastPrunedUtc >= TimeSpan.FromHours(24))
+            {
+                await _repository.PruneWatchlistHistoryAsync(
+                    DateTimeOffset.UtcNow.AddDays(-90),
+                    maximumRows: 50_000,
+                    cancellationToken);
+                _lastPrunedUtc = DateTimeOffset.UtcNow;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            // The history row was already persisted; projection notification and retention are
+            // also best-effort and cannot make the calling Watchlist transaction fail.
         }
 
         return entry;
@@ -787,14 +945,6 @@ public sealed class WatchlistHistoryService
 
     public static string ArtistItemKey(long artistId)
         => $"artist:{artistId}";
-
-    public static WatchlistHistoryStatus ParseStatus(string status)
-        => Enum.TryParse<WatchlistHistoryStatus>(
-            string.Concat(status.Split('_', StringSplitOptions.RemoveEmptyEntries).Select(part => char.ToUpperInvariant(part[0]) + part[1..])),
-            ignoreCase: true,
-            out var parsed)
-            ? parsed
-            : throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown Watchlist history status.");
 
     public static string ToPersistedStatus(WatchlistHistoryStatus status)
     {

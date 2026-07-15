@@ -641,6 +641,9 @@ public sealed class WatchlistFinalizationService
         return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
     }
 
+    internal static bool PayloadHasWatchlistContext(string? payloadJson)
+        => TryReadWatchlistTrackContext(payloadJson, out _, out _, out _);
+
     private static bool TryReadWatchlistTrackContext(
         string? payloadJson,
         out string source,
