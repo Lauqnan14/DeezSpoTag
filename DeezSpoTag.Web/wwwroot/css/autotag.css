@@ -1991,6 +1991,18 @@ body.autotag-col-resizing * {
     color: var(--text-muted);
 }
 
+.platform-auth-link {
+    width: fit-content;
+    color: var(--primary-color);
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.platform-auth-link:hover {
+    text-decoration: underline;
+}
+
 .platform-handle {
     display: inline-flex;
     align-items: center;

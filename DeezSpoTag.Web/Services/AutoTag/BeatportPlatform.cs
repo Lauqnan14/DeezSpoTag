@@ -13,7 +13,7 @@ public sealed class BeatportPlatform : AutoTagPlatformBase
             Description = "Overall more specialized in Techno",
             Version = "1.0.0",
             MaxThreads = 0,
-            RequiresAuth = false,
+            RequiresAuth = true,
             SupportedTags = new List<SupportedTag>
             {
                 SupportedTag.Title,

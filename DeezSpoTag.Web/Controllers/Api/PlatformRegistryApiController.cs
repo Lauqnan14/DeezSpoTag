@@ -64,7 +64,8 @@ public class PlatformRegistryApiController : ControllerBase
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
-        BoomplayPlatform
+        BoomplayPlatform,
+        "beatport"
     };
 
     private static readonly Dictionary<string, string> LoginTabMap = new(StringComparer.OrdinalIgnoreCase)
@@ -80,6 +81,7 @@ public class PlatformRegistryApiController : ControllerBase
         [LastFmPlatform] = "lastfm-login",
         [BpmSupremePlatform] = "bpmsupreme-login",
         [BoomplayPlatform] = "boomplay-login",
+        ["beatport"] = "beatport-login",
         ["plex"] = "plex-login",
         ["jellyfin"] = "jellyfin-login",
         [NavidromePlatform] = "navidrome-login"

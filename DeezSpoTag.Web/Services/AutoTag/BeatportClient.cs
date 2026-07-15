@@ -31,14 +31,24 @@ public sealed class BeatportClient
 
     private async Task<T?> SendAsync<T>(string relativeUrl, CancellationToken cancellationToken, bool notFoundReturnsNull = false)
     {
-        for (var attempt = 0; attempt < 2; attempt++)
+        var forceRefresh = false;
+        while (true)
         {
-            var token = await _tokens.GetAccessTokenAsync(forceRefresh: attempt > 0, cancellationToken);
+            var token = await _tokens.GetAccessTokenAsync(forceRefresh, cancellationToken);
             using var request = new HttpRequestMessage(HttpMethod.Get, ApiBase + relativeUrl);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (response.StatusCode == HttpStatusCode.Unauthorized && attempt == 0) continue;
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                if (!forceRefresh)
+                {
+                    forceRefresh = true;
+                    continue;
+                }
+                await _tokens.ClearConnectionAsync();
+                throw new HttpRequestException("Beatport authorization expired; reconnect the provider.", null, response.StatusCode);
+            }
             if (notFoundReturnsNull && response.StatusCode == HttpStatusCode.NotFound) return default;
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
                 throw new HttpRequestException("Beatport rate limit exceeded.", null, response.StatusCode);
@@ -46,7 +56,6 @@ public sealed class BeatportClient
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             return await JsonSerializer.DeserializeAsync<T>(stream, _jsonOptions, cancellationToken);
         }
-        throw new HttpRequestException("Beatport authorization expired; reconnect the provider.", null, HttpStatusCode.Unauthorized);
     }
 
     public static string? GetArt(BeatportRelease release, int artResolution)

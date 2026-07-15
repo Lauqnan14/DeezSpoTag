@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
@@ -67,14 +68,34 @@ public sealed class BeatportTokenService
             auth = (await _authService.LoadAsync()).Beatport ?? auth;
             if (!forceRefresh && !string.IsNullOrWhiteSpace(auth.AccessToken)
                 && auth.ExpiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(1)) return auth.AccessToken;
-            return await ExchangeAndSaveAsync(auth, new Dictionary<string, string>
+            try
             {
-                ["grant_type"] = "refresh_token", ["refresh_token"] = auth.RefreshToken ?? string.Empty,
-                ["client_id"] = auth.ClientId ?? string.Empty
-            }, cancellationToken);
+                return await ExchangeAndSaveAsync(auth, new Dictionary<string, string>
+                {
+                    ["grant_type"] = "refresh_token", ["refresh_token"] = auth.RefreshToken ?? string.Empty,
+                    ["client_id"] = auth.ClientId ?? string.Empty
+                }, cancellationToken);
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode is HttpStatusCode.BadRequest
+                or HttpStatusCode.Unauthorized
+                or HttpStatusCode.Forbidden)
+            {
+                await ClearConnectionAsync();
+                throw new InvalidOperationException("Beatport authorization expired; reconnect the provider.", ex);
+            }
         }
         finally { RefreshLock.Release(); }
     }
+
+    public Task ClearConnectionAsync()
+        => _authService.UpdateAsync(state =>
+        {
+            if (state.Beatport is null) return false;
+            state.Beatport.AccessToken = null;
+            state.Beatport.RefreshToken = null;
+            state.Beatport.ExpiresAtUtc = null;
+            return true;
+        });
 
     private async Task<string> ExchangeAndSaveAsync(BeatportAuth auth, Dictionary<string, string> fields, CancellationToken cancellationToken)
     {

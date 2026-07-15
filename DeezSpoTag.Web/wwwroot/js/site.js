@@ -1973,6 +1973,7 @@ globalThis.DeezSpoTag = {
         this.applyConnectedFlagState(authData.qobuz?.connected === true, connected, platformStates, 'qobuz', 'official-api', 'offline');
         this.applyConnectedFlagState(authData.tidal?.connected === true, connected, platformStates, 'tidal', 'official-api', 'offline');
         this.applyConnectedFlagState(authData.amazonMusic?.connected === true, connected, platformStates, 'amazonmusic', 'session', 'offline');
+        this.applyConnectedFlagState(authData.beatport?.connected === true, connected, platformStates, 'beatport', 'oauth', 'missing');
         this.applyConnectedFlagState(
             authData.soulseek?.connected === true,
             connected,

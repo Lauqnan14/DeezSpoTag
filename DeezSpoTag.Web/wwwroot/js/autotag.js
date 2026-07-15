@@ -1520,7 +1520,7 @@
 
         config.downloadTagSource = normalizeDownloadTagSource(config.downloadTagSource || getDownloadTagSource());
         const seen = new Set();
-        const platforms = [];
+        let platforms = [];
         const sourceList = Array.isArray(config.platforms) ? config.platforms : [];
 
         sourceList.forEach((platform) => {
@@ -1535,6 +1535,10 @@
             seen.add(key);
             platforms.push(normalized);
         });
+
+        if (state.authReady && !isPlatformAuthenticated("beatport")) {
+            platforms = platforms.filter((platformId) => normalizePlatformId(platformId) !== "beatport");
+        }
 
         config.platforms = platforms;
         config.multiplatform = platforms.length > 1;
@@ -2264,6 +2268,13 @@
             description.className = "platform-description";
             description.textContent = platform.description;
             text.appendChild(description);
+        }
+        if (platform.id === "beatport" && platform.requiresAuth && state.authReady && !isPlatformAuthenticated(platform.id)) {
+            const authLink = document.createElement("a");
+            authLink.className = "platform-auth-link";
+            authLink.href = "/Login?tab=beatport-login";
+            authLink.textContent = "Authenticate Beatport";
+            text.appendChild(authLink);
         }
 
         info.appendChild(text);
@@ -3812,6 +3823,9 @@
         }
         if (key === "jellyfin") {
             return Boolean(auth.jellyfin?.url && (auth.jellyfin?.apiKey || auth.jellyfin?.username));
+        }
+        if (key === "beatport") {
+            return auth.beatport?.connected === true;
         }
         return false;
     }

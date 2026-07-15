@@ -163,6 +163,11 @@
                 <img src="/images/icons/navidrome.png" alt="Navidrome" class="platform-icon" />Navidrome
             </button>
         </li>
+        <li class="nav-item">
+            <button class="nav-link" id="beatport-login-tab" data-login-target="beatport-login" type="button" role="tab" aria-selected="false">
+                <img src="/images/icons/beatport.png" alt="Beatport" class="platform-icon" />Beatport
+            </button>
+        </li>
     </ul>
 
     <div class="tab-content" id="platformLoginTabsContent" hidden>
@@ -653,6 +658,41 @@
                     </form>
                 </div>
                 @await Html.PartialAsync("~/Views/Shared/_PlatformLoginStatusCard.cshtml", new PlatformLoginStatusCardModel { ContainerId = "navidromeLoggedInInfo", ImageAlt = "Navidrome", ImageSrc = "/images/icons/navidrome.png", ImageCssClass = "h-20 w-20", ButtonId = "navidromeDisconnectBtn", NameId = "navidromeLoggedInName", NameFallback = "Navidrome account" })
+            </div>
+        </div>
+
+        <div class="tab-pane" id="beatport-login" role="tabpanel" hidden>
+            <div class="settings-group">
+                <h3 class="settings-group__header">
+                    <i class="material-icons">library_music</i>Beatport Authentication
+                </h3>
+                <p class="text-muted">
+                    Register the callback URL below with your Beatport API application, save the credentials, then connect your account.
+                </p>
+                <form id="beatportAuthForm" class="space-y-5">
+                    <label class="block mb-4">
+                        <span class="block mb-2">Client ID</span>
+                        <input type="text" id="beatportClientId" placeholder="Beatport Client ID" class="w-full" autocomplete="off" required />
+                    </label>
+                    <label class="block mb-4">
+                        <span class="block mb-2">Client Secret</span>
+                        <input type="password" id="beatportClientSecret" placeholder="Beatport Client Secret" class="w-full" autocomplete="new-password" />
+                    </label>
+                    <label class="block mb-4">
+                        <span class="block mb-2">Redirect URI</span>
+                        <input type="url" id="beatportRedirectUri" class="w-full" required />
+                    </label>
+                    <label class="block mb-4">
+                        <span class="block mb-2">Scope (optional)</span>
+                        <input type="text" id="beatportScope" placeholder="Optional Beatport OAuth scope" class="w-full" autocomplete="off" />
+                    </label>
+                    <div class="flex flex-wrap gap-3">
+                        <button class="btn btn-primary action-btn" type="submit" id="beatportSaveBtn">Save Configuration</button>
+                        <button class="btn btn-primary action-btn" type="button" id="beatportConnectBtn" disabled>Connect</button>
+                        <button class="btn btn-danger action-btn hidden" type="button" id="beatportDisconnectBtn">Disconnect</button>
+                    </div>
+                    <p class="text-muted" id="beatportStatus">Beatport is not configured.</p>
+                </form>
             </div>
         </div>
     </div>
@@ -1521,7 +1561,8 @@ const LOGIN_TAB_PLATFORM_MAP = {
     'boomplay-login': 'boomplay',
     'plex-login': 'plex',
     'jellyfin-login': 'jellyfin',
-    'navidrome-login': 'navidrome'
+    'navidrome-login': 'navidrome',
+    'beatport-login': 'beatport'
 };
 let spotifyConfigRequested = false;
 let spotifyConfigLoadSequence = 0;
@@ -2075,6 +2116,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
     bindPlatformDisconnect('navidromeDisconnectBtn', '/api/platform-auth/navidrome/disconnect', 'navidromeStatus');
 
+    const beatportForm = document.getElementById('beatportAuthForm');
+    if (beatportForm) {
+        beatportForm.addEventListener('submit', async function(event) {
+            event.preventDefault();
+            await saveBeatportConfiguration();
+        });
+    }
+    bindAsyncClick('beatportConnectBtn', connectBeatport);
+    bindAsyncClick('beatportDisconnectBtn', disconnectBeatport);
+
     const spotifyApiCredentialsForm = document.getElementById('spotifyApiCredentialsForm');
     if (spotifyApiCredentialsForm) {
         spotifyApiCredentialsForm.addEventListener('submit', async function(event) {
@@ -2247,7 +2298,8 @@ function getLoginTabFromLocation() {
             boomplay: 'boomplay-login',
             plex: 'plex-login',
             jellyfin: 'jellyfin-login',
-            navidrome: 'navidrome-login'
+            navidrome: 'navidrome-login',
+            beatport: 'beatport-login'
         };
         const normalizedPlatform = platformRaw.replace(/[^a-z]/g, '');
         const mapped = platformMap[normalizedPlatform];
@@ -2580,6 +2632,7 @@ async function loadPlatformAuthState() {
             renderAmazonMusicInfo(data.amazonMusic);
             togglePlatformLoginState('amazonMusic', Boolean(data.amazonMusic.connected));
         }
+        applyBeatportAuthState(data.beatport || {});
     return true;
 }
 
@@ -2848,6 +2901,162 @@ function isQobuzLoggedIn(auth) {
 function isTidalLoggedIn(auth) {
     return auth?.credentialsValid === true;
 }
+
+function defaultBeatportRedirectUri() {
+    return `${window.location.origin}/api/platform-auth/beatport/callback`;
+}
+
+function applyBeatportAuthState(auth) {
+    const clientId = document.getElementById('beatportClientId');
+    const clientSecret = document.getElementById('beatportClientSecret');
+    const redirectUri = document.getElementById('beatportRedirectUri');
+    const scope = document.getElementById('beatportScope');
+    const connectButton = document.getElementById('beatportConnectBtn');
+    const disconnectButton = document.getElementById('beatportDisconnectBtn');
+    const status = document.getElementById('beatportStatus');
+    if (!clientId || !clientSecret || !redirectUri || !scope || !connectButton || !disconnectButton || !status) {
+        return;
+    }
+
+    clientId.value = auth?.clientId || '';
+    clientSecret.value = '';
+    clientSecret.placeholder = auth?.clientSecretSaved
+        ? 'Saved - leave blank to keep current secret'
+        : 'Beatport Client Secret';
+    redirectUri.value = auth?.redirectUri || defaultBeatportRedirectUri();
+    scope.value = auth?.scope || '';
+
+    const configured = auth?.configured === true;
+    const connected = auth?.connected === true;
+    connectButton.disabled = !configured;
+    connectButton.textContent = connected ? 'Reconnect' : 'Connect';
+    disconnectButton.classList.toggle('hidden', !connected);
+
+    if (connected) {
+        const expiry = auth?.expiresAtUtc ? new Date(auth.expiresAtUtc) : null;
+        const expiryText = expiry && !Number.isNaN(expiry.getTime())
+            ? ` Access token expires ${expiry.toLocaleString()}; it will refresh automatically.`
+            : '';
+        status.textContent = `Beatport is connected.${expiryText}`;
+    } else if (configured) {
+        status.textContent = 'Configuration saved. Connect Beatport to authorize AutoTag access.';
+    } else {
+        status.textContent = 'Beatport is not configured.';
+    }
+}
+
+async function refreshBeatportAuthState() {
+    const response = await fetch('/api/platform-auth', {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) {
+        throw new Error(await getApiErrorMessage(response, 'Failed to refresh Beatport authentication state'));
+    }
+    const data = await response.json();
+    applyBeatportAuthState(data?.beatport || {});
+    return data?.beatport || {};
+}
+
+async function saveBeatportConfiguration() {
+    const saveButton = document.getElementById('beatportSaveBtn');
+    const payload = {
+        clientId: document.getElementById('beatportClientId')?.value.trim() || '',
+        clientSecret: document.getElementById('beatportClientSecret')?.value.trim() || '',
+        redirectUri: document.getElementById('beatportRedirectUri')?.value.trim() || defaultBeatportRedirectUri(),
+        scope: document.getElementById('beatportScope')?.value.trim() || ''
+    };
+    if (!payload.clientId || !payload.redirectUri) {
+        showToast('Beatport Client ID and Redirect URI are required.', 'error');
+        return;
+    }
+
+    try {
+        if (saveButton) saveButton.disabled = true;
+        const response = await fetch('/api/platform-auth/beatport/configure', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+            throw new Error(await getApiErrorMessage(response, 'Failed to save Beatport configuration'));
+        }
+        await refreshBeatportAuthState();
+        refreshConnectedPlatformsSidebar();
+        showToast('Beatport configuration saved', 'success');
+    } catch (error) {
+        console.error('Beatport configuration error:', error);
+        showToast(error.message || 'Failed to save Beatport configuration', 'error');
+    } finally {
+        if (saveButton) saveButton.disabled = false;
+    }
+}
+
+async function connectBeatport() {
+    const popup = window.open('', 'beatport-oauth', 'width=720,height=820,resizable=yes,scrollbars=yes');
+    if (!popup) {
+        showToast('Allow popups to connect Beatport.', 'error');
+        return;
+    }
+    popup.document.title = 'Connecting Beatport';
+    popup.document.body.textContent = 'Preparing Beatport authorization...';
+
+    try {
+        const response = await fetch('/api/platform-auth/beatport/connect', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            throw new Error(await getApiErrorMessage(response, 'Failed to start Beatport authorization'));
+        }
+        const data = await response.json();
+        if (!data?.authorizationUrl) {
+            throw new Error('Beatport returned no authorization URL.');
+        }
+        popup.location.replace(data.authorizationUrl);
+    } catch (error) {
+        popup.close();
+        console.error('Beatport connect error:', error);
+        showToast(error.message || 'Failed to start Beatport authorization', 'error');
+    }
+}
+
+async function disconnectBeatport() {
+    try {
+        const response = await fetch('/api/platform-auth/beatport', {
+            method: 'DELETE',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/json' }
+        });
+        if (!response.ok) {
+            throw new Error(await getApiErrorMessage(response, 'Failed to disconnect Beatport'));
+        }
+        await refreshBeatportAuthState();
+        refreshConnectedPlatformsSidebar();
+        showToast('Beatport disconnected', 'success');
+    } catch (error) {
+        console.error('Beatport disconnect error:', error);
+        showToast(error.message || 'Failed to disconnect Beatport', 'error');
+    }
+}
+
+window.addEventListener('message', async event => {
+    if (event.origin !== window.location.origin || event.data?.type !== 'deezspotag:beatport-auth') {
+        return;
+    }
+    try {
+        await refreshBeatportAuthState();
+        refreshConnectedPlatformsSidebar();
+    } catch (error) {
+        console.error('Failed to refresh Beatport state after callback:', error);
+    }
+    showToast(
+        event.data?.message || (event.data?.connected ? 'Beatport connected' : 'Beatport connection failed'),
+        event.data?.connected ? 'success' : 'error');
+});
 
 function clearElementValue(elementId, fallbackValue = '') {
     const el = document.getElementById(elementId);

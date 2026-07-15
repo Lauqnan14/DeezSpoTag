@@ -17,6 +17,14 @@ using DeezSpoTag.Services.Download.Tidal;
 namespace DeezSpoTag.Web.Controllers.Api;
 
 internal sealed record DeezerPlatformStatus(bool Configured, bool Live, string State);
+internal sealed record BeatportPlatformStatus(
+    bool Configured,
+    bool Connected,
+    string? ClientId,
+    bool ClientSecretSaved,
+    string? RedirectUri,
+    string? Scope,
+    DateTimeOffset? ExpiresAtUtc);
 
 public sealed class PlatformAuthApiDependencies
 {
@@ -125,7 +133,8 @@ public class PlatformAuthApiController : ControllerBase
             tidal = ToPublicTidal(state.Tidal),
             amazonMusic = ToPublicAmazonMusic(state.AmazonMusic),
             soulseek = ToPublicSoulseek(state.Soulseek),
-            boomplay = ToPublicBoomplay(state.Boomplay)
+            boomplay = ToPublicBoomplay(state.Boomplay),
+            beatport = ToPublicBeatport(state.Beatport)
         });
     }
 
@@ -881,6 +890,23 @@ public class PlatformAuthApiController : ControllerBase
             apiKey = auth.ApiKey,
             hasApiKey = !string.IsNullOrWhiteSpace(auth.ApiKey)
         };
+    }
+
+    internal static BeatportPlatformStatus ToPublicBeatport(BeatportAuth? auth)
+    {
+        var configured = !string.IsNullOrWhiteSpace(auth?.ClientId)
+            && !string.IsNullOrWhiteSpace(auth.RedirectUri);
+        var connected = !string.IsNullOrWhiteSpace(auth?.RefreshToken)
+            || (!string.IsNullOrWhiteSpace(auth?.AccessToken)
+                && auth.ExpiresAtUtc > DateTimeOffset.UtcNow);
+        return new BeatportPlatformStatus(
+            configured,
+            connected,
+            auth?.ClientId,
+            !string.IsNullOrWhiteSpace(auth?.ClientSecret),
+            auth?.RedirectUri,
+            auth?.Scope,
+            auth?.ExpiresAtUtc);
     }
 
     private static object ToPublicQobuz(QobuzAuth? auth)
