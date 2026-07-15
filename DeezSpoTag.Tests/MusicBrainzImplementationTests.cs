@@ -86,7 +86,6 @@ public sealed class MusicBrainzImplementationTests
         Assert.Contains("SetCustomFrameIfPresent(tag, \"TXXX\", RecordingIdUpperTag", audioTagger, StringComparison.Ordinal);
         Assert.Contains("SetVorbisCommentIf(tag, save.RecordingId, RecordingIdUpperTag", audioTagger, StringComparison.Ordinal);
         Assert.Contains("SetAtlAdditionalFieldIf(file, save.RecordingId, RecordingIdUpperTag", audioTagger, StringComparison.Ordinal);
-        Assert.Contains("Add(\"recordingId\", !string.IsNullOrWhiteSpace(ResolveRecordingId(track)))", audioTagger, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveMetadataValue", audioTagger, StringComparison.Ordinal);
         Assert.Contains("\"recordingId\"", deezerPlatform, StringComparison.Ordinal);
         Assert.Contains("\"artistId\"", deezerPlatform, StringComparison.Ordinal);

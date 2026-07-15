@@ -63,7 +63,6 @@ public sealed class DeezerTrack
             Album = Album.Title,
             ArtHash = Album.Md5Image,
             Url = Link,
-            CatalogNumber = Id.ToString(),
             TrackId = Id.ToString(),
             ReleaseId = Album.Id.ToString(),
             ArtistId = Artist.Id > 0 ? Artist.Id.ToString() : null,
@@ -171,7 +170,6 @@ public sealed class DeezerTrackInfo
     public string? ArtHash { get; set; }
     public string? ArtUrl { get; set; }
     public string Url { get; set; } = "";
-    public string? CatalogNumber { get; set; }
     public string TrackId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
     public string? ArtistId { get; set; }
@@ -194,7 +192,6 @@ public sealed class DeezerTrackInfo
     public List<string> InvolvedPeople { get; set; } = new();
     public string? Source { get; set; }
     public string? SourceId { get; set; }
-    public string? Rating { get; set; }
     public string? UnsyncedLyrics { get; set; }
     public List<string> SyncedLyrics { get; set; } = new();
 }

@@ -457,10 +457,6 @@ public sealed class DeezerMatcher
             track.ReleaseDate = TryParseDate(full.ReleaseDate);
             track.Copyright ??= Normalize(full.Copyright);
             ApplyContributorRoles(track, full.Contributors);
-            if (full.Rank.HasValue && full.Rank.Value > 0)
-            {
-                track.Rating = Math.Clamp((int)Math.Round(full.Rank.Value / 10000d), 0, 10).ToString(CultureInfo.InvariantCulture);
-            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -533,7 +529,6 @@ public sealed class DeezerMatcher
             Album = track.Album?.Title,
             ArtHash = !string.IsNullOrWhiteSpace(track.Album?.Md5Image) ? track.Album.Md5Image : track.Md5Image,
             Url = track.Link,
-            CatalogNumber = track.Id.ToString(),
             TrackId = track.Id.ToString(),
             ReleaseId = track.Album?.Id.ToString() ?? string.Empty,
             ArtistId = track.Artist?.Id > 0 ? track.Artist.Id.ToString(CultureInfo.InvariantCulture) : null,
@@ -547,9 +542,6 @@ public sealed class DeezerMatcher
             Copyright = Normalize(track.Copyright),
             Source = "Deezer",
             SourceId = track.Id.ToString(CultureInfo.InvariantCulture),
-            Rating = track.Rank.HasValue && track.Rank.Value > 0
-                ? Math.Clamp((int)Math.Round(track.Rank.Value / 10000d), 0, 10).ToString(CultureInfo.InvariantCulture)
-                : null
         };
     }
 
@@ -596,7 +588,6 @@ public sealed class DeezerMatcher
         AddOtherIfNotEmpty(other, "copyright", track.Copyright);
         AddOtherIfNotEmpty(other, "source", track.Source);
         AddOtherIfNotEmpty(other, "sourceId", track.SourceId);
-        AddOtherIfNotEmpty(other, "rating", track.Rating);
         AddOtherListIfAny(other, "composer", track.Composers);
         AddOtherListIfAny(other, "involvedPeople", track.InvolvedPeople);
 
@@ -609,7 +600,6 @@ public sealed class DeezerMatcher
             Album = track.Album,
             Art = track.ArtUrl,
             Url = track.Url,
-            CatalogNumber = track.CatalogNumber,
             TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
             RecordingId = track.TrackId,

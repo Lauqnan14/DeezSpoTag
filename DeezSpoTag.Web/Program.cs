@@ -1213,14 +1213,6 @@ public partial class Program
 
     static void RegisterApplicationServices(IServiceCollection services, IConfiguration configuration)
     {
-        services.AddSingleton<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>(sp =>
-        {
-            var env = sp.GetRequiredService<IWebHostEnvironment>();
-            var logger = sp.GetService<ILogger<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>>();
-            var dataRoot = DeezSpoTag.Web.Services.AppDataPaths.GetDataRoot(env);
-            return new DeezSpoTag.Services.Settings.PlatformCapabilitiesStore(dataRoot, logger);
-        });
-
         RegisterAutoTagServices(services);
         RegisterCoreApplicationServices(services, configuration);
         RegisterDeezerServices(services, configuration);
@@ -1301,7 +1293,6 @@ public partial class Program
                 AppleMusicCatalogService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 DownloadLyricsService = sp.GetRequiredService<DeezSpoTag.Services.Download.Utils.LyricsService>(),
                 SettingsService = sp.GetRequiredService<DeezSpoTag.Services.Settings.DeezSpoTagSettingsService>(),
-                CapabilitiesStore = sp.GetRequiredService<DeezSpoTag.Services.Settings.PlatformCapabilitiesStore>(),
                 ServiceScopeFactory = sp.GetRequiredService<IServiceScopeFactory>(),
                 TrackIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Download.Identity.ITrackIdentityResolver>(),
                 PlatformRegistry = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTag.PortedPlatformRegistry>()

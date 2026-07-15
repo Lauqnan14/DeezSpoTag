@@ -65,7 +65,6 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
         ApplyExplicit(track, summary);
         ApplyLabelAndGenres(track, summary);
         ApplyCopyright(track, summary);
-        ApplyAudioFeatures(track, summary);
     }
 
     private static void ApplySpotifyIdentity(Track track, string spotifyId)
@@ -172,53 +171,4 @@ public sealed class SpotifyMetadataResolver : IMetadataResolver
         }
     }
 
-    private static void ApplyAudioFeatures(Track track, SpotifyTrackSummary summary)
-    {
-        if (summary.Danceability.HasValue)
-        {
-            track.Danceability = summary.Danceability;
-        }
-        if (summary.Energy.HasValue)
-        {
-            track.Energy = summary.Energy;
-        }
-        if (summary.Valence.HasValue)
-        {
-            track.Valence = summary.Valence;
-        }
-        if (summary.Acousticness.HasValue)
-        {
-            track.Acousticness = summary.Acousticness;
-        }
-        if (summary.Instrumentalness.HasValue)
-        {
-            track.Instrumentalness = summary.Instrumentalness;
-        }
-        if (summary.Speechiness.HasValue)
-        {
-            track.Speechiness = summary.Speechiness;
-        }
-        if (summary.Loudness.HasValue)
-        {
-            track.Loudness = summary.Loudness;
-        }
-        if (summary.Tempo.HasValue)
-        {
-            track.Tempo = summary.Tempo;
-            track.Bpm = summary.Tempo.Value;
-        }
-        if (summary.TimeSignature.HasValue)
-        {
-            track.TimeSignature = summary.TimeSignature;
-        }
-        if (summary.Liveness.HasValue)
-        {
-            track.Liveness = summary.Liveness;
-        }
-        var mappedKey = SpotifyAudioFeatureMapper.MapKey(summary.Key, summary.Mode);
-        if (!string.IsNullOrWhiteSpace(mappedKey))
-        {
-            track.Key = mappedKey;
-        }
-    }
 }

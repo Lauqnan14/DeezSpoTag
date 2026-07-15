@@ -336,6 +336,11 @@ public sealed class DiscogsMatcher
             TrackNumber = config.TrackNumberInt ? (int?)int.Parse(trackNumber, CultureInfo.InvariantCulture) : null,
             DiscNumber = discNumber,
             TrackTotal = release.Tracks.Count,
+            ReleaseType = AutoTagReleaseCategory.Resolve(
+                null,
+                release.Formats?.SelectMany(format =>
+                    (format.Descriptions ?? new List<string>()).Append(format.Name)),
+                release.Tracks.Count),
             Other = other
         };
     }
@@ -421,6 +426,7 @@ public sealed class DiscogsMatcher
             TrackNumber = track.TrackNumber,
             DiscNumber = track.DiscNumber,
             TrackTotal = track.TrackTotal,
+            ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
             Other = track.Other.ToDictionary(k => k.Key, v => v.Values)
         };
     }
@@ -447,5 +453,6 @@ public sealed class DiscogsTrackInfo
     public int? TrackNumber { get; set; }
     public int? DiscNumber { get; set; }
     public int TrackTotal { get; set; }
+    public string? ReleaseType { get; set; }
     public List<(string Key, List<string> Values)> Other { get; set; } = new();
 }

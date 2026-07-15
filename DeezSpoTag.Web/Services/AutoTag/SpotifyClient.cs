@@ -36,15 +36,6 @@ public sealed class SpotifyClient
             _logger.LogDebug(ex, "Spotify track ISRC hydration failed.");
         }
 
-        try
-        {
-            summaries = await _metadataService.HydrateTrackAudioFeaturesAsync(summaries, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Spotify track audio feature hydration failed.");
-        }
-
         return summaries.Select(ToTrackInfo).ToList();
     }
 
@@ -106,18 +97,7 @@ public sealed class SpotifyClient
             TrackTotal = summary.TrackTotal,
             ReleaseType = summary.ReleaseType,
             Label = summary.Label,
-            Genres = summary.Genres?.ToList() ?? new List<string>(),
-            Danceability = summary.Danceability,
-            Energy = summary.Energy,
-            Valence = summary.Valence,
-            Acousticness = summary.Acousticness,
-            Instrumentalness = summary.Instrumentalness,
-            Speechiness = summary.Speechiness,
-            Loudness = summary.Loudness,
-            Tempo = summary.Tempo,
-            TimeSignature = summary.TimeSignature,
-            Liveness = summary.Liveness,
-            Key = SpotifyAudioFeatureMapper.MapKey(summary.Key, summary.Mode)
+            Genres = summary.Genres?.ToList() ?? new List<string>()
         };
     }
 
@@ -215,17 +195,5 @@ public sealed class SpotifyClient
         {
             track.Genres = summary.Genres.ToList();
         }
-
-        track.Danceability ??= summary.Danceability;
-        track.Energy ??= summary.Energy;
-        track.Valence ??= summary.Valence;
-        track.Acousticness ??= summary.Acousticness;
-        track.Instrumentalness ??= summary.Instrumentalness;
-        track.Speechiness ??= summary.Speechiness;
-        track.Loudness ??= summary.Loudness;
-        track.Tempo ??= summary.Tempo;
-        track.TimeSignature ??= summary.TimeSignature;
-        track.Liveness ??= summary.Liveness;
-        track.Key ??= SpotifyAudioFeatureMapper.MapKey(summary.Key, summary.Mode);
     }
 }

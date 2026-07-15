@@ -110,6 +110,11 @@ public sealed class ItunesMatcher
         {
             other["copyright"] = new List<string> { track.Copyright };
         }
+        if (!string.IsNullOrWhiteSpace(track.TrackId))
+        {
+            other["source"] = new List<string> { "iTunes" };
+            other["sourceId"] = new List<string> { track.TrackId };
+        }
 
         return new AutoTagTrack
         {

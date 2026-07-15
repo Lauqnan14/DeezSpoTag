@@ -3918,20 +3918,6 @@ public sealed class DownloadIntentService
             ApplyIntentStringValue(overwriteExisting, intent.Label, resolvedLabel, value => intent.Label = value);
             ApplyIntentNullableValue(overwriteExisting, intent.Explicit, resolvedExplicit, value => intent.Explicit = value);
 
-            ApplyIntentNullableValue(overwriteExisting, intent.Danceability, summary?.Danceability, value => intent.Danceability = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Energy, summary?.Energy, value => intent.Energy = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Valence, summary?.Valence, value => intent.Valence = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Acousticness, summary?.Acousticness, value => intent.Acousticness = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Instrumentalness, summary?.Instrumentalness, value => intent.Instrumentalness = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Speechiness, summary?.Speechiness, value => intent.Speechiness = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Loudness, summary?.Loudness, value => intent.Loudness = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Tempo, summary?.Tempo, value => intent.Tempo = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.TimeSignature, summary?.TimeSignature, value => intent.TimeSignature = value);
-            ApplyIntentNullableValue(overwriteExisting, intent.Liveness, summary?.Liveness, value => intent.Liveness = value);
-
-            var mappedKey = SpotifyAudioFeatureMapper.MapKey(summary?.Key, summary?.Mode);
-            ApplyIntentStringValue(overwriteExisting, intent.MusicKey, mappedKey, value => intent.MusicKey = value);
-
             var artistIds = summary?.ArtistIds;
             if (overwriteExisting || intent.Genres.Count == 0)
             {

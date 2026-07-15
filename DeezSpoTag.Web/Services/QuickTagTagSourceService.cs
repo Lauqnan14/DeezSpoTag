@@ -1048,21 +1048,9 @@ public sealed class QuickTagTagSourceService
             Genre = genre,
             Label = NullIfEmpty(track.Label),
             Isrc = NullIfEmpty(track.Isrc),
-            Bpm = track.Tempo.HasValue && track.Tempo.Value > 0 ? (int)Math.Round(track.Tempo.Value) : null,
-            Key = NullIfEmpty(SpotifyAudioFeatureMapper.MapKey(track.Key, track.Mode)),
             CoverUrl = NullIfEmpty(track.ImageUrl),
             Url = NullIfEmpty(track.SourceUrl),
-            DurationMs = track.DurationMs.HasValue && track.DurationMs.Value > 0 ? track.DurationMs.Value : null,
-            Danceability = track.Danceability,
-            Energy = track.Energy,
-            Valence = track.Valence,
-            Acousticness = track.Acousticness,
-            Instrumentalness = track.Instrumentalness,
-            Speechiness = track.Speechiness,
-            Loudness = track.Loudness,
-            Tempo = track.Tempo,
-            TimeSignature = track.TimeSignature,
-            Liveness = track.Liveness
+            DurationMs = track.DurationMs.HasValue && track.DurationMs.Value > 0 ? track.DurationMs.Value : null
         };
     }
 

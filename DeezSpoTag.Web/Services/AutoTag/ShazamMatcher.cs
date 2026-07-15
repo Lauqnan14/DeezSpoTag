@@ -7,6 +7,14 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class ShazamMatcher
 {
+    private static readonly HashSet<string> CrossPlatformTagKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SHAZAM_APPLE_MUSIC_URL",
+        "SHAZAM_SPOTIFY_URL",
+        "SHAZAM_DEEZER_URL",
+        "SHAZAM_YOUTUBE_URL"
+    };
+
     private readonly ShazamRecognitionService _recognitionService;
     private readonly ILogger<ShazamMatcher> _logger;
 
@@ -89,7 +97,6 @@ public sealed class ShazamMatcher
             Isrc = recognized.Isrc,
             Url = recognized.Url,
             TrackId = recognized.TrackId,
-            ReleaseId = recognized.TrackId,
             TrackNumber = recognized.TrackNumber,
             DiscNumber = recognized.DiscNumber,
             Explicit = recognized.Explicit,
@@ -371,10 +378,6 @@ public sealed class ShazamMatcher
         AddOtherIfNotEmpty(track, "SHAZAM_LYRICIST", recognized.Lyricist);
         AddOtherIfNotEmpty(track, "SHAZAM_PUBLISHER", recognized.Publisher);
         AddOtherIfNotEmpty(track, "SHAZAM_ALBUM_ADAM_ID", recognized.AlbumAdamId);
-        AddOtherIfNotEmpty(track, "SHAZAM_APPLE_MUSIC_URL", recognized.AppleMusicUrl);
-        AddOtherIfNotEmpty(track, "SHAZAM_SPOTIFY_URL", recognized.SpotifyUrl);
-        AddOtherIfNotEmpty(track, "SHAZAM_YOUTUBE_URL", recognized.YoutubeUrl);
-
         if (recognized.TrackNumber is > 0)
         {
             AddOtherIfNotEmpty(track, "SHAZAM_TRACK_NUMBER", recognized.TrackNumber.Value.ToString(CultureInfo.InvariantCulture));
@@ -403,7 +406,10 @@ public sealed class ShazamMatcher
     {
         foreach (var (key, values) in tags)
         {
-            if (string.IsNullOrWhiteSpace(key) || values == null || values.Count == 0)
+            if (string.IsNullOrWhiteSpace(key)
+                || CrossPlatformTagKeys.Contains(key.Trim())
+                || values == null
+                || values.Count == 0)
             {
                 continue;
             }

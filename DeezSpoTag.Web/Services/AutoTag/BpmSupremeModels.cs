@@ -45,8 +45,7 @@ public sealed class BpmSupremeSong
             ReleaseDate = CreatedAt,
             TrackId = Id.ToString(),
             Mood = DepthAnalysis?.Mood,
-            Url = $"https://app.bpmsupreme.com/d/album/{Id}",
-            CatalogNumber = Id.ToString()
+            Url = $"https://app.bpmsupreme.com/d/album/{Id}"
         };
 
         var output = new List<BpmSupremeTrackInfo> { baseTrack };
@@ -105,5 +104,4 @@ public sealed record BpmSupremeTrackInfo
     public string TrackId { get; init; } = "";
     public string? Mood { get; init; }
     public string Url { get; init; } = "";
-    public string? CatalogNumber { get; init; }
 }

@@ -63,7 +63,6 @@ public sealed class SpotifyPlatform : AutoTagPlatformBase
             SupportedTag.RecordingId,
             SupportedTag.AlbumId,
             SupportedTag.Duration,
-            SupportedTag.BPM,
             SupportedTag.TrackNumber,
             SupportedTag.TrackTotal,
             SupportedTag.ReleaseType,
@@ -73,6 +72,7 @@ public sealed class SpotifyPlatform : AutoTagPlatformBase
             SupportedTag.Genre,
             SupportedTag.Label,
             SupportedTag.Explicit,
+            SupportedTag.Source,
             SupportedTag.UnsyncedLyrics,
             SupportedTag.SyncedLyrics
         };

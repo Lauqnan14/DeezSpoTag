@@ -138,7 +138,7 @@
         { tag: "discNumber", label: "Disc Number" },
         { tag: "duration", label: "Duration" },
         { tag: "trackTotal", label: "Track Total" },
-        { tag: "releaseType", label: "Release Type", tooltip: "Writes RELEASETYPE as album or single." },
+        { tag: "releaseType", label: "Release Type", tooltip: "Writes RELEASETYPE as album, single, EP, or compilation when identified by the metadata provider." },
         { tag: "isrc", label: "ISRC" },
         { tag: "publishDate", label: "Publish Date", tooltip: "Available from Beatport only" },
         { tag: "releaseDate", label: "Release Date" },

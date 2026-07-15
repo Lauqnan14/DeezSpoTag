@@ -23,9 +23,6 @@ public sealed class SpotifyMetadataService
         IReadOnlyList<SpotifyCopyrightInfo>? Copyrights,
         string? CopyrightText,
         int? TrackTotal);
-    private sealed record ParsedAudioFeatureHydration(
-        Dictionary<string, SpotifyAudioFeatures> Cached,
-        Dictionary<string, SpotifyAudioFeatures>? Fetched);
     private sealed record ParsedTrackNumbers(
         int? DurationMs,
         int? TrackNumber,
@@ -130,14 +127,12 @@ public sealed class SpotifyMetadataService
     private const int PlaylistCacheLimit = 256;
     private const int PlaylistTrackCacheLimit = 256;
     private const int LibrespotTrackCacheLimit = 4096;
-    private const int AudioFeatureCacheLimit = 10000;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> PlaylistCache = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> PlaylistMetadataCache = new();
     private static readonly TimeSpan PlaylistTrackCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, PlaylistTrackCache> PlaylistTrackCache = new();
     private static readonly TimeSpan LibrespotTrackCacheTtl = TimeSpan.FromMinutes(10);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTrackSummary Track)> LibrespotTrackCache = new();
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpotifyAudioFeatures> AudioFeatureCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _userAgentLock = new();
     private readonly Random _userAgentRandom = new();
     private readonly string _userAgent;
@@ -174,13 +169,6 @@ public sealed class SpotifyMetadataService
 
         if (parsed.Type == PlaylistType && TryGetPlaylistFromCache(parsed.Id, out var cached))
         {
-            if (cached.TrackList.Count > 0 && cached.TrackList.Any(track => !HasAudioFeatures(track)))
-            {
-                var refreshed = await HydrateTrackMetadataAsync(cached, cancellationToken);
-                CachePlaylist(parsed.Id, refreshed);
-                return refreshed;
-            }
-
             return cached;
         }
 
@@ -347,12 +335,6 @@ public sealed class SpotifyMetadataService
         if (detailHydratedTracks.Count > 0)
         {
             trackList = detailHydratedTracks;
-        }
-
-        var audioHydratedTracks = await HydrateTrackAudioFeaturesAsync(trackList, cancellationToken);
-        if (audioHydratedTracks.Count > 0)
-        {
-            trackList = audioHydratedTracks;
         }
 
         return metadata with { TrackList = trackList };
@@ -1806,104 +1788,6 @@ public sealed class SpotifyMetadataService
         return updated;
     }
 
-    public async Task<List<SpotifyTrackSummary>> HydrateTrackAudioFeaturesAsync(
-        List<SpotifyTrackSummary> tracks,
-        CancellationToken cancellationToken)
-    {
-        if (tracks.Count == 0)
-        {
-            return tracks;
-        }
-
-        var hydration = await LoadAudioFeatureHydrationAsync(tracks, cancellationToken);
-        if (hydration.Cached.Count == 0 && (hydration.Fetched == null || hydration.Fetched.Count == 0))
-        {
-            return tracks;
-        }
-
-        return tracks.Select(track => ApplyAvailableAudioFeatures(track, hydration)).ToList();
-    }
-
-    private static (Dictionary<string, SpotifyAudioFeatures> Cached, List<string> Missing) PartitionTracksByAudioFeatureState(
-        IEnumerable<SpotifyTrackSummary> tracks)
-    {
-        var cached = new Dictionary<string, SpotifyAudioFeatures>(StringComparer.OrdinalIgnoreCase);
-        var missing = new List<string>();
-        foreach (var track in tracks)
-        {
-            if (string.IsNullOrWhiteSpace(track.Id) || HasAudioFeatures(track))
-            {
-                continue;
-            }
-
-            if (AudioFeatureCache.TryGetValue(track.Id, out var existing))
-            {
-                cached[track.Id] = existing;
-            }
-            else
-            {
-                missing.Add(track.Id);
-            }
-        }
-
-        return (cached, missing);
-    }
-
-    private async Task<ParsedAudioFeatureHydration> LoadAudioFeatureHydrationAsync(
-        List<SpotifyTrackSummary> tracks,
-        CancellationToken cancellationToken)
-    {
-        var (cached, missing) = PartitionTracksByAudioFeatureState(tracks);
-        Dictionary<string, SpotifyAudioFeatures>? fetched = null;
-        if (missing.Count > 0)
-        {
-            fetched = await TryFetchAudioFeaturesAsync(missing, cancellationToken);
-        }
-
-        return new ParsedAudioFeatureHydration(cached, fetched);
-    }
-
-    private async Task<Dictionary<string, SpotifyAudioFeatures>?> TryFetchAudioFeaturesAsync(
-        List<string> missing,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var fetched = await FetchAudioFeaturesByIdsAsync(missing, cancellationToken);
-            foreach (var (id, features) in fetched)
-            {
-                AudioFeatureCache[id] = features;
-            }
-            TrimCache(AudioFeatureCache, AudioFeatureCacheLimit);
-
-            return fetched;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Spotify pathfinder audio feature hydration failed.");
-            return null;
-        }
-    }
-
-    private static SpotifyTrackSummary ApplyAvailableAudioFeatures(
-        SpotifyTrackSummary track,
-        ParsedAudioFeatureHydration hydration)
-    {
-        if (string.IsNullOrWhiteSpace(track.Id))
-        {
-            return track;
-        }
-
-        if (hydration.Cached.TryGetValue(track.Id, out var cachedFeatures))
-        {
-            return ApplyAudioFeatures(track, cachedFeatures);
-        }
-
-        return hydration.Fetched != null && hydration.Fetched.TryGetValue(track.Id, out var fetchedFeatures)
-            ? ApplyAudioFeatures(track, fetchedFeatures)
-            : track;
-    }
-
     public async Task<SpotifyAlbumSummary?> FetchAlbumFallbackWithLibrespotAsync(
         string albumId,
         CancellationToken cancellationToken)
@@ -2146,42 +2030,6 @@ public sealed class SpotifyMetadataService
             : tracks;
     }
 
-    private async Task<Dictionary<string, SpotifyAudioFeatures>> FetchAudioFeaturesByIdsAsync(
-        IReadOnlyList<string> trackIds,
-        CancellationToken cancellationToken)
-    {
-        var ids = trackIds
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var results = new Dictionary<string, SpotifyAudioFeatures>(StringComparer.OrdinalIgnoreCase);
-        if (ids.Count == 0)
-        {
-            return results;
-        }
-
-        var fetched = await _pathfinderMetadataClient.FetchTrackAudioFeaturesByIdsAsync(ids, cancellationToken);
-        foreach (var (id, value) in fetched)
-        {
-            results[id] = new SpotifyAudioFeatures(
-                id,
-                value.Danceability,
-                value.Energy,
-                value.Valence,
-                value.Acousticness,
-                value.Instrumentalness,
-                value.Speechiness,
-                value.Loudness,
-                value.Tempo,
-                value.TimeSignature,
-                value.Liveness,
-                value.Key,
-                value.Mode);
-        }
-
-        return results;
-    }
-
     private async Task<List<SpotifyTrackSummary>> HydrateTrackDetailsAsync(
         List<SpotifyTrackSummary> tracks,
         CancellationToken cancellationToken)
@@ -2242,41 +2090,6 @@ public sealed class SpotifyMetadataService
         }
 
         return null;
-    }
-
-    private static SpotifyTrackSummary ApplyAudioFeatures(SpotifyTrackSummary track, SpotifyAudioFeatures features)
-    {
-        return track with
-        {
-            Danceability = track.Danceability ?? features.Danceability,
-            Energy = track.Energy ?? features.Energy,
-            Valence = track.Valence ?? features.Valence,
-            Acousticness = track.Acousticness ?? features.Acousticness,
-            Instrumentalness = track.Instrumentalness ?? features.Instrumentalness,
-            Speechiness = track.Speechiness ?? features.Speechiness,
-            Loudness = track.Loudness ?? features.Loudness,
-            Tempo = track.Tempo ?? features.Tempo,
-            TimeSignature = track.TimeSignature ?? features.TimeSignature,
-            Liveness = track.Liveness ?? features.Liveness,
-            Key = track.Key ?? features.Key,
-            Mode = track.Mode ?? features.Mode
-        };
-    }
-
-    private static bool HasAudioFeatures(SpotifyTrackSummary track)
-    {
-        return track.Danceability.HasValue ||
-               track.Energy.HasValue ||
-               track.Valence.HasValue ||
-               track.Acousticness.HasValue ||
-               track.Instrumentalness.HasValue ||
-               track.Speechiness.HasValue ||
-               track.Loudness.HasValue ||
-               track.Tempo.HasValue ||
-               track.TimeSignature.HasValue ||
-               track.Liveness.HasValue ||
-               track.Key.HasValue ||
-               track.Mode.HasValue;
     }
 
     private async Task<List<SpotifyTrackSummary>> HydrateTrackDetailsWithLibrespotAsync(
@@ -2390,18 +2203,6 @@ public sealed class SpotifyMetadataService
             ArtistIds = PreferNonEmptyList(track.ArtistIds, hydrated.ArtistIds),
             Label = PreferNonEmptyString(track.Label, hydrated.Label),
             Genres = PreferNonEmptyList(track.Genres, hydrated.Genres),
-            Danceability = track.Danceability ?? hydrated.Danceability,
-            Energy = track.Energy ?? hydrated.Energy,
-            Valence = track.Valence ?? hydrated.Valence,
-            Acousticness = track.Acousticness ?? hydrated.Acousticness,
-            Instrumentalness = track.Instrumentalness ?? hydrated.Instrumentalness,
-            Speechiness = track.Speechiness ?? hydrated.Speechiness,
-            Loudness = track.Loudness ?? hydrated.Loudness,
-            Tempo = track.Tempo ?? hydrated.Tempo,
-            TimeSignature = track.TimeSignature ?? hydrated.TimeSignature,
-            Liveness = track.Liveness ?? hydrated.Liveness,
-            Key = track.Key ?? hydrated.Key,
-            Mode = track.Mode ?? hydrated.Mode,
             Popularity = track.Popularity ?? hydrated.Popularity,
             PreviewUrl = PreferNonEmptyString(track.PreviewUrl, hydrated.PreviewUrl),
             HasLyrics = track.HasLyrics ?? hydrated.HasLyrics,
@@ -3714,19 +3515,7 @@ public sealed record SpotifyTrackSummary(
     int? TrackNumber = null,
     int? DiscNumber = null,
     int? TrackTotal = null,
-    bool? Explicit = null,
-    double? Danceability = null,
-    double? Energy = null,
-    double? Valence = null,
-    double? Acousticness = null,
-    double? Instrumentalness = null,
-    double? Speechiness = null,
-    double? Loudness = null,
-    double? Tempo = null,
-    int? TimeSignature = null,
-    double? Liveness = null,
-    int? Key = null,
-    int? Mode = null)
+    bool? Explicit = null)
 {
     public string? AlbumId { get; init; }
     public string? AlbumArtist { get; init; }
@@ -3795,20 +3584,6 @@ public sealed record SpotifyArtistFallbackMetadata(
     public IReadOnlyList<string>? Gallery { get; init; }
 }
 
-internal sealed record SpotifyAudioFeatures(
-    string Id,
-    double? Danceability,
-    double? Energy,
-    double? Valence,
-    double? Acousticness,
-    double? Instrumentalness,
-    double? Speechiness,
-    double? Loudness,
-    double? Tempo,
-    int? TimeSignature,
-    double? Liveness,
-    int? Key,
-    int? Mode);
 
 internal sealed record PlaylistTrackCache(
     DateTimeOffset Stamp,

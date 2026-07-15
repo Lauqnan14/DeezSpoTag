@@ -19,7 +19,7 @@ public sealed class AutoTagAppleIdentityTests
     [Fact]
     public void ItunesPlatform_AdvertisesAppleCatalogAndAtmosMetadataFields()
     {
-        var supported = ItunesPlatform.SharedDownloadParityTags();
+        var supported = ItunesPlatform.AutoTagSupportedTags();
 
         Assert.Contains(SupportedTag.Copyright, supported);
         Assert.Contains(SupportedTag.Composer, supported);

@@ -70,5 +70,5 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public bool? Explicit { get; set; }
     public DateTime? ReleaseDate { get; set; }
     public DateTime? PublishDate { get; set; }
-    public Dictionary<string, List<string>> Other { get; set; } = new();
+    public Dictionary<string, List<string>> Other { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

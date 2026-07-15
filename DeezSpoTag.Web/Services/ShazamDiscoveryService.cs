@@ -992,10 +992,6 @@ public sealed partial class ShazamDiscoveryService
         AddTagValue(tags, "SHAZAM_TITLE", context.Title);
         AddTagValue(tags, "SHAZAM_ARTIST", context.Artist);
         AddTagValue(tags, "SHAZAM_URL", context.ShazamUrl);
-        AddTagValue(tags, "SHAZAM_APPLE_MUSIC_URL", context.AppleMusicUrl);
-        AddTagValue(tags, "SHAZAM_SPOTIFY_URL", context.SpotifyUrl);
-        AddTagValues(tags, "SHAZAM_DEEZER_URL", context.DeezerUrls);
-        AddTagValue(tags, "SHAZAM_DEEZER_URL", context.DeezerUrl);
         AddTagValue(tags, "SHAZAM_ALBUM", context.Album);
         AddTagValue(tags, "SHAZAM_GENRE", context.Genre);
         AddTagValue(tags, "SHAZAM_LABEL", context.Label);

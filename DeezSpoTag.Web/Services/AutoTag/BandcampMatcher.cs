@@ -70,6 +70,7 @@ public sealed class BandcampMatcher
             TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
             TrackTotal = track.TrackTotal,
+            ReleaseType = AutoTagReleaseCategory.Resolve(null, track.TrackTotal),
             ReleaseDate = track.ReleaseDate
         };
     }

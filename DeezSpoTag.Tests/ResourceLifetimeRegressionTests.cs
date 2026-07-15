@@ -218,7 +218,6 @@ public sealed class ResourceLifetimeRegressionTests
         Assert.Contains("MaxShowCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxShowEpisodeCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("_jobMatchCaches.TryRemove(jobId, out _);", localAutoTagRunner, StringComparison.Ordinal);
-        Assert.Contains("AudioFeatureCacheLimit", spotifyMetadata, StringComparison.Ordinal);
         Assert.Contains("PlaylistTrackCacheLimit", spotifyMetadata, StringComparison.Ordinal);
         Assert.Contains("CacheLimit", spotifyArtwork, StringComparison.Ordinal);
         Assert.Contains("SnapshotCacheLimit", spotifyTracklist, StringComparison.Ordinal);

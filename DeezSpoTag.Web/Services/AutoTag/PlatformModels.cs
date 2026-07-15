@@ -60,7 +60,11 @@ public enum SupportedTag
     ISRC,
     Copyright,
     Composer,
-    InvolvedPeople
+    InvolvedPeople,
+    ReplayGain,
+    Source,
+    Rating,
+    Language
 }
 
 public sealed class PlatformInfo

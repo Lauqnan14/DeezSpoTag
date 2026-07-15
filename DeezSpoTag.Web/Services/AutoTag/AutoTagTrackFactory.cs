@@ -16,6 +16,7 @@ internal static class AutoTagTrackFactory
         public string? Url { get; init; }
         public string? Label { get; init; }
         public string? CatalogNumber { get; init; }
+        public string? TrackId { get; init; }
         public string? ReleaseId { get; init; }
         public TimeSpan? Duration { get; init; }
         public int? TrackNumber { get; init; }
@@ -39,6 +40,7 @@ internal static class AutoTagTrackFactory
             Url = input.Url,
             Label = input.Label,
             CatalogNumber = input.CatalogNumber,
+            TrackId = input.TrackId,
             ReleaseId = input.ReleaseId,
             Duration = input.Duration,
             TrackNumber = input.TrackNumber,
@@ -80,6 +82,7 @@ internal static class AutoTagTrackFactory
             Url = track.Url,
             Label = track.Label,
             CatalogNumber = track.CatalogNumber,
+            TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
             Duration = track.Duration,
             TrackNumber = track.TrackNumber,

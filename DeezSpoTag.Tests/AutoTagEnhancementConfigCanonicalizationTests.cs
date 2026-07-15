@@ -423,21 +423,18 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     }
 
     [Fact]
-    public void EnhancementActivities_ExposeSectionAndFortyFileBatchProgress()
+    public void EnhancementActivities_ExposeMetadataAndFortyFileBatchProgress()
     {
         var repoRoot = ResolveRepoRoot();
         var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml"));
         var autoTagViewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
-        var statusScript = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
         var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
         var orchestrationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
 
         Assert.Contains("autotag-enhancement-feature", viewSource, StringComparison.Ordinal);
         Assert.Contains("autotag-current-batch", viewSource, StringComparison.Ordinal);
-        Assert.Contains("autotag-live-status-table", viewSource, StringComparison.Ordinal);
         Assert.Contains("runAllEnhancementWorkflows", autoTagViewSource, StringComparison.Ordinal);
-        Assert.Contains("renderLiveBatchStatus", statusScript, StringComparison.Ordinal);
         Assert.Contains("EnhancementGroupId", serviceSource, StringComparison.Ordinal);
         Assert.Contains("private const int EnhancementBatchSize = 40", workflowSource, StringComparison.Ordinal);
         Assert.Contains("GetEnabledEnhancementFeatures", orchestrationSource, StringComparison.Ordinal);

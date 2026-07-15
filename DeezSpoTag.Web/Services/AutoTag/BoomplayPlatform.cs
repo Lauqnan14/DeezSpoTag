@@ -34,7 +34,9 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 "language",
                 "source",
                 "url",
-                "trackId"
+                "trackId",
+                "releaseId",
+                "albumId"
             },
             SupportedTags = new List<SupportedTag>
             {
@@ -45,6 +47,8 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 SupportedTag.AlbumArt,
                 SupportedTag.URL,
                 SupportedTag.TrackId,
+                SupportedTag.ReleaseId,
+                SupportedTag.AlbumId,
                 SupportedTag.Duration,
                 SupportedTag.TrackNumber,
                 SupportedTag.DiscNumber,
@@ -55,7 +59,10 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 SupportedTag.Activity,
                 SupportedTag.Label,
                 SupportedTag.BPM,
-                SupportedTag.Key
+                SupportedTag.Key,
+                SupportedTag.Composer,
+                SupportedTag.Language,
+                SupportedTag.Source
             },
             CustomOptions = new PlatformCustomOptions
             {

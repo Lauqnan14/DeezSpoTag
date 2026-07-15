@@ -43,8 +43,6 @@ public static class DownloadServiceExtensions
         services.AddSingleton<DeezSpoTagSettingsService>();
         services.AddSingleton<ISettingsService>(sp => sp.GetRequiredService<DeezSpoTagSettingsService>());
         services.AddSingleton<IDeezSpoTagListener, DeezSpoTagListener>();
-        services.AddSingleton<PlatformCapabilitiesStore>();
-
         // Core download services (Deezer engine removed)
         services.AddSingleton<Queue.DownloadCancellationRegistry>();
         services.AddSingleton<IActivityLogWriter, NullActivityLogWriter>();

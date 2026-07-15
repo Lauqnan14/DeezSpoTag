@@ -2985,16 +2985,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     DiscNumber = track.DiscNumber ?? 0,
                     TrackTotal = track.TrackTotal ?? 0,
                     Explicit = track.Explicit,
-                    Danceability = track.Danceability,
-                    Energy = track.Energy,
-                    Valence = track.Valence,
-                    Acousticness = track.Acousticness,
-                    Instrumentalness = track.Instrumentalness,
-                    Speechiness = track.Speechiness,
-                    Loudness = track.Loudness,
-                    Tempo = track.Tempo,
-                    TimeSignature = track.TimeSignature,
-                    Liveness = track.Liveness,
                     Label = track.Label ?? string.Empty,
                     Genres = track.Genres?
                         .Where(static genre => !string.IsNullOrWhiteSpace(genre))

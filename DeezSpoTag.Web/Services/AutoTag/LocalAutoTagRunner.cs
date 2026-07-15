@@ -377,7 +377,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private readonly AppleMusicCatalogService _appleMusicCatalogService;
     private readonly DownloadLyricsService _downloadLyricsService;
     private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly PlatformCapabilitiesStore _capabilitiesStore;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly PortedPlatformRegistry? _platformRegistry;
@@ -413,7 +412,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         _appleMusicCatalogService = collaborators.AppleMusicCatalogService;
         _downloadLyricsService = collaborators.DownloadLyricsService;
         _settingsService = collaborators.SettingsService;
-        _capabilitiesStore = collaborators.CapabilitiesStore;
         _serviceScopeFactory = collaborators.ServiceScopeFactory;
         _trackIdentityResolver = collaborators.TrackIdentityResolver;
         _platformRegistry = collaborators.PlatformRegistry;
@@ -1083,8 +1081,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         info.Artist = FirstNonEmpty(resolution.Artist, info.Artist) ?? info.Artist;
         info.Album = FirstNonEmpty(resolution.Album, info.Album);
         info.Isrc = FirstNonEmpty(resolution.Isrc, info.Isrc);
-        AddResolvedIdentity(info, "SPOTIFY_TRACK_ID", resolution.SpotifyId);
-        AddResolvedIdentity(info, SpotifyUrlTag, resolution.SpotifyUrl);
+        var spotifyUrl = FirstNonEmpty(
+            NormalizeSpotifyTrackUrl(resolution.SpotifyUrl),
+            NormalizeSpotifyTrackUrl(AutoTagTagValueReader.ReadFirstTagValue(info, "SHAZAM_SPOTIFY_URL")),
+            NormalizeSpotifyTrackUrl(resolution.SpotifyId));
+        var spotifyId = FirstNonEmpty(resolution.SpotifyId, ExtractSpotifyTrackIdFromTags(info.Tags));
+        AddResolvedIdentity(info, SpotifyTrackIdTag, spotifyId);
+        AddResolvedIdentity(info, SpotifyUrlTag, spotifyUrl);
         AddResolvedIdentity(info, DeezerTrackIdTag, resolution.DeezerId);
         AddResolvedIdentity(info, "DEEZER_URL", resolution.DeezerUrl);
         AddResolvedIdentity(info, "ITUNES_TRACK_ID", resolution.AppleId);
@@ -1365,7 +1368,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context.Plan.Config,
                     context.Plan.Settings,
                     stepToken));
-            ApplyResolvedIdentityTagsToTrack(info, match.Track);
             if (!isManualEnrichment || context.Plan.AttemptedAppleExtras.Add(context.FileIndex))
             {
                 await RunBoundedOptionalStepAsync(
@@ -1428,31 +1430,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             _logger.LogWarning(ex, "AutoTag failed for {File} on {Platform}", SanitizeLogValue(context.File), SanitizeLogValue(context.Platform));
             EmitErrorStatus(context, ex.Message, usedShazamForStatus, "provider_error", tagPlan, match);
-        }
-    }
-
-    private static void ApplyResolvedIdentityTagsToTrack(AutoTagAudioInfo identity, AutoTagTrack track)
-    {
-        foreach (var key in new[]
-                 {
-                     SpotifyTrackIdTag,
-                     SpotifyUrlTag,
-                     DeezerTrackIdTag,
-                     "DEEZER_URL",
-                     AutoTagIdentityTags.AppleTrackId,
-                     AutoTagIdentityTags.ItunesTrackId,
-                     AutoTagIdentityTags.AppleMusicTrackId,
-                     "APPLE_MUSIC_URL",
-                     "QOBUZ_TRACK_ID",
-                     "TIDAL_TRACK_ID",
-                     "AMAZON_TRACK_ID"
-                 })
-        {
-            var value = AutoTagTagValueReader.ReadFirstTagValue(identity, key);
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                track.Other[key] = [value];
-            }
         }
     }
 
@@ -2536,13 +2513,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         DeezSpoTagSettings settings,
         CancellationToken token)
     {
-        var request = BuildLyricsPopulationRequest(filePath, track, config, settings);
+        var provider = NormalizeLyricsLookupSource(platform.Trim().ToLowerInvariant());
+        if (provider is not AppleProvider and not DeezerPlatform and not SpotifyPlatform and not LrclibProvider and not "musixmatch")
+        {
+            return;
+        }
+
+        var request = RestrictLyricsRequestToProvider(
+            BuildLyricsPopulationRequest(filePath, track, config, settings),
+            provider);
         if (!request.ShouldFetch)
         {
             return;
         }
 
-        var platformId = platform.Trim().ToLowerInvariant();
         if (request.HasAllRequestedLyrics())
         {
             return;
@@ -2555,12 +2539,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        var lookupTrack = BuildLyricsLookupTrack(track, platformId);
+        var lookupTrack = BuildLyricsLookupTrack(track, provider);
         var lookupSettings = BuildLyricsLookupSettings(
             settings,
             request.WantsSynced,
             request.WantsUnsynced,
             request.WantsTtml);
+        lookupSettings.LyricsFallbackEnabled = true;
+        lookupSettings.LyricsFallbackOrder = provider;
         var providerOptions = BuildLyricsProviderOptions(config.Custom);
         LyricsBase? lyrics = null;
         try
@@ -2575,7 +2561,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug(ex, "Lyrics resolution failed for platform {Platform} and track {Title}.", SanitizeLogValue(platformId), SanitizeLogValue(track.Title));
+                _logger.LogDebug(ex, "Lyrics resolution failed for platform {Platform} and track {Title}.", SanitizeLogValue(provider), SanitizeLogValue(track.Title));
             }
             return;
         }
@@ -2586,6 +2572,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         ApplyResolvedLyrics(track, lyrics, request);
+    }
+
+    private static LyricsPopulationRequest RestrictLyricsRequestToProvider(
+        LyricsPopulationRequest request,
+        string provider)
+    {
+        var supportsTtml = string.Equals(provider, AppleProvider, StringComparison.OrdinalIgnoreCase);
+        return request with { WantsTtml = request.WantsTtml && supportsTtml };
     }
 
     private async Task<TrackIdentityResolution?> ResolveAppleIdentityForExtrasAsync(
@@ -3428,54 +3422,27 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string provider,
         AutoTagAudioInfo sourceInfo)
     {
-        if (match.Track.Other == null)
-        {
-            match.Track.Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        }
+        match.Track.Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
         match.Track.Other["SHAZAM_MATCH_STRATEGY"] = new List<string> { "ID_FIRST" };
         match.Track.Other["SHAZAM_MATCH_PROVIDER"] = new List<string> { provider.ToUpperInvariant() };
         match.MatchStrategy = "id_first";
 
-        if (provider.Equals(DeezerPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            AddOtherIfMissing(match.Track, DeezerTrackIdTag, match.Track.TrackId);
-            AddOtherIfMissing(match.Track, "DEEZER_RELEASE_ID", match.Track.ReleaseId);
-        }
-        else if (provider.Equals(SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
-        {
-            AddOtherIfMissing(match.Track, SpotifyTrackIdTag, match.Track.TrackId);
-            AddOtherIfMissing(match.Track, "SPOTIFY_RELEASE_ID", match.Track.ReleaseId);
-        }
-
         var shazamTrackId = ReadFirstTagValue(sourceInfo.Tags, "SHAZAM_TRACK_ID", "SHAZAM_TRACK_KEY");
+        var shazamUrl = ReadFirstTagValue(sourceInfo.Tags, "SHAZAM_URL");
+        match.Track.Url = string.IsNullOrWhiteSpace(shazamUrl) ? null : shazamUrl.Trim();
+        match.Track.ReleaseId = null;
         if (string.IsNullOrWhiteSpace(shazamTrackId))
         {
             match.Track.TrackId = null;
-            match.Track.ReleaseId = null;
         }
         else
         {
-            match.Track.TrackId = shazamTrackId;
-            match.Track.ReleaseId = shazamTrackId;
+            match.Track.TrackId = shazamTrackId.Trim();
+            match.Track.Other["SHAZAM_TRACK_ID"] = [match.Track.TrackId];
         }
 
         return match;
-    }
-
-    private static void AddOtherIfMissing(AutoTagTrack track, string key, string? value)
-    {
-        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        if (track.Other.ContainsKey(key))
-        {
-            return;
-        }
-
-        track.Other[key] = new List<string> { value.Trim() };
     }
 
     private static bool HasTagValue(AutoTagAudioInfo info, params string[] keys)
@@ -4191,7 +4158,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AddTagIfAny(tags, DeezerTrackIdTag, ReadRawTagValuesAny(file, extension, DeezerTrackIdTag, "DEEZERID", "DEEZER_ID"));
         AddTagIfAny(tags, "DEEZER_RELEASE_ID", ReadRawTagValuesAny(file, extension, "DEEZER_RELEASE_ID"));
         AddTagIfAny(tags, SpotifyTrackIdTag, ReadRawTagValuesAny(file, extension, SpotifyTrackIdTag, SpotifyTrackIdLegacyTag, SpotifyIdLegacyTag, SpotifyIdUnderscoreLegacyTag));
-        AddTagIfAny(tags, SpotifyUrlTag, ReadRawTagValuesAny(file, extension, SpotifyUrlTag, "SPOTIFYURI", "SPOTIFY_URI", "URL", WwwAudioFileTag));
+        AddTagIfAny(tags, SpotifyUrlTag, NormalizeSpotifyTrackUrls(ReadRawTagValuesAny(file, extension, SpotifyUrlTag, "SPOTIFYURI", "SPOTIFY_URI")));
+        AddTagIfAny(tags, "URL", ReadRawTagValuesAny(file, extension, "URL"));
+        AddTagIfAny(tags, WwwAudioFileTag, ReadRawTagValuesAny(file, extension, WwwAudioFileTag));
         AddTagIfAny(tags, "MUSICBRAINZ_RECORDING_ID", ReadRawTagValuesAny(file, extension, "MUSICBRAINZ_RECORDING_ID", "MUSICBRAINZ_RECORDINGID", "MUSICBRAINZ_TRACK_ID", "MUSICBRAINZ_TRACKID"));
         AddTagIfAny(tags, RecordingIdRawTag, ReadRawTagValuesAny(file, extension, RecordingIdRawTag));
         AddTagIfAny(tags, ArtistIdRawTag, ReadRawTagValuesAny(file, extension, ArtistIdRawTag));
@@ -4206,6 +4175,40 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             AddTagIfAny(tags, shazamTag, ReadRawTagValuesAny(file, extension, shazamTag));
         }
+    }
+
+    private static List<string> NormalizeSpotifyTrackUrls(IEnumerable<string> values)
+    {
+        return values
+            .Select(NormalizeSpotifyTrackUrl)
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? NormalizeSpotifyTrackUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        string? trackId = null;
+        if (SpotifyMetadataService.TryParseSpotifyUrl(trimmed, out var type, out var parsedId)
+            && type.Equals("track", StringComparison.OrdinalIgnoreCase))
+        {
+            trackId = parsedId;
+        }
+        else if (IsSpotifyTrackId(trimmed))
+        {
+            trackId = trimmed;
+        }
+
+        return IsSpotifyTrackId(trackId)
+            ? $"https://open.spotify.com/track/{trackId}"
+            : null;
     }
 
     private static void ApplyDraftTagFallbacks(AudioInfoDraft draft)
@@ -4845,7 +4848,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         CancellationToken token)
     {
         EnsureReleaseCategory(track);
-        UpdateAutoTagCapabilities(platformId, track);
         var separator = ResolveSeparatorForFormat(config, Path.GetExtension(filePath));
         var effectiveTagSettings = ApplyOverwriteRules(filePath, tagSettings, config, platformId, track, settings);
         NormalizeTrackArtistsForTagging(track, effectiveTagSettings.SingleAlbumArtist);
@@ -5547,7 +5549,31 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        SetRaw(tagWriteContext, WwwAudioFileTag, SupportedTag.URL, new List<string> { context.SourceTrack.Url });
+        var url = context.SourceTrack.Url;
+        if (string.Equals(context.PlatformId, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            url = NormalizeSpotifyTrackUrl(url);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return;
+            }
+        }
+
+        SetRaw(tagWriteContext, WwwAudioFileTag, SupportedTag.URL, new List<string> { url });
+
+        if (!string.Equals(context.PlatformId, SpotifyPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var existingSpotifyUrls = ReadRawTagValues(tagWriteContext.File, context.Extension, SpotifyUrlTag);
+        var shouldWriteSpotifyUrl = ShouldOverwriteTag(context.Config, SupportedTag.URL)
+            || existingSpotifyUrls.Count == 0
+            || existingSpotifyUrls.Any(existing => NormalizeSpotifyTrackUrl(existing) == null);
+        if (shouldWriteSpotifyUrl)
+        {
+            SetRaw(tagWriteContext, SpotifyUrlTag, SupportedTag.URL, new List<string> { url }, force: true);
+        }
     }
 
     private static void WriteTrackIdTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -6632,7 +6658,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             [MediaTag] = SupportedTag.Media,
             [CopyrightTag] = SupportedTag.Copyright,
             [ComposerTag] = SupportedTag.Composer,
-            [InvolvedPeopleTag] = SupportedTag.InvolvedPeople
+            [InvolvedPeopleTag] = SupportedTag.InvolvedPeople,
+            [ReplayGainTag] = SupportedTag.ReplayGain,
+            [SourceTag] = SupportedTag.Source,
+            [RatingTag] = SupportedTag.Rating,
+            [LanguageTag] = SupportedTag.Language
         };
 
         SupportedTagFeatureMappings.AddAudioFeatureTags(map);
@@ -6692,28 +6722,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return ", ";
     }
 
-    private void UpdateAutoTagCapabilities(string platformId, AutoTagTrack track)
-    {
-        if (string.IsNullOrWhiteSpace(platformId))
-        {
-            return;
-        }
-
-        try
-        {
-            var tags = CollectAutoTagTags(track);
-            if (tags.Count == 0)
-            {
-                return;
-            }
-            _capabilitiesStore.RecordAutoTagTags(platformId, tags);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed updating AutoTag capabilities.");
-        }
-    }
-
     private static List<string> CollectAutoTagTags(AutoTagTrack track)
     {
         var tags = new List<string>();
@@ -6749,6 +6757,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         add(LabelTag, !string.IsNullOrWhiteSpace(track.Label));
         add(ReleaseIdTag, !string.IsNullOrWhiteSpace(track.ReleaseId));
         add(TrackIdTag, !string.IsNullOrWhiteSpace(track.TrackId));
+        add(RecordingIdTag, !string.IsNullOrWhiteSpace(track.RecordingId));
+        add(ArtistIdTag, !string.IsNullOrWhiteSpace(track.ArtistId));
+        add(AlbumArtistIdTag, !string.IsNullOrWhiteSpace(track.AlbumArtistId));
+        add(ReleaseGroupIdTag, !string.IsNullOrWhiteSpace(track.ReleaseGroupId));
+        add(AlbumIdTag, !string.IsNullOrWhiteSpace(track.AlbumId));
+        add(ReleaseStatusTag, !string.IsNullOrWhiteSpace(track.ReleaseStatus));
+        add(ReleaseCountryTag, !string.IsNullOrWhiteSpace(track.ReleaseCountry));
+        add(BarcodeTag, !string.IsNullOrWhiteSpace(track.Barcode));
+        add(MediaTag, track.Media.Count > 0);
     }
 
     private static void AddAutoTagFeatureTags(AutoTagTrack track, Action<string, bool> add)
@@ -6931,6 +6948,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Copyright => TagRawProbe.HasId3Raw(tag, CopyrightRawTag),
             SupportedTag.Composer => TagRawProbe.HasId3Raw(tag, "TCOM"),
             SupportedTag.InvolvedPeople => TagRawProbe.HasId3Raw(tag, InvolvedPeopleRawTag),
+            SupportedTag.ReplayGain => TagRawProbe.HasId3Raw(tag, ReplayGainRawTag),
+            SupportedTag.Source => TagRawProbe.HasId3Raw(tag, SourceRawTag),
+            SupportedTag.Rating => TagRawProbe.HasId3Raw(tag, RatingRawTag),
+            SupportedTag.Language => TagRawProbe.HasId3Raw(tag, LanguageRawTag),
             SupportedTag.ISRC => TagRawProbe.HasId3Raw(tag, "TSRC"),
             SupportedTag.CatalogNumber => TagRawProbe.HasId3Raw(tag, CatalogNumberUpperTag),
             SupportedTag.Version => TagRawProbe.HasId3Raw(tag, "TIT3"),
@@ -6992,6 +7013,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Copyright => tag.GetField(CopyrightRawTag).Length > 0,
             SupportedTag.Composer => tag.GetField(ComposerUpperTag).Length > 0,
             SupportedTag.InvolvedPeople => tag.GetField(InvolvedPeopleRawTag).Length > 0,
+            SupportedTag.ReplayGain => tag.GetField(ReplayGainRawTag).Length > 0,
+            SupportedTag.Source => tag.GetField(SourceRawTag).Length > 0,
+            SupportedTag.Rating => tag.GetField(RatingRawTag).Length > 0,
+            SupportedTag.Language => tag.GetField(LanguageRawTag).Length > 0,
             SupportedTag.ISRC => tag.GetField("ISRC").Length > 0,
             SupportedTag.CatalogNumber => tag.GetField(CatalogNumberUpperTag).Length > 0,
             SupportedTag.Version => tag.GetField("SUBTITLE").Length > 0,
@@ -7054,6 +7079,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Copyright => Mp4TagHelper.HasRaw(file, CopyrightRawTag),
             SupportedTag.Composer => Mp4TagHelper.HasRaw(file, "©wrt"),
             SupportedTag.InvolvedPeople => Mp4TagHelper.HasRaw(file, InvolvedPeopleRawTag),
+            SupportedTag.ReplayGain => Mp4TagHelper.HasRaw(file, ReplayGainRawTag),
+            SupportedTag.Source => Mp4TagHelper.HasRaw(file, SourceRawTag),
+            SupportedTag.Rating => Mp4TagHelper.HasRaw(file, RatingRawTag),
+            SupportedTag.Language => Mp4TagHelper.HasRaw(file, LanguageRawTag),
             SupportedTag.ISRC => Mp4TagHelper.HasRaw(file, "ISRC"),
             SupportedTag.CatalogNumber => Mp4TagHelper.HasRaw(file, CatalogNumberUpperTag),
             SupportedTag.Version => Mp4TagHelper.HasRaw(file, "desc"),
@@ -7349,7 +7378,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required AppleMusicCatalogService AppleMusicCatalogService { get; init; }
         public required DownloadLyricsService DownloadLyricsService { get; init; }
         public required DeezSpoTagSettingsService SettingsService { get; init; }
-        public required PlatformCapabilitiesStore CapabilitiesStore { get; init; }
         public required IServiceScopeFactory ServiceScopeFactory { get; init; }
         public required ITrackIdentityResolver TrackIdentityResolver { get; init; }
         public PortedPlatformRegistry? PlatformRegistry { get; init; }
@@ -7428,6 +7456,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (tag == SupportedTag.Genre || IsGenreRawTag(rawName))
         {
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
+        }
+        else if (rawName.Equals(SpotifyUrlTag, StringComparison.OrdinalIgnoreCase))
+        {
+            values = NormalizeSpotifyTrackUrls(values);
+            if (values.Count == 0)
+            {
+                return;
+            }
+
+            var existingValues = ReadRawTagValues(context.File, context.Extension, SpotifyUrlTag);
+            force |= existingValues.Any(value => NormalizeSpotifyTrackUrl(value) == null);
         }
 
         if (!force && !ShouldOverwriteTag(context.Config, tag))

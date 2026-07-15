@@ -26,11 +26,20 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
                 "releaseType",
                 "discNumber",
                 "genre",
+                "explicit",
                 "year",
                 "date",
                 "isrc",
                 "length",
+                "barcode",
                 "label",
+                "lyrics",
+                "syncedLyrics",
+                "ttmlLyrics",
+                "copyright",
+                "composer",
+                "involvedPeople",
+                "otherTags",
                 "cover",
                 "source",
                 "url",
@@ -40,7 +49,7 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
                 "artistId",
                 "albumId"
             },
-            SupportedTags = SharedDownloadParityTags(),
+            SupportedTags = AutoTagSupportedTags(),
             CustomOptions = new PlatformCustomOptions
             {
                 Options = new List<PlatformCustomOption>
@@ -78,9 +87,8 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
         return CreateDescriptor(info, "itunes.png");
     }
 
-    internal static List<SupportedTag> SharedDownloadParityTags()
+    internal static List<SupportedTag> AutoTagSupportedTags()
     {
-        // Keep Apple enrichment/enhancement tag options aligned with Apple download tags.
         return new List<SupportedTag>
         {
             SupportedTag.Title,
@@ -96,9 +104,7 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
             SupportedTag.ReleaseId,
             SupportedTag.RecordingId,
             SupportedTag.ArtistId,
-            SupportedTag.AlbumArtistId,
             SupportedTag.AlbumId,
-            SupportedTag.Barcode,
             SupportedTag.Duration,
             SupportedTag.TrackNumber,
             SupportedTag.TrackTotal,
@@ -108,6 +114,7 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
             SupportedTag.ReleaseDate,
             SupportedTag.Genre,
             SupportedTag.Label,
+            SupportedTag.Source,
             SupportedTag.Copyright,
             SupportedTag.Composer,
             SupportedTag.InvolvedPeople,

@@ -75,7 +75,6 @@ public class AudioTagger
     private const string AppleSource = "apple";
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private readonly ILogger<AudioTagger> _logger;
-    private readonly PlatformCapabilitiesStore _capabilitiesStore;
     private readonly DeezSpoTagSettingsService _settingsService;
     private IReadOnlyDictionary<string, string>? _genreAliasMap;
     private IReadOnlyList<string>? _genreBlockList;
@@ -131,11 +130,9 @@ public class AudioTagger
         RegexTimeout);
     public AudioTagger(
         ILogger<AudioTagger> logger,
-        PlatformCapabilitiesStore capabilitiesStore,
         DeezSpoTagSettingsService settingsService)
     {
         _logger = logger;
-        _capabilitiesStore = capabilitiesStore;
         _settingsService = settingsService;
     }
 
@@ -236,7 +233,6 @@ public class AudioTagger
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(writePath),
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedExtension));
         }
-        UpdateDownloadCapabilities(track);
 
         const int maxAttempts = 5;
         const int delayMs = 200;
@@ -2384,96 +2380,6 @@ public class AudioTagger
             MimeType = mimeType
         };
         tag.Pictures = new[] { picture };
-    }
-
-    private void UpdateDownloadCapabilities(DeezSpoTag.Core.Models.Track track)
-    {
-        try
-        {
-            var platform = ResolveSourceName(track);
-            var tags = CollectDownloadTags(track);
-            if (tags.Count == 0)
-            {
-                return;
-            }
-            _capabilitiesStore.RecordDownloadTags(platform, tags);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed updating download tag capabilities.");
-        }
-    }
-
-    private static List<string> CollectDownloadTags(DeezSpoTag.Core.Models.Track track)
-    {
-        var tags = new List<string>();
-        void Add(string tag, bool condition)
-        {
-            if (!condition || tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
-            {
-                return;
-            }
-            tags.Add(tag);
-        }
-
-        Add("title", !string.IsNullOrWhiteSpace(track.Title));
-        Add("artist", track.Artists.Count > 0 || !string.IsNullOrWhiteSpace(track.MainArtist?.Name));
-        Add("artists", track.Artists.Count > 0);
-        Add("album", !string.IsNullOrWhiteSpace(track.Album?.Title));
-        Add("albumArtist", !string.IsNullOrWhiteSpace(track.Album?.MainArtist?.Name) || (track.Album?.Artists?.Count ?? 0) > 0);
-        Add("trackNumber", track.TrackNumber > 0);
-        Add("trackTotal", (track.Album?.TrackTotal ?? 0) > 0);
-        Add("discNumber", track.DiscNumber > 0);
-        Add("discTotal", (track.Album?.DiscTotal ?? 0) > 0);
-        Add("genre", (track.Album?.Genre?.Count ?? 0) > 0);
-        Add("year", track.Date != null && !string.IsNullOrWhiteSpace(track.Date.Year) && track.Date.Year != "0000");
-        Add("date", track.Date != null && track.Date.IsValid());
-        Add("explicit", track.Album?.Explicit.HasValue == true || track.Explicit);
-        Add("isrc", !string.IsNullOrWhiteSpace(track.ISRC));
-        Add("length", track.Duration > 0);
-        Add("barcode", !string.IsNullOrWhiteSpace(track.Album?.Barcode) || !string.IsNullOrWhiteSpace(track.Album?.UPC));
-        Add("bpm", track.Bpm > 0);
-        Add("key", !string.IsNullOrWhiteSpace(track.Key));
-        foreach (var (tag, hasValue) in GetFeatureCapabilityTags(track))
-        {
-            Add(tag, hasValue);
-        }
-        Add("replayGain", !string.IsNullOrWhiteSpace(track.ReplayGain));
-        Add("label", !string.IsNullOrWhiteSpace(track.Album?.Label));
-        Add(LyricsKey, !string.IsNullOrWhiteSpace(track.Lyrics?.Unsync));
-        Add("syncedLyrics", !string.IsNullOrWhiteSpace(track.Lyrics?.Sync) || (track.Lyrics?.SyncID3?.Count ?? 0) > 0);
-        Add("copyright", !string.IsNullOrWhiteSpace(track.Copyright) || !string.IsNullOrWhiteSpace(track.Album?.Copyright));
-        Add(ComposerRole, track.Contributors?.ContainsKey(ComposerRole) == true);
-        Add("involvedPeople", track.Contributors?.Count > 0);
-        Add(CoverDescription, !string.IsNullOrWhiteSpace(track.Album?.EmbeddedCoverPath) && System.IO.File.Exists(track.Album.EmbeddedCoverPath));
-        Add("source", !string.IsNullOrWhiteSpace(track.Source) || !string.IsNullOrWhiteSpace(track.SourceId));
-        Add("url", !string.IsNullOrWhiteSpace(track.DownloadURL) || (track.Urls?.Count ?? 0) > 0);
-        Add("trackId", !string.IsNullOrWhiteSpace(ResolveSourceId(track)));
-        Add("releaseId", !string.IsNullOrWhiteSpace(ResolveReleaseId(track)));
-        Add("recordingId", !string.IsNullOrWhiteSpace(ResolveRecordingId(track)));
-        Add("artistId", !string.IsNullOrWhiteSpace(ResolveArtistId(track)));
-        Add("albumArtistId", !string.IsNullOrWhiteSpace(ResolveAlbumArtistId(track)));
-        Add("releaseGroupId", !string.IsNullOrWhiteSpace(ResolveReleaseGroupId(track)));
-        Add("albumId", !string.IsNullOrWhiteSpace(ResolveAlbumId(track)));
-        Add("releaseStatus", !string.IsNullOrWhiteSpace(ResolveReleaseStatus(track)));
-        Add("releaseCountry", !string.IsNullOrWhiteSpace(ResolveReleaseCountry(track)));
-        Add("media", !string.IsNullOrWhiteSpace(ResolveMedia(track)));
-
-        return tags;
-    }
-
-    private static IEnumerable<(string Tag, bool HasValue)> GetFeatureCapabilityTags(DeezSpoTag.Core.Models.Track track)
-    {
-        yield return ("danceability", track.Danceability.HasValue);
-        yield return ("energy", track.Energy.HasValue);
-        yield return ("valence", track.Valence.HasValue);
-        yield return ("acousticness", track.Acousticness.HasValue);
-        yield return ("instrumentalness", track.Instrumentalness.HasValue);
-        yield return ("speechiness", track.Speechiness.HasValue);
-        yield return ("loudness", track.Loudness.HasValue);
-        yield return ("tempo", track.Tempo.HasValue);
-        yield return ("timeSignature", track.TimeSignature.HasValue);
-        yield return ("liveness", track.Liveness.HasValue);
     }
 
     #endregion

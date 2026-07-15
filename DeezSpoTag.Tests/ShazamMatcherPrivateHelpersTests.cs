@@ -168,6 +168,46 @@ public sealed class ShazamMatcherPrivateHelpersTests
     }
 
     [Fact]
+    public void MergeAdditionalTags_RejectsCrossPlatformUrls()
+    {
+        var track = new AutoTagTrack();
+        var tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["SHAZAM_SPOTIFY_URL"] = new() { "https://open.spotify.com/track/spotify-id" },
+            ["SHAZAM_DEEZER_URL"] = new() { "https://www.deezer.com/track/deezer-id" },
+            ["SHAZAM_APPLE_MUSIC_URL"] = new() { "https://music.apple.com/song/apple-id" },
+            ["SHAZAM_YOUTUBE_URL"] = new() { "https://youtube.com/watch?v=video-id" },
+            ["SHAZAM_ISRC"] = new() { "USRC17607839" }
+        };
+
+        MatcherMethod("MergeAdditionalTags").Invoke(null, new object?[] { track, tags });
+
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("SPOTIFY", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("DEEZER", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("APPLE_MUSIC", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("YOUTUBE", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("USRC17607839", Assert.Single(track.Other["SHAZAM_ISRC"]));
+    }
+
+    [Fact]
+    public void AddShazamOtherFields_DoesNotExposeCrossPlatformUrls()
+    {
+        var track = new AutoTagTrack();
+        var recognized = new ShazamRecognitionInfo
+        {
+            SpotifyUrl = "https://open.spotify.com/track/spotify-id",
+            AppleMusicUrl = "https://music.apple.com/song/apple-id",
+            YoutubeUrl = "https://youtube.com/watch?v=video-id"
+        };
+
+        MatcherMethod("AddShazamOtherFields").Invoke(null, new object?[] { track, recognized });
+
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("SPOTIFY", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("APPLE_MUSIC", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(track.Other.Keys, key => key.Contains("YOUTUBE", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void AddFingerprintAuditFields_WritesExpectedNumericDiagnostics()
     {
         var track = new AutoTagTrack();

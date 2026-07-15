@@ -18,6 +18,7 @@ public sealed class BandcampPlatform : AutoTagPlatformBase
             {
                 SupportedTag.Title,
                 SupportedTag.Artist,
+                SupportedTag.AlbumArtist,
                 SupportedTag.Album,
                 SupportedTag.ReleaseDate,
                 SupportedTag.Label,

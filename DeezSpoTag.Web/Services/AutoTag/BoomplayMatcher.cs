@@ -519,6 +519,8 @@ public sealed class BoomplayMatcher
             Album = Normalize(track.Album),
             Url = Normalize(track.Url),
             TrackId = Normalize(track.Id),
+            ReleaseId = Normalize(track.AlbumId),
+            AlbumId = Normalize(track.AlbumId),
             Duration = track.DurationMs > 0 ? TimeSpan.FromMilliseconds(track.DurationMs) : null,
             TrackNumber = track.TrackNumber > 0 ? track.TrackNumber : null,
             DiscNumber = track.DiscNumber > 0 ? track.DiscNumber : null,

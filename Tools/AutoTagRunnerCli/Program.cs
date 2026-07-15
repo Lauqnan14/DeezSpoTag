@@ -358,8 +358,6 @@ internal static class Program
         services.AddSingleton<ISpotifyUserContextAccessor, SpotifyUserContextAccessor>();
         services.AddHttpClient();
 
-        services.AddSingleton<PlatformCapabilitiesStore>(sp =>
-            new PlatformCapabilitiesStore(dataRoot, sp.GetService<ILogger<PlatformCapabilitiesStore>>()));
 
         services.AddSingleton<LibraryRepository>();
         services.AddSingleton<LibraryConfigStore>();

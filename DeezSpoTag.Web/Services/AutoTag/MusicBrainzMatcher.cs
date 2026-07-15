@@ -352,7 +352,10 @@ public sealed class MusicBrainzMatcher
         {
             AddOtherValue(track.Other, "MUSICBRAINZ_RELEASEGROUPID", release.ReleaseGroup.Id);
             track.ReleaseGroupId = release.ReleaseGroup.Id;
-            track.ReleaseType = AutoTagReleaseCategory.Resolve(release.ReleaseGroup.PrimaryType, track.TrackTotal);
+            track.ReleaseType = AutoTagReleaseCategory.Resolve(
+                release.ReleaseGroup.PrimaryType,
+                release.ReleaseGroup.SecondaryTypes,
+                track.TrackTotal);
             AddOtherValue(track.Other, "RELEASETYPE", track.ReleaseType);
         }
 

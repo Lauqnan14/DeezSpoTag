@@ -73,7 +73,6 @@ public sealed class BpmSupremeMatcher
             TrackId = track.TrackId,
             Mood = track.Mood,
             Url = track.Url,
-            CatalogNumber = track.CatalogNumber,
             Art = track.Art
         };
     }

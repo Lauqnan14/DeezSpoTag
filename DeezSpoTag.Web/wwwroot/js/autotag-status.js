@@ -437,7 +437,6 @@
             status: summary.status,
             progress: typeof summary.progress === "number" ? summary.progress : null
         });
-        renderLiveBatchStatus({ ...summary, statusHistory: archive?.statusHistory || [] });
     }
 
     function updateProgressBar(job) {
@@ -484,46 +483,6 @@
             ? logLines.map(stripAnsi).join("\n")
             : "No AutoTag logs yet.";
         setText("autotag-log", text);
-    }
-
-    function renderLiveBatchStatus(job) {
-        const tableBody = el("autotag-live-status-table");
-        if (!tableBody) {
-            return;
-        }
-
-        const history = Array.isArray(job?.statusHistory) ? job.statusHistory : [];
-        const requestedBatchSize = Number(job?.batchSize || 0);
-        const batchSize = Math.max(1, Math.min(40, requestedBatchSize || 40));
-        const rows = history.slice(-batchSize).reverse();
-        if (!rows.length) {
-            const phase = formatEnhancementFeature(job?.currentPhase);
-            const message = job?.id
-                ? `Waiting for item results${phase !== "--" ? ` from ${phase}` : ""}.`
-                : "No active AutoTag batch.";
-            tableBody.innerHTML = `<tr><td colspan="6">${escapeHtml(message)}</td></tr>`;
-            return;
-        }
-
-        tableBody.innerHTML = rows.map((entry) => {
-            const wrap = entry?.status || {};
-            const inner = wrap.status || {};
-            const time = entry?.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : "--";
-            const operation = formatEnhancementFeature(wrap.platform || job?.enhancementFeature);
-            const result = inner.status || "--";
-            const statusClass = getStatusClass(result);
-            const progress = typeof wrap.progress === "number"
-                ? `${Math.round(Math.max(0, Math.min(1, wrap.progress)) * 100)}%`
-                : "--";
-            return `<tr>
-                <td data-label="Time">${escapeHtml(time)}</td>
-                <td data-label="Operation">${escapeHtml(operation)}</td>
-                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}</td>
-                <td data-label="Progress">${escapeHtml(progress)}</td>
-                <td data-label="File" title="${escapeHtml(inner.path || "")}">${escapeHtml(toFileName(inner.path))}</td>
-                <td data-label="Details" title="${escapeHtml(inner.message || "")}">${escapeHtml(inner.message || "--")}</td>
-            </tr>`;
-        }).join("");
     }
 
     function updateFilterCountsFromHistory() {
@@ -1154,7 +1113,6 @@
         updateLogs([]);
         updateLiveMetadata(null);
         updateProgressBar(null);
-        renderLiveBatchStatus(null);
     }
 
     async function applyPolledJob(job, logs) {
@@ -1170,9 +1128,6 @@
         }
         updateLiveMetadata(hasLogsPayload ? { ...job, logs } : job);
         updateProgressBar(job);
-        if (hasLiveDetailPayload(job)) {
-            renderLiveBatchStatus(job);
-        }
         const hasDetails = hasLiveDetailPayload(job);
         if (shouldFollowLiveRunInHistory() && hasDetails) {
             renderLiveRunSelection(job, logs);
