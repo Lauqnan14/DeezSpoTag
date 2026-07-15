@@ -39,7 +39,7 @@ public sealed class DeezerLoginCoordinator
                 return DeezerLoginCoordinatorResult.Ok(alreadyLive: true);
             }
 
-            var success = await _deezerClient.LoginViaArlAsync(arl, child);
+            var success = await _deezerClient.LoginViaArlAsync(arl, child, cancellationToken);
             return success && _deezerClient.CurrentUser != null
                 ? DeezerLoginCoordinatorResult.Ok(alreadyLive: false)
                 : DeezerLoginCoordinatorResult.Failed(_deezerClient.LastLoginFailureReason ?? "login_failed");

@@ -98,6 +98,26 @@ public sealed class DeezerAuthenticationPathGuardrailTests
             "IDeezerAuthenticationService.cs")));
     }
 
+    [Fact]
+    public void StartupLogin_UsesSingleCancellableGatewayPathAndPreservesTransientCredentials()
+    {
+        var startup = ReadSource("DeezSpoTag.Web", "Services", "StartupLoginService.cs");
+        var coordinator = ReadSource("DeezSpoTag.Web", "Services", "DeezerLoginCoordinator.cs");
+        var client = ReadSource("DeezSpoTag.Integrations", "Deezer", "DeezerClient.cs");
+        var session = ReadSource("DeezSpoTag.Integrations", "Deezer", "DeezerSessionManager.cs");
+
+        Assert.DoesNotContain("IsDeezerAvailableAsync", startup, StringComparison.Ordinal);
+        Assert.Contains("keeping saved Deezer credentials", startup, StringComparison.Ordinal);
+        Assert.Contains("LoginViaArlAsync(arl, child, cancellationToken)", coordinator, StringComparison.Ordinal);
+        Assert.Contains("LoginViaArlAsync(arl, child, cancellationToken)", client, StringComparison.Ordinal);
+        Assert.Contains("PostAsync(url, content, cancellationToken)", session, StringComparison.Ordinal);
+        Assert.Contains("Task.Delay(RetryDelay, cancellationToken)", session, StringComparison.Ordinal);
+
+        var connectedIndex = session.IndexOf("SetConnectionState(DeezerConnectionState.Connected)", StringComparison.Ordinal);
+        var familyIndex = session.IndexOf("await LoadFamilyAccountsAsync(userData, cancellationToken)", StringComparison.Ordinal);
+        Assert.True(connectedIndex >= 0 && familyIndex > connectedIndex);
+    }
+
     private static string ReadSource(params string[] relativeParts)
         => File.ReadAllText(Path.Join(FindRepoRoot(), Path.Join(relativeParts)));
 

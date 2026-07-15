@@ -8,11 +8,15 @@ using DeezSpoTag.Integrations.Amazon;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Services.Authentication;
+using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Tidal;
 
 namespace DeezSpoTag.Web.Controllers.Api;
+
+internal sealed record DeezerPlatformStatus(bool Configured, bool Live, string State);
 
 public sealed class PlatformAuthApiDependencies
 {
@@ -32,6 +36,7 @@ public sealed class PlatformAuthApiDependencies
     public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
     public required SoulseekConnectionService SoulseekConnectionService { get; init; }
     public required DeezerSessionManager DeezerSessionManager { get; init; }
+    public required ILoginStorageService LoginStorage { get; init; }
 }
 
 public sealed class BoomplayLoginRequest
@@ -68,6 +73,7 @@ public class PlatformAuthApiController : ControllerBase
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
     private readonly SoulseekConnectionService _soulseekConnectionService;
     private readonly DeezerSessionManager _deezerSessionManager;
+    private readonly ILoginStorageService _loginStorage;
     public PlatformAuthApiController(PlatformAuthApiDependencies dependencies)
     {
         _authService = dependencies.AuthService;
@@ -86,6 +92,7 @@ public class PlatformAuthApiController : ControllerBase
         _tidalAccessTokenProvider = dependencies.TidalAccessTokenProvider;
         _soulseekConnectionService = dependencies.SoulseekConnectionService;
         _deezerSessionManager = dependencies.DeezerSessionManager;
+        _loginStorage = dependencies.LoginStorage;
     }
 
     [HttpGet]
@@ -97,12 +104,16 @@ public class PlatformAuthApiController : ControllerBase
             return gate;
         }
 
-        var state = await _authService.LoadAsync();
+        var platformAuthTask = _authService.LoadAsync();
+        var deezerLoginTask = _loginStorage.LoadLoginCredentialsAsync();
+        await Task.WhenAll(platformAuthTask, deezerLoginTask);
+        var state = await platformAuthTask;
+        var deezerLogin = await deezerLoginTask;
         return Ok(new
         {
             spotify = state.Spotify is null ? null : new { state.Spotify.ActiveAccount, accounts = state.Spotify.Accounts?.Select(a => new { a.Name, a.Region, a.CreatedAt, a.UpdatedAt }) },
             spotifyConnected = HasSpotifyRuntimeCredentials(state.Spotify),
-            deezerConnected = _deezerSessionManager.LoggedIn && _deezerSessionManager.CurrentUser is not null,
+            deezer = ToPublicDeezer(deezerLogin, _deezerSessionManager),
             discogs = state.Discogs is null ? null : new { state.Discogs.Username, state.Discogs.AvatarUrl, state.Discogs.Location, tokenSaved = !string.IsNullOrWhiteSpace(state.Discogs.Token) },
             lastFm = ToPublicLastFm(state.LastFm),
             bpmSupreme = state.BpmSupreme is null ? null : new { state.BpmSupreme.Email, state.BpmSupreme.Library, passwordSaved = !string.IsNullOrWhiteSpace(state.BpmSupreme.Password) },
@@ -116,6 +127,27 @@ public class PlatformAuthApiController : ControllerBase
             soulseek = ToPublicSoulseek(state.Soulseek),
             boomplay = ToPublicBoomplay(state.Boomplay)
         });
+    }
+
+    internal static DeezerPlatformStatus ToPublicDeezer(
+        LoginData? login,
+        DeezerSessionManager sessionManager)
+    {
+        var normalizedArl = DeezerAuthUtils.NormalizeArl(login?.Arl);
+        var configured = login?.User is not null && DeezerAuthUtils.IsValidArlLength(normalizedArl);
+        var live = sessionManager.LoggedIn && sessionManager.CurrentUser is not null;
+        var state = live
+            ? "connected"
+            : !configured
+                ? "disconnected"
+                : sessionManager.ConnectionState switch
+                {
+                    DeezerConnectionState.Failed => "failed",
+                    DeezerConnectionState.Connected => "failed",
+                    _ => "authenticating"
+                };
+
+        return new DeezerPlatformStatus(configured, live, state);
     }
 
     [HttpGet("amazonmusic/providers")]

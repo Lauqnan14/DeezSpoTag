@@ -79,9 +79,12 @@ public sealed class DeezerClient : IDisposable
     /// <summary>
     /// Login using ARL token - delegates to session manager
     /// </summary>
-    public async Task<bool> LoginViaArlAsync(string arl, int child = 0)
+    public async Task<bool> LoginViaArlAsync(
+        string arl,
+        int child = 0,
+        CancellationToken cancellationToken = default)
     {
-        return await RequireSessionManager().LoginViaArlAsync(arl, child);
+        return await RequireSessionManager().LoginViaArlAsync(arl, child, cancellationToken);
     }
 
     /// <summary>

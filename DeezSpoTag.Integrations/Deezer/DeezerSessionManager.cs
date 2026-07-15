@@ -9,6 +9,24 @@ using Newtonsoft.Json;
 
 namespace DeezSpoTag.Integrations.Deezer;
 
+public enum DeezerConnectionState
+{
+    Disconnected,
+    Authenticating,
+    Connected,
+    Failed
+}
+
+public sealed class DeezerConnectionStateChangedEventArgs : EventArgs
+{
+    public DeezerConnectionStateChangedEventArgs(DeezerConnectionState state)
+    {
+        State = state;
+    }
+
+    public DeezerConnectionState State { get; }
+}
+
 /// <summary>
 /// Centralized session manager for Deezer authentication and cookie management
 /// Exact port from deezspotag deezer.ts - manages shared state across all services
@@ -33,10 +51,13 @@ public sealed class DeezerSessionManager : IDisposable
     private readonly CookieContainer _sharedCookieContainer;
     private readonly Dictionary<string, string> _httpHeaders;
     private readonly Func<DeezSpoTagSettings?> _settingsProvider;
+    private readonly Func<HttpMessageHandler>? _httpMessageHandlerFactory;
     private bool _disposed;
 
     public bool LoggedIn { get; private set; }
     public DeezerUser? CurrentUser { get; private set; }
+    public DeezerConnectionState ConnectionState { get; private set; } = DeezerConnectionState.Disconnected;
+    public event EventHandler<DeezerConnectionStateChangedEventArgs>? ConnectionStateChanged;
     public List<DeezerUser> Children { get; private set; } = new();
     public IReadOnlyList<string> ChildAccounts { get; private set; } = Array.Empty<string>();
     public int SelectedAccount { get; private set; }
@@ -67,11 +88,15 @@ public sealed class DeezerSessionManager : IDisposable
 
     private const string UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36";
 
-    public DeezerSessionManager(ILogger<DeezerSessionManager> logger, Func<DeezSpoTagSettings?> settingsProvider)
+    public DeezerSessionManager(
+        ILogger<DeezerSessionManager> logger,
+        Func<DeezSpoTagSettings?> settingsProvider,
+        Func<HttpMessageHandler>? httpMessageHandlerFactory = null)
     {
         _logger = logger;
         _sharedCookieContainer = new CookieContainer();
         _settingsProvider = settingsProvider;
+        _httpMessageHandlerFactory = httpMessageHandlerFactory;
 
         // EXACT PORT: Initialize headers like deezspotag deezer.ts constructor
         _httpHeaders = new Dictionary<string, string>
@@ -91,16 +116,21 @@ public sealed class DeezerSessionManager : IDisposable
     /// <summary>
     /// Login using ARL token - EXACT PORT from deezspotag deezer.ts loginViaArl
     /// </summary>
-    public async Task<bool> LoginViaArlAsync(string arl, int child = 0)
+    public async Task<bool> LoginViaArlAsync(
+        string arl,
+        int child = 0,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(arl))
         {
             _logger.LogWarning("ARL is null or empty");
+            SetConnectionState(DeezerConnectionState.Failed);
             return false;
         }
 
         try
         {
+            SetConnectionState(DeezerConnectionState.Authenticating);
             LastLoginFailureReason = null;
             // EXACT PORT: Create and set ARL cookie like deezspotag
             var cookie = new Cookie("arl", arl.Trim(), "/", ".deezer.com")
@@ -114,7 +144,7 @@ public sealed class DeezerSessionManager : IDisposable
                 _logger.LogDebug("Set ARL cookie: {ArlLength} characters", arl.Trim().Length);            }
 
             // Get user data to validate login - this will also set the API token
-            var userData = await GetUserDataAsync();
+            var userData = await GetUserDataAsync(cancellationToken);
 
             // EXACT PORT: Check login validation like deezspotag
             if (userData?.User?.UserId == null || userData.User.UserId == 0)
@@ -122,14 +152,18 @@ public sealed class DeezerSessionManager : IDisposable
                 _logger.LogWarning("Invalid ARL - USER_ID is null or 0");
                 LastLoginFailureReason = "invalid_user";
                 LoggedIn = false;
+                CurrentUser = null;
+                SetConnectionState(DeezerConnectionState.Failed);
                 return false;
             }
 
-            // EXACT PORT: Process login data like deezspotag _postLogin
-            await PostLoginAsync(userData);
-            ChangeAccount(child);
-
+            InitializePrimaryAccount(userData);
             LoggedIn = true;
+            SetConnectionState(DeezerConnectionState.Connected);
+
+            // Family discovery is optional. The primary account is live before this request starts.
+            await LoadFamilyAccountsAsync(userData, cancellationToken);
+            ChangeAccount(child);
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation("Successfully logged in as user: {UserName} (ID: {UserId})",
@@ -137,12 +171,24 @@ public sealed class DeezerSessionManager : IDisposable
 
             return true;
         }
+        catch (OperationCanceledException)
+        {
+            if (!LoggedIn || CurrentUser is null)
+            {
+                LoggedIn = false;
+                CurrentUser = null;
+                SetConnectionState(DeezerConnectionState.Failed);
+            }
+
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Failed to login with ARL");
             LastLoginFailureReason = "exception";
             LoggedIn = false;
             CurrentUser = null;
+            SetConnectionState(DeezerConnectionState.Failed);
             return false;
         }
     }
@@ -151,10 +197,13 @@ public sealed class DeezerSessionManager : IDisposable
     /// Get user data using Gateway API - EXACT PORT from deezspotag gw.ts get_user_data
     /// This also handles API token extraction
     /// </summary>
-    private async Task<DeezerUserData> GetUserDataAsync()
+    private async Task<DeezerUserData> GetUserDataAsync(CancellationToken cancellationToken = default)
     {
         // EXACT PORT: Call getUserData without token first, then extract token from response
-        var response = await GatewayApiCallAsync<DeezerUserData>(GetUserDataMethod, new { });
+        var response = await GatewayApiCallAsync<DeezerUserData>(
+            GetUserDataMethod,
+            new { },
+            cancellationToken: cancellationToken);
 
         // EXACT PORT: Extract API token from response like deezspotag
         if (string.IsNullOrEmpty(ApiToken) && response?.CheckForm != null)
@@ -169,7 +218,11 @@ public sealed class DeezerSessionManager : IDisposable
     /// <summary>
     /// Gateway API call with shared authentication - EXACT PORT from deezspotag gw.ts api_call
     /// </summary>
-    public async Task<T> GatewayApiCallAsync<T>(string method, object? args = null, Dictionary<string, object>? parameters = null) where T : class
+    public async Task<T> GatewayApiCallAsync<T>(
+        string method,
+        object? args = null,
+        Dictionary<string, object>? parameters = null,
+        CancellationToken cancellationToken = default) where T : class
     {
         var countries = string.Equals(method, GetUserDataMethod, StringComparison.Ordinal)
             ? new[] { ResolveCountry(fallback: null) }
@@ -179,7 +232,7 @@ public sealed class DeezerSessionManager : IDisposable
         {
             try
             {
-                return await GatewayApiCallForCountryAsync<T>(method, args, parameters, countries[index]);
+                return await GatewayApiCallForCountryAsync<T>(method, args, parameters, countries[index], cancellationToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException && index + 1 < countries.Count)
             {
@@ -199,7 +252,8 @@ public sealed class DeezerSessionManager : IDisposable
         string method,
         object? args,
         Dictionary<string, object>? parameters,
-        string country) where T : class
+        string country,
+        CancellationToken cancellationToken = default) where T : class
     {
         args ??= new { };
         parameters ??= new Dictionary<string, object>();
@@ -207,7 +261,7 @@ public sealed class DeezerSessionManager : IDisposable
         // EXACT PORT: Get API token if needed (except for getUserData)
         if (string.IsNullOrEmpty(ApiToken) && method != GetUserDataMethod)
         {
-            ApiToken = await GetTokenAsync();
+            ApiToken = await GetTokenAsync(cancellationToken);
         }
 
         var queryParams = new Dictionary<string, object>
@@ -228,16 +282,21 @@ public sealed class DeezerSessionManager : IDisposable
         var url = $"{BuildDeezerWebBaseUrl()}/ajax/gw-light.php?{BuildQueryString(queryParams)}";
         return await ExecuteWithRetryAsync(
             method,
-            () => ExecuteGatewayRequestAsync<T>(method, args, url, country),
-            endpoint => new DeezerGatewayException($"Failed to call {endpoint} after {MaxRetries} retries"));
+            token => ExecuteGatewayRequestAsync<T>(method, args, url, country, token),
+            endpoint => new DeezerGatewayException($"Failed to call {endpoint} after {MaxRetries} retries"),
+            cancellationToken);
     }
 
     /// <summary>
     /// Gateway API call with shared authentication - Alias for GatewayApiCallAsync
     /// </summary>
-    public async Task<T> GatewayCallAsync<T>(string method, object? args = null, Dictionary<string, object>? parameters = null) where T : class
+    public async Task<T> GatewayCallAsync<T>(
+        string method,
+        object? args = null,
+        Dictionary<string, object>? parameters = null,
+        CancellationToken cancellationToken = default) where T : class
     {
-        return await GatewayApiCallAsync<T>(method, args, parameters);
+        return await GatewayApiCallAsync<T>(method, args, parameters, cancellationToken);
     }
 
     /// <summary>
@@ -289,18 +348,23 @@ public sealed class DeezerSessionManager : IDisposable
 
         return await ExecuteWithRetryAsync(
             endpoint,
-            () => ExecutePublicRequestAsync<T>(endpoint, url, country),
+            _ => ExecutePublicRequestAsync<T>(endpoint, url, country),
             name => new InvalidOperationException($"Failed to call {name} after {MaxRetries} retries"));
     }
 
-    private async Task<T> ExecuteGatewayRequestAsync<T>(string method, object args, string url, string country) where T : class
+    private async Task<T> ExecuteGatewayRequestAsync<T>(
+        string method,
+        object args,
+        string url,
+        string country,
+        CancellationToken cancellationToken) where T : class
     {
         using var httpClient = CreateHttpClient(country);
         var json = JsonConvert.SerializeObject(args);
         using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync(url, content);
-        var responseContent = await response.Content.ReadAsStringAsync();
+        var response = await httpClient.PostAsync(url, content, cancellationToken);
+        var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -420,39 +484,43 @@ public sealed class DeezerSessionManager : IDisposable
 
     private async Task<T> ExecuteWithRetryAsync<T>(
         string operationName,
-        Func<Task<T>> operation,
-        Func<string, Exception> finalExceptionFactory)
+        Func<CancellationToken, Task<T>> operation,
+        Func<string, Exception> finalExceptionFactory,
+        CancellationToken cancellationToken = default)
     {
         for (var attempt = 1; attempt <= MaxRetries; attempt++)
         {
             try
             {
-                return await operation();
+                return await operation(cancellationToken);
             }
             catch (HttpRequestException ex) when (IsRetryableError(ex))
             {
-                await HandleRetryableRequestFailureAsync(ex, attempt);
+                await HandleRetryableRequestFailureAsync(ex, attempt, cancellationToken);
             }
             catch (TaskCanceledException ex)
             {
-                await HandleRetryableRequestFailureAsync(ex, attempt);
+                await HandleRetryableRequestFailureAsync(ex, attempt, cancellationToken);
             }
             catch (RetryableApiResponseException) when (attempt < MaxRetries)
             {
-                await Task.Delay(RetryDelay);
+                await Task.Delay(RetryDelay, cancellationToken);
             }
         }
 
         throw finalExceptionFactory(operationName);
     }
 
-    private async Task HandleRetryableRequestFailureAsync(Exception ex, int attempt)
+    private async Task HandleRetryableRequestFailureAsync(
+        Exception ex,
+        int attempt,
+        CancellationToken cancellationToken)
     {
         var reason = ex is TaskCanceledException ? "timeout" : "retryable-http-error";
         _logger.LogWarning(ex, "Retryable request failure ({Reason}). Retrying in {RetryDelaySeconds} seconds.", reason, RetryDelay.TotalSeconds);
         if (attempt < MaxRetries)
         {
-            await Task.Delay(RetryDelay);
+            await Task.Delay(RetryDelay, cancellationToken);
         }
     }
 
@@ -667,60 +735,66 @@ public sealed class DeezerSessionManager : IDisposable
         return true;
     }
 
-    /// <summary>
-    /// Post-login processing - EXACT PORT from deezspotag deezer.ts _postLogin
-    /// </summary>
-    private async Task PostLoginAsync(DeezerUserData userData)
+    private void InitializePrimaryAccount(DeezerUserData userData)
     {
         Children.Clear();
+        Children.Add(BuildPrimaryChild(userData.User));
+        UpdateChildAccounts();
+        ChangeAccount(0);
+    }
 
-        // EXACT PORT: Check if family account like deezspotag
+    private async Task LoadFamilyAccountsAsync(
+        DeezerUserData userData,
+        CancellationToken cancellationToken)
+    {
         var user = userData.User;
         var multiAccount = user?.MultiAccount;
         var isFamily = user is not null
             && multiAccount?.Enabled == true
             && !multiAccount.IsSubAccount;
-
-        if (isFamily)
+        if (!isFamily)
         {
-            await TryLoadFamilyChildAccountsAsync(user!);
+            return;
         }
 
-        // EXACT PORT: Add main user if no children like deezspotag
-        if (Children.Count == 0)
-        {
-            Children.Add(BuildPrimaryChild(userData.User));
-        }
-
-        UpdateChildAccounts();
-    }
-
-    private async Task TryLoadFamilyChildAccountsAsync(GwUser user)
-    {
         try
         {
-            // EXACT PORT: Get child accounts like deezspotag
-            var childAccounts = await GatewayApiCallAsync<List<GwChildAccount>>("deezer.getChildAccounts");
-            if (_logger.IsEnabled(LogLevel.Debug))
+            var familyAccounts = await GetFamilyChildAccountsAsync(user!, cancellationToken);
+            if (familyAccounts.Count == 0)
             {
-                _logger.LogDebug("Retrieved {Count} child accounts", childAccounts.Count);
+                return;
             }
 
-            foreach (var childUser in childAccounts
-                .Where(static child => child.ExtraFamily?.IsLoggableAs == true)
-                .Select(child => BuildFamilyChild(user, child)))
-            {
-                Children.Add(childUser);
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Added child account: {Name} (ID: {Id})", childUser.Name, childUser.Id);
-                }
-            }
+            Children.Clear();
+            Children.AddRange(familyAccounts);
+            UpdateChildAccounts();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Deezer family account discovery was cancelled after the primary account connected.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to get child accounts");
         }
+    }
+
+    private async Task<List<DeezerUser>> GetFamilyChildAccountsAsync(
+        GwUser user,
+        CancellationToken cancellationToken)
+    {
+        var childAccounts = await GatewayApiCallAsync<List<GwChildAccount>>(
+            "deezer.getChildAccounts",
+            cancellationToken: cancellationToken);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Retrieved {Count} child accounts", childAccounts.Count);
+        }
+
+        return childAccounts
+            .Where(static child => child.ExtraFamily?.IsLoggableAs == true)
+            .Select(child => BuildFamilyChild(user, child))
+            .ToList();
     }
 
     private DeezerUser BuildFamilyChild(GwUser user, GwChildAccount child)
@@ -788,14 +862,7 @@ public sealed class DeezerSessionManager : IDisposable
     /// </summary>
     private HttpClient CreateHttpClient(string? countryOverride = null)
     {
-        var handler = new HttpClientHandler()
-        {
-            CookieContainer = _sharedCookieContainer
-        };
-        handler.ServerCertificateCustomValidationCallback = static (message, cert, chain, errors) =>
-            errors == SslPolicyErrors.None || AllowInsecureSsl;
-
-        var httpClient = new HttpClient(handler)
+        var httpClient = new HttpClient(CreateHttpMessageHandler())
         {
             Timeout = HttpRequestTimeout
         };
@@ -812,6 +879,21 @@ public sealed class DeezerSessionManager : IDisposable
         }
 
         return httpClient;
+    }
+
+    private HttpMessageHandler CreateHttpMessageHandler()
+    {
+        if (_httpMessageHandlerFactory is not null)
+        {
+            return _httpMessageHandlerFactory();
+        }
+
+        return new HttpClientHandler
+        {
+            CookieContainer = _sharedCookieContainer,
+            ServerCertificateCustomValidationCallback = static (message, cert, chain, errors) =>
+                errors == SslPolicyErrors.None || AllowInsecureSsl
+        };
     }
 
     private void ApplyLocaleOverride()
@@ -908,9 +990,9 @@ public sealed class DeezerSessionManager : IDisposable
     /// <summary>
     /// Get API token - EXACT PORT from deezspotag gw.ts _get_token
     /// </summary>
-    private async Task<string> GetTokenAsync()
+    private async Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
     {
-        var userData = await GetUserDataAsync();
+        var userData = await GetUserDataAsync(cancellationToken);
         return userData?.CheckForm ?? "";
     }
 
@@ -993,6 +1075,17 @@ public sealed class DeezerSessionManager : IDisposable
                message.Contains("reset");
     }
 
+    private void SetConnectionState(DeezerConnectionState state)
+    {
+        if (ConnectionState == state)
+        {
+            return;
+        }
+
+        ConnectionState = state;
+        ConnectionStateChanged?.Invoke(this, new DeezerConnectionStateChangedEventArgs(state));
+    }
+
     /// <summary>
     /// Logout and clear session
     /// </summary>
@@ -1005,6 +1098,7 @@ public sealed class DeezerSessionManager : IDisposable
         SelectedAccount = 0;
         ApiToken = null;
         AccessToken = null;
+        SetConnectionState(DeezerConnectionState.Disconnected);
 
         // Clear cookies
         foreach (Cookie cookie in _sharedCookieContainer.GetCookies(new Uri(BuildDeezerWebBaseUrl())))

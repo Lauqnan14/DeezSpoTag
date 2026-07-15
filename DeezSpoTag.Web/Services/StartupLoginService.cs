@@ -1,6 +1,5 @@
 using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Settings;
-using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Integrations.Deezer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,7 +19,6 @@ namespace DeezSpoTag.Web.Services
         private readonly DeezerLoginCoordinator _loginCoordinator;
         private readonly ILoginStorageService _loginStorage;
         private readonly DeezSpoTagSettingsService _settingsService;
-        private readonly DeezerAuthUtils _authUtils;
         private readonly IHostApplicationLifetime _applicationLifetime;
 
         public StartupLoginService(
@@ -29,7 +27,6 @@ namespace DeezSpoTag.Web.Services
             DeezerLoginCoordinator loginCoordinator,
             ILoginStorageService loginStorage,
             DeezSpoTagSettingsService settingsService,
-            DeezerAuthUtils authUtils,
             IHostApplicationLifetime applicationLifetime)
         {
             _logger = logger;
@@ -37,7 +34,6 @@ namespace DeezSpoTag.Web.Services
             _loginCoordinator = loginCoordinator;
             _loginStorage = loginStorage;
             _settingsService = settingsService;
-            _authUtils = authUtils;
             _applicationLifetime = applicationLifetime;
         }
 
@@ -117,19 +113,23 @@ namespace DeezSpoTag.Web.Services
         {
             try
             {
-                if (!await _authUtils.IsDeezerAvailableAsync(cancellationToken))
-                {
-                    _logger.LogWarning("Deezer is not available; skipping automatic login");
-                    return;
-                }
-
                 // EXACT PORT: Attempt to login with saved ARL like deezspotag connect.ts
                 DeezSpoTag.Web.Controllers.Api.DeezerStreamApiController.ClearPlaybackContextCache();
                 var loginResult = await _loginCoordinator.LoginViaArlAsync(normalizedArl, cancellationToken: cancellationToken);
                 if (!loginResult.Success || _deezerClient.CurrentUser == null)
                 {
-                    _logger.LogWarning("Automatic login failed - invalid ARL or user data");
-                    await _loginStorage.ResetLoginCredentialsAsync();
+                    if (string.Equals(loginResult.FailureReason, "invalid_user", StringComparison.Ordinal))
+                    {
+                        _logger.LogWarning("Automatic login failed because the saved ARL is invalid; clearing stored credentials.");
+                        await _loginStorage.ResetLoginCredentialsAsync();
+                        await _deezerClient.LogoutAsync();
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "Automatic login was unavailable ({FailureReason}); keeping saved Deezer credentials for the next attempt.",
+                            loginResult.FailureReason ?? "login_failed");
+                    }
                     return;
                 }
 
@@ -141,9 +141,7 @@ namespace DeezSpoTag.Web.Services
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogError(ex, "Error during automatic login");
-                // EXACT PORT: Clear invalid credentials on error like deezspotag
-                await _loginStorage.ResetLoginCredentialsAsync();
+                _logger.LogError(ex, "Automatic login was unavailable; keeping saved Deezer credentials for the next attempt.");
             }
         }
 

@@ -893,10 +893,19 @@ globalThis.DeezSpoTag = {
         connection.on('watchlistUpdated', (eventPayload) => {
             this.handleWatchlistUpdated(eventPayload);
         });
-
-        connection.start().catch((error) => {
-            console.debug('Cross-device sync unavailable.', error);
+        connection.on('deezerConnectionStateChanged', () => {
+            this.loadConnectedPlatforms({ force: true, reason: 'deezer-state-event' });
         });
+
+        connection.onreconnected(() => {
+            this.loadConnectedPlatforms({ force: true, reason: 'signalr-reconnected' });
+        });
+
+        connection.start()
+            .then(() => this.loadConnectedPlatforms({ force: true, reason: 'signalr-connected' }))
+            .catch((error) => {
+                console.debug('Cross-device sync unavailable.', error);
+            });
 
         this.crossDeviceSyncConnection = connection;
     },
@@ -981,13 +990,9 @@ globalThis.DeezSpoTag = {
         this.updateThemedPlatformIcons();
         this.initializeCrossDeviceSync();
         if (this.isLoginRoute()) {
-            // Login route should avoid expensive probes unless explicitly requested.
-            globalThis.setTimeout(() => this.loadConnectedPlatforms({ force: true, deep: false, reason: 'login-init' }), 350);
+            globalThis.setTimeout(() => this.loadConnectedPlatforms({ force: true, reason: 'login-init' }), 350);
         } else {
-            this.loadConnectedPlatforms({ force: true, deep: false, reason: 'init-cheap' });
-            globalThis.setTimeout(() => {
-                this.loadConnectedPlatforms({ forceDeep: true, force: true, reason: 'init-deep' });
-            }, 1800);
+            this.loadConnectedPlatforms({ force: true, reason: 'init' });
             this.startConnectedPlatformsAutoRefresh();
         }
         this.startPublicApiStatusAutoRefresh();
@@ -1141,15 +1146,14 @@ globalThis.DeezSpoTag = {
 
     connectedPlatformsRefreshIntervalMs: 300000,
     publicApiStatusRefreshIntervalMs: 180000,
-    connectedPlatformsDeepProbeMinIntervalMs: 300000,
-    connectedPlatformsCheapProbeMinIntervalMs: 30000,
+    connectedPlatformsProbeMinIntervalMs: 30000,
+    connectedPlatformsCacheMaxAgeMs: 300000,
     connectedPlatformsRefreshTimerId: null,
     connectedPlatformsRefreshInFlight: false,
     connectedPlatformsRefreshPending: null,
     connectedPlatformsFocusHandler: null,
     connectedPlatformsVisibilityHandler: null,
-    connectedPlatformsLastDeepProbeAt: 0,
-    connectedPlatformsLastCheapProbeAt: 0,
+    connectedPlatformsLastProbeAt: 0,
     connectedPlatformsHasRendered: false,
     connectedPlatformsLastRenderSignature: null,
     publicApiStatusRefreshTimerId: null,
@@ -1436,7 +1440,7 @@ globalThis.DeezSpoTag = {
 
     getConnectedPlatformsRenderSignature(entries) {
         return entries
-            .map(([id, status]) => `${id}:${status?.active === true ? 1 : 0}:${status?.publicApiStatus || ''}:${status?.publicApiOnlineCount ?? ''}`)
+            .map(([id, status]) => `${id}:${status?.active === true ? 1 : 0}:${status?.reason || ''}:${status?.publicApiStatus || ''}:${status?.publicApiOnlineCount ?? ''}`)
             .join('|');
     },
 
@@ -1452,7 +1456,8 @@ globalThis.DeezSpoTag = {
                 return {
                     platforms: parsed,
                     statuses: null,
-                    updatedAt: null
+                    updatedAt: null,
+                    isFresh: false
                 };
             }
 
@@ -1460,12 +1465,14 @@ globalThis.DeezSpoTag = {
                 return null;
             }
 
+            const updatedAt = Number(parsed.updatedAt || 0);
             return {
                 platforms: parsed.platforms,
                 statuses: parsed.statuses && typeof parsed.statuses === 'object'
                     ? parsed.statuses
                     : null,
-                updatedAt: parsed.updatedAt || null
+                updatedAt: updatedAt || null,
+                isFresh: updatedAt > 0 && (Date.now() - updatedAt) <= this.connectedPlatformsCacheMaxAgeMs
             };
         } catch {
             return null;
@@ -1599,45 +1606,23 @@ globalThis.DeezSpoTag = {
 
     resolveConnectedPlatformsProbePlan(options = {}) {
         const now = Date.now();
-        const loginRoute = this.isLoginRoute();
-        const forceDeep = options?.forceDeep === true || options?.deep === true;
-        const force = options?.force === true || forceDeep;
-        const explicitCheap = options?.deep === false;
-
-        let runDeepChecks = forceDeep;
-        if (!runDeepChecks && !explicitCheap && !loginRoute) {
-            runDeepChecks = (now - this.connectedPlatformsLastDeepProbeAt) >= this.connectedPlatformsDeepProbeMinIntervalMs;
-        }
-
-        const lastProbeAt = runDeepChecks
-            ? this.connectedPlatformsLastDeepProbeAt
-            : this.connectedPlatformsLastCheapProbeAt;
-        const minInterval = runDeepChecks
-            ? this.connectedPlatformsDeepProbeMinIntervalMs
-            : this.connectedPlatformsCheapProbeMinIntervalMs;
-        const shouldProbe = force || lastProbeAt === 0 || (now - lastProbeAt) >= minInterval;
+        const force = options?.force === true;
+        const shouldProbe = force
+            || this.connectedPlatformsLastProbeAt === 0
+            || (now - this.connectedPlatformsLastProbeAt) >= this.connectedPlatformsProbeMinIntervalMs;
 
         return {
             now,
             force,
-            forceDeep,
-            runDeepChecks,
             shouldProbe
         };
     },
 
-    markConnectedPlatformsProbe(runDeepChecks, timestamp) {
+    markConnectedPlatformsProbe(timestamp) {
         if (!timestamp) {
             return;
         }
-
-        if (runDeepChecks) {
-            this.connectedPlatformsLastDeepProbeAt = timestamp;
-            this.connectedPlatformsLastCheapProbeAt = timestamp;
-            return;
-        }
-
-        this.connectedPlatformsLastCheapProbeAt = timestamp;
+        this.connectedPlatformsLastProbeAt = timestamp;
     },
 
     startPublicApiStatusAutoRefresh() {
@@ -1724,14 +1709,14 @@ globalThis.DeezSpoTag = {
 
         this.connectedPlatformsRefreshTimerId = globalThis.setInterval(() => {
             if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-                this.loadConnectedPlatforms({ force: true, forceDeep: false, reason: 'timer-cached' });
+                this.loadConnectedPlatforms({ force: true, reason: 'timer' });
             }
         }, this.connectedPlatformsRefreshIntervalMs);
 
         if (!this.connectedPlatformsFocusHandler) {
             this.connectedPlatformsFocusHandler = () => {
                 if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-                    this.loadConnectedPlatforms({ deep: false, reason: 'focus-cheap' });
+                    this.loadConnectedPlatforms({ reason: 'focus' });
                     this.refreshPublicApiSidebarStatus();
                 }
             };
@@ -1742,7 +1727,7 @@ globalThis.DeezSpoTag = {
             this.connectedPlatformsVisibilityHandler = () => {
                 if (document.visibilityState === 'visible') {
                     if (this.tryAcquireConnectedPlatformsPollingLease()) {
-                        this.loadConnectedPlatforms({ deep: false, reason: 'visibility-cheap' });
+                        this.loadConnectedPlatforms({ reason: 'visibility' });
                         this.refreshPublicApiSidebarStatus();
                     }
                 }
@@ -1760,40 +1745,51 @@ globalThis.DeezSpoTag = {
             return;
         }
 
-        await this.ensurePlatformRegistryLoaded();
-
-        const selected = this.getAutoTagSelectedPlatforms();
-        const initialStates = this.buildInitialPlatformStates(selected);
-        const cached = this.getCachedConnectedPlatformsSnapshot();
-        this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
-
         const probePlan = this.resolveConnectedPlatformsProbePlan(options);
+        const registryPromise = this.ensurePlatformRegistryLoaded();
         if (!probePlan.shouldProbe) {
+            await registryPromise;
+            const selected = this.getAutoTagSelectedPlatforms();
+            const initialStates = this.buildInitialPlatformStates(selected);
+            const cached = this.getCachedConnectedPlatformsSnapshot();
+            this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
             return;
         }
 
         if (this.connectedPlatformsRefreshInFlight) {
             this.queuePendingConnectedPlatformsRefresh(options);
+            await registryPromise;
+            const selected = this.getAutoTagSelectedPlatforms();
+            const initialStates = this.buildInitialPlatformStates(selected);
+            const cached = this.getCachedConnectedPlatformsSnapshot();
+            this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
             return;
         }
 
         this.connectedPlatformsRefreshInFlight = true;
-
-        const platformStates = this.resolveConnectedPlatformStates(cached, selected);
-        const connected = new Set(
-            Object.entries(platformStates)
-                .filter(([, status]) => status?.active === true)
-                .map(([id]) => id));
-        this.seedSelectedConnectedPlatforms(selected, connected, platformStates);
-
         const fetchOptions = {
             cache: 'no-store',
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         };
+        const authResponsesPromise = this.fetchConnectedPlatformResponses(fetchOptions);
+        let platformStates = null;
         try {
-            const settledResponses = await this.fetchConnectedPlatformResponses(fetchOptions, probePlan.runDeepChecks, probePlan.forceDeep);
-            const authData = await this.applyAuthStatus(settledResponses.authResponse, settledResponses.authOk, connected, platformStates);
+            await registryPromise;
+            const selected = this.getAutoTagSelectedPlatforms();
+            const initialStates = this.buildInitialPlatformStates(selected);
+            const cached = this.getCachedConnectedPlatformsSnapshot();
+            this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
+
+            platformStates = this.resolveConnectedPlatformStates(cached, selected);
+            const connected = new Set(
+                Object.entries(platformStates)
+                    .filter(([, status]) => status?.active === true)
+                    .map(([id]) => id));
+            this.seedSelectedConnectedPlatforms(selected, connected, platformStates);
+
+            const settledResponses = await authResponsesPromise;
+            await this.applyAuthStatus(settledResponses.authResponse, settledResponses.authOk, connected, platformStates);
             const resolved = Array.from(connected);
             const requiredChecksCompleted = settledResponses.authCompleted;
             const preserveIfEmpty = !requiredChecksCompleted;
@@ -1805,9 +1801,11 @@ globalThis.DeezSpoTag = {
             this.renderConnectedPlatforms(platformStates, { preserveIfEmpty });
         } catch (error) {
             console.warn('Failed to refresh connected platform status', error);
-            this.renderConnectedPlatforms(platformStates);
+            if (platformStates) {
+                this.renderConnectedPlatforms(platformStates);
+            }
         } finally {
-            this.markConnectedPlatformsProbe(probePlan.runDeepChecks, probePlan.now);
+            this.markConnectedPlatformsProbe(probePlan.now);
             this.connectedPlatformsRefreshInFlight = false;
             const pendingOptions = this.connectedPlatformsRefreshPending;
             this.connectedPlatformsRefreshPending = null;
@@ -1822,11 +1820,6 @@ globalThis.DeezSpoTag = {
             if (options?.force === true) {
                 this.connectedPlatformsRefreshPending.force = true;
             }
-            if (options?.forceDeep === true || options?.deep === true) {
-                this.connectedPlatformsRefreshPending.force = true;
-                this.connectedPlatformsRefreshPending.forceDeep = true;
-                this.connectedPlatformsRefreshPending.deep = true;
-            }
             return;
         }
 
@@ -1834,10 +1827,10 @@ globalThis.DeezSpoTag = {
     },
 
     resolveConnectedPlatformStates(cached, selected) {
-        if (cached?.statuses) {
+        if (cached?.isFresh === true && cached?.statuses) {
             return this.buildCachedPlatformStates(cached.statuses, selected);
         }
-        if (cached?.platforms?.length) {
+        if (cached?.isFresh === true && cached?.platforms?.length) {
             return this.buildCachedPlatformStates(cached.platforms, selected);
         }
         return this.buildInitialPlatformStates(selected);
@@ -1872,7 +1865,7 @@ globalThis.DeezSpoTag = {
         });
     },
 
-    async fetchConnectedPlatformResponses(fetchOptions, runDeepChecks, forceDeepRefresh = false) {
+    async fetchConnectedPlatformResponses(fetchOptions) {
         const [authResult] = await Promise.allSettled([
             fetch('/api/platform-auth', fetchOptions)
         ]);
@@ -1964,7 +1957,17 @@ globalThis.DeezSpoTag = {
     },
 
     applyStreamingPlatformStatus(authData, connected, platformStates) {
-        this.applyConnectedFlagState(authData.deezerConnected === true, connected, platformStates, 'deezer', 'auth', 'offline');
+        const deezerState = ['disconnected', 'authenticating', 'connected', 'failed'].includes(authData.deezer?.state)
+            ? authData.deezer.state
+            : 'disconnected';
+        const deezerConfigured = authData.deezer?.configured === true || authData.deezer?.live === true;
+        this.applyConnectedFlagState(
+            deezerConfigured,
+            connected,
+            platformStates,
+            'deezer',
+            deezerState,
+            deezerState);
         this.applyConnectedFlagState(authData.spotifyConnected === true, connected, platformStates, 'spotify', 'librespot-blob', 'missing');
         this.applyConnectedFlagState(authData.appleMusic?.wrapperReady === true, connected, platformStates, 'applemusic', 'wrapper', 'wrapper');
         this.applyConnectedFlagState(authData.qobuz?.connected === true, connected, platformStates, 'qobuz', 'official-api', 'offline');
@@ -2028,7 +2031,15 @@ globalThis.DeezSpoTag = {
                 return;
             }
             const isActive = status?.active === true;
-            const stateLabel = isActive ? 'Connected' : 'Not connected';
+            const deezerStateLabels = {
+                authenticating: 'Configured; connecting',
+                connected: 'Connected',
+                failed: 'Configured; temporarily unavailable',
+                disconnected: 'Not connected'
+            };
+            const stateLabel = id === 'deezer' && deezerStateLabels[status?.reason]
+                ? deezerStateLabels[status.reason]
+                : isActive ? 'Connected' : 'Not connected';
             const publicApiStatus = ['qobuz', 'tidal', 'amazonmusic'].includes(id)
                 && ['online', 'offline', 'unknown'].includes(status?.publicApiStatus)
                 ? status.publicApiStatus
@@ -2266,7 +2277,7 @@ globalThis.DeezSpoTag = {
 document.addEventListener('DOMContentLoaded', () => {
     DeezSpoTag.init();
     globalThis.addEventListener('autotagPlatformsChanged', () => {
-        DeezSpoTag.loadConnectedPlatforms({ force: true, deep: false, reason: 'autotag-change' });
+        DeezSpoTag.loadConnectedPlatforms({ force: true, reason: 'autotag-change' });
     });
     globalThis.addEventListener('themeChanged', () => {
         DeezSpoTag.updateThemedPlatformIcons();
@@ -2276,7 +2287,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     globalThis.addEventListener('storage', (event) => {
         if (event.key === 'autotag-selected-platforms') {
-            DeezSpoTag.loadConnectedPlatforms({ force: true, deep: false, reason: 'storage-change' });
+            DeezSpoTag.loadConnectedPlatforms({ force: true, reason: 'storage-change' });
         }
     });
 });

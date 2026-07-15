@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Deezer;
@@ -111,6 +113,113 @@ public sealed class DeezerLoginStatusBehaviorTests
         Assert.DoesNotContain(ValidateStatusUrl, siteSource, StringComparison.Ordinal);
         Assert.Contains(ValidateStatusUrl, loginSource, StringComparison.Ordinal);
         Assert.DoesNotContain($"'{ConnectedPlatformsCacheKey}',", layoutSource, StringComparison.Ordinal);
+        Assert.Contains("deezerConnectionStateChanged", siteSource, StringComparison.Ordinal);
+        Assert.Contains("connectedPlatformsCacheMaxAgeMs", siteSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("deezerConnected", siteSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("forceDeep", siteSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("runDeepChecks", siteSource, StringComparison.Ordinal);
+
+        var registryStart = siteSource.IndexOf("const registryPromise = this.ensurePlatformRegistryLoaded()", StringComparison.Ordinal);
+        var authStart = siteSource.IndexOf("const authResponsesPromise = this.fetchConnectedPlatformResponses(fetchOptions)", StringComparison.Ordinal);
+        var registryAwait = siteSource.IndexOf("await registryPromise", authStart, StringComparison.Ordinal);
+        Assert.True(registryStart >= 0 && authStart > registryStart && registryAwait > authStart);
+    }
+
+    [Fact]
+    public void PlatformStatus_WithStoredCredentials_IsImmediatelyConfigured()
+    {
+        var sessionManager = CreateSessionManager();
+        var status = PlatformAuthApiController.ToPublicDeezer(CreateStoredLogin(), sessionManager);
+
+        Assert.True(status.Configured);
+        Assert.False(status.Live);
+        Assert.Equal("authenticating", status.State);
+    }
+
+    [Fact]
+    public void PlatformStatus_WithTemporaryFailure_RetainsConfiguredState()
+    {
+        var sessionManager = CreateSessionManager();
+        SetConnectionState(sessionManager, DeezerConnectionState.Failed);
+
+        var status = PlatformAuthApiController.ToPublicDeezer(CreateStoredLogin(), sessionManager);
+
+        Assert.True(status.Configured);
+        Assert.False(status.Live);
+        Assert.Equal("failed", status.State);
+    }
+
+    [Fact]
+    public void PlatformStatus_WithInvalidStoredArl_IsDisconnected()
+    {
+        var sessionManager = CreateSessionManager();
+        var login = CreateStoredLogin();
+        login.Arl = "invalid";
+
+        var status = PlatformAuthApiController.ToPublicDeezer(login, sessionManager);
+
+        Assert.False(status.Configured);
+        Assert.False(status.Live);
+        Assert.Equal("disconnected", status.State);
+    }
+
+    [Fact]
+    public void PlatformStatus_WithLiveSession_IsConnected()
+    {
+        var sessionManager = CreateSessionManager();
+        SetLiveUser(sessionManager, UnitedStatesCountry);
+
+        var status = PlatformAuthApiController.ToPublicDeezer(CreateStoredLogin(), sessionManager);
+
+        Assert.True(status.Configured);
+        Assert.True(status.Live);
+        Assert.Equal("connected", status.State);
+    }
+
+    [Fact]
+    public async Task Login_PrimaryAccountConnectsBeforeCancelledFamilyDiscovery()
+    {
+        var connectedObserved = false;
+        var sessionManager = CreateSessionManager(() => new StubHttpMessageHandler(async (request, cancellationToken) =>
+        {
+            if (request.RequestUri?.Query.Contains("deezer.getUserData", StringComparison.Ordinal) == true)
+            {
+                return JsonResponse("""
+                    {"results":{"checkForm":"token","user":{"USER_ID":456,"BLOG_NAME":"Primary","MULTI_ACCOUNT":{"ENABLED":true,"IS_SUB_ACCOUNT":false},"OPTIONS":{"license_country":"US","license_token":"license"}}},"error":{}}
+                    """);
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Unreachable");
+        }));
+        sessionManager.ConnectionStateChanged += (_, args) =>
+            connectedObserved |= args.State == DeezerConnectionState.Connected;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        var success = await sessionManager.LoginViaArlAsync(new string('a', 192), cancellationToken: timeout.Token);
+
+        Assert.True(success);
+        Assert.True(connectedObserved);
+        Assert.True(sessionManager.LoggedIn);
+        Assert.Equal("Primary", sessionManager.CurrentUser?.Name);
+        Assert.Equal(DeezerConnectionState.Connected, sessionManager.ConnectionState);
+    }
+
+    [Fact]
+    public async Task Login_CancellationReachesInitialGatewayRequest()
+    {
+        var sessionManager = CreateSessionManager(() => new StubHttpMessageHandler(async (_, cancellationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Unreachable");
+        }));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            sessionManager.LoginViaArlAsync(new string('a', 192), cancellationToken: timeout.Token));
+
+        Assert.False(sessionManager.LoggedIn);
+        Assert.Equal(DeezerConnectionState.Failed, sessionManager.ConnectionState);
     }
 
     [Fact]
@@ -207,6 +316,31 @@ public sealed class DeezerLoginStatusBehaviorTests
         return new DeezerClient(NullLogger<DeezerClient>.Instance, sessionManager);
     }
 
+    private static DeezerSessionManager CreateSessionManager(
+        Func<HttpMessageHandler>? handlerFactory = null)
+        => new(
+            NullLogger<DeezerSessionManager>.Instance,
+            () => new DeezSpoTagSettings { DeezerCountry = UnitedStatesCountry },
+            handlerFactory);
+
+    private static LoginData CreateStoredLogin()
+        => new()
+        {
+            Arl = new string('a', 192),
+            User = new UserData
+            {
+                Id = "456",
+                Name = "Stored Deezer User",
+                Country = UnitedStatesCountry
+            }
+        };
+
+    private static HttpResponseMessage JsonResponse(string json)
+        => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+        };
+
     private static DeezerClient CreateDeezerClientWithLiveUser()
     {
         var client = CreateDeezerClient();
@@ -232,7 +366,15 @@ public sealed class DeezerLoginStatusBehaviorTests
         typeof(DeezerSessionManager)
             .GetProperty("LoggedIn")!
             .SetValue(sessionManager, true);
+        SetConnectionState(sessionManager, DeezerConnectionState.Connected);
     }
+
+    private static void SetConnectionState(
+        DeezerSessionManager sessionManager,
+        DeezerConnectionState state)
+        => typeof(DeezerSessionManager)
+            .GetProperty(nameof(DeezerSessionManager.ConnectionState))!
+            .SetValue(sessionManager, state);
 
     private static string SerializeOkResult(IActionResult result)
     {
@@ -282,5 +424,21 @@ public sealed class DeezerLoginStatusBehaviorTests
 
         public Task ForceFixCorruptedFileAsync()
             => Task.CompletedTask;
+    }
+
+    private sealed class StubHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
+
+        public StubHttpMessageHandler(
+            Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => _handler(request, cancellationToken);
     }
 }

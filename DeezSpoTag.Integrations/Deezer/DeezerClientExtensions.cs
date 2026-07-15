@@ -10,9 +10,13 @@ public static class DeezerClientExtensions
     /// <summary>
     /// Login using ARL (Account Request Login) token (alias for compatibility)
     /// </summary>
-    public static async Task<bool> LoginWithArlAsync(this DeezerClient client, string arl, int? child = null)
+    public static async Task<bool> LoginWithArlAsync(
+        this DeezerClient client,
+        string arl,
+        int? child = null,
+        CancellationToken cancellationToken = default)
     {
-        return await client.LoginViaArlAsync(arl, child ?? 0);
+        return await client.LoginViaArlAsync(arl, child ?? 0, cancellationToken);
     }
 
     /// <summary>

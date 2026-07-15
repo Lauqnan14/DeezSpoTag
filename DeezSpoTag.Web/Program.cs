@@ -1240,6 +1240,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Services.Download.Apple.IAppleWrapperStatusProvider>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.AppleMusicWrapperService>());
         services.AddSingleton<ILoginStorageService, LoginStorageService>();
+        services.AddHostedService<DeezSpoTag.Web.Services.DeezerConnectionStateNotifier>();
         RegisterStartupWorker<StartupLoginService>(
             services,
             StartupWorkerCategory.Deferred,
@@ -1403,7 +1404,8 @@ public partial class Program
                 TidalDownloadService = sp.GetRequiredService<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
                 SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>(),
-                DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>()
+                DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>(),
+                LoginStorage = sp.GetRequiredService<DeezSpoTag.Services.Authentication.ILoginStorageService>()
             });
         services.AddSingleton<DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry, DeezSpoTag.Web.Services.AmazonPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();
