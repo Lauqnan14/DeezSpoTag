@@ -177,9 +177,6 @@ CREATE TABLE IF NOT EXISTS folder (
     convert_enabled INTEGER NOT NULL DEFAULT 0,
     convert_format TEXT,
     convert_bitrate TEXT,
-    plex_section_id TEXT,
-    jellyfin_library_id TEXT,
-    navidrome_library_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -765,6 +762,7 @@ CREATE TABLE IF NOT EXISTS play_history (
     played_at_utc TEXT NOT NULL,
     play_duration_ms INTEGER,
     source TEXT NOT NULL DEFAULT 'plex',
+    remote_library_id TEXT,
     metadata_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (plex_user_id, source, event_key)

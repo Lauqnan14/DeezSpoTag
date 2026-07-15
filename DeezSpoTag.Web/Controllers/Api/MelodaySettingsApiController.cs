@@ -39,7 +39,6 @@ public sealed class MelodaySettingsApiController : ControllerBase
         var cleaned = new MelodayOptions
         {
             Enabled = request.Enabled,
-            LibraryName = string.IsNullOrWhiteSpace(request.LibraryName) ? null : request.LibraryName.Trim(),
             PlaylistPrefix = string.IsNullOrWhiteSpace(request.PlaylistPrefix) ? _defaults.PlaylistPrefix : request.PlaylistPrefix.Trim(),
             BaseUrl = string.IsNullOrWhiteSpace(request.BaseUrl) ? _defaults.BaseUrl : request.BaseUrl.Trim(),
             ExcludePlayedDays = MelodayClamp.AllowZeroOrDefault(request.ExcludePlayedDays, _defaults.ExcludePlayedDays, 0, 365),
@@ -50,44 +49,10 @@ public sealed class MelodaySettingsApiController : ControllerBase
             SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(request.SonicSimilarityDistance, _defaults.SonicSimilarityDistance, 0.05d, 1d),
             UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(request.UpdateIntervalMinutes, _defaults.UpdateIntervalMinutes, 5, 1440),
             Mode = MelodayModes.Normalize(request.Mode),
-            MoodMapPath = _defaults.MoodMapPath,
-            SyncTargets = NormalizeSyncTargets(request.SyncTargets, _defaults.SyncTargets)
+            MoodMapPath = _defaults.MoodMapPath
         };
 
         var saved = await _store.SaveAsync(cleaned);
         return Ok(saved);
     }
-
-    private static List<string> NormalizeSyncTargets(IReadOnlyList<string>? targets, IReadOnlyList<string>? fallback)
-    {
-        var normalized = targets?
-            .Select(NormalizeSyncTarget)
-            .Where(static target => !string.IsNullOrWhiteSpace(target))
-            .Select(static target => target!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (normalized is { Count: > 0 })
-        {
-            return normalized;
-        }
-
-        return fallback?
-            .Select(NormalizeSyncTarget)
-            .Where(static target => !string.IsNullOrWhiteSpace(target))
-            .Select(static target => target!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList() is { Count: > 0 } fallbackNormalized
-            ? fallbackNormalized
-            : new List<string> { "plex", "jellyfin", "navidrome" };
-    }
-
-    private static string? NormalizeSyncTarget(string? target)
-        => target?.Trim().ToLowerInvariant() switch
-        {
-            "plex" => "plex",
-            "jellyfin" => "jellyfin",
-            "navidrome" => "navidrome",
-            _ => null
-        };
 }

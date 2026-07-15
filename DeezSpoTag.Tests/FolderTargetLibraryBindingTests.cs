@@ -19,7 +19,7 @@ public sealed class FolderTargetLibraryBindingTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _root = Path.Join(Path.GetTempPath(), "deezspotag-folder-binding-" + Path.GetRandomFileName());
+        _root = Path.Join(Path.GetTempPath(), "deezspotag-automatic-scope-" + Path.GetRandomFileName());
         Directory.CreateDirectory(_root);
         _dbPath = Path.Join(_root, "library.db");
         _configuration = new ConfigurationBuilder()
@@ -28,148 +28,72 @@ public sealed class FolderTargetLibraryBindingTests : IAsyncLifetime
                 ["ConnectionStrings:Library"] = $"Data Source={_dbPath}"
             })
             .Build();
-
         await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
         _repository = new LibraryRepository(_configuration, NullLogger<LibraryRepository>.Instance);
     }
 
     public Task DisposeAsync()
     {
-        if (Directory.Exists(_root))
-        {
-            Directory.Delete(_root, recursive: true);
-        }
-
+        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
         return Task.CompletedTask;
     }
 
     [Fact]
-    public async Task FolderTargetLibraryBindings_RoundTrip_AndResolveBySource()
+    public async Task Folder_Create_AssignsCanonicalLibraryImmediately_AndUpdatePreservesIt()
     {
-        var folder = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
-            RootPath: "/music/gold",
-            DisplayName: "Gold",
-            Enabled: true,
-            LibraryName: "Gold",
-            DesiredQuality: "27",
-            ConvertEnabled: false,
-            ConvertFormat: null,
-            ConvertBitrate: null,
-            AutoTagProfileId: "profile-1",
-            PlexSectionId: " 4 ",
-            JellyfinLibraryId: "jellyfin-gold",
-            NavidromeLibraryId: "navidrome-gold"));
+        var folder = await AddFolderAsync("/music/gold", "Gold");
 
-        Assert.Equal("4", folder.PlexSectionId);
-        Assert.Equal("jellyfin-gold", folder.JellyfinLibraryId);
-        Assert.Equal("navidrome-gold", folder.NavidromeLibraryId);
-
-        var configured = await _repository.GetConfiguredEnabledMusicFoldersAsync();
-        Assert.Contains(configured, candidate => candidate.Id == folder.Id);
-        Assert.Equal(folder.Id, (await _repository.ResolveConfiguredFolderAsync("plex", "4"))?.Id);
-        Assert.Equal(folder.Id, (await _repository.ResolveConfiguredFolderAsync("JELLYFIN", "jellyfin-gold"))?.Id);
-        Assert.Equal(folder.Id, (await _repository.ResolveConfiguredFolderAsync("navidrome", "navidrome-gold"))?.Id);
-
-        var updated = await _repository.UpdateFolderTargetLibrariesAsync(
-            folder.Id,
-            " 9 ",
-            string.Empty,
-            "navidrome-new");
-        Assert.NotNull(updated);
-        Assert.Equal("9", updated!.PlexSectionId);
-        Assert.Null(updated.JellyfinLibraryId);
-        Assert.Equal("navidrome-new", updated.NavidromeLibraryId);
-    }
-
-    [Fact]
-    public async Task HistoryBackfill_BindsUnambiguousTrackToFolder_AndFolderScopedReads()
-    {
-        var folder = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
-            RootPath: "/music/scoped",
-            DisplayName: "Scoped",
-            Enabled: true,
-            LibraryName: "Scoped",
-            DesiredQuality: "27",
-            ConvertEnabled: false,
-            ConvertFormat: null,
-            ConvertBitrate: null,
-            AutoTagProfileId: "profile-1"));
         Assert.NotNull(folder.LibraryId);
+        Assert.Equal("Gold", folder.LibraryName);
 
-        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
-        {
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = @"
-INSERT INTO artist (id, name) VALUES (101, 'Artist');
-INSERT INTO album (id, artist_id, title) VALUES (102, 101, 'Album');
-INSERT INTO track (id, album_id, title) VALUES (103, 102, 'Track');
-INSERT INTO audio_file (id, path, relative_path, folder_id)
-VALUES (104, '/music/scoped/Artist/Album/Track.flac', 'Artist/Album/Track.flac', @folderId);
-INSERT INTO track_local (track_id, audio_file_id) VALUES (103, 104);";
-            command.Parameters.AddWithValue("folderId", folder.Id);
-            await command.ExecuteNonQueryAsync();
-        }
+        var updated = await _repository.UpdateFolderAsync(
+            folder.Id,
+            new LibraryRepository.FolderUpsertInput(
+                "/music/gold", "Gold renamed", true, null, "27", false, null, null, "profile-2"));
 
-        var userId = await _repository.EnsurePlexUserAsync("user", "user-1", "http://plex.test", null);
-        var playedAt = new DateTimeOffset(2026, 7, 1, 10, 0, 0, TimeSpan.Zero);
-        Assert.True(await _repository.AddPlayHistoryAsync(new LibraryRepository.PlayHistoryWriteInput(
-            PlexUserId: userId,
-            LibraryId: null,
-            TrackId: 103,
-            PlexTrackKey: "/library/metadata/103",
-            PlexRatingKey: "103",
-            PlayedAtUtc: playedAt,
-            DurationMs: 180000,
-            MetadataJson: null)));
-
-        Assert.Equal(1, await _repository.BackfillPlayHistoryLibraryIdsAsync());
-        var scope = await _repository.GetFolderScopeForTrackAsync(103);
-        Assert.Equal(new FolderLibraryScopeDto(folder.Id, folder.LibraryId.Value), scope);
-
-        var entries = await _repository.GetPlayHistoryEntriesAsync(
-            userId,
-            folder.LibraryId.Value,
-            playedAt.AddDays(-1),
-            [10],
-            playedAt.AddDays(1),
-            folderId: folder.Id);
-        Assert.Single(entries);
-
-        var localTimeEntries = await _repository.GetPlayHistoryEntriesAsync(
-            userId,
-            folder.LibraryId.Value,
-            playedAt.AddDays(-1),
-            [13],
-            playedAt.AddDays(1),
-            folderId: folder.Id,
-            localUtcOffset: TimeSpan.FromHours(3));
-        Assert.Single(localTimeEntries);
-
-        await using var verify = new SqliteConnection($"Data Source={_dbPath}");
-        await verify.OpenAsync();
-        await using var verifyCommand = verify.CreateCommand();
-        verifyCommand.CommandText = "SELECT library_id, folder_id FROM play_history LIMIT 1;";
-        await using var reader = await verifyCommand.ExecuteReaderAsync();
-        Assert.True(await reader.ReadAsync());
-        Assert.Equal(folder.LibraryId.Value, reader.GetInt64(0));
-        Assert.Equal(folder.Id, reader.GetInt64(1));
+        Assert.NotNull(updated);
+        Assert.Equal(folder.LibraryId, updated!.LibraryId);
+        Assert.Equal("Gold", updated.LibraryName);
     }
 
     [Fact]
-    public async Task EnsureSchema_AddsBindingAndHistoryScopeColumnsToExistingDatabase()
+    public async Task HistoryScope_UsesUniqueLocalPath_AndFailsClosedForDuplicateMetadata()
+    {
+        var first = await AddFolderAsync("/local/a", "Library A");
+        var second = await AddFolderAsync("/local/b", "Library B");
+        await SeedTrackAsync(101, first.Id, "/local/a/Artist/Album/Same.flac", "Artist/Album/Same.flac");
+        await SeedTrackAsync(201, second.Id, "/local/b/Artist/Album/Same.flac", "Artist/Album/Same.flac");
+
+        var pathMatch = await _repository.ResolveHistoryTrackScopeAsync(
+            "/local/a/Artist/Album/Same.flac",
+            new LibraryRepository.LibraryExistenceInput(null, "Same", "Artist", null),
+            default);
+        var ambiguous = await _repository.ResolveHistoryTrackScopeAsync(
+            null,
+            new LibraryRepository.LibraryExistenceInput(null, "Same", "Artist", null),
+            default);
+
+        Assert.True(pathMatch.Resolved);
+        Assert.Equal(first.Id, pathMatch.FolderId);
+        Assert.Equal(first.LibraryId, pathMatch.LibraryId);
+        Assert.True(ambiguous.Ambiguous);
+        Assert.Null(ambiguous.FolderId);
+        Assert.Null(ambiguous.LibraryId);
+    }
+
+    [Fact]
+    public async Task EnsureSchema_RemovesManualBindings_AndAddsAutomaticHistoryScope()
     {
         await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
         {
             await connection.OpenAsync();
             await using var command = connection.CreateCommand();
             command.CommandText = @"
-DROP INDEX IF EXISTS idx_play_history_folder;
-DROP INDEX IF EXISTS idx_play_history_user_folder_time;
-ALTER TABLE folder DROP COLUMN plex_section_id;
-ALTER TABLE folder DROP COLUMN jellyfin_library_id;
-ALTER TABLE folder DROP COLUMN navidrome_library_id;
-ALTER TABLE play_history DROP COLUMN folder_id;";
+ALTER TABLE folder ADD COLUMN plex_section_id TEXT;
+ALTER TABLE folder ADD COLUMN jellyfin_library_id TEXT;
+ALTER TABLE folder ADD COLUMN navidrome_library_id TEXT;
+DROP INDEX IF EXISTS idx_play_history_remote_library_time;
+ALTER TABLE play_history DROP COLUMN remote_library_id;";
             await command.ExecuteNonQueryAsync();
         }
 
@@ -177,12 +101,77 @@ ALTER TABLE play_history DROP COLUMN folder_id;";
 
         await using var migrated = new SqliteConnection($"Data Source={_dbPath}");
         await migrated.OpenAsync();
-        Assert.True(await ColumnExistsAsync(migrated, "folder", "plex_section_id"));
-        Assert.True(await ColumnExistsAsync(migrated, "folder", "jellyfin_library_id"));
-        Assert.True(await ColumnExistsAsync(migrated, "folder", "navidrome_library_id"));
-        Assert.True(await ColumnExistsAsync(migrated, "play_history", "folder_id"));
-        Assert.True(await IndexExistsAsync(migrated, "idx_play_history_folder"));
-        Assert.True(await IndexExistsAsync(migrated, "idx_play_history_user_folder_time"));
+        Assert.False(await ColumnExistsAsync(migrated, "folder", "plex_section_id"));
+        Assert.False(await ColumnExistsAsync(migrated, "folder", "jellyfin_library_id"));
+        Assert.False(await ColumnExistsAsync(migrated, "folder", "navidrome_library_id"));
+        Assert.True(await ColumnExistsAsync(migrated, "play_history", "remote_library_id"));
+        Assert.True(await IndexExistsAsync(migrated, "idx_play_history_remote_library_time"));
+    }
+
+    [Fact]
+    public async Task HistoryRepair_CorrectsWrongScope_AndClearsCrossLibraryAmbiguity()
+    {
+        var first = await AddFolderAsync("/local/a", "Library A");
+        var second = await AddFolderAsync("/local/b", "Library B");
+        await SeedTrackAsync(301, first.Id, "/local/a/Artist/Album/Unique.flac", "Artist/Album/Unique.flac");
+        await SeedTrackAsync(501, first.Id, "/local/a/Artist/Album/Only-A.flac", "Artist/Album/Only-A.flac");
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+INSERT INTO audio_file (id, path, relative_path, folder_id)
+VALUES (302, '/local/b/Artist/Album/Unique.flac', 'Artist/Album/Unique.flac', @secondFolderId);
+INSERT INTO track_local (track_id, audio_file_id) VALUES (301, 302);
+INSERT INTO plex_user (id, username, plex_user_id) VALUES (401, 'listener', 'listener');
+INSERT INTO play_history
+    (library_id, folder_id, plex_user_id, track_id, plex_track_key, event_key, played_at_utc, source)
+VALUES
+    (@wrongLibraryId, @wrongFolderId, 401, 301, 'remote-301', 'legacy-301', '2026-07-01T10:00:00Z', 'plex'),
+    (@wrongLibraryId, @wrongFolderId, 401, 501, 'remote-501', 'legacy-501', '2026-07-01T11:00:00Z', 'plex');";
+            command.Parameters.AddWithValue("secondFolderId", second.Id);
+            command.Parameters.AddWithValue("wrongLibraryId", second.LibraryId!.Value);
+            command.Parameters.AddWithValue("wrongFolderId", second.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await _repository.BackfillPlayHistoryLibraryIdsAsync();
+
+        await using var verify = new SqliteConnection($"Data Source={_dbPath}");
+        await verify.OpenAsync();
+        await using var verifyCommand = verify.CreateCommand();
+        verifyCommand.CommandText = "SELECT track_id, library_id, folder_id FROM play_history ORDER BY track_id;";
+        await using var reader = await verifyCommand.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.True(await reader.IsDBNullAsync(1));
+        Assert.True(await reader.IsDBNullAsync(2));
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(501, reader.GetInt64(0));
+        Assert.Equal(first.LibraryId!.Value, reader.GetInt64(1));
+        Assert.Equal(first.Id, reader.GetInt64(2));
+    }
+
+    private Task<FolderDto> AddFolderAsync(string root, string name)
+        => _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            root, name, true, name, "27", false, null, null, "profile-1"));
+
+    private async Task SeedTrackAsync(long id, long folderId, string path, string relativePath)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+INSERT INTO artist (id, name) VALUES (@id, 'Artist');
+INSERT INTO album (id, artist_id, title) VALUES (@id, @id, 'Album');
+INSERT INTO track (id, album_id, title) VALUES (@id, @id, 'Same');
+INSERT INTO audio_file (id, path, relative_path, folder_id) VALUES (@id, @path, @relativePath, @folderId);
+INSERT INTO track_local (track_id, audio_file_id) VALUES (@id, @id);";
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("path", path);
+        command.Parameters.AddWithValue("relativePath", relativePath);
+        command.Parameters.AddWithValue("folderId", folderId);
+        await command.ExecuteNonQueryAsync();
     }
 
     private static async Task<bool> ColumnExistsAsync(SqliteConnection connection, string table, string column)

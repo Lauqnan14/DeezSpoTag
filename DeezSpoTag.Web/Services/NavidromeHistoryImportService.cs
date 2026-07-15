@@ -10,21 +10,27 @@ public sealed class NavidromeHistoryImportService
     private readonly NavidromeApiClient _navidromeApiClient;
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
+    private readonly MelodayRemoteLibraryCatalog _libraryCatalog;
     private readonly ILogger<NavidromeHistoryImportService> _logger;
 
     public NavidromeHistoryImportService(
         NavidromeApiClient navidromeApiClient,
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
+        MelodayRemoteLibraryCatalog libraryCatalog,
         ILogger<NavidromeHistoryImportService> logger)
     {
         _navidromeApiClient = navidromeApiClient;
         _authService = authService;
         _libraryRepository = libraryRepository;
+        _libraryCatalog = libraryCatalog;
         _logger = logger;
     }
 
     public async Task<int> ImportAsync(CancellationToken cancellationToken = default)
+        => (await ImportDetailedAsync(cancellationToken)).Imported;
+
+    public async Task<MelodayHistoryImportResult> ImportDetailedAsync(CancellationToken cancellationToken = default)
     {
         var state = await _authService.LoadAsync();
         var navidrome = state.Navidrome;
@@ -34,7 +40,7 @@ public sealed class NavidromeHistoryImportService
             || string.IsNullOrWhiteSpace(navidrome.Password))
         {
             _logger.LogWarning("Navidrome auth missing; skipping history import.");
-            return 0;
+            return MelodayHistoryImportResult.NotConfigured("navidrome");
         }
 
         var username = navidrome.Username.Trim();
@@ -44,80 +50,81 @@ public sealed class NavidromeHistoryImportService
             navidrome.Url,
             navidrome.ServerName,
             cancellationToken);
-        var stats = new ImportStats();
+        var insertedCount = 0;
         var fetchedCount = 0;
-        var folders = (await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
-            .Where(static folder => !string.IsNullOrWhiteSpace(folder.NavidromeLibraryId))
-            .ToList();
-        foreach (var folder in folders)
+        var resolvedCount = 0;
+        var ambiguousCount = 0;
+        var unresolvedCount = 0;
+        string? importError = null;
+        var catalog = await _libraryCatalog.GetNavidromeAsync(navidrome, forceRefresh: true, cancellationToken);
+        if (!catalog.Available)
         {
-            var latest = await _libraryRepository.GetLatestPlayHistoryUtcForFolderAsync(
-                historyUserId, "navidrome", folder.Id, cancellationToken);
-            var history = await _navidromeApiClient.GetPlayHistoryAsync(
-                navidrome.Url, username, navidrome.Password, folder.NavidromeLibraryId!,
-                latest?.Subtract(ImportOverlap), cancellationToken: cancellationToken);
+            return MelodayHistoryImportResult.Unavailable(
+                "navidrome",
+                catalog.Error ?? "Navidrome library discovery failed.");
+        }
+
+        foreach (var library in catalog.Libraries)
+        {
+            var latest = await _libraryRepository.GetLatestPlayHistoryUtcForRemoteLibraryAsync(
+                historyUserId, "navidrome", library.Id, cancellationToken);
+            List<NavidromeHistoryItem> history;
+            try
+            {
+                history = await _navidromeApiClient.GetPlayHistoryAsync(
+                    navidrome.Url, username, navidrome.Password, library.Id,
+                    latest?.Subtract(ImportOverlap), cancellationToken: cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                importError = $"One or more Navidrome libraries could not be read: {ex.Message}";
+                _logger.LogWarning(ex, "Navidrome history import failed for remote library {RemoteLibraryId}.", library.Id);
+                continue;
+            }
             fetchedCount += history.Count;
             foreach (var item in history)
             {
-                var trackId = await ResolveTrackIdAsync(item, folder, stats, cancellationToken);
-                if (!trackId.HasValue) stats.Unresolved++;
+                var resolution = await _libraryRepository.ResolveHistoryTrackScopeAsync(
+                    item.FilePath,
+                    new LibraryRepository.LibraryExistenceInput(
+                        null, item.Title, item.Artist, item.DurationMs,
+                        "navidrome", item.ItemId),
+                    cancellationToken);
+                if (resolution.Resolved) resolvedCount++;
+                else if (resolution.Ambiguous) ambiguousCount++;
+                else unresolvedCount++;
+
                 if (await _libraryRepository.AddPlayHistoryAsync(
                         new LibraryRepository.PlayHistoryWriteInput(
-                            historyUserId, folder.LibraryId, trackId, item.ItemId, null,
+                            historyUserId, resolution.LibraryId, resolution.TrackId,
+                            string.IsNullOrWhiteSpace(item.FilePath) ? item.ItemId : item.FilePath,
+                            item.ItemId,
                             item.PlayedAtUtc, item.DurationMs, JsonSerializer.Serialize(item),
-                            "navidrome", folder.Id),
+                            "navidrome", resolution.FolderId, library.Id),
                         cancellationToken))
                 {
-                    stats.Inserted++;
+                    insertedCount++;
                 }
             }
         }
 
         _logger.LogInformation(
-            "Imported {Count} Navidrome history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
-            stats.Inserted,
+            "Imported {Count} library-scoped Navidrome history entries from {FetchedCount} fetched. resolved={Resolved} ambiguous={Ambiguous} unresolved={Unresolved}.",
+            insertedCount,
             fetchedCount,
-            stats.ResolvedByFilePath,
-            stats.ResolvedByMetadata,
-            stats.Unresolved);
-        return stats.Inserted;
-    }
-
-    private async Task<long?> ResolveTrackIdAsync(
-        NavidromeHistoryItem item,
-        FolderDto folder,
-        ImportStats stats,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(item.FilePath))
-        {
-            var pathMatch = await _libraryRepository.GetTrackIdForFilePathAsync(item.FilePath, cancellationToken);
-            if (pathMatch.HasValue && await _libraryRepository.GetFolderScopeForTrackAsync(
-                    pathMatch.Value, folder.Id, folder.LibraryId, cancellationToken) is not null)
-            {
-                stats.ResolvedByFilePath++;
-                return pathMatch;
-            }
-        }
-
-        var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
-            new LibraryRepository.LibraryExistenceInput(
-                null, item.Title, item.Artist, item.DurationMs, "navidrome", item.ItemId),
-            folder.LibraryId,
-            folder.Id,
-            cancellationToken);
-        if (resolved.LocalTrackId.HasValue)
-        {
-            stats.ResolvedByMetadata++;
-        }
-        return resolved.LocalTrackId;
-    }
-
-    private sealed class ImportStats
-    {
-        public int Inserted { get; set; }
-        public int ResolvedByFilePath { get; set; }
-        public int ResolvedByMetadata { get; set; }
-        public int Unresolved { get; set; }
+            resolvedCount,
+            ambiguousCount,
+            unresolvedCount);
+        return new MelodayHistoryImportResult(
+            "navidrome",
+            true,
+            true,
+            catalog.Libraries.Count,
+            fetchedCount,
+            insertedCount,
+            resolvedCount,
+            ambiguousCount,
+            unresolvedCount,
+            importError);
     }
 }

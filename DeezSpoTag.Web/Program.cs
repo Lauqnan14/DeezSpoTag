@@ -1749,6 +1749,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.PlexHistoryImportService>();
         services.AddSingleton<DeezSpoTag.Web.Services.JellyfinHistoryImportService>();
         services.AddSingleton<DeezSpoTag.Web.Services.NavidromeHistoryImportService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MelodayRemoteLibraryCatalog>();
         services.AddSingleton<DeezSpoTag.Web.Services.VibeAnalysisSettingsStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.TrackAnalysisBackgroundService>(

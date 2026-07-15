@@ -9,21 +9,27 @@ public sealed class JellyfinHistoryImportService
     private readonly JellyfinApiClient _jellyfinApiClient;
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
+    private readonly MelodayRemoteLibraryCatalog _libraryCatalog;
     private readonly ILogger<JellyfinHistoryImportService> _logger;
 
     public JellyfinHistoryImportService(
         JellyfinApiClient jellyfinApiClient,
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
+        MelodayRemoteLibraryCatalog libraryCatalog,
         ILogger<JellyfinHistoryImportService> logger)
     {
         _jellyfinApiClient = jellyfinApiClient;
         _authService = authService;
         _libraryRepository = libraryRepository;
+        _libraryCatalog = libraryCatalog;
         _logger = logger;
     }
 
     public async Task<int> ImportAsync(CancellationToken cancellationToken = default)
+        => (await ImportDetailedAsync(cancellationToken)).Imported;
+
+    public async Task<MelodayHistoryImportResult> ImportDetailedAsync(CancellationToken cancellationToken = default)
     {
         var state = await _authService.LoadAsync();
         var jellyfin = state.Jellyfin;
@@ -33,7 +39,7 @@ public sealed class JellyfinHistoryImportService
             || string.IsNullOrWhiteSpace(jellyfin.UserId))
         {
             _logger.LogWarning("Jellyfin auth missing; skipping history import.");
-            return 0;
+            return MelodayHistoryImportResult.NotConfigured("jellyfin");
         }
 
         var username = !string.IsNullOrWhiteSpace(jellyfin.Username) ? jellyfin.Username : jellyfin.ServerName;
@@ -44,29 +50,56 @@ public sealed class JellyfinHistoryImportService
             jellyfin.ServerName,
             cancellationToken);
 
-        var stats = new ImportStats();
+        var insertedCount = 0;
         var fetchedCount = 0;
-        var folders = (await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
-            .Where(static folder => !string.IsNullOrWhiteSpace(folder.JellyfinLibraryId))
-            .ToList();
-        foreach (var folder in folders)
+        var resolvedCount = 0;
+        var ambiguousCount = 0;
+        var unresolvedCount = 0;
+        string? importError = null;
+        var catalog = await _libraryCatalog.GetJellyfinAsync(jellyfin, forceRefresh: true, cancellationToken);
+        if (!catalog.Available)
         {
-            var history = await _jellyfinApiClient.GetAudioPlayHistoryAsync(
-                jellyfin.Url, jellyfin.ApiKey, jellyfin.UserId, folder.JellyfinLibraryId!,
-                cancellationToken: cancellationToken);
+            return MelodayHistoryImportResult.Unavailable(
+                "jellyfin",
+                catalog.Error ?? "Jellyfin library discovery failed.");
+        }
+
+        foreach (var library in catalog.Libraries)
+        {
+            List<JellyfinHistoryItem> history;
+            try
+            {
+                history = await _jellyfinApiClient.GetAudioPlayHistoryAsync(
+                    jellyfin.Url, jellyfin.ApiKey, jellyfin.UserId, library.Id,
+                    cancellationToken: cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                importError = $"One or more Jellyfin libraries could not be read: {ex.Message}";
+                _logger.LogWarning(ex, "Jellyfin history import failed for remote library {RemoteLibraryId}.", library.Id);
+                continue;
+            }
             fetchedCount += history.Count;
             foreach (var item in history)
             {
-                var trackId = await ResolveTrackIdAsync(item, folder, stats, cancellationToken);
-                if (!trackId.HasValue) stats.Unresolved++;
+                var resolution = await _libraryRepository.ResolveHistoryTrackScopeAsync(
+                    item.FilePath,
+                    new LibraryRepository.LibraryExistenceInput(
+                        null, item.Title, item.Artist, item.DurationMs,
+                        "jellyfin", item.ItemId, item.Album),
+                    cancellationToken);
+                if (resolution.Resolved) resolvedCount++;
+                else if (resolution.Ambiguous) ambiguousCount++;
+                else unresolvedCount++;
+
                 if (await _libraryRepository.AddPlayHistoryAsync(
                         new LibraryRepository.PlayHistoryWriteInput(
-                            userId, folder.LibraryId, trackId, item.FilePath, item.ItemId,
+                            userId, resolution.LibraryId, resolution.TrackId, item.FilePath, item.ItemId,
                             item.PlayedAtUtc, item.DurationMs, JsonSerializer.Serialize(item),
-                            "jellyfin", folder.Id),
+                            "jellyfin", resolution.FolderId, library.Id),
                         cancellationToken))
                 {
-                    stats.Inserted++;
+                    insertedCount++;
                 }
             }
         }
@@ -74,52 +107,24 @@ public sealed class JellyfinHistoryImportService
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Imported {Count} folder-scoped Jellyfin history entries from {FetchedCount} fetched. resolvedByPath={ResolvedByPath} resolvedByMetadata={ResolvedByMetadata} unresolved={Unresolved}.",
-                stats.Inserted,
+                "Imported {Count} library-scoped Jellyfin history entries from {FetchedCount} fetched. resolved={Resolved} ambiguous={Ambiguous} unresolved={Unresolved}.",
+                insertedCount,
                 fetchedCount,
-                stats.ResolvedByFilePath,
-                stats.ResolvedByMetadata,
-                stats.Unresolved);
+                resolvedCount,
+                ambiguousCount,
+                unresolvedCount);
         }
 
-        return stats.Inserted;
-    }
-
-    private async Task<long?> ResolveTrackIdAsync(
-        JellyfinHistoryItem item,
-        FolderDto folder,
-        ImportStats stats,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(item.FilePath))
-        {
-            var pathMatch = await _libraryRepository.GetTrackIdForFilePathAsync(item.FilePath, cancellationToken);
-            if (pathMatch.HasValue && await _libraryRepository.GetFolderScopeForTrackAsync(
-                    pathMatch.Value, folder.Id, folder.LibraryId, cancellationToken) is not null)
-            {
-                stats.ResolvedByFilePath++;
-                return pathMatch;
-            }
-        }
-
-        var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
-            new LibraryRepository.LibraryExistenceInput(
-                null, item.Title, item.Artist, item.DurationMs, "jellyfin", item.ItemId, item.Album),
-            folder.LibraryId,
-            folder.Id,
-            cancellationToken);
-        if (resolved.LocalTrackId.HasValue)
-        {
-            stats.ResolvedByMetadata++;
-        }
-        return resolved.LocalTrackId;
-    }
-
-    private sealed class ImportStats
-    {
-        public int Inserted { get; set; }
-        public int ResolvedByFilePath { get; set; }
-        public int ResolvedByMetadata { get; set; }
-        public int Unresolved { get; set; }
+        return new MelodayHistoryImportResult(
+            "jellyfin",
+            true,
+            true,
+            catalog.Libraries.Count,
+            fetchedCount,
+            insertedCount,
+            resolvedCount,
+            ambiguousCount,
+            unresolvedCount,
+            importError);
     }
 }

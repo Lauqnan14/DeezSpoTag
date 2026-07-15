@@ -95,6 +95,7 @@ async function loadMelodayStatus() {
     const lastRunEl = document.getElementById('melodayLastRun');
     const periodEl = document.getElementById('melodayPeriod');
     const lastMessageEl = document.getElementById('melodayLastMessage');
+    const historySourcesEl = document.getElementById('melodayHistorySources');
     const settingsSummaryEl = document.getElementById('melodaySettingsSummary');
     try {
         const status = await melodayFetchJson('/api/meloday/status');
@@ -108,6 +109,18 @@ async function loadMelodayStatus() {
         }
         if (lastMessageEl) {
             lastMessageEl.textContent = status.lastMessage || '—';
+        }
+        if (historySourcesEl) {
+            const sources = Array.isArray(status.historySources) ? status.historySources : [];
+            historySourcesEl.textContent = sources.length > 0
+                ? sources.map(source => {
+                    const service = String(source.service || 'server');
+                    const sourceStatus = String(source.status || 'unknown');
+                    const resolved = Number(source.resolved || 0);
+                    const fetched = Number(source.fetched || 0);
+                    return `${service}: ${sourceStatus} (${resolved}/${fetched} resolved)`;
+                }).join(' • ')
+                : 'Not checked';
         }
         if (settingsSummaryEl) {
             const tracks = status.maxTracks ?? melodayDefaults.maxTracks;
@@ -130,6 +143,9 @@ async function loadMelodayStatus() {
         }
         if (lastMessageEl) {
             lastMessageEl.textContent = '—';
+        }
+        if (historySourcesEl) {
+            historySourcesEl.textContent = 'Unavailable';
         }
         if (settingsSummaryEl) {
             settingsSummaryEl.textContent = '—';
@@ -169,24 +185,6 @@ function melodayGetMode() {
     return melodayNormalizeMode(document.querySelector('input[name="meloday-mode"]:checked')?.value || melodayDefaults.mode);
 }
 
-function melodayGetSyncTargets() {
-    const selected = Array.from(document.querySelectorAll('[data-meloday-target]'))
-        .filter(input => input.checked)
-        .map(input => String(input.getAttribute('data-meloday-target') || '').trim().toLowerCase())
-        .filter(Boolean);
-    return selected.length > 0 ? selected : ['plex', 'jellyfin', 'navidrome'];
-}
-
-function melodaySetSyncTargets(targets) {
-    const selected = Array.isArray(targets) && targets.length > 0
-        ? targets.map(target => String(target || '').trim().toLowerCase())
-        : ['plex', 'jellyfin', 'navidrome'];
-    document.querySelectorAll('[data-meloday-target]').forEach((input) => {
-        const target = String(input.getAttribute('data-meloday-target') || '').trim().toLowerCase();
-        input.checked = selected.includes(target);
-    });
-}
-
 async function loadMelodaySettings() {
     const enabledEl = document.getElementById('meloday-enabled');
     if (!enabledEl) {
@@ -198,7 +196,6 @@ async function loadMelodaySettings() {
         melodayState.enabled = enabledEl.checked;
         melodayState.settings = { ...settings, enabled: enabledEl.checked };
         updateMelodayStatusPill();
-        const libraryName = document.getElementById('meloday-library-name');
         const playlistPrefix = document.getElementById('meloday-playlist-prefix');
         const maxTracks = document.getElementById('meloday-max-tracks');
         const lookback = document.getElementById('meloday-lookback-days');
@@ -208,9 +205,6 @@ async function loadMelodaySettings() {
         const similarLimit = document.getElementById('meloday-similar-limit');
         const historicalRatio = document.getElementById('meloday-historical-ratio');
         melodaySetMode(settings.mode || melodayDefaults.mode);
-        melodaySetSyncTargets(settings.syncTargets);
-
-        if (libraryName) libraryName.value = settings.libraryName || '';
         if (playlistPrefix) playlistPrefix.value = settings.playlistPrefix || '';
         if (maxTracks) maxTracks.value = settings.maxTracks ?? 50;
         if (lookback) lookback.value = settings.historyLookbackDays ?? 30;
@@ -228,7 +222,6 @@ function buildMelodayPayload(enabledOverride) {
     const enabledEl = document.getElementById('meloday-enabled');
     return {
         enabled: enabledOverride ?? enabledEl?.checked ?? true,
-        libraryName: document.getElementById('meloday-library-name')?.value || '',
         playlistPrefix: document.getElementById('meloday-playlist-prefix')?.value || '',
         maxTracks: melodayParseNumber(document.getElementById('meloday-max-tracks')?.value, 50),
         historyLookbackDays: melodayParseNumber(document.getElementById('meloday-lookback-days')?.value, 30),
@@ -237,8 +230,7 @@ function buildMelodayPayload(enabledOverride) {
         sonicSimilarityDistance: melodayParseNumber(document.getElementById('meloday-similarity-distance')?.value, 0.35),
         sonicSimilarLimit: melodayParseNumber(document.getElementById('meloday-similar-limit')?.value, 8),
         historicalRatio: melodayParseNumber(document.getElementById('meloday-historical-ratio')?.value, 0.3),
-        mode: melodayGetMode(),
-        syncTargets: melodayGetSyncTargets()
+        mode: melodayGetMode()
     };
 }
 

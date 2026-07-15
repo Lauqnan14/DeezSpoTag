@@ -98,7 +98,6 @@ public sealed class MelodaySettingsStore
     private static MelodayOptions Merge(MelodayOptions defaults, MelodayOptions stored) => new()
     {
         Enabled = stored.Enabled,
-        LibraryName = string.IsNullOrWhiteSpace(stored.LibraryName) ? defaults.LibraryName : stored.LibraryName,
         PlaylistPrefix = string.IsNullOrWhiteSpace(stored.PlaylistPrefix) ? defaults.PlaylistPrefix : stored.PlaylistPrefix,
         BaseUrl = string.IsNullOrWhiteSpace(stored.BaseUrl) ? defaults.BaseUrl : stored.BaseUrl,
         ExcludePlayedDays = MelodayClamp.AllowZeroOrDefault(stored.ExcludePlayedDays, defaults.ExcludePlayedDays, 0, 365),
@@ -109,14 +108,12 @@ public sealed class MelodaySettingsStore
         SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(stored.SonicSimilarityDistance, defaults.SonicSimilarityDistance, 0.05d, 1d),
         UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(stored.UpdateIntervalMinutes, defaults.UpdateIntervalMinutes, 5, 1440),
         Mode = MelodayModes.Normalize(string.IsNullOrWhiteSpace(stored.Mode) ? defaults.Mode : stored.Mode),
-        MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath,
-        SyncTargets = NormalizeSyncTargets(stored.SyncTargets, defaults.SyncTargets)
+        MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath
     };
 
     private static MelodayOptions Clone(MelodayOptions source) => new()
     {
         Enabled = source.Enabled,
-        LibraryName = source.LibraryName,
         PlaylistPrefix = source.PlaylistPrefix,
         BaseUrl = source.BaseUrl,
         ExcludePlayedDays = source.ExcludePlayedDays,
@@ -127,40 +124,6 @@ public sealed class MelodaySettingsStore
         SonicSimilarityDistance = source.SonicSimilarityDistance,
         UpdateIntervalMinutes = source.UpdateIntervalMinutes,
         Mode = MelodayModes.Normalize(source.Mode),
-        MoodMapPath = source.MoodMapPath,
-        SyncTargets = NormalizeSyncTargets(source.SyncTargets, null)
+        MoodMapPath = source.MoodMapPath
     };
-
-    private static List<string> NormalizeSyncTargets(IReadOnlyList<string>? targets, IReadOnlyList<string>? fallback)
-    {
-        var normalized = targets?
-            .Select(NormalizeSyncTarget)
-            .Where(static target => !string.IsNullOrWhiteSpace(target))
-            .Select(static target => target!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (normalized is { Count: > 0 })
-        {
-            return normalized;
-        }
-
-        return fallback?
-            .Select(NormalizeSyncTarget)
-            .Where(static target => !string.IsNullOrWhiteSpace(target))
-            .Select(static target => target!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList() is { Count: > 0 } fallbackNormalized
-            ? fallbackNormalized
-            : new List<string> { "plex", "jellyfin", "navidrome" };
-    }
-
-    private static string? NormalizeSyncTarget(string? target)
-        => target?.Trim().ToLowerInvariant() switch
-        {
-            "plex" => "plex",
-            "jellyfin" => "jellyfin",
-            "navidrome" => "navidrome",
-            _ => null
-        };
 }

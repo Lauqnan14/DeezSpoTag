@@ -1,6 +1,3 @@
-using DeezSpoTag.Integrations.Jellyfin;
-using DeezSpoTag.Integrations.Navidrome;
-using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
@@ -62,47 +59,15 @@ public class LibraryFoldersApiController : ControllerBase
     private readonly LibraryRepository _repository;
     private readonly TaggingProfileService _profileService;
     private readonly DeezSpoTag.Web.Services.LibraryConfigStore _configStore;
-    private readonly PlatformAuthService _platformAuthService;
-    private readonly PlexApiClient _plexApiClient;
-    private readonly JellyfinApiClient _jellyfinApiClient;
-    private readonly NavidromeApiClient _navidromeApiClient;
 
     public LibraryFoldersApiController(
         LibraryRepository repository,
         TaggingProfileService profileService,
-        DeezSpoTag.Web.Services.LibraryConfigStore configStore,
-        PlatformAuthService platformAuthService,
-        PlexApiClient plexApiClient,
-        JellyfinApiClient jellyfinApiClient,
-        NavidromeApiClient navidromeApiClient)
+        DeezSpoTag.Web.Services.LibraryConfigStore configStore)
     {
         _repository = repository;
         _profileService = profileService;
         _configStore = configStore;
-        _platformAuthService = platformAuthService;
-        _plexApiClient = plexApiClient;
-        _jellyfinApiClient = jellyfinApiClient;
-        _navidromeApiClient = navidromeApiClient;
-    }
-
-    public sealed record TargetLibraryOption(string Id, string Name);
-    public sealed record TargetLibrarySource(bool Configured, IReadOnlyList<TargetLibraryOption> Libraries, string? Error = null);
-
-    [HttpGet("target-libraries")]
-    public async Task<IActionResult> GetTargetLibraries(CancellationToken cancellationToken)
-    {
-        var auth = await _platformAuthService.LoadAsync();
-        var plexTask = DiscoverPlexLibrariesAsync(auth.Plex, cancellationToken);
-        var jellyfinTask = DiscoverJellyfinLibrariesAsync(auth.Jellyfin, cancellationToken);
-        var navidromeTask = DiscoverNavidromeLibrariesAsync(auth.Navidrome, cancellationToken);
-        await Task.WhenAll(plexTask, jellyfinTask, navidromeTask);
-
-        return Ok(new
-        {
-            plex = await plexTask,
-            jellyfin = await jellyfinTask,
-            navidrome = await navidromeTask
-        });
     }
 
     [HttpGet]
@@ -198,10 +163,7 @@ public class LibraryFoldersApiController : ControllerBase
         bool? ConvertEnabled,
         string? ConvertFormat,
         string? ConvertBitrate,
-        string? ProfileId = null,
-        string? PlexSectionId = null,
-        string? JellyfinLibraryId = null,
-        string? NavidromeLibraryId = null);
+        string? ProfileId = null);
 
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateFolderRequest request, CancellationToken cancellationToken)
@@ -247,10 +209,7 @@ public class LibraryFoldersApiController : ControllerBase
                 convertFormat,
                 convertBitrate,
                 requiredProfile.ProfileId,
-                ReplaceAutoTagProfile: true,
-                PlexSectionId: request.PlexSectionId,
-                JellyfinLibraryId: request.JellyfinLibraryId,
-                NavidromeLibraryId: request.NavidromeLibraryId),
+                ReplaceAutoTagProfile: true),
             cancellationToken);
         _configStore.AddLog(new DeezSpoTag.Web.Services.LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,
@@ -268,10 +227,7 @@ public class LibraryFoldersApiController : ControllerBase
         bool? ConvertEnabled,
         string? ConvertFormat,
         string? ConvertBitrate,
-        string? ProfileId = null,
-        string? PlexSectionId = null,
-        string? JellyfinLibraryId = null,
-        string? NavidromeLibraryId = null);
+        string? ProfileId = null);
 
     [HttpPatch("{id:long}")]
     public async Task<IActionResult> Update(long id, [FromBody] UpdateFolderRequest request, CancellationToken cancellationToken)
@@ -321,10 +277,7 @@ public class LibraryFoldersApiController : ControllerBase
                 convertFormat,
                 convertBitrate,
                 requiredProfile.ProfileId,
-                ReplaceAutoTagProfile: true,
-                PlexSectionId: request.PlexSectionId ?? existingFolder.PlexSectionId,
-                JellyfinLibraryId: request.JellyfinLibraryId ?? existingFolder.JellyfinLibraryId,
-                NavidromeLibraryId: request.NavidromeLibraryId ?? existingFolder.NavidromeLibraryId),
+                ReplaceAutoTagProfile: true),
             cancellationToken);
         if (folder is null)
         {
@@ -362,31 +315,6 @@ public class LibraryFoldersApiController : ControllerBase
                 $"Folder removed (db): id={id}"));
         }
         return Ok(new { deleted });
-    }
-
-    public sealed record UpdateTargetLibrariesRequest(
-        string? PlexSectionId,
-        string? JellyfinLibraryId,
-        string? NavidromeLibraryId);
-
-    [HttpPut("{id:long}/target-libraries")]
-    public async Task<IActionResult> UpdateTargetLibraries(
-        long id,
-        [FromBody] UpdateTargetLibrariesRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (!_repository.IsConfigured)
-        {
-            return DatabaseNotConfigured();
-        }
-
-        var folder = await _repository.UpdateFolderTargetLibrariesAsync(
-            id,
-            request.PlexSectionId,
-            request.JellyfinLibraryId,
-            request.NavidromeLibraryId,
-            cancellationToken);
-        return folder is null ? NotFound() : Ok(folder);
     }
 
     [HttpGet("{id:long}/aliases")]
@@ -832,110 +760,6 @@ public class LibraryFoldersApiController : ControllerBase
         }
 
         return FolderContentMusic;
-    }
-
-    private async Task<TargetLibrarySource> DiscoverPlexLibrariesAsync(
-        PlexAuth? plex,
-        CancellationToken cancellationToken)
-    {
-        var configured = !string.IsNullOrWhiteSpace(plex?.Url)
-            && !string.IsNullOrWhiteSpace(plex.Token);
-        if (!configured)
-        {
-            return new TargetLibrarySource(false, Array.Empty<TargetLibraryOption>());
-        }
-
-        try
-        {
-            var sections = await _plexApiClient.GetLibrarySectionsAsync(plex!.Url!, plex.Token!, cancellationToken);
-            var libraries = sections
-                .Where(static section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
-                .Where(static section => !string.IsNullOrWhiteSpace(section.Key))
-                .Select(static section => new TargetLibraryOption(
-                    section.Key.Trim(),
-                    string.IsNullOrWhiteSpace(section.Title) ? section.Key.Trim() : section.Title.Trim()))
-                .OrderBy(static library => library.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            return new TargetLibrarySource(true, libraries);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return new TargetLibrarySource(true, Array.Empty<TargetLibraryOption>(), "Plex libraries could not be loaded.");
-        }
-    }
-
-    private async Task<TargetLibrarySource> DiscoverJellyfinLibrariesAsync(
-        JellyfinAuth? jellyfin,
-        CancellationToken cancellationToken)
-    {
-        var configured = !string.IsNullOrWhiteSpace(jellyfin?.Url)
-            && !string.IsNullOrWhiteSpace(jellyfin.ApiKey);
-        if (!configured)
-        {
-            return new TargetLibrarySource(false, Array.Empty<TargetLibraryOption>());
-        }
-
-        try
-        {
-            var sections = await _jellyfinApiClient.GetLibrariesAsync(jellyfin!.Url!, jellyfin.ApiKey!, cancellationToken);
-            var libraries = sections
-                .Where(static section => string.Equals(section.CollectionType, "music", StringComparison.OrdinalIgnoreCase))
-                .Where(static section => !string.IsNullOrWhiteSpace(section.Id))
-                .Select(static section => new TargetLibraryOption(
-                    section.Id!.Trim(),
-                    string.IsNullOrWhiteSpace(section.Name) ? section.Id!.Trim() : section.Name.Trim()))
-                .OrderBy(static library => library.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            return new TargetLibrarySource(true, libraries);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return new TargetLibrarySource(true, Array.Empty<TargetLibraryOption>(), "Jellyfin libraries could not be loaded.");
-        }
-    }
-
-    private async Task<TargetLibrarySource> DiscoverNavidromeLibrariesAsync(
-        NavidromeAuth? navidrome,
-        CancellationToken cancellationToken)
-    {
-        var configured = !string.IsNullOrWhiteSpace(navidrome?.Url)
-            && !string.IsNullOrWhiteSpace(navidrome.Username)
-            && !string.IsNullOrWhiteSpace(navidrome.Password);
-        if (!configured)
-        {
-            return new TargetLibrarySource(false, Array.Empty<TargetLibraryOption>());
-        }
-
-        try
-        {
-            var sections = await _navidromeApiClient.GetLibrariesAsync(
-                navidrome!.Url!,
-                navidrome.Username!,
-                navidrome.Password!,
-                cancellationToken);
-            var libraries = sections
-                .Where(static section => !string.IsNullOrWhiteSpace(section.Id))
-                .Select(static section => new TargetLibraryOption(section.Id.Trim(), section.Name.Trim()))
-                .OrderBy(static library => library.Name, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            return new TargetLibrarySource(true, libraries);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            return new TargetLibrarySource(true, Array.Empty<TargetLibraryOption>(), "Navidrome libraries could not be loaded.");
-        }
     }
 
     private static string[] SafeEnumerateDirectories(string path)

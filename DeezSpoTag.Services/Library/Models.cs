@@ -18,14 +18,22 @@ public sealed record FolderDto(
     bool AutoTagEnabled,
     bool ConvertEnabled,
     string? ConvertFormat,
-    string? ConvertBitrate,
-    string? PlexSectionId = null,
-    string? JellyfinLibraryId = null,
-    string? NavidromeLibraryId = null);
+    string? ConvertBitrate);
 
 public sealed record FolderLibraryScopeDto(
     long FolderId,
     long LibraryId);
+
+public sealed record HistoryTrackScopeResolution(
+    long? TrackId,
+    long? FolderId,
+    long? LibraryId,
+    string MatchType,
+    string Reason)
+{
+    public bool Resolved => TrackId.HasValue && FolderId.HasValue && LibraryId.HasValue;
+    public bool Ambiguous => string.Equals(MatchType, "ambiguous", StringComparison.Ordinal);
+}
 
 public sealed record LibraryDto(long Id, string Name);
 

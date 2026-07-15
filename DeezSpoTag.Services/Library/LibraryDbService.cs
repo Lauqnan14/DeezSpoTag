@@ -38,6 +38,7 @@ public sealed class LibraryDbService
     private const string PlayHistoryTable = "play_history";
     private const string BackgroundJobStateTable = "background_job_state";
     private const string PlayHistoryIdentityMigrationId = "play-history-event-identity-v1";
+    private const string MelodayAutomaticScopeMigrationId = "meloday-automatic-library-scope-v1";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -87,6 +88,8 @@ public sealed class LibraryDbService
             ["idx_play_history_folder"] = (PlayHistoryTable, "folder_id", false)
             ,
             ["idx_play_history_user_source_time"] = (PlayHistoryTable, "plex_user_id, source, played_at_utc DESC", false)
+            ,
+            ["idx_play_history_remote_library_time"] = (PlayHistoryTable, "plex_user_id, source, remote_library_id, played_at_utc DESC", false)
             ,
             ["idx_play_history_user_library_time"] = (PlayHistoryTable, "plex_user_id, library_id, played_at_utc DESC", false)
             ,
@@ -353,11 +356,20 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
         await EnsureColumnAsync(connection, FolderTable, "convert_enabled", $"{IntegerType} DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "convert_format", TextType, cancellationToken);
         await EnsureColumnAsync(connection, FolderTable, "convert_bitrate", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, FolderTable, "plex_section_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, FolderTable, "jellyfin_library_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, FolderTable, "navidrome_library_id", TextType, cancellationToken);
         await BackfillFolderLibraryLinksAsync(connection, cancellationToken);
+        await DropColumnIfExistsAsync(connection, FolderTable, "plex_section_id", cancellationToken);
+        await DropColumnIfExistsAsync(connection, FolderTable, "jellyfin_library_id", cancellationToken);
+        await DropColumnIfExistsAsync(connection, FolderTable, "navidrome_library_id", cancellationToken);
+        await EnsureColumnAsync(connection, PlayHistoryTable, "remote_library_id", TextType, cancellationToken);
+        await EnsureIndexAsync(
+            connection,
+            "idx_play_history_remote_library_time",
+            PlayHistoryTable,
+            "plex_user_id, source, remote_library_id, played_at_utc DESC",
+            unique: false,
+            cancellationToken);
         await BackfillPlayHistoryFolderLinksAsync(connection, cancellationToken);
+        await MigrateMelodayAutomaticScopeAsync(connection, cancellationToken);
 
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "batch_next_offset", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "batch_processing_snapshot_id", TextType, cancellationToken);
@@ -874,6 +886,21 @@ CREATE TABLE IF NOT EXISTS {tableName} (
         CancellationToken cancellationToken)
         => await SqliteSchemaUtils.EnsureColumnAsync(connection, table, column, type, cancellationToken);
 
+    private static async Task DropColumnIfExistsAsync(
+        SqliteConnection connection,
+        string table,
+        string column,
+        CancellationToken cancellationToken)
+    {
+        if (!await ColumnExistsAsync(connection, table, column, cancellationToken))
+        {
+            return;
+        }
+
+        await using var command = new SqliteCommand($"ALTER TABLE \"{table}\" DROP COLUMN \"{column}\";", connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static async Task EnsureColumnsAsync(
         SqliteConnection connection,
         string table,
@@ -976,17 +1003,10 @@ WHERE library_id IS NULL;";
 
         const string sql = @"
 UPDATE play_history AS ph
-SET folder_id = (
-    SELECT MIN(af.folder_id)
-    FROM track_local tl
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    WHERE tl.track_id = ph.track_id
-    GROUP BY tl.track_id
-    HAVING COUNT(DISTINCT af.folder_id) = 1
-)
-WHERE ph.folder_id IS NULL
-  AND ph.track_id IS NOT NULL
-  AND 1 = (
+SET folder_id = NULL,
+    library_id = NULL
+WHERE ph.track_id IS NOT NULL
+  AND 1 <> (
       SELECT COUNT(DISTINCT af.folder_id)
       FROM track_local tl
       JOIN audio_file af ON af.id = tl.audio_file_id
@@ -998,60 +1018,65 @@ SET folder_id = (
     SELECT MIN(af.folder_id)
     FROM track_local tl
     JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
     WHERE tl.track_id = ph.track_id
-      AND f.library_id = ph.library_id
     GROUP BY tl.track_id
     HAVING COUNT(DISTINCT af.folder_id) = 1
-)
-WHERE ph.folder_id IS NULL
-  AND ph.library_id IS NOT NULL
-  AND ph.track_id IS NOT NULL
+),
+    library_id = (
+        SELECT MIN(f.library_id)
+        FROM track_local tl
+        JOIN audio_file af ON af.id = tl.audio_file_id
+        JOIN folder f ON f.id = af.folder_id
+        WHERE tl.track_id = ph.track_id
+        GROUP BY tl.track_id
+        HAVING COUNT(DISTINCT af.folder_id) = 1
+    )
+WHERE ph.track_id IS NOT NULL
   AND 1 = (
       SELECT COUNT(DISTINCT af.folder_id)
       FROM track_local tl
       JOIN audio_file af ON af.id = tl.audio_file_id
-      JOIN folder f ON f.id = af.folder_id
       WHERE tl.track_id = ph.track_id
-        AND f.library_id = ph.library_id
-  );
-
-UPDATE play_history AS ph
-SET library_id = (
-    SELECT f.library_id
-    FROM folder f
-    WHERE f.id = ph.folder_id
-)
-WHERE ph.folder_id IS NOT NULL
-  AND ph.library_id IS NOT (
-      SELECT f.library_id
-      FROM folder f
-      WHERE f.id = ph.folder_id
-  );
-
-UPDATE play_history AS ph
-SET library_id = (
-    SELECT MIN(f.library_id)
-    FROM track_local tl
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    WHERE tl.track_id = ph.track_id
-      AND f.library_id IS NOT NULL
-    GROUP BY tl.track_id
-    HAVING COUNT(DISTINCT f.library_id) = 1
-)
-WHERE ph.library_id IS NULL
-  AND ph.track_id IS NOT NULL
-  AND 1 = (
-      SELECT COUNT(DISTINCT f.library_id)
-      FROM track_local tl
-      JOIN audio_file af ON af.id = tl.audio_file_id
-      JOIN folder f ON f.id = af.folder_id
-      WHERE tl.track_id = ph.track_id
-        AND f.library_id IS NOT NULL
   );";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task MigrateMelodayAutomaticScopeAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var check = new SqliteCommand(
+            "SELECT 1 FROM app_schema_migration WHERE migration_id = @migrationId LIMIT 1;",
+            connection))
+        {
+            check.Parameters.AddWithValue("migrationId", MelodayAutomaticScopeMigrationId);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+DELETE FROM mix_item
+WHERE mix_cache_id IN (
+    SELECT id FROM mix_cache WHERE mix_id LIKE 'meloday-%'
+);
+DELETE FROM mix_cache WHERE mix_id LIKE 'meloday-%';";
+        await using (var cleanup = new SqliteCommand(sql, connection, transaction))
+        {
+            await cleanup.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var marker = new SqliteCommand(@"
+INSERT INTO app_schema_migration (migration_id, completed_at_utc)
+VALUES (@migrationId, @completedAtUtc);", connection, transaction))
+        {
+            marker.Parameters.AddWithValue("migrationId", MelodayAutomaticScopeMigrationId);
+            marker.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+            await marker.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static async Task<bool> TableExistsAsync(

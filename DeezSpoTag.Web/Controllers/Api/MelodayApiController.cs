@@ -38,10 +38,21 @@ public class MelodayApiController : ControllerBase
 
         if (!result.Success)
         {
-            return BadRequest(new { message = result.Message });
+            return BadRequest(new
+            {
+                message = result.Message,
+                status = result.Status,
+                historySources = result.HistorySources
+            });
         }
 
-        return Ok(new { message = result.Message, playlistId = result.PlaylistId });
+        return Ok(new
+        {
+            message = result.Message,
+            playlistId = result.PlaylistId,
+            status = result.Status,
+            historySources = result.HistorySources
+        });
     }
 
     [HttpGet("status")]

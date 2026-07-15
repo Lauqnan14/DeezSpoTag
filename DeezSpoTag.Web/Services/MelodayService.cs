@@ -14,7 +14,6 @@ public sealed class MelodayOptions
 {
     [JsonRequired]
     public bool Enabled { get; set; }
-    public string? LibraryName { get; set; }
     public string PlaylistPrefix { get; set; } = "Meloday for";
     public string? BaseUrl { get; set; }
     public int ExcludePlayedDays { get; set; } = 4;
@@ -26,10 +25,14 @@ public sealed class MelodayOptions
     public int UpdateIntervalMinutes { get; set; } = 30;
     public string Mode { get; set; } = MelodayModes.Sonic;
     public string MoodMapPath { get; set; } = "Resources/meloday/assets/moodmap.json";
-    public List<string> SyncTargets { get; set; } = new();
 }
 
-public sealed record MelodayRunResult(bool Success, string Message, string? PlaylistId);
+public sealed record MelodayRunResult(
+    bool Success,
+    string Message,
+    string? PlaylistId,
+    string Status = "complete",
+    IReadOnlyList<MelodayHistoryImportResult>? HistorySources = null);
 public sealed record MelodayStatusDto(
     bool Enabled,
     string CurrentPeriod,
@@ -38,7 +41,8 @@ public sealed record MelodayStatusDto(
     int MaxTracks,
     int HistoryLookbackDays,
     int ExcludePlayedDays,
-    string Mode);
+    string Mode,
+    IReadOnlyList<MelodayHistoryImportResult> HistorySources);
 
 public static class MelodayModes
 {
@@ -66,6 +70,7 @@ public sealed class MelodayCollaborators
         NavidromeApiClient navidromeApiClient,
         PlatformAuthService authService,
         LibraryRepository libraryRepository,
+        MelodayRemoteLibraryCatalog remoteLibraryCatalog,
         PlexHistoryImportService historyImportService,
         JellyfinHistoryImportService jellyfinHistoryImportService,
         NavidromeHistoryImportService navidromeHistoryImportService)
@@ -75,6 +80,7 @@ public sealed class MelodayCollaborators
         NavidromeApiClient = navidromeApiClient;
         AuthService = authService;
         LibraryRepository = libraryRepository;
+        RemoteLibraryCatalog = remoteLibraryCatalog;
         HistoryImportService = historyImportService;
         JellyfinHistoryImportService = jellyfinHistoryImportService;
         NavidromeHistoryImportService = navidromeHistoryImportService;
@@ -85,6 +91,7 @@ public sealed class MelodayCollaborators
     public NavidromeApiClient NavidromeApiClient { get; }
     public PlatformAuthService AuthService { get; }
     public LibraryRepository LibraryRepository { get; }
+    public MelodayRemoteLibraryCatalog RemoteLibraryCatalog { get; }
     public PlexHistoryImportService HistoryImportService { get; }
     public JellyfinHistoryImportService JellyfinHistoryImportService { get; }
     public NavidromeHistoryImportService NavidromeHistoryImportService { get; }
@@ -108,6 +115,7 @@ public sealed class MelodayService
     private readonly NavidromeApiClient _navidromeApiClient;
     private readonly PlatformAuthService _authService;
     private readonly LibraryRepository _libraryRepository;
+    private readonly MelodayRemoteLibraryCatalog _remoteLibraryCatalog;
     private readonly PlexHistoryImportService _historyImportService;
     private readonly JellyfinHistoryImportService _jellyfinHistoryImportService;
     private readonly NavidromeHistoryImportService _navidromeHistoryImportService;
@@ -117,15 +125,15 @@ public sealed class MelodayService
     private readonly string _webRoot;
     private DateTimeOffset? _lastRunUtc;
     private string? _lastMessage;
+    private IReadOnlyList<MelodayHistoryImportResult> _lastImportResults = Array.Empty<MelodayHistoryImportResult>();
 
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex FeaturingParentheticalRegex = CreateRegex(@"(\(|\[)\s*(feat\.?|ft\.?|featuring).*?(\)|\])", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex FeaturingInlineRegex = CreateRegex(@"\b(feat\.?|ft\.?|featuring)\s+[^\-\(\[]+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private sealed record RunModeContext(
-        IReadOnlyList<MediaServerTarget> SyncTargets,
+        IReadOnlyList<MediaServerTarget> TargetServers,
         LibraryDto Library,
-        IReadOnlyList<FolderDto> LibraryFolders,
         IReadOnlyList<long> HistoryTrackIds,
         IReadOnlyList<long> BalancedHistorical,
         SimilarTrackContext SimilarContext,
@@ -133,18 +141,27 @@ public sealed class MelodayService
         MelodayPeriod Period,
         string? Username,
         long MixUserId,
-        PlexAuth? SonicPlex);
+        PlexAuth? SonicPlex,
+        PlaylistResolutionCache PlaylistResolutionCache);
 
     private sealed record PlaylistSyncContext(
         MediaServerTarget Target,
-        IReadOnlyList<FolderDto> LibraryFolders,
         string Title,
         string Description,
         IReadOnlyList<long> OrderedTrackIds,
         SimilarTrackContext SimilarContext,
         MelodayOptions TitleOptions,
         string PeriodName,
-        GeneratedMelodayCover? Cover);
+        GeneratedMelodayCover? Cover,
+        PlaylistResolutionCache ResolutionCache);
+
+    private sealed class PlaylistResolutionCache
+    {
+        public List<PlexTrack>? PlexTracks { get; set; }
+        public List<JellyfinAudioTrack>? JellyfinTracks { get; set; }
+        public Dictionary<string, List<NavidromeAudioTrack>> NavidromeSearches { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+    }
     private static readonly Regex DashVersionRegex = CreateRegex(@"\s-\s.*(mix|dub|remix|edit|version)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex TrailingSpaceOrHyphenRegex = CreateRegex(@"[\s-]+$", RegexOptions.Compiled);
     private static readonly Regex MultiWhitespaceRegex = CreateRegex(@"\s+", RegexOptions.Compiled);
@@ -195,6 +212,7 @@ public sealed class MelodayService
         _navidromeApiClient = collaborators.NavidromeApiClient;
         _authService = collaborators.AuthService;
         _libraryRepository = collaborators.LibraryRepository;
+        _remoteLibraryCatalog = collaborators.RemoteLibraryCatalog;
         _historyImportService = collaborators.HistoryImportService;
         _jellyfinHistoryImportService = collaborators.JellyfinHistoryImportService;
         _navidromeHistoryImportService = collaborators.NavidromeHistoryImportService;
@@ -226,7 +244,7 @@ public sealed class MelodayService
         }
 
         var auth = await _authService.LoadAsync();
-        var targets = ResolveTargetServers(auth, effective.SyncTargets);
+        var targets = ResolveTargetServers(auth);
         if (targets.Count == 0)
         {
             _lastMessage = "Plex, Jellyfin, or Navidrome auth missing.";
@@ -235,19 +253,19 @@ public sealed class MelodayService
 
         if (refreshHistory)
         {
-            if (targets.Any(static target => target.IsPlex))
+            var importResults = new List<MelodayHistoryImportResult>
             {
-                await _historyImportService.ImportAsync(cancellationToken);
-            }
+                await _historyImportService.ImportDetailedAsync(cancellationToken),
+                await _jellyfinHistoryImportService.ImportDetailedAsync(cancellationToken),
+                await _navidromeHistoryImportService.ImportDetailedAsync(cancellationToken)
+            };
 
-            if (targets.Any(static target => target.IsJellyfin))
+            _lastImportResults = importResults;
+            var configuredImports = importResults.Where(static result => result.Configured).ToList();
+            if (configuredImports.Count > 0 && configuredImports.All(static result => !result.Available))
             {
-                await _jellyfinHistoryImportService.ImportAsync(cancellationToken);
-            }
-
-            if (targets.Any(static target => target.IsNavidrome))
-            {
-                await _navidromeHistoryImportService.ImportAsync(cancellationToken);
+                _lastMessage = "Meloday history refresh is blocked because every configured media server is unavailable.";
+                return new MelodayRunResult(false, _lastMessage, null, "blocked", importResults);
             }
         }
 
@@ -257,10 +275,6 @@ public sealed class MelodayService
         var configuredFolders = new List<FolderDto>();
         foreach (var folder in await _libraryRepository.GetConfiguredEnabledMusicFoldersAsync(cancellationToken))
         {
-            if (!FolderSupportsAnyTarget(folder, targets))
-            {
-                continue;
-            }
             var tracks = await _libraryRepository.GetTrackIdsForLibraryScopeAsync(
                 folder.LibraryId!.Value, folder.Id, cancellationToken);
             if (tracks.Count > 0)
@@ -268,14 +282,12 @@ public sealed class MelodayService
                 configuredFolders.Add(folder);
             }
         }
-        var libraries = ResolveMelodayLibraries(configuredFolders, effective.LibraryName);
+        var libraries = ResolveMelodayLibraries(configuredFolders);
         await _libraryRepository.DeleteInactiveMelodayMixesAsync(
             libraries.Select(static library => library.Id).ToList(), cancellationToken);
         if (libraries.Count == 0)
         {
-            _lastMessage = string.IsNullOrWhiteSpace(effective.LibraryName)
-                ? "No nonempty music folders with target-library bindings are configured."
-                : $"Configured library '{effective.LibraryName.Trim()}' was not found, mapped, or contains no tracks.";
+            _lastMessage = "No nonempty configured music libraries were found.";
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
@@ -301,6 +313,7 @@ public sealed class MelodayService
         var sonicPlex = targets.FirstOrDefault(static target => target.IsPlex)?.Plex;
         var requestedModes = ResolveRunModes(effective.Mode);
         var results = new List<MelodayRunResult>();
+        var playlistResolutionCache = new PlaylistResolutionCache();
         foreach (var library in libraries)
         {
             var libraryFolders = configuredFolders
@@ -386,7 +399,6 @@ public sealed class MelodayService
             var runModeContext = new RunModeContext(
                 targets,
                 library,
-                libraryFolders,
                 historyTrackIds,
                 balancedHistorical,
                 similarContext,
@@ -394,7 +406,8 @@ public sealed class MelodayService
                 period,
                 username,
                 mixUserId,
-                sonicPlex);
+                sonicPlex,
+                playlistResolutionCache);
 
             foreach (var mode in requestedModes)
             {
@@ -423,7 +436,18 @@ public sealed class MelodayService
         var firstPlaylistId = successful
             .Select(static result => result.PlaylistId)
             .FirstOrDefault(static playlistId => !string.IsNullOrWhiteSpace(playlistId));
-        return new MelodayRunResult(true, _lastMessage, firstPlaylistId);
+        var degraded = _lastImportResults.Any(static result => result.Configured
+            && (result.Status == "degraded" || !result.Available));
+        if (degraded)
+        {
+            _lastMessage += " History refresh was degraded; see source diagnostics.";
+        }
+        return new MelodayRunResult(
+            true,
+            _lastMessage,
+            firstPlaylistId,
+            degraded ? "degraded" : "complete",
+            _lastImportResults);
     }
 
     private async Task<MelodayRunResult> RunModeAsync(
@@ -496,19 +520,19 @@ public sealed class MelodayService
             mode,
             cancellationToken);
         var syncResults = new List<(string Service, string? PlaylistId)>();
-        foreach (var target in context.SyncTargets)
+        foreach (var target in context.TargetServers)
         {
             var targetPlaylistId = await TrySyncTargetPlaylistAsync(
                 new PlaylistSyncContext(
                     target,
-                    context.LibraryFolders,
                     title,
                     description,
                     orderedTrackIds,
                     context.SimilarContext,
                     optionsForTitle,
                     context.PeriodName,
-                    cover),
+                    cover,
+                    context.PlaylistResolutionCache),
                 cancellationToken);
             syncResults.Add((target.Service, targetPlaylistId));
         }
@@ -574,7 +598,6 @@ public sealed class MelodayService
     private static MelodayOptions CloneOptionsWithPlaylistPrefix(MelodayOptions source, string playlistPrefix) => new()
     {
         Enabled = source.Enabled,
-        LibraryName = source.LibraryName,
         PlaylistPrefix = playlistPrefix,
         BaseUrl = source.BaseUrl,
         ExcludePlayedDays = source.ExcludePlayedDays,
@@ -585,22 +608,19 @@ public sealed class MelodayService
         SonicSimilarityDistance = source.SonicSimilarityDistance,
         UpdateIntervalMinutes = source.UpdateIntervalMinutes,
         Mode = source.Mode,
-        MoodMapPath = source.MoodMapPath,
-        SyncTargets = NormalizeSyncTargets(source.SyncTargets).ToList()
+        MoodMapPath = source.MoodMapPath
     };
 
-    private static IReadOnlyList<MediaServerTarget> ResolveTargetServers(PlatformAuthState auth, IReadOnlyList<string>? syncTargets)
+    private static IReadOnlyList<MediaServerTarget> ResolveTargetServers(PlatformAuthState auth)
     {
-        var allowedTargets = NormalizeSyncTargets(syncTargets).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var targets = new List<MediaServerTarget>();
-        if (allowedTargets.Contains("plex") && TryGetPlexConnection(auth.Plex, out var plex, out _, out _))
+        if (TryGetPlexConnection(auth.Plex, out var plex, out _, out _))
         {
             var username = !string.IsNullOrWhiteSpace(plex.Username) ? plex.Username : plex.ServerName;
             targets.Add(new MediaServerTarget("plex", plex, null, null, username));
         }
 
-        if (allowedTargets.Contains("jellyfin")
-            && auth.Jellyfin is { } jellyfin
+        if (auth.Jellyfin is { } jellyfin
             && !string.IsNullOrWhiteSpace(jellyfin.Url)
             && !string.IsNullOrWhiteSpace(jellyfin.ApiKey)
             && !string.IsNullOrWhiteSpace(jellyfin.UserId))
@@ -609,8 +629,7 @@ public sealed class MelodayService
             targets.Add(new MediaServerTarget("jellyfin", null, jellyfin, null, username));
         }
 
-        if (allowedTargets.Contains("navidrome")
-            && auth.Navidrome is { } navidrome
+        if (auth.Navidrome is { } navidrome
             && !string.IsNullOrWhiteSpace(navidrome.Url)
             && !string.IsNullOrWhiteSpace(navidrome.Username)
             && !string.IsNullOrWhiteSpace(navidrome.Password))
@@ -621,25 +640,6 @@ public sealed class MelodayService
 
         return targets;
     }
-
-    private static IReadOnlyList<string> NormalizeSyncTargets(IReadOnlyList<string>? targets)
-        => targets?
-            .Select(NormalizeSyncTarget)
-            .Where(static target => !string.IsNullOrWhiteSpace(target))
-            .Select(static target => target!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList() is { Count: > 0 } normalized
-            ? normalized
-            : new[] { "plex", "jellyfin", "navidrome" };
-
-    private static string? NormalizeSyncTarget(string? target)
-        => target?.Trim().ToLowerInvariant() switch
-        {
-            "plex" => "plex",
-            "jellyfin" => "jellyfin",
-            "navidrome" => "navidrome",
-            _ => null
-        };
 
     private static string ResolveMelodayDisplayUsername(IReadOnlyList<MediaServerTarget> targets)
         => string.Join(", ", targets
@@ -698,10 +698,10 @@ public sealed class MelodayService
 
         var ratingKeyList = await ResolvePlexRatingKeysForSyncAsync(
             context.OrderedTrackIds,
-            context.LibraryFolders,
             context.SimilarContext.RatingKeyByTrackId,
+            context.ResolutionCache,
             cancellationToken);
-        if (ratingKeyList.Count == 0)
+        if (!HasCompleteTargetResolution("plex", context.OrderedTrackIds, ratingKeyList))
         {
             return null;
         }
@@ -766,8 +766,8 @@ public sealed class MelodayService
 
     private async Task<List<string>> ResolvePlexRatingKeysForSyncAsync(
         IReadOnlyList<long> orderedTrackIds,
-        IReadOnlyList<FolderDto> folders,
         Dictionary<long, string> ratingKeyByTrackId,
+        PlaylistResolutionCache resolutionCache,
         CancellationToken cancellationToken)
     {
         var plex = (await _authService.LoadAsync()).Plex;
@@ -775,18 +775,26 @@ public sealed class MelodayService
         {
             return new List<string>();
         }
-        var remoteTracks = new List<PlexTrack>();
-        foreach (var sectionId in folders.Select(static folder => folder.PlexSectionId)
-                     .Where(static id => !string.IsNullOrWhiteSpace(id))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        var catalog = await _remoteLibraryCatalog.GetPlexAsync(plex, cancellationToken: cancellationToken);
+        if (!catalog.Available)
         {
-            for (var offset = 0; ; offset += 500)
+            return new List<string>();
+        }
+        var remoteTracks = resolutionCache.PlexTracks;
+        if (remoteTracks is null)
+        {
+            remoteTracks = new List<PlexTrack>();
+            foreach (var library in catalog.Libraries)
             {
-                var page = await _plexApiClient.GetLibraryTracksAsync(
-                    plex.Url, plex.Token, sectionId!, offset, 500, cancellationToken);
-                remoteTracks.AddRange(page);
-                if (page.Count < 500) break;
+                for (var offset = 0; ; offset += 500)
+                {
+                    var page = await _plexApiClient.GetLibraryTracksAsync(
+                        plex.Url, plex.Token, library.Id, offset, 500, cancellationToken);
+                    remoteTracks.AddRange(page);
+                    if (page.Count < 500) break;
+                }
             }
+            resolutionCache.PlexTracks = remoteTracks;
         }
         var summaries = (await _libraryRepository.GetTrackSummariesAsync(orderedTrackIds, cancellationToken))
             .ToDictionary(static summary => summary.TrackId);
@@ -828,8 +836,8 @@ public sealed class MelodayService
         }
 
         var itemIds = await ResolveJellyfinItemIdsAsync(
-            jellyfin, context.LibraryFolders, context.OrderedTrackIds, cancellationToken);
-        if (itemIds.Count == 0)
+            jellyfin, context.OrderedTrackIds, context.ResolutionCache, cancellationToken);
+        if (!HasCompleteTargetResolution("jellyfin", context.OrderedTrackIds, itemIds))
         {
             return null;
         }
@@ -935,8 +943,8 @@ public sealed class MelodayService
         }
 
         var itemIds = await ResolveNavidromeItemIdsAsync(
-            navidrome, context.LibraryFolders, context.OrderedTrackIds, cancellationToken);
-        if (itemIds.Count == 0)
+            navidrome, context.OrderedTrackIds, context.ResolutionCache, cancellationToken);
+        if (!HasCompleteTargetResolution("navidrome", context.OrderedTrackIds, itemIds))
         {
             return null;
         }
@@ -964,26 +972,34 @@ public sealed class MelodayService
 
     private async Task<List<string>> ResolveJellyfinItemIdsAsync(
         JellyfinAuth jellyfin,
-        IReadOnlyList<FolderDto> folders,
         IReadOnlyList<long> orderedTrackIds,
+        PlaylistResolutionCache resolutionCache,
         CancellationToken cancellationToken)
     {
         var summaries = await _libraryRepository.GetTrackSummariesAsync(orderedTrackIds, cancellationToken);
         var summaryByTrackId = summaries.ToDictionary(static summary => summary.TrackId);
         var itemIds = new List<string>();
-        var libraryTracks = new List<JellyfinAudioTrack>();
-        foreach (var libraryId in folders.Select(static folder => folder.JellyfinLibraryId)
-                     .Where(static id => !string.IsNullOrWhiteSpace(id))
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        var libraryTracks = resolutionCache.JellyfinTracks;
+        var catalog = await _remoteLibraryCatalog.GetJellyfinAsync(jellyfin, cancellationToken: cancellationToken);
+        if (!catalog.Available)
         {
-            for (var offset = 0; ; offset += 1000)
+            return itemIds;
+        }
+        if (libraryTracks is null)
+        {
+            libraryTracks = new List<JellyfinAudioTrack>();
+            foreach (var library in catalog.Libraries)
             {
-                var page = await _jellyfinApiClient.GetAudioTracksAsync(
-                    jellyfin.Url!, jellyfin.ApiKey!, jellyfin.UserId!, libraryId,
-                    offset, 1000, cancellationToken);
-                libraryTracks.AddRange(page);
-                if (page.Count < 1000) break;
+                for (var offset = 0; ; offset += 1000)
+                {
+                    var page = await _jellyfinApiClient.GetAudioTracksAsync(
+                        jellyfin.Url!, jellyfin.ApiKey!, jellyfin.UserId!, library.Id,
+                        offset, 1000, cancellationToken);
+                    libraryTracks.AddRange(page);
+                    if (page.Count < 1000) break;
+                }
             }
+            resolutionCache.JellyfinTracks = libraryTracks;
         }
         foreach (var trackId in orderedTrackIds)
         {
@@ -1004,17 +1020,21 @@ public sealed class MelodayService
 
     private async Task<List<string>> ResolveNavidromeItemIdsAsync(
         NavidromeAuth navidrome,
-        IReadOnlyList<FolderDto> folders,
         IReadOnlyList<long> orderedTrackIds,
+        PlaylistResolutionCache resolutionCache,
         CancellationToken cancellationToken)
     {
         var summaries = await _libraryRepository.GetTrackSummariesAsync(orderedTrackIds, cancellationToken);
         var summaryByTrackId = summaries.ToDictionary(static summary => summary.TrackId);
         var itemIds = new List<string>();
-        var cache = new Dictionary<string, List<NavidromeAudioTrack>>(StringComparer.OrdinalIgnoreCase);
-        var allowedLibraryIds = folders
-            .Select(static folder => folder.NavidromeLibraryId)
-            .Where(static id => !string.IsNullOrWhiteSpace(id))
+        var cache = resolutionCache.NavidromeSearches;
+        var catalog = await _remoteLibraryCatalog.GetNavidromeAsync(navidrome, cancellationToken: cancellationToken);
+        if (!catalog.Available)
+        {
+            return itemIds;
+        }
+        var allowedLibraryIds = catalog.Libraries
+            .Select(static library => library.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var trackId in orderedTrackIds)
         {
@@ -1059,6 +1079,25 @@ public sealed class MelodayService
             && NormalizeComparableText(candidate.Artist).Contains(NormalizeComparableText(summary.ArtistName), StringComparison.Ordinal);
     }
 
+    private bool HasCompleteTargetResolution(
+        string service,
+        IReadOnlyList<long> orderedTrackIds,
+        IReadOnlyCollection<string> resolvedItemIds)
+    {
+        var expectedCount = orderedTrackIds.Distinct().Count();
+        if (expectedCount > 0 && resolvedItemIds.Count == expectedCount)
+        {
+            return true;
+        }
+
+        _logger.LogWarning(
+            "Meloday did not update {Service} because only {ResolvedCount} of {ExpectedCount} canonical library tracks resolved on that server.",
+            service,
+            resolvedItemIds.Count,
+            expectedCount);
+        return false;
+    }
+
     private static bool TryGetPlexConnection(
         PlexAuth? plex,
         [NotNullWhen(true)] out PlexAuth? configuredPlex,
@@ -1080,27 +1119,14 @@ public sealed class MelodayService
     }
 
     private static IReadOnlyList<LibraryDto> ResolveMelodayLibraries(
-        IReadOnlyList<FolderDto> folders,
-        string? libraryName)
+        IReadOnlyList<FolderDto> folders)
     {
         return folders
             .Where(folder => folder.LibraryId.HasValue && !string.IsNullOrWhiteSpace(folder.LibraryName))
-            .Where(folder => string.IsNullOrWhiteSpace(libraryName)
-                || string.Equals(folder.LibraryName, libraryName.Trim(), StringComparison.OrdinalIgnoreCase))
             .GroupBy(folder => folder.LibraryId!.Value)
             .Select(group => new LibraryDto(group.Key, group.First().LibraryName!))
             .OrderBy(library => library.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
-    }
-
-    private static bool FolderSupportsAnyTarget(
-        FolderDto folder,
-        IReadOnlyList<MediaServerTarget> targets)
-    {
-        return targets.Any(target =>
-            (target.IsPlex && !string.IsNullOrWhiteSpace(folder.PlexSectionId))
-            || (target.IsJellyfin && !string.IsNullOrWhiteSpace(folder.JellyfinLibraryId))
-            || (target.IsNavidrome && !string.IsNullOrWhiteSpace(folder.NavidromeLibraryId)));
     }
 
     private async Task<List<long>> BuildDirectTrackSelectionAsync(
@@ -1299,7 +1325,8 @@ public sealed class MelodayService
             effective.MaxTracks,
             effective.HistoryLookbackDays,
             effective.ExcludePlayedDays,
-            MelodayModes.Normalize(effective.Mode));
+            MelodayModes.Normalize(effective.Mode),
+            _lastImportResults);
     }
 
     private IReadOnlyList<long> Sample(IReadOnlyList<long> source, int count)

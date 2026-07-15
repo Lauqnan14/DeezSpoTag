@@ -7,6 +7,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Integrations.Navidrome;
+using DeezSpoTag.Integrations.Jellyfin;
+using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.DataProtection;
@@ -74,10 +76,17 @@ public sealed class NavidromeHistoryImportServiceTests : IAsyncLifetime
     {
         using var handler = new HistoryHandler();
         using var httpClient = new HttpClient(handler);
+        var navidromeClient = new NavidromeApiClient(httpClient);
+        var catalog = new MelodayRemoteLibraryCatalog(
+            new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient),
+            new JellyfinApiClient(httpClient),
+            navidromeClient,
+            NullLogger<MelodayRemoteLibraryCatalog>.Instance);
         var service = new NavidromeHistoryImportService(
-            new NavidromeApiClient(httpClient),
+            navidromeClient,
             _authService,
             _repository,
+            catalog,
             NullLogger<NavidromeHistoryImportService>.Instance);
 
         Assert.Equal(1, await service.ImportAsync());
@@ -87,7 +96,7 @@ public sealed class NavidromeHistoryImportServiceTests : IAsyncLifetime
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = @"
-SELECT ph.source, ph.library_id, ph.track_id, ph.plex_track_key, pu.plex_user_id
+SELECT ph.source, ph.library_id, ph.track_id, ph.plex_track_key, pu.plex_user_id, ph.remote_library_id
 FROM play_history ph
 JOIN plex_user pu ON pu.id = ph.plex_user_id;";
         await using var reader = await command.ExecuteReaderAsync();
@@ -95,8 +104,9 @@ JOIN plex_user pu ON pu.id = ph.plex_user_id;";
         Assert.Equal("navidrome", reader.GetString(0));
         Assert.Equal(1, reader.GetInt64(1));
         Assert.Equal(1, reader.GetInt64(2));
-        Assert.Equal("nav-song-1", reader.GetString(3));
+        Assert.Equal("/remote/music/Artist One/Album One/Track One.flac", reader.GetString(3));
         Assert.Equal("navidrome:listener", reader.GetString(4));
+        Assert.Equal("1", reader.GetString(5));
         Assert.False(await reader.ReadAsync());
     }
 
@@ -107,8 +117,8 @@ JOIN plex_user pu ON pu.id = ph.plex_user_id;";
         await using var command = connection.CreateCommand();
         command.CommandText = @"
 INSERT INTO library (id, name) VALUES (1, 'Music');
-INSERT INTO folder (id, root_path, display_name, enabled, library_id, desired_quality_value, navidrome_library_id)
-VALUES (1, '/local/music', 'Music', 1, 1, 'cd_lossless', '1');
+INSERT INTO folder (id, root_path, display_name, enabled, library_id, desired_quality_value)
+VALUES (1, '/local/music', 'Music', 1, 1, 'cd_lossless');
 INSERT INTO artist (id, name) VALUES (1, 'Artist One');
 INSERT INTO album (id, artist_id, title) VALUES (1, 1, 'Album One');
 INSERT INTO track (id, album_id, title, duration_ms) VALUES (1, 1, 'Track One', 181500);
@@ -126,7 +136,9 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
         {
             var json = request.RequestUri!.AbsolutePath.EndsWith("/auth/login", StringComparison.Ordinal)
                 ? """{"token":"jwt-token"}"""
-                : """
+                : request.RequestUri.AbsolutePath.Contains("getMusicFolders", StringComparison.Ordinal)
+                    ? """{"subsonic-response":{"status":"ok","musicFolders":{"musicFolder":[{"id":1,"name":"Music"}]}}}"""
+                    : """
                   [
                     {
                       "id":"nav-song-1",
