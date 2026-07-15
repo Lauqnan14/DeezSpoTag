@@ -23,7 +23,8 @@ public sealed record BoomplayDeezerMatchResult(
     string Artist,
     string Album,
     string CoverMedium,
-    int? DurationSeconds)
+    int? DurationSeconds,
+    string? Isrc = null)
 {
     public int? DurationMs => DurationSeconds is > 0 ? DurationSeconds.Value * 1000 : null;
 }
@@ -661,6 +662,7 @@ public sealed class BoomplayDeezerMatchService
         var artist = WebUtility.HtmlDecode(context.Artist ?? fallback?.Artist ?? string.Empty).Trim();
         var album = WebUtility.HtmlDecode(context.Album ?? fallback?.Album ?? string.Empty).Trim();
         var coverMedium = WebUtility.HtmlDecode(fallback?.CoverUrl ?? string.Empty).Trim();
+        var isrc = Normalize(context.Isrc);
         int? durationSeconds = context.DurationMs is > 0
             ? (int)Math.Round(context.DurationMs.Value / 1000d)
             : null;
@@ -689,6 +691,7 @@ public sealed class BoomplayDeezerMatchService
                 {
                     durationSeconds = deezerDuration;
                 }
+                isrc = FirstNonEmpty(GetString(trackData, "ISRC"), isrc ?? string.Empty);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -699,7 +702,7 @@ public sealed class BoomplayDeezerMatchService
             }
         }
 
-        return new BoomplayDeezerMatchResult(deezerId, title, artist, album, coverMedium, durationSeconds);
+        return new BoomplayDeezerMatchResult(deezerId, title, artist, album, coverMedium, durationSeconds, isrc);
     }
 
     private static BoomplayDeezerMatchResult BuildResultFromApiTrack(
@@ -717,7 +720,8 @@ public sealed class BoomplayDeezerMatchService
             FirstNonEmpty(track.Artist?.Name ?? string.Empty, fallbackArtist),
             FirstNonEmpty(track.Album?.Title ?? string.Empty, fallbackAlbum),
             FirstNonEmpty(track.Album?.CoverMedium ?? string.Empty, fallbackCover),
-            track.Duration > 0 ? track.Duration : fallbackDurationSeconds);
+            track.Duration > 0 ? track.Duration : fallbackDurationSeconds,
+            Normalize(track.Isrc));
     }
 
     private async Task<(bool fetched, ApiTrack? track)> TryGetValidationCandidateAsync(

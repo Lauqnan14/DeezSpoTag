@@ -28,6 +28,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string RecommendationRejectionTable = "recommendation_rejection";
+    private const string BoomplayDeezerTrackMappingTable = "boomplay_deezer_track_mapping";
     private const string WatchlistHistoryTable = "watchlist_history";
     private const string ArtistWatchlistTable = "artist_watchlist";
     private const string TrackAnalysisTable = "track_analysis";
@@ -131,6 +132,10 @@ public sealed class LibraryDbService
             ["idx_watchlist_reconciliation_request_updated"] = (WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", false)
             ,
             ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)
+            ,
+            ["idx_boomplay_deezer_track_mapping_deezer"] = (BoomplayDeezerTrackMappingTable, "deezer_track_id", false)
+            ,
+            ["idx_boomplay_deezer_track_mapping_retry"] = (BoomplayDeezerTrackMappingTable, "status, next_retry_utc", false)
             ,
             ["idx_recommendation_rejection_library"] = (RecommendationRejectionTable, "library_id, folder_id, station_id", false)
             ,
@@ -540,6 +545,25 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS boomplay_deezer_track_mapping (
+    boomplay_track_id TEXT NOT NULL PRIMARY KEY,
+    deezer_track_id TEXT,
+    isrc TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT '',
+    album TEXT NOT NULL DEFAULT '',
+    cover_url TEXT,
+    duration_ms INTEGER,
+    source_fingerprint TEXT NOT NULL,
+    matcher_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_error TEXT,
+    next_retry_utc TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_boomplay_deezer_track_mapping_deezer", BoomplayDeezerTrackMappingTable, "deezer_track_id", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_boomplay_deezer_track_mapping_retry", BoomplayDeezerTrackMappingTable, "status, next_retry_utc", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS recommendation_rejection (
     library_id BIGINT NOT NULL,

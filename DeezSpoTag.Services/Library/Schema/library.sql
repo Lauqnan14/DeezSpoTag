@@ -493,6 +493,29 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     PRIMARY KEY (source, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS boomplay_deezer_track_mapping (
+    boomplay_track_id TEXT NOT NULL PRIMARY KEY,
+    deezer_track_id TEXT,
+    isrc TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    artist TEXT NOT NULL DEFAULT '',
+    album TEXT NOT NULL DEFAULT '',
+    cover_url TEXT,
+    duration_ms INTEGER,
+    source_fingerprint TEXT NOT NULL,
+    matcher_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_error TEXT,
+    next_retry_utc TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_boomplay_deezer_track_mapping_deezer
+    ON boomplay_deezer_track_mapping (deezer_track_id);
+
+CREATE INDEX IF NOT EXISTS idx_boomplay_deezer_track_mapping_retry
+    ON boomplay_deezer_track_mapping (status, next_retry_utc);
+
 CREATE TABLE IF NOT EXISTS recommendation_rejection (
     library_id BIGINT NOT NULL,
     folder_id BIGINT,

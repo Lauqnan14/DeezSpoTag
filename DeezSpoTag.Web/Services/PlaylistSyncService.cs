@@ -28,7 +28,9 @@ public sealed class PlaylistSyncService
         string? ReleaseDate,
         bool? Explicit,
         IReadOnlyList<string> Genres,
-        int? DurationMs);
+        int? DurationMs,
+        string? IdentitySource = null,
+        string? IdentityTrackId = null);
 
     private sealed record SyncMatchSummary(
         List<string> TargetIds,
@@ -683,17 +685,17 @@ public sealed class PlaylistSyncService
         }
 
         var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
-        var normalizedSource = NormalizeSource(playlist.Source);
         foreach (var track in eligibleTracks)
         {
+            var (identitySource, identityTrackId) = ResolveTrackIdentity(playlist.Source, track);
             var identity = await _libraryRepository.ResolveLocalTrackIdentityAsync(
                 new LibraryRepository.LibraryExistenceInput(
                     track.Isrc,
                     track.Name,
                     track.Artists,
                     track.DurationMs,
-                    normalizedSource,
-                    track.SourceTrackId,
+                    identitySource,
+                    identityTrackId,
                     track.Album),
                 cancellationToken: cancellationToken);
             var identityStatus = identity.IsAmbiguous
@@ -1135,7 +1137,10 @@ public sealed class PlaylistSyncService
         var source = NormalizeSource(playlist.Source);
         if (trackCandidates is { Count: > 0 })
         {
-            return (trackCandidates.Select(ToSyncTrackSummary).ToList(), null);
+            var candidates = string.Equals(source, "boomplay", StringComparison.OrdinalIgnoreCase)
+                ? trackCandidates.Where(static candidate => !string.IsNullOrWhiteSpace(candidate.DeezerId))
+                : trackCandidates;
+            return (candidates.Select(ToSyncTrackSummary).ToList(), null);
         }
 
         if (string.Equals(source, SpotifySource, StringComparison.OrdinalIgnoreCase))
@@ -2522,18 +2527,18 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        var normalizedSource = NormalizeSource(playlistSource);
         var resolved = new List<long>(tracks.Count);
         foreach (var track in tracks)
         {
+            var (identitySource, identityTrackId) = ResolveTrackIdentity(playlistSource, track);
             var decision = await _libraryRepository.ResolveLocalTrackIdentityAsync(
                 new LibraryRepository.LibraryExistenceInput(
                     track.Isrc,
                     track.Name,
                     track.Artists,
                     track.DurationMs,
-                    normalizedSource,
-                    track.SourceTrackId,
+                    identitySource,
+                    identityTrackId,
                     track.Album),
                 cancellationToken: cancellationToken);
             resolved.Add(decision.IsAmbiguous ? 0L : decision.LocalTrackId ?? 0L);
@@ -2547,15 +2552,15 @@ public sealed class PlaylistSyncService
         SyncTrackSummary track,
         CancellationToken cancellationToken)
     {
-        var source = NormalizeSource(playlistSource);
+        var (identitySource, identityTrackId) = ResolveTrackIdentity(playlistSource, track);
         var decision = await _libraryRepository.ResolveLocalTrackIdentityAsync(
             new LibraryRepository.LibraryExistenceInput(
                 track.Isrc,
                 track.Name,
                 track.Artists,
                 track.DurationMs,
-                source,
-                track.SourceTrackId,
+                identitySource,
+                identityTrackId,
                 track.Album),
             cancellationToken: cancellationToken);
         return decision.IsAmbiguous ? null : decision.LocalTrackId;
@@ -3230,7 +3235,22 @@ public sealed class PlaylistSyncService
             track.ReleaseYear?.ToString(CultureInfo.InvariantCulture),
             track.Explicit,
             NormalizeGenres(track.Genres),
-            track.DurationMs);
+            track.DurationMs,
+            string.IsNullOrWhiteSpace(track.DeezerId) ? null : "deezer",
+            string.IsNullOrWhiteSpace(track.DeezerId) ? null : track.DeezerId.Trim());
+    }
+
+    private static (string Source, string TrackId) ResolveTrackIdentity(
+        string playlistSource,
+        SyncTrackSummary track)
+    {
+        var source = string.IsNullOrWhiteSpace(track.IdentitySource)
+            ? NormalizeSource(playlistSource)
+            : NormalizeSource(track.IdentitySource);
+        var trackId = string.IsNullOrWhiteSpace(track.IdentityTrackId)
+            ? track.SourceTrackId
+            : track.IdentityTrackId.Trim();
+        return (source, trackId);
     }
 
     private static IReadOnlyList<string> NormalizeGenres(IReadOnlyList<string>? genres)

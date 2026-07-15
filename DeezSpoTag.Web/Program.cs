@@ -1434,6 +1434,7 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayDeezerMatchService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.BoomplayWatchlistMappingService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadControllerServices>();
         services.AddScoped<DeezSpoTag.Web.Services.LinkMapping.DeezerLinkMappingService>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.QobuzMetadataResolver>();
@@ -1552,6 +1553,7 @@ public partial class Program
                 DeezerGatewayService = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerGatewayService>(),
                 AppleCatalogService = sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
+                BoomplayWatchlistMappingService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayWatchlistMappingService>(),
                 LibraryRecommendationService = sp.GetRequiredService<DeezSpoTag.Web.Services.LibraryRecommendationService>(),
                 HttpClientFactory = sp.GetRequiredService<IHttpClientFactory>(),
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>()

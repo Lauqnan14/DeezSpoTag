@@ -23,6 +23,21 @@ public sealed class LibraryRepository
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
 
+    public sealed record BoomplayDeezerTrackMappingUpsertInput(
+        string BoomplayTrackId,
+        string? DeezerTrackId,
+        string? Isrc,
+        string? Title,
+        string? Artist,
+        string? Album,
+        string? CoverUrl,
+        int? DurationMs,
+        string SourceFingerprint,
+        string MatcherVersion,
+        string Status,
+        string? LastError,
+        DateTimeOffset? NextRetryUtc);
+
     private sealed record ExistingTrackRecord(
         long Id,
         int? DurationMs,
@@ -7977,6 +7992,120 @@ WHERE source = @source AND source_id = @sourceId;";
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<BoomplayDeezerTrackMappingDto?> GetBoomplayDeezerTrackMappingAsync(
+        string boomplayTrackId,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTrackId = boomplayTrackId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedTrackId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT boomplay_track_id,
+       deezer_track_id,
+       isrc,
+       title,
+       artist,
+       album,
+       cover_url,
+       duration_ms,
+       source_fingerprint,
+       matcher_version,
+       status,
+       last_error,
+       next_retry_utc,
+       updated_at
+FROM boomplay_deezer_track_mapping
+WHERE boomplay_track_id=@boomplayTrackId
+LIMIT 1;", connection);
+        command.Parameters.AddWithValue("boomplayTrackId", normalizedTrackId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new BoomplayDeezerTrackMappingDto(
+            reader.GetString(0),
+            await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1),
+            await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+            reader.GetString(3),
+            reader.GetString(4),
+            reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+            await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetInt32(7),
+            reader.GetString(8),
+            reader.GetString(9),
+            reader.GetString(10),
+            await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
+            await reader.IsDBNullAsync(12, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(12)),
+            ParseDateTimeOffsetInvariant(reader.GetString(13)));
+    }
+
+    public async Task UpsertBoomplayDeezerTrackMappingAsync(
+        BoomplayDeezerTrackMappingUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        var normalizedBoomplayTrackId = input.BoomplayTrackId?.Trim();
+        var normalizedFingerprint = input.SourceFingerprint?.Trim();
+        var normalizedMatcherVersion = input.MatcherVersion?.Trim();
+        var normalizedStatus = input.Status?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedBoomplayTrackId)
+            || string.IsNullOrWhiteSpace(normalizedFingerprint)
+            || string.IsNullOrWhiteSpace(normalizedMatcherVersion)
+            || normalizedStatus is not "matched" and not "mapping_retry")
+        {
+            throw new ArgumentException("A valid Boomplay mapping identity, fingerprint, matcher version, and status are required.", nameof(input));
+        }
+
+        var normalizedDeezerTrackId = string.IsNullOrWhiteSpace(input.DeezerTrackId) ? null : input.DeezerTrackId.Trim();
+        if (normalizedStatus == "matched" && string.IsNullOrWhiteSpace(normalizedDeezerTrackId))
+        {
+            throw new ArgumentException("A matched Boomplay mapping requires a Deezer track id.", nameof(input));
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+INSERT INTO boomplay_deezer_track_mapping (
+    boomplay_track_id, deezer_track_id, isrc, title, artist, album, cover_url,
+    duration_ms, source_fingerprint, matcher_version, status, last_error, next_retry_utc)
+VALUES (
+    @boomplayTrackId, @deezerTrackId, @isrc, @title, @artist, @album, @coverUrl,
+    @durationMs, @sourceFingerprint, @matcherVersion, @status, @lastError, @nextRetryUtc)
+ON CONFLICT(boomplay_track_id) DO UPDATE SET
+    deezer_track_id=excluded.deezer_track_id,
+    isrc=excluded.isrc,
+    title=excluded.title,
+    artist=excluded.artist,
+    album=excluded.album,
+    cover_url=excluded.cover_url,
+    duration_ms=excluded.duration_ms,
+    source_fingerprint=excluded.source_fingerprint,
+    matcher_version=excluded.matcher_version,
+    status=excluded.status,
+    last_error=excluded.last_error,
+    next_retry_utc=excluded.next_retry_utc,
+    updated_at=CURRENT_TIMESTAMP;", connection);
+        command.Parameters.AddWithValue("boomplayTrackId", normalizedBoomplayTrackId);
+        command.Parameters.AddWithValue("deezerTrackId", (object?)normalizedDeezerTrackId ?? DBNull.Value);
+        command.Parameters.AddWithValue("isrc", string.IsNullOrWhiteSpace(input.Isrc) ? DBNull.Value : input.Isrc.Trim());
+        command.Parameters.AddWithValue("title", input.Title?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("artist", input.Artist?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("album", input.Album?.Trim() ?? string.Empty);
+        command.Parameters.AddWithValue("coverUrl", string.IsNullOrWhiteSpace(input.CoverUrl) ? DBNull.Value : input.CoverUrl.Trim());
+        command.Parameters.AddWithValue("durationMs", input.DurationMs is > 0 ? input.DurationMs.Value : DBNull.Value);
+        command.Parameters.AddWithValue("sourceFingerprint", normalizedFingerprint);
+        command.Parameters.AddWithValue("matcherVersion", normalizedMatcherVersion);
+        command.Parameters.AddWithValue("status", normalizedStatus);
+        command.Parameters.AddWithValue("lastError", string.IsNullOrWhiteSpace(input.LastError) ? DBNull.Value : input.LastError.Trim());
+        command.Parameters.AddWithValue("nextRetryUtc", input.NextRetryUtc?.ToString("O") ?? (object)DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task AddRecommendationRejectionAsync(

@@ -44,7 +44,10 @@ public sealed record PlaylistTrackCandidate(
     int? DurationMs,
     bool? Explicit,
     IReadOnlyList<string> Genres,
-    string? CoverUrl = null);
+    string? CoverUrl = null,
+    string? DeezerId = null,
+    string? MappingStatus = null,
+    string? MappingError = null);
 
 public sealed record PlaylistReconciliationResult(
     bool Success,
@@ -139,6 +142,7 @@ internal sealed class WatchlistEngine
     private readonly DeezerGatewayService _deezerGatewayService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly BoomplayMetadataService _boomplayMetadataService;
+    private readonly BoomplayWatchlistMappingService _boomplayWatchlistMappingService;
     private readonly LibraryRecommendationService _libraryRecommendationService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
@@ -174,6 +178,7 @@ internal sealed class WatchlistEngine
         public required DeezerGatewayService DeezerGatewayService { get; init; }
         public required AppleMusicCatalogService AppleCatalogService { get; init; }
         public required BoomplayMetadataService BoomplayMetadataService { get; init; }
+        internal required BoomplayWatchlistMappingService BoomplayWatchlistMappingService { get; init; }
         public required LibraryRecommendationService LibraryRecommendationService { get; init; }
         public required IHttpClientFactory HttpClientFactory { get; init; }
         public required ITidalAccessTokenProvider TidalAccessTokenProvider { get; init; }
@@ -205,6 +210,7 @@ internal sealed class WatchlistEngine
         _deezerGatewayService = platformServices.DeezerGatewayService;
         _appleCatalogService = platformServices.AppleCatalogService;
         _boomplayMetadataService = platformServices.BoomplayMetadataService;
+        _boomplayWatchlistMappingService = platformServices.BoomplayWatchlistMappingService;
         _libraryRecommendationService = platformServices.LibraryRecommendationService;
         _httpClientFactory = platformServices.HttpClientFactory;
         _tidalAccessTokenProvider = platformServices.TidalAccessTokenProvider;
@@ -960,6 +966,14 @@ internal sealed class WatchlistEngine
             {
                 await TryMarkWatchTrackCompletedAsync(source, sourceId, candidate.TrackSourceId, cancellationToken);
                 ignoredCount++;
+                continue;
+            }
+
+            if (string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(candidate.DeezerId))
+            {
+                // A Boomplay membership is not a downloadable identity. Leave it pending so the
+                // durable mapper can retry instead of recording a false source-unavailable result.
                 continue;
             }
 
@@ -2295,7 +2309,7 @@ internal sealed class WatchlistEngine
         CancellationToken cancellationToken)
     {
         var playlistData = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
-        var candidates = MapWatchIntentTrackCandidates(playlistData?.Tracks);
+        var candidates = await MapBoomplayWatchIntentTrackCandidatesAsync(playlistData?.Tracks, cancellationToken);
         return BuildLivePlaylistSnapshot(
             candidates,
             new LivePlaylistSnapshotMetadata(
@@ -2305,6 +2319,49 @@ internal sealed class WatchlistEngine
                 TrackCount: playlistData?.TrackCount,
                 IsComplete: playlistData != null,
                 CanClearImageUrl: true));
+    }
+
+    private async Task<IReadOnlyList<PlaylistTrackCandidate>> MapBoomplayWatchIntentTrackCandidatesAsync(
+        IReadOnlyCollection<WatchIntentTrack>? tracks,
+        CancellationToken cancellationToken)
+    {
+        if (tracks == null || tracks.Count == 0)
+        {
+            return Array.Empty<PlaylistTrackCandidate>();
+        }
+
+        var uniqueTracks = tracks
+            .Where(static track => !string.IsNullOrWhiteSpace(track.TrackId))
+            .GroupBy(static track => track.TrackId.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .ToList();
+        var mapped = await _boomplayWatchlistMappingService.ResolveTracksAsync(
+            uniqueTracks.Select(static track => new BoomplayWatchlistTrackInput(
+                track.TrackId.Trim(),
+                EmptyToNull(track.Intent.SourceUrl),
+                EmptyToNull(track.Intent.Title),
+                EmptyToNull(track.Intent.Artist),
+                EmptyToNull(track.Intent.Album),
+                EmptyToNull(track.Isrc),
+                track.Intent.DurationMs > 0 ? track.Intent.DurationMs : null,
+                EmptyToNull(track.Intent.Cover))).ToList(),
+            cancellationToken);
+
+        return mapped.Select(static track => new PlaylistTrackCandidate(
+                track.BoomplayTrackId,
+                EmptyToNull(track.Isrc),
+                track.Title,
+                track.Artist,
+                track.Album,
+                ReleaseYear: null,
+                track.DurationMs,
+                Explicit: null,
+                Genres: Array.Empty<string>(),
+                track.CoverUrl,
+                track.DeezerTrackId,
+                track.MappingStatus,
+                track.MappingError))
+            .ToList();
     }
 
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> GetRecommendationTrackCandidatesAsync(
@@ -3135,6 +3192,17 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private static WatchIntentTrack? BuildWatchIntentTrackFromCandidate(string source, PlaylistTrackCandidate candidate)
     {
+        var intent = BuildWatchDownloadIntentFromCandidate(source, candidate);
+        var trackId = (candidate.TrackSourceId ?? string.Empty).Trim();
+        return intent == null || string.IsNullOrWhiteSpace(trackId)
+            ? null
+            : new WatchIntentTrack(trackId, candidate.Isrc, intent);
+    }
+
+    internal static DownloadIntent? BuildWatchDownloadIntentFromCandidate(
+        string source,
+        PlaylistTrackCandidate candidate)
+    {
         if (!IsDownloadableWatchSource(source))
         {
             return null;
@@ -3146,16 +3214,25 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
+        var canonicalTrackId = string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase)
+            ? (candidate.DeezerId ?? string.Empty).Trim()
+            : trackId;
+        if (string.IsNullOrWhiteSpace(canonicalTrackId))
+        {
+            return null;
+        }
+
         var sourceService = source switch
         {
             RecommendationsSource => DeezerSource,
             SmartTracklistSource => DeezerSource,
+            BoomplaySource => DeezerSource,
             _ => source
         };
         var intent = new DownloadIntent
         {
             SourceService = sourceService,
-            SourceUrl = BuildCandidateSourceUrl(source, trackId),
+            SourceUrl = BuildCandidateSourceUrl(sourceService, canonicalTrackId),
             Isrc = candidate.Isrc ?? string.Empty,
             Title = candidate.Title ?? string.Empty,
             Artist = candidate.Artist ?? string.Empty,
@@ -3180,6 +3257,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             case SmartTracklistSource:
                 intent.DeezerId = trackId;
                 break;
+            case BoomplaySource:
+                intent.DeezerId = canonicalTrackId;
+                break;
             case AppleSource:
                 intent.AppleId = trackId;
                 break;
@@ -3191,7 +3271,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 break;
         }
 
-        return new WatchIntentTrack(trackId, candidate.Isrc, intent);
+        return intent;
     }
 
     private static string BuildCandidateSourceUrl(string source, string trackId)

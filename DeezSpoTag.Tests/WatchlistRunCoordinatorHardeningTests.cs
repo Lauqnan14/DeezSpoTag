@@ -113,6 +113,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 DeezerGatewayService = null!,
                 AppleCatalogService = null!,
                 BoomplayMetadataService = null!,
+                BoomplayWatchlistMappingService = null!,
                 LibraryRecommendationService = null!,
                 HttpClientFactory = new StubHttpClientFactory(),
                 TidalAccessTokenProvider = new StubTidalAccessTokenProvider()

@@ -734,6 +734,22 @@ public sealed record PlaylistTrackCandidateCacheDto(
     string CandidatesJson,
     DateTimeOffset UpdatedAt);
 
+public sealed record BoomplayDeezerTrackMappingDto(
+    string BoomplayTrackId,
+    string? DeezerTrackId,
+    string? Isrc,
+    string Title,
+    string Artist,
+    string Album,
+    string? CoverUrl,
+    int? DurationMs,
+    string SourceFingerprint,
+    string MatcherVersion,
+    string Status,
+    string? LastError,
+    DateTimeOffset? NextRetryUtc,
+    DateTimeOffset UpdatedAt);
+
 public sealed record PlaylistWatchTrackStatusDto(
     string TrackSourceId,
     string? Isrc,
