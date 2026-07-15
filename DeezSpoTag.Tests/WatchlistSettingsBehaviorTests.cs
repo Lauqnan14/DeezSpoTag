@@ -272,13 +272,15 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
         Assert.Contains("WatchUseSnapshotIdChecking", source, StringComparison.Ordinal);
-        Assert.Contains("var maxCandidates = MaxPlaylistCandidateFetchCount;", source, StringComparison.Ordinal);
+        Assert.Contains("var maxCandidates = CompletePlaylistCandidateFetchCount;", source, StringComparison.Ordinal);
         Assert.Contains("FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchlistMetadataAsync", source, StringComparison.Ordinal);
         Assert.Contains("RemovePlaylistWatchTracksNotInAsync", source, StringComparison.Ordinal);
         Assert.Contains("FetchPlaylistTrackPageAsync(", source, StringComparison.Ordinal);
         Assert.Contains("Math.Min(100, maxCandidates)", source, StringComparison.Ordinal);
         Assert.Contains("while (candidates.Count < maxCandidates)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("MaxPlaylistCandidateFetchCount = 1000", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LimitLivePlaylistSnapshot", source, StringComparison.Ordinal);
         Assert.Contains("GetBoomplayPlaylistWatchDataAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetPlaylistAsync(playlistId, cancellationToken)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetPlaylistAsync(playlistId, includeTracks:", source, StringComparison.Ordinal);
@@ -530,7 +532,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("\"waiting_for_target_sync\"", watchSource, StringComparison.Ordinal);
         Assert.Contains("queueResult.FailedCount == 0 && !IsTerminalPlaylistSyncFailure(syncResult)", watchSource, StringComparison.Ordinal);
         Assert.Contains("IsFinalizedTrackSyncedAsync", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("status.SyncStatus, \"playlist_synced\"", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("IsPlaylistWatchTrackSyncedToTargetAsync", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -556,8 +558,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl)", visualSource, StringComparison.Ordinal);
         Assert.Contains("return remoteUrl;", visualSource, StringComparison.Ordinal);
         Assert.Contains("ResolveActiveFileName", visualSource, StringComparison.Ordinal);
-        Assert.Contains("watcher.ReconcilePlaylistAsync(", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("mode: PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksToTargetAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("VerifyAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", postDownloadSource, StringComparison.Ordinal);
@@ -866,7 +868,14 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask NotifyFinalizedAsync(");
         Assert.DoesNotContain("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistSyncJobAsync", notifyBody, StringComparison.Ordinal);
-        Assert.Contains("PersistDeferredWhileDisabledAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("if (IsWatchlistEnabled())", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("while (!stoppingToken.IsCancellationRequested)", syncSource, StringComparison.Ordinal);
+        Assert.Contains("the worker will remain active and retry", syncSource, StringComparison.Ordinal);
+        Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("MarkWatchlistSyncJobRepairRequiredAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("HasWatchlistReconciliationRequestAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
     }
 
     public void Dispose()

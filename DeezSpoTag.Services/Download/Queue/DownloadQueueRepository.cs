@@ -676,8 +676,15 @@ WHERE (
           lower(status) IN ('completed', 'complete')
           AND destination_folder_id IS NOT NULL
           AND (
-              lower(COALESCE(move_status, '')) IN ('', 'pending', 'running')
-              OR lower(COALESCE(enrichment_status, '')) IN ('', 'pending', 'running')
+              lower(COALESCE(move_status, '')) = 'running'
+              OR lower(COALESCE(enrichment_status, '')) = 'running'
+              OR (
+                  datetime(updated_at) >= datetime(@postDownloadLeaseUtc)
+                  AND (
+                      lower(COALESCE(move_status, '')) IN ('', 'pending')
+                      OR lower(COALESCE(enrichment_status, '')) IN ('', 'pending')
+                  )
+              )
           )
       )
   )
@@ -694,6 +701,9 @@ WHERE (
   )
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(
+            "postDownloadLeaseUtc",
+            (DateTimeOffset.UtcNow - DownloadQueueRecoveryPolicy.PostDownloadPendingLease).ToString("O"));
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is not null && result is not DBNull;
     }
@@ -3142,11 +3152,14 @@ LIMIT 1;";
     }
 
     public static bool HasExistingMaterializedFile(DownloadQueueItem item)
+        => GetExistingMaterializedFilePaths(item).Count > 0;
+
+    public static IReadOnlyList<string> GetExistingMaterializedFilePaths(DownloadQueueItem item)
     {
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         AddFinalDestinationPaths(item.FinalDestinationsJson, paths);
         AddPayloadPaths(item.PayloadJson, paths);
-        return paths.Any(PathExists);
+        return paths.Where(PathExists).ToList();
     }
 
     private static bool PathExists(string path)

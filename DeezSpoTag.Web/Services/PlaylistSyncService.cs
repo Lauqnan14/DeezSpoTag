@@ -767,6 +767,33 @@ public sealed class PlaylistSyncService
         return partialResult;
     }
 
+    public Task<PlaylistSyncResult> SyncAvailablePlaylistTracksToTargetAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto preference,
+        string targetService,
+        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTarget = NormalizeService(targetService);
+        if (normalizedTarget is not PlexService and not JellyfinService and not NavidromeService)
+        {
+            return Task.FromResult(PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage));
+        }
+
+        var targetPreference = preference with
+        {
+            Service = normalizedTarget,
+            SyncTargets = [normalizedTarget]
+        };
+        return SyncAvailablePlaylistTracksAsync(
+            playlist,
+            targetPreference,
+            trackCandidates,
+            force,
+            cancellationToken);
+    }
+
     private async Task<PlaylistSyncResult> SyncPlaylistToTargetsAsync(
         IReadOnlyList<string> services,
         PlaylistWatchlistDto playlist,
@@ -830,12 +857,7 @@ public sealed class PlaylistSyncService
             return results[0].Result;
         }
 
-        var successfulResults = results
-            .Where(item => item.Result.Success)
-            .ToList();
-        var failedResults = results
-            .Where(item => !item.Result.Success)
-            .ToList();
+        var successfulResults = results.Where(item => item.Result.Success).ToList();
         var message = string.Join(
             " ",
             results.Select(item => string.Concat(
@@ -843,13 +865,17 @@ public sealed class PlaylistSyncService
                 ": ",
                 item.Result.Message)));
 
-        if (successfulResults.Count == 0)
+        if (successfulResults.Count != results.Count)
         {
-            var first = results[0].Result;
+            var first = results.First(item => !item.Result.Success).Result;
             return first with
             {
                 Success = false,
-                Message = message
+                Message = message,
+                SyncedTracks = successfulResults.Sum(item => item.Result.SyncedTracks),
+                TargetMatches = successfulResults.Sum(item => item.Result.TargetMatches),
+                MetadataMatches = successfulResults.Sum(item => item.Result.MetadataMatches),
+                SearchMatches = successfulResults.Sum(item => item.Result.SearchMatches)
             };
         }
 

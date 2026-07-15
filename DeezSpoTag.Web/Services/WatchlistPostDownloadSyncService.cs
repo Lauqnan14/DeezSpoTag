@@ -1,46 +1,44 @@
-using System.Collections.Concurrent;
-using System.Threading.Channels;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Services;
 
+public sealed record WatchlistPostDownloadSyncHealth(
+    bool IsRunning,
+    bool IsProcessing,
+    DateTimeOffset? LastHeartbeatUtc,
+    DateTimeOffset? LastCycleCompletedUtc,
+    DateTimeOffset? LastSuccessfulJobUtc,
+    long? CurrentJobId,
+    string? CurrentTarget,
+    int ConsecutiveFailures,
+    string? LastError);
+
 public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatchlistPostDownloadSyncNotifier
 {
-    private static readonly TimeSpan[] RetryDelays =
-    [
-        TimeSpan.FromSeconds(15),
-        TimeSpan.FromSeconds(30),
-        TimeSpan.FromMinutes(1),
-        TimeSpan.FromMinutes(2),
-        TimeSpan.FromMinutes(5),
-        TimeSpan.FromMinutes(10)
-    ];
-    private static readonly TimeSpan FollowUpDelay = TimeSpan.FromMinutes(10);
-    private const int MaxFollowUpPasses = 12;
-
-    private readonly Channel<SyncRequest> _queue = Channel.CreateBounded<SyncRequest>(
-        new BoundedChannelOptions(256)
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait
-        });
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _playlistLocks = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, SyncRequest> _pendingAfterCurrentRun = new(StringComparer.OrdinalIgnoreCase);
-    private readonly SemaphoreSlim _executionGate = new(initialCount: 2, maxCount: 2);
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
+    private readonly WatchlistRunSignal _wakeSignal = new();
+    private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<WatchlistPostDownloadSyncService> _logger;
+    private readonly string _leaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+    private readonly object _healthGate = new();
+    private WatchlistPostDownloadSyncHealth _health = new(false, false, null, null, null, null, null, 0, null);
+    private DateTimeOffset _lastRepairAttemptUtc = DateTimeOffset.MinValue;
 
     public WatchlistPostDownloadSyncService(
         IServiceProvider serviceProvider,
         DeezSpoTagSettingsService settingsService,
+        WatchlistRunSignal coordinatorSignal,
         ILogger<WatchlistPostDownloadSyncService> logger)
     {
         _serviceProvider = serviceProvider;
         _settingsService = settingsService;
+        _coordinatorSignal = coordinatorSignal;
         _logger = logger;
     }
 
@@ -48,6 +46,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         string source,
         string playlistId,
         string trackId,
+        string queueUuid,
         long? destinationFolderId,
         IReadOnlyList<string>? finalFilePaths = null,
         CancellationToken cancellationToken = default)
@@ -62,71 +61,159 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
         var paths = NormalizeChangedFilePaths(finalFilePaths);
-        await repository.EnqueueWatchlistSyncJobAsync(source, playlistId, trackId, destinationFolderId, paths, cancellationToken);
-        var due = await repository.GetDueWatchlistSyncJobsAsync(100, cancellationToken);
-        var job = due.FirstOrDefault(item => string.Equals(item.Source, source.Trim(), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(item.PlaylistId, playlistId.Trim(), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(item.TrackId, trackId.Trim(), StringComparison.OrdinalIgnoreCase));
-        var request = new SyncRequest(
-            job?.Id ?? 0,
-            source.Trim().ToLowerInvariant(),
-            playlistId.Trim(),
-            trackId.Trim(),
+        var jobs = await repository.EnqueueWatchlistSyncJobAsync(
+            source,
+            playlistId,
+            trackId,
             destinationFolderId,
             paths,
-            FollowUpPass: 0);
-        await _queue.Writer.WriteAsync(request, cancellationToken);
+            queueUuid,
+            cancellationToken);
+        if (jobs.Count > 0)
+        {
+            SignalWorker();
+        }
     }
 
-    public async Task ResumePendingJobsAsync(CancellationToken cancellationToken = default)
+    public Task ResumePendingJobsAsync(CancellationToken cancellationToken = default)
     {
         if (!IsWatchlistEnabled())
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        await RecoverDurableJobsAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        SignalWorker();
+        return Task.CompletedTask;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await RecoverDurableJobsAsync(stoppingToken);
-        await foreach (var request in _queue.Reader.ReadAllAsync(stoppingToken))
+        UpdateHealth(health => health with { IsRunning = true, LastHeartbeatUtc = DateTimeOffset.UtcNow });
+        while (!stoppingToken.IsCancellationRequested)
         {
-            if (!IsWatchlistEnabled())
+            try
             {
-                await PersistDeferredWhileDisabledAsync(request, stoppingToken);
-                continue;
-            }
+                UpdateHealth(health => health with { LastHeartbeatUtc = DateTimeOffset.UtcNow });
+                if (IsWatchlistEnabled())
+                {
+                    await ProcessDueJobsAsync(stoppingToken);
+                }
 
-            _ = RunQueuedRequestAsync(request, stoppingToken);
+                UpdateHealth(health => health with
+                {
+                    LastHeartbeatUtc = DateTimeOffset.UtcNow,
+                    LastCycleCompletedUtc = DateTimeOffset.UtcNow,
+                    ConsecutiveFailures = 0
+                });
+                await WaitForWakeAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Watchlist target-sync worker cycle failed; the worker will remain active and retry.");
+                UpdateHealth(health => health with
+                {
+                    LastHeartbeatUtc = DateTimeOffset.UtcNow,
+                    LastCycleCompletedUtc = DateTimeOffset.UtcNow,
+                    ConsecutiveFailures = health.ConsecutiveFailures + 1,
+                    LastError = ex.Message,
+                    IsProcessing = false,
+                    CurrentJobId = null,
+                    CurrentTarget = null
+                });
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+        }
+        UpdateHealth(health => health with { IsRunning = false, IsProcessing = false, LastHeartbeatUtc = DateTimeOffset.UtcNow });
+    }
+
+    public WatchlistPostDownloadSyncHealth GetRuntimeHealth()
+    {
+        lock (_healthGate)
+        {
+            return _health;
         }
     }
 
-    private async Task RecoverDurableJobsAsync(CancellationToken cancellationToken)
+    private void UpdateHealth(Func<WatchlistPostDownloadSyncHealth, WatchlistPostDownloadSyncHealth> update)
     {
-        using var scope = _serviceProvider.CreateScope();
-        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-        if (!repository.IsConfigured) return;
-        foreach (var job in await repository.GetDueWatchlistSyncJobsAsync(100, cancellationToken))
-            await _queue.Writer.WriteAsync(new SyncRequest(job.Id, job.Source, job.PlaylistId, job.TrackId,
-                job.DestinationFolderId, job.FinalFilePaths, job.AttemptCount), cancellationToken);
+        lock (_healthGate)
+        {
+            _health = update(_health);
+        }
     }
 
-    private async Task PersistDeferredWhileDisabledAsync(SyncRequest request, CancellationToken cancellationToken)
+    private async Task ProcessDueJobsAsync(CancellationToken cancellationToken)
     {
-        if (request.JobId <= 0)
+        await RepairIncompleteJobsIfNeededAsync(cancellationToken);
+        for (var processed = 0; processed < 100 && IsWatchlistEnabled(); processed++)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            if (!repository.IsConfigured)
+            {
+                return;
+            }
+
+            var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(1, ProcessingLease, _leaseOwner, cancellationToken);
+            var job = jobs.FirstOrDefault();
+            if (job == null)
+            {
+                return;
+            }
+
+            UpdateHealth(health => health with
+            {
+                IsProcessing = true,
+                LastHeartbeatUtc = DateTimeOffset.UtcNow,
+                CurrentJobId = job.Id,
+                CurrentTarget = job.TargetService
+            });
+            await ProcessClaimedJobAsync(repository, job, cancellationToken);
+            UpdateHealth(health => health with
+            {
+                IsProcessing = false,
+                LastHeartbeatUtc = DateTimeOffset.UtcNow,
+                CurrentJobId = null,
+                CurrentTarget = null
+            });
+        }
+    }
+
+    private async Task RepairIncompleteJobsIfNeededAsync(CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow - _lastRepairAttemptUtc < TimeSpan.FromMinutes(5))
         {
             return;
         }
 
         using var scope = _serviceProvider.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<LibraryRepository>().RetryWatchlistSyncJobAsync(
-            request.JobId,
-            request.FollowUpPass,
-            DateTimeOffset.UtcNow,
-            "Watchlist disabled; durable synchronization suspended.",
-            cancellationToken);
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        if (!repository.IsConfigured)
+        {
+            return;
+        }
+        var counts = await repository.GetWatchlistSyncJobStatusCountsAsync(cancellationToken);
+        if (counts.RepairRequired <= 0)
+        {
+            return;
+        }
+
+        _lastRepairAttemptUtc = DateTimeOffset.UtcNow;
+        var playlists = await repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var repairService = scope.ServiceProvider.GetRequiredService<WatchlistFinalizationService>();
+        await repairService.RepairPlaylistsAsync(playlists, cancellationToken);
     }
 
     private bool IsWatchlistEnabled()
@@ -135,158 +222,114 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         return settings.WatchEnabled;
     }
 
-    private async Task RunQueuedRequestAsync(SyncRequest request, CancellationToken stoppingToken)
+    private async Task ProcessClaimedJobAsync(
+        LibraryRepository repository,
+        WatchlistSyncJobDto job,
+        CancellationToken cancellationToken)
     {
-        await _executionGate.WaitAsync(stoppingToken);
+        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
         try
         {
-            await ProcessWithRetriesAsync(request, stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-            // Service shutdown.
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Watchlist playlist sync worker failed for {Source}:{PlaylistId} after finalized track {TrackId}.",
-                request.Source,
-                request.PlaylistId,
-                request.TrackId);
-        }
-        finally
-        {
-            _executionGate.Release();
-        }
-    }
-
-    private async Task ProcessWithRetriesAsync(SyncRequest request, CancellationToken stoppingToken)
-    {
-        var key = BuildKey(request);
-        var playlistLock = _playlistLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
-        if (!await playlistLock.WaitAsync(0, stoppingToken))
-        {
-            _pendingAfterCurrentRun[key] = request;
-            if (_logger.IsEnabled(LogLevel.Debug))
+            var request = new SyncRequest(
+                job.Id,
+                job.Source,
+                job.PlaylistId,
+                job.TrackId,
+                job.TargetService,
+                job.DestinationFolderId,
+                job.FinalFilePaths,
+                job.AttemptCount);
+            var outcome = await TrySyncOnceAsync(request, job.AttemptCount + 1, cancellationToken);
+            switch (outcome.Kind)
             {
-                _logger.LogDebug(
-                    "Watchlist playlist sync already running for {Source}:{PlaylistId}; queued one follow-up pass.",
-                    request.Source,
-                    request.PlaylistId);
-            }
-            return;
-        }
-
-        try
-        {
-            for (var attempt = 0; attempt < RetryDelays.Length; attempt++)
-            {
-                await Task.Delay(RetryDelays[attempt], stoppingToken);
-
-                var synced = await TrySyncOnceAsync(request, attempt + 1, stoppingToken);
-                if (synced)
-                {
-                    await CompleteDurableJobAsync(request, stoppingToken);
+                case SyncAttemptOutcomeKind.Completed:
+                    if (await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken))
+                    {
+                        UpdateHealth(health => health with
+                        {
+                            LastSuccessfulJobUtc = DateTimeOffset.UtcNow,
+                            LastError = null
+                        });
+                    }
                     return;
-                }
+                case SyncAttemptOutcomeKind.Obsolete:
+                    await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken);
+                    return;
+                case SyncAttemptOutcomeKind.RepairRequired:
+                    await repository.MarkWatchlistSyncJobRepairRequiredAsync(
+                        job.Id,
+                        _leaseOwner,
+                        outcome.Message,
+                        cancellationToken);
+                    return;
+                case SyncAttemptOutcomeKind.Blocked:
+                    await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
+                    return;
             }
-
-            _logger.LogWarning(
-                "Watchlist playlist sync exhausted retries for {Source}:{PlaylistId} after finalized track {TrackId}.",
-                request.Source,
-                request.PlaylistId,
-                request.TrackId);
-            ScheduleFollowUp(request, stoppingToken);
-            await PersistRetryAsync(request, stoppingToken);
+            var attempt = job.AttemptCount + 1;
+            var retryDelay = TimeSpan.FromSeconds(Math.Min(MaximumRetryDelay.TotalSeconds, 15 * Math.Pow(2, Math.Min(attempt - 1, 6))));
+            await repository.RetryWatchlistSyncJobAsync(
+                job.Id,
+                _leaseOwner,
+                attempt,
+                DateTimeOffset.UtcNow + retryDelay,
+                outcome.Message,
+                cancellationToken);
         }
-        catch (OperationCanceledException ex) when (stoppingToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    ex,
-                    "Watchlist playlist sync canceled for {Source}:{PlaylistId}.",
-                    request.Source,
-                    request.PlaylistId);
-            }
-        }
-        finally
-        {
-            playlistLock.Release();
-            if (_pendingAfterCurrentRun.TryRemove(key, out var pendingRequest)
-                && !stoppingToken.IsCancellationRequested)
-            {
-                await _queue.Writer.WriteAsync(pendingRequest, stoppingToken);
-            }
-        }
-    }
-
-    private async Task CompleteDurableJobAsync(SyncRequest request, CancellationToken cancellationToken)
-    {
-        if (request.JobId <= 0) return;
-        using var scope = _serviceProvider.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<LibraryRepository>().CompleteWatchlistSyncJobAsync(request.JobId, cancellationToken);
-    }
-
-    private async Task PersistRetryAsync(SyncRequest request, CancellationToken cancellationToken)
-    {
-        if (request.JobId <= 0) return;
-        using var scope = _serviceProvider.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<LibraryRepository>().RetryWatchlistSyncJobAsync(
-            request.JobId, request.FollowUpPass + 1, DateTimeOffset.UtcNow + FollowUpDelay, "Playlist synchronization not ready.", cancellationToken);
-    }
-
-    private static string BuildKey(SyncRequest request)
-        => $"{request.Source}:{request.PlaylistId}";
-
-    private void ScheduleFollowUp(SyncRequest request, CancellationToken cancellationToken)
-    {
-        if (request.FollowUpPass >= MaxFollowUpPasses)
-        {
-            _logger.LogWarning(
-                "Watchlist playlist sync stopped after {FollowUpPasses} follow-up passes for {Source}:{PlaylistId} after finalized track {TrackId}.",
-                request.FollowUpPass,
-                request.Source,
-                request.PlaylistId,
-                request.TrackId);
-            return;
-        }
-
-        var followUp = request with { FollowUpPass = request.FollowUpPass + 1 };
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Watchlist playlist sync scheduled follow-up pass {FollowUpPass}/{MaxFollowUpPasses} for {Source}:{PlaylistId} after finalized track {TrackId}.",
-                followUp.FollowUpPass,
-                MaxFollowUpPasses,
-                followUp.Source,
-                followUp.PlaylistId,
-                followUp.TrackId);
-        }
-
-        _ = DelayAndQueueFollowUpAsync(followUp, cancellationToken);
-    }
-
-    private async Task DelayAndQueueFollowUpAsync(SyncRequest followUp, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await Task.Delay(FollowUpDelay, cancellationToken);
-            await _queue.Writer.WriteAsync(followUp, cancellationToken);
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(
                 ex,
-                "Watchlist playlist sync failed to schedule follow-up for {Source}:{PlaylistId} after finalized track {TrackId}.",
-                followUp.Source,
-                followUp.PlaylistId,
-                followUp.TrackId);
+                "Watchlist target sync job {JobId} failed unexpectedly; returning it to durable retry.",
+                job.Id);
+            await repository.RetryWatchlistSyncJobAsync(
+                job.Id,
+                _leaseOwner,
+                job.AttemptCount + 1,
+                DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
+                ex.Message,
+                cancellationToken);
+        }
+        finally
+        {
+            leaseRenewalCancellation.Cancel();
+            try
+            {
+                await leaseRenewal;
+            }
+            catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+            {
+                // Expected once the claimed job leaves processing.
+            }
         }
     }
 
-    private async Task<bool> TrySyncOnceAsync(SyncRequest request, int attempt, CancellationToken cancellationToken)
+    private async Task RenewLeaseAsync(LibraryRepository repository, long jobId, CancellationToken cancellationToken)
+    {
+        var interval = TimeSpan.FromTicks(ProcessingLease.Ticks / 3);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(interval, cancellationToken);
+            if (!await repository.RenewWatchlistSyncJobLeaseAsync(jobId, _leaseOwner, ProcessingLease, cancellationToken))
+            {
+                return;
+            }
+            UpdateHealth(health => health with { LastHeartbeatUtc = DateTimeOffset.UtcNow });
+        }
+    }
+
+    private void SignalWorker()
+        => _wakeSignal.Request();
+
+    private Task WaitForWakeAsync(CancellationToken cancellationToken)
+        => _wakeSignal.WaitAsync(PollInterval, cancellationToken);
+
+    private async Task<SyncAttemptOutcome> TrySyncOnceAsync(SyncRequest request, int attempt, CancellationToken cancellationToken)
     {
         try
         {
@@ -294,36 +337,92 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
             if (!repository.IsConfigured)
             {
-                return false;
+                return SyncAttemptOutcome.Retry("Library database is not configured.");
             }
 
             var playlist = await FindPlaylistAsync(repository, request, cancellationToken);
             if (playlist == null)
             {
                 LogPlaylistMissing(request);
-                return true;
+                return SyncAttemptOutcome.Obsolete("The monitored playlist no longer exists.");
             }
 
             var preference = await repository.GetPlaylistWatchPreferenceAsync(
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
+            if (preference == null || !IsConfiguredTarget(preference, request.TargetService))
+            {
+                _logger.LogInformation(
+                    "Completing obsolete Watchlist sync job {JobId}; target {TargetService} is no longer configured for {Source}:{PlaylistId}.",
+                    request.JobId,
+                    request.TargetService,
+                    request.Source,
+                    request.PlaylistId);
+                return SyncAttemptOutcome.Obsolete("The synchronization target is no longer configured.");
+            }
             var effectiveRequest = ResolveEffectiveRequest(request, preference);
+
+            if (await repository.HasWatchlistReconciliationRequestAsync(
+                    "playlist",
+                    playlist.Source,
+                    playlist.SourceId,
+                    cancellationToken))
+            {
+                _coordinatorSignal.Request();
+                return SyncAttemptOutcome.Retry("Waiting for the durable playlist reconciliation request to complete.");
+            }
+
+            var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
+            var candidates = await watcher.GetCachedPlaylistTrackCandidatesAsync(
+                playlist.Source,
+                playlist.SourceId,
+                cancellationToken);
+            if (candidates.Count == 0)
+            {
+                await repository.EnqueueWatchlistReconciliationRequestAsync(
+                    "playlist",
+                    playlist.Source,
+                    playlist.SourceId,
+                    cancellationToken);
+                _coordinatorSignal.Request();
+                return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
+            }
+            if (!candidates.Any(candidate => string.Equals(
+                    candidate.TrackSourceId,
+                    request.TrackId,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                return SyncAttemptOutcome.Obsolete("The track is no longer present in the monitored source playlist.");
+            }
+
+            if (effectiveRequest.DestinationFolderId.HasValue && effectiveRequest.ChangedFilePaths.Count == 0)
+            {
+                var repairService = scope.ServiceProvider.GetService<WatchlistFinalizationService>();
+                var repaired = repairService == null
+                    ? 0
+                    : await repairService.RepairPlaylistAsync(playlist, cancellationToken);
+                return repaired > 0
+                    ? SyncAttemptOutcome.Completed("Finalization repair recreated the target synchronization job.")
+                    : SyncAttemptOutcome.RepairRequired("Finalized download has no recoverable destination file paths.");
+            }
 
             if (!await VerifyLocalLibraryIngestionAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
             {
-                return false;
+                return SyncAttemptOutcome.Retry("Finalized files are not visible in the local library yet.");
             }
-            await RefreshMediaServerAsync(scope.ServiceProvider, preference, cancellationToken);
 
-            var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
-            var reconciliationResult = await watcher.ReconcilePlaylistAsync(
+            await RefreshMediaServerAsync(scope.ServiceProvider, request.TargetService, cancellationToken);
+            var syncResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
+                .SyncAvailablePlaylistTracksToTargetAsync(
                 playlist,
-                cancellationToken,
-                forceMediaServerSync: true,
-                mode: PlaylistReconciliationMode.SyncOnly);
+                preference,
+                request.TargetService,
+                candidates,
+                force: false,
+                cancellationToken);
 
-            if (await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, cancellationToken))
+            if (await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, request.TargetService, cancellationToken))
             {
                 await TransitionPlaylistStateAsync(
                     scope.ServiceProvider,
@@ -336,25 +435,26 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                     playlist,
                     WatchlistHistoryStatus.MediaSyncCompleted,
                     cancellationToken);
-                LogSyncCompleted(request, attempt, reconciliationResult.SyncResult?.SyncedTracks ?? 0);
-                return true;
+                LogSyncCompleted(request, attempt, syncResult.SyncedTracks);
+                return SyncAttemptOutcome.Completed(syncResult.Message);
             }
 
-            var syncResult = reconciliationResult.SyncResult;
-            var terminalFailure = syncResult is not null && IsTerminalSyncFailure(syncResult);
+            var terminalFailure = IsTerminalSyncFailure(syncResult);
             await TransitionPlaylistStateAsync(
                 scope.ServiceProvider,
                 playlist,
                 terminalFailure ? WatchlistPlaylistState.MediaSyncBlocked : WatchlistPlaylistState.MediaSyncWaiting,
-                syncResult?.Message ?? reconciliationResult.Message,
+                syncResult.Message,
                 cancellationToken);
             await AddPlaylistSyncHistoryAsync(
                 scope.ServiceProvider,
                 playlist,
                 terminalFailure ? WatchlistHistoryStatus.MediaSyncBlocked : WatchlistHistoryStatus.MediaSyncWaiting,
                 cancellationToken);
-            LogSyncNotReady(request, attempt, syncResult?.Message ?? reconciliationResult.Message);
-            return terminalFailure;
+            LogSyncNotReady(request, attempt, syncResult.Message);
+            return terminalFailure
+                ? SyncAttemptOutcome.Blocked(syncResult.Message)
+                : SyncAttemptOutcome.Retry(syncResult.Message);
         }
         catch (OperationCanceledException)
         {
@@ -369,7 +469,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 request.Source,
                 request.PlaylistId,
                 request.TrackId);
-            return false;
+            return SyncAttemptOutcome.Retry(ex.Message);
         }
     }
 
@@ -391,15 +491,21 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         LibraryRepository repository,
         PlaylistWatchlistDto playlist,
         string trackId,
+        string targetService,
         CancellationToken cancellationToken)
-    {
-        var statuses = await repository.GetPlaylistWatchTrackStatusesAsync(
+        => await repository.IsPlaylistWatchTrackSyncedToTargetAsync(
             playlist.Source,
             playlist.SourceId,
+            trackId,
+            targetService,
             cancellationToken);
-        return statuses.Any(status =>
-            string.Equals(status.TrackSourceId, trackId, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(status.SyncStatus, "playlist_synced", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsConfiguredTarget(PlaylistWatchPreferenceDto preference, string targetService)
+    {
+        var targets = preference.SyncTargets is { Count: > 0 }
+            ? preference.SyncTargets
+            : [preference.Service ?? string.Empty];
+        return targets.Any(target => string.Equals(target, targetService, StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task AddPlaylistSyncHistoryAsync(
@@ -565,17 +671,11 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
     private static async Task RefreshMediaServerAsync(
         IServiceProvider services,
-        PlaylistWatchPreferenceDto? preference,
+        string targetService,
         CancellationToken cancellationToken)
     {
-        var service = (preference?.Service ?? string.Empty).Trim().ToLowerInvariant();
-        if (service == "none")
-        {
-            return;
-        }
-
         var refreshService = services.GetRequiredService<MediaServerLibraryRefreshService>();
-        await refreshService.RefreshAsync(service, cancellationToken);
+        await refreshService.RefreshAsync(targetService, cancellationToken);
     }
 
     private sealed record SyncRequest(
@@ -583,9 +683,28 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         string Source,
         string PlaylistId,
         string TrackId,
+        string TargetService,
         long? DestinationFolderId,
         IReadOnlyList<string> ChangedFilePaths,
-        int FollowUpPass);
+        int AttemptCount);
+
+    private enum SyncAttemptOutcomeKind
+    {
+        Completed,
+        Retry,
+        Obsolete,
+        RepairRequired,
+        Blocked
+    }
+
+    private sealed record SyncAttemptOutcome(SyncAttemptOutcomeKind Kind, string Message)
+    {
+        public static SyncAttemptOutcome Completed(string message) => new(SyncAttemptOutcomeKind.Completed, message);
+        public static SyncAttemptOutcome Retry(string message) => new(SyncAttemptOutcomeKind.Retry, message);
+        public static SyncAttemptOutcome Obsolete(string message) => new(SyncAttemptOutcomeKind.Obsolete, message);
+        public static SyncAttemptOutcome RepairRequired(string message) => new(SyncAttemptOutcomeKind.RepairRequired, message);
+        public static SyncAttemptOutcome Blocked(string message) => new(SyncAttemptOutcomeKind.Blocked, message);
+    }
 }
 
 public enum WatchlistHistoryStatus
@@ -605,7 +724,6 @@ public enum WatchlistHistoryStatus
     DuplicateSharedTrackLinked,
     WatchlistDisabled,
     MediaSyncDeferredQueueActive,
-    QueueDeferredPreviousWatchlistActive,
     QueueBudgetReached,
     TrackQueueDeferred,
     SourceFailure

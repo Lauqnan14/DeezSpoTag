@@ -7,7 +7,7 @@ namespace DeezSpoTag.Tests;
 public sealed class PlaylistSyncTargetAggregationTests
 {
     [Fact]
-    public void CombinePlaylistSyncTargetResults_ReturnsSuccessWhenAtLeastOneTargetSucceeds()
+    public void CombinePlaylistSyncTargetResults_ReturnsFailureUntilEveryTargetSucceeds()
     {
         var result = PlaylistSyncService.CombinePlaylistSyncTargetResults(new List<(string Service, PlaylistSyncResult Result)>
         {
@@ -16,7 +16,7 @@ public sealed class PlaylistSyncTargetAggregationTests
             ("navidrome", new PlaylistSyncResult(true, "Playlist synced to Navidrome.", "navidrome-1", SyncedTracks: 2, SourceTracks: 3, LocalMatches: 2, TargetMatches: 2))
         });
 
-        Assert.True(result.Success);
+        Assert.False(result.Success);
         Assert.Equal(4, result.SyncedTracks);
         Assert.Equal(4, result.TargetMatches);
         Assert.Contains("Plex: Playlist synced to Plex.", result.Message);

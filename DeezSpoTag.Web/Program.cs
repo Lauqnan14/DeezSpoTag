@@ -1577,6 +1577,7 @@ public partial class Program
             new DeezSpoTag.Web.Services.WatchlistQueueService(
                 sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunSignal>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunCoordinator>();
@@ -1591,7 +1592,8 @@ public partial class Program
                 QueueRepository = sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>(),
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
                 WatchlistFinalizationService = sp.GetService<DeezSpoTag.Web.Services.WatchlistFinalizationService>(),
-                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>()
+                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(),
+                WatchlistPostDownloadSyncService = sp.GetService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>()
             });
         AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(
             services,

@@ -252,8 +252,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("LibraryScanRunner", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", methodBody, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("watcher.ReconcilePlaylistAsync(", source, StringComparison.Ordinal);
-        Assert.Contains("mode: PlaylistReconciliationMode.SyncOnly", source, StringComparison.Ordinal);
+        Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksToTargetAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]

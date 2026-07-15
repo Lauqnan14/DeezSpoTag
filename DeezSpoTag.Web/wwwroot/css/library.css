@@ -713,6 +713,16 @@
     justify-content: start;
 }
 
+.watchlist-runtime-health {
+    grid-column: 1 / -1;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 24%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-tertiary) 88%, transparent);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 .watchlist-artist-card,
 .watchlist-playlist-card-v2 {
     position: relative;

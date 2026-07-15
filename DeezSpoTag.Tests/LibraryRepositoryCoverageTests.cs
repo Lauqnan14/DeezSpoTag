@@ -380,8 +380,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 Source: "  SPOTIFY ",
                 SourceId: " pl-123  ",
                 DestinationFolderId: seeded.Folder.Id,
-                Service: "spotify",
-                SyncTargets: null,
+                Service: "plex",
+                SyncTargets: ["plex", "jellyfin"],
                 PreferredEngine: "native",
                 DownloadEngineOrder: null,
                 DownloadVariantMode: "default",
@@ -467,9 +467,6 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 new("dz-song-2", "ISRC00000002")
             });
         await _repository.UpdatePlaylistWatchTrackStatusAsync(" Spotify ", " pl-123 ", "dz-song-1", "completed");
-        var completedTrackIds = await _repository.GetPlaylistWatchTrackIdsAsync("spotify", "pl-123");
-        Assert.Contains("dz-song-1", completedTrackIds);
-        Assert.DoesNotContain("dz-song-2", completedTrackIds);
         var localTrackId = seeded.TrackIdsByTitle.Values.First();
         await _repository.UpdatePlaylistWatchTrackVerificationAsync(
             "spotify",
@@ -498,6 +495,16 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             _configuration,
             NullLogger<LibraryRepository>.Instance);
         var summaryAfterRestart = Assert.Single(
+            await restartedRepository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, summaryAfterRestart.SyncedTrackCount);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "pl-123",
+            "jellyfin",
+            "jellyfin-playlist-1",
+            [new PlaylistWatchTargetMembership("dz-song-1", localTrackId, "jellyfin-track-1")]);
+        summaryAfterRestart = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
         Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
@@ -543,9 +550,6 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(seeded.Folder.Id, claim.DestinationFolderId);
         Assert.Equal("pending", claim.Status);
         Assert.Single(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));
-        var pendingSatisfiedIds = await _repository.GetSatisfiedPlaylistWatchTrackIdsAsync("spotify", "pl-123");
-        Assert.Contains("dz-song-1", pendingSatisfiedIds);
-        Assert.DoesNotContain("dz-song-2", pendingSatisfiedIds);
         var playlistPendingClaims = await _repository.GetPlaylistWatchDownloadClaimsForPlaylistAsync(" SPOTIFY ", " pl-123 ", status: "pending");
         Assert.Single(playlistPendingClaims);
         Assert.Equal("queue-shared-1", playlistPendingClaims.Single().QueueUuid);
@@ -559,8 +563,6 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Equal(1, claimUpdates);
         Assert.Equal("completed", (await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1")).Single().Status);
         Assert.Empty(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-shared-1", status: "pending"));
-        var completedSatisfiedIds = await _repository.GetSatisfiedPlaylistWatchTrackIdsAsync("spotify", "pl-123");
-        Assert.Contains("dz-song-2", completedSatisfiedIds);
 
         await _repository.AddPlaylistWatchIgnoredTracksAsync(
             " SPOTIFY ",
@@ -594,19 +596,22 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             "spotify",
             "pl-123",
             new List<PlaylistWatchIgnoreInsert> { new("dz-song-orphan-check", null) });
-        await _repository.EnqueueWatchlistSyncJobAsync(
+        var targetJobs = await _repository.EnqueueWatchlistSyncJobAsync(
             "spotify",
             "pl-123",
             "dz-song-orphan-check",
             destinationFolderId: null,
             finalFilePaths: null);
+        Assert.Equal(
+            new[] { "jellyfin", "plex" },
+            targetJobs.Select(job => job.TargetService).OrderBy(value => value).ToArray());
 
         var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync(" Spotify ", " pl-123 ");
         Assert.True(removedWatchlist);
         Assert.False(await _repository.IsPlaylistWatchlistedAsync("spotify", "pl-123"));
         Assert.Empty(await _repository.GetPlaylistWatchIgnoredTrackIdsAsync("spotify", "pl-123"));
         Assert.DoesNotContain(
-            await _repository.GetDueWatchlistSyncJobsAsync(100),
+            await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "test-owner"),
             job => job.Source == "spotify" && job.PlaylistId == "pl-123");
     }
 

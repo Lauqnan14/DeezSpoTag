@@ -94,6 +94,8 @@ VALUES (1, 'Artist One', ' sp-1 ', ' dz-1 ');
             Assert.True(await IndexExistsAsync(connection, "idx_playlist_watch_state_updated"));
             Assert.True(await IndexExistsAsync(connection, "idx_playlist_watch_track_source_status"));
             Assert.True(await IndexExistsAsync(connection, "idx_watchlist_history_source_created"));
+            Assert.True(await IndexExistsAsync(connection, "idx_watchlist_sync_job_due"));
+            Assert.True(await IndexExistsAsync(connection, "idx_watchlist_reconciliation_request_updated"));
 
             await using var command = connection.CreateCommand();
             command.CommandText = @"
@@ -160,6 +162,88 @@ WHERE source = 'spotify'
         var updatedAt = await verifyCommand.ExecuteScalarAsync();
 
         Assert.False(string.IsNullOrWhiteSpace(Convert.ToString(updatedAt)));
+    }
+
+    [Fact]
+    public async Task EnsureSchema_MigratesLegacySingleTargetStateAndSyncJobsToPerTargetStorage()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+INSERT INTO playlist_watchlist (source, source_id, name)
+VALUES ('spotify', 'legacy-targets', 'Legacy Targets');
+INSERT INTO playlist_watch_preferences (source, source_id, service, sync_targets_json)
+VALUES ('spotify', 'legacy-targets', 'plex', '[""plex"",""jellyfin""]');
+INSERT INTO playlist_watch_track (source, source_id, track_source_id, status, local_track_id, identity_status)
+VALUES ('spotify', 'legacy-targets', 'track-1', 'completed', 42, 'identity_verified');
+ALTER TABLE playlist_watch_track ADD COLUMN target_service TEXT;
+ALTER TABLE playlist_watch_track ADD COLUMN target_playlist_id TEXT;
+ALTER TABLE playlist_watch_track ADD COLUMN target_item_id TEXT;
+ALTER TABLE playlist_watch_track ADD COLUMN sync_status TEXT;
+UPDATE playlist_watch_track
+SET target_service='plex', target_playlist_id='plex-list', target_item_id='plex-track', sync_status='playlist_synced'
+WHERE source='spotify' AND source_id='legacy-targets' AND track_source_id='track-1';
+DROP INDEX IF EXISTS idx_watchlist_sync_job_due;
+DROP TABLE watchlist_sync_job;
+CREATE TABLE watchlist_sync_job (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    playlist_id TEXT NOT NULL,
+    track_id TEXT NOT NULL,
+    destination_folder_id BIGINT,
+    final_file_paths_json TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source, playlist_id, track_id)
+);
+INSERT INTO watchlist_sync_job (source, playlist_id, track_id)
+VALUES ('spotify', 'legacy-targets', 'track-1');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await dbService.EnsureSchemaAsync();
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verifyCommand = verifyConnection.CreateCommand();
+        verifyCommand.CommandText = @"
+SELECT COUNT(*) FROM pragma_table_info('playlist_watch_track')
+WHERE name IN ('target_service', 'target_playlist_id', 'target_item_id', 'sync_status');
+SELECT target_service, target_playlist_id, target_item_id, sync_status
+FROM playlist_watch_target_membership
+WHERE source='spotify' AND source_id='legacy-targets' AND track_source_id='track-1';
+SELECT group_concat(target_service, ',')
+FROM (SELECT target_service FROM watchlist_sync_job ORDER BY target_service);
+SELECT COUNT(*) FROM pragma_table_info('watchlist_sync_job')
+WHERE name IN ('queue_uuid', 'lease_owner', 'status', 'lease_until_utc');
+SELECT COUNT(*) FROM sqlite_master
+WHERE type='table' AND name='watchlist_reconciliation_request';";
+        await using var reader = await verifyCommand.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(0, reader.GetInt32(0));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("plex", reader.GetString(0));
+        Assert.Equal("plex-list", reader.GetString(1));
+        Assert.Equal("plex-track", reader.GetString(2));
+        Assert.Equal("playlist_synced", reader.GetString(3));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("jellyfin,plex", reader.GetString(0));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(4, reader.GetInt32(0));
+        Assert.True(await reader.NextResultAsync());
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(1, reader.GetInt32(0));
     }
 
     [Fact]

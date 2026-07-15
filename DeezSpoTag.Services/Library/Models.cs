@@ -793,10 +793,32 @@ public sealed record WatchlistSyncJobDto(
     string Source,
     string PlaylistId,
     string TrackId,
+    string TargetService,
     long? DestinationFolderId,
     IReadOnlyList<string> FinalFilePaths,
     int AttemptCount,
-    DateTimeOffset NextAttemptUtc);
+    DateTimeOffset NextAttemptUtc,
+    string? QueueUuid = null,
+    string? LeaseOwner = null,
+    string Status = "pending",
+    string? LastError = null);
+
+public sealed record WatchlistSyncJobStatusCounts(
+    int Due,
+    int Processing,
+    int RetryWaiting,
+    int ExpiredProcessing = 0,
+    int RepairRequired = 0,
+    int Blocked = 0,
+    DateTimeOffset? OldestPendingUtc = null,
+    string? LastError = null);
+
+public sealed record WatchlistReconciliationRequestDto(
+    string Kind,
+    string Source,
+    string Identifier,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
 
 public sealed record MediaServerTrackMetadataUpsertDto(
     long TrackId,

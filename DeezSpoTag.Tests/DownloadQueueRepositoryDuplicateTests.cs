@@ -201,7 +201,8 @@ public sealed class DownloadQueueRepositoryDuplicateTests
                 Status = "completed",
                 FinalizationStatus = moveStatus,
                 EnrichmentStatus = enrichmentStatus,
-                PayloadJson = WatchlistPayloadJson
+                PayloadJson = WatchlistPayloadJson,
+                UpdatedAt = DateTimeOffset.UtcNow
             },
             CancellationToken.None);
 

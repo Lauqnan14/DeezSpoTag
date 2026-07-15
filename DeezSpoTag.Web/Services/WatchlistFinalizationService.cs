@@ -21,7 +21,7 @@ public sealed class WatchlistFinalizationService
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
     private readonly PlaylistWatchReconciler _playlistWatchReconciler;
-    private readonly WatchlistRunCoordinator _watchlistCoordinator;
+    private readonly WatchlistRunSignal _runSignal;
     private readonly IWatchlistPostDownloadSyncNotifier _notifier;
     private readonly ILogger<WatchlistFinalizationService> _logger;
 
@@ -29,14 +29,14 @@ public sealed class WatchlistFinalizationService
         DownloadQueueRepository queueRepository,
         LibraryRepository libraryRepository,
         PlaylistWatchReconciler playlistWatchReconciler,
-        WatchlistRunCoordinator watchlistCoordinator,
+        WatchlistRunSignal runSignal,
         IWatchlistPostDownloadSyncNotifier notifier,
         ILogger<WatchlistFinalizationService> logger)
     {
         _queueRepository = queueRepository;
         _libraryRepository = libraryRepository;
         _playlistWatchReconciler = playlistWatchReconciler;
-        _watchlistCoordinator = watchlistCoordinator;
+        _runSignal = runSignal;
         _notifier = notifier;
         _logger = logger;
     }
@@ -93,10 +93,16 @@ public sealed class WatchlistFinalizationService
         var sent = 0;
         foreach (var notification in notifications)
         {
+            await _libraryRepository.EnqueueWatchlistReconciliationRequestAsync(
+                "playlist",
+                notification.Source,
+                notification.PlaylistId,
+                cancellationToken);
             await _notifier.NotifyFinalizedAsync(
                 notification.Source,
                 notification.PlaylistId,
                 notification.TrackId,
+                item.QueueUuid,
                 notification.DestinationFolderId,
                 verifiedAudioPaths,
                 cancellationToken);
@@ -112,7 +118,7 @@ public sealed class WatchlistFinalizationService
 
         if (sent > 0)
         {
-            await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
+            _runSignal.Request();
         }
 
         return sent;
@@ -243,12 +249,21 @@ public sealed class WatchlistFinalizationService
     public async Task<int> RepairPlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken)
+        => await RepairPlaylistsAsync([playlist], cancellationToken);
+
+    public async Task<int> RepairPlaylistsAsync(
+        IReadOnlyCollection<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
     {
-        if (!_libraryRepository.IsConfigured)
+        if (!_libraryRepository.IsConfigured || playlists.Count == 0)
         {
             return 0;
         }
 
+        var playlistKeys = playlists
+            .Where(static playlist => playlist != null)
+            .Select(static playlist => $"{NormalizeSource(playlist.Source)}|{playlist.SourceId}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var items = await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
         var sent = 0;
         foreach (var item in items)
@@ -260,9 +275,8 @@ public sealed class WatchlistFinalizationService
             }
 
             var notifications = await ResolveNotificationsAsync(item, item.PayloadJson, cancellationToken);
-            if (!notifications.Any(notification =>
-                    string.Equals(notification.Source, playlist.Source, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(notification.PlaylistId, playlist.SourceId, StringComparison.OrdinalIgnoreCase)))
+            if (!notifications.Any(notification => playlistKeys.Contains(
+                    $"{NormalizeSource(notification.Source)}|{notification.PlaylistId}")))
             {
                 continue;
             }
@@ -270,7 +284,7 @@ public sealed class WatchlistFinalizationService
             sent += await NotifyQueueItemFinalizedAsync(
                 item,
                 item.PayloadJson,
-                finalFilePaths: null,
+                DownloadQueueRepository.GetExistingMaterializedFilePaths(item),
                 cancellationToken);
         }
 
@@ -389,7 +403,7 @@ public sealed class WatchlistFinalizationService
     {
         try
         {
-            return await _playlistWatchReconciler.GetPlaylistTrackCandidatesAsync(
+            return await _playlistWatchReconciler.GetCachedPlaylistTrackCandidatesAsync(
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
@@ -400,7 +414,7 @@ public sealed class WatchlistFinalizationService
             {
                 _logger.LogDebug(
                     ex,
-                    "Watchlist finalization candidate refresh failed for {Source}:{PlaylistId}.",
+                    "Watchlist finalization candidate cache read failed for {Source}:{PlaylistId}.",
                     playlist.Source,
                     playlist.SourceId);
             }

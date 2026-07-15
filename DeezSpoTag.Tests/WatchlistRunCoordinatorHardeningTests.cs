@@ -36,6 +36,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     private DeezSpoTagSettingsService _settingsService = default!;
     private DownloadQueueRepository _queueRepository = default!;
     private ServiceProvider _provider = default!;
+    private long _destinationFolderId;
 
     public async Task InitializeAsync()
     {
@@ -74,6 +75,28 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         settings.WatchDelayBetweenPlaylistsSeconds = 1;
         settings.WatchMaxItemsPerRun = 50;
         _settingsService.SaveSettings(settings);
+        var profileService = new TaggingProfileService(
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<TaggingProfileService>.Instance);
+        var profiles = await profileService.LoadAsync();
+        profiles.Add(new DeezSpoTag.Core.Models.Settings.TaggingProfile
+        {
+            Id = "watchlist-test-profile",
+            Name = "Watchlist Test Profile"
+        });
+        await profileService.SaveAsync(profiles);
+        var destinationFolder = await _repository.AddFolderAsync(
+            new LibraryRepository.FolderUpsertInput(
+                RootPath: Path.Join(_tempRoot, "music"),
+                DisplayName: "Watchlist Test Library",
+                Enabled: true,
+                LibraryName: "Music",
+                DesiredQuality: "flac",
+                ConvertEnabled: false,
+                ConvertFormat: null,
+                ConvertBitrate: null,
+                AutoTagProfileId: "watchlist-test-profile"));
+        _destinationFolderId = destinationFolder.Id;
         var queueAdmission = new WatchlistQueueAdmissionService();
         _queueRepository = new DownloadQueueRepository(
             config,
@@ -284,6 +307,8 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-zero-1", new PlaylistWatchlistMetadataInput("Zero One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-zero-2", new PlaylistWatchlistMetadataInput("Zero Two", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-zero-1");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-zero-2");
 
         var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(hosted);
@@ -335,6 +360,8 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-cursor-1", new PlaylistWatchlistMetadataInput("Cursor One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-cursor-2", new PlaylistWatchlistMetadataInput("Cursor Two", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-cursor-1");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-cursor-2");
 
         var firstHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(firstHosted);
@@ -356,6 +383,8 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-stale-focus-target", new PlaylistWatchlistMetadataInput("Stale Focus Target", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-priority-first", new PlaylistWatchlistMetadataInput("Priority First", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-stale-focus-target");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-priority-first");
         await _repository.UpsertWatchlistSchedulerStateAsync(
             new LibraryRepository.WatchlistSchedulerStateUpsertInput(
                 "playlist",
@@ -385,6 +414,8 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-explicit-focus-target", new PlaylistWatchlistMetadataInput("Explicit Focus Target", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-priority-first", new PlaylistWatchlistMetadataInput("Priority First", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-explicit-focus-target");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-priority-first");
         await _repository.UpsertWatchlistSchedulerStateAsync(
             new LibraryRepository.WatchlistSchedulerStateUpsertInput(
                 "playlist",
@@ -582,6 +613,23 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return field!.GetValue(instance)!;
+    }
+
+    private async Task ConfigurePlaylistDestinationAsync(string source, string sourceId)
+    {
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: source,
+                SourceId: sourceId,
+                DestinationFolderId: _destinationFolderId,
+                Service: null,
+                SyncTargets: null,
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: null,
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false));
     }
 
     private AutoTagProfileResolutionService CreateProfileResolutionService()

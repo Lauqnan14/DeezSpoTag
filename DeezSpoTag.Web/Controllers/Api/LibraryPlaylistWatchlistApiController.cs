@@ -24,6 +24,7 @@ public sealed class LibraryPlaylistWatchlistDependencies
     public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
     public WatchlistFinalizationService? WatchlistFinalizationService { get; init; }
     public WatchlistRunCoordinator? WatchlistRunCoordinator { get; init; }
+    public WatchlistPostDownloadSyncService? WatchlistPostDownloadSyncService { get; init; }
 }
 
 [Route("api/library/playlists")]
@@ -45,6 +46,7 @@ public partial class WatchlistApiController : ControllerBase
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly WatchlistRunCoordinator? _watchlistCoordinator;
+    private readonly WatchlistPostDownloadSyncService? _watchlistPostDownloadSyncService;
 
     public WatchlistApiController(LibraryPlaylistWatchlistDependencies dependencies)
     {
@@ -57,6 +59,7 @@ public partial class WatchlistApiController : ControllerBase
         _queueRepository = dependencies.QueueRepository;
         _watchlistFinalizationService = dependencies.WatchlistFinalizationService;
         _watchlistCoordinator = dependencies.WatchlistRunCoordinator;
+        _watchlistPostDownloadSyncService = dependencies.WatchlistPostDownloadSyncService;
     }
 
     [HttpGet]
@@ -136,6 +139,22 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var scheduler = await _repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, cancellationToken);
+        var pendingClaims = await _repository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken);
+        var queueItems = _queueRepository == null
+            ? []
+            : await _queueRepository.GetTasksAsync(cancellationToken: cancellationToken);
+        var queueByUuid = queueItems.ToDictionary(item => item.QueueUuid, StringComparer.OrdinalIgnoreCase);
+        var orphanedPendingClaims = pendingClaims.Count(claim =>
+            !queueByUuid.TryGetValue(claim.QueueUuid, out var queueItem)
+            || !DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(queueItem, DateTimeOffset.UtcNow));
+        var syncJobs = await _repository.GetWatchlistSyncJobStatusCountsAsync(cancellationToken);
+        var pendingReconciliationRequests = await _repository.GetWatchlistReconciliationRequestCountAsync(cancellationToken);
+        var runtime = _watchlistCoordinator?.GetRuntimeHealth();
+        if (runtime != null)
+        {
+            runtime = runtime with { PendingReconciliationRequests = pendingReconciliationRequests };
+        }
+        var targetSyncWorker = _watchlistPostDownloadSyncService?.GetRuntimeHealth();
         var playlists = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var sources = playlists
             .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
@@ -179,6 +198,14 @@ public partial class WatchlistApiController : ControllerBase
                     zeroQueueStreak = scheduler.ZeroQueueStreak
                 },
             circuits,
+            runtime,
+            targetSyncWorker,
+            claims = new
+            {
+                pending = pendingClaims.Count,
+                orphanedPending = orphanedPendingClaims
+            },
+            targetSyncJobs = syncJobs,
             utcNow = DateTimeOffset.UtcNow
         });
     }
@@ -440,7 +467,7 @@ public partial class WatchlistApiController : ControllerBase
             ? syncTargets[0]
             : "none";
 
-        return await _repository.UpsertPlaylistWatchPreferenceAsync(
+        var saved = await _repository.UpsertPlaylistWatchPreferenceAsync(
             new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
                 normalizedSource,
                 request.SourceId,
@@ -461,6 +488,14 @@ public partial class WatchlistApiController : ControllerBase
                 blockRules,
                 request.AtmosFolderId),
             cancellationToken);
+        if (saved != null && _watchlistCoordinator != null)
+        {
+            await _watchlistCoordinator.TriggerPlaylistOnceAsync(
+                normalizedSource,
+                request.SourceId,
+                cancellationToken);
+        }
+        return saved;
     }
 
     [HttpDelete("{source}/{sourceId}")]
@@ -529,12 +564,17 @@ public partial class WatchlistApiController : ControllerBase
         var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var playlistsReset = 0;
         var circuitsReset = 0;
+        var repairedFinalizations = 0;
 
         foreach (var item in watchlist)
         {
             cancellationToken.ThrowIfCancellationRequested();
             await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
             playlistsReset++;
+        }
+        if (_watchlistFinalizationService != null)
+        {
+            repairedFinalizations = await _watchlistFinalizationService.RepairPlaylistsAsync(watchlist, cancellationToken);
         }
 
         var distinctSources = watchlist
@@ -554,10 +594,16 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         _watchlistCoordinator?.ResetPlaylistRuntimeStateForAll(watchlist);
+        var recoveredClaims = await _playlistWatchReconciler.RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
+        if (_watchlistPostDownloadSyncService != null)
+        {
+            await _watchlistPostDownloadSyncService.ResumePendingJobsAsync(cancellationToken);
+        }
+        WatchlistTriggerResult? trigger = null;
         if (_watchlistCoordinator != null)
         {
             await _watchlistCoordinator.ResetSchedulerStateAsync(cancellationToken);
-            await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
+            trigger = await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
         }
 
         return Ok(new
@@ -565,7 +611,10 @@ public partial class WatchlistApiController : ControllerBase
             reset = true,
             playlistsReset,
             circuitsReset,
-            triggered = _watchlistCoordinator != null
+            recoveredClaims,
+            repairedFinalizations,
+            triggered = trigger?.Scheduled == true,
+            triggerStatus = trigger?.Status.ToString()
         });
     }
 
@@ -584,15 +633,24 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
+        var repairedFinalizations = _watchlistFinalizationService == null
+            ? 0
+            : await _watchlistFinalizationService.RepairPlaylistAsync(item, cancellationToken);
         if (_watchlistCoordinator != null)
         {
             await _watchlistCoordinator.ResetSourceCircuitAsync(item.Source, cancellationToken);
         }
         _watchlistCoordinator?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
+        var recoveredClaims = await _playlistWatchReconciler.RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
+        if (_watchlistPostDownloadSyncService != null)
+        {
+            await _watchlistPostDownloadSyncService.ResumePendingJobsAsync(cancellationToken);
+        }
 
+        WatchlistTriggerResult? trigger = null;
         if (_watchlistCoordinator != null)
         {
-            await _watchlistCoordinator.TriggerPlaylistOnceAsync(item.Source, item.SourceId, cancellationToken);
+            trigger = await _watchlistCoordinator.TriggerPlaylistOnceAsync(item.Source, item.SourceId, cancellationToken);
         }
 
         return Ok(new
@@ -600,7 +658,10 @@ public partial class WatchlistApiController : ControllerBase
             reset = true,
             source = item.Source,
             sourceId = item.SourceId,
-            triggered = _watchlistCoordinator != null
+            recoveredClaims,
+            repairedFinalizations,
+            triggered = trigger?.Scheduled == true,
+            triggerStatus = trigger?.Status.ToString()
         });
     }
 
@@ -655,16 +716,17 @@ public partial class WatchlistApiController : ControllerBase
             }
         }
 
+        WatchlistTriggerResult? trigger = null;
         if (_watchlistCoordinator != null)
         {
             if (next != null)
             {
-                await _watchlistCoordinator.TriggerPlaylistOnceAsync(next.Source, next.SourceId, cancellationToken);
+                trigger = await _watchlistCoordinator.TriggerPlaylistOnceAsync(next.Source, next.SourceId, cancellationToken);
             }
             else
             {
                 await _watchlistCoordinator.ResetSchedulerStateAsync(cancellationToken);
-                await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
+                trigger = await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
             }
         }
 
@@ -674,7 +736,8 @@ public partial class WatchlistApiController : ControllerBase
             skipped = next != null,
             nextSource = next?.Source,
             nextSourceId = next?.SourceId,
-            triggered = _watchlistCoordinator != null
+            triggered = trigger?.Scheduled == true,
+            triggerStatus = trigger?.Status.ToString()
         });
     }
 

@@ -75,9 +75,22 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
 
-        Assert.Contains("Interlocked.Exchange(ref _triggerPending, 1)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("if (!await _runLock.WaitAsync(0, cancellationToken))", hostedSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("await _runLock.WaitAsync(cancellationToken);", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("_runSignal.Request()", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_runLock", hostedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatchTriggers_AreDurableAndDoNotUseOverwriteProneInMemoryFocusFields()
+    {
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var repositorySource = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
+
+        Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("GetWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("CompleteWatchlistReconciliationRequestsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("updated_at=@updatedAt", repositorySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_requestedPlaylistKey", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_requestedArtistId", hostedSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -105,20 +118,21 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
 
         Assert.True(batchGateIndex >= 0);
         Assert.True(processPlaylistIndex > batchGateIndex);
-        Assert.Contains("HasPendingPlaylistWatchBatchWorkAsync", admissionSource, StringComparison.Ordinal);
-        Assert.Contains("Waiting for Watchlist enrichment, finalization, or synchronization work to finish.", admissionSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasPendingPlaylistWatchBatchWorkAsync", admissionSource, StringComparison.Ordinal);
+        Assert.Contains("RecoverInvalidPendingWatchClaimsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.True(hostedSource.IndexOf("RecoverInvalidPendingWatchClaimsAsync", StringComparison.Ordinal) < batchGateIndex);
     }
 
     [Fact]
-    public void PlaylistReconciliation_SupportsSyncOnlyModeWithoutQueuePlanning()
+    public void PostDownloadSync_UsesDedicatedTargetSyncWithoutASecondReconciliationPath()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
 
-        Assert.Contains("SyncOnly", watchSource, StringComparison.Ordinal);
-        Assert.Contains("var queuePlanningAllowed = mode == PlaylistReconciliationMode.QueuePlanningAllowed", watchSource, StringComparison.Ordinal);
-        Assert.Contains("if (queuePlanningAllowed)", watchSource, StringComparison.Ordinal);
-        Assert.Contains("mode: PlaylistReconciliationMode.SyncOnly", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistReconciliationMode", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("queuePlanningAllowed", watchSource, StringComparison.Ordinal);
+        Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksToTargetAsync", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -128,8 +142,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
 
         Assert.Contains("Waiting for downloads from the previous Watchlist run to finish.", admissionSource, StringComparison.Ordinal);
-        Assert.Contains("queue_deferred_previous_watchlist_active", watchSource, StringComparison.Ordinal);
-        Assert.Contains("WatchQueueStopReason.PreviousWatchlistRunActive", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("queue_deferred_previous_watchlist_active", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("WatchQueueStopReason.PreviousWatchlistRunActive", watchSource, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -1622,6 +1622,68 @@ async function loadPlaylistWatchlist() {
                 .map(circuit => [String(circuit.source || '').trim().toLowerCase(), circuit])
                 .filter(entry => Boolean(entry[0]))
         );
+        const runtimeHealth = runtime?.runtime || {};
+        const claimHealth = runtime?.claims || {};
+        const syncJobHealth = runtime?.targetSyncJobs || {};
+        const targetSyncWorker = runtime?.targetSyncWorker || {};
+        const runtimeHealthParts = [];
+        if (!runtime) {
+            runtimeHealthParts.push('Watchlist runtime telemetry unavailable');
+        } else if (runtimeHealth.isRunning) {
+            runtimeHealthParts.push('Watchlist cycle running');
+        } else if (runtimeHealth.lastCycleCompletedUtc) {
+            runtimeHealthParts.push(`Last cycle ${formatRelativeTime(runtimeHealth.lastCycleCompletedUtc)}`);
+        } else {
+            runtimeHealthParts.push('Watchlist worker has not completed a cycle yet');
+        }
+        if (runtimeHealth.triggerPending) {
+            runtimeHealthParts.push('trigger queued');
+        }
+        if (Number(runtimeHealth.pendingReconciliationRequests || 0) > 0) {
+            runtimeHealthParts.push(`${runtimeHealth.pendingReconciliationRequests} reconciliation request(s)`);
+        }
+        if (runtimeHealth.lastAdmissionBlockReason) {
+            runtimeHealthParts.push(runtimeHealth.lastAdmissionBlockReason);
+        }
+        if (Number(runtimeHealth.lastRecoveredClaimCount || 0) > 0) {
+            runtimeHealthParts.push(`recovered ${runtimeHealth.lastRecoveredClaimCount} stale claim(s)`);
+        }
+        if (Number(claimHealth.orphanedPending || 0) > 0) {
+            runtimeHealthParts.push(`${claimHealth.orphanedPending} orphaned pending claim(s)`);
+        }
+        const targetSyncWork = Number(syncJobHealth.due || 0)
+            + Number(syncJobHealth.processing || 0)
+            + Number(syncJobHealth.retryWaiting || 0)
+            + Number(syncJobHealth.repairRequired || 0)
+            + Number(syncJobHealth.blocked || 0);
+        if (targetSyncWork > 0) {
+            runtimeHealthParts.push(`${targetSyncWork} target sync job(s)`);
+        }
+        if (Number(syncJobHealth.expiredProcessing || 0) > 0) {
+            runtimeHealthParts.push(`${syncJobHealth.expiredProcessing} expired target lease(s)`);
+        }
+        if (Number(syncJobHealth.repairRequired || 0) > 0) {
+            runtimeHealthParts.push(`${syncJobHealth.repairRequired} target job(s) awaiting automatic repair`);
+        }
+        if (Number(syncJobHealth.blocked || 0) > 0) {
+            runtimeHealthParts.push(`${syncJobHealth.blocked} blocked target job(s)`);
+        }
+        if (syncJobHealth.oldestPendingUtc) {
+            runtimeHealthParts.push(`oldest target job ${formatRelativeTime(syncJobHealth.oldestPendingUtc)}`);
+        }
+        const targetHeartbeatUtc = targetSyncWorker.lastHeartbeatUtc
+            ? new Date(targetSyncWorker.lastHeartbeatUtc).getTime()
+            : 0;
+        const targetWorkerStale = !targetHeartbeatUtc || (Date.now() - targetHeartbeatUtc) > 90000;
+        if (!targetSyncWorker.isRunning || targetWorkerStale) {
+            runtimeHealthParts.push('target sync worker unhealthy');
+        } else if (targetSyncWorker.isProcessing) {
+            runtimeHealthParts.push(`target sync processing ${targetSyncWorker.currentTarget || 'server'}`);
+        }
+        if (targetSyncWorker.lastError || syncJobHealth.lastError) {
+            runtimeHealthParts.push(targetSyncWorker.lastError || syncJobHealth.lastError);
+        }
+        const runtimeHealthHtml = `<div class="watchlist-runtime-health">${escapeHtml(runtimeHealthParts.join(' • '))}</div>`;
         if (mergeButton) {
             mergeButton.disabled = items.length < 2;
             mergeButton.onclick = async () => {
@@ -1661,7 +1723,7 @@ async function loadPlaylistWatchlist() {
             ? renderManualUnavailablePlaylistCard(manualUnavailableTracks, manualUnavailable?.imageUrl)
             : '';
 
-        container.innerHTML = items.map((item, index) => {
+        container.innerHTML = runtimeHealthHtml + items.map((item, index) => {
             const imageUrl = toSafeHttpUrl(item.imageUrl || '');
             const artContent = imageUrl
                 ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" />`

@@ -545,10 +545,6 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
     local_track_id BIGINT,
     identity_status TEXT,
     identity_reason TEXT,
-    target_service TEXT,
-    target_playlist_id TEXT,
-    target_item_id TEXT,
-    sync_status TEXT,
     redirect_track_source_id TEXT,
     redirect_reason TEXT,
     verified_at_utc TEXT,
@@ -593,23 +589,43 @@ CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
 CREATE INDEX IF NOT EXISTS idx_playlist_watch_download_claim_queue
     ON playlist_watch_download_claim (queue_uuid, status);
 
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_download_claim_status_updated
+    ON playlist_watch_download_claim (status, updated_at);
+
 CREATE TABLE IF NOT EXISTS watchlist_sync_job (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
     playlist_id TEXT NOT NULL,
     track_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    queue_uuid TEXT,
     destination_folder_id BIGINT,
     final_file_paths_json TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    lease_owner TEXT,
+    lease_until_utc TEXT,
     next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (source, playlist_id, track_id)
+    UNIQUE (source, playlist_id, track_id, target_service)
 );
 
 CREATE INDEX IF NOT EXISTS idx_watchlist_sync_job_due
     ON watchlist_sync_job (next_attempt_utc, id);
+
+CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    identifier TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (kind, source, identifier)
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_reconciliation_request_updated
+    ON watchlist_reconciliation_request (updated_at, kind, source, identifier);
 
 CREATE TABLE IF NOT EXISTS playlist_watch_ignore (
     source TEXT NOT NULL,

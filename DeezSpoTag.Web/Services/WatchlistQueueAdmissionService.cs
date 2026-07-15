@@ -3,12 +3,6 @@ using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Services;
 
-public enum WatchlistQueueBlockReason
-{
-    None,
-    PreviousWatchlistRunActive
-}
-
 public enum WatchQueueStopReason
 {
     None,
@@ -42,7 +36,6 @@ public enum WatchlistPlaylistState
     DeltaDetected,
     Reconciling,
     Syncing,
-    SyncOnly,
     Queued,
     Completed,
     Unavailable,
@@ -51,7 +44,6 @@ public enum WatchlistPlaylistState
     CircuitOpen,
     WatchlistDisabled,
     MediaSyncDeferredQueueActive,
-    QueueDeferredPreviousWatchlistActive,
     QueueBudgetReached,
     TrackQueueDeferred,
     SourceFailure,
@@ -62,7 +54,8 @@ public enum WatchlistPlaylistState
     MediaSyncCompleted,
     MediaSyncWaiting,
     MediaSyncBlocked,
-    MetadataRefreshed
+    MetadataRefreshed,
+    ConfigurationRequired
 }
 
 public sealed record WatchlistPlaylistStateTransition(
@@ -119,7 +112,6 @@ public sealed class WatchlistStateService
             "delta_detected" => WatchlistPlaylistState.DeltaDetected,
             "reconciling" => WatchlistPlaylistState.Reconciling,
             "syncing" => WatchlistPlaylistState.Syncing,
-            "sync_only" => WatchlistPlaylistState.SyncOnly,
             "queued" => WatchlistPlaylistState.Queued,
             "completed" => WatchlistPlaylistState.Completed,
             "unavailable" => WatchlistPlaylistState.Unavailable,
@@ -128,7 +120,6 @@ public sealed class WatchlistStateService
             "circuit_open" => WatchlistPlaylistState.CircuitOpen,
             "watchlist_disabled" => WatchlistPlaylistState.WatchlistDisabled,
             "media_sync_deferred_queue_active" => WatchlistPlaylistState.MediaSyncDeferredQueueActive,
-            "queue_deferred_previous_watchlist_active" => WatchlistPlaylistState.QueueDeferredPreviousWatchlistActive,
             "queue_budget_reached" => WatchlistPlaylistState.QueueBudgetReached,
             "track_queue_deferred" => WatchlistPlaylistState.TrackQueueDeferred,
             "source_failure" => WatchlistPlaylistState.SourceFailure,
@@ -148,11 +139,9 @@ public sealed class WatchlistStateService
         {
             WatchlistPlaylistState.HeadFetching => "head_fetching",
             WatchlistPlaylistState.DeltaDetected => "delta_detected",
-            WatchlistPlaylistState.SyncOnly => "sync_only",
             WatchlistPlaylistState.CircuitOpen => "circuit_open",
             WatchlistPlaylistState.WatchlistDisabled => "watchlist_disabled",
             WatchlistPlaylistState.MediaSyncDeferredQueueActive => "media_sync_deferred_queue_active",
-            WatchlistPlaylistState.QueueDeferredPreviousWatchlistActive => "queue_deferred_previous_watchlist_active",
             WatchlistPlaylistState.QueueBudgetReached => "queue_budget_reached",
             WatchlistPlaylistState.TrackQueueDeferred => "track_queue_deferred",
             WatchlistPlaylistState.SourceFailure => "source_failure",
@@ -193,11 +182,9 @@ public sealed class WatchlistQueueAdmissionService
     private long _activeGeneration;
     private int _limit;
     private int _remaining;
-    private WatchlistQueueBlockReason _blockReason;
 
     public async Task<WatchlistQueueAdmissionDecision> EvaluateBatchAsync(
         DownloadQueueRepository queueRepository,
-        LibraryRepository repository,
         CancellationToken cancellationToken)
     {
         if (await queueRepository.HasActiveWatchlistDownloadsAsync(cancellationToken))
@@ -208,16 +195,6 @@ public sealed class WatchlistQueueAdmissionService
                 null,
                 false,
                 "Waiting for downloads from the previous Watchlist run to finish.");
-        }
-
-        if (await repository.HasPendingPlaylistWatchBatchWorkAsync(cancellationToken))
-        {
-            return new WatchlistQueueAdmissionDecision(
-                false,
-                WatchQueueStopReason.TrackDeferred,
-                null,
-                false,
-                "Waiting for Watchlist enrichment, finalization, or synchronization work to finish.");
         }
 
         return WatchlistQueueAdmissionDecision.Allow();
@@ -245,22 +222,15 @@ public sealed class WatchlistQueueAdmissionService
             return WatchlistQueueAdmissionDecision.Allow();
         }
 
-        var reason = GetBlockReason() == WatchlistQueueBlockReason.PreviousWatchlistRunActive
-            ? WatchQueueStopReason.PreviousWatchlistRunActive
-            : WatchQueueStopReason.RunBudget;
         return new WatchlistQueueAdmissionDecision(
             false,
-            reason,
+            WatchQueueStopReason.RunBudget,
             null,
             false,
-            reason == WatchQueueStopReason.PreviousWatchlistRunActive
-                ? "Waiting for downloads from the previous Watchlist run to finish."
-                : "Watchlist run queue budget reached.");
+            "Watchlist run queue budget reached.");
     }
 
-    public long BeginRun(
-        int queueBudget,
-        WatchlistQueueBlockReason blockReason = WatchlistQueueBlockReason.None)
+    public long BeginRun(int queueBudget)
     {
         lock (_gate)
         {
@@ -269,14 +239,11 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = _activeGeneration;
             _limit = Math.Max(0, queueBudget);
             _remaining = _limit;
-            _blockReason = blockReason;
             return _activeGeneration;
         }
     }
 
-    public long BeginRunIfInactive(
-        int queueBudget,
-        WatchlistQueueBlockReason blockReason = WatchlistQueueBlockReason.None)
+    public long BeginRunIfInactive(int queueBudget)
     {
         lock (_gate)
         {
@@ -290,7 +257,6 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = _activeGeneration;
             _limit = Math.Max(0, queueBudget);
             _remaining = _limit;
-            _blockReason = blockReason;
             return _activeGeneration;
         }
     }
@@ -308,7 +274,6 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = 0;
             _limit = 0;
             _remaining = 0;
-            _blockReason = WatchlistQueueBlockReason.None;
         }
     }
 
@@ -319,16 +284,6 @@ public sealed class WatchlistQueueAdmissionService
             return _activeGeneration == 0 || _executionGeneration.Value != _activeGeneration
                 ? 0
                 : _remaining;
-        }
-    }
-
-    public WatchlistQueueBlockReason GetBlockReason()
-    {
-        lock (_gate)
-        {
-            return _activeGeneration == 0 || _executionGeneration.Value != _activeGeneration
-                ? WatchlistQueueBlockReason.None
-                : _blockReason;
         }
     }
 

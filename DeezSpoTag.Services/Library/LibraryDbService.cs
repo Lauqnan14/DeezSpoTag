@@ -24,6 +24,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
     private const string MediaServerTrackMetadataTable = "media_server_track_metadata";
     private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
+    private const string WatchlistReconciliationRequestTable = "watchlist_reconciliation_request";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string RecommendationRejectionTable = "recommendation_rejection";
@@ -123,7 +124,11 @@ public sealed class LibraryDbService
             ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
             ,
-            ["idx_watchlist_sync_job_due"] = ("watchlist_sync_job", "next_attempt_utc, id", false)
+            ["idx_playlist_watch_download_claim_status_updated"] = (PlaylistWatchDownloadClaimTable, "status, updated_at", false)
+            ,
+            ["idx_watchlist_sync_job_due"] = ("watchlist_sync_job", "status, next_attempt_utc, lease_until_utc, id", false)
+            ,
+            ["idx_watchlist_reconciliation_request_updated"] = (WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", false)
             ,
             ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)
             ,
@@ -411,10 +416,6 @@ WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "local_track_id", BigIntType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "identity_status", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "identity_reason", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "target_service", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "target_playlist_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "target_item_id", TextType, cancellationToken);
-        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "sync_status", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_track_source_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_reason", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "verified_at_utc", TextType, cancellationToken);
@@ -441,34 +442,7 @@ CREATE TABLE IF NOT EXISTS media_server_track_metadata (
     updated_at_utc TEXT NOT NULL,
     PRIMARY KEY (track_id, service)
 );", cancellationToken);
-        await ExecuteIfTableExistsAsync(connection, PlaylistWatchTrackTable, @"
-INSERT OR IGNORE INTO playlist_watch_target_membership (
-    source,
-    source_id,
-    track_source_id,
-    target_service,
-    target_playlist_id,
-    target_item_id,
-    local_track_id,
-    sync_status,
-    verified_at_utc,
-    updated_at
-)
-SELECT source,
-       source_id,
-       track_source_id,
-       target_service,
-       target_playlist_id,
-       target_item_id,
-       local_track_id,
-       COALESCE(sync_status, 'waiting_for_target'),
-       COALESCE(verified_at_utc, CURRENT_TIMESTAMP),
-       COALESCE(updated_at, CURRENT_TIMESTAMP)
-FROM playlist_watch_track
-WHERE target_service IS NOT NULL
-  AND TRIM(target_service) <> ''
-  AND target_playlist_id IS NOT NULL
-  AND TRIM(target_playlist_id) <> '';", cancellationToken);
+        await MigrateLegacyPlaylistWatchTargetMembershipAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"
 	CREATE TABLE IF NOT EXISTS playlist_watch_download_claim (
     source TEXT NOT NULL,
@@ -481,22 +455,42 @@ WHERE target_service IS NOT NULL
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id, track_source_id, queue_uuid)
 );", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_download_claim_status_updated", PlaylistWatchDownloadClaimTable, "status, updated_at", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS watchlist_sync_job (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
     playlist_id TEXT NOT NULL,
     track_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    queue_uuid TEXT,
     destination_folder_id BIGINT,
     final_file_paths_json TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    lease_owner TEXT,
+    lease_until_utc TEXT,
     next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_error TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (source, playlist_id, track_id)
+    UNIQUE (source, playlist_id, track_id, target_service)
 );", cancellationToken);
-        await EnsureIndexAsync(connection, "idx_watchlist_sync_job_due", "watchlist_sync_job", "next_attempt_utc, id", unique: false, cancellationToken);
+        await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
+        await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_owner", TextType, cancellationToken);
+        await DropIndexIfExistsAsync(connection, "idx_watchlist_sync_job_due", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_sync_job_due", "watchlist_sync_job", "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS watchlist_reconciliation_request (
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    identifier TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (kind, source, identifier)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_watchlist_reconciliation_request_updated", WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
     watch_type TEXT NOT NULL PRIMARY KEY,
@@ -942,6 +936,120 @@ WHERE lower(trim(watch_type)) = 'playlist'
   AND (item_key IS NULL OR trim(item_key) = '');";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task MigrateLegacyPlaylistWatchTargetMembershipAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var legacyColumns = new[] { "target_service", "target_playlist_id", "target_item_id", "sync_status" };
+        var existingLegacyColumns = new List<string>(legacyColumns.Length);
+        foreach (var column in legacyColumns)
+        {
+            if (await ColumnExistsAsync(connection, PlaylistWatchTrackTable, column, cancellationToken))
+            {
+                existingLegacyColumns.Add(column);
+            }
+        }
+        if (existingLegacyColumns.Count == 0)
+        {
+            return;
+        }
+
+        if (existingLegacyColumns.Count == legacyColumns.Length)
+        {
+            const string migrateSql = @"
+INSERT OR IGNORE INTO playlist_watch_target_membership (
+    source, source_id, track_source_id, target_service, target_playlist_id,
+    target_item_id, local_track_id, sync_status, verified_at_utc, updated_at)
+SELECT source, source_id, track_source_id, target_service, target_playlist_id,
+       target_item_id, local_track_id, COALESCE(sync_status, 'waiting_for_target'),
+       COALESCE(verified_at_utc, CURRENT_TIMESTAMP), COALESCE(updated_at, CURRENT_TIMESTAMP)
+FROM playlist_watch_track
+WHERE target_service IS NOT NULL
+  AND TRIM(target_service) <> ''
+  AND target_playlist_id IS NOT NULL
+  AND TRIM(target_playlist_id) <> '';";
+            await using var command = new SqliteCommand(migrateSql, connection);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var column in existingLegacyColumns)
+        {
+            await DropColumnIfExistsAsync(connection, PlaylistWatchTrackTable, column, cancellationToken);
+        }
+    }
+
+    private static async Task MigrateWatchlistSyncJobsToTargetsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (await ColumnExistsAsync(connection, "watchlist_sync_job", "target_service", cancellationToken))
+        {
+            await EnsureColumnAsync(connection, "watchlist_sync_job", "status", "TEXT NOT NULL DEFAULT 'pending'", cancellationToken);
+            await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_until_utc", TextType, cancellationToken);
+            return;
+        }
+
+        await DropIndexIfExistsAsync(connection, "idx_watchlist_sync_job_due", cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+ALTER TABLE watchlist_sync_job RENAME TO watchlist_sync_job_legacy;
+
+CREATE TABLE watchlist_sync_job (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    playlist_id TEXT NOT NULL,
+    track_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    queue_uuid TEXT,
+    destination_folder_id BIGINT,
+    final_file_paths_json TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source, playlist_id, track_id, target_service)
+);
+
+INSERT OR IGNORE INTO watchlist_sync_job (
+    source, playlist_id, track_id, target_service, queue_uuid, destination_folder_id,
+    final_file_paths_json, attempt_count, status, next_attempt_utc,
+    last_error, created_at, updated_at)
+SELECT legacy.source,
+       legacy.playlist_id,
+       legacy.track_id,
+       lower(trim(target.value)),
+       NULL,
+       legacy.destination_folder_id,
+       legacy.final_file_paths_json,
+       legacy.attempt_count,
+       'pending',
+       legacy.next_attempt_utc,
+       legacy.last_error,
+       legacy.created_at,
+       legacy.updated_at
+FROM watchlist_sync_job_legacy legacy
+JOIN playlist_watch_preferences preference
+  ON preference.source = legacy.source
+ AND preference.source_id = legacy.playlist_id
+JOIN json_each(
+    CASE
+        WHEN json_valid(preference.sync_targets_json)
+             AND json_array_length(preference.sync_targets_json) > 0
+            THEN preference.sync_targets_json
+        ELSE json_array(preference.service)
+    END) target
+WHERE lower(trim(target.value)) IN ('plex', 'jellyfin', 'navidrome');
+
+DROP TABLE watchlist_sync_job_legacy;";
+        await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static async Task BackfillManualUnavailableRetryDeadlinesAsync(

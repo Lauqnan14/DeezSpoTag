@@ -88,16 +88,16 @@ public sealed class WatchlistQueueAdmissionServiceTests
     }
 
     [Fact]
-    public void BlockReason_IsScopedToActiveRun()
+    public void EmptyBudget_ReturnsRunBudgetDecision()
     {
         var service = new WatchlistQueueAdmissionService();
-        var token = service.BeginRun(0, WatchlistQueueBlockReason.PreviousWatchlistRunActive);
+        var token = service.BeginRun(0);
 
-        Assert.Equal(WatchlistQueueBlockReason.PreviousWatchlistRunActive, service.GetBlockReason());
-        Assert.False(service.TryReserve(1));
+        var decision = service.TryAdmitTrack();
+        Assert.False(decision.Allowed);
+        Assert.Equal(WatchQueueStopReason.RunBudget, decision.Reason);
 
         service.EndRun(token);
-        Assert.Equal(WatchlistQueueBlockReason.None, service.GetBlockReason());
     }
 
     [Fact]
