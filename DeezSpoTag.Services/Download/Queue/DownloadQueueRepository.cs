@@ -36,7 +36,6 @@ public sealed class DownloadQueueRepository
     private const string DownloadTaskTable = "download_task";
     private const string FilesPropertyLower = "files";
     private const string PayloadParameterName = "payload";
-    private const string LyricsStatusParameterName = "lyricsStatus";
     private const string MoveStatusPending = "pending";
     private const string MoveStatusRunning = "running";
     private const string MoveStatusMoved = "moved";
@@ -1143,7 +1142,6 @@ WHERE id = @id;";
             queueUuid,
             payloadJson,
             cancellationToken);
-        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
         const string sql = @"
 UPDATE download_task
 SET payload = @payload,
@@ -1159,12 +1157,10 @@ SET payload = @payload,
         WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.AmazonId'), json_extract(@payload, '$.amazonId'))), ''), amazon_track_id)
         ELSE amazon_track_id
     END,
-    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
-        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -1195,18 +1191,91 @@ WHERE queue_uuid = @queueUuid;";
                 return incomingPayloadJson;
             }
 
-            PreserveNonEmptyProperty(current, incoming, "LyricsStatus");
             PreserveNonEmptyProperty(current, incoming, "ArtworkStatus");
             PreserveNonEmptyProperty(current, incoming, "ArtworkError");
             PreserveNonEmptyPropertyUnlessSpecified(current, incoming, "PrefetchArtworkStatus");
-            PreserveNonEmptyPropertyUnlessSpecified(current, incoming, "PrefetchLyricsStatus");
-            PreserveNonEmptyPropertyUnlessSpecified(current, incoming, "PrefetchLyricsType");
+            PreserveCanonicalLyricsArtifacts(current, incoming);
             MergeFileArrays(current, incoming);
             return incoming.ToJsonString();
         }
         catch (JsonException)
         {
             return incomingPayloadJson;
+        }
+    }
+
+    private static void PreserveCanonicalLyricsArtifacts(JsonObject current, JsonObject incoming)
+    {
+        var currentState = current["lyricsArtifacts"] ?? current["LyricsArtifacts"];
+        var incomingState = incoming["lyricsArtifacts"] ?? incoming["LyricsArtifacts"];
+        if (currentState == null)
+        {
+            return;
+        }
+
+        var currentRevision = (currentState as JsonObject)?["revision"]?.GetValue<long?>() ?? 0;
+        var incomingRevision = (incomingState as JsonObject)?["revision"]?.GetValue<long?>() ?? -1;
+        if (incomingState == null || incomingRevision < currentRevision)
+        {
+            incoming.Remove("LyricsArtifacts");
+            incoming["lyricsArtifacts"] = currentState.DeepClone();
+        }
+    }
+
+    public async Task<bool> UpdateLyricsArtifactsAsync(
+        string queueUuid,
+        LyricsArtifactState state,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var stateJson = JsonSerializer.Serialize(state);
+        const string sql = @"
+UPDATE download_task
+SET payload = CASE
+        WHEN json_valid(payload) THEN json_set(
+            json_remove(payload,
+                '$.LyricsArtifacts',
+                '$.PrefetchLyricsStatus',
+                '$.PrefetchLyricsType',
+                '$.prefetchLyricsStatus',
+                '$.prefetchLyricsType'),
+            '$.lyricsArtifacts', json(@state))
+        ELSE payload
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid
+  AND (
+      json_extract(payload, '$.lyricsArtifacts.revision') IS NULL
+      OR CAST(json_extract(payload, '$.lyricsArtifacts.revision') AS INTEGER) <= @revision
+  );";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("state", stateJson);
+        command.Parameters.AddWithValue("revision", state.Revision);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<LyricsArtifactState?> GetLyricsArtifactsAsync(
+        string queueUuid,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var payloadJson = await GetPayloadJsonAsync(connection, queueUuid, cancellationToken);
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+        try
+        {
+            var payload = JsonNode.Parse(payloadJson) as JsonObject;
+            return (payload?["lyricsArtifacts"] ?? payload?["LyricsArtifacts"])
+                ?.Deserialize<LyricsArtifactState>();
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
@@ -1260,10 +1329,9 @@ WHERE queue_uuid = @queueUuid;";
         incoming["Files"] = merged;
     }
 
-    public async Task UpdatePrefetchStateAsync(
+    public async Task UpdatePrefetchFilesAndArtworkAsync(
         string queueUuid,
         string filesJson,
-        string lyricsStatus,
         string artworkStatus,
         string? artworkError,
         CancellationToken cancellationToken = default)
@@ -1275,29 +1343,24 @@ UPDATE download_task
 SET payload = CASE
         WHEN json_valid(payload) THEN json_set(
             payload,
-            '$.Files', json(@files),
-            '$.LyricsStatus', @lyricsStatus,
+            '$.files', json(@files),
             '$.ArtworkStatus', @artworkStatus,
             '$.ArtworkError', @artworkError)
         ELSE payload
     END,
-    lyrics_status = @lyricsStatus,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("files", filesJson);
-        command.Parameters.AddWithValue("lyricsStatus", lyricsStatus);
         command.Parameters.AddWithValue("artworkStatus", artworkStatus);
         command.Parameters.AddWithValue("artworkError", (object?)artworkError ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task UpdatePrefetchProgressAsync(
+    public async Task UpdateArtworkPrefetchProgressAsync(
         string queueUuid,
         string artworkStatus,
-        string lyricsStatus,
-        string? lyricsType,
         CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);
@@ -1307,9 +1370,7 @@ UPDATE download_task
 SET payload = CASE
         WHEN json_valid(payload) THEN json_set(
             payload,
-            '$.PrefetchArtworkStatus', @artworkStatus,
-            '$.PrefetchLyricsStatus', @lyricsStatus,
-            '$.PrefetchLyricsType', @lyricsType)
+            '$.PrefetchArtworkStatus', @artworkStatus)
         ELSE payload
     END,
     updated_at = CURRENT_TIMESTAMP
@@ -1317,8 +1378,6 @@ WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("artworkStatus", artworkStatus);
-        command.Parameters.AddWithValue("lyricsStatus", lyricsStatus);
-        command.Parameters.AddWithValue("lyricsType", lyricsType ?? string.Empty);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -1330,7 +1389,13 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        payloadJson = await MergeCurrentPrefetchStateAsync(
+            connection,
+            transaction,
+            queueUuid,
+            payloadJson,
+            cancellationToken);
         const string sql = @"
 UPDATE download_task
 SET engine = @engine,
@@ -1347,15 +1412,14 @@ SET engine = @engine,
         WHEN json_valid(@payload) THEN COALESCE(NULLIF(trim(COALESCE(json_extract(@payload, '$.AmazonId'), json_extract(@payload, '$.amazonId'))), ''), amazon_track_id)
         ELSE amazon_track_id
     END,
-    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
-        await using var command = new SqliteCommand(sql, connection);
+        await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("engine", engine);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
-        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task<bool> TryUpdateQueuedPayloadIfCurrentAsync(
@@ -1369,7 +1433,13 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, payloadJson);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        payloadJson = await MergeCurrentPrefetchStateAsync(
+            connection,
+            transaction,
+            queueUuid,
+            payloadJson,
+            cancellationToken);
         const string sql = @"
 UPDATE download_task
 SET payload = @payload,
@@ -1380,20 +1450,19 @@ SET payload = @payload,
         WHEN @status = 'queued' THEN NULL
         ELSE error
     END,
-    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
   AND status IN ('queued', 'resolving', 'running')
   AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
-        await using var command = new SqliteCommand(sql, connection);
+        await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue(PayloadParameterName, payloadJson);
         command.Parameters.AddWithValue("engine", (object?)engine ?? DBNull.Value);
         command.Parameters.AddWithValue("status", (object?)status ?? DBNull.Value);
         command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
-        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("expectedPayload", (object?)expectedPayloadJson ?? DBNull.Value);
         var updated = await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        await transaction.CommitAsync(cancellationToken);
         if (updated && !string.IsNullOrWhiteSpace(status))
         {
             PublishQueueStateChanged(queueUuid, status);
@@ -1411,7 +1480,13 @@ WHERE queue_uuid = @queueUuid
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, item.PayloadJson);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        var mergedPayloadJson = await MergeCurrentPrefetchStateAsync(
+            connection,
+            transaction,
+            item.QueueUuid,
+            item.PayloadJson ?? "{}",
+            cancellationToken);
         const string sql = @"
 UPDATE download_task
 SET payload = @payload,
@@ -1447,18 +1522,17 @@ SET payload = @payload,
         WHEN @status = 'queued' THEN NULL
         ELSE error
     END,
-    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid
   AND status IN ('queued', 'resolving')
   AND ((payload IS NULL AND @expectedPayload IS NULL) OR payload = @expectedPayload);";
-        await using var command = new SqliteCommand(sql, connection);
-        BindCurrentIdentityParameters(command, item);
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        BindCurrentIdentityParameters(command, item, mergedPayloadJson);
         command.Parameters.AddWithValue("@status", (object?)status ?? DBNull.Value);
         command.Parameters.AddWithValue("@error", (object?)error ?? DBNull.Value);
-        command.Parameters.AddWithValue("@" + LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("@expectedPayload", (object?)expectedPayloadJson ?? DBNull.Value);
         var updated = await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        await transaction.CommitAsync(cancellationToken);
         if (updated && !string.IsNullOrWhiteSpace(status))
         {
             PublishQueueStateChanged(item.QueueUuid, status);
@@ -1467,10 +1541,13 @@ WHERE queue_uuid = @queueUuid
         return updated;
     }
 
-    private static void BindCurrentIdentityParameters(SqliteCommand command, DownloadQueueItem item)
+    private static void BindCurrentIdentityParameters(
+        SqliteCommand command,
+        DownloadQueueItem item,
+        string? payloadJson = null)
     {
         BindQueueIdentityParameters(command, item, "@");
-        command.Parameters.AddWithValue("@payload", (object?)item.PayloadJson ?? DBNull.Value);
+        command.Parameters.AddWithValue("@payload", (object?)payloadJson ?? (object?)item.PayloadJson ?? DBNull.Value);
     }
 
     public async Task UpdateFinalDestinationsAsync(
@@ -1481,23 +1558,73 @@ WHERE queue_uuid = @queueUuid
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        var currentPayloadJson = await GetPayloadJsonAsync(connection, queueUuid, cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         var effectivePayloadJson = string.IsNullOrWhiteSpace(payloadJson)
-            ? await GetPayloadJsonAsync(connection, queueUuid, cancellationToken)
-            : payloadJson;
-        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson, effectivePayloadJson);
+            ? currentPayloadJson
+            : await MergeCurrentPrefetchStateAsync(connection, transaction, queueUuid, payloadJson, cancellationToken);
+        effectivePayloadJson = RebaseLyricsArtifacts(effectivePayloadJson, finalDestinationsJson);
         const string sql = @"
 UPDATE download_task
 SET final_destinations_json = @finalDestinationsJson,
     payload = COALESCE(@payload, payload),
-    lyrics_status = COALESCE(@lyricsStatus, lyrics_status),
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
-        await using var command = new SqliteCommand(sql, connection);
+        await using var command = new SqliteCommand(sql, connection, transaction);
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         command.Parameters.AddWithValue("finalDestinationsJson", (object?)finalDestinationsJson ?? DBNull.Value);
-        command.Parameters.AddWithValue(PayloadParameterName, (object?)payloadJson ?? DBNull.Value);
-        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
+        command.Parameters.AddWithValue(PayloadParameterName, (object?)effectivePayloadJson ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static string? RebaseLyricsArtifacts(string? payloadJson, string? finalDestinationsJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson) || string.IsNullOrWhiteSpace(finalDestinationsJson))
+        {
+            return payloadJson;
+        }
+        try
+        {
+            var payload = JsonNode.Parse(payloadJson) as JsonObject;
+            var artifactsNode = payload?["lyricsArtifacts"] ?? payload?["LyricsArtifacts"];
+            var state = artifactsNode?.Deserialize<LyricsArtifactState>();
+            var destinations = JsonSerializer.Deserialize<Dictionary<string, string>>(finalDestinationsJson);
+            if (payload == null || state == null || destinations == null || destinations.Count == 0)
+            {
+                return payloadJson;
+            }
+
+            var changed = false;
+            foreach (var format in state.FilesByFormat.Keys.ToArray())
+            {
+                var source = state.FilesByFormat[format];
+                var destination = destinations
+                    .FirstOrDefault(pair => string.Equals(pair.Key, source, StringComparison.OrdinalIgnoreCase)).Value;
+                destination ??= destinations.Values.FirstOrDefault(path =>
+                    string.Equals(Path.GetExtension(path), "." + format, StringComparison.OrdinalIgnoreCase));
+                if (string.IsNullOrWhiteSpace(destination)
+                    || string.Equals(destination, source, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                state.FilesByFormat[format] = destination;
+                changed = true;
+            }
+            if (!changed)
+            {
+                return payloadJson;
+            }
+
+            state.Revision++;
+            payload.Remove("LyricsArtifacts");
+            payload["lyricsArtifacts"] = JsonSerializer.SerializeToNode(state);
+            return payload.ToJsonString();
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        {
+            return payloadJson;
+        }
     }
 
     public async Task MarkMovePendingAsync(string queueUuid, CancellationToken cancellationToken = default)
@@ -1739,7 +1866,6 @@ WHERE queue_uuid = @queueUuid;";
     {
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var lyricsStatus = ResolveLyricsStatusFromOutputs(finalDestinationsJson: null, item.PayloadJson);
         string sql = @$"
 	UPDATE download_task
 	SET engine = @engine,
@@ -1770,7 +1896,6 @@ WHERE queue_uuid = @queueUuid;";
     content_type = @contentType,
     payload = @payload,
     final_destinations_json = NULL,
-    lyrics_status = @lyricsStatus,
     staging_cleanup_status = NULL,
 	    staging_cleanup_error = NULL,
 	    staging_cleanup_at = NULL,
@@ -1789,7 +1914,6 @@ WHERE queue_uuid = @queueUuid;";
 WHERE queue_uuid = @queueUuid;";
         await using var command = new SqliteCommand(sql, connection);
         BindCommonParameters(command, item);
-        command.Parameters.AddWithValue(LyricsStatusParameterName, (object?)lyricsStatus ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -2652,10 +2776,134 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await NormalizeCompletedFinalizationStatusesAsync(connection, cancellationToken);
         await BackfillMissingIdentityFromPayloadAsync(connection, cancellationToken);
         await NormalizeLegacyExecutionPlansAsync(connection, cancellationToken);
+        await MigrateLegacyLyricsArtifactsAsync(connection, cancellationToken);
 
         lock (_schemaLock)
         {
             _schemaEnsured = true;
+        }
+    }
+
+    private static async Task MigrateLegacyLyricsArtifactsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string selectSql = @"
+SELECT id, payload, lyrics_status
+FROM download_task
+WHERE json_valid(payload)
+  AND json_extract(payload, '$.lyricsArtifacts') IS NULL;";
+        var rows = new List<(long Id, string Payload, string? LyricsStatus)>();
+        await using (var select = new SqliteCommand(selectSql, connection))
+        await using (var reader = await select.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                rows.Add((reader.GetInt64(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            var payload = JsonNode.Parse(row.Payload) as JsonObject;
+            if (payload == null)
+            {
+                continue;
+            }
+
+            var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddLegacyLyricsFormats(row.LyricsStatus, resolved);
+            AddLegacyLyricsFormats(payload["PrefetchLyricsType"]?.ToString(), resolved);
+            AddLegacyLyricsFormats(payload["prefetchLyricsType"]?.ToString(), resolved);
+            var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var filesByFormat = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            CollectLegacyLyricsFiles(payload["files"] ?? payload["Files"], downloaded, filesByFormat);
+            resolved.UnionWith(downloaded);
+            if (resolved.Contains("ttml") || resolved.Contains("lrc"))
+            {
+                resolved.Remove("txt");
+                downloaded.Remove("txt");
+                filesByFormat.Remove("txt");
+            }
+
+            var state = new LyricsArtifactState
+            {
+                Revision = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Status = downloaded.Count > 0 ? "completed" : (resolved.Count > 0 ? "resolved" : "unavailable"),
+                ResolvedFormats = resolved.ToList(),
+                DownloadedFormats = downloaded.ToList(),
+                FilesByFormat = filesByFormat
+            };
+            payload.Remove("PrefetchLyricsStatus");
+            payload.Remove("PrefetchLyricsType");
+            payload.Remove("prefetchLyricsStatus");
+            payload.Remove("prefetchLyricsType");
+            payload.Remove("LyricsStatus");
+            payload.Remove("lyricsStatus");
+            payload.Remove("lyrics_status");
+            payload["lyricsArtifacts"] = JsonSerializer.SerializeToNode(state);
+
+            await using var update = new SqliteCommand(
+                "UPDATE download_task SET payload = @payload WHERE id = @id;",
+                connection);
+            update.Parameters.AddWithValue("payload", payload.ToJsonString());
+            update.Parameters.AddWithValue("id", row.Id);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var clearLegacyStatus = new SqliteCommand(
+            "UPDATE download_task SET lyrics_status = NULL WHERE lyrics_status IS NOT NULL;",
+            connection);
+        await clearLegacyStatus.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static void AddLegacyLyricsFormats(string? raw, ISet<string> formats)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+        foreach (var token in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var normalized = token.Trim().ToLowerInvariant();
+            if (normalized is "time-synced" or "timesynced" or "ttml" or "syllable-lyrics") formats.Add("ttml");
+            else if (normalized is "synced" or "lrc" or "lyrics") formats.Add("lrc");
+            else if (normalized is "unsynced" or "txt" or "unsynced-lyrics") formats.Add("txt");
+            else if (normalized == "both")
+            {
+                formats.Add("lrc");
+                formats.Add("txt");
+            }
+        }
+    }
+
+    private static void CollectLegacyLyricsFiles(
+        JsonNode? filesNode,
+        ISet<string> downloaded,
+        IDictionary<string, string> filesByFormat)
+    {
+        if (filesNode is not JsonArray files)
+        {
+            return;
+        }
+        foreach (var file in files)
+        {
+            var path = file is JsonObject obj
+                ? (obj["path"] ?? obj["Path"])?.ToString()
+                : file?.ToString();
+            var format = Path.GetExtension(path ?? string.Empty).ToLowerInvariant() switch
+            {
+                ".ttml" => "ttml",
+                ".lrc" => "lrc",
+                ".txt" => "txt",
+                _ => string.Empty
+            };
+            if (string.IsNullOrEmpty(format))
+            {
+                continue;
+            }
+            downloaded.Add(format);
+            filesByFormat[format] = path!;
         }
     }
 
@@ -2999,172 +3247,6 @@ LIMIT 1;";
         command.Parameters.AddWithValue("queueUuid", queueUuid);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? null : Convert.ToString(result, CultureInfo.InvariantCulture);
-    }
-
-    private static string? ResolveLyricsStatusFromOutputs(
-        string? finalDestinationsJson,
-        string? payloadJson)
-    {
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        AddFinalDestinationPaths(finalDestinationsJson, paths);
-        AddPayloadPaths(payloadJson, paths);
-
-        var lyricsStatus = default(LyricsStatusFlags);
-        ApplyPayloadLyricsStatus(payloadJson, ref lyricsStatus);
-
-        foreach (var path in paths)
-        {
-            TryMarkLyricsStatus(path, ref lyricsStatus);
-        }
-
-        var statuses = new List<string>(capacity: 3);
-        if (lyricsStatus.HasTimeSynced)
-        {
-            statuses.Add("time-synced");
-        }
-
-        if (lyricsStatus.HasSynced)
-        {
-            statuses.Add("synced");
-        }
-
-        if (lyricsStatus.HasUnsynced)
-        {
-            statuses.Add("unsynced");
-        }
-
-        if (statuses.Count > 0)
-        {
-            return string.Join(",", statuses);
-        }
-
-        return null;
-    }
-
-    private static void TryMarkLyricsStatus(
-        string? path,
-        ref LyricsStatusFlags status)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return;
-        }
-
-        try
-        {
-            var ioPath = DownloadPathResolver.ResolveIoPath(path);
-            switch (Path.GetExtension(ioPath))
-            {
-                case ".ttml":
-                case ".TTML":
-                    status.HasTimeSynced = true;
-                    break;
-                case ".lrc":
-                case ".LRC":
-                    status.HasSynced = true;
-                    break;
-                case ".txt":
-                case ".TXT":
-                    status.HasUnsynced = true;
-                    break;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best-effort lyrics status persistence; ignore unreadable paths.
-        }
-    }
-
-    private static void ApplyPayloadLyricsStatus(
-        string? payloadJson,
-        ref LyricsStatusFlags status)
-    {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(payloadJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return;
-            }
-
-            ApplyPayloadLyricsStatusProperty(document.RootElement, "LyricsStatus", ref status);
-            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyricsStatus", ref status);
-            ApplyPayloadLyricsStatusProperty(document.RootElement, "lyrics_status", ref status);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Ignore malformed JSON payloads and continue with best effort.
-        }
-    }
-
-    private static void ApplyPayloadLyricsStatusProperty(
-        JsonElement root,
-        string propertyName,
-        ref LyricsStatusFlags status)
-    {
-        if (!root.TryGetProperty(propertyName, out var value))
-        {
-            return;
-        }
-
-        if (value.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var token in value.EnumerateArray().Where(static token => token.ValueKind == JsonValueKind.String))
-            {
-                MarkLyricsStatusToken(token.GetString(), ref status);
-            }
-
-            return;
-        }
-
-        if (value.ValueKind == JsonValueKind.String)
-        {
-            MarkLyricsStatusToken(value.GetString(), ref status);
-        }
-    }
-
-    private static void MarkLyricsStatusToken(
-        string? rawToken,
-        ref LyricsStatusFlags status)
-    {
-        if (string.IsNullOrWhiteSpace(rawToken))
-        {
-            return;
-        }
-
-        foreach (var token in rawToken.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            switch (token.Trim().ToLowerInvariant())
-            {
-                case "time-synced":
-                case "timesynced":
-                case "ttml":
-                    status.HasTimeSynced = true;
-                    break;
-                case "synced":
-                case "lrc":
-                    status.HasSynced = true;
-                    break;
-                case "unsynced":
-                case "txt":
-                    status.HasUnsynced = true;
-                    break;
-            }
-        }
-    }
-
-    private struct LyricsStatusFlags
-    {
-        public bool HasTimeSynced { get; set; }
-
-        public bool HasSynced { get; set; }
-
-        public bool HasUnsynced { get; set; }
     }
 
     private static void AddFinalDestinationPaths(string? finalDestinationsJson, ISet<string> target)

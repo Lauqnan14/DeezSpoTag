@@ -926,10 +926,9 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             : FailedStatus;
         if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
         {
-            await _queueRepository.UpdatePrefetchStateAsync(
+            await _queueRepository.UpdatePrefetchFilesAndArtworkAsync(
                 queueUuid,
                 "[]",
-                string.Empty,
                 terminalStatus,
                 "Audio download failed before prefetched assets could be finalized.",
                 CancellationToken.None);

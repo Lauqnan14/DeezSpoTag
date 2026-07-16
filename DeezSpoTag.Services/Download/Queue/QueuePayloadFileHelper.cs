@@ -1,7 +1,5 @@
 using DeezSpoTag.Services.Download.Shared.Models;
-using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
-using DeezSpoTag.Services.Apple;
 
 namespace DeezSpoTag.Services.Download.Queue;
 
@@ -24,7 +22,7 @@ public static class QueuePayloadFileHelper
         };
     }
 
-    public static (List<Dictionary<string, object>> Files, string LyricsStatus) BuildAudioFiles(
+    public static List<Dictionary<string, object>> BuildAudioFiles(
         PathGenerationResult pathResult,
         string outputPath)
     {
@@ -44,9 +42,6 @@ public static class QueuePayloadFileHelper
 
         var outputIo = DownloadPathResolver.ResolveIoPath(displayOutput);
         var dir = Path.GetDirectoryName(outputIo);
-        var hasTtml = false;
-        var hasLrc = false;
-        var hasTxt = false;
         if (!string.IsNullOrWhiteSpace(dir))
         {
             var baseName = Path.GetFileNameWithoutExtension(outputIo);
@@ -66,50 +61,9 @@ public static class QueuePayloadFileHelper
                     ["artistPath"] = artistPath
                 });
 
-                switch (ext)
-                {
-                    case ".ttml":
-                        hasTtml = IsTimedTtmlFile(lyricIo);
-                        break;
-                    case ".lrc":
-                        hasLrc = true;
-                        break;
-                    case ".txt":
-                        hasTxt = true;
-                        break;
-                }
             }
         }
-
-        var status = new List<string>();
-        if (hasTtml)
-        {
-            status.Add("time-synced");
-        }
-
-        if (hasLrc)
-        {
-            status.Add("synced");
-        }
-
-        if (hasTxt)
-        {
-            status.Add("unsynced");
-        }
-
-        return (files, string.Join(",", status));
-    }
-
-    private static bool IsTimedTtmlFile(string path)
-    {
-        try
-        {
-            return AppleLyricsService.IsTimedTtml(File.ReadAllText(path));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return false;
-        }
+        return files;
     }
 
 }

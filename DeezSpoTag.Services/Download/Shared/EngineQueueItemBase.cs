@@ -47,7 +47,7 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string Quality { get; set; } = "";
     public string RequestedQuality { get; set; } = "";
     public string DeliveredQuality { get; set; } = "";
-    public string LyricsStatus { get; set; } = "";
+    public LyricsArtifactState LyricsArtifacts { get; set; } = new();
     public List<Dictionary<string, object>> Files { get; set; } = new();
     public int DurationSeconds { get; set; }
     public string ReleaseDate { get; set; } = "";
@@ -114,7 +114,8 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["tidalId"] = TidalId,
             ["amazonId"] = AmazonId,
             ["expectedFinalOutputPath"] = ExpectedFinalOutputPath,
-            ["watchlistUnavailableSettingsFingerprint"] = WatchlistUnavailableSettingsFingerprint
+            ["watchlistUnavailableSettingsFingerprint"] = WatchlistUnavailableSettingsFingerprint,
+            ["lyricsArtifacts"] = LyricsArtifacts
         };
 
         if (extra != null)
@@ -142,7 +143,6 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             Engine = Engine,
             ContentType = ContentType,
             Files = Files,
-            LyricsStatus = LyricsStatus,
             Profile = Profile,
             FinalDestinations = FinalDestinations,
             DestinationFolderId = DestinationFolderId,

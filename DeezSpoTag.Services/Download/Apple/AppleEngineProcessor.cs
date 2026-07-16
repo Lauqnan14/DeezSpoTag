@@ -538,10 +538,9 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             itemToken);
         if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(reason))
         {
-            await _queueRepository.UpdatePrefetchStateAsync(
+            await _queueRepository.UpdatePrefetchFilesAndArtworkAsync(
                 next.QueueUuid,
                 "[]",
-                string.Empty,
                 FailedStatus,
                 "Audio download failed before prefetched assets could be finalized.",
                 itemToken);

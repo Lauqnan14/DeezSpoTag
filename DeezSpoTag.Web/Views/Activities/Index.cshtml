@@ -5359,15 +5359,10 @@ function mapQueueItem(item) {
         : mapBitrate(rawQuality);
     const taskId = String(item.uuid || '');
     const prefetchArtworkStatus = item.prefetchArtworkStatus ?? item.PrefetchArtworkStatus;
-    const prefetchLyricsStatus = item.prefetchLyricsStatus ?? item.PrefetchLyricsStatus;
-    const prefetchLyricsType = item.prefetchLyricsType ?? item.PrefetchLyricsType;
-    updateTaskPrefetchStatus(
-        taskId,
-        prefetchArtworkStatus,
-        prefetchLyricsStatus,
-        prefetchLyricsType);
+    updateTaskPrefetchStatus(taskId, prefetchArtworkStatus);
     const mappedStatus = mapStatus(item.status);
-    const lyricsBadges = resolveLyricsBadgesForQueueItem(item, taskId, mappedStatus);
+    const lyricsBadges = resolveLyricsBadgesForQueueItem(item);
+    const lyricsRevision = getLyricsArtifactRevision(item.lyricsArtifacts ?? item.LyricsArtifacts);
     return {
         taskId,
         title: resolveQueueItemTitle(item) || 'Unknown',
@@ -5375,6 +5370,7 @@ function mapQueueItem(item) {
         rawQuality: String(rawQuality || '').trim(),
         quality: displayQuality,
         videoBadges: isVideo ? resolveVideoBadges(item, rawQuality) : [],
+        lyricsRevision,
         status: mappedStatus,
         rawStatus: item.rawStatus || item.RawStatus || item.status,
         progress: normalizeQueueProgressPercent(item.progress),
@@ -5524,7 +5520,12 @@ function mergeQueueTask(existing, incoming) {
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
-        lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : [],
+        lyricsRevision: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
+            ? incoming.lyricsRevision
+            : existing.lyricsRevision,
+        lyricsBadges: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
+            ? incoming.lyricsBadges
+            : existing.lyricsBadges,
         requestedQuality: String(incoming.requestedQuality || '').trim() || existing.requestedQuality,
         deliveredQuality: String(incoming.deliveredQuality || '').trim() || existing.deliveredQuality,
         cover: String(incoming.cover || '').trim() || existing.cover
@@ -5889,95 +5890,22 @@ function normalizePrefetchStatus(value) {
     return '';
 }
 
-function normalizePrefetchLyricsType(value) {
-    const tokens = String(value || '')
-        .trim()
-        .toLowerCase()
-        .split(/[^a-z0-9-]+/)
-        .filter(Boolean);
-    if (tokens.length === 0) {
-        return '';
-    }
-
-    const kinds = [];
-    const addKind = (kind) => {
-        if (!kinds.includes(kind)) {
-            kinds.push(kind);
-        }
-    };
-
-    tokens.forEach(token => {
-        if (token === 'time-synced'
-            || token === 'time-synced-lyrics'
-            || token === 'timesynced'
-            || token === 'time'
-            || token === 'ttml'
-            || token === 'syllable-lyrics') {
-            addKind('time-synced');
-            return;
-        }
-        if (token === 'unsynced'
-            || token === 'unsynced-lyrics'
-            || token === 'unsynchronized-lyrics'
-            || token === 'unsynchronised-lyrics'
-            || token === 'unsyncedlyrics'
-            || token === 'plain'
-            || token === 'text'
-            || token === 'txt') {
-            addKind('unsynced');
-            return;
-        }
-        if (token === 'synced'
-            || token === 'synced-lyrics'
-            || token === 'lyrics'
-            || token === 'lrc') {
-            addKind('synced');
-        }
-    });
-
-    return kinds.join(',');
-}
-
-function formatPrefetchLyricsType(value) {
-    const normalized = normalizePrefetchLyricsType(value);
-    if (!normalized) {
-        return '';
-    }
-    const labels = normalized.split(',').map(kind => {
-        if (kind === 'time-synced') {
-            return 'Time-Synced';
-        }
-        if (kind === 'synced') {
-            return 'Synced';
-        }
-        if (kind === 'unsynced') {
-            return 'Unsynced';
-        }
-        return '';
-    }).filter(Boolean);
-    return labels.join(' + ');
-}
-
-function updateTaskPrefetchStatus(taskId, artworkStatus, lyricsStatus, lyricsType) {
+function updateTaskPrefetchStatus(taskId, artworkStatus) {
     if (!taskId) {
         return false;
     }
 
     const hasArtwork = artworkStatus !== undefined && artworkStatus !== null;
-    const hasLyrics = lyricsStatus !== undefined && lyricsStatus !== null;
-    const hasLyricsType = lyricsType !== undefined && lyricsType !== null;
-    if (!hasArtwork && !hasLyrics && !hasLyricsType) {
+    if (!hasArtwork) {
         return false;
     }
 
-    const current = queuePrefetchByTask[taskId] || { artwork: '', lyrics: '', lyricsType: '' };
+    const current = queuePrefetchByTask[taskId] || { artwork: '' };
     const next = {
-        artwork: hasArtwork ? normalizePrefetchStatus(artworkStatus) : current.artwork,
-        lyrics: hasLyrics ? normalizePrefetchStatus(lyricsStatus) : current.lyrics,
-        lyricsType: hasLyricsType ? normalizePrefetchLyricsType(lyricsType) : current.lyricsType
+        artwork: normalizePrefetchStatus(artworkStatus)
     };
 
-    const hasVisibleStatus = [next.artwork, next.lyrics].some(status => status && status !== 'skipped');
+    const hasVisibleStatus = next.artwork && next.artwork !== 'skipped';
     if (!hasVisibleStatus) {
         if (queuePrefetchByTask[taskId]) {
             delete queuePrefetchByTask[taskId];
@@ -5986,9 +5914,7 @@ function updateTaskPrefetchStatus(taskId, artworkStatus, lyricsStatus, lyricsTyp
         return false;
     }
 
-    if (current.artwork === next.artwork
-        && current.lyrics === next.lyrics
-        && current.lyricsType === next.lyricsType) {
+    if (current.artwork === next.artwork) {
         return false;
     }
 
@@ -6010,25 +5936,21 @@ function hasActivePrefetchStatus(taskId) {
     if (!state) {
         return false;
     }
-    return state.artwork === 'fetching' || state.lyrics === 'fetching';
+    return state.artwork === 'fetching';
 }
 
-function formatPrefetchPart(label, status, details) {
+function formatPrefetchPart(label, status) {
     if (!status || status === 'skipped') {
         return '';
     }
-    const suffix = details ? ` (${details})` : '';
     if (status === 'fetching') {
-        return `${label}: fetching${suffix}`;
+        return `${label}: fetching`;
     }
     if (status === 'completed') {
-        return `${label}: ready${suffix}`;
+        return `${label}: ready`;
     }
     if (status === 'failed') {
-        return `${label}: failed${suffix}`;
-    }
-    if (status === 'no-lyrics' && label === 'Lyrics') {
-        return 'Lyrics: No lyrics!!!!';
+        return `${label}: failed`;
     }
     return '';
 }
@@ -6040,8 +5962,7 @@ function getPrefetchActivityText(taskId) {
     }
 
     const parts = [
-        formatPrefetchPart('Artwork', state.artwork),
-        formatPrefetchPart('Lyrics', state.lyrics, formatPrefetchLyricsType(state.lyricsType))
+        formatPrefetchPart('Artwork', state.artwork)
     ].filter(Boolean);
 
     return parts.join(' • ');
@@ -6129,9 +6050,7 @@ function applyQueueRealtimeUpdate(payload) {
 
     const prefetchChanged = updateTaskPrefetchStatus(
         taskId,
-        update?.prefetchArtworkStatus,
-        update?.prefetchLyricsStatus,
-        update?.prefetchLyricsType);
+        update?.prefetchArtworkStatus);
     if (prefetchChanged) {
         scheduleRenderTasks();
     }
@@ -6144,12 +6063,6 @@ function applyQueueRealtimeUpdate(payload) {
     if (!task) {
         scheduleQueueHydrationRefresh();
         return;
-    }
-    if (prefetchChanged) {
-        const prefetchBadges = getLyricsBadgesFromPrefetchState(taskId);
-        if (prefetchBadges.length > 0 && !areSameBadgeSet(task.lyricsBadges, prefetchBadges)) {
-            task.lyricsBadges = prefetchBadges;
-        }
     }
 
     const rawNextProgress = parseQueueRealtimeProgressValue(
@@ -6169,10 +6082,6 @@ function applyQueueRealtimeUpdate(payload) {
     if (status === 'queued' && nextProgress !== null && nextProgress <= 0) {
         resetQueueProgressCache(taskId);
         clearTaskPrefetchStatus(taskId);
-        if (Array.isArray(task.lyricsBadges) && task.lyricsBadges.length > 0) {
-            task.lyricsBadges = [];
-            taskChanged = true;
-        }
     }
     if (!status && nextProgress !== null && nextProgress > 0 && task.status === 'queued') {
         task.status = 'running';
@@ -6263,10 +6172,16 @@ function applyQueueRealtimeUpdate(payload) {
         task.error = null;
         taskChanged = true;
     }
-    const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update, taskId);
-    if (nextLyricsBadges && !areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
-        task.lyricsBadges = nextLyricsBadges;
-        taskChanged = true;
+    const incomingLyricsArtifacts = update?.lyricsArtifacts ?? update?.LyricsArtifacts;
+    const incomingLyricsRevision = getLyricsArtifactRevision(incomingLyricsArtifacts);
+    const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update);
+    if (nextLyricsBadges
+        && incomingLyricsRevision >= (task.lyricsRevision || 0)) {
+        if (!areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
+            task.lyricsBadges = nextLyricsBadges;
+            taskChanged = true;
+        }
+        task.lyricsRevision = incomingLyricsRevision;
     }
     if (status === 'complete' && task.progress !== 100) {
         task.progress = 100;
@@ -6617,66 +6532,48 @@ function getCoverFromPayload(item) {
     return '';
 }
 
-function getLyricsBadgesFromRealtimeUpdate(update, taskId) {
+function getLyricsBadgesFromRealtimeUpdate(update) {
     if (!update || typeof update !== 'object') {
         return null;
     }
 
-    const status = mapStatus(update.status || update.Status || '');
-    const prefetchBadges = getLyricsBadgesFromPrefetchPayload(update, taskId);
-    if (prefetchBadges.length > 0) {
-        return prefetchBadges;
-    }
-
-    return status === 'complete' ? getLyricsBadgesFromFiles(update) : null;
+    const artifacts = update.lyricsArtifacts ?? update.LyricsArtifacts;
+    return artifacts === undefined || artifacts === null
+        ? null
+        : getLyricsBadgesFromArtifacts(artifacts);
 }
 
-function resolveLyricsBadgesForQueueItem(item, taskId, mappedStatus) {
-    const fileBadges = getLyricsBadgesFromFiles(item);
-    if (fileBadges.length > 0) {
-        return fileBadges;
-    }
-
-    const prefetchBadges = getLyricsBadgesFromPrefetchPayload(item, taskId);
-    if (prefetchBadges.length > 0) {
-        return prefetchBadges;
-    }
-
-    return mappedStatus === 'complete' ? [] : [];
+function resolveLyricsBadgesForQueueItem(item) {
+    return getLyricsBadgesFromArtifacts(item.lyricsArtifacts ?? item.LyricsArtifacts);
 }
 
-function getLyricsBadgesFromPrefetchPayload(item, taskId) {
-    const rawStatus = item?.prefetchLyricsStatus ?? item?.PrefetchLyricsStatus;
-    const rawType = item?.prefetchLyricsType ?? item?.PrefetchLyricsType;
-    const status = normalizePrefetchStatus(rawStatus);
-    const type = normalizePrefetchLyricsType(rawType);
-    if (status === 'completed' && type) {
-        return lyricsBadgesFromType(type);
-    }
-
-    return getLyricsBadgesFromPrefetchState(taskId);
-}
-
-function getLyricsBadgesFromPrefetchState(taskId) {
-    const state = queuePrefetchByTask[taskId];
-    if (!state || state.lyrics !== 'completed' || !state.lyricsType) {
+function getLyricsBadgesFromArtifacts(artifacts) {
+    if (!artifacts || typeof artifacts !== 'object') {
         return [];
     }
 
-    return lyricsBadgesFromType(state.lyricsType);
+    const resolved = Array.isArray(artifacts.resolvedFormats)
+        ? artifacts.resolvedFormats
+        : (Array.isArray(artifacts.ResolvedFormats) ? artifacts.ResolvedFormats : []);
+    const downloaded = Array.isArray(artifacts.downloadedFormats)
+        ? artifacts.downloadedFormats
+        : (Array.isArray(artifacts.DownloadedFormats) ? artifacts.DownloadedFormats : []);
+    const formats = resolved.concat(downloaded)
+        .map(value => String(value || '').trim().toLowerCase())
+        .filter(value => value === 'ttml' || value === 'lrc' || value === 'txt');
+    const unique = formats.filter((value, index, list) => list.indexOf(value) === index);
+    const hasRich = unique.includes('ttml') || unique.includes('lrc');
+    return unique
+        .filter(value => value !== 'txt' || !hasRich)
+        .map(value => value === 'ttml' ? 'time-synced' : (value === 'lrc' ? 'synced' : 'unsynced'));
 }
 
-function lyricsBadgesFromType(value) {
-    const normalized = normalizePrefetchLyricsType(value);
-    if (!normalized) {
-        return [];
+function getLyricsArtifactRevision(artifacts) {
+    if (!artifacts || typeof artifacts !== 'object') {
+        return 0;
     }
-
-    return normalized
-        .split(',')
-        .map(kind => kind.trim())
-        .filter(kind => kind === 'time-synced' || kind === 'synced' || kind === 'unsynced')
-        .filter((kind, index, list) => list.indexOf(kind) === index);
+    const value = Number(artifacts.revision ?? artifacts.Revision ?? 0);
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
 function areSameBadgeSet(left, right) {
@@ -6695,44 +6592,6 @@ function areSameBadgeSet(left, right) {
     return true;
 }
 
-function getLyricsBadgesFromFiles(item) {
-    const files = Array.isArray(item.files) ? item.files : (Array.isArray(item.Files) ? item.Files : null);
-    if (!Array.isArray(files)) {
-        return [];
-    }
-    const filenames = files
-        .map(file => {
-            if (!file) {
-                return '';
-            }
-            if (typeof file === 'string') {
-                return file;
-            }
-            return (
-                file.filename ||
-                file.Filename ||
-                file.path ||
-                file.Path ||
-                file.name ||
-                file.Name ||
-                ''
-            );
-        })
-        .filter(Boolean)
-        .map(name => name.toLowerCase());
-
-    const badges = [];
-    if (filenames.some(name => name.endsWith('.ttml'))) {
-        badges.push('time-synced');
-    }
-    if (filenames.some(name => name.endsWith('.lrc'))) {
-        badges.push('synced');
-    }
-    if (filenames.some(name => name.endsWith('.txt'))) {
-        badges.push('unsynced');
-    }
-    return badges;
-}
 
 function initDownloadPlaceholder() {
     initQueueRealtimeEvents();

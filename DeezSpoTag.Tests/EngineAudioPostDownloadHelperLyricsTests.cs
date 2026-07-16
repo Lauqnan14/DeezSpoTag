@@ -98,27 +98,6 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
     }
 
     [Fact]
-    public void BuildAudioFiles_DoesNotMarkAppleTimingNoneAsTimeSynced()
-    {
-        using var tmp = new TemporaryDirectory();
-        var audioPath = Path.Join(tmp.Path, "track.flac");
-        File.WriteAllText(audioPath, "audio");
-        File.WriteAllText(
-            Path.Join(tmp.Path, "track.ttml"),
-            "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"None\"><body><div><p>Plain text</p></div></body></tt>");
-        var paths = new PathGenerationResult
-        {
-            FilePath = tmp.Path,
-            ArtistPath = tmp.Path,
-            Filename = "track"
-        };
-
-        var result = DeezSpoTag.Services.Download.Queue.QueuePayloadFileHelper.BuildAudioFiles(paths, audioPath);
-
-        Assert.DoesNotContain("time-synced", result.LyricsStatus, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
     public void ResolveUnsyncedTextFromSidecars_PrefersTxtThenFallsBackToSyncedText()
     {
         using var tmp = new TemporaryDirectory();

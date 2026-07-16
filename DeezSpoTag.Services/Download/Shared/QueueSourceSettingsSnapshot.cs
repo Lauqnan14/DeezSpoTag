@@ -21,6 +21,13 @@ public sealed class QueueSourceSettingsSnapshot
     public string? DeezerLanguage { get; set; }
     public MultiQualityDownloadSettings? MultiQuality { get; set; }
     public DownloadEngineOrderSettings? DownloadEngineOrder { get; set; }
+    public bool? SyncedLyrics { get; set; }
+    public bool? SaveLyrics { get; set; }
+    public string? LrcType { get; set; }
+    public string? LrcFormat { get; set; }
+    public bool? SynthesizeTtmlLyrics { get; set; }
+    public bool? LyricsFallbackEnabled { get; set; }
+    public string? LyricsFallbackOrder { get; set; }
 
     public bool HasValues =>
         !string.IsNullOrWhiteSpace(Service)
@@ -33,7 +40,14 @@ public sealed class QueueSourceSettingsSnapshot
         || !string.IsNullOrWhiteSpace(DeezerCountry)
         || !string.IsNullOrWhiteSpace(DeezerLanguage)
         || MultiQuality != null
-        || DownloadEngineOrder != null;
+        || DownloadEngineOrder != null
+        || SyncedLyrics.HasValue
+        || SaveLyrics.HasValue
+        || !string.IsNullOrWhiteSpace(LrcType)
+        || !string.IsNullOrWhiteSpace(LrcFormat)
+        || SynthesizeTtmlLyrics.HasValue
+        || LyricsFallbackEnabled.HasValue
+        || !string.IsNullOrWhiteSpace(LyricsFallbackOrder);
 
     public static QueueSourceSettingsSnapshot Capture(DeezSpoTagSettings? settings)
     {
@@ -50,7 +64,14 @@ public sealed class QueueSourceSettingsSnapshot
             DeezerCountry = NormalizeString(settings.DeezerCountry),
             DeezerLanguage = NormalizeString(settings.DeezerLanguage),
             MultiQuality = CloneMultiQuality(settings.MultiQuality),
-            DownloadEngineOrder = CloneDownloadEngineOrder(settings.DownloadEngineOrder)
+            DownloadEngineOrder = CloneDownloadEngineOrder(settings.DownloadEngineOrder),
+            SyncedLyrics = settings.SyncedLyrics,
+            SaveLyrics = settings.SaveLyrics,
+            LrcType = NormalizeString(settings.LrcType),
+            LrcFormat = NormalizeString(settings.LrcFormat),
+            SynthesizeTtmlLyrics = settings.SynthesizeTtmlLyrics,
+            LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
+            LyricsFallbackOrder = NormalizeString(settings.LyricsFallbackOrder)
         };
     }
 
@@ -78,6 +99,13 @@ public sealed class QueueSourceSettingsSnapshot
         {
             effective.DownloadEngineOrder = CloneDownloadEngineOrder(DownloadEngineOrder);
         }
+        effective.SyncedLyrics = SyncedLyrics ?? effective.SyncedLyrics;
+        effective.SaveLyrics = SaveLyrics ?? effective.SaveLyrics;
+        effective.LrcType = LrcType ?? effective.LrcType;
+        effective.LrcFormat = LrcFormat ?? effective.LrcFormat;
+        effective.SynthesizeTtmlLyrics = SynthesizeTtmlLyrics ?? effective.SynthesizeTtmlLyrics;
+        effective.LyricsFallbackEnabled = LyricsFallbackEnabled ?? effective.LyricsFallbackEnabled;
+        effective.LyricsFallbackOrder = LyricsFallbackOrder ?? effective.LyricsFallbackOrder;
 
         return effective;
     }
@@ -107,7 +135,14 @@ public sealed class QueueSourceSettingsSnapshot
             DeezerCountry = ReadString(snapshotObj, "DeezerCountry", "deezerCountry"),
             DeezerLanguage = ReadString(snapshotObj, "DeezerLanguage", "deezerLanguage"),
             MultiQuality = ReadMultiQuality(snapshotObj),
-            DownloadEngineOrder = ReadDownloadEngineOrder(snapshotObj)
+            DownloadEngineOrder = ReadDownloadEngineOrder(snapshotObj),
+            SyncedLyrics = ReadBool(snapshotObj, "SyncedLyrics", "syncedLyrics"),
+            SaveLyrics = ReadBool(snapshotObj, "SaveLyrics", "saveLyrics"),
+            LrcType = ReadString(snapshotObj, "LrcType", "lrcType"),
+            LrcFormat = ReadString(snapshotObj, "LrcFormat", "lrcFormat"),
+            SynthesizeTtmlLyrics = ReadBool(snapshotObj, "SynthesizeTtmlLyrics", "synthesizeTtmlLyrics"),
+            LyricsFallbackEnabled = ReadBool(snapshotObj, "LyricsFallbackEnabled", "lyricsFallbackEnabled"),
+            LyricsFallbackOrder = ReadString(snapshotObj, "LyricsFallbackOrder", "lyricsFallbackOrder")
         };
 
         return snapshot.HasValues ? snapshot : null;

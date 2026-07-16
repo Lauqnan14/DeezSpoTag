@@ -26,7 +26,6 @@ internal static class QueuePayloadBuilder
         public required string Engine { get; init; }
         public required string ContentType { get; init; }
         public required List<Dictionary<string, object>> Files { get; init; }
-        public required string LyricsStatus { get; init; }
         public required string Profile { get; init; }
         public required Dictionary<string, string> FinalDestinations { get; init; }
         public required long? DestinationFolderId { get; init; }
@@ -52,7 +51,6 @@ internal static class QueuePayloadBuilder
             ["engine"] = input.Engine,
             ["contentType"] = input.ContentType,
             ["files"] = input.Files,
-            ["lyrics_status"] = input.LyricsStatus,
             ["profile"] = input.Profile,
             ["finalDestinations"] = input.FinalDestinations,
             ["destinationFolderId"] = input.DestinationFolderId!

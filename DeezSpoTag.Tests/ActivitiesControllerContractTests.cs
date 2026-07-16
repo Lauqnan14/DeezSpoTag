@@ -60,8 +60,11 @@ public sealed class ActivitiesControllerContractTests
             PayloadJson: """
                 {
                   "PrefetchArtworkStatus": "fetching",
-                  "PrefetchLyricsStatus": "fetching",
-                  "PrefetchLyricsType": "time-synced"
+                  "lyricsArtifacts": {
+                    "revision": 12,
+                    "status": "resolved",
+                    "resolvedFormats": ["ttml"]
+                  }
                 }
                 """,
             Progress: null,
@@ -78,8 +81,8 @@ public sealed class ActivitiesControllerContractTests
         Assert.True(payload.TryGetValue("error", out var error));
         Assert.Equal("Network timeout", error);
         Assert.Equal("fetching", payload["prefetchArtworkStatus"]);
-        Assert.Equal("fetching", payload["prefetchLyricsStatus"]);
-        Assert.Equal("time-synced", payload["prefetchLyricsType"]);
+        Assert.True(payload.ContainsKey("lyricsArtifacts"));
+        Assert.False(payload.ContainsKey("prefetchLyricsStatus"));
     }
 
     [Fact]
@@ -176,21 +179,20 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
-    public void ActivitiesDownloadsTab_LyricsBadgesUseSidecarOrCompletedPrefetchEvidenceOnly()
+    public void ActivitiesDownloadsTab_LyricsBadgesUseOnlyVersionedArtifactState()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
 
-        Assert.Contains("const lyricsBadges = resolveLyricsBadgesForQueueItem(item, taskId, mappedStatus);", source, StringComparison.Ordinal);
-        Assert.Contains("function getLyricsBadgesFromPrefetchPayload(item, taskId)", source, StringComparison.Ordinal);
-        Assert.Contains("status === 'completed' && type", source, StringComparison.Ordinal);
-        Assert.Contains("lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : []", source, StringComparison.Ordinal);
-        Assert.Contains("name.endsWith('.ttml')", source, StringComparison.Ordinal);
-        Assert.Contains("name.endsWith('.lrc')", source, StringComparison.Ordinal);
-        Assert.Contains("name.endsWith('.txt')", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("function getLyricsBadgesFromStatus", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("existing.lyricsBadges", source, StringComparison.Ordinal);
+        Assert.Contains("const lyricsBadges = resolveLyricsBadgesForQueueItem(item);", source, StringComparison.Ordinal);
+        Assert.Contains("function getLyricsBadgesFromArtifacts(artifacts)", source, StringComparison.Ordinal);
+        Assert.Contains("resolved.concat(downloaded)", source, StringComparison.Ordinal);
+        Assert.Contains("incomingLyricsRevision >= (task.lyricsRevision || 0)", source, StringComparison.Ordinal);
+        Assert.Contains("? incoming.lyricsBadges", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("getLyricsBadgesFromFiles", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("getLyricsBadgesFromPrefetch", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("prefetchLyricsType", source, StringComparison.Ordinal);
     }
 
     [Fact]

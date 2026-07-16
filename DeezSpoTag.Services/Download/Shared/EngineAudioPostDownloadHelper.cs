@@ -41,7 +41,6 @@ public static partial class EngineAudioPostDownloadHelper
     private const string FailedStatus = "failed";
     private const string FetchingStatus = "fetching";
     private const string SkippedStatus = "skipped";
-    private const string NoLyricsStatus = "no-lyrics";
     private const string CompletedStatusName = "completed";
     private const string CancelledStatus = "cancelled";
     private const string PausedStatus = "paused";
@@ -179,18 +178,16 @@ public static partial class EngineAudioPostDownloadHelper
 
     private sealed class PrefetchRunState
     {
-        public PrefetchRunState(PrefetchRequirements requirements)
+        public PrefetchRunState(PrefetchRequirements requirements, LyricsArtifactState lyricsArtifacts)
         {
             ArtworkStatus = requirements.ShouldFetchArtwork ? FetchingStatus : SkippedStatus;
-            LyricsStatus = requirements.ShouldFetchLyrics ? FetchingStatus : SkippedStatus;
             ArtworkResult = new PrefetchArtworkResult(!requirements.ShouldFetchArtwork);
+            LyricsArtifacts = lyricsArtifacts;
         }
 
         public string ArtworkStatus { get; set; }
 
-        public string LyricsStatus { get; set; }
-
-        public string LyricsType { get; set; } = string.Empty;
+        public LyricsArtifactState LyricsArtifacts { get; }
 
         public PrefetchArtworkResult ArtworkResult { get; set; }
     }
@@ -207,7 +204,8 @@ public static partial class EngineAudioPostDownloadHelper
         PrefetchRequest Request,
         PrefetchPathContext Paths,
         PrefetchRequirements Requirements,
-        PrefetchGateState GateState);
+        PrefetchGateState GateState,
+        LyricsArtifactState LyricsArtifacts);
 
     private sealed record PrefetchRuntimeServices(
         ImageDownloader ImageDownloader,
@@ -1756,6 +1754,9 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         var prefetchPaths = BuildPrefetchPathContext(request.QueueUuid, request.Context, request.ExpectedOutputPath);
+        var previousLyricsArtifacts = requirements.ShouldFetchLyrics
+            ? await request.QueueRepository.GetLyricsArtifactsAsync(prefetchPaths.QueueUuid, cancellationToken)
+            : null;
         if (PrefetchGates.ContainsKey(prefetchPaths.QueueUuid))
         {
             return;
@@ -1769,15 +1770,25 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         var initialArtworkStatus = requirements.ShouldFetchArtwork ? FetchingStatus : SkippedStatus;
-        var initialLyricsStatus = requirements.ShouldFetchLyrics ? FetchingStatus : SkippedStatus;
+        var lyricsArtifacts = LyricsArtifactState.Fetching(
+            LyricsService.DescribeResolutionPlan(request.Settings),
+            previousLyricsArtifacts);
         try
         {
-            await request.QueueRepository.UpdatePrefetchProgressAsync(
+            await request.QueueRepository.UpdateArtworkPrefetchProgressAsync(
                 prefetchPaths.QueueUuid,
                 initialArtworkStatus,
-                initialLyricsStatus,
-                string.Empty,
                 cancellationToken);
+            if (requirements.ShouldFetchLyrics)
+            {
+                await request.QueueRepository.UpdateLyricsArtifactsAsync(prefetchPaths.QueueUuid, lyricsArtifacts, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            PrefetchGates.TryRemove(prefetchPaths.QueueUuid, out _);
+            gateState.Cancellation.Dispose();
+            throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1787,13 +1798,16 @@ public static partial class EngineAudioPostDownloadHelper
                 request.Engine,
                 prefetchPaths.QueueUuid);
         }
-        QueuePrefetchStatusHelper.Send(
+        ArtworkPrefetchStatusHelper.Send(
             request.Listener,
             prefetchPaths.QueueUuid,
-            initialArtworkStatus,
-            initialLyricsStatus);
+            initialArtworkStatus);
+        if (requirements.ShouldFetchLyrics)
+        {
+            QueueLyricsArtifactHelper.Send(request.Listener, prefetchPaths.QueueUuid, lyricsArtifacts);
+        }
 
-        var execution = new PrefetchExecutionContext(request, prefetchPaths, requirements, gateState);
+        var execution = new PrefetchExecutionContext(request, prefetchPaths, requirements, gateState, lyricsArtifacts);
         try
         {
             await request.TaskScheduler.EnqueueAsync(
@@ -1815,11 +1829,9 @@ public static partial class EngineAudioPostDownloadHelper
                 prefetchPaths.QueueUuid);
             try
             {
-                await request.QueueRepository.UpdatePrefetchProgressAsync(
+                await request.QueueRepository.UpdateArtworkPrefetchProgressAsync(
                     prefetchPaths.QueueUuid,
                     requirements.ShouldFetchArtwork ? FailedStatus : SkippedStatus,
-                    requirements.ShouldFetchLyrics ? FailedStatus : SkippedStatus,
-                    string.Empty,
                     CancellationToken.None);
             }
             catch (Exception persistEx) when (persistEx is not OperationCanceledException)
@@ -1830,11 +1842,21 @@ public static partial class EngineAudioPostDownloadHelper
                     request.Engine,
                     prefetchPaths.QueueUuid);
             }
-            QueuePrefetchStatusHelper.Send(
+            ArtworkPrefetchStatusHelper.Send(
                 request.Listener,
                 prefetchPaths.QueueUuid,
-                requirements.ShouldFetchArtwork ? FailedStatus : SkippedStatus,
-                requirements.ShouldFetchLyrics ? FailedStatus : SkippedStatus);
+                requirements.ShouldFetchArtwork ? FailedStatus : SkippedStatus);
+            if (requirements.ShouldFetchLyrics)
+            {
+                lyricsArtifacts.Revision++;
+                lyricsArtifacts.Status = FailedStatus;
+                lyricsArtifacts.Error = "Lyrics work could not be scheduled.";
+                await request.QueueRepository.UpdateLyricsArtifactsAsync(
+                    prefetchPaths.QueueUuid,
+                    lyricsArtifacts,
+                    CancellationToken.None);
+                QueueLyricsArtifactHelper.Send(request.Listener, prefetchPaths.QueueUuid, lyricsArtifacts);
+            }
             gateState.Completion.TrySetResult(new PrefetchCompletionResult(
                 requirements.ShouldFetchArtwork,
                 false,
@@ -1849,7 +1871,7 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken token)
     {
         var completionResult = BuildDefaultPrefetchCompletionResult(execution.Requirements);
-        var runState = new PrefetchRunState(execution.Requirements);
+        var runState = new PrefetchRunState(execution.Requirements, execution.LyricsArtifacts);
 
         try
         {
@@ -1912,6 +1934,21 @@ public static partial class EngineAudioPostDownloadHelper
                 "{Engine} prefetch worker failed for {QueueUuid}",
                 execution.Request.Engine,
                 execution.Paths.QueueUuid);
+            if (execution.Requirements.ShouldFetchLyrics
+                && string.Equals(runState.LyricsArtifacts.Status, FetchingStatus, StringComparison.OrdinalIgnoreCase))
+            {
+                runState.LyricsArtifacts.Revision++;
+                runState.LyricsArtifacts.Status = FailedStatus;
+                runState.LyricsArtifacts.Error = ex.Message;
+                await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
+                    execution.Paths.QueueUuid,
+                    runState.LyricsArtifacts,
+                    CancellationToken.None);
+                QueueLyricsArtifactHelper.Send(
+                    execution.Request.Listener,
+                    execution.Paths.QueueUuid,
+                    runState.LyricsArtifacts);
+            }
         }
         finally
         {
@@ -1972,6 +2009,10 @@ public static partial class EngineAudioPostDownloadHelper
         {
             return Task.CompletedTask;
         }
+        if (string.Equals(runState.LyricsArtifacts.Status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.CompletedTask;
+        }
 
         return RunLyricsPrefetchTaskAsync(execution, runState, token);
     }
@@ -2019,11 +2060,10 @@ public static partial class EngineAudioPostDownloadHelper
         finally
         {
             await PersistPrefetchProgressAsync(execution, runState, CancellationToken.None);
-            QueuePrefetchStatusHelper.Send(
+            ArtworkPrefetchStatusHelper.Send(
                 execution.Request.Listener,
                 execution.Paths.QueueUuid,
-                runState.ArtworkStatus,
-                runState.LyricsStatus);
+                runState.ArtworkStatus);
         }
     }
 
@@ -2034,11 +2074,9 @@ public static partial class EngineAudioPostDownloadHelper
     {
         try
         {
-            await execution.Request.QueueRepository.UpdatePrefetchProgressAsync(
+            await execution.Request.QueueRepository.UpdateArtworkPrefetchProgressAsync(
                 execution.Paths.QueueUuid,
                 runState.ArtworkStatus,
-                runState.LyricsStatus,
-                runState.LyricsType,
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2061,12 +2099,13 @@ public static partial class EngineAudioPostDownloadHelper
     {
         try
         {
-            runState.LyricsType = await RunLyricsPrefetchAsync(execution, runState, token);
-            runState.LyricsStatus = string.IsNullOrWhiteSpace(runState.LyricsType) ? NoLyricsStatus : CompletedStatus;
+            await RunLyricsPrefetchAsync(execution, runState, token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            runState.LyricsStatus = FailedStatus;
+            runState.LyricsArtifacts.Revision++;
+            runState.LyricsArtifacts.Status = FailedStatus;
+            runState.LyricsArtifacts.Error = ex.Message;
             execution.Request.Logger.LogWarning(
                 ex,
                 "{Engine} lyrics download failed for {Path}",
@@ -2075,12 +2114,14 @@ public static partial class EngineAudioPostDownloadHelper
         }
         finally
         {
-            QueuePrefetchStatusHelper.Send(
+            await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
+                execution.Paths.QueueUuid,
+                runState.LyricsArtifacts,
+                CancellationToken.None);
+            QueueLyricsArtifactHelper.Send(
                 execution.Request.Listener,
                 execution.Paths.QueueUuid,
-                runState.ArtworkStatus,
-                runState.LyricsStatus,
-                runState.LyricsType);
+                runState.LyricsArtifacts);
         }
     }
 
@@ -2104,18 +2145,16 @@ public static partial class EngineAudioPostDownloadHelper
                 return;
             }
 
-            var result = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
+            var files = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
             AddGeneratedSidecars(
-                result.Files,
+                files,
                 runState.ArtworkResult.GeneratedSidecarPaths,
                 execution.Request.Context.PathResult);
-            execution.Request.Payload.Files = result.Files;
-            execution.Request.Payload.LyricsStatus = result.LyricsStatus;
-            var filesJson = System.Text.Json.JsonSerializer.Serialize(result.Files);
-            await queueRepository.UpdatePrefetchStateAsync(
+            execution.Request.Payload.Files = files;
+            var filesJson = System.Text.Json.JsonSerializer.Serialize(files);
+            await queueRepository.UpdatePrefetchFilesAndArtworkAsync(
                 execution.Paths.QueueUuid,
                 filesJson,
-                result.LyricsStatus,
                 runState.ArtworkStatus,
                 runState.ArtworkResult.FailureReason,
                 token);
@@ -2123,9 +2162,7 @@ public static partial class EngineAudioPostDownloadHelper
             execution.Request.Listener.Send(UpdateQueueEvent, new
             {
                 uuid = execution.Paths.QueueUuid,
-                files = result.Files,
-                lyricsStatus = result.LyricsStatus,
-                lyrics_status = result.LyricsStatus
+                files
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2612,7 +2649,7 @@ public static partial class EngineAudioPostDownloadHelper
             token);
     }
 
-    private static async Task<string> RunLyricsPrefetchAsync(
+    private static async Task RunLyricsPrefetchAsync(
         PrefetchExecutionContext execution,
         PrefetchRunState runState,
         CancellationToken token)
@@ -2625,30 +2662,36 @@ public static partial class EngineAudioPostDownloadHelper
             CoverPath: execution.Paths.CoverPath,
             ArtistPath: execution.Paths.ArtistPath
         );
-        var lyrics = await execution.Request.LyricsService.ResolveLyricsAsync(execution.Request.Context.Track, execution.Request.Settings, token);
-        var lyricsType = LyricsPrefetchTypeHelper.ResolveFromLyrics(lyrics);
-        if (!string.IsNullOrWhiteSpace(lyricsType))
-        {
-            runState.LyricsType = lyricsType;
-            await PersistPrefetchProgressAsync(execution, runState, token);
-            QueuePrefetchStatusHelper.Send(
-                execution.Request.Listener,
-                execution.Paths.QueueUuid,
-                runState.ArtworkStatus,
-                FetchingStatus,
-                lyricsType);
-        }
+        var resolution = await execution.Request.LyricsService.ResolveLyricsWithDetailsAsync(
+            execution.Request.Context.Track,
+            execution.Request.Settings,
+            token);
+        runState.LyricsArtifacts.ApplyResolution(resolution);
+        await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
+            execution.Paths.QueueUuid,
+            runState.LyricsArtifacts,
+            token);
+        QueueLyricsArtifactHelper.Send(
+            execution.Request.Listener,
+            execution.Paths.QueueUuid,
+            runState.LyricsArtifacts);
+        var lyrics = resolution.Lyrics;
         if (lyrics != null && lyrics.IsLoaded())
         {
             await execution.Request.LyricsService.SaveLyricsAsync(lyrics, execution.Request.Context.Track, paths, execution.Request.Settings, token);
-            var savedLyricsType = LyricsPrefetchTypeHelper.ResolveSavedLyricsType(execution.Paths.FileDir, execution.Paths.ExpectedBaseName);
-            if (!string.IsNullOrWhiteSpace(savedLyricsType))
-            {
-                lyricsType = savedLyricsType;
-            }
+            runState.LyricsArtifacts.ApplyDownloadedFiles(
+                execution.Paths.FileDir,
+                execution.Paths.ExpectedBaseName,
+                lyrics.TtmlLyricsSourceFormat == LyricsSourceFormat.SynthesizedTtml);
+            await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
+                execution.Paths.QueueUuid,
+                runState.LyricsArtifacts,
+                token);
+            QueueLyricsArtifactHelper.Send(
+                execution.Request.Listener,
+                execution.Paths.QueueUuid,
+                runState.LyricsArtifacts);
         }
-
-        return lyricsType;
     }
 
     public static PrefetchPathContext BuildPrefetchPathContext(
@@ -2683,10 +2726,9 @@ public static partial class EngineAudioPostDownloadHelper
             .Where(IsGeneratedArtworkFile)
             .Select(file => new Dictionary<string, object>(file, StringComparer.OrdinalIgnoreCase))
             .ToList();
-        var result = QueuePayloadFileHelper.BuildAudioFiles(pathResult, outputPath);
-        AddGeneratedArtworkFiles(result.Files, generatedArtworkFiles);
-        payload.Files = result.Files;
-        payload.LyricsStatus = result.LyricsStatus;
+        var files = QueuePayloadFileHelper.BuildAudioFiles(pathResult, outputPath);
+        AddGeneratedArtworkFiles(files, generatedArtworkFiles);
+        payload.Files = files;
     }
 
     private static bool IsGeneratedArtworkFile(IReadOnlyDictionary<string, object> file)
@@ -3160,10 +3202,9 @@ public static partial class EngineAudioPostDownloadHelper
             : FailedStatus;
         if (!IsFinalDestinationDedupeBlock(failureMessage))
         {
-            await context.QueueRepository.UpdatePrefetchStateAsync(
+            await context.QueueRepository.UpdatePrefetchFilesAndArtworkAsync(
                 queueUuid,
                 "[]",
-                string.Empty,
                 terminalStatus,
                 "Audio download failed before prefetched assets could be finalized.",
                 CancellationToken.None);

@@ -29,6 +29,19 @@ public sealed class LrclibLyricsProviderOptions
     public bool? PreferSynced { get; init; }
 }
 
+public sealed record LyricsResolutionPlan(
+    IReadOnlyList<string> RequestedFormats,
+    IReadOnlyList<string> Providers,
+    bool PlainFallbackAllowed);
+
+public sealed record LyricsResolutionResult(
+    LyricsBase? Lyrics,
+    LyricsResolutionPlan Plan,
+    IReadOnlyList<string> ProvidersAttempted,
+    IReadOnlyList<string> ResolvedFormats,
+    IReadOnlyDictionary<string, string> SourcesByFormat,
+    string? Error);
+
 /// <summary>
 /// Enhanced lyrics service implementing refreezer's dual API approach
 /// Provides robust lyrics fetching with Pipe API primary and GW API fallback
@@ -101,6 +114,8 @@ public class LyricsService
         public LyricsBase? ResolvedLyrics { get; set; }
         public bool DeezerAttempted { get; set; }
         public bool DeezerMissingAuth { get; set; }
+        public List<string> ProvidersAttempted { get; } = new();
+        public Dictionary<string, string> SourcesByFormat { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 
     public LyricsService(
@@ -135,36 +150,51 @@ public class LyricsService
         DeezSpoTagSettings settings,
         LyricsProviderOptions? providerOptions,
         CancellationToken cancellationToken = default)
+        => (await ResolveLyricsWithDetailsAsync(track, settings, providerOptions, cancellationToken)).Lyrics;
+
+    public Task<LyricsResolutionResult> ResolveLyricsWithDetailsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken = default)
+        => ResolveLyricsWithDetailsAsync(track, settings, providerOptions: null, cancellationToken);
+
+    public async Task<LyricsResolutionResult> ResolveLyricsWithDetailsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        LyricsProviderOptions? providerOptions,
+        CancellationToken cancellationToken = default)
     {
+        var plan = DescribeResolutionPlan(settings);
         if (track == null)
         {
             _logger.LogWarning("ResolveLyricsAsync called with null track");
-            return null;
+            return EmptyResolution(plan, "Track is required");
         }
 
         var shouldFetch = ShouldHandleLyricsBySettings(settings);
         if (!shouldFetch)
         {
-            return null;
+            return EmptyResolution(plan, null);
         }
 
         var outputRequirements = ResolveOutputRequirements(settings);
-        var providers = ResolveLyricsProviders(settings);
+        var providers = plan.Providers;
 
         var state = new LyricsResolutionState();
 
         foreach (var provider in providers)
         {
+            state.ProvidersAttempted.Add(provider);
             var providerLyrics = await TryResolveProviderSafelyAsync(provider, track, settings, providerOptions, state, cancellationToken);
             if (providerLyrics == null || !providerLyrics.IsLoaded())
             {
                 continue;
             }
 
-            MergeProviderLyrics(state, providerLyrics);
+            MergeProviderLyrics(state, providerLyrics, provider);
             if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: true))
             {
-                return state.ResolvedLyrics;
+                return BuildResolutionResult(state, plan, outputRequirements, null);
             }
         }
 
@@ -178,25 +208,92 @@ public class LyricsService
 
             if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: false))
             {
-                return state.ResolvedLyrics;
+                return BuildResolutionResult(state, plan, outputRequirements, null);
             }
         }
 
         if (!string.IsNullOrWhiteSpace(state.TtmlFallback) && outputRequirements.WantsTtmlLyrics)
         {
-            return new LyricsSource
+            var lyrics = new LyricsSource
             {
                 TtmlLyrics = state.TtmlFallback,
                 TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
             };
+            state.ResolvedLyrics = lyrics;
+            return BuildResolutionResult(state, plan, outputRequirements, null);
         }
 
+        string error;
         if (state.DeezerAttempted && state.DeezerMissingAuth && string.IsNullOrEmpty(state.Arl))
         {
-            return LyricsNew.CreateError("No ARL available for lyrics fetching");
+            error = "No ARL available for lyrics fetching";
+        }
+        else
+        {
+            error = "No lyrics available from configured providers";
         }
 
-        return LyricsNew.CreateError("No lyrics available from configured providers");
+        state.ResolvedLyrics = LyricsNew.CreateError(error);
+        return BuildResolutionResult(state, plan, outputRequirements, error);
+    }
+
+    public static LyricsResolutionPlan DescribeResolutionPlan(DeezSpoTagSettings settings)
+    {
+        var requirements = ResolveOutputRequirements(settings);
+        var requested = new List<string>(3);
+        if (requirements.WantsTtmlLyrics)
+        {
+            requested.Add("ttml");
+        }
+        if (requirements.WantsLrcLyrics)
+        {
+            requested.Add("lrc");
+        }
+        if (!requirements.WantsRichLyrics && requirements.WantsPlainLyrics)
+        {
+            requested.Add("txt");
+        }
+
+        return new LyricsResolutionPlan(requested, ResolveLyricsProviders(settings), requirements.WantsPlainLyrics);
+    }
+
+    private static LyricsResolutionResult EmptyResolution(LyricsResolutionPlan plan, string? error)
+        => new(null, plan, Array.Empty<string>(), Array.Empty<string>(),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase), error);
+
+    private static LyricsResolutionResult BuildResolutionResult(
+        LyricsResolutionState state,
+        LyricsResolutionPlan plan,
+        LyricsOutputRequirements requirements,
+        string? error)
+    {
+        var resolved = new List<string>(3);
+        var lyrics = state.ResolvedLyrics;
+        var hasTtml = lyrics != null && AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics);
+        var hasLrc = lyrics?.CanSaveLrcSidecar() == true;
+        if (requirements.WantsTtmlLyrics && hasTtml)
+        {
+            resolved.Add("ttml");
+        }
+        if (requirements.WantsLrcLyrics && hasLrc)
+        {
+            resolved.Add("lrc");
+        }
+        if (resolved.Count == 0 && requirements.WantsPlainLyrics && !string.IsNullOrWhiteSpace(lyrics?.UnsyncedLyrics))
+        {
+            resolved.Add("txt");
+        }
+
+        var sources = state.SourcesByFormat
+            .Where(pair => resolved.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        return new LyricsResolutionResult(
+            lyrics,
+            plan,
+            state.ProvidersAttempted.ToArray(),
+            resolved,
+            sources,
+            error);
     }
 
     private async Task<LyricsBase?> TryResolveProviderSafelyAsync(
@@ -357,8 +454,21 @@ public class LyricsService
         return deezerLyrics.IsLoaded() ? deezerLyrics : null;
     }
 
-    private static void MergeProviderLyrics(LyricsResolutionState state, LyricsBase providerLyrics)
+    private static void MergeProviderLyrics(LyricsResolutionState state, LyricsBase providerLyrics, string provider)
     {
+        if (AppleLyricsService.IsTimedTtml(providerLyrics.TtmlLyrics))
+        {
+            state.SourcesByFormat.TryAdd("ttml", provider);
+        }
+        if (providerLyrics.CanSaveLrcSidecar())
+        {
+            state.SourcesByFormat.TryAdd("lrc", provider);
+        }
+        if (!string.IsNullOrWhiteSpace(providerLyrics.UnsyncedLyrics))
+        {
+            state.SourcesByFormat.TryAdd("txt", provider);
+        }
+
         if (DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(providerLyrics.TtmlLyrics))
         {
             state.TtmlFallback = providerLyrics.TtmlLyrics;

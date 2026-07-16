@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,191 +13,100 @@ using Xunit;
 
 namespace DeezSpoTag.Tests;
 
-public sealed class DownloadQueueLyricsStatusPersistenceTests
+public sealed class DownloadQueueLyricsArtifactPersistenceTests
 {
     [Fact]
-    public async Task UpdateFinalDestinationsAsync_PersistsLyricsStatus_FromExistingSidecars()
-    {
-        await using var context = await CreateContextAsync();
-        var queueUuid = "lyrics-sidecars-1";
-        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
-        var ttmlPath = Path.ChangeExtension(outputPath, ".ttml");
-        var lrcPath = Path.ChangeExtension(outputPath, ".lrc");
-
-        CreateFile(outputPath, "audio");
-        CreateFile(ttmlPath, "<tt></tt>");
-        CreateFile(lrcPath, "[00:00.00]line");
-
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-
-        var finalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [outputPath] = outputPath,
-            [ttmlPath] = ttmlPath,
-            [lrcPath] = lrcPath
-        });
-
-        await context.QueueRepository.UpdateFinalDestinationsAsync(queueUuid, finalDestinationsJson, cancellationToken: CancellationToken.None);
-
-        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
-        Assert.Equal("time-synced,synced", lyricsStatus);
-    }
-
-    [Fact]
-    public async Task UpdateFinalDestinationsAsync_DoesNotPersistLyricsStatus_WhenAudioOutputExistsWithoutSidecars()
-    {
-        await using var context = await CreateContextAsync();
-        var queueUuid = "lyrics-none-1";
-        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
-
-        CreateFile(outputPath, "audio");
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-
-        var finalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [outputPath] = outputPath
-        });
-
-        await context.QueueRepository.UpdateFinalDestinationsAsync(queueUuid, finalDestinationsJson, cancellationToken: CancellationToken.None);
-
-        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
-        Assert.Null(lyricsStatus);
-    }
-
-    [Fact]
-    public async Task UpdateFinalDestinationsAsync_PersistsLyricsStatus_FromDeclaredSidecarsEvenWhenFilesMoved()
-    {
-        await using var context = await CreateContextAsync();
-        var queueUuid = "lyrics-sidecars-declared-1";
-        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
-        var ttmlPath = Path.ChangeExtension(outputPath, ".ttml");
-        var lrcPath = Path.ChangeExtension(outputPath, ".lrc");
-
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-
-        var finalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [outputPath] = outputPath,
-            [ttmlPath] = ttmlPath,
-            [lrcPath] = lrcPath
-        });
-
-        await context.QueueRepository.UpdateFinalDestinationsAsync(queueUuid, finalDestinationsJson, cancellationToken: CancellationToken.None);
-
-        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
-        Assert.Equal("time-synced,synced", lyricsStatus);
-    }
-
-    [Fact]
-    public async Task UpdatePayloadAsync_PersistsLyricsStatus_FromPayloadFilesWhenSidecarExists()
-    {
-        await using var context = await CreateContextAsync();
-        var queueUuid = "lyrics-payload-1";
-        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
-        var lrcPath = Path.ChangeExtension(outputPath, ".lrc");
-
-        CreateFile(outputPath, "audio");
-        CreateFile(lrcPath, "[00:00.00]line");
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-
-        var payloadJson = JsonSerializer.Serialize(new
-        {
-            FilePath = outputPath,
-            Files = new[]
-            {
-                new Dictionary<string, object>
-                {
-                    ["path"] = outputPath
-                },
-                new Dictionary<string, object>
-                {
-                    ["path"] = lrcPath
-                }
-            }
-        });
-
-        await context.QueueRepository.UpdatePayloadAsync(queueUuid, payloadJson, CancellationToken.None);
-
-        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
-        Assert.Equal("synced", lyricsStatus);
-    }
-
-    [Fact]
-    public async Task UpdatePayloadAsync_PersistsLyricsStatus_FromPayloadStatusTokenWithoutFiles()
-    {
-        await using var context = await CreateContextAsync();
-        var queueUuid = "lyrics-payload-status-1";
-        var outputPath = Path.Join(context.TempRoot, "Artist", "Album", "01 - Track.m4a");
-
-        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-
-        var payloadJson = JsonSerializer.Serialize(new
-        {
-            FilePath = outputPath,
-            LyricsStatus = "time-synced,synced"
-        });
-
-        await context.QueueRepository.UpdatePayloadAsync(queueUuid, payloadJson, CancellationToken.None);
-
-        var lyricsStatus = await context.GetLyricsStatusAsync(queueUuid);
-        Assert.Equal("time-synced,synced", lyricsStatus);
-    }
-
-    [Fact]
-    public async Task UpdatePrefetchProgressAsync_PersistsActiveLyricsStateWithoutFinalizingLyricsStatus()
+    public async Task UpdateLyricsArtifactsAsync_PersistsResolvedAndDownloadedState()
     {
         await using var context = await CreateContextAsync();
         var queueUuid = "lyrics-prefetch-active-1";
         await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
 
-        await context.QueueRepository.UpdatePrefetchProgressAsync(
-            queueUuid,
-            "fetching",
-            "fetching",
-            "time-synced",
-            CancellationToken.None);
+        var state = new LyricsArtifactState
+        {
+            Revision = 10,
+            Status = "completed",
+            RequestedFormats = ["ttml", "lrc"],
+            ResolvedFormats = ["ttml", "lrc"],
+            DownloadedFormats = ["lrc"],
+            FilesByFormat = new Dictionary<string, string> { ["lrc"] = "/music/track.lrc" }
+        };
+        await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, state, CancellationToken.None);
 
         var payload = await context.GetPayloadAsync(queueUuid);
         using var document = JsonDocument.Parse(payload!);
-        Assert.Equal("fetching", document.RootElement.GetProperty("PrefetchArtworkStatus").GetString());
-        Assert.Equal("fetching", document.RootElement.GetProperty("PrefetchLyricsStatus").GetString());
-        Assert.Equal("time-synced", document.RootElement.GetProperty("PrefetchLyricsType").GetString());
-        Assert.Null(await context.GetLyricsStatusAsync(queueUuid));
+        var artifacts = document.RootElement.GetProperty("lyricsArtifacts");
+        Assert.Equal(10, artifacts.GetProperty("revision").GetInt64());
+        Assert.Equal("completed", artifacts.GetProperty("status").GetString());
+        Assert.Equal(["ttml", "lrc"], artifacts.GetProperty("resolvedFormats").EnumerateArray().Select(value => value.GetString()));
     }
 
     [Fact]
-    public async Task UpdatePayloadAsync_PreservesPrefetchStateUnlessRetryExplicitlyClearsIt()
+    public async Task PayloadAndEngineUpdates_PreserveNewestLyricsArtifactRevision()
     {
         await using var context = await CreateContextAsync();
         var queueUuid = "lyrics-prefetch-retry-1";
         await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-        await context.QueueRepository.UpdatePrefetchProgressAsync(
-            queueUuid,
-            "completed",
-            "completed",
-            "synced",
-            CancellationToken.None);
-
-        await context.QueueRepository.UpdatePayloadAsync(queueUuid, """{"Title":"Track"}""", CancellationToken.None);
-        using (var preserved = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!))
+        var state = new LyricsArtifactState
         {
-            Assert.Equal("completed", preserved.RootElement.GetProperty("PrefetchLyricsStatus").GetString());
-            Assert.Equal("synced", preserved.RootElement.GetProperty("PrefetchLyricsType").GetString());
-        }
+            Revision = 20,
+            Status = "resolved",
+            ResolvedFormats = ["lrc"]
+        };
+        await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, state, CancellationToken.None);
+        var staleAccepted = await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, new LyricsArtifactState
+        {
+            Revision = 10,
+            Status = "unavailable"
+        }, CancellationToken.None);
+        Assert.False(staleAccepted);
 
         await context.QueueRepository.UpdatePayloadAsync(
             queueUuid,
-            """
-            {
-              "PrefetchArtworkStatus": "",
-              "PrefetchLyricsStatus": "",
-              "PrefetchLyricsType": ""
-            }
-            """,
+            """{"Title":"Track","lyricsArtifacts":{"revision":1,"status":"fetching"}}""",
             CancellationToken.None);
-        using var cleared = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
-        Assert.Equal(string.Empty, cleared.RootElement.GetProperty("PrefetchLyricsStatus").GetString());
-        Assert.Equal(string.Empty, cleared.RootElement.GetProperty("PrefetchLyricsType").GetString());
+        using (var preserved = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!))
+        {
+            Assert.Equal(20, preserved.RootElement.GetProperty("lyricsArtifacts").GetProperty("revision").GetInt64());
+            Assert.Equal("resolved", preserved.RootElement.GetProperty("lyricsArtifacts").GetProperty("status").GetString());
+        }
+
+        await context.QueueRepository.UpdatePayloadAndEngineAsync(
+            queueUuid,
+            "qobuz",
+            """{"Title":"Track","lyricsArtifacts":{"revision":0,"status":"disabled"}}""",
+            CancellationToken.None);
+        using var handedOff = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
+        Assert.Equal(20, handedOff.RootElement.GetProperty("lyricsArtifacts").GetProperty("revision").GetInt64());
+        Assert.Equal("resolved", handedOff.RootElement.GetProperty("lyricsArtifacts").GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task UpdateFinalDestinationsAsync_RebasesCanonicalLyricsSidecarPaths()
+    {
+        await using var context = await CreateContextAsync();
+        var queueUuid = "lyrics-rebase-1";
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
+        var source = Path.Join(context.TempRoot, "staging", "track.lrc");
+        var destination = Path.Join(context.TempRoot, "library", "track.lrc");
+        await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, new LyricsArtifactState
+        {
+            Revision = 30,
+            Status = "completed",
+            ResolvedFormats = ["lrc"],
+            DownloadedFormats = ["lrc"],
+            FilesByFormat = new Dictionary<string, string> { ["lrc"] = source }
+        }, CancellationToken.None);
+
+        await context.QueueRepository.UpdateFinalDestinationsAsync(
+            queueUuid,
+            JsonSerializer.Serialize(new Dictionary<string, string> { [source] = destination }),
+            cancellationToken: CancellationToken.None);
+
+        using var payload = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
+        var artifacts = payload.RootElement.GetProperty("lyricsArtifacts");
+        Assert.Equal(31, artifacts.GetProperty("revision").GetInt64());
+        Assert.Equal(destination, artifacts.GetProperty("filesByFormat").GetProperty("lrc").GetString());
     }
 
     private static Task<TestContext> CreateContextAsync()
@@ -250,12 +160,6 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
             UpdatedAt: DateTimeOffset.UtcNow);
     }
 
-    private static void CreateFile(string path, string content)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? throw new InvalidOperationException("Missing directory path."));
-        File.WriteAllText(path, content);
-    }
-
     private sealed class TestContext : IAsyncDisposable
     {
         public TestContext(string tempRoot, string queueDbPath, DownloadQueueRepository queueRepository)
@@ -268,17 +172,6 @@ public sealed class DownloadQueueLyricsStatusPersistenceTests
         public string TempRoot { get; }
         public string QueueDbPath { get; }
         public DownloadQueueRepository QueueRepository { get; }
-
-        public async Task<string?> GetLyricsStatusAsync(string queueUuid)
-        {
-            await using var connection = new SqliteConnection($"Data Source={QueueDbPath}");
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT lyrics_status FROM download_task WHERE queue_uuid = $queueUuid LIMIT 1;";
-            command.Parameters.AddWithValue("$queueUuid", queueUuid);
-            var result = await command.ExecuteScalarAsync();
-            return result is null or DBNull ? null : Convert.ToString(result);
-        }
 
         public async Task<string?> GetPayloadAsync(string queueUuid)
         {

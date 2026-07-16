@@ -672,9 +672,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             failed = 0,
             error = default(string),
             engine = firstStepEngine,
-            quality = firstStepQuality,
-            lyricsStatus = string.Empty,
-            lyrics_status = string.Empty
+            quality = firstStepQuality
         });
         DeezSpoTagSpeedTracker.Clear(uuid);
         await EnsureQueueProcessorRunningAsync();
@@ -699,15 +697,8 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         payloadObj["FilePath"] = string.Empty;
         payloadObj["filePath"] = string.Empty;
 
-        payloadObj.Remove("LyricsStatus");
-        payloadObj.Remove("lyricsStatus");
-        payloadObj.Remove("lyrics_status");
         payloadObj["PrefetchArtworkStatus"] = string.Empty;
         payloadObj.Remove("prefetchArtworkStatus");
-        payloadObj["PrefetchLyricsStatus"] = string.Empty;
-        payloadObj.Remove("prefetchLyricsStatus");
-        payloadObj["PrefetchLyricsType"] = string.Empty;
-        payloadObj.Remove("prefetchLyricsType");
     }
 
     private async Task UpdateWatchlistTrackStatusAsync(string payloadJson, string status, CancellationToken cancellationToken)
