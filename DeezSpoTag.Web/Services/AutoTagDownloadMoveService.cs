@@ -115,7 +115,7 @@ public sealed class AutoTagDownloadMoveService
         string DestinationRoot,
         long DestinationKey,
         ConversionPlan ConversionPlan,
-        Dictionary<string, Dictionary<string, string>> TransitionsByQueue,
+        Dictionary<string, string> Transitions,
         CancellationToken CancellationToken);
 
     private sealed record MoveFileContext(
@@ -236,6 +236,43 @@ public sealed class AutoTagDownloadMoveService
     public Task<AutoTagMoveSummary> MoveForRootWithSummaryAsync(string rootPath, CancellationToken cancellationToken)
     {
         return MoveForRootWithSummaryAsync(rootPath, new AutoTagOrganizerOptions(), Array.Empty<string>(), Array.Empty<string>(), cancellationToken);
+    }
+
+    public async Task<bool> CanResumeFinalizationAsync(
+        DownloadQueueItem item,
+        string stagingRoot,
+        CancellationToken cancellationToken)
+    {
+        if (!item.DestinationFolderId.HasValue || string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            return false;
+        }
+
+        var destinationRoot = await ResolveDestinationRootAsync(item.DestinationFolderId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(destinationRoot))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(item.PayloadJson);
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CollectPayloadPaths(stagingRoot, document.RootElement, files, roots);
+            var qualityBucket = NormalizeQualityBucket(ReadStringProperty(document.RootElement, "qualityBucket"));
+            return files
+                .Where(IsAudioExtension)
+                .Any(sourcePath => !string.IsNullOrWhiteSpace(ResolveAlreadyMovedPathUnderRoot(
+                    stagingRoot,
+                    sourcePath,
+                    destinationRoot,
+                    qualityBucket)));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     public Task<AutoTagMoveSummary> MoveForRootWithSummaryAsync(
@@ -402,7 +439,7 @@ public sealed class AutoTagDownloadMoveService
             rootBucketsByDestination,
             fileOwnersByDestination,
             rootOwnersByDestination);
-        var transitionsByQueue = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var transitions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         PopulatePayloadSourceMaps(items, rootPath, payloadSourceMaps);
         if (batchScopedFilesOnly)
         {
@@ -438,13 +475,13 @@ public sealed class AutoTagDownloadMoveService
                 destinationRoot,
                 destinationKey,
                 conversionPlan,
-                transitionsByQueue,
+                transitions,
                 cancellationToken);
             await MoveDestinationFilesAsync(destinationContext, payloadSourceMaps, summary);
             await MoveDestinationRootsAsync(destinationContext, payloadSourceMaps, summary);
         }
 
-        await PersistFinalDestinationsAsync(items, rootPath, transitionsByQueue, cancellationToken);
+        await PersistFinalDestinationsByPayloadLookupAsync(items, rootPath, transitions, cancellationToken);
     }
 
     private async Task<IReadOnlyList<DownloadQueueItem>> ReconcileMonitoredRoutingDestinationsAsync(
@@ -1074,12 +1111,32 @@ public sealed class AutoTagDownloadMoveService
         var owners = ResolvePathOwners(maps.FileOwnersByDestination, context.DestinationKey, filePath);
         try
         {
+            var sourceIo = DownloadPathResolver.ResolveIoPath(filePath);
+            if (!string.IsNullOrWhiteSpace(sourceIo) && IsDownloadTemporaryArtifact(sourceIo))
+            {
+                if (IOFile.Exists(sourceIo))
+                {
+                    IOFile.Delete(sourceIo);
+                    summary.MovedCount++;
+                }
+                else
+                {
+                    summary.SkippedCount++;
+                }
+                return;
+            }
+
             var qualityBucket = TryResolveBucket(maps.FileBucketsByDestination, context.DestinationKey, filePath);
             var movedPath = MoveFileUnderRoot(
                 context.RootPath,
                 filePath,
                 context.DestinationRoot,
                 context.Settings,
+                qualityBucket);
+            movedPath ??= ResolveAlreadyMovedPathUnderRoot(
+                context.RootPath,
+                filePath,
+                context.DestinationRoot,
                 qualityBucket);
             if (string.IsNullOrWhiteSpace(movedPath))
             {
@@ -1093,7 +1150,7 @@ public sealed class AutoTagDownloadMoveService
                 summary,
                 isRootItem: false);
 
-            RememberTransitionsForOwners(context.TransitionsByQueue, owners, filePath, finalPath);
+            FinalDestinationTracker.RecordPathTransition(context.Transitions, filePath, finalPath);
             if (DidPathChange(sourceDisplay, movedPath))
             {
                 summary.MovedCount++;
@@ -1146,7 +1203,7 @@ public sealed class AutoTagDownloadMoveService
                 summary.SkippedCount += candidateCount - movedPaths.Count;
             }
 
-            await RememberDestinationRootTransitionsAsync(movedPaths, owners, context, summary);
+            await RememberDestinationRootTransitionsAsync(movedPaths, context, summary);
         }
         catch (OperationCanceledException)
         {
@@ -1172,7 +1229,6 @@ public sealed class AutoTagDownloadMoveService
 
     private async Task RememberDestinationRootTransitionsAsync(
         IReadOnlyDictionary<string, string> movedPaths,
-        IReadOnlyCollection<string> owners,
         DestinationMoveContext context,
         AutoTagMoveSummary summary)
     {
@@ -1183,7 +1239,7 @@ public sealed class AutoTagDownloadMoveService
                 context,
                 summary,
                 isRootItem: true);
-            RememberTransitionsForOwners(context.TransitionsByQueue, owners, transition.Key, finalPath);
+            FinalDestinationTracker.RecordPathTransition(context.Transitions, transition.Key, finalPath);
             summary.MarkChangedFile(finalPath);
         }
     }
@@ -1278,6 +1334,12 @@ public sealed class AutoTagDownloadMoveService
     {
         try
         {
+            if (IsDownloadTemporaryArtifact(file))
+            {
+                IOFile.Delete(file);
+                return true;
+            }
+
             if (IsAudioExtension(file))
             {
                 await ProcessResidualAudioFileAsync(file, runtime, buckets, moved, cancellationToken);
@@ -2591,6 +2653,7 @@ public sealed class AutoTagDownloadMoveService
         AddFileFromProperty(files, rootPath, root, FilePathProperty);
         AddRootFromProperty(roots, rootPath, root, FilePathProperty);
         AddRootFromProperty(roots, rootPath, root, "albumPath");
+        AddAlbumSidecarFilesFromProperty(files, rootPath, root, "albumPath");
         AddRootFromProperty(roots, rootPath, root, "extrasPath");
         AddArtistArtworkFilesFromProperty(files, rootPath, root, "artistPath");
 
@@ -2607,10 +2670,58 @@ public sealed class AutoTagDownloadMoveService
                 AddFileFromProperty(files, rootPath, fileElement, "path");
                 AddRootFromProperty(roots, rootPath, fileElement, "path");
                 AddRootFromProperty(roots, rootPath, fileElement, "albumPath");
+                AddAlbumSidecarFilesFromProperty(files, rootPath, fileElement, "albumPath");
                 AddArtistArtworkFilesFromProperty(files, rootPath, fileElement, "artistPath");
             }
         }
 
+    }
+
+    private static void AddAlbumSidecarFilesFromProperty(
+        HashSet<string> files,
+        string rootPath,
+        JsonElement source,
+        string propertyName)
+    {
+        var albumPath = ReadStringProperty(source, propertyName);
+        if (string.IsNullOrWhiteSpace(albumPath) || !IsUnderRoot(rootPath, albumPath))
+        {
+            return;
+        }
+
+        var albumIo = DownloadPathResolver.ResolveIoPath(albumPath);
+        if (string.IsNullOrWhiteSpace(albumIo) || !Directory.Exists(albumIo))
+        {
+            return;
+        }
+
+        foreach (var sidecarPath in TryEnumerateTopLevelArtistSidecars(albumIo))
+        {
+            if (IsDownloadTemporaryArtifact(sidecarPath))
+            {
+                files.Add(DownloadPathResolver.NormalizeDisplayPath(sidecarPath));
+                continue;
+            }
+
+            if (IsPrimaryAudioFile(sidecarPath))
+            {
+                continue;
+            }
+
+            files.Add(DownloadPathResolver.NormalizeDisplayPath(sidecarPath));
+        }
+    }
+
+    private static bool IsPrimaryAudioFile(string path)
+    {
+        if (!IsAudioExtension(path))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileNameWithoutExtension(path);
+        return !fileName.Contains("cover", StringComparison.OrdinalIgnoreCase)
+            && !fileName.Contains("artwork", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddArtistArtworkFilesFromProperty(
@@ -2848,6 +2959,40 @@ public sealed class AutoTagDownloadMoveService
         return DownloadPathResolver.NormalizeDisplayPath(destinationPath);
     }
 
+    private static string? ResolveAlreadyMovedPathUnderRoot(
+        string stagingRoot,
+        string sourcePath,
+        string destinationRoot,
+        string? qualityBucket)
+    {
+        var stagingIo = DownloadPathResolver.ResolveIoPath(stagingRoot);
+        var sourceIo = DownloadPathResolver.ResolveIoPath(sourcePath);
+        var destinationIo = DownloadPathResolver.ResolveIoPath(destinationRoot);
+        if (string.IsNullOrWhiteSpace(stagingIo)
+            || string.IsNullOrWhiteSpace(sourceIo)
+            || string.IsNullOrWhiteSpace(destinationIo)
+            || IOFile.Exists(sourceIo)
+            || DownloadPathResolver.IsSmbPath(stagingIo)
+            || DownloadPathResolver.IsSmbPath(destinationIo)
+            || !IsUnderRoot(stagingIo, sourceIo)
+            || !TryGetRelativePathUnderRoot(stagingIo, sourceIo, out var relative))
+        {
+            return null;
+        }
+
+        relative = StripLeadingQualityBucket(relative, qualityBucket);
+        relative = StripLeadingKnownQualityBucket(relative);
+        if (string.IsNullOrWhiteSpace(relative))
+        {
+            return null;
+        }
+
+        var destinationPath = Path.Join(destinationIo, relative);
+        return IOFile.Exists(destinationPath)
+            ? DownloadPathResolver.NormalizeDisplayPath(destinationPath)
+            : null;
+    }
+
     private static MoveFileContext? TryResolveMoveFileContext(
         string stagingRoot,
         string sourcePath,
@@ -3031,6 +3176,12 @@ public sealed class AutoTagDownloadMoveService
 
         foreach (var file in Directory.EnumerateFiles(moveRootIo, "*", SearchOption.AllDirectories))
         {
+            if (IsDownloadTemporaryArtifact(file))
+            {
+                IOFile.Delete(file);
+                continue;
+            }
+
             var sourceDisplay = DownloadPathResolver.NormalizeDisplayPath(file);
             var movedPath = MoveFileUnderRoot(stagingIo, file, destinationIo, settings, qualityBucket);
             if (!string.IsNullOrWhiteSpace(movedPath))
@@ -3056,6 +3207,18 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return moved;
+    }
+
+    private static bool IsDownloadTemporaryArtifact(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        return fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".part", StringComparison.OrdinalIgnoreCase)
+            || fileName.EndsWith(".download", StringComparison.OrdinalIgnoreCase)
+            || Regex.IsMatch(
+                fileName,
+                @"\.(?:candidate-\d+\.)?part(?:\.|$)",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     private static string GetUniqueDestinationPath(string destinationDir, string destinationPath)
@@ -3190,29 +3353,6 @@ public sealed class AutoTagDownloadMoveService
         }
 
         return owners;
-    }
-
-    private static void RememberTransitionsForOwners(
-        Dictionary<string, Dictionary<string, string>> transitionsByQueue,
-        IReadOnlyCollection<string> owners,
-        string sourcePath,
-        string destinationPath)
-    {
-        if (owners.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var queueUuid in owners)
-        {
-            if (!transitionsByQueue.TryGetValue(queueUuid, out var map))
-            {
-                map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                transitionsByQueue[queueUuid] = map;
-            }
-
-            FinalDestinationTracker.RecordPathTransition(map, sourcePath, destinationPath);
-        }
     }
 
     private async Task PersistFinalDestinationsAsync(
@@ -3426,7 +3566,8 @@ public sealed class AutoTagDownloadMoveService
             changed = true;
         }
 
-        if (root[FilesProperty] is JsonArray files)
+        if (TryGetJsonPropertyValueIgnoreCase(root, FilesProperty, out _, out var filesNode)
+            && filesNode is JsonArray files)
         {
             foreach (var node in files.OfType<JsonObject>())
             {
@@ -3519,7 +3660,8 @@ public sealed class AutoTagDownloadMoveService
         string propertyName,
         IReadOnlyDictionary<string, string> transitions)
     {
-        if (!obj.TryGetPropertyValue(propertyName, out var node) || node is null)
+        if (!TryGetJsonPropertyValueIgnoreCase(obj, propertyName, out var actualPropertyName, out var node)
+            || node is null)
         {
             return false;
         }
@@ -3537,8 +3679,31 @@ public sealed class AutoTagDownloadMoveService
             return false;
         }
 
-        obj[propertyName] = rewritten;
+        obj[actualPropertyName] = rewritten;
         return true;
+    }
+
+    private static bool TryGetJsonPropertyValueIgnoreCase(
+        JsonObject obj,
+        string propertyName,
+        out string actualPropertyName,
+        out JsonNode? value)
+    {
+        foreach (var property in obj)
+        {
+            if (!string.Equals(property.Key, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            actualPropertyName = property.Key;
+            value = property.Value;
+            return true;
+        }
+
+        actualPropertyName = propertyName;
+        value = null;
+        return false;
     }
 
     private static string? RewritePath(string? path, IReadOnlyDictionary<string, string> transitions)

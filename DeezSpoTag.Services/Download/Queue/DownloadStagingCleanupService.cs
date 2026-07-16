@@ -512,7 +512,9 @@ public sealed class DownloadStagingCleanupService
         yield return Path.Join(directory, $"{stem}.part{extension}");
         for (var candidateIndex = 1; candidateIndex <= 20; candidateIndex++)
         {
-            yield return Path.Join(directory, $"{stem}.candidate-{candidateIndex}.part{extension}");
+            var candidatePath = Path.Join(directory, $"{stem}.candidate-{candidateIndex}.part{extension}");
+            yield return candidatePath;
+            yield return candidatePath + ".m4a.tmp";
         }
     }
 

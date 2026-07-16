@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Tidal;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,6 +16,37 @@ namespace DeezSpoTag.Tests;
 public sealed class DownloadStagingCleanupServiceTests
 {
     [Fact]
+    public void TidalCandidateCleanup_DeletesDecoderTemporaryFile()
+    {
+        var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-tidal-candidate-cleanup-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tempRoot);
+        var candidatePath = Path.Join(tempRoot, "Song.candidate-1.part.flac");
+        var decoderTempPath = candidatePath + ".m4a.tmp";
+        File.WriteAllText(candidatePath, "candidate");
+        File.WriteAllText(decoderTempPath, "decoder-temp");
+
+        try
+        {
+            var method = typeof(TidalDownloadService).GetMethod(
+                "DeleteCandidateArtifacts",
+                BindingFlags.NonPublic | BindingFlags.Static)
+                ?? throw new InvalidOperationException("DeleteCandidateArtifacts was not found.");
+
+            method.Invoke(null, [candidatePath]);
+
+            Assert.False(File.Exists(candidatePath));
+            Assert.False(File.Exists(decoderTempPath));
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task CleanupAsync_DeletesFormatPreservingEngineStagingFiles()
     {
         await using var context = CreateContext();
@@ -22,8 +55,10 @@ public sealed class DownloadStagingCleanupServiceTests
         var expectedAudioPath = Path.Join(albumFolder, "Song.flac");
         var qobuzPartPath = Path.Join(albumFolder, "Song.part.flac");
         var tidalPartPath = Path.Join(albumFolder, "Song.candidate-1.part.flac");
+        var tidalDecoderTempPath = tidalPartPath + ".m4a.tmp";
         File.WriteAllText(qobuzPartPath, "partial");
         File.WriteAllText(tidalPartPath, "partial");
+        File.WriteAllText(tidalDecoderTempPath, "partial");
 
         var result = await context.CleanupService.CleanupAsync(
             "queue-format-staging",
@@ -33,6 +68,7 @@ public sealed class DownloadStagingCleanupServiceTests
         Assert.Equal(DownloadStagingCleanupService.CompletedStatus, result.Status);
         Assert.False(File.Exists(qobuzPartPath));
         Assert.False(File.Exists(tidalPartPath));
+        Assert.False(File.Exists(tidalDecoderTempPath));
     }
 
     [Fact]

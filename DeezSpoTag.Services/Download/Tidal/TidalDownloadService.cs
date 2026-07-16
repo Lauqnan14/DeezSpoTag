@@ -1546,6 +1546,7 @@ public sealed class TidalDownloadService
     private static void DeleteCandidateArtifacts(string candidateOutputPath)
     {
         DownloadFileUtilities.TryDeleteFile(candidateOutputPath);
+        DownloadFileUtilities.TryDeleteFile(candidateOutputPath + ".m4a.tmp");
 
         var preservedSourcePath = Path.ChangeExtension(candidateOutputPath, ".m4a");
         if (!string.Equals(preservedSourcePath, candidateOutputPath, StringComparison.OrdinalIgnoreCase))

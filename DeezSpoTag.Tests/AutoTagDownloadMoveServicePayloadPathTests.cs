@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -13,6 +14,56 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AutoTagDownloadMoveServicePayloadPathTests
 {
+    [Theory]
+    [InlineData("completed", "running", true)]
+    [InlineData("not_required", "pending", true)]
+    [InlineData("completed", "moved", false)]
+    [InlineData("not_required", "not_required", false)]
+    public void NeedsEnrichmentPipelineWork_RecoversIncompleteFinalization(
+        string enrichmentStatus,
+        string finalizationStatus,
+        bool expected)
+    {
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "NeedsEnrichmentPipelineWork",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("NeedsEnrichmentPipelineWork was not found.");
+        var item = CreateQueueItem(enrichmentStatus, finalizationStatus);
+
+        Assert.Equal(expected, (bool)method.Invoke(null, [item])!);
+    }
+
+    [Fact]
+    public void ResolveRecordedSourceAudioFilesUnderRoot_KeepsMissingAudioAndExcludesArtwork()
+    {
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "ResolveRecordedSourceAudioFilesUnderRoot",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("ResolveRecordedSourceAudioFilesUnderRoot was not found.");
+        const string rootPath = "/downloads";
+        const string audioPath = "/downloads/Atmos/Artist/Album/Track.m4a";
+        const string artworkPath = "/downloads/Atmos/Artist/Album/cover - animated_artwork.mp4";
+        var payload = JsonSerializer.Serialize(new
+        {
+            filePath = audioPath,
+            files = new object[]
+            {
+                new { path = audioPath },
+                new { path = artworkPath, type = "artwork" }
+            }
+        });
+        var item = CreateQueueItem("completed", "running") with { PayloadJson = payload };
+
+        var resolved = Assert.IsType<List<string>>(method.Invoke(null, new object[]
+        {
+            new[] { item },
+            rootPath
+        }));
+
+        Assert.Single(resolved);
+        Assert.Equal(audioPath, resolved[0]);
+    }
+
     [Fact]
     public void TryApplyFinalDestinationTransitions_RejectsIdentityAndMissingDestinations()
     {
@@ -64,6 +115,42 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
             var updatedPayload = Assert.IsType<string>(args[4]);
             Assert.Contains(destinationPath, updatedPayload, StringComparison.Ordinal);
             Assert.DoesNotContain($"\"filePath\":{JsonSerializer.Serialize(sourcePath)}", updatedPayload, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void TryApplyFinalDestinationTransitions_RewritesPascalCaseQueuePayload()
+    {
+        var method = GetPrivateStaticMethod("TryApplyFinalDestinationTransitions");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-finalize-case-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var sourcePath = Path.Combine(stagingRoot, "Artist", "Track.flac");
+        var destinationPath = Path.Combine(tempRoot, "Library", "Artist", "Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.WriteAllText(destinationPath, "audio");
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { FilePath = sourcePath, Files = new[] { new { Path = sourcePath } } });
+            var args = new object?[]
+            {
+                payload,
+                null,
+                stagingRoot,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [sourcePath] = destinationPath },
+                null,
+                null
+            };
+
+            Assert.True((bool)method.Invoke(null, args)!);
+            var updatedPayload = Assert.IsType<string>(args[4]);
+            using var updatedDocument = JsonDocument.Parse(updatedPayload);
+            Assert.Equal(destinationPath, updatedDocument.RootElement.GetProperty("FilePath").GetString());
+            Assert.Equal(destinationPath, updatedDocument.RootElement.GetProperty("Files")[0].GetProperty("Path").GetString());
         }
         finally
         {
@@ -202,6 +289,49 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
                 new object[] { rootPath, document.RootElement, files, roots });
 
             Assert.Contains(DownloadPathResolver.NormalizeDisplayPath(artworkPath), files);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void CollectPayloadPaths_AddsUnrecordedAlbumSidecarsAndOwnedTemporaryFiles()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-album-sidecars-{Guid.NewGuid():N}");
+        var rootPath = Path.Combine(tempRoot, "Downs");
+        var albumPath = Path.Combine(rootPath, "Artist", "Album");
+        var sourcePath = Path.Combine(albumPath, "Track.flac");
+        var coverPath = Path.Combine(albumPath, "cover.jpg");
+        var temporaryPath = Path.Combine(albumPath, "Track.candidate-1.part.flac.m4a.tmp");
+        Directory.CreateDirectory(albumPath);
+        File.WriteAllText(coverPath, "cover");
+        File.WriteAllText(temporaryPath, "partial");
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                $$"""
+                  {
+                    "FilePath": {{JsonSerializer.Serialize(sourcePath)}},
+                    "Files": [
+                      {
+                        "path": {{JsonSerializer.Serialize(sourcePath)}},
+                        "albumPath": {{JsonSerializer.Serialize(albumPath)}}
+                      }
+                    ]
+                  }
+                  """);
+            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            GetPrivateStaticMethod("CollectPayloadPaths").Invoke(
+                null,
+                new object[] { rootPath, document.RootElement, files, roots });
+
+            Assert.Contains(DownloadPathResolver.NormalizeDisplayPath(coverPath), files);
+            Assert.Contains(DownloadPathResolver.NormalizeDisplayPath(temporaryPath), files);
         }
         finally
         {
@@ -431,6 +561,71 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     }
 
     [Fact]
+    public void MoveDirectoryTreeUnderRoot_DeletesTemporaryArtifactsInsteadOfMovingThem()
+    {
+        var method = GetPrivateStaticMethod("MoveDirectoryTreeUnderRoot");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-temp-finalize-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var albumRoot = Path.Combine(stagingRoot, "Artist", "Album");
+        var destinationRoot = Path.Combine(tempRoot, "Library");
+        var temporaryPath = Path.Combine(albumRoot, "Track.candidate-1.part.flac.m4a.tmp");
+        Directory.CreateDirectory(albumRoot);
+        Directory.CreateDirectory(destinationRoot);
+        File.WriteAllText(temporaryPath, "partial");
+
+        try
+        {
+            method.Invoke(null, new object?[]
+            {
+                stagingRoot,
+                albumRoot,
+                destinationRoot,
+                new DeezSpoTagSettings { OverwriteFile = "y" },
+                null
+            });
+
+            Assert.False(File.Exists(temporaryPath));
+            Assert.False(File.Exists(Path.Combine(destinationRoot, "Artist", "Album", Path.GetFileName(temporaryPath))));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void ResolveAlreadyMovedPathUnderRoot_FindsDestinationAfterInterruptedMove()
+    {
+        var method = GetPrivateStaticMethod("ResolveAlreadyMovedPathUnderRoot");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-resume-move-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "Downs");
+        var destinationRoot = Path.Combine(tempRoot, "Library");
+        var sourcePath = Path.Combine(stagingRoot, "Artist", "Album", "Track.flac");
+        var destinationPath = Path.Combine(destinationRoot, "Artist", "Album", "Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+        File.WriteAllText(destinationPath, "audio");
+
+        try
+        {
+            var resolved = (string?)method.Invoke(null, new object?[]
+            {
+                stagingRoot,
+                sourcePath,
+                destinationRoot,
+                null
+            });
+
+            Assert.Equal(
+                DownloadPathResolver.NormalizeDisplayPath(destinationPath),
+                DownloadPathResolver.NormalizeDisplayPath(resolved ?? string.Empty));
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
     public void ResolveResidualSuccessRoot_ReturnsNull_WhenMoveTaggedPathIsNotConfigured()
     {
         var method = GetPrivateStaticMethod("ResolveResidualSuccessRoot");
@@ -462,6 +657,39 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
                    BindingFlags.NonPublic | BindingFlags.Static)
                ?? throw new InvalidOperationException($"{methodName} was not found.");
     }
+
+    private static DownloadQueueItem CreateQueueItem(string enrichmentStatus, string finalizationStatus)
+        => new(
+            Id: 1,
+            QueueUuid: "queue-finalization-recovery",
+            Engine: "qobuz",
+            ArtistName: "Artist",
+            TrackTitle: "Track",
+            Isrc: null,
+            DeezerTrackId: null,
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: null,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: 180000,
+            DestinationFolderId: 7,
+            QualityRank: 1,
+            QueueOrder: 1,
+            ContentType: "stereo",
+            FinalizationStatus: finalizationStatus,
+            EnrichmentStatus: enrichmentStatus,
+            Status: "completed",
+            PayloadJson: "{}",
+            Progress: 100,
+            Downloaded: 1,
+            Failed: 0,
+            Error: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
 
     private static object CreateRoutingMetadata(
         string artist,
