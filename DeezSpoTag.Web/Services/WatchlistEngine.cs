@@ -59,7 +59,8 @@ public sealed record PlaylistTrackCandidate(
     string? CoverUrl = null,
     string? DeezerId = null,
     string? MappingStatus = null,
-    string? MappingError = null);
+    string? MappingError = null,
+    string? SourceUrl = null);
 
 public sealed record PlaylistReconciliationResult(
     bool Success,
@@ -2476,7 +2477,7 @@ internal sealed class WatchlistEngine
                 EmptyToNull(track.Intent.Cover))).ToList(),
             cancellationToken);
 
-        return mapped.Select(static track => new PlaylistTrackCandidate(
+        return mapped.Select((track, index) => new PlaylistTrackCandidate(
                 track.BoomplayTrackId,
                 EmptyToNull(track.Isrc),
                 track.Title,
@@ -2489,7 +2490,8 @@ internal sealed class WatchlistEngine
                 track.CoverUrl,
                 track.DeezerTrackId,
                 track.MappingStatus,
-                track.MappingError))
+                track.MappingError,
+                EmptyToNull(uniqueTracks[index].Intent.SourceUrl)))
             .ToList();
     }
 
@@ -3126,7 +3128,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             var intent = new DownloadIntent
             {
                 SourceService = BoomplaySource,
-                SourceUrl = $"https://www.boomplay.com/songs/{trackId}",
+                SourceUrl = string.IsNullOrWhiteSpace(hint?.Url)
+                    ? $"https://www.boomplay.com/songs/{trackId}"
+                    : hint.Url,
                 Title = hint?.Title ?? string.Empty,
                 Artist = hint?.Artist ?? string.Empty,
                 Album = hint?.Album ?? string.Empty,

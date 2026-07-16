@@ -52,6 +52,7 @@ public sealed class BoomplayApiController : ControllerBase
             {
                 type,
                 id,
+                canonicalUrl = url.Trim(),
                 error = string.Empty
             });
         }

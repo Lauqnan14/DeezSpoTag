@@ -21,6 +21,7 @@ public sealed class LibraryPlaylistWatchlistDependencies
     public required PlaylistVisualService PlaylistVisualService { get; init; }
     public required DownloadQueueRepository QueueRepository { get; init; }
     public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
+    public required BoomplayMetadataService BoomplayMetadataService { get; init; }
     public WatchlistFinalizationService? WatchlistFinalizationService { get; init; }
     public WatchlistRunCoordinator? WatchlistRunCoordinator { get; init; }
     public WatchlistPostDownloadSyncService? WatchlistPostDownloadSyncService { get; init; }
@@ -43,6 +44,7 @@ public partial class WatchlistApiController : ControllerBase
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
+    private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly WatchlistRunCoordinator? _watchlistCoordinator;
     private readonly WatchlistPostDownloadSyncService? _watchlistPostDownloadSyncService;
@@ -55,6 +57,7 @@ public partial class WatchlistApiController : ControllerBase
         _playlistSyncService = dependencies.PlaylistSyncService;
         _playlistVisualService = dependencies.PlaylistVisualService;
         _profileResolutionService = dependencies.ProfileResolutionService;
+        _boomplayMetadataService = dependencies.BoomplayMetadataService;
         _queueRepository = dependencies.QueueRepository;
         _watchlistFinalizationService = dependencies.WatchlistFinalizationService;
         _watchlistCoordinator = dependencies.WatchlistRunCoordinator;
@@ -266,9 +269,24 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(request.Source);
+        var normalizedSourceId = request.SourceId.Trim();
+        if (string.Equals(normalizedSource, "boomplay", StringComparison.OrdinalIgnoreCase))
+        {
+            var resolvedSourceId = await _boomplayMetadataService.ResolveContentIdAsync(
+                "playlist",
+                normalizedSourceId,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(resolvedSourceId))
+            {
+                return BadRequest("Boomplay playlist id could not be resolved.");
+            }
+
+            normalizedSourceId = resolvedSourceId;
+        }
+
         var added = await _repository.AddPlaylistWatchlistAsync(
             normalizedSource,
-            request.SourceId,
+            normalizedSourceId,
             new PlaylistWatchlistMetadataInput(
                 request.Name,
                 request.ImageUrl,
@@ -283,7 +301,7 @@ public partial class WatchlistApiController : ControllerBase
 
         await ApplyGlobalRoutingTemplateToPlaylistAsync(
             normalizedSource,
-            request.SourceId,
+            normalizedSourceId,
             cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -1462,7 +1480,9 @@ public partial class WatchlistApiController : ControllerBase
         var trackSourceId = candidate.TrackSourceId ?? string.Empty;
         statusByTrackId.TryGetValue(trackSourceId, out var watchStatus);
         var locationStatus = ResolveCachedTrackLocationStatus(watchStatus);
-        var sourceUrl = BuildSourceTrackUrl(source, trackSourceId);
+        var sourceUrl = !string.IsNullOrWhiteSpace(candidate.SourceUrl)
+            ? candidate.SourceUrl
+            : BuildSourceTrackUrl(source, trackSourceId);
         return new
         {
             id = trackSourceId,

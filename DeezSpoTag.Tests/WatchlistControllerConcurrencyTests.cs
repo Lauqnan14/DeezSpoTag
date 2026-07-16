@@ -163,7 +163,8 @@ public sealed class WatchlistControllerConcurrencyTests : IAsyncLifetime
             PlaylistSyncService = null!,
             PlaylistVisualService = _playlistVisualService,
             QueueRepository = null!,
-            ProfileResolutionService = CreateProfileResolutionService()
+            ProfileResolutionService = CreateProfileResolutionService(),
+            BoomplayMetadataService = null!
         });
 
     private sealed class StubHostEnvironment : IHostEnvironment

@@ -1206,6 +1206,23 @@ async function routeSearchUrlDirectly(input) {
     }
 
     const parsedUrl = new URL(normalizedInput);
+    if (classifyExternalSource(normalizedInput) === 'boomplay') {
+        const response = await fetch(`/api/boomplay/parse-link?url=${encodeURIComponent(normalizedInput)}`);
+        if (!response.ok) {
+            throw new Error(`Boomplay link parse failed (HTTP ${response.status}).`);
+        }
+
+        const parsed = await response.json();
+        const itemId = String(parsed?.id || '').trim();
+        const itemType = String(parsed?.type || '').trim().toLowerCase();
+        if (!itemId || !itemType || parsed?.error) {
+            throw new Error(parsed?.error || 'Boomplay link did not resolve to a supported item.');
+        }
+
+        navigateToTracklist(itemId, itemType, 'boomplay', { externalUrl: parsed?.canonicalUrl || normalizedInput });
+        return true;
+    }
+
     if (isSpotifyHostname(parsedUrl.hostname)) {
         const response = await fetch(`/api/spotify/metadata?url=${encodeURIComponent(normalizedInput)}`);
         if (!response.ok) {

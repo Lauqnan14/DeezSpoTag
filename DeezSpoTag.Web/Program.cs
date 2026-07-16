@@ -1594,6 +1594,7 @@ public partial class Program
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 QueueRepository = sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>(),
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
+                BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 WatchlistFinalizationService = sp.GetService<DeezSpoTag.Web.Services.WatchlistFinalizationService>(),
                 WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(),
                 WatchlistPostDownloadSyncService = sp.GetService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>()

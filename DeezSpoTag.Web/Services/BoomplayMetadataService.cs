@@ -40,6 +40,12 @@ public sealed class BoomplayMetadataService
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex SongPathRegex = CreateRegex(@"(?:^|/)songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PlaylistPathRegex = CreateRegex(@"(?:^|/)playlists/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex PublicSongPathRegex = CreateRegex(
+        @"(?:^|/)songs/(?<id>[A-Za-z0-9_-]{1,80})(?:/|$)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex PublicPlaylistPathRegex = CreateRegex(
+        @"(?:^|/)playlists/(?<id>[A-Za-z0-9_-]{1,80})(?:/|$)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex TrendingSongsPathRegex = CreateRegex(@"(?:^|/)trending-songs(?:/)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex SongIdInHtmlRegex = CreateRegex(@"/songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex EmbeddedMusicItemRegex = CreateRegex(
@@ -194,13 +200,19 @@ public sealed class BoomplayMetadataService
             return false;
         }
 
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         var path = uri.AbsolutePath.Trim('/');
         if (string.IsNullOrWhiteSpace(path))
         {
             return false;
         }
 
-        var songMatch = SongPathRegex.Match(path);
+        var songMatch = PublicSongPathRegex.Match(path);
         if (songMatch.Success)
         {
             type = "track";
@@ -208,7 +220,7 @@ public sealed class BoomplayMetadataService
             return true;
         }
 
-        var playlistMatch = PlaylistPathRegex.Match(path);
+        var playlistMatch = PublicPlaylistPathRegex.Match(path);
         if (playlistMatch.Success)
         {
             type = "playlist";
@@ -225,6 +237,79 @@ public sealed class BoomplayMetadataService
 
         return false;
     }
+
+    public async Task<BoomplayResolvedLink?> ResolveLinkAsync(
+        string? url,
+        CancellationToken cancellationToken)
+    {
+        if (!TryParseBoomplayUrl(url, out var type, out var publicId))
+        {
+            return null;
+        }
+
+        if (string.Equals(type, "trending", StringComparison.OrdinalIgnoreCase))
+        {
+            return new BoomplayResolvedLink(type, publicId, $"{BoomplayBaseUrl}/trending-songs");
+        }
+
+        var normalizedUrl = url!.Trim();
+        var html = await GetHtmlAsync(
+            normalizedUrl,
+            new BoomplaySessionSnapshot(false, null, "anon"),
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return null;
+        }
+
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+        var numericId = ResolveDetailContentId(doc, type, publicId);
+        if (!IsNumericBoomplayId(numericId))
+        {
+            return null;
+        }
+
+        var canonicalUrl = ResolveCanonicalContentUrl(doc, normalizedUrl, type);
+        return new BoomplayResolvedLink(type, numericId, canonicalUrl);
+    }
+
+    public async Task<string?> ResolveContentIdAsync(
+        string type,
+        string? idOrUrl,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(idOrUrl))
+        {
+            return null;
+        }
+
+        var normalizedType = type.Trim().ToLowerInvariant();
+        var normalized = idOrUrl.Trim();
+        if (string.Equals(normalizedType, "trending", StringComparison.OrdinalIgnoreCase))
+        {
+            return "trending-songs";
+        }
+
+        if (IsNumericBoomplayId(normalized))
+        {
+            return normalized;
+        }
+
+        var url = Uri.TryCreate(normalized, UriKind.Absolute, out _)
+            ? normalized
+            : $"{BoomplayBaseUrl}/{ResolveContentPath(normalizedType)}/{Uri.EscapeDataString(normalized)}";
+        var resolved = await ResolveLinkAsync(url, cancellationToken);
+        return resolved != null && string.Equals(resolved.Type, normalizedType, StringComparison.OrdinalIgnoreCase)
+            ? resolved.NumericId
+            : null;
+    }
+
+    private static string ResolveContentPath(string type)
+        => string.Equals(type, "playlist", StringComparison.OrdinalIgnoreCase) ? "playlists" : "songs";
+
+    private static bool IsNumericBoomplayId(string? value)
+        => !string.IsNullOrWhiteSpace(value) && value.All(char.IsDigit);
 
     public static bool IsBoomplayUrl(string? url)
     {
@@ -263,7 +348,11 @@ public sealed class BoomplayMetadataService
             return null;
         }
 
-        var normalizedSongId = songId.Trim();
+        var normalizedSongId = await ResolveContentIdAsync("track", songId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(normalizedSongId))
+        {
+            return null;
+        }
         const int maxAttempts = 3;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -614,7 +703,7 @@ public sealed class BoomplayMetadataService
         track = new BoomplayTrackMetadata
         {
             Id = songId.Trim(),
-            Url = $"{BoomplayBaseUrl}/songs/{songId.Trim()}",
+            Url = FirstNonEmpty(hint.Url, $"{BoomplayBaseUrl}/songs/{songId.Trim()}")!,
             Title = title,
             Artist = artist,
             AlbumId = DecodeAndTrim(hint.AlbumId),
@@ -709,6 +798,11 @@ public sealed class BoomplayMetadataService
         }
 
         _songCache.Set(songId, parsed, BuildSongCacheOptions());
+        if (!string.Equals(songId, parsed.Id, StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(parsed.Id))
+        {
+            _songCache.Set(parsed.Id, parsed, BuildSongCacheOptions());
+        }
         resolvedTrack = parsed;
         return true;
     }
@@ -721,13 +815,18 @@ public sealed class BoomplayMetadataService
         CancellationToken cancellationToken)
     {
         var parsed = ParseSongHtml(songId, html, url);
-        var official = await GetOfficialSongMetadataAsync(songId, cancellationToken);
+        if (!IsNumericBoomplayId(parsed.Id))
+        {
+            return new SongAttemptParseResult(parsed);
+        }
+
+        var official = await GetOfficialSongMetadataAsync(parsed.Id, cancellationToken);
         if (official != null)
         {
             MergeOfficialSongMetadata(parsed, official);
         }
 
-        await ApplyStreamTagsAsync(songId, parsed, streamTagAttempts, cancellationToken);
+        await ApplyStreamTagsAsync(parsed.Id, parsed, streamTagAttempts, cancellationToken);
         await ApplyBoomplayMoodContextsAsync(parsed, cancellationToken);
         return new SongAttemptParseResult(parsed);
     }
@@ -1111,7 +1210,7 @@ public sealed class BoomplayMetadataService
             return null;
         }
 
-        var session = await GetBoomplaySessionAsync();
+        var session = new BoomplaySessionSnapshot(false, null, "anon");
         var cacheKey = BuildPlaylistCacheKey(playlistId, session);
         if (_playlistCache.TryGetValue(cacheKey, out BoomplayPlaylistMetadata? cached)
             && cached != null)
@@ -1120,21 +1219,20 @@ public sealed class BoomplayMetadataService
         }
 
         var url = $"{BoomplayBaseUrl}/playlists/{playlistId}";
-        var htmlTask = GetHtmlAsync(url, session, cancellationToken);
-        var officialTask = GetOfficialPlaylistSnapshotAsync(playlistId, session, cancellationToken);
-        await Task.WhenAll(htmlTask, officialTask);
-
-        var html = await htmlTask;
-        var official = await officialTask;
+        var html = await GetHtmlAsync(url, session, cancellationToken);
+        var parsed = string.IsNullOrWhiteSpace(html)
+            ? new BoomplayPlaylistMetadata { Id = playlistId, Url = url }
+            : ParsePlaylistHtml(playlistId, html, url);
+        var resolvedPlaylistId = parsed.Id;
+        var official = IsNumericBoomplayId(resolvedPlaylistId)
+            ? await GetOfficialPlaylistSnapshotAsync(resolvedPlaylistId, session, cancellationToken)
+            : null;
         if (string.IsNullOrWhiteSpace(html) && official == null)
         {
             return null;
         }
 
         var invalidWebPage = LooksLikeNotFoundPlaylistPage(html);
-        var parsed = string.IsNullOrWhiteSpace(html)
-            ? new BoomplayPlaylistMetadata { Id = playlistId, Url = url }
-            : ParsePlaylistHtml(playlistId, html, url);
         if (official != null)
         {
             ApplyOfficialPlaylistMetadata(parsed, official);
@@ -1168,11 +1266,17 @@ public sealed class BoomplayMetadataService
                 Artist = track.Artist,
                 AlbumId = track.AlbumId,
                 Album = track.Album,
-                CoverUrl = track.CoverUrl
+                CoverUrl = track.CoverUrl,
+                Url = track.Url
             },
             StringComparer.Ordinal);
 
         _playlistCache.Set(cacheKey, parsed, BuildPlaylistCacheOptions());
+        if (!string.Equals(playlistId, parsed.Id, StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(parsed.Id))
+        {
+            _playlistCache.Set(BuildPlaylistCacheKey(parsed.Id, session), parsed, BuildPlaylistCacheOptions());
+        }
         return parsed;
     }
 
@@ -1202,7 +1306,7 @@ public sealed class BoomplayMetadataService
         return new BoomplayTrackMetadata
         {
             Id = id,
-            Url = $"{BoomplayBaseUrl}/songs/{id}",
+            Url = FirstNonEmpty(hint?.Url, official?.Url, $"{BoomplayBaseUrl}/songs/{id}")!,
             AlbumId = FirstNonEmpty(official?.AlbumId, hint?.AlbumId) ?? string.Empty,
             Title = FirstNonEmpty(official?.Title, hint?.Title) ?? string.Empty,
             Artist = FirstNonEmpty(official?.Artist, hint?.Artist) ?? string.Empty,
@@ -1332,6 +1436,21 @@ public sealed class BoomplayMetadataService
                     .Where(static name => !string.IsNullOrWhiteSpace(name)));
             }
 
+            if (string.IsNullOrWhiteSpace(artist)
+                && item.TryGetProperty("beArtist", out var beArtist)
+                && beArtist.ValueKind == JsonValueKind.Object)
+            {
+                artist = GetJsonText(beArtist, "name");
+            }
+
+            var album = GetJsonText(item, "albumName");
+            if (string.IsNullOrWhiteSpace(album)
+                && item.TryGetProperty("beAlbum", out var beAlbum)
+                && beAlbum.ValueKind == JsonValueKind.Object)
+            {
+                album = GetJsonText(beAlbum, "name");
+            }
+
             tracks.Add(new BoomplayTrackMetadata
             {
                 Id = id,
@@ -1339,7 +1458,7 @@ public sealed class BoomplayMetadataService
                 Url = $"{BoomplayBaseUrl}/songs/{id}",
                 Title = GetJsonText(item, "name"),
                 Artist = artist,
-                Album = GetJsonText(item, "albumName"),
+                Album = album,
                 CoverUrl = BuildBoomplaySourceUrl(GetJsonText(item, "cover")),
                 DurationMs = ParseDurationMs(GetJsonText(item, "deaution")),
                 TrackNumber = GetJsonInt32(item, "seq")
@@ -1612,6 +1731,8 @@ public sealed class BoomplayMetadataService
     {
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
+        var resolvedPlaylistId = ResolveDetailContentId(doc, "playlist", playlistId);
+        var canonicalUrl = ResolveCanonicalContentUrl(doc, url, "playlist");
 
         var rawTitle = FirstNonEmpty(
             GetMetaContent(doc, "og:title", PropertyAttribute),
@@ -1633,15 +1754,39 @@ public sealed class BoomplayMetadataService
 
         return new BoomplayPlaylistMetadata
         {
-            Id = playlistId,
-            Url = url,
+            Id = resolvedPlaylistId,
+            Url = canonicalUrl,
             Title = title,
             Description = description,
             ImageUrl = imageUrl ?? string.Empty,
             TrackIds = trackIds,
             TrackHints = trackHints,
-            RecommendationSections = ExtractPlaylistRecommendationSections(doc, html, playlistId)
+            RecommendationSections = ExtractPlaylistRecommendationSections(doc, html, resolvedPlaylistId)
         };
+    }
+
+    private static string ResolveDetailContentId(HtmlDocument doc, string type, string fallbackId)
+    {
+        var nodeId = string.Equals(type, "playlist", StringComparison.OrdinalIgnoreCase)
+            ? "playlistsDetails"
+            : "songsDetails";
+        var candidate = doc.GetElementbyId(nodeId)?.GetAttributeValue("data-cid", string.Empty)?.Trim();
+        return IsNumericBoomplayId(candidate) ? candidate! : fallbackId.Trim();
+    }
+
+    private static string ResolveCanonicalContentUrl(HtmlDocument doc, string fallbackUrl, string type)
+    {
+        var candidate = FirstNonEmpty(
+            doc.DocumentNode.SelectSingleNode("//link[@rel='canonical']")?.GetAttributeValue("href", string.Empty),
+            GetMetaContent(doc, "og:url", PropertyAttribute));
+        if (string.IsNullOrWhiteSpace(candidate)
+            || !TryParseBoomplayUrl(candidate, out var candidateType, out _)
+            || !string.Equals(candidateType, type, StringComparison.OrdinalIgnoreCase))
+        {
+            return fallbackUrl;
+        }
+
+        return candidate.Trim();
     }
 
     private static string ExtractPlaylistBodyDescription(HtmlDocument doc)
@@ -2019,14 +2164,16 @@ public sealed class BoomplayMetadataService
             return $"https:{trimmed}";
         }
 
-        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute))
-        {
-            return absolute.ToString();
-        }
-
         if (trimmed.StartsWith('/'))
         {
             return $"{BoomplayBaseUrl}{trimmed}";
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute)
+            && (string.Equals(absolute.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(absolute.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            return absolute.ToString();
         }
 
         return string.Empty;
@@ -2181,7 +2328,7 @@ public sealed class BoomplayMetadataService
 
         var seen = new HashSet<string>(StringComparer.Ordinal);
         return anchors
-            .Select(static anchor => SongPathRegex.Match(anchor.GetAttributeValue("href", string.Empty)).Groups["id"].Value)
+            .Select(static anchor => ResolvePlaylistRowNumericSongId(anchor, FindPlaylistRowScope(anchor)))
             .Where(static id => !string.IsNullOrWhiteSpace(id))
             .Where(seen.Add)
             .ToList();
@@ -2298,25 +2445,12 @@ public sealed class BoomplayMetadataService
                 continue;
             }
 
-            var songMatch = SongPathRegex.Match(href);
-            if (!songMatch.Success)
-            {
-                continue;
-            }
-
-            var songId = songMatch.Groups["id"].Value.Trim();
+            var scope = FindPlaylistRowScope(anchor);
+            var songId = ResolvePlaylistRowNumericSongId(anchor, scope);
             if (string.IsNullOrWhiteSpace(songId) || hints.ContainsKey(songId))
             {
                 continue;
             }
-
-            var scope = anchor.Ancestors().FirstOrDefault(static node =>
-                    node.Name.Equals("li", StringComparison.OrdinalIgnoreCase)
-                    || node.Name.Equals("tr", StringComparison.OrdinalIgnoreCase)
-                    || HasClassToken(node, "listItem")
-                    || HasClassToken(node, "songInfo")
-                    || HasClassToken(node, "searchSongsMenuWrap_list"))
-                ?? anchor.ParentNode;
 
             var title = NormalizePlaylistHintText(anchor.InnerText);
             var artist = NormalizePlaylistHintText(scope?.SelectSingleNode(".//a[contains(@class,'artistName')]")?.InnerText);
@@ -2342,11 +2476,50 @@ public sealed class BoomplayMetadataService
                 Title = title,
                 Artist = artist,
                 Album = album,
-                CoverUrl = cover
+                CoverUrl = cover,
+                Url = TryBuildAbsoluteBoomplayUrl(href)
             };
         }
 
         return hints;
+    }
+
+    private static HtmlNode? FindPlaylistRowScope(HtmlNode anchor)
+        => anchor.Ancestors().FirstOrDefault(static node =>
+               node.Name.Equals("li", StringComparison.OrdinalIgnoreCase)
+               || node.Name.Equals("tr", StringComparison.OrdinalIgnoreCase)
+               || HasClassToken(node, "listItem")
+               || HasClassToken(node, "songInfo")
+               || HasClassToken(node, "searchSongsMenuWrap_list"))
+           ?? anchor.ParentNode;
+
+    private static string ResolvePlaylistRowNumericSongId(HtmlNode anchor, HtmlNode? scope)
+    {
+        var numericPathMatch = SongPathRegex.Match(anchor.GetAttributeValue("href", string.Empty));
+        if (numericPathMatch.Success)
+        {
+            return numericPathMatch.Groups["id"].Value.Trim();
+        }
+
+        var itemId = scope?
+            .DescendantsAndSelf()
+            .Select(static node => FirstNonEmpty(
+                node.GetAttributeValue("data-itemID", string.Empty),
+                node.GetAttributeValue("data-itemid", string.Empty)))
+            .FirstOrDefault(IsNumericBoomplayId);
+        if (IsNumericBoomplayId(itemId))
+        {
+            return itemId!.Trim();
+        }
+
+        var encoded = scope?
+            .DescendantsAndSelf()
+            .Select(static node => node.GetAttributeValue("data-data", string.Empty))
+            .FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
+        var decoded = WebUtility.UrlDecode(encoded ?? string.Empty);
+        var separator = decoded.IndexOf("@+#", StringComparison.Ordinal);
+        var candidate = separator > 0 ? decoded[..separator].Trim() : string.Empty;
+        return IsNumericBoomplayId(candidate) ? candidate : string.Empty;
     }
 
     private static string ExtractPlaylistRowCover(HtmlNode? scope)
@@ -2405,6 +2578,8 @@ public sealed class BoomplayMetadataService
     {
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
+        var resolvedSongId = ResolveDetailContentId(doc, "track", songId);
+        var canonicalUrl = ResolveCanonicalContentUrl(doc, url, "track");
 
         var title = CleanBoomplayTitle(FirstNonEmpty(
             GetMetaContent(doc, "og:title", PropertyAttribute),
@@ -2419,15 +2594,15 @@ public sealed class BoomplayMetadataService
 
         var track = new BoomplayTrackMetadata
         {
-            Id = songId,
-            Url = url,
+            Id = resolvedSongId,
+            Url = canonicalUrl,
             Title = title ?? string.Empty,
             CoverUrl = imageUrl ?? string.Empty
         };
 
         ParseSongJsonLd(doc, track);
         ApplySongDetailMetadata(doc, track);
-        ApplyEmbeddedGenreMetadata(html, songId, track);
+        ApplyEmbeddedGenreMetadata(html, resolvedSongId, track);
 
         if (string.IsNullOrWhiteSpace(track.Artist))
         {
@@ -4104,7 +4279,10 @@ public sealed class BoomplayTrackHint
     public string AlbumId { get; set; } = string.Empty;
     public string Album { get; set; } = string.Empty;
     public string CoverUrl { get; set; } = string.Empty;
+    public string Url { get; set; } = string.Empty;
 }
+
+public sealed record BoomplayResolvedLink(string Type, string NumericId, string CanonicalUrl);
 
 public sealed class BoomplayAlbumMetadata
 {

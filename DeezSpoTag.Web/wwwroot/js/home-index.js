@@ -878,7 +878,6 @@ function isPlaylistLikeExternalUrl(parsedUrl, source) {
 const SPOTIFY_PLAYLIST_PATH_REGEX = /\/(?:intl-[a-z]{2}\/)?playlist\/([a-z0-9]+)/i;
 const APPLE_PLAYLIST_WITH_SLUG_REGEX = /\/playlist\/[^/]+\/([^/?#]+)/i;
 const APPLE_PLAYLIST_DIRECT_REGEX = /\/playlist\/([^/?#]+)/i;
-const BOOMPLAY_PLAYLIST_REGEX = /\/playlists?\/([a-z0-9]+)/i;
 
 function extractRegexGroup(input, regex) {
     return regex.exec(input)?.[1] ?? '';
@@ -916,9 +915,6 @@ function extractExternalCollectionId(parsedUrl, source) {
     if (source === 'apple') {
         return extractRegexGroup(parsedUrl.pathname, APPLE_PLAYLIST_WITH_SLUG_REGEX)
             || extractRegexGroup(parsedUrl.pathname, APPLE_PLAYLIST_DIRECT_REGEX);
-    }
-    if (source === 'boomplay') {
-        return extractRegexGroup(parsedUrl.pathname, BOOMPLAY_PLAYLIST_REGEX);
     }
     if (source === 'soundcloud') {
         return findPathSegmentAfter(pathSegments, 'sets');
@@ -968,14 +964,6 @@ function buildExternalPlaylistRouteBySource(source, parsedUrl, sourceUrl) {
             return '';
         }
         return `/Tracklist?id=${encodeURIComponent(playlistId)}&type=playlist&source=apple&appleUrl=${encodeURIComponent(sourceUrl)}`;
-    }
-
-    if (source === 'boomplay') {
-        const playlistId = extractRegexGroup(parsedUrl.pathname, BOOMPLAY_PLAYLIST_REGEX);
-        if (!playlistId) {
-            return '';
-        }
-        return `/Tracklist?id=${encodeURIComponent(playlistId)}&type=playlist&source=boomplay`;
     }
 
     if (source === 'tidal') {
@@ -1049,6 +1037,23 @@ async function handleUnifiedSearchUrlInput(input, parsedUrl) {
             throw new Error('Invalid Spotify link.');
         }
         globalThis.location.href = `/Tracklist?id=${encodeURIComponent(parsedSpotify.id)}&type=${encodeURIComponent(parsedSpotify.type)}&source=spotify`;
+        return true;
+    }
+
+    if (source === 'boomplay') {
+        const response = await fetch(`/api/boomplay/parse-link?url=${encodeURIComponent(input)}`);
+        if (!response.ok) {
+            throw new Error(`Boomplay link parse failed (${response.status}).`);
+        }
+
+        const parsed = await response.json();
+        const itemId = String(parsed?.id || '').trim();
+        const itemType = String(parsed?.type || '').trim().toLowerCase();
+        if (!itemId || !itemType || parsed?.error) {
+            throw new Error(parsed?.error || 'Boomplay link did not resolve to a supported item.');
+        }
+
+        globalThis.location.href = `/Tracklist?id=${encodeURIComponent(itemId)}&type=${encodeURIComponent(itemType)}&source=boomplay`;
         return true;
     }
 
