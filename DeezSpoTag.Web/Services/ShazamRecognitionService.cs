@@ -20,8 +20,8 @@ public sealed class ShazamRecognitionService : IDisposable
     private static readonly TimeSpan RuntimeProbeSuccessCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RuntimeProbeFailureRetryTtl = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
-    private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 12, 14, 18];
-    private const bool UseSearchAssistedFallbackAfterAudioOnlyMiss = true;
+    private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 18];
+    private static readonly TimeSpan RecognizerProcessTimeout = TimeSpan.FromSeconds(15);
     private const string ToolsDirectory = "Tools";
     private const string ShazamPortDirectory = "shazam_port";
     private static readonly string[] BashExecutableCandidates =
@@ -115,6 +115,106 @@ public sealed class ShazamRecognitionService : IDisposable
         return attempt.Matched ? attempt.Recognition : null;
     }
 
+    public async Task<ShazamRecognitionInfo?> RecognizeAsync(
+        string filePath,
+        CancellationToken cancellationToken = default)
+    {
+        var attempt = await RecognizeWithResilienceAsync(filePath, cancellationToken);
+        return attempt.Matched ? attempt.Recognition : null;
+    }
+
+    private async Task<ShazamRecognitionAttempt> RecognizeWithResilienceAsync(
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var invalidInputAttempt = BuildInvalidInputAttempt(filePath);
+        if (invalidInputAttempt != null)
+        {
+            return invalidInputAttempt;
+        }
+
+        ShazamRecognitionAttempt? firstRecognizerFailure = null;
+        var audioOnlyMatches = new List<ShazamRecognitionAttempt>();
+        foreach (var signatureWindowSeconds in AudioOnlySignatureRetryWindowsSeconds)
+        {
+            var attempt = await RecognizeAudioOnlyWithDetailsAsync(
+                filePath,
+                signatureWindowSeconds,
+                cancellationToken);
+            if (attempt.Matched)
+            {
+                audioOnlyMatches.Add(attempt);
+                continue;
+            }
+
+            if (attempt.Outcome == ShazamRecognitionOutcome.RecognizerUnavailable)
+            {
+                return attempt;
+            }
+
+            if (attempt.Outcome == ShazamRecognitionOutcome.RecognizerError
+                && firstRecognizerFailure == null)
+            {
+                firstRecognizerFailure = attempt;
+            }
+        }
+
+        var selectedAudioOnlyMatch = SelectBestAudioOnlyAttempt(audioOnlyMatches);
+        if (selectedAudioOnlyMatch != null)
+        {
+            return selectedAudioOnlyMatch;
+        }
+
+        if (audioOnlyMatches.Count > 0)
+        {
+            return new ShazamRecognitionAttempt
+            {
+                Outcome = ShazamRecognitionOutcome.NoMatch,
+                Error = "Conflicting Shazam fingerprint results."
+            };
+        }
+
+        return firstRecognizerFailure ?? new ShazamRecognitionAttempt
+        {
+            Outcome = ShazamRecognitionOutcome.NoMatch
+        };
+    }
+
+    private async Task<ShazamRecognitionAttempt> RecognizeAudioOnlyWithDetailsAsync(
+        string filePath,
+        int signatureWindowSeconds,
+        CancellationToken cancellationToken)
+    {
+        var portedExecution = await RunPortedRecognizerAsync(
+            filePath,
+            signatureWindowSeconds,
+            cancellationToken);
+        if (portedExecution.State == PortedRecognizerState.Recognized
+            && portedExecution.Recognition != null)
+        {
+            var fromPorted = BuildFallbackPortedInfo(portedExecution.Recognition)
+                ?? await TryResolveDetailedPortedInfoAsync(portedExecution.Recognition, cancellationToken);
+            if (fromPorted?.HasCoreMetadata == true)
+            {
+                return new ShazamRecognitionAttempt
+                {
+                    Outcome = ShazamRecognitionOutcome.Matched,
+                    Recognition = fromPorted
+                };
+            }
+        }
+
+        var failure = portedExecution.State switch
+        {
+            PortedRecognizerState.Unavailable => new PortedFailureState(true, false, portedExecution.Error),
+            PortedRecognizerState.Error => new PortedFailureState(false, true, portedExecution.Error),
+            _ => PortedFailureState.None
+        };
+        return BuildFailureAttempt(failure);
+    }
+
     private ShazamRecognitionAttempt RecognizeWithResilience(string filePath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -164,15 +264,6 @@ public sealed class ShazamRecognitionService : IDisposable
                 Outcome = ShazamRecognitionOutcome.NoMatch,
                 Error = "Conflicting Shazam fingerprint results."
             };
-        }
-
-        if (UseSearchAssistedFallbackAfterAudioOnlyMiss)
-        {
-            var assistedAttempt = RecognizeWithSearchAssistedFallback(filePath, cancellationToken);
-            if (assistedAttempt != null)
-            {
-                return assistedAttempt;
-            }
         }
 
         return firstRecognizerFailure ?? new ShazamRecognitionAttempt
@@ -290,28 +381,6 @@ public sealed class ShazamRecognitionService : IDisposable
         recognition.Tags["SHAZAM_FINGERPRINT_SELECTED_COUNT"] = new List<string> { selectedIdentityCount.ToString(CultureInfo.InvariantCulture) };
         recognition.Tags["SHAZAM_FINGERPRINT_TOTAL_MATCHES"] = new List<string> { totalMatchCount.ToString(CultureInfo.InvariantCulture) };
         recognition.Tags["SHAZAM_FINGERPRINT_HAD_CONFLICT"] = new List<string> { hadConflict ? "true" : "false" };
-    }
-
-    private ShazamRecognitionAttempt? RecognizeWithSearchAssistedFallback(string filePath, CancellationToken cancellationToken)
-    {
-        var assistedAttempt = RecognizeWithDetails(
-            filePath,
-            mode: RecognitionMode.SearchAssisted,
-            cancellationToken: cancellationToken);
-        if (assistedAttempt.Matched)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Shazam search-assisted fallback matched after audio-only retries for {Path}.",
-                    LogSanitizer.OneLine(filePath));
-            }
-            return assistedAttempt;
-        }
-
-        return assistedAttempt.Outcome == ShazamRecognitionOutcome.NoMatch
-            ? null
-            : assistedAttempt;
     }
 
     public ShazamRecognitionAttempt RecognizeWithDetails(
@@ -573,6 +642,12 @@ public sealed class ShazamRecognitionService : IDisposable
         string filePath,
         int? signatureWindowSeconds,
         CancellationToken cancellationToken)
+        => RunPortedRecognizerAsync(filePath, signatureWindowSeconds, cancellationToken).GetAwaiter().GetResult();
+
+    private async Task<PortedRecognizerExecution> RunPortedRecognizerAsync(
+        string filePath,
+        int? signatureWindowSeconds,
+        CancellationToken cancellationToken)
     {
         var scriptPath = GetRecognizerScriptPath();
         var runtimeProbe = GetRuntimeProbe();
@@ -587,7 +662,7 @@ public sealed class ShazamRecognitionService : IDisposable
 
         var pythonExecutable = ResolvePythonExecutable();
         var startInfo = CreateRecognizerProcessStartInfo(scriptPath, filePath, pythonExecutable, signatureWindowSeconds);
-        _recognizerGate.Wait(cancellationToken);
+        await _recognizerGate.WaitAsync(cancellationToken);
         try
         {
             using var process = new Process { StartInfo = startInfo };
@@ -604,12 +679,12 @@ public sealed class ShazamRecognitionService : IDisposable
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(TimeSpan.FromSeconds(40));
+                timeout.CancelAfter(RecognizerProcessTimeout);
                 var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
                 var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
                 try
                 {
-                    process.WaitForExitAsync(timeout.Token).GetAwaiter().GetResult();
+                    await process.WaitForExitAsync(timeout.Token);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -618,7 +693,7 @@ public sealed class ShazamRecognitionService : IDisposable
                     {
                         State = PortedRecognizerState.Error,
                         Error = terminated
-                            ? "Shazam recognizer timed out after 40 seconds."
+                            ? $"Shazam recognizer timed out after {RecognizerProcessTimeout.TotalSeconds:0} seconds."
                             : "Shazam recognizer timed out and its process did not terminate."
                     };
                 }
@@ -628,8 +703,8 @@ public sealed class ShazamRecognitionService : IDisposable
                     throw;
                 }
 
-                var stdout = stdoutTask.GetAwaiter().GetResult().Trim();
-                var stderr = stderrTask.GetAwaiter().GetResult().Trim();
+                var stdout = (await stdoutTask).Trim();
+                var stderr = (await stderrTask).Trim();
                 if (process.ExitCode != 0)
                 {
                     if (_logger.IsEnabled(LogLevel.Debug))
@@ -1198,6 +1273,42 @@ public sealed class ShazamRecognitionService : IDisposable
                 info.Url = ported.Url;
             }
 
+            return info.HasCoreMetadata ? info : null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Shazam track enrichment lookup failed for trackId {TrackId}. Falling back to recognizer metadata.",
+                ported.TrackId);
+            return null;
+        }
+    }
+
+    private async Task<ShazamRecognitionInfo?> TryResolveDetailedPortedInfoAsync(
+        PortedRecognitionResult ported,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(ported.TrackId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var card = await _discoveryService.GetTrackAsync(ported.TrackId, cancellationToken);
+            if (card == null)
+            {
+                return null;
+            }
+
+            var info = BuildInfo(card);
+            info.Isrc = FirstNonEmpty(info.Isrc, ported.Isrc);
+            info.Url = FirstNonEmpty(info.Url, ported.Url);
             return info.HasCoreMetadata ? info : null;
         }
         catch (OperationCanceledException)

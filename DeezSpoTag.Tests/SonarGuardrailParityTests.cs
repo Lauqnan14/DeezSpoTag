@@ -179,6 +179,37 @@ public sealed class SonarGuardrailParityTests
     }
 
     [Fact]
+    public void AutoTagService_PlatformDiffUsesThatProvidersImmediateBeforeSnapshot()
+    {
+        var root = FindRepoRoot();
+        var servicePath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        Assert.Contains("var baseSnapshot = target.Before", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("baseSnapshot = stored.Before ?? completed.FirstOrDefault()?.Before", source, StringComparison.Ordinal);
+        Assert.Contains("if (targetIndex > 0)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!isFinal && targetIndex > 0)", source, StringComparison.Ordinal);
+        Assert.Contains("stored.Before ?? selected.Before", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadQueue_UsesOriginalBadgeDesignWithoutFallbackChain()
+    {
+        var root = FindRepoRoot();
+        var activitiesPath = Path.Combine(root, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
+        Assert.True(File.Exists(activitiesPath), $"File not found: {activitiesPath}");
+
+        var source = File.ReadAllText(activitiesPath);
+        Assert.DoesNotContain("renderFallbackPlanBadges", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("task-fallback-chain", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("badge-fallback-step", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fallbackPlan: item.fallbackPlan", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("fallbackHistory: item.fallbackHistory", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("autoIndex: Number(item.autoIndex", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Download_DeezerMetadataResolver_PreservesFeaturedArtistsForCrossEngineTemplates()
     {
         var root = FindRepoRoot();

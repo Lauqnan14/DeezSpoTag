@@ -887,36 +887,6 @@
     border: 1px solid var(--warning);
 }
 
-.downloads-tab .badge-fallback-step {
-    background: rgba(148, 163, 184, 0.16);
-    color: var(--text-primary);
-    border: 1px solid rgba(148, 163, 184, 0.45);
-    text-transform: none;
-}
-
-.downloads-tab .badge-fallback-step.is-active {
-    background: rgba(0, 212, 255, 0.22);
-    color: var(--accent-blue);
-    border-color: var(--accent-blue);
-}
-
-.downloads-tab .badge-fallback-step.is-rejected {
-    background: rgba(255, 59, 92, 0.18);
-    color: var(--danger);
-    border-color: var(--danger);
-}
-
-.downloads-tab .badge-fallback-step.is-skipped {
-    opacity: 0.58;
-    text-decoration: line-through;
-}
-
-.downloads-tab .badge-fallback-step.is-completed {
-    background: rgba(16, 185, 129, 0.2);
-    color: #10b981;
-    border-color: #10b981;
-}
-
 .downloads-tab .badge-lyrics-synced {
     background: rgba(16, 185, 129, 0.2);
     color: #10b981;
@@ -4755,135 +4725,6 @@ async function clearCanceledTasks() {
 	    return classes[status] || 'badge-status';
 	}
 
-	function normalizeFallbackStep(step) {
-	    if (!step || typeof step !== 'object') {
-	        return null;
-	    }
-
-	    const engine = String(step.engine ?? step.Engine ?? '').trim();
-	    if (!engine) {
-	        return null;
-	    }
-
-	    const quality = String(step.quality ?? step.Quality ?? '').trim();
-	    return { engine, quality };
-	}
-
-	function decodeFallbackStepValue(value) {
-	    const raw = String(value ?? '').trim();
-	    if (!raw) {
-	        return null;
-	    }
-
-	    const [enginePart, qualityPart] = raw.split('|', 2);
-	    const engine = String(enginePart || '').trim();
-	    if (!engine) {
-	        return null;
-	    }
-
-	    return {
-	        engine,
-	        quality: String(qualityPart || '').trim()
-	    };
-	}
-
-	function formatFallbackStepLabel(step) {
-	    const engine = String(step?.engine || '').trim().toLowerCase();
-	    const quality = String(step?.quality || '').trim();
-	    const qualityLabel = formatFallbackQualityLabel(engine, quality);
-	    if (qualityLabel) {
-	        return qualityLabel;
-	    }
-
-	    return engine ? engine.charAt(0).toUpperCase() + engine.slice(1) : 'Unknown';
-	}
-
-	function formatFallbackQualityLabel(engine, quality) {
-	    if (!quality) {
-	        return '';
-	    }
-
-	    const upper = quality.toUpperCase();
-	    if (engine === 'amazon') {
-	        const amazonQualityLabels = {
-	            ULTRA_HD_FLAC: 'Ultra HD FLAC',
-	            HD_FLAC: 'HD FLAC',
-	            FLAC: 'Ultra HD FLAC',
-	            OPUS: 'Opus'
-	        };
-	        if (amazonQualityLabels[upper]) {
-	            return amazonQualityLabels[upper];
-	        }
-	    }
-
-	    const qualityLabels = {
-	        '27': 'Max Hi-Res (24-bit/192kHz)',
-	        'HI_RES_LOSSLESS': 'Max Hi-Res (24-bit/192kHz)',
-	        'ALAC': 'Apple ALAC',
-	        '7': 'Hi-Res (24-bit/96kHz)',
-	        'HI_RES': 'Hi-Res (24-bit/96kHz)',
-	        '6': 'CD Lossless (16-bit/44.1kHz)',
-	        'LOSSLESS': 'CD Lossless (16-bit/44.1kHz)',
-	        'FLAC': 'Amazon FLAC',
-	        '9': 'Deezer FLAC',
-	        'AAC': 'Apple AAC',
-	        '5': 'MP3 (320kbps)',
-	        'HIGH': 'MP3 (320kbps)',
-	        'LOW': 'Low (96kbps)',
-	        '3': 'Deezer 320kbps',
-	        '1': 'Deezer 128kbps'
-	    };
-
-	    if (qualityLabels[upper]) {
-	        return qualityLabels[upper];
-	    }
-
-	    if (!engine) {
-	        return quality;
-	    }
-
-	    return `${engine.charAt(0).toUpperCase() + engine.slice(1)} ${quality}`;
-	}
-
-	function renderFallbackPlanBadges(task) {
-	    const rawPlan = Array.isArray(task?.fallbackPlan) && task.fallbackPlan.length > 0
-	        ? task.fallbackPlan.map(normalizeFallbackStep).filter(Boolean)
-	        : (Array.isArray(task?.autoSources) ? task.autoSources.map(decodeFallbackStepValue).filter(Boolean) : []);
-
-	    if (rawPlan.length === 0) {
-	        return '';
-	    }
-
-	    const currentIndex = Number.isFinite(Number(task?.autoIndex)) ? Number(task.autoIndex) : -1;
-	    const history = Array.isArray(task?.fallbackHistory) ? task.fallbackHistory : [];
-	    const attemptByStep = new Map();
-	    history.forEach(attempt => {
-	        const stepId = String(attempt?.stepId ?? attempt?.StepId ?? '').trim();
-	        if (stepId) {
-	            attemptByStep.set(stepId, attempt);
-	        }
-	    });
-	    const badges = rawPlan.map((step, index) => {
-	        const label = escapeHtml(formatFallbackStepLabel(step));
-	        const attempt = attemptByStep.get(`step-${index}`);
-	        const attemptStatus = String(attempt?.status ?? attempt?.Status ?? '').trim().toLowerCase();
-	        const stateClass = attemptStatus === 'completed'
-	            ? ' is-completed'
-	            : attemptStatus === 'rejected' || attemptStatus === 'failed'
-	            ? ' is-rejected'
-	            : attemptStatus === 'skipped'
-	                ? ' is-skipped'
-	                : index === currentIndex
-	                    ? ' is-active'
-	                    : '';
-	        const detail = String(attempt?.detail ?? attempt?.Detail ?? '').trim();
-	        const title = detail || `${step.engine}${step.quality ? ` | ${step.quality}` : ''}`;
-	        return `<span class="badge badge-fallback-step${stateClass}" title="${escapeHtml(title)}">${label}</span>`;
-	    });
-
-	    return badges.join('');
-	}
-
 	function renderQualityBadge(task, displayQuality) {
 	    const engine = String(task?.engine || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 	    const quality = String(displayQuality || '').trim();
@@ -5092,7 +4933,6 @@ async function clearCanceledTasks() {
 	                        ${qualityBadge}
 	                        ${videoBadges.map(videoBadge => `<span class="badge ${videoBadge.className}">${videoBadge.label}</span>`).join('')}
 	                        <span class="badge badge-engine">${safeEngine}</span>
-	                        ${renderFallbackPlanBadges(task)}
                         ${lyricsBadges.length
                             ? lyricsBadges.map(label => {
                                 const kind = label.toLowerCase();
@@ -5106,8 +4946,8 @@ async function clearCanceledTasks() {
                             }).join('')
                             : ''
                         }
-                    </div>
-                </div>
+	                    </div>
+	                </div>
                 ${progressHtml}
                 ${errorHtml}
                 ${taskActions}
@@ -5550,9 +5390,6 @@ function mapQueueItem(item) {
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         canMonitorUnavailable: getQueueBoolFlag(item, 'canMonitorUnavailable', 'CanMonitorUnavailable'),
         lyricsBadges,
-        fallbackPlan: item.fallbackPlan ?? item.FallbackPlan ?? [],
-        fallbackHistory: item.fallbackHistory ?? item.FallbackHistory ?? [],
-        autoIndex: Number(item.autoIndex ?? item.AutoIndex ?? -1),
         requestedQuality: readQueueItemText(item, ['requestedQuality', 'RequestedQuality']),
         deliveredQuality: readQueueItemText(item, ['deliveredQuality', 'DeliveredQuality']),
         cover: getCoverFromPayload(item)
@@ -5688,13 +5525,6 @@ function mergeQueueTask(existing, incoming) {
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
         lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : [],
-        fallbackPlan: Array.isArray(incoming.fallbackPlan) && incoming.fallbackPlan.length > 0
-            ? incoming.fallbackPlan
-            : existing.fallbackPlan,
-        fallbackHistory: Array.isArray(incoming.fallbackHistory)
-            ? incoming.fallbackHistory
-            : existing.fallbackHistory,
-        autoIndex: Number.isFinite(Number(incoming.autoIndex)) ? Number(incoming.autoIndex) : existing.autoIndex,
         requestedQuality: String(incoming.requestedQuality || '').trim() || existing.requestedQuality,
         deliveredQuality: String(incoming.deliveredQuality || '').trim() || existing.deliveredQuality,
         cover: String(incoming.cover || '').trim() || existing.cover
@@ -6367,21 +6197,6 @@ function applyQueueRealtimeUpdate(payload) {
     const nextEngine = nextEngineRaw ? normalizeEngine(nextEngineRaw) : '';
     if (nextEngine && task.engine !== nextEngine) {
         task.engine = nextEngine;
-        taskChanged = true;
-    }
-    const nextFallbackPlan = update?.fallbackPlan ?? update?.FallbackPlan;
-    if (Array.isArray(nextFallbackPlan)) {
-        task.fallbackPlan = nextFallbackPlan;
-        taskChanged = true;
-    }
-    const nextFallbackHistory = update?.fallbackHistory ?? update?.FallbackHistory;
-    if (Array.isArray(nextFallbackHistory)) {
-        task.fallbackHistory = nextFallbackHistory;
-        taskChanged = true;
-    }
-    const nextAutoIndex = Number(update?.autoIndex ?? update?.AutoIndex);
-    if (Number.isFinite(nextAutoIndex) && task.autoIndex !== nextAutoIndex) {
-        task.autoIndex = nextAutoIndex;
         taskChanged = true;
     }
     const nextRequestedQuality = readQueueItemText(update, ['requestedQuality', 'RequestedQuality']);

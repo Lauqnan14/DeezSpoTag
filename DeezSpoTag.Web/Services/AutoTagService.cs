@@ -1640,16 +1640,11 @@ public partial class AutoTagService
 
         var target = completed[targetIndex];
         var isFinal = targetIndex == completed.Count - 1;
-        var baseSnapshot = targetIndex > 0
-            ? completed[targetIndex - 1].After
-            : stored.Before ?? target.Before;
-        if (isFinal)
-        {
-            baseSnapshot = stored.Before ?? completed.FirstOrDefault()?.Before ?? baseSnapshot;
-        }
+        var baseSnapshot = target.Before
+            ?? (targetIndex > 0 ? completed[targetIndex - 1].After : stored.Before);
 
         var basePlatform = "original";
-        if (!isFinal && targetIndex > 0)
+        if (targetIndex > 0)
         {
             basePlatform = completed[targetIndex - 1].Platform;
         }
@@ -1669,7 +1664,7 @@ public partial class AutoTagService
         if (isFinal && selected.After != null)
         {
             selected.RetainedSources = ComputeRetainedSources(
-                selected.Before,
+                stored.Before ?? selected.Before,
                 selected.After,
                 selected.PlatformDiffs);
         }

@@ -372,6 +372,39 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
     }
 
     [Fact]
+    public void EvaluateGlobalMismatchGuard_TrustsAuthoritativePlatformIdMatch()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "Incorrect old title",
+            Artist = "Incorrect old artist",
+            Artists = new List<string> { "Incorrect old artist" }
+        };
+        var match = new AutoTagMatchResult
+        {
+            Accuracy = 1,
+            MatchStrategy = "id",
+            Track = new AutoTagTrack
+            {
+                Title = "Resolved title",
+                Artists = new List<string> { "Resolved artist" },
+                TrackId = "authoritative-id"
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.Null(reason);
+    }
+
+    [Fact]
     public void NormalizeTrackArtistsForTagging_UsesUnknownArtist_WhenIncomingArtistsAreMissing()
     {
         var track = new AutoTagTrack

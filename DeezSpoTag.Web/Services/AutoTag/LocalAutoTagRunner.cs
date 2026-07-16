@@ -19,6 +19,7 @@ using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.DependencyInjection;
 using SixLabors.ImageSharp;
@@ -500,7 +501,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             MaxDurationDifferenceSeconds = config.MaxDurationDifference,
             Strictness = config.Strictness,
             MultipleMatches = config.MultipleMatches,
-            PreferredReleaseType = config.ManualReleasePreference
+            PreferredReleaseType = IsManualEnrichment(config)
+                ? config.ManualReleasePreference
+                : null
         };
         var settings = LoadRuntimeSettings(config.Technical, config);
         settings.DownloadLocation = targetPath;
@@ -1291,8 +1294,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             frozenRelease.ApplyTo(match.Track);
         }
 
+        var validationBasis = isManualEnrichment
+            || (usedShazamForStatus
+                && !string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase))
+            ? info
+            : validationInfo;
         var mismatchReason = EvaluateGlobalMismatchGuard(
-            isManualEnrichment ? info : validationInfo,
+            validationBasis,
             match,
             context.Plan.MatchingConfig);
         if (!string.IsNullOrWhiteSpace(mismatchReason))
@@ -1368,7 +1376,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     context.Plan.Config,
                     context.Plan.Settings,
                     stepToken));
-            if (!isManualEnrichment || context.Plan.AttemptedAppleExtras.Add(context.FileIndex))
+            if (context.Plan.AttemptedAppleExtras.Add(context.FileIndex))
             {
                 await RunBoundedOptionalStepAsync(
                     context,
@@ -1397,6 +1405,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Platform,
                 match.Track,
                 returnedTags);
+            if (persistenceFailures.Remove(SupportedTag.AlbumArt))
+            {
+                returnedTags.Remove(SupportedTag.AlbumArt);
+                context.LogCallback(
+                    $"onetagger_autotag: {context.Platform} artwork was not persisted; retaining provider metadata and reporting artwork as missing");
+            }
             if (persistenceFailures.Count > 0)
             {
                 throw new IOException($"Metadata persistence verification failed for: {string.Join(", ", persistenceFailures.Select(ToTagKey))}.");
@@ -1556,6 +1570,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.LogCallback(
                 $"onetagger_autotag: {context.Platform} {stepName} timed out after {timeout.TotalSeconds:0}s; continuing");
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Optional AutoTag step {Step} failed for {File} on {Platform}; continuing with provider metadata.",
+                SanitizeLogValue(stepName),
+                SanitizeLogValue(context.File),
+                SanitizeLogValue(context.Platform));
+            context.LogCallback(
+                $"onetagger_autotag: {context.Platform} optional {stepName} failed; continuing with provider metadata");
+        }
     }
 
     private static void ObserveBackgroundTask(Task task)
@@ -1573,6 +1598,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagMatchingConfig matchingConfig)
     {
         if (match.Track == null)
+        {
+            return null;
+        }
+
+        if (IsAuthoritativeIdMatch(match.MatchStrategy))
         {
             return null;
         }
@@ -1628,6 +1658,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         return null;
     }
+
+    private static bool IsAuthoritativeIdMatch(string? matchStrategy)
+        => (matchStrategy ?? string.Empty).Trim().ToLowerInvariant() is "id" or "id_first";
 
     private static string? EvaluateBoomplayReliabilityGuard(
         AutoTagAudioInfo info,
@@ -2293,6 +2326,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             await PopulateAppleCatalogMetadataAsync(
                 track,
                 config,
+                IsLocalAtmosFile(filePath),
                 appleIdentity.AppleId,
                 storefront,
                 settings.AppleMusic?.MediaUserToken,
@@ -2332,6 +2366,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private async Task PopulateAppleCatalogMetadataAsync(
         AutoTagTrack track,
         AutoTagRunnerConfig config,
+        bool localFileIsAtmos,
         string appleTrackId,
         string storefront,
         string? mediaUserToken,
@@ -2351,13 +2386,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        ApplyAppleCatalogMetadata(track, config, attributes);
+        ApplyAppleCatalogMetadata(track, config, attributes, localFileIsAtmos);
     }
 
     private static void ApplyAppleCatalogMetadata(
         AutoTagTrack track,
         AutoTagRunnerConfig config,
-        JsonElement attributes)
+        JsonElement attributes,
+        bool localFileIsAtmos)
     {
         if (HasAnyTags(config, GenreTag)
             && attributes.TryGetProperty("genreNames", out var genreNames)
@@ -2414,29 +2450,40 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             track.Explicit = string.Equals(rating.GetString(), "explicit", StringComparison.OrdinalIgnoreCase);
         }
 
-        if (!HasAnyTags(config, OtherTagsTag)
-            || !attributes.TryGetProperty("audioTraits", out var audioTraits)
-            || audioTraits.ValueKind != JsonValueKind.Array)
+        if (!HasAnyTags(config, OtherTagsTag))
         {
             return;
         }
 
-        var traits = audioTraits.EnumerateArray()
-            .Select(value => value.GetString())
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value!.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (traits.Count == 0)
+        track.RawTagsToRemove.Add("APPLE_AUDIO_TRAITS");
+        track.RawTagsToRemove.Add("APPLE_IS_ATMOS");
+        if (!localFileIsAtmos)
         {
             return;
         }
 
-        track.Other["APPLE_AUDIO_TRAITS"] = traits;
-        track.Other["APPLE_IS_ATMOS"] =
-        [
-            traits.Any(trait => AppleAtmosHeuristics.ContainsAtmosToken(trait)) ? "1" : "0"
-        ];
+        track.Other["APPLE_AUDIO_TRAITS"] = ["atmos"];
+        track.Other["APPLE_IS_ATMOS"] = ["1"];
+    }
+
+    private static bool IsLocalAtmosFile(string filePath)
+    {
+        try
+        {
+            using var file = TagLib.File.Create(filePath);
+            var codec = file.Properties.Codecs == null
+                ? string.Empty
+                : string.Join(' ', file.Properties.Codecs.Select(value => value.Description ?? string.Empty));
+            return AudioVariantResolver.IsAtmosVariant(
+                file.Properties.AudioChannels,
+                codec,
+                Path.GetExtension(filePath),
+                filePath);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
     }
 
     private static string? TryGetJsonString(JsonElement element, string propertyName)
@@ -5415,7 +5462,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         TagWriteExecutionContext context)
     {
         var genres = SanitizeGenres(context.CoreTrack.Album?.Genre ?? new List<string>(), context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
-        var styles = context.SourceTrack.Styles.ToList();
+        var styles = NormalizeStyleValues(context.SourceTrack.Styles, context.Separator);
         (genres, styles) = ApplyStylesOptions(genres, styles, context.Config.StylesOptions);
 
         if (context.EnabledTags.Contains(GenreTag) && context.EffectiveTagSettings.Genre && genres.Count > 0)
@@ -5432,6 +5479,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 genres = genres.Select(CapitalizeGenre).ToList();
             }
+            genres = GenreTagAliasNormalizer.DedupeValues(genres, context.GenreBlockList);
 
             SetField(tagWriteContext, new TagFieldBinding("TCON", Mp4GenreTag, "©gen", SupportedTag.Genre), genres);
         }
@@ -5445,7 +5493,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var styleValues = styles;
         if (context.Config.MergeGenres)
         {
-            var existingStyles = ReadExistingRawTag(file, context.Extension, styleTagName);
+            var existingStyles = NormalizeStyleValues(
+                ReadExistingRawTag(file, context.Extension, styleTagName),
+                context.Separator);
             var existingStyleSet = new HashSet<string>(existingStyles, StringComparer.OrdinalIgnoreCase);
             existingStyles.AddRange(styleValues.Where(existingStyleSet.Add));
             styleValues = existingStyles;
@@ -5455,6 +5505,29 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ? styleTagName
             : ResolveFieldRawName(SupportedTag.Style, ResolveFormatName(context.Extension), context.Config);
         SetRaw(tagWriteContext, rawName, SupportedTag.Style, styleValues);
+    }
+
+    private static List<string> NormalizeStyleValues(IEnumerable<string> values, string separator)
+    {
+        var normalized = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values)
+        {
+            var effectiveSeparator = string.IsNullOrEmpty(separator) ? "," : separator;
+            var parts = value.Split(
+                effectiveSeparator,
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+                if (trimmed.Length > 0 && seen.Add(trimmed))
+                {
+                    normalized.Add(trimmed);
+                }
+            }
+        }
+
+        return normalized;
     }
 
     private static (List<string> Genres, List<string> Styles) ApplyStylesOptions(
@@ -5952,6 +6025,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             && !context.EnabledTags.Contains(ReleaseTypeTag))
         {
             return;
+        }
+
+        if (context.EnabledTags.Contains(OtherTagsTag))
+        {
+            foreach (var rawName in context.SourceTrack.RawTagsToRemove)
+            {
+                RemoveRawTagValues(tagWriteContext, rawName);
+            }
         }
 
         if (context.SourceTrack.Other.Count == 0)
@@ -7160,10 +7241,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (track.Styles.Count > 0)
         {
-            var styleValues = track.Styles.ToList();
+            var separator = ResolveSeparatorForFormat(config, extension);
+            var styleValues = NormalizeStyleValues(track.Styles, separator);
             if (config.MergeGenres)
             {
-                var existing = ReadExistingRawTag(file, extension, styleTagName);
+                var existing = NormalizeStyleValues(
+                    ReadExistingRawTag(file, extension, styleTagName),
+                    separator);
                 var existingStyleSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
                 existing.AddRange(styleValues.Where(existingStyleSet.Add));
                 styleValues = existing;
@@ -7435,10 +7519,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (IsMp4Family(context.Extension))
         {
-            Mp4TagHelper.SetMp4Field(
+            if (Mp4TagHelper.TrySetMp4Field(
                 context,
                 binding.Tag,
-                values);
+                values))
+            {
+                return;
+            }
+
+            SetRaw(context, binding.Mp4Field, binding.Tag, values);
             return;
         }
 
@@ -8188,61 +8277,63 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             };
         }
 
-        public static void SetMp4Field(
+        public static bool TrySetMp4Field(
             TagWriteContext context,
             SupportedTag tag,
             List<string> values)
         {
             if (!ShouldOverwriteTag(context.Config, tag) && HasTag(context.File, ".mp4", tag, context.Config, context.PlatformId))
             {
-                return;
+                return true;
             }
 
             switch (tag)
             {
                 case SupportedTag.Title:
                     context.File.Tag.Title = values.FirstOrDefault() ?? "";
-                    break;
+                    return true;
                 case SupportedTag.Artist:
                     context.File.Tag.Performers = values.ToArray();
-                    break;
+                    return true;
                 case SupportedTag.AlbumArtist:
                     context.File.Tag.AlbumArtists = values.ToArray();
-                    break;
+                    return true;
                 case SupportedTag.Album:
                     context.File.Tag.Album = values.FirstOrDefault() ?? "";
-                    break;
+                    return true;
                 case SupportedTag.Genre:
                     context.File.Tag.Genres = SanitizeGenres(
                         values,
                         context.GenreAliasMap,
                         context.GenreBlockList,
                         context.SplitCompositeGenres).ToArray();
-                    break;
+                    return true;
                 case SupportedTag.BPM:
                     if (int.TryParse(values.FirstOrDefault(), out var bpm))
                     {
                         context.File.Tag.BeatsPerMinute = (uint)bpm;
                     }
-                    break;
+                    return true;
                 case SupportedTag.TrackNumber:
                     if (int.TryParse(values.FirstOrDefault(), out var track))
                     {
                         context.File.Tag.Track = (uint)track;
                     }
-                    break;
+                    return true;
                 case SupportedTag.TrackTotal:
                     if (int.TryParse(values.FirstOrDefault(), out var total))
                     {
                         context.File.Tag.TrackCount = (uint)total;
                     }
-                    break;
+                    return true;
                 case SupportedTag.DiscNumber:
                     if (int.TryParse(values.FirstOrDefault(), out var disc))
                     {
                         context.File.Tag.Disc = (uint)disc;
                     }
-                    break;
+                    return true;
+                default:
+                    return false;
             }
         }
 
@@ -8824,6 +8915,45 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.GenreAliasMap,
                 context.GenreBlockList,
                 context.SplitCompositeGenres);
+        }
+    }
+
+    private static void RemoveRawTagValues(TagWriteContext context, string rawName)
+    {
+        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            var id3 = (TagLib.Id3v2.Tag?)context.File.GetTag(TagTypes.Id3v2, false);
+            if (id3 == null)
+            {
+                return;
+            }
+
+            if (rawName.Length == 4)
+            {
+                id3.RemoveFrames(rawName);
+                return;
+            }
+
+            foreach (var frame in id3.GetFrames<TagLib.Id3v2.UserTextInformationFrame>("TXXX")
+                         .Where(frame => string.Equals(frame.Description, rawName, StringComparison.OrdinalIgnoreCase))
+                         .ToList())
+            {
+                id3.RemoveFrame(frame);
+            }
+            return;
+        }
+
+        if (context.Extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            var vorbis = (TagLib.Ogg.XiphComment?)context.File.GetTag(TagTypes.Xiph, false);
+            vorbis?.RemoveField(rawName);
+            return;
+        }
+
+        if (IsMp4Family(context.Extension))
+        {
+            var apple = (TagLib.Mpeg4.AppleTag?)context.File.GetTag(TagTypes.Apple, false);
+            AppleDashBoxReflectionHelper.TryClearValues(apple, Mp4RawTagNameNormalizer.Normalize(rawName));
         }
     }
 

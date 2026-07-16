@@ -49,7 +49,7 @@ public sealed class AutoTagAppleIdentityTests
         }
         """);
 
-        ApplyAppleCatalogMetadata(track, config, payload.RootElement);
+        ApplyAppleCatalogMetadata(track, config, payload.RootElement, localFileIsAtmos: true);
 
         Assert.Equal(["Afrobeats", "African"], track.Genres);
         Assert.Equal("QZWA32202168", track.Isrc);
@@ -57,8 +57,10 @@ public sealed class AutoTagAppleIdentityTests
         Assert.Equal("2026 Encore Recordings", Assert.Single(track.Other["copyright"]));
         Assert.Equal(["Anthony Ebuka Victor", "John Doe"], track.Other["composer"]);
         Assert.Equal(["Composer: Anthony Ebuka Victor", "Composer: John Doe"], track.Other["involvedPeople"]);
-        Assert.Equal(["atmos", "lossless"], track.Other["APPLE_AUDIO_TRAITS"]);
+        Assert.Equal(["atmos"], track.Other["APPLE_AUDIO_TRAITS"]);
         Assert.Equal("1", Assert.Single(track.Other["APPLE_IS_ATMOS"]));
+        Assert.Contains("APPLE_AUDIO_TRAITS", track.RawTagsToRemove);
+        Assert.Contains("APPLE_IS_ATMOS", track.RawTagsToRemove);
         Assert.True(track.Explicit);
     }
 
@@ -73,9 +75,24 @@ public sealed class AutoTagAppleIdentityTests
         };
         using var payload = JsonDocument.Parse("""{ "genreNames": [] }""");
 
-        ApplyAppleCatalogMetadata(track, config, payload.RootElement);
+        ApplyAppleCatalogMetadata(track, config, payload.RootElement, localFileIsAtmos: false);
 
         Assert.Equal(["Afrobeats"], track.Genres);
+    }
+
+    [Fact]
+    public void AppleCatalogMetadata_DoesNotWriteCatalogAudioTraitsToStereoFiles()
+    {
+        var config = CreateRunnerConfig("otherTags");
+        var track = new AutoTagTrack();
+        using var payload = JsonDocument.Parse("""{ "audioTraits": ["atmos", "lossless", "lossy-stereo"] }""");
+
+        ApplyAppleCatalogMetadata(track, config, payload.RootElement, localFileIsAtmos: false);
+
+        Assert.False(track.Other.ContainsKey("APPLE_AUDIO_TRAITS"));
+        Assert.False(track.Other.ContainsKey("APPLE_IS_ATMOS"));
+        Assert.Contains("APPLE_AUDIO_TRAITS", track.RawTagsToRemove);
+        Assert.Contains("APPLE_IS_ATMOS", track.RawTagsToRemove);
     }
 
     [Theory]
@@ -140,14 +157,25 @@ public sealed class AutoTagAppleIdentityTests
     }
 
     [Fact]
-    public async Task ItunesMatcher_DoesNotTextSearchWhenAuthoritativeAppleIdIsUnresolved()
+    public async Task ItunesMatcher_UsesStrictTextFallbackWhenAuthoritativeAppleIdIsUnresolved()
     {
-        var handler = new CapturingJsonHandler("""
-        {
-          "resultCount": 0,
-          "results": []
-        }
-        """);
+        var handler = new SequencedJsonHandler(
+            """{ "resultCount": 0, "results": [] }""",
+            """
+            {
+              "resultCount": 1,
+              "results": [{
+                "wrapperType": "track",
+                "kind": "song",
+                "trackId": 6786449720,
+                "artistName": "Victony",
+                "collectionName": "SLICK - Single",
+                "trackName": "SLICK",
+                "trackTimeMillis": 106909,
+                "trackCount": 1
+              }]
+            }
+            """);
         using var client = new HttpClient(handler, disposeHandler: true);
         var itunesClient = new ItunesClient(client, NullLogger<ItunesClient>.Instance);
         itunesClient.SetRateLimit(-1);
@@ -157,6 +185,7 @@ public sealed class AutoTagAppleIdentityTests
             Title = "SLICK",
             Artist = "Victony",
             Artists = ["Victony"],
+            DurationSeconds = 107,
             Tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
             {
                 ["APPLE_TRACK_ID"] = ["6786449714"]
@@ -169,9 +198,12 @@ public sealed class AutoTagAppleIdentityTests
             new ItunesMatchConfig { MatchById = true, Country = "ke" },
             CancellationToken.None);
 
-        Assert.Null(match);
-        Assert.Single(handler.RequestUris);
+        Assert.NotNull(match);
+        Assert.Equal("text_fallback", match!.MatchStrategy);
+        Assert.Equal("6786449720", match.Track.TrackId);
+        Assert.Equal(2, handler.RequestUris.Count);
         Assert.Equal("/lookup", handler.RequestUris[0].AbsolutePath);
+        Assert.Equal("/search", handler.RequestUris[1].AbsolutePath);
     }
 
     private sealed class CapturingJsonHandler(string payload) : HttpMessageHandler
@@ -190,6 +222,22 @@ public sealed class AutoTagAppleIdentityTests
         }
     }
 
+    private sealed class SequencedJsonHandler(params string[] payloads) : HttpMessageHandler
+    {
+        private int _index;
+        public List<Uri> RequestUris { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestUris.Add(request.RequestUri!);
+            var payload = payloads[Math.Min(_index++, payloads.Length - 1)];
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            });
+        }
+    }
+
     private static object CreateRunnerConfig(params string[] tags)
     {
         var type = typeof(LocalAutoTagRunner).GetNestedType("AutoTagRunnerConfig", BindingFlags.NonPublic)
@@ -200,12 +248,16 @@ public sealed class AutoTagAppleIdentityTests
         return config;
     }
 
-    private static void ApplyAppleCatalogMetadata(AutoTagTrack track, object config, JsonElement attributes)
+    private static void ApplyAppleCatalogMetadata(
+        AutoTagTrack track,
+        object config,
+        JsonElement attributes,
+        bool localFileIsAtmos)
     {
         var method = typeof(LocalAutoTagRunner).GetMethod(
             "ApplyAppleCatalogMetadata",
             BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException("ApplyAppleCatalogMetadata was not found.");
-        method.Invoke(null, [track, config, attributes]);
+        method.Invoke(null, [track, config, attributes, localFileIsAtmos]);
     }
 }

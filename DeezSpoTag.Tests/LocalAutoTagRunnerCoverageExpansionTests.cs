@@ -355,9 +355,108 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("usedShazamForStatus", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("!string.Equals(context.Platform, ShazamPlatform", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var validationBasis", runnerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("var match = await ResolvePlatformMatchAsync(context, info, usedShazamForStatus);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("Isrc = recognized.Isrc,", matcherSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Isrc = FirstNonEmpty(recognized.Isrc, info.Isrc)", matcherSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OptionalEnrichmentFailures_DoNotFailResolvedProviderMetadata()
+    {
+        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("catch (Exception ex) when (ex is not OperationCanceledException)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("optional {stepName} failed; continuing with provider metadata", runnerSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtworkPersistenceFailure_DoesNotDiscardPersistedProviderMetadata()
+    {
+        var runnerSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("persistenceFailures.Remove(SupportedTag.AlbumArt)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("returnedTags.Remove(SupportedTag.AlbumArt)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("retaining provider metadata and reporting artwork as missing", runnerSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ShazamProviderMatch_UsesAsyncRecognizerWithoutTaskRunWrapper()
+    {
+        var matcherSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "ShazamMatcher.cs");
+
+        Assert.Contains("await _recognitionService.RecognizeAsync(filePath, cancellationToken)", matcherSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task" + ".Run(", matcherSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ShazamRecognition_RetriesAreBoundedInsideProviderDeadline()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "ShazamRecognitionService.cs");
+
+        Assert.Contains("AudioOnlySignatureRetryWindowsSeconds = [10, 18]", source, StringComparison.Ordinal);
+        Assert.Contains("RecognizerProcessTimeout = TimeSpan.FromSeconds(15)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("UseSearchAssistedFallbackAfterAudioOnlyMiss", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mp4NonCoreFields_FallThroughToRawTagWriter()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("if (Mp4TagHelper.TrySetMp4Field(", source, StringComparison.Ordinal);
+        Assert.Contains("SetRaw(context, binding.Mp4Field, binding.Tag, values);", source, StringComparison.Ordinal);
+        Assert.Contains("default:\n                    return false;", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutomaticEnrichment_DoesNotApplyManualReleasePreference()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("PreferredReleaseType = IsManualEnrichment(config)", source, StringComparison.Ordinal);
+        Assert.Contains("? config.ManualReleasePreference\n                : null", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PreferredReleaseType = config.ManualReleasePreference", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void StyleMerge_SplitsConfiguredCompositeValuesBeforeDeduplication()
+    {
+        var normalized = InvokeStatic<List<string>>(
+            "NormalizeStyleValues",
+            new[] { "Synthwave, New Wave", "Synthwave", "New Wave" },
+            ", ");
+
+        Assert.Equal(new[] { "Synthwave", "New Wave" }, normalized);
+
+        var normalizedLegacyVorbis = InvokeStatic<List<string>>(
+            "NormalizeStyleValues",
+            new[] { "Synthwave, New Wave", "Synthwave" },
+            string.Empty);
+
+        Assert.Equal(new[] { "Synthwave", "New Wave" }, normalizedLegacyVorbis);
+    }
+
+    [Fact]
+    public void GenreWrite_PerformsFinalCanonicalDedupeAfterFormatting()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains(
+            "genres = GenreTagAliasNormalizer.DedupeValues(genres, context.GenreBlockList);",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutomaticEnrichment_AttemptsAppleExtrasOnlyOncePerFile()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("if (context.Plan.AttemptedAppleExtras.Add(context.FileIndex))", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!isManualEnrichment || context.Plan.AttemptedAppleExtras.Add(context.FileIndex))", source, StringComparison.Ordinal);
     }
 
     [Fact]

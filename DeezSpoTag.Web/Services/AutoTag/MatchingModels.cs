@@ -71,4 +71,5 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public DateTime? ReleaseDate { get; set; }
     public DateTime? PublishDate { get; set; }
     public Dictionary<string, List<string>> Other { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> RawTagsToRemove { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }

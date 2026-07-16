@@ -55,7 +55,7 @@ public sealed class BeatportMatcher
         var full = await ResolveFullTrackAsync(cleaned, beatportConfig, includeReleaseMeta, cancellationToken);
         return full == null
             ? null
-            : new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(full) };
+            : new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(full), MatchStrategy = "id" };
     }
 
     private async Task<AutoTagMatchResult?> MatchBySearchAsync(
@@ -148,7 +148,8 @@ public sealed class BeatportMatcher
         return new AutoTagMatchResult
         {
             Accuracy = 1.0,
-            Track = ToAutoTagTrack(full)
+            Track = ToAutoTagTrack(full),
+            MatchStrategy = "isrc"
         };
     }
 

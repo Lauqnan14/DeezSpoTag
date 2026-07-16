@@ -10,6 +10,7 @@ public sealed class ItunesMatcher
 
     public async Task<AutoTagMatchResult?> MatchAsync(AutoTagAudioInfo info, AutoTagMatchingConfig config, ItunesMatchConfig itunesConfig, CancellationToken cancellationToken)
     {
+        var authoritativeLookupMiss = false;
         if (itunesConfig.MatchById)
         {
             var existingTrackId = AutoTagIdentityTags.ReadAppleTrackId(info);
@@ -31,9 +32,7 @@ public sealed class ItunesMatcher
                     };
                 }
 
-                // A usable Apple/iTunes track ID is authoritative. Do not silently
-                // replace an unresolved ID match with a potentially different text match.
-                return null;
+                authoritativeLookupMiss = true;
             }
         }
 
@@ -84,7 +83,7 @@ public sealed class ItunesMatcher
             matchArtist: true);
         if (match != null)
         {
-            match.MatchStrategy = "text";
+            match.MatchStrategy = authoritativeLookupMiss ? "text_fallback" : "text";
         }
 
         return match;

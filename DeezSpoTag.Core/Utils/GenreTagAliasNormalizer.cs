@@ -123,23 +123,28 @@ public static class GenreTagAliasNormalizer
             }
 
             var trimmed = rawValue.Trim();
+            var normalizedValue = trimmed;
             if (TryNormalizeAliasMatch(trimmed, aliasMap, out var normalizedWholeValue))
             {
-                output.Add(normalizedWholeValue);
-                continue;
+                normalizedValue = normalizedWholeValue;
             }
 
             if (!splitComposite)
             {
-                output.Add(trimmed);
+                output.Add(normalizedValue);
                 continue;
             }
 
-            var tokens = trimmed.Split(CompositeGenreSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var tokens = normalizedValue.Split(
+                CompositeGenreSeparators,
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
             foreach (var normalized in tokens
                 .Select(token => NormalizeValue(token, aliasMap))
-                .Where(normalized => !string.IsNullOrWhiteSpace(normalized)))
+                .Where(normalized => !string.IsNullOrWhiteSpace(normalized))
+                .SelectMany(value => value.Split(
+                    CompositeGenreSeparators,
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)))
             {
                 output.Add(normalized);
             }

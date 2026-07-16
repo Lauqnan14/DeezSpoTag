@@ -2,7 +2,6 @@ namespace DeezSpoTag.Web.Services.AutoTag;
 
 public sealed class SpotifyMatcher
 {
-    private const int TrackIdAuthority = 3;
     private const int IsrcAuthority = 2;
     private const int SearchAuthority = 1;
 
@@ -38,10 +37,19 @@ public sealed class SpotifyMatcher
         if (!string.IsNullOrWhiteSpace(seededTrackId))
         {
             var byTrackId = await GetTrackIdCandidateAsync(seededTrackId, info, cancellationToken);
-            if (byTrackId != null)
+            if (byTrackId != null && MatchesKnownReleasePreference(byTrackId, config.PreferredReleaseType))
             {
-                candidates.Add(new SpotifyCandidate(byTrackId, TrackIdAuthority));
+                return new AutoTagMatchResult
+                {
+                    Accuracy = 1.0,
+                    Track = ToAutoTagTrack(byTrackId),
+                    MatchStrategy = "id"
+                };
             }
+
+            // A valid embedded Spotify ID is authoritative. If it cannot be
+            // resolved, do not replace it with a potentially different search result.
+            return null;
         }
 
         if (!string.IsNullOrWhiteSpace(info.Isrc))
@@ -62,7 +70,26 @@ public sealed class SpotifyMatcher
 
         var enriched = await _client.EnrichTrackWithPathfinderAsync(match.Track.Track, cancellationToken);
         EnsureTrackIdentity(enriched, seededTrackId, info);
-        return new AutoTagMatchResult { Accuracy = match.Accuracy, Track = ToAutoTagTrack(enriched) };
+        return new AutoTagMatchResult
+        {
+            Accuracy = match.Accuracy,
+            Track = ToAutoTagTrack(enriched),
+            MatchStrategy = match.Track.Authority switch
+            {
+                IsrcAuthority => "isrc",
+                _ => "text"
+            }
+        };
+    }
+
+    private static bool MatchesKnownReleasePreference(SpotifyTrackInfo track, string? preferredReleaseType)
+    {
+        var resolvedReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal);
+        return string.IsNullOrWhiteSpace(resolvedReleaseType)
+            || AutoTagReleaseCategory.MatchesPreference(
+                resolvedReleaseType,
+                track.TrackTotal,
+                preferredReleaseType);
     }
 
     private static OneTaggerMatching.MatchSelection<SpotifyCandidate>? SelectBestCandidate(

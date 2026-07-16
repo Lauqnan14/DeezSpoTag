@@ -130,7 +130,7 @@ public sealed class DiscogsMatcher
                 return null;
             }
 
-            return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(direct) };
+            return new AutoTagMatchResult { Accuracy = 1.0, Track = ToAutoTagTrack(direct), MatchStrategy = "id" };
         }
 
         var tracks = release.Tracks.Select((_, idx) => ToTrack(release, idx, discogsConfig)).ToList();

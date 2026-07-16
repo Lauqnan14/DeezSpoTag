@@ -108,8 +108,14 @@ public static class AppleDashBoxReflectionHelper
         return false;
     }
 
-    private static void TryClearValues(TagLib.Mpeg4.AppleTag tag, string name)
+    public static bool TryClearValues(TagLib.Mpeg4.AppleTag? tag, string name)
     {
+        if (tag == null || string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var cleared = false;
         try
         {
             foreach (var method in EnumerateMatchingMethods(tag, "SetDashBoxes", 3))
@@ -126,6 +132,7 @@ public static class AppleDashBoxReflectionHelper
                 }
 
                 method.Invoke(tag, new[] { MeanValue, name, argument });
+                cleared = true;
             }
 
             foreach (var method in EnumerateMatchingMethods(tag, "SetDashBox", 3))
@@ -139,12 +146,14 @@ public static class AppleDashBoxReflectionHelper
                 if (parameters[2].ParameterType == typeof(string))
                 {
                     method.Invoke(tag, new object[] { MeanValue, name, string.Empty });
+                    cleared = true;
                     continue;
                 }
 
                 if (TryBuildThirdArgument(parameters[2].ParameterType, Array.Empty<string>(), out var argument))
                 {
                     method.Invoke(tag, new[] { MeanValue, name, argument });
+                    cleared = true;
                 }
             }
         }
@@ -152,6 +161,8 @@ public static class AppleDashBoxReflectionHelper
         {
             // best effort only
         }
+
+        return cleared;
     }
 
     private static IEnumerable<MethodInfo> EnumerateMatchingMethods(

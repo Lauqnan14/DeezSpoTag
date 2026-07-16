@@ -24,7 +24,7 @@ public sealed class ShazamMatcher
         _logger = logger;
     }
 
-    public Task<AutoTagMatchResult?> MatchAsync(
+    public async Task<AutoTagMatchResult?> MatchAsync(
         string filePath,
         AutoTagAudioInfo info,
         AutoTagMatchingConfig matchingConfig,
@@ -34,20 +34,20 @@ public sealed class ShazamMatcher
     {
         if (!_recognitionService.IsAvailable)
         {
-            return Task.FromResult<AutoTagMatchResult?>(null);
+            return null;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!cache.TryGetValue(filePath, out var recognized))
         {
-            recognized = _recognitionService.Recognize(filePath, cancellationToken);
+            recognized = await _recognitionService.RecognizeAsync(filePath, cancellationToken);
             cache[filePath] = recognized;
         }
 
         if (recognized == null || !recognized.HasCoreMetadata)
         {
-            return Task.FromResult<AutoTagMatchResult?>(null);
+            return null;
         }
 
         var resolvedConfig = config ?? new ShazamMatchConfig();
@@ -79,7 +79,7 @@ public sealed class ShazamMatcher
                     resolvedConfig.MaxDurationDeltaSeconds);
             }
 
-            return Task.FromResult<AutoTagMatchResult?>(null);
+            return null;
         }
 
         var artists = ResolveArtists(recognized, info);
@@ -112,12 +112,12 @@ public sealed class ShazamMatcher
             ? Math.Clamp((titleSimilarity * 0.45d) + (artistSimilarity * 0.20d) + (durationSimilarity.Value * 0.35d), 0d, 1d)
             : Math.Clamp((titleSimilarity * 0.68d) + (artistSimilarity * 0.32d), 0d, 1d);
 
-        return Task.FromResult<AutoTagMatchResult?>(new AutoTagMatchResult
+        return new AutoTagMatchResult
         {
             Accuracy = compositeAccuracy,
             Track = track,
             MatchStrategy = "fingerprint"
-        });
+        };
     }
 
     private static void AddFingerprintAuditFields(

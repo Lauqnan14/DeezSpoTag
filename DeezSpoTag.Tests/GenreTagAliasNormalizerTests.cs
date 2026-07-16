@@ -118,6 +118,48 @@ public sealed class GenreTagAliasNormalizerTests
     }
 
     [Fact]
+    public void NormalizeExpandFilterAndDedupeValues_SplitsCompositeCanonicalAliasBeforeFinalDedupe()
+    {
+        var aliasMap = GenreTagAliasNormalizer.BuildAliasMap(
+        [
+            new GenreTagAliasRule
+            {
+                Alias = "Rap/HipHop",
+                Canonical = "Rap, HipHop"
+            }
+        ]);
+
+        var values = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            ["Rap/HipHop", "HipHop"],
+            aliasMap,
+            splitComposite: true,
+            BlockedGenres);
+
+        Assert.Equal(["Rap", "HipHop"], values);
+    }
+
+    [Fact]
+    public void NormalizeExpandFilterAndDedupeValues_SplitsCompositeCanonicalProducedByTokenAlias()
+    {
+        var aliasMap = GenreTagAliasNormalizer.BuildAliasMap(
+        [
+            new GenreTagAliasRule
+            {
+                Alias = "Rap",
+                Canonical = "Rap, HipHop"
+            }
+        ]);
+
+        var values = GenreTagAliasNormalizer.NormalizeExpandFilterAndDedupeValues(
+            ["Rap/Pop", "HipHop"],
+            aliasMap,
+            splitComposite: true,
+            BlockedGenres);
+
+        Assert.Equal(["Rap", "HipHop", "Pop"], values);
+    }
+
+    [Fact]
     public void NormalizeExpandFilterAndDedupeValues_SplitsCompositeBeforeDedupe()
     {
         var aliasMap = GenreTagAliasNormalizer.BuildAliasMap(

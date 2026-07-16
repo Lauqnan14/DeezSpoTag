@@ -44,6 +44,7 @@ public sealed class DeezerMatcher
                 var byId = await TryMatchByTrackIdAsync(trackIdFromTag, deezerConfig, cancellationToken);
                 if (IsPreferredRelease(byId, config))
                 {
+                    byId!.MatchStrategy = "id";
                     return byId;
                 }
             }
@@ -54,6 +55,7 @@ public sealed class DeezerMatcher
             var byIsrc = await TryMatchByIsrcAsync(effectiveInfo, effectiveInfo.Isrc!, config, deezerConfig, cancellationToken);
             if (IsPreferredRelease(byIsrc, config))
             {
+                byIsrc!.MatchStrategy = "isrc";
                 return byIsrc;
             }
         }
@@ -61,11 +63,18 @@ public sealed class DeezerMatcher
         var byMetadata = await TryMatchByMetadataAsync(effectiveInfo, config, deezerConfig, cancellationToken);
         if (IsPreferredRelease(byMetadata, config))
         {
+            byMetadata!.MatchStrategy = "text";
             return byMetadata;
         }
 
         var bySearch = await TryMatchBySearchAsync(effectiveInfo, config, deezerConfig, cancellationToken);
-        return IsPreferredRelease(bySearch, config) ? bySearch : null;
+        if (!IsPreferredRelease(bySearch, config))
+        {
+            return null;
+        }
+
+        bySearch!.MatchStrategy = "text";
+        return bySearch;
     }
 
     private static bool IsPreferredRelease(AutoTagMatchResult? match, AutoTagMatchingConfig config)

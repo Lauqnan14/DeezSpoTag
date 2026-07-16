@@ -103,20 +103,11 @@ public sealed class MusicBrainzMatcher
 
                 var track = ToTrack(recording, preferences);
                 await ExtendTrackAsync(info, track, preferences, cancellationToken);
-                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig))
-                {
-                    _logger.LogDebug(
-                        "MusicBrainz ID candidate rejected by source guard. id={RecordingId}, inputTitle={InputTitle}, candidateTitle={CandidateTitle}",
-                        recordingId,
-                        info.Title,
-                        track.Title);
-                    continue;
-                }
-
                 return new AutoTagMatchResult
                 {
                     Accuracy = 1.0,
-                    Track = ToAutoTagTrack(track)
+                    Track = ToAutoTagTrack(track),
+                    MatchStrategy = "id"
                 };
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
