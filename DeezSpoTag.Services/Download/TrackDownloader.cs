@@ -114,31 +114,6 @@ public class TrackDownloader
         public bool CoverIsApple { get; set; }
     }
 
-    private sealed class ArtistResolutionRequest
-    {
-        public required Track Track { get; init; }
-        public required DeezSpoTagSettings Settings { get; init; }
-        public required IReadOnlyList<string> ArtistFallbackOrder { get; init; }
-        public bool HasDeezerArtist { get; init; }
-        public string? AppleTrackId { get; init; }
-        public string? DeezerTrackId { get; init; }
-        public string? SpotifyId { get; init; }
-        public DeezerClient? DeezerClient { get; init; }
-        public ILastFmArtistImageResolver? LastFmArtistImageResolver { get; init; }
-    }
-
-    private sealed class ArtistResolutionState
-    {
-        public bool AllowAppleArtist { get; init; }
-        public bool AllowSpotifyArtist { get; init; }
-        public int AppleArtworkSize { get; init; }
-        public string? ResolvedArtistUrl { get; set; }
-        public bool ArtistIsApple { get; set; }
-        public bool UseDeezerArtist { get; set; }
-        public string? AppleArtistUrl { get; set; }
-        public string? SpotifyArtistUrl { get; set; }
-    }
-
     private sealed class EmbeddedCoverPathRequest
     {
         public required Track Track { get; init; }
@@ -622,7 +597,10 @@ public class TrackDownloader
             AlbumPath = context.DownloadResult.AlbumPath ?? string.Empty,
             ArtistPath = context.DownloadResult.ArtistPath ?? string.Empty,
             AlbumFilename = context.DownloadResult.AlbumFilename ?? string.Empty,
-            ArtistFilename = context.DownloadResult.ArtistFilename ?? string.Empty
+            ArtistFilename = context.DownloadResult.ArtistFilename ?? string.Empty,
+            ArtistArtworkProvider = context.DownloadResult.ArtistArtworkProvider ?? string.Empty,
+            ArtistArtworkSourceUrl = context.DownloadResult.ArtistArtworkSourceUrl ?? string.Empty,
+            ArtistArtworkResolutionMethod = context.DownloadResult.ArtistArtworkResolutionMethod ?? string.Empty
         });
     }
 
@@ -906,7 +884,7 @@ public class TrackDownloader
     {
         var coverAlbum = album ?? track.Album ?? new Album("Unknown Album");
         var fallbackOrder = ResolveArtworkFallbackOrder(settings);
-        var artistFallbackOrder = ResolveArtistArtworkFallbackOrder(settings);
+        var artistFallbackOrder = ArtworkFallbackHelper.ResolveArtistOrder(settings);
         var albumConstraint = ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(coverAlbum.Title);
         var hasDeezerCover = coverAlbum.Pic != null && !string.IsNullOrEmpty(coverAlbum.Pic.Md5);
         var hasDeezerArtist = coverAlbum.MainArtist?.Pic != null && !string.IsNullOrEmpty(coverAlbum.MainArtist.Pic.Md5);
@@ -930,22 +908,33 @@ public class TrackDownloader
             cancellationToken);
 
         var (resolvedCoverUrl, coverIsApple, useDeezerCover, spotifyId) = coverResolution;
-        var artistResolution = await ResolveArtistArtworkAsync(
-            new ArtistResolutionRequest
+        var artistResolution = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
+            new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
+                _appleCatalogService,
+                _httpClientFactory,
+                settings,
+                deezerClient,
+                _spotifyArtworkResolver,
+                _lastFmArtistImageResolver,
+                appleTrackId,
+                deezerTrackId,
+                spotifyId,
+                track.MainArtist?.Name,
+                _logger)
             {
-                Track = track,
-                Settings = settings,
-                ArtistFallbackOrder = artistFallbackOrder,
-                HasDeezerArtist = hasDeezerArtist,
-                AppleTrackId = appleTrackId,
-                DeezerTrackId = deezerTrackId,
-                SpotifyId = spotifyId,
-                DeezerClient = deezerClient,
-                LastFmArtistImageResolver = _lastFmArtistImageResolver
+                AppleArtistId = track.Urls.GetValueOrDefault("apple_artist_id"),
+                DeezerArtistId = track.Urls.GetValueOrDefault("deezer_artist_id")
+                    ?? (hasDeezerArtist ? track.MainArtist?.Id : null),
+                SpotifyArtistId = track.Urls.GetValueOrDefault("spotify_artist_id")
             },
             cancellationToken);
-
-        var (resolvedArtistUrl, artistIsApple, useDeezerArtist) = artistResolution;
+        var resolvedArtistUrl = artistResolution?.Url;
+        var artistIsApple = string.Equals(artistResolution?.Provider, "apple", StringComparison.OrdinalIgnoreCase);
+        const bool useDeezerArtist = false;
+        result.ArtistArtworkProvider = artistResolution?.Provider;
+        result.ArtistArtworkSourceUrl = artistResolution?.Url;
+        result.ArtistArtworkResolutionMethod = artistResolution?.ResolutionMethod;
+        PopulateArtistArtworkResult(result, settings, pathResult, coverAlbum, resolvedArtistUrl, artistIsApple, useDeezerArtist);
 
         if (!TryResolveAlbumMd5(coverAlbum, resolvedCoverUrl, useDeezerCover, out var albumMd5))
         {
@@ -988,7 +977,6 @@ public class TrackDownloader
                 CoverIsApple = coverIsApple,
                 AlbumMd5 = albumMd5
             });
-        PopulateArtistArtworkResult(result, settings, pathResult, coverAlbum, resolvedArtistUrl, artistIsApple, useDeezerArtist);
     }
 
     private static void EnsureTrackEmbeddedCoverPathForTagging(Track track, Album? contextAlbum)
@@ -1302,244 +1290,6 @@ public class TrackDownloader
             albumConstraint);
     }
 
-    private async Task<(string? resolvedArtistUrl, bool artistIsApple, bool useDeezerArtist)> ResolveArtistArtworkAsync(
-        ArtistResolutionRequest request,
-        CancellationToken cancellationToken)
-    {
-        var state = new ArtistResolutionState
-        {
-            AllowAppleArtist = AllowsJpegArtistArtwork(request.Settings),
-            AllowSpotifyArtist = AllowsJpegArtistArtwork(request.Settings),
-            AppleArtworkSize = AppleQueueHelpers.GetAppleArtworkSize(request.Settings)
-        };
-
-        foreach (var source in request.ArtistFallbackOrder)
-        {
-            var shouldStop = source switch
-            {
-                "apple" => await TryHandleAppleArtistSourceAsync(request, state, cancellationToken),
-                DeezerSource => await TryHandleDeezerArtistSourceAsync(request, state, cancellationToken),
-                "spotify" => await TryHandleSpotifyArtistSourceAsync(request, state, cancellationToken),
-                "lastfm" => await TryHandleLastFmArtistSourceAsync(request, state, cancellationToken),
-                _ => false
-            };
-
-            if (shouldStop)
-            {
-                break;
-            }
-        }
-
-        return (state.ResolvedArtistUrl, state.ArtistIsApple, state.UseDeezerArtist);
-    }
-
-    private async Task<bool> TryHandleAppleArtistSourceAsync(
-        ArtistResolutionRequest request,
-        ArtistResolutionState state,
-        CancellationToken cancellationToken)
-    {
-        if (!state.AllowAppleArtist || string.IsNullOrWhiteSpace(request.Track.MainArtist?.Name))
-        {
-            return false;
-        }
-
-        state.AppleArtistUrl = await ResolveAppleArtistUrlAsync(
-            request.Track,
-            request.Settings,
-            request.AppleTrackId,
-            state.AppleArtworkSize,
-            state.AppleArtistUrl,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(state.AppleArtistUrl))
-        {
-            return false;
-        }
-
-        state.ResolvedArtistUrl = state.AppleArtistUrl;
-        state.ArtistIsApple = true;
-        return true;
-    }
-
-    private async Task<bool> TryHandleDeezerArtistSourceAsync(
-        ArtistResolutionRequest request,
-        ArtistResolutionState state,
-        CancellationToken cancellationToken)
-    {
-        var deezerArtistUrl = await ArtworkFallbackHelper.TryResolveDeezerArtistImageAsync(
-            request.DeezerClient,
-            request.DeezerTrackId,
-            request.Settings.LocalArtworkSize,
-            _logger,
-            cancellationToken,
-            request.Track.MainArtist?.Name);
-        if (!string.IsNullOrWhiteSpace(deezerArtistUrl))
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Deezer artist art selected: {Url}", deezerArtistUrl);            }
-            state.ResolvedArtistUrl = deezerArtistUrl;
-            return true;
-        }
-
-        if (!request.HasDeezerArtist)
-        {
-            return false;
-        }
-
-        state.UseDeezerArtist = true;
-        return true;
-    }
-
-    private async Task<bool> TryHandleSpotifyArtistSourceAsync(
-        ArtistResolutionRequest request,
-        ArtistResolutionState state,
-        CancellationToken cancellationToken)
-    {
-        if (!state.AllowSpotifyArtist)
-        {
-            return false;
-        }
-
-        state.SpotifyArtistUrl = await ResolveSpotifyArtistUrlAsync(
-            request.Track,
-            request.SpotifyId,
-            state.SpotifyArtistUrl,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(state.SpotifyArtistUrl))
-        {
-            return false;
-        }
-
-        state.ResolvedArtistUrl = state.SpotifyArtistUrl;
-        return true;
-    }
-
-    private static async Task<bool> TryHandleLastFmArtistSourceAsync(
-        ArtistResolutionRequest request,
-        ArtistResolutionState state,
-        CancellationToken cancellationToken)
-    {
-        if (request.LastFmArtistImageResolver == null || string.IsNullOrWhiteSpace(request.Track.MainArtist?.Name))
-        {
-            return false;
-        }
-
-        var lastFmArtistUrl = await request.LastFmArtistImageResolver.ResolveArtistImageByNameAsync(
-            request.Track.MainArtist.Name,
-            cancellationToken);
-        if (string.IsNullOrWhiteSpace(lastFmArtistUrl))
-        {
-            return false;
-        }
-
-        state.ResolvedArtistUrl = lastFmArtistUrl;
-        return true;
-    }
-
-    private async Task<string?> ResolveAppleArtistUrlAsync(
-        Track track,
-        DeezSpoTagSettings settings,
-        string? appleTrackId,
-        int appleArtworkSize,
-        string? currentValue,
-        CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(currentValue))
-        {
-            return currentValue;
-        }
-
-        var artistName = track.MainArtist?.Name;
-        if (string.IsNullOrWhiteSpace(artistName))
-        {
-            return null;
-        }
-
-        var artistStorefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront;
-        try
-        {
-            var appleArtistUrl = string.Empty;
-            if (!string.IsNullOrWhiteSpace(appleTrackId))
-            {
-                appleArtistUrl = await AppleQueueHelpers.ResolveAppleArtistImageFromSongAsync(
-                    _appleCatalogService,
-                    appleTrackId,
-                    artistStorefront,
-                    appleArtworkSize,
-                    _logger,
-                    cancellationToken);
-            }
-
-            if (string.IsNullOrWhiteSpace(appleArtistUrl))
-            {
-                appleArtistUrl = await AppleQueueHelpers.ResolveAppleArtistImageAsync(
-                    _appleCatalogService,
-                    artistName,
-                    artistStorefront,
-                    appleArtworkSize,
-                    cancellationToken);
-            }
-
-            if (string.IsNullOrWhiteSpace(appleArtistUrl))
-            {
-                appleArtistUrl = await ArtworkFallbackHelper.TryResolveAppleArtistImageAsync(
-                    _appleCatalogService,
-                    _httpClientFactory,
-                    settings,
-                    appleTrackId,
-                    artistName,
-                    _logger,
-                    cancellationToken);
-            }
-
-            if (!string.IsNullOrWhiteSpace(appleArtistUrl) && _logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Apple artist art selected: {Url}", appleArtistUrl);
-            }
-
-            return appleArtistUrl;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", artistName);            }
-            return null;
-        }
-    }
-
-    private async Task<string?> ResolveSpotifyArtistUrlAsync(
-        Track track,
-        string? spotifyId,
-        string? currentValue,
-        CancellationToken cancellationToken)
-    {
-        var spotifyArtistUrl = currentValue;
-        if (string.IsNullOrWhiteSpace(spotifyArtistUrl) && !string.IsNullOrWhiteSpace(spotifyId))
-        {
-            spotifyArtistUrl = await _spotifyArtworkResolver.ResolveArtistImageUrlAsync(spotifyId, cancellationToken);
-        }
-
-        if (string.IsNullOrWhiteSpace(spotifyArtistUrl))
-        {
-            spotifyArtistUrl = await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(
-                track.MainArtist?.Name,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(spotifyArtistUrl) && _logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Spotify artist art selected by name: {Url}", spotifyArtistUrl);
-            }
-        }
-        else
-        {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Spotify artist art selected: {Url}", spotifyArtistUrl);            }
-        }
-
-        return spotifyArtistUrl;
-    }
-
     private bool TryResolveAlbumMd5(Album coverAlbum, string? resolvedCoverUrl, bool useDeezerCover, out string? albumMd5)
     {
         albumMd5 = null;
@@ -1812,13 +1562,6 @@ public class TrackDownloader
         return ArtworkFallbackHelper.ResolveOrder(settings);
     }
 
-    private static List<string> ResolveArtistArtworkFallbackOrder(DeezSpoTagSettings settings)
-    {
-        return ArtworkFallbackHelper.ResolveArtistOrder(settings)
-            .Where(source => !string.IsNullOrWhiteSpace(source))
-            .ToList();
-    }
-
     private async Task<string?> TryResolvePreferredArtworkTrackIdAsync(
         DeezerClient deezerClient,
         Track track,
@@ -1839,11 +1582,6 @@ public class TrackDownloader
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(format => format.ToLowerInvariant());
         return formats.Contains("jpg");
-    }
-
-    private static bool AllowsJpegArtistArtwork(DeezSpoTagSettings settings)
-    {
-        return AllowsJpegArtwork(settings);
     }
 
     /// <summary>

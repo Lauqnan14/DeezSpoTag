@@ -14829,6 +14829,39 @@ ON CONFLICT(artist_id, role, identity) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<ArtistArtworkProvenanceDto?> GetArtistArtworkProvenanceAsync(
+        long artistId,
+        string role,
+        string? localPath,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source, original_url, local_path, width, height
+FROM artist_artwork_cache
+WHERE artist_id = @artistId
+  AND role = @role
+  AND (@localPath IS NULL OR local_path = @localPath)
+ORDER BY last_seen_at DESC
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("role", role);
+        command.Parameters.AddWithValue("localPath", (object?)localPath ?? DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new ArtistArtworkProvenanceDto(
+            await ReadNullableStringAsync(reader, 0, cancellationToken),
+            await ReadNullableStringAsync(reader, 1, cancellationToken),
+            await ReadNullableStringAsync(reader, 2, cancellationToken),
+            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetInt32(3),
+            await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt32(4));
+    }
+
     public async Task SetArtistArtworkBlockedAsync(
         long artistId,
         string role,
@@ -15278,6 +15311,13 @@ public sealed record ArtistArtworkCacheUpsertInput(
     string? DetectedText,
     bool TextArtBlocked,
     bool UserBlocked);
+
+public sealed record ArtistArtworkProvenanceDto(
+    string? Source,
+    string? OriginalUrl,
+    string? LocalPath,
+    int? Width,
+    int? Height);
 
 public sealed record ArtistServerSyncStateUpsertInput(
     long ArtistId,

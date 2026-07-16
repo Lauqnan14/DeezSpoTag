@@ -1244,6 +1244,41 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         Assert.Single(coverPaths);
     }
 
+    [Fact]
+    public async Task ArtistArtworkProvenance_RoundTripsProviderUrlPathAndDimensions()
+    {
+        var seeded = await SeedLibraryAsync(("Provenance Song", "dz-prov", "sp-prov", "ap-prov"));
+        var localPath = Path.Join(_tempRoot, "artist.jpg");
+
+        await _repository.UpsertArtistArtworkCacheAsync(
+            new ArtistArtworkCacheUpsertInput(
+                seeded.ArtistId,
+                "avatar",
+                "spotify:artist-1",
+                "spotify",
+                "https://i.scdn.co/image/square",
+                localPath,
+                "hash",
+                640,
+                640,
+                "not_scanned",
+                null,
+                false,
+                false));
+
+        var result = await _repository.GetArtistArtworkProvenanceAsync(
+            seeded.ArtistId,
+            "avatar",
+            localPath);
+
+        Assert.NotNull(result);
+        Assert.Equal("spotify", result!.Source);
+        Assert.Equal("https://i.scdn.co/image/square", result.OriginalUrl);
+        Assert.Equal(localPath, result.LocalPath);
+        Assert.Equal(640, result.Width);
+        Assert.Equal(640, result.Height);
+    }
+
     private async Task<SeededLibrary> SeedLibraryAsync(params (string Title, string DeezerTrackId, string SpotifyTrackId, string AppleTrackId)[] tracks)
     {
         Assert.NotEmpty(tracks);

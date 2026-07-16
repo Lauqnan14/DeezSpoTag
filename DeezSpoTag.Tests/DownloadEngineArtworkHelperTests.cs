@@ -13,6 +13,35 @@ namespace DeezSpoTag.Tests;
 
 public sealed class DownloadEngineArtworkHelperTests
 {
+    [Theory]
+    [InlineData(1200, 1200, true)]
+    [InlineData(1000, 995, true)]
+    [InlineData(1200, 630, false)]
+    [InlineData(0, 1200, false)]
+    public void ArtistArtworkDimensions_RequireSquareImage(int width, int height, bool expected)
+    {
+        Assert.Equal(expected, DownloadEngineArtworkHelper.IsSquareArtistArtworkDimensions(width, height));
+    }
+
+    [Theory]
+    [InlineData("deezer", "spotify", "n", false)]
+    [InlineData("deezer", "spotify", "y", true)]
+    [InlineData("unknown", "spotify", "t", true)]
+    [InlineData("spotify", "spotify", "y", false)]
+    public void ExistingArtistArtwork_SeparatesProviderPreferenceFromOverwritePolicy(
+        string currentProvider,
+        string preferredProvider,
+        string overwrite,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            DownloadEngineArtworkHelper.ShouldRefreshExistingArtistArtwork(
+                currentProvider,
+                preferredProvider,
+                overwrite));
+    }
+
     [Fact]
     public void DownloadArtwork_ConsumesPersistedIdsWithoutResolvingAgain()
     {
@@ -154,7 +183,7 @@ public sealed class DownloadEngineArtworkHelperTests
         };
         var resolver = new TestLastFmArtistImageResolver("https://lastfm.example/artist.jpg");
 
-        var result = await DownloadEngineArtworkHelper.ResolveArtistImageUrlAsync(
+        var result = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
                 AppleCatalog: null,
                 HttpClientFactory: null,
@@ -169,8 +198,81 @@ public sealed class DownloadEngineArtworkHelperTests
                 Logger: NullLogger.Instance),
             CancellationToken.None);
 
-        Assert.Equal("https://lastfm.example/artist.jpg", result);
+        Assert.NotNull(result);
+        Assert.Equal("https://lastfm.example/artist.jpg", result!.Url);
+        Assert.Equal("lastfm", result.Provider);
+        Assert.Equal("exact-name", result.ResolutionMethod);
         Assert.Equal("Da'Ville", resolver.RequestedArtist);
+    }
+
+    [Fact]
+    public async Task ResolveArtistArtworkAsync_UsesDirectSpotifyArtistIdBeforeTrackAndName()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtistArtworkFallbackEnabled = true,
+            ArtistArtworkFallbackOrder = "spotify,apple,deezer"
+        };
+        var spotify = new TestSpotifyArtworkResolver
+        {
+            ArtistIdUrl = "https://i.scdn.co/image/artist-square"
+        };
+
+        var result = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
+            new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
+                null,
+                null,
+                settings,
+                null,
+                spotify,
+                null,
+                null,
+                null,
+                "spotify-track",
+                "Da'Ville",
+                NullLogger.Instance)
+            {
+                SpotifyArtistId = "spotify-artist"
+            },
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("spotify", result!.Provider);
+        Assert.Equal("artist-id", result.ResolutionMethod);
+        Assert.Equal("spotify-artist", result.ProviderArtistId);
+        Assert.Equal(1, spotify.ArtistIdCalls);
+        Assert.Equal(0, spotify.TrackCalls);
+        Assert.Equal(0, spotify.NameCalls);
+    }
+
+    [Fact]
+    public async Task ResolveArtistArtworkAsync_StopsAfterFirstConfiguredProviderSucceeds()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtistArtworkFallbackEnabled = true,
+            ArtistArtworkFallbackOrder = "lastfm,spotify"
+        };
+        var lastFm = new TestLastFmArtistImageResolver("https://lastfm.example/square.jpg");
+        var spotify = new TestSpotifyArtworkResolver { NameUrl = "https://spotify.example/square.jpg" };
+
+        var result = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
+            new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
+                null,
+                null,
+                settings,
+                null,
+                spotify,
+                lastFm,
+                null,
+                null,
+                null,
+                "Da'Ville",
+                NullLogger.Instance),
+            CancellationToken.None);
+
+        Assert.Equal("lastfm", result?.Provider);
+        Assert.Equal(0, spotify.NameCalls);
     }
 
     [Theory]
@@ -228,6 +330,41 @@ public sealed class DownloadEngineArtworkHelperTests
         {
             RequestedArtist = artistName;
             return Task.FromResult(_url);
+        }
+    }
+
+    private sealed class TestSpotifyArtworkResolver : ISpotifyArtworkResolver
+    {
+        public string? ArtistIdUrl { get; init; }
+        public string? TrackUrl { get; init; }
+        public string? NameUrl { get; init; }
+        public int ArtistIdCalls { get; private set; }
+        public int TrackCalls { get; private set; }
+        public int NameCalls { get; private set; }
+
+        public Task<string?> ResolveAlbumCoverUrlAsync(
+            string? spotifyTrackId,
+            CancellationToken cancellationToken,
+            string? requestedAlbumTitle = null,
+            bool rejectCompilationAlbumCandidate = false)
+            => Task.FromResult<string?>(null);
+
+        public Task<string?> ResolveArtistImageUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken)
+        {
+            TrackCalls++;
+            return Task.FromResult(TrackUrl);
+        }
+
+        public Task<string?> ResolveArtistImageByArtistIdAsync(string? spotifyArtistId, CancellationToken cancellationToken)
+        {
+            ArtistIdCalls++;
+            return Task.FromResult(ArtistIdUrl);
+        }
+
+        public Task<string?> ResolveArtistImageByNameAsync(string? artistName, CancellationToken cancellationToken)
+        {
+            NameCalls++;
+            return Task.FromResult(NameUrl);
         }
     }
 }

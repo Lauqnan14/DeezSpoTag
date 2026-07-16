@@ -6,6 +6,7 @@ using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using System.Linq;
 using System.Threading.Channels;
+using DeezSpoTag.Services.Download.Shared;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -14,10 +15,11 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private static readonly HttpClient ImageHttpClient = new();
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
-    private readonly DeezerArtistImageService _imageService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
     private readonly ILastFmArtistImageResolver _lastFmArtistImageResolver;
+    private readonly DeezSpoTag.Integrations.Deezer.DeezerClient _deezerClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<LibraryArtistImageQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
@@ -33,10 +35,11 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     {
         _repository = dependencies.Repository;
         _configStore = dependencies.ConfigStore;
-        _imageService = dependencies.Providers.ImageService;
         _appleCatalogService = dependencies.Providers.AppleCatalogService;
         _spotifyArtworkResolver = dependencies.Providers.SpotifyArtworkResolver;
         _lastFmArtistImageResolver = dependencies.Providers.LastFmArtistImageResolver;
+        _deezerClient = dependencies.Providers.DeezerClient;
+        _httpClientFactory = dependencies.Providers.HttpClientFactory;
         _settingsService = dependencies.SettingsService;
         _logger = logger;
         _dataRoot = AppDataPaths.GetDataRoot(dependencies.Environment);
@@ -141,68 +144,65 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private async Task<string?> ResolveImagePathAsync(QueueItem item, CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
-        foreach (var source in ResolveArtistArtworkOrder(settings))
-        {
-            var imagePath = source switch
+        var appleArtistId = await _repository.GetArtistSourceIdAsync(item.ArtistId, "apple", cancellationToken)
+            ?? await _repository.GetArtistSourceIdAsync(item.ArtistId, "applemusic", cancellationToken)
+            ?? await _repository.GetArtistSourceIdAsync(item.ArtistId, "itunes", cancellationToken);
+        var deezerArtistId = await _repository.GetArtistSourceIdAsync(item.ArtistId, "deezer", cancellationToken);
+        var spotifyArtistId = await _repository.GetArtistSourceIdAsync(item.ArtistId, "spotify", cancellationToken);
+        var resolution = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
+            new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
+                _appleCatalogService,
+                _httpClientFactory,
+                settings,
+                _deezerClient,
+                _spotifyArtworkResolver,
+                _lastFmArtistImageResolver,
+                null,
+                null,
+                null,
+                item.ArtistName,
+                _logger)
             {
-                "spotify" => await TryResolveSpotifyImagePathAsync(item, cancellationToken),
-                "deezer" => await TryResolveDeezerImagePathAsync(item, cancellationToken),
-                "apple" => await TryResolveAppleImagePathAsync(item, cancellationToken),
-                "lastfm" => await TryResolveLastFmImagePathAsync(item, cancellationToken),
-                _ => null
-            };
-
-            if (!string.IsNullOrWhiteSpace(imagePath))
-            {
-                return imagePath;
-            }
-        }
-
-        return null;
-    }
-
-    internal static IReadOnlyList<string> ResolveArtistArtworkOrder(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
-        => ArtworkFallbackHelper.ResolveArtistOrder(settings)
-            .Where(static source => source is "spotify" or "deezer" or "apple" or "lastfm")
-            .ToArray();
-
-    private async Task<string?> TryResolveAppleImagePathAsync(QueueItem item, CancellationToken cancellationToken)
-    {
-        var appleUrl = await TryResolveAppleArtistImageAsync(item.ArtistName, cancellationToken);
-        return string.IsNullOrWhiteSpace(appleUrl)
-            ? null
-            : await DownloadImageAsync(item.ArtistId, appleUrl, cancellationToken);
-    }
-
-    private async Task<string?> TryResolveDeezerImagePathAsync(QueueItem item, CancellationToken cancellationToken)
-    {
-        return await _imageService.DownloadArtistImageAsync(
-            item.ArtistId,
-            item.ArtistName,
-            ImageCacheDir,
+                AppleArtistId = appleArtistId,
+                DeezerArtistId = deezerArtistId,
+                SpotifyArtistId = spotifyArtistId
+            },
             cancellationToken);
-    }
-
-    private async Task<string?> TryResolveSpotifyImagePathAsync(QueueItem item, CancellationToken cancellationToken)
-    {
-        var spotifyUrl = await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(item.ArtistName, cancellationToken);
-        if (string.IsNullOrWhiteSpace(spotifyUrl))
+        if (resolution == null)
         {
             return null;
         }
 
-        return await DownloadImageAsync(item.ArtistId, spotifyUrl, cancellationToken);
-    }
-
-    private async Task<string?> TryResolveLastFmImagePathAsync(QueueItem item, CancellationToken cancellationToken)
-    {
-        var lastFmUrl = await _lastFmArtistImageResolver.ResolveArtistImageByNameAsync(item.ArtistName, cancellationToken);
-        if (string.IsNullOrWhiteSpace(lastFmUrl))
+        var imagePath = await DownloadImageAsync(item.ArtistId, resolution.Url, cancellationToken, resolution.Provider);
+        if (string.IsNullOrWhiteSpace(imagePath))
         {
             return null;
         }
 
-        return await DownloadImageAsync(item.ArtistId, lastFmUrl, cancellationToken, "lastfm");
+        var dimensions = await DownloadEngineArtworkHelper.ReadSquareArtistArtworkDimensionsAsync(imagePath, cancellationToken);
+        if (dimensions == null)
+        {
+            File.Delete(imagePath);
+            return null;
+        }
+
+        await _repository.UpsertArtistArtworkCacheAsync(
+            new ArtistArtworkCacheUpsertInput(
+                item.ArtistId,
+                "avatar",
+                $"{resolution.Provider}:{resolution.ProviderArtistId ?? item.ArtistName}",
+                resolution.Provider,
+                resolution.Url,
+                imagePath,
+                null,
+                dimensions.Value.Width,
+                dimensions.Value.Height,
+                "not_scanned",
+                null,
+                false,
+                false),
+            cancellationToken);
+        return imagePath;
     }
 
     private bool TryEnqueue(QueueItem item)
@@ -223,11 +223,56 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
         {
             return false;
         }
-        if (!string.IsNullOrWhiteSpace(artist.PreferredImagePath) && File.Exists(artist.PreferredImagePath))
+        if (string.IsNullOrWhiteSpace(artist.PreferredImagePath) || !File.Exists(artist.PreferredImagePath))
+        {
+            return true;
+        }
+
+        var dimensions = await DownloadEngineArtworkHelper.ReadSquareArtistArtworkDimensionsAsync(
+            artist.PreferredImagePath,
+            cancellationToken);
+        if (dimensions == null)
+        {
+            return true;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        var preferredProvider = ArtworkFallbackHelper.ResolveArtistOrder(settings).FirstOrDefault();
+        var provenance = await _repository.GetArtistArtworkProvenanceAsync(
+            item.ArtistId,
+            "avatar",
+            artist.PreferredImagePath,
+            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(provenance?.Source)
+            && string.Equals(provenance.Source, preferredProvider, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
-        return true;
+
+        if (provenance == null)
+        {
+            await _repository.UpsertArtistArtworkCacheAsync(
+                new ArtistArtworkCacheUpsertInput(
+                    item.ArtistId,
+                    "avatar",
+                    $"legacy:{Path.GetFileName(artist.PreferredImagePath)}",
+                    "unknown",
+                    null,
+                    artist.PreferredImagePath,
+                    null,
+                    dimensions.Value.Width,
+                    dimensions.Value.Height,
+                    "not_scanned",
+                    null,
+                    false,
+                    false),
+                cancellationToken);
+        }
+
+        return DownloadEngineArtworkHelper.ShouldRefreshExistingArtistArtwork(
+            provenance?.Source,
+            preferredProvider,
+            settings.OverwriteFile);
     }
 
     private void CompleteItem(QueueItem item)
@@ -238,32 +283,6 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             _queueLock,
             QueuePath,
             static queuedItem => queuedItem.ArtistId);
-    }
-
-    private async Task<string?> TryResolveAppleArtistImageAsync(string artistName, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(artistName))
-        {
-            return null;
-        }
-
-        try
-        {
-            return await AppleQueueHelpers.ResolveAppleArtistImageAsync(
-                _appleCatalogService,
-                artistName,
-                "us",
-                1200,
-                cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Apple artist lookup failed for {ArtistName}", artistName);
-            }
-            return null;
-        }
     }
 
     private async Task<string?> DownloadImageAsync(

@@ -596,6 +596,47 @@ public static class ArtworkFallbackHelper
         }
     }
 
+    public static async Task<string?> TryResolveDeezerArtistImageByArtistIdAsync(
+        DeezerClient? deezerClient,
+        string? deezerArtistId,
+        int size,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        if (deezerClient == null)
+        {
+            return null;
+        }
+
+        var normalizedArtistId = TryExtractNumericId(deezerArtistId);
+        if (string.IsNullOrWhiteSpace(normalizedArtistId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var artist = await deezerClient.GetArtistAsync(normalizedArtistId);
+            return BuildDeezerArtistImageUrl(
+                artist.Md5Image,
+                size > 0 ? size : 1200,
+                artist.PictureXl,
+                artist.PictureBig,
+                artist.PictureMedium,
+                artist.PictureSmall,
+                artist.Picture);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(ex, "Deezer artist image lookup failed for artist id {ArtistId}", normalizedArtistId);
+            }
+            return null;
+        }
+    }
+
     private static string? BuildDeezerArtistImageUrl(
         string? md5,
         int size,
@@ -630,8 +671,6 @@ public static class ArtworkFallbackHelper
         }
 
         var target = NormalizeLookupToken(artistName);
-        string? firstId = null;
-
         foreach (var item in data)
         {
             if (item is not JsonElement element || element.ValueKind != JsonValueKind.Object)
@@ -640,11 +679,6 @@ public static class ArtworkFallbackHelper
             }
 
             var id = TryGetJsonString(element, "id");
-            if (firstId == null && !string.IsNullOrWhiteSpace(id))
-            {
-                firstId = id;
-            }
-
             if (string.IsNullOrWhiteSpace(target))
             {
                 continue;
@@ -659,7 +693,7 @@ public static class ArtworkFallbackHelper
             }
         }
 
-        return firstId;
+        return null;
     }
 
     private static string? TryGetJsonString(JsonElement element, string propertyName)

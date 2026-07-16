@@ -15,6 +15,8 @@ using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Authentication;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Core.Models.Deezer;
 using Newtonsoft.Json;
@@ -132,6 +134,7 @@ namespace DeezSpoTag.Web.Controllers
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ISpotifyIdResolver _spotifyIdResolver;
         private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
+        private readonly ILastFmArtistImageResolver _lastFmArtistImageResolver;
         private readonly DeezSpoTag.Web.Services.SpotifyArtistService _spotifyArtistService;
         private readonly DeezSpoTag.Web.Services.AmazonMusicMetadataService _amazonMusicMetadataService;
         private readonly TracklistSongCacheStore _tracklistSongCacheStore;
@@ -145,6 +148,7 @@ namespace DeezSpoTag.Web.Controllers
                 IHttpClientFactory httpClientFactory,
                 ISpotifyIdResolver spotifyIdResolver,
                 ISpotifyArtworkResolver spotifyArtworkResolver,
+                ILastFmArtistImageResolver lastFmArtistImageResolver,
                 DeezSpoTag.Web.Services.SpotifyArtistService spotifyArtistService,
                 DeezSpoTag.Web.Services.AmazonMusicMetadataService amazonMusicMetadataService)
             {
@@ -152,6 +156,7 @@ namespace DeezSpoTag.Web.Controllers
                 HttpClientFactory = httpClientFactory;
                 SpotifyIdResolver = spotifyIdResolver;
                 SpotifyArtworkResolver = spotifyArtworkResolver;
+                LastFmArtistImageResolver = lastFmArtistImageResolver;
                 SpotifyArtistService = spotifyArtistService;
                 AmazonMusicMetadataService = amazonMusicMetadataService;
             }
@@ -160,6 +165,7 @@ namespace DeezSpoTag.Web.Controllers
             public IHttpClientFactory HttpClientFactory { get; }
             public ISpotifyIdResolver SpotifyIdResolver { get; }
             public ISpotifyArtworkResolver SpotifyArtworkResolver { get; }
+            public ILastFmArtistImageResolver LastFmArtistImageResolver { get; }
             public DeezSpoTag.Web.Services.SpotifyArtistService SpotifyArtistService { get; }
             public DeezSpoTag.Web.Services.AmazonMusicMetadataService AmazonMusicMetadataService { get; }
         }
@@ -192,6 +198,7 @@ namespace DeezSpoTag.Web.Controllers
             _httpClientFactory = dependencies.MusicServices.HttpClientFactory;
             _spotifyIdResolver = dependencies.MusicServices.SpotifyIdResolver;
             _spotifyArtworkResolver = dependencies.MusicServices.SpotifyArtworkResolver;
+            _lastFmArtistImageResolver = dependencies.MusicServices.LastFmArtistImageResolver;
             _spotifyArtistService = dependencies.MusicServices.SpotifyArtistService;
             _amazonMusicMetadataService = dependencies.MusicServices.AmazonMusicMetadataService;
             _tracklistSongCacheStore = dependencies.TracklistSongCacheStore;
@@ -4540,7 +4547,26 @@ namespace DeezSpoTag.Web.Controllers
         private async Task<string?> ResolveArtworkUrlAsync(ArtworkLookupRequest request, CancellationToken cancellationToken)
         {
             var settings = _settingsService.LoadSettings();
-            var fallbackOrder = ResolveArtworkFallbackOrder(settings);
+            if (request.IsArtist)
+            {
+                var artistArtwork = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
+                    new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
+                        _appleCatalog,
+                        _httpClientFactory,
+                        settings,
+                        _deezerClient,
+                        _spotifyArtworkResolver,
+                        _lastFmArtistImageResolver,
+                        null,
+                        null,
+                        null,
+                        request.Artist,
+                        _logger),
+                    cancellationToken);
+                return artistArtwork?.Url;
+            }
+
+            var fallbackOrder = ArtworkFallbackHelper.ResolveOrder(settings).ToList();
             if (!request.AllowApple)
             {
                 fallbackOrder = fallbackOrder
@@ -4558,34 +4584,6 @@ namespace DeezSpoTag.Web.Controllers
             }
 
             return null;
-        }
-
-        private static IReadOnlyList<string> ResolveArtworkFallbackOrder(DeezSpoTagSettings settings)
-        {
-            if (!settings.ArtworkFallbackEnabled)
-            {
-                return new[] { DeezerSource };
-            }
-
-            var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { AppleSource, DeezerSource, SpotifySource };
-            var order = (settings.ArtworkFallbackOrder ?? string.Empty)
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(value => value.ToLowerInvariant())
-                .Where(value => allowed.Contains(value))
-                .Distinct()
-                .ToList();
-
-            if (order.Count == 0)
-            {
-                order.AddRange(new[] { AppleSource, DeezerSource, SpotifySource });
-            }
-            else
-            {
-                order.AddRange(new[] { AppleSource, DeezerSource, SpotifySource }
-                    .Where(fallback => !order.Contains(fallback)));
-            }
-
-            return order;
         }
 
         private static string? BuildDeezerImage(string type, string? hash)
@@ -4652,7 +4650,6 @@ namespace DeezSpoTag.Web.Controllers
                             request.Title,
                             request.Artist,
                             request.Album,
-                            request.IsArtist,
                             "Apple artwork lookup failed.",
                             cancellationToken);
 
@@ -4665,15 +4662,6 @@ namespace DeezSpoTag.Web.Controllers
                     }
                 case SpotifySource:
                     {
-                        if (request.IsArtist)
-                        {
-                            if (!string.IsNullOrWhiteSpace(request.Artist))
-                            {
-                                return await _spotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
-                            }
-                            return null;
-                        }
-
                         var spotifyId = await _spotifyIdResolver.ResolveTrackIdAsync(
                             request.Title ?? string.Empty,
                             request.Artist ?? string.Empty,
@@ -4696,7 +4684,6 @@ namespace DeezSpoTag.Web.Controllers
             string? title,
             string? artist,
             string? album,
-            bool isArtist,
             string warningMessage,
             CancellationToken cancellationToken)
         {
@@ -4707,29 +4694,6 @@ namespace DeezSpoTag.Web.Controllers
 
             try
             {
-                if (isArtist)
-                {
-                    if (string.IsNullOrWhiteSpace(artist))
-                    {
-                        return null;
-                    }
-
-                    var artistUrl = await AppleQueueHelpers.ResolveAppleArtistImageAsync(
-                        _appleCatalog,
-                        artist,
-                        settings.AppleMusic?.Storefront ?? "us",
-                        appleArtworkSize,
-                        cancellationToken);
-                    return string.IsNullOrWhiteSpace(artistUrl)
-                        ? null
-                        : AppleQueueHelpers.BuildAppleArtworkUrl(
-                            artistUrl,
-                            appleDims.SizeText,
-                            appleArtworkSize,
-                            appleArtworkSize,
-                            appleFormat);
-                }
-
                 var appleUrl = await AppleQueueHelpers.ResolveAppleCoverFromCatalogAsync(
                     _appleCatalog,
                     new AppleQueueHelpers.AppleCatalogCoverLookup
@@ -5557,10 +5521,9 @@ namespace DeezSpoTag.Web.Controllers
                 md5,
                 imageType ?? CoverImageType,
                 string.Equals(state.Type, ArtistType, StringComparison.OrdinalIgnoreCase));
-            return state.ImageOverride ?? await ResolveArtworkUrlForSourceAsync(
-                state.Source,
-                imageRequest,
-                cancellationToken);
+            return state.ImageOverride ?? (imageRequest.IsArtist
+                ? await ResolveArtworkUrlAsync(imageRequest, cancellationToken)
+                : await ResolveArtworkUrlForSourceAsync(state.Source, imageRequest, cancellationToken));
         }
 
         private static string[] ExtractHomeItemFilterOptionIds(JObject item)

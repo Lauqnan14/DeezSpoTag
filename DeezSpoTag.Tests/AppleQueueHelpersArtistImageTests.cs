@@ -80,6 +80,43 @@ public sealed class AppleQueueHelpersArtistImageTests
         Assert.Contains("/1200x1200", result!, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ResolveItunesArtistImageAsync_UsesEmbeddedSquarePortraitInsteadOfWideSocialCard()
+    {
+        var factory = new StubHttpClientFactory(new StubHttpMessageHandler(request =>
+        {
+            var uri = request.RequestUri?.ToString() ?? string.Empty;
+            if (uri.Contains("itunes.apple.com/search", StringComparison.OrdinalIgnoreCase))
+            {
+                return Json(
+                    """
+                    {"resultCount":1,"results":[{"artistName":"The Ben","artistLinkUrl":"https://music.apple.com/us/artist/the-ben/343631056"}]}
+                    """);
+            }
+
+            if (uri.Contains("music.apple.com/us/artist/the-ben/343631056", StringComparison.OrdinalIgnoreCase))
+            {
+                return Html("""
+                    <html><head><meta property="og:image" content="https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages221/v4/a/b/c/file.png/1200x630cw.png"></head>
+                    <body><script type="application/ld+json">{"image":"https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages221/v4/a/b/c/file.png/486x486bb.png"}</script></body></html>
+                    """);
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+
+        var result = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
+            factory,
+            "The Ben",
+            1200,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Contains("/1200x1200", result!, StringComparison.Ordinal);
+        Assert.DoesNotContain("1200x630", result, StringComparison.Ordinal);
+    }
+
     private static HttpResponseMessage Json(string content)
         => new(HttpStatusCode.OK)
         {

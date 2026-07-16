@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Linq;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
+using SixLabors.ImageSharp;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
@@ -55,7 +56,18 @@ public static class DownloadEngineArtworkHelper
         string? DeezerId,
         string? SpotifyId,
         string? Artist,
-        ILogger Logger);
+        ILogger Logger)
+    {
+        public string? AppleArtistId { get; init; }
+        public string? DeezerArtistId { get; init; }
+        public string? SpotifyArtistId { get; init; }
+    }
+
+    public sealed record ArtistArtworkResolution(
+        string Provider,
+        string Url,
+        string? ProviderArtistId,
+        string ResolutionMethod);
 
     public sealed record SaveArtistArtworkRequest(
         ImageDownloader ImageDownloader,
@@ -246,24 +258,29 @@ public static class DownloadEngineArtworkHelper
         }
     }
 
-    public static async Task<string?> ResolveArtistImageUrlAsync(
+    public static async Task<ArtistArtworkResolution?> ResolveArtistArtworkAsync(
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
     {
         var fallbackOrder = ArtworkFallbackHelper.ResolveArtistOrder(request.Settings);
         foreach (var source in fallbackOrder)
         {
-            var imageUrl = await TryResolveArtistImageBySourceAsync(source, request, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(imageUrl))
+            var resolution = await TryResolveArtistImageBySourceAsync(source, request, cancellationToken);
+            if (resolution != null)
             {
-                return imageUrl;
+                request.Logger.LogInformation(
+                    "Artist artwork resolved from {Provider} using {ResolutionMethod} for {Artist}",
+                    resolution.Provider,
+                    resolution.ResolutionMethod,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.Artist));
+                return resolution;
             }
         }
 
         return null;
     }
 
-    private static Task<string?> TryResolveArtistImageBySourceAsync(
+    private static Task<ArtistArtworkResolution?> TryResolveArtistImageBySourceAsync(
         string source,
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
@@ -275,13 +292,7 @@ public static class DownloadEngineArtworkHelper
 
         if (string.Equals(source, "deezer", StringComparison.OrdinalIgnoreCase))
         {
-            return ArtworkFallbackHelper.TryResolveDeezerArtistImageAsync(
-                request.DeezerClient,
-                request.DeezerId,
-                request.Settings.LocalArtworkSize,
-                request.Logger,
-                cancellationToken,
-                request.Artist);
+            return TryResolveDeezerArtistImageAsync(request, cancellationToken);
         }
 
         if (string.Equals(source, "spotify", StringComparison.OrdinalIgnoreCase))
@@ -294,19 +305,70 @@ public static class DownloadEngineArtworkHelper
             return TryResolveLastFmArtistImageAsync(request, cancellationToken);
         }
 
-        return Task.FromResult<string?>(null);
+        return Task.FromResult<ArtistArtworkResolution?>(null);
     }
 
-    private static Task<string?> TryResolveAppleArtistImageAsync(
+    private static async Task<ArtistArtworkResolution?> TryResolveDeezerArtistImageAsync(
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Artist))
+        if (!string.IsNullOrWhiteSpace(request.DeezerArtistId))
         {
-            return Task.FromResult<string?>(null);
+            var byArtistId = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(
+                request.DeezerClient,
+                request.DeezerArtistId,
+                request.Settings.LocalArtworkSize,
+                request.Logger,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(byArtistId))
+            {
+                return new ArtistArtworkResolution(DeezerProvider, byArtistId, request.DeezerArtistId, "artist-id");
+            }
         }
 
-        return ArtworkFallbackHelper.TryResolveAppleArtistImageAsync(
+        var imageUrl = await ArtworkFallbackHelper.TryResolveDeezerArtistImageAsync(
+            request.DeezerClient,
+            request.DeezerId,
+            request.Settings.LocalArtworkSize,
+            request.Logger,
+            cancellationToken,
+            request.Artist);
+        return string.IsNullOrWhiteSpace(imageUrl)
+            ? null
+            : new ArtistArtworkResolution(
+                DeezerProvider,
+                imageUrl,
+                request.DeezerArtistId,
+                string.IsNullOrWhiteSpace(request.DeezerId) ? "exact-name" : "track-relationship");
+    }
+
+    private static async Task<ArtistArtworkResolution?> TryResolveAppleArtistImageAsync(
+        ArtistImageResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.AppleCatalog != null && !string.IsNullOrWhiteSpace(request.AppleArtistId))
+        {
+            var storefront = string.IsNullOrWhiteSpace(request.Settings.AppleMusic?.Storefront)
+                ? "us"
+                : request.Settings.AppleMusic!.Storefront;
+            var byArtistId = await AppleQueueHelpers.ResolveAppleArtistImageByIdAsync(
+                request.AppleCatalog,
+                request.AppleArtistId,
+                storefront,
+                AppleQueueHelpers.GetAppleArtworkSize(request.Settings),
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(byArtistId))
+            {
+                return new ArtistArtworkResolution(AppleProvider, byArtistId, request.AppleArtistId, "artist-id");
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        var imageUrl = await ArtworkFallbackHelper.TryResolveAppleArtistImageAsync(
             request.AppleCatalog,
             request.HttpClientFactory,
             request.Settings,
@@ -314,9 +376,16 @@ public static class DownloadEngineArtworkHelper
             request.Artist,
             request.Logger,
             cancellationToken);
+        return string.IsNullOrWhiteSpace(imageUrl)
+            ? null
+            : new ArtistArtworkResolution(
+                AppleProvider,
+                imageUrl,
+                request.AppleArtistId,
+                string.IsNullOrWhiteSpace(request.AppleId) ? "exact-name" : "track-relationship");
     }
 
-    private static async Task<string?> TryResolveSpotifyArtistImageAsync(
+    private static async Task<ArtistArtworkResolution?> TryResolveSpotifyArtistImageAsync(
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
     {
@@ -325,21 +394,38 @@ public static class DownloadEngineArtworkHelper
             return null;
         }
 
+        if (!string.IsNullOrWhiteSpace(request.SpotifyArtistId))
+        {
+            var byArtistId = await request.SpotifyArtworkResolver.ResolveArtistImageByArtistIdAsync(
+                request.SpotifyArtistId,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(byArtistId))
+            {
+                return new ArtistArtworkResolution(SpotifyProvider, byArtistId, request.SpotifyArtistId, "artist-id");
+            }
+        }
+
         if (!string.IsNullOrWhiteSpace(request.SpotifyId))
         {
             var byId = await request.SpotifyArtworkResolver.ResolveArtistImageUrlAsync(request.SpotifyId, cancellationToken);
             if (!string.IsNullOrWhiteSpace(byId))
             {
-                return byId;
+                return new ArtistArtworkResolution(SpotifyProvider, byId, request.SpotifyArtistId, "track-relationship");
             }
         }
 
-        return string.IsNullOrWhiteSpace(request.Artist)
+        if (string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        var byName = await request.SpotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
+        return string.IsNullOrWhiteSpace(byName)
             ? null
-            : await request.SpotifyArtworkResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
+            : new ArtistArtworkResolution(SpotifyProvider, byName, request.SpotifyArtistId, "exact-name");
     }
 
-    private static async Task<string?> TryResolveLastFmArtistImageAsync(
+    private static async Task<ArtistArtworkResolution?> TryResolveLastFmArtistImageAsync(
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)
     {
@@ -348,15 +434,26 @@ public static class DownloadEngineArtworkHelper
             return null;
         }
 
-        return await request.LastFmArtistImageResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
+        var imageUrl = await request.LastFmArtistImageResolver.ResolveArtistImageByNameAsync(request.Artist, cancellationToken);
+        return string.IsNullOrWhiteSpace(imageUrl)
+            ? null
+            : new ArtistArtworkResolution("lastfm", imageUrl, null, "exact-name");
     }
 
-    public static async Task<IReadOnlyList<string>> SaveArtistArtworkAsync(
+    public sealed record ArtistArtworkSaveResult(
+        IReadOnlyList<string> Paths,
+        int? Width,
+        int? Height,
+        bool ExistingArtworkRetained);
+
+    private sealed record ValidatedArtistArtwork(string Path, int Width, int Height, bool ExistingArtworkRetained);
+
+    public static async Task<ArtistArtworkSaveResult> SaveArtistArtworkAsync(
         SaveArtistArtworkRequest request,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(request.ArtistPath);
-        var savedPaths = new List<string>();
+        var savedArtwork = new List<ValidatedArtistArtwork>();
         var artistName = request.PathProcessor.GenerateArtistName(
             request.Settings.ArtistImageTemplate,
             request.Track.MainArtist,
@@ -373,6 +470,7 @@ public static class DownloadEngineArtworkHelper
             foreach (var format in AppleQueueHelpers.GetArtworkOutputFormats(request.Settings))
             {
                 var targetPath = Path.Join(request.ArtistPath, $"{artistName}.{format}");
+                var protectedExisting = IsProtectedExistingArtwork(targetPath, request.Settings.OverwriteFile);
                 var downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
                     request.ImageDownloader,
                     new AppleQueueHelpers.AppleArtworkDownloadRequest
@@ -386,30 +484,33 @@ public static class DownloadEngineArtworkHelper
                         Logger = request.Logger
                     },
                     cancellationToken);
-                if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+                var validated = await ValidateArtistArtworkAsync(downloaded, protectedExisting, request.Logger, cancellationToken);
+                if (validated != null)
                 {
-                    savedPaths.Add(downloaded);
+                    savedArtwork.Add(validated);
                 }
             }
 
-            return savedPaths;
+            return BuildArtistArtworkSaveResult(savedArtwork);
         }
 
         if (request.SingleJpegForNonApple)
         {
             var artistFilePath = Path.Join(request.ArtistPath, $"{artistName}.jpg");
+            var protectedExisting = IsProtectedExistingArtwork(artistFilePath, request.Settings.OverwriteFile);
             var downloaded = await request.ImageDownloader.DownloadImageAsync(
                 request.ArtistImageUrl,
                 artistFilePath,
                 request.Settings.OverwriteFile,
                 request.PreferMaxQualityCover,
                 cancellationToken);
-            if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+            var validated = await ValidateArtistArtworkAsync(downloaded, protectedExisting, request.Logger, cancellationToken);
+            if (validated != null)
             {
-                savedPaths.Add(downloaded);
+                savedArtwork.Add(validated);
             }
 
-            return savedPaths;
+            return BuildArtistArtworkSaveResult(savedArtwork);
         }
 
         var formats = (request.Settings.LocalArtworkFormat ?? "jpg")
@@ -419,18 +520,124 @@ public static class DownloadEngineArtworkHelper
         {
             var ext = format.Equals("png", StringComparison.OrdinalIgnoreCase) ? "png" : "jpg";
             var targetPath = Path.Join(request.ArtistPath, $"{artistName}.{ext}");
+            var protectedExisting = IsProtectedExistingArtwork(targetPath, request.Settings.OverwriteFile);
             var downloaded = await request.ImageDownloader.DownloadImageAsync(
                 request.ArtistImageUrl,
                 targetPath,
                 request.Settings.OverwriteFile,
                 request.PreferMaxQualityCover,
                 cancellationToken);
-            if (!string.IsNullOrWhiteSpace(downloaded) && File.Exists(downloaded))
+            var validated = await ValidateArtistArtworkAsync(downloaded, protectedExisting, request.Logger, cancellationToken);
+            if (validated != null)
             {
-                savedPaths.Add(downloaded);
+                savedArtwork.Add(validated);
             }
         }
 
-        return savedPaths;
+        return BuildArtistArtworkSaveResult(savedArtwork);
+    }
+
+    private static ArtistArtworkSaveResult BuildArtistArtworkSaveResult(IReadOnlyList<ValidatedArtistArtwork> savedArtwork)
+    {
+        var first = savedArtwork.FirstOrDefault();
+        return new ArtistArtworkSaveResult(
+            savedArtwork.Select(item => item.Path).ToArray(),
+            first?.Width,
+            first?.Height,
+            savedArtwork.Any(item => item.ExistingArtworkRetained));
+    }
+
+    private static async Task<ValidatedArtistArtwork?> ValidateArtistArtworkAsync(
+        string? downloadedPath,
+        bool protectedExisting,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(downloadedPath) || !File.Exists(downloadedPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var image = await Image.LoadAsync(downloadedPath, cancellationToken);
+            if (IsSquareArtistArtworkDimensions(image.Width, image.Height))
+            {
+                if (protectedExisting && logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation(
+                        "Retained existing artist artwork because overwrite protection is enabled: {Path}",
+                        DeezSpoTag.Core.Security.LogSanitizer.OneLine(downloadedPath));
+                }
+                return new ValidatedArtistArtwork(downloadedPath, image.Width, image.Height, protectedExisting);
+            }
+
+            logger.LogWarning(
+                "Rejected non-square artist artwork {Path} ({Width}x{Height}). ExistingProtected={ExistingProtected}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(downloadedPath),
+                image.Width,
+                image.Height,
+                protectedExisting);
+            if (!protectedExisting)
+            {
+                File.Delete(downloadedPath);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Rejected unreadable artist artwork {Path}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(downloadedPath));
+            if (!protectedExisting)
+            {
+                File.Delete(downloadedPath);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsProtectedExistingArtwork(string path, string? overwrite)
+        => File.Exists(path) && overwrite is not ("y" or "t");
+
+    public static bool IsSquareArtistArtworkDimensions(int width, int height)
+    {
+        var longer = Math.Max(width, height);
+        var shorter = Math.Min(width, height);
+        return shorter > 0 && longer / (double)shorter <= 1.01d;
+    }
+
+    public static bool ShouldRefreshExistingArtistArtwork(
+        string? currentProvider,
+        string? preferredProvider,
+        string? overwrite)
+    {
+        if (!string.IsNullOrWhiteSpace(currentProvider)
+            && string.Equals(currentProvider, preferredProvider, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return overwrite is "y" or "t";
+    }
+
+    public static async Task<(int Width, int Height)?> ReadSquareArtistArtworkDimensionsAsync(
+        string? path,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var image = await Image.LoadAsync(path, cancellationToken);
+            return IsSquareArtistArtworkDimensions(image.Width, image.Height)
+                ? (image.Width, image.Height)
+                : null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 }

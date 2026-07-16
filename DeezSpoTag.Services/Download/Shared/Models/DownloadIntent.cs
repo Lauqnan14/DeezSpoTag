@@ -10,6 +10,7 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public string SourceService { get; set; } = "";
     public string SourceUrl { get; set; } = "";
     public string SpotifyId { get; set; } = "";
+    public string SpotifyArtistId { get; set; } = "";
     public string DeezerId { get; set; } = "";
     public string QobuzId { get; set; } = "";
     public string TidalId { get; set; } = "";
@@ -43,6 +44,7 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public long? DestinationFolderId { get; set; }
     public long? SecondaryDestinationFolderId { get; set; }
     public string AppleId { get; set; } = "";
+    public string AppleArtistId { get; set; } = "";
     public string AppleAlbumId { get; set; } = "";
     public string AppleAlbumName { get; set; } = "";
     public string AppleArtistName { get; set; } = "";

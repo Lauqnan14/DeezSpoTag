@@ -47,6 +47,17 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
         return artwork?.ArtistImageUrl;
     }
 
+    public async Task<string?> ResolveArtistImageByArtistIdAsync(string? spotifyArtistId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(spotifyArtistId))
+        {
+            return null;
+        }
+
+        var artist = await _pathfinderMetadataClient.FetchArtistOverviewAsync(spotifyArtistId, cancellationToken);
+        return artist?.ImageUrl;
+    }
+
     public async Task<string?> ResolveArtistImageByNameAsync(string? artistName, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(artistName))
@@ -54,13 +65,21 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
             return null;
         }
 
-        var candidates = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, 1, cancellationToken);
-        if (candidates.Count == 0)
+        var candidates = await _pathfinderMetadataClient.SearchArtistsAsync(artistName, 8, cancellationToken);
+        var normalizedArtist = NormalizeArtistIdentity(artistName);
+        var candidate = candidates.FirstOrDefault(item =>
+            string.Equals(NormalizeArtistIdentity(item.Name), normalizedArtist, StringComparison.Ordinal));
+        if (candidate == null)
         {
             return null;
         }
 
-        var artist = await _pathfinderMetadataClient.FetchArtistOverviewAsync(candidates[0].Id, cancellationToken);
+        var artist = await _pathfinderMetadataClient.FetchArtistOverviewAsync(candidate.Id, cancellationToken);
+        if (artist == null
+            || !string.Equals(NormalizeArtistIdentity(artist.Name), normalizedArtist, StringComparison.Ordinal))
+        {
+            return null;
+        }
         var imageUrl = artist?.ImageUrl;
         if (!string.IsNullOrWhiteSpace(imageUrl) && _logger.IsEnabled(LogLevel.Debug))
         {
@@ -69,6 +88,13 @@ public sealed class SpotifyArtworkResolver : ISpotifyArtworkResolver
 
         return imageUrl;
     }
+
+    private static string NormalizeArtistIdentity(string value)
+        => new(value
+            .Normalize(System.Text.NormalizationForm.FormD)
+            .Where(character => char.IsLetterOrDigit(character))
+            .Select(char.ToLowerInvariant)
+            .ToArray());
 
     private async Task<SpotifyTrackArtwork?> ResolveArtworkAsync(
         string? spotifyTrackId,

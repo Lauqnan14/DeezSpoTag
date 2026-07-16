@@ -136,6 +136,9 @@ public class DownloadFile
     public string ArtistPath { get; set; } = "";
     public string AlbumFilename { get; set; } = "";
     public string ArtistFilename { get; set; } = "";
+    public string ArtistArtworkProvider { get; set; } = "";
+    public string ArtistArtworkSourceUrl { get; set; } = "";
+    public string ArtistArtworkResolutionMethod { get; set; } = "";
 }
 
 /// <summary>

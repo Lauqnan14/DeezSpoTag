@@ -628,7 +628,9 @@ public sealed class DownloadIntentService
                 DeezerAlbumId: intent.DeezerAlbumId,
                 DeezerArtistId: intent.DeezerArtistId,
                 SpotifyId: intent.SpotifyId,
+                SpotifyArtistId: intent.SpotifyArtistId,
                 AppleId: intent.AppleId,
+                AppleArtistId: intent.AppleArtistId,
                 AppleAlbumId: intent.AppleAlbumId,
                 AppleAlbumName: intent.AppleAlbumName,
                 AppleArtistName: intent.AppleArtistName,
@@ -654,7 +656,9 @@ public sealed class DownloadIntentService
             DeezerAlbumId: intent.DeezerAlbumId,
             DeezerArtistId: intent.DeezerArtistId,
             SpotifyId: intent.SpotifyId,
+            SpotifyArtistId: intent.SpotifyArtistId,
             AppleId: intent.AppleId,
+            AppleArtistId: intent.AppleArtistId,
             AppleAlbumId: intent.AppleAlbumId,
             AppleAlbumName: intent.AppleAlbumName,
             AppleArtistName: intent.AppleArtistName,
@@ -745,7 +749,9 @@ public sealed class DownloadIntentService
                 DeezerAlbumId: intent.DeezerAlbumId,
                 DeezerArtistId: intent.DeezerArtistId,
                 SpotifyId: intent.SpotifyId,
+                SpotifyArtistId: intent.SpotifyArtistId,
                 AppleId: intent.AppleId,
+                AppleArtistId: intent.AppleArtistId,
                 AppleAlbumId: intent.AppleAlbumId,
                 AppleAlbumName: intent.AppleAlbumName,
                 AppleArtistName: intent.AppleArtistName,
@@ -773,7 +779,9 @@ public sealed class DownloadIntentService
             DeezerAlbumId: intent.DeezerAlbumId,
             DeezerArtistId: intent.DeezerArtistId,
             SpotifyId: intent.SpotifyId,
+            SpotifyArtistId: intent.SpotifyArtistId,
             AppleId: intent.AppleId,
+            AppleArtistId: intent.AppleArtistId,
             AppleAlbumId: intent.AppleAlbumId,
             AppleAlbumName: intent.AppleAlbumName,
             AppleArtistName: intent.AppleArtistName,
@@ -944,6 +952,7 @@ public sealed class DownloadIntentService
             null,
             Isrc: FirstNonEmpty(resolvedAtmosTrack?.Isrc, intent.Isrc),
             SpotifyId: intent.SpotifyId,
+            SpotifyArtistId: intent.SpotifyArtistId,
             TidalId: FirstNonEmpty(intent.TidalId, TryExtractTidalTrackId(sourceUrl)),
             DurationMs: durationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
@@ -967,6 +976,9 @@ public sealed class DownloadIntentService
             SpotifyId = FirstNonEmpty(
                 ReadPayloadString(payload, "SpotifyId", "spotifyId"),
                 item.SpotifyTrackId) ?? string.Empty,
+            SpotifyArtistId = FirstNonEmpty(
+                ReadPayloadString(payload, "SpotifyArtistId", "spotifyArtistId"),
+                item.SpotifyArtistId) ?? string.Empty,
             DeezerId = FirstNonEmpty(
                 ReadPayloadString(payload, "DeezerId", "deezerId"),
                 item.DeezerTrackId) ?? string.Empty,
@@ -979,6 +991,9 @@ public sealed class DownloadIntentService
             AppleId = FirstNonEmpty(
                 ReadPayloadString(payload, "AppleId", "appleId"),
                 item.AppleTrackId) ?? string.Empty,
+            AppleArtistId = FirstNonEmpty(
+                ReadPayloadString(payload, "AppleArtistId", "appleArtistId"),
+                item.AppleArtistId) ?? string.Empty,
             QobuzId = EngineLinkParser.NormalizeNumericTrackId(
                 FirstNonEmpty(item.QobuzTrackId, ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId"))) ?? string.Empty,
             TidalId = EngineLinkParser.NormalizeNumericTrackId(
@@ -3983,6 +3998,12 @@ public sealed class DownloadIntentService
             ApplyIntentNullableValue(overwriteExisting, intent.Explicit, resolvedExplicit, value => intent.Explicit = value);
 
             var artistIds = summary?.ArtistIds;
+            var primaryArtistId = artistIds?.FirstOrDefault();
+            ApplyIntentStringValue(
+                overwriteExisting,
+                intent.SpotifyArtistId,
+                primaryArtistId ?? string.Empty,
+                value => intent.SpotifyArtistId = value);
             if (overwriteExisting || intent.Genres.Count == 0)
             {
                 var resolvedArtistGenres = await ResolveSpotifyGenresAsync(artistIds, cancellationToken);
@@ -4250,6 +4271,16 @@ public sealed class DownloadIntentService
             }
 
             var item = data[0];
+            if (item.TryGetProperty("relationships", out var relationships)
+                && relationships.TryGetProperty("artists", out var artistsRelationship)
+                && artistsRelationship.TryGetProperty("data", out var artistsData)
+                && artistsData.ValueKind == JsonValueKind.Array
+                && artistsData.GetArrayLength() > 0
+                && artistsData[0].TryGetProperty("id", out var artistIdElement)
+                && artistIdElement.ValueKind == JsonValueKind.String)
+            {
+                intent.AppleArtistId = artistIdElement.GetString() ?? intent.AppleArtistId;
+            }
             if (!TryResolveAppleSongAttributes(item, out var catalogAppleId, out var attrs))
             {
                 return;
@@ -6274,6 +6305,9 @@ public sealed class DownloadIntentService
             SourceService = ApplePlatform,
             SourceUrl = sourceUrl,
             AppleId = appleId ?? string.Empty,
+            AppleArtistId = intent.AppleArtistId ?? string.Empty,
+            DeezerArtistId = intent.DeezerArtistId ?? string.Empty,
+            SpotifyArtistId = intent.SpotifyArtistId ?? string.Empty,
             WatchlistSource = intent.WatchlistSource ?? string.Empty,
             WatchlistPlaylistId = intent.WatchlistPlaylistId ?? string.Empty,
             WatchlistTrackId = intent.WatchlistTrackId ?? string.Empty,
@@ -6488,6 +6522,9 @@ public sealed class DownloadIntentService
         p.Url = ResolveIntentString(intent.Url, p.Url);
         p.Barcode = ResolveIntentString(intent.Barcode, p.Barcode);
         p.AppleId = ResolveIntentString(intent.AppleId, p.AppleId);
+        p.AppleArtistId = ResolveIntentString(intent.AppleArtistId, p.AppleArtistId);
+        p.SpotifyArtistId = ResolveIntentString(intent.SpotifyArtistId, p.SpotifyArtistId);
+        p.DeezerArtistId = ResolveIntentString(intent.DeezerArtistId, p.DeezerArtistId);
         p.QobuzId = ResolveIntentString(intent.QobuzId, p.QobuzId);
         p.TidalId = ResolveIntentString(intent.TidalId, p.TidalId);
         p.AmazonId = ResolveIntentString(intent.AmazonId, p.AmazonId);
@@ -6944,7 +6981,9 @@ public sealed class DownloadIntentService
         payload.DeezerId = !string.IsNullOrWhiteSpace(payload.DeezerId)
             ? payload.DeezerId
             : intent.DeezerId ?? string.Empty;
+        payload.DeezerArtistId = intent.DeezerArtistId ?? string.Empty;
         payload.AppleId = intent.AppleId ?? string.Empty;
+        payload.AppleArtistId = intent.AppleArtistId ?? string.Empty;
         payload.AppleAlbumId = intent.AppleAlbumId ?? string.Empty;
         payload.AppleAlbumName = intent.AppleAlbumName ?? string.Empty;
         payload.AppleArtistName = intent.AppleArtistName ?? string.Empty;
@@ -6963,6 +7002,7 @@ public sealed class DownloadIntentService
         payload.DurationSeconds = context.DurationSeconds;
         payload.Position = intent.Position;
         payload.SpotifyId = intent.SpotifyId ?? string.Empty;
+        payload.SpotifyArtistId = intent.SpotifyArtistId ?? string.Empty;
         payload.DestinationFolderId = context.DestinationFolderId;
         payload.QualityBucket = context.QualityBucket;
         payload.Size = 1;

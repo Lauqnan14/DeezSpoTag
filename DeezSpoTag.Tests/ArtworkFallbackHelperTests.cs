@@ -11,7 +11,7 @@ namespace DeezSpoTag.Tests;
 public sealed class ArtworkFallbackHelperTests
 {
     [Fact]
-    public void TrackDownloaderArtistArtworkOrder_RespectsConfiguredSpotifyFirstOrder()
+    public void CentralArtistArtworkOrder_RespectsConfiguredSpotifyFirstOrder()
     {
         var settings = new DeezSpoTagSettings
         {
@@ -19,12 +19,7 @@ public sealed class ArtworkFallbackHelperTests
             ArtistArtworkFallbackOrder = "spotify,apple,deezer"
         };
 
-        var method = typeof(TrackDownloader).GetMethod(
-            "ResolveArtistArtworkFallbackOrder",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(method);
-        var order = Assert.IsAssignableFrom<List<string>>(method!.Invoke(null, new object[] { settings }));
+        var order = ArtworkFallbackHelper.ResolveArtistOrder(settings);
 
         Assert.Equal(["spotify", "apple", "deezer"], order);
     }
@@ -38,7 +33,7 @@ public sealed class ArtworkFallbackHelperTests
             ArtistArtworkFallbackOrder = "spotify,apple,deezer"
         };
 
-        var order = LibraryArtistImageQueueService.ResolveArtistArtworkOrder(settings);
+        var order = ArtworkFallbackHelper.ResolveArtistOrder(settings);
 
         Assert.Equal(["spotify", "apple", "deezer"], order);
     }
@@ -94,7 +89,7 @@ public sealed class ArtworkFallbackHelperTests
             ArtistArtworkFallbackOrder = "lastfm,spotify,apple"
         };
 
-        var order = LibraryArtistImageQueueService.ResolveArtistArtworkOrder(settings);
+        var order = ArtworkFallbackHelper.ResolveArtistOrder(settings);
 
         Assert.Equal(["lastfm", "spotify", "apple"], order);
     }

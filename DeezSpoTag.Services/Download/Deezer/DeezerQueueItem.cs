@@ -14,7 +14,6 @@ public sealed class DeezerQueueItem : EngineQueueItemBase
     }
 
     public string DeezerAlbumId { get; set; } = "";
-    public string DeezerArtistId { get; set; } = "";
     public int Bitrate { get; set; }
 
     [JsonIgnore]

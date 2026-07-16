@@ -8,5 +8,6 @@ public interface ISpotifyArtworkResolver
         string? requestedAlbumTitle = null,
         bool rejectCompilationAlbumCandidate = false);
     Task<string?> ResolveArtistImageUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken);
+    Task<string?> ResolveArtistImageByArtistIdAsync(string? spotifyArtistId, CancellationToken cancellationToken);
     Task<string?> ResolveArtistImageByNameAsync(string? artistName, CancellationToken cancellationToken);
 }

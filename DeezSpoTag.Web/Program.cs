@@ -1526,6 +1526,7 @@ public partial class Program
                 sp.GetRequiredService<IHttpClientFactory>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.ISpotifyIdResolver>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Download.ISpotifyArtworkResolver>(),
+                sp.GetRequiredService<DeezSpoTag.Services.Download.ILastFmArtistImageResolver>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyArtistService>(),
                 sp.GetRequiredService<DeezSpoTag.Web.Services.AmazonMusicMetadataService>()));
         services.AddScoped<DeezSpoTag.Web.Controllers.ApiController.ApiControllerDependencies>(sp =>
@@ -1692,7 +1693,6 @@ public partial class Program
             services,
             StartupWorkerCategory.Manual,
             "Explicit library scans only when requested by the user or API.");
-        services.AddSingleton<DeezSpoTag.Web.Services.DeezerArtistImageService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>();
         AddDeferredHostedService<DeezSpoTag.Web.Services.LibraryArtistImageQueueService>(
             services,

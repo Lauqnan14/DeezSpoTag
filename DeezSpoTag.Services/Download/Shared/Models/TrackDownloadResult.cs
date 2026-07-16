@@ -79,6 +79,9 @@ public class TrackDownloadResult
     /// URLs for artist artwork in different formats
     /// </summary>
     public List<ArtworkUrl>? ArtistURLs { get; set; }
+    public string? ArtistArtworkProvider { get; set; }
+    public string? ArtistArtworkSourceUrl { get; set; }
+    public string? ArtistArtworkResolutionMethod { get; set; }
 }
 
 /// <summary>

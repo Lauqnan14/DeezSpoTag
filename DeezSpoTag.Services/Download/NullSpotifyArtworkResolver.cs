@@ -12,6 +12,9 @@ public sealed class NullSpotifyArtworkResolver : ISpotifyArtworkResolver
     public Task<string?> ResolveArtistImageUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken)
         => Task.FromResult<string?>(null);
 
+    public Task<string?> ResolveArtistImageByArtistIdAsync(string? spotifyArtistId, CancellationToken cancellationToken)
+        => Task.FromResult<string?>(null);
+
     public Task<string?> ResolveArtistImageByNameAsync(string? artistName, CancellationToken cancellationToken)
         => Task.FromResult<string?>(null);
 }

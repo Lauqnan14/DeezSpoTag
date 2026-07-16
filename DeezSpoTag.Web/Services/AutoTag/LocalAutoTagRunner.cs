@@ -1477,7 +1477,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         using var scope = _serviceScopeFactory.CreateScope();
         var provider = scope.ServiceProvider;
         var artist = track.Artists.FirstOrDefault();
-        var artistUrl = await DownloadEngineArtworkHelper.ResolveArtistImageUrlAsync(
+        var artistArtwork = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
                 _appleMusicCatalogService,
                 _httpClientFactory,
@@ -1489,19 +1489,35 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 AutoTagTagValueReader.ReadFirstTagValue(identity, DeezerTrackIdTag),
                 AutoTagTagValueReader.ReadFirstTagValue(identity, SpotifyTrackIdTag),
                 artist,
-                _logger),
+                _logger)
+            {
+                AppleArtistId = AutoTagIdentityTags.ReadAppleArtistId(identity)
+                    ?? (context.Platform is "itunes" or "apple" or "applemusic" ? track.ArtistId : null),
+                DeezerArtistId = string.Equals(context.Platform, "deezer", StringComparison.OrdinalIgnoreCase)
+                    ? track.ArtistId
+                    : null,
+                SpotifyArtistId = string.Equals(context.Platform, "spotify", StringComparison.OrdinalIgnoreCase)
+                    ? track.ArtistId
+                    : null
+            },
             context.Token);
-        if (string.IsNullOrWhiteSpace(artistUrl))
+        if (artistArtwork == null)
         {
             return;
         }
+
+        _logger.LogInformation(
+            "Artist artwork resolved from {Provider} using {ResolutionMethod} for {Artist}",
+            artistArtwork.Provider,
+            artistArtwork.ResolutionMethod,
+            artist);
 
         _ = await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.SaveArtistArtworkRequest(
                 provider.GetRequiredService<ImageDownloader>(),
                 provider.GetRequiredService<EnhancedPathTemplateProcessor>(),
                 artistPath,
-                artistUrl,
+                artistArtwork.Url,
                 context.Plan.Settings,
                 coreTrack,
                 AppleQueueHelpers.GetAppleArtworkSize(context.Plan.Settings),

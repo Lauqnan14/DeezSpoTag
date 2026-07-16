@@ -1217,11 +1217,19 @@ public static partial class EngineAudioPostDownloadHelper
             track.Urls["spotify_track_id"] = payload.SpotifyId;
             track.Urls[SpotifySource] = $"https://open.spotify.com/track/{payload.SpotifyId}";
         }
+        if (!string.IsNullOrWhiteSpace(payload.SpotifyArtistId))
+        {
+            track.Urls["spotify_artist_id"] = payload.SpotifyArtistId;
+        }
 
         if (!string.IsNullOrWhiteSpace(payload.DeezerId))
         {
             track.Urls[DeezerTrackIdKey] = payload.DeezerId;
             track.Urls[DeezerSource] = $"https://www.deezer.com/track/{payload.DeezerId}";
+        }
+        if (!string.IsNullOrWhiteSpace(payload.DeezerArtistId))
+        {
+            track.Urls["deezer_artist_id"] = payload.DeezerArtistId;
         }
 
         if (!string.IsNullOrWhiteSpace(payload.AppleId))
@@ -1229,6 +1237,10 @@ public static partial class EngineAudioPostDownloadHelper
             track.Urls["apple_track_id"] = payload.AppleId;
             track.Urls["apple_id"] = payload.AppleId;
             track.Urls[AppleSource] = $"https://music.apple.com/us/song/{payload.AppleId}?i={payload.AppleId}";
+        }
+        if (!string.IsNullOrWhiteSpace(payload.AppleArtistId))
+        {
+            track.Urls["apple_artist_id"] = payload.AppleArtistId;
         }
 
         if (!string.IsNullOrWhiteSpace(payload.QobuzId))
@@ -2616,7 +2628,7 @@ public static partial class EngineAudioPostDownloadHelper
             return Array.Empty<string>();
         }
 
-        var artistImageUrl = await DownloadEngineArtworkHelper.ResolveArtistImageUrlAsync(
+        var artistArtwork = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
                 runtime.AppleCatalog,
                 runtime.HttpClientFactory,
@@ -2628,25 +2640,38 @@ public static partial class EngineAudioPostDownloadHelper
                 execution.Request.Payload.DeezerId,
                 execution.Request.Payload.SpotifyId,
                 execution.Request.Payload.Artist,
-                NullLogger.Instance),
+                NullLogger.Instance)
+            {
+                AppleArtistId = execution.Request.Payload.AppleArtistId,
+                DeezerArtistId = execution.Request.Payload.DeezerArtistId,
+                SpotifyArtistId = execution.Request.Payload.SpotifyArtistId
+            },
             token);
-        if (string.IsNullOrWhiteSpace(artistImageUrl))
+        if (artistArtwork == null)
         {
             return Array.Empty<string>();
         }
 
-        return await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
+        execution.Request.Payload.ArtistArtworkProvider = artistArtwork.Provider;
+        execution.Request.Payload.ArtistArtworkSourceUrl = artistArtwork.Url;
+        execution.Request.Payload.ArtistArtworkResolutionMethod = artistArtwork.ResolutionMethod;
+
+        var saveResult = await DownloadEngineArtworkHelper.SaveArtistArtworkAsync(
             new DownloadEngineArtworkHelper.SaveArtistArtworkRequest(
                 runtime.ImageDownloader,
                 runtime.PathProcessor,
                 execution.Paths.ArtistPath,
-                artistImageUrl,
+                artistArtwork.Url,
                 settings,
                 execution.Request.Context.Track,
                 appleArtworkSize,
                 preferMaxQualityCover,
                 execution.Request.Logger),
             token);
+        execution.Request.Payload.ArtistArtworkWidth = saveResult.Width;
+        execution.Request.Payload.ArtistArtworkHeight = saveResult.Height;
+        execution.Request.Payload.ArtistArtworkExistingRetained = saveResult.ExistingArtworkRetained;
+        return saveResult.Paths;
     }
 
     private static async Task RunLyricsPrefetchAsync(

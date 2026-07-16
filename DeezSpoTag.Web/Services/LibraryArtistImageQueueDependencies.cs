@@ -3,19 +3,22 @@ using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
 namespace DeezSpoTag.Web.Services;
 
 public sealed class ArtistImageProviderServices(
-    DeezerArtistImageService imageService,
     AppleMusicCatalogService appleCatalogService,
     ISpotifyArtworkResolver spotifyArtworkResolver,
-    ILastFmArtistImageResolver lastFmArtistImageResolver)
+    ILastFmArtistImageResolver lastFmArtistImageResolver,
+    DeezerClient deezerClient,
+    IHttpClientFactory httpClientFactory)
 {
-    public DeezerArtistImageService ImageService { get; } = imageService;
     public AppleMusicCatalogService AppleCatalogService { get; } = appleCatalogService;
     public ISpotifyArtworkResolver SpotifyArtworkResolver { get; } = spotifyArtworkResolver;
     public ILastFmArtistImageResolver LastFmArtistImageResolver { get; } = lastFmArtistImageResolver;
+    public DeezerClient DeezerClient { get; } = deezerClient;
+    public IHttpClientFactory HttpClientFactory { get; } = httpClientFactory;
 }
 
 public sealed class LibraryArtistImageQueueDependencies(

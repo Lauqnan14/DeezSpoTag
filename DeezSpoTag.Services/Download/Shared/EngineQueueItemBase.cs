@@ -26,7 +26,9 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string Url { get; set; } = "";
     public string Barcode { get; set; } = "";
     public string DeezerId { get; set; } = "";
+    public string DeezerArtistId { get; set; } = "";
     public string AppleId { get; set; } = "";
+    public string AppleArtistId { get; set; } = "";
     public string AppleAlbumId { get; set; } = "";
     public string AppleAlbumName { get; set; } = "";
     public string AppleArtistName { get; set; } = "";
@@ -61,6 +63,13 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public int SpotifyTotalTracks { get; set; }
     public bool UseAlbumTrackNumber { get; set; }
     public string SpotifyId { get; set; } = "";
+    public string SpotifyArtistId { get; set; } = "";
+    public string ArtistArtworkProvider { get; set; } = "";
+    public string ArtistArtworkSourceUrl { get; set; } = "";
+    public string ArtistArtworkResolutionMethod { get; set; } = "";
+    public int? ArtistArtworkWidth { get; set; }
+    public int? ArtistArtworkHeight { get; set; }
+    public bool ArtistArtworkExistingRetained { get; set; }
     public int Size { get; set; } = 1;
     public int Downloaded { get; set; }
     public int Failed { get; set; }
@@ -105,6 +114,9 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["requestedQuality"] = RequestedQuality,
             ["deliveredQuality"] = DeliveredQuality,
             ["appleId"] = AppleId,
+            ["appleArtistId"] = AppleArtistId,
+            ["deezerArtistId"] = DeezerArtistId,
+            ["spotifyArtistId"] = SpotifyArtistId,
             ["appleAlbumId"] = AppleAlbumId,
             ["appleAlbumName"] = AppleAlbumName,
             ["appleArtistName"] = AppleArtistName,
@@ -115,7 +127,13 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["amazonId"] = AmazonId,
             ["expectedFinalOutputPath"] = ExpectedFinalOutputPath,
             ["watchlistUnavailableSettingsFingerprint"] = WatchlistUnavailableSettingsFingerprint,
-            ["lyricsArtifacts"] = LyricsArtifacts
+            ["lyricsArtifacts"] = LyricsArtifacts,
+            ["artistArtworkProvider"] = ArtistArtworkProvider,
+            ["artistArtworkSourceUrl"] = ArtistArtworkSourceUrl,
+            ["artistArtworkResolutionMethod"] = ArtistArtworkResolutionMethod,
+            ["artistArtworkWidth"] = ArtistArtworkWidth,
+            ["artistArtworkHeight"] = ArtistArtworkHeight,
+            ["artistArtworkExistingRetained"] = ArtistArtworkExistingRetained
         };
 
         if (extra != null)

@@ -455,6 +455,49 @@ public static class AppleQueueHelpers
         return resolved;
     }
 
+    public static async Task<string?> ResolveAppleArtistImageByIdAsync(
+        AppleMusicCatalogService appleCatalog,
+        string? artistId,
+        string storefront,
+        int size,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(artistId))
+        {
+            return null;
+        }
+
+        var cacheKey = $"apple:artist-image-id:{storefront}:{artistId}:{size}";
+        if (AppleArtworkCache.TryGetValue(cacheKey, out string? cached) && !string.IsNullOrWhiteSpace(cached))
+        {
+            return cached;
+        }
+
+        using var doc = await appleCatalog.GetArtistAsync(artistId, storefront, DefaultLanguage, cancellationToken);
+        if (!doc.RootElement.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array
+            || data.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var entry = data[0];
+        if (!entry.TryGetProperty(AttributesKey, out var attributes)
+            || attributes.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var resolved = TryExtractArtworkFromAttrs(attributes, size);
+        if (!string.IsNullOrWhiteSpace(resolved) && IsLikelyUsableItunesArtistPageArtwork(resolved))
+        {
+            CacheArtistArtwork(cacheKey, resolved);
+            return resolved;
+        }
+
+        return null;
+    }
+
     private static string? TryResolveAppleArtistArtwork(JsonElement data, string artist, int size)
     {
         var normalizedArtist = NormalizeLookupToken(artist);
@@ -475,7 +518,7 @@ public static class AppleQueueHelpers
             var candidateName = TryReadItunesString(attrs, "name")
                 ?? TryReadItunesString(attrs, ArtistNameKey);
             if (!string.IsNullOrWhiteSpace(candidateName)
-                && IsLikelySameArtist(normalizedArtist, NormalizeLookupToken(candidateName)))
+                && IsExactArtistIdentity(normalizedArtist, NormalizeLookupToken(candidateName)))
             {
                 return artwork;
             }
@@ -588,7 +631,7 @@ public static class AppleQueueHelpers
         artistLinkUrl = string.Empty;
         var candidateArtist = TryReadItunesString(entry, ArtistNameKey);
         if (string.IsNullOrWhiteSpace(candidateArtist)
-            || !IsLikelySameArtist(normalizedArtist, NormalizeLookupToken(candidateArtist)))
+            || !IsExactArtistIdentity(normalizedArtist, NormalizeLookupToken(candidateArtist)))
         {
             return false;
         }
@@ -619,18 +662,14 @@ public static class AppleQueueHelpers
             html,
             "<meta\\s+property=\"og:image\"\\s+content=\"(?<url>[^\"]+)\"",
             RegexOptions.IgnoreCase);
-        if (!ogImage.Success)
+        var raw = ogImage.Success
+            ? WebUtility.HtmlDecode(ogImage.Groups["url"].Value)
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(raw) || !IsLikelyUsableItunesArtistPageArtwork(raw))
         {
-            return null;
+            raw = TryExtractSquareAppleArtistPageArtwork(html);
         }
-
-        var raw = WebUtility.HtmlDecode(ogImage.Groups["url"].Value);
         if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-
-        if (!IsLikelyUsableItunesArtistPageArtwork(raw))
         {
             return null;
         }
@@ -643,6 +682,30 @@ public static class AppleQueueHelpers
         }
 
         return raw;
+    }
+
+    private static string? TryExtractSquareAppleArtistPageArtwork(string html)
+    {
+        var matches = Regex.Matches(
+            html,
+            "https://[^\\\"'\\s]+/image/thumb/AMCArtistImages[^\\\"'\\s]+/(?<width>\\d{2,5})x(?<height>\\d{2,5})[^\\\"'\\s]*\\.(?:jpg|jpeg|png|webp)",
+            RegexOptions.IgnoreCase,
+            RegexTimeout);
+        foreach (Match match in matches)
+        {
+            if (!int.TryParse(match.Groups["width"].Value, out var width)
+                || !int.TryParse(match.Groups["height"].Value, out var height)
+                || width <= 0
+                || height <= 0
+                || Math.Max(width, height) / (double)Math.Min(width, height) > 1.01d)
+            {
+                continue;
+            }
+
+            return WebUtility.HtmlDecode(match.Value);
+        }
+
+        return null;
     }
 
     private static bool IsLikelyUsableItunesArtistPageArtwork(string rawUrl)
@@ -1213,6 +1276,11 @@ public static class AppleQueueHelpers
         return expected.Contains(candidate, StringComparison.Ordinal)
             || candidate.Contains(expected, StringComparison.Ordinal);
     }
+
+    private static bool IsExactArtistIdentity(string expected, string candidate)
+        => !string.IsNullOrWhiteSpace(expected)
+           && !string.IsNullOrWhiteSpace(candidate)
+           && string.Equals(expected, candidate, StringComparison.Ordinal);
 
     public static async Task<IReadOnlyList<string>> SaveAnimatedArtworkAsync(
         AppleMusicCatalogService appleCatalog,

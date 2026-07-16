@@ -25,6 +25,7 @@ public sealed class ApiControllerDeezerRecoveryTests
             httpClientFactory: httpClientFactory,
             spotifyIdResolver: null!,
             spotifyArtworkResolver: null!,
+            lastFmArtistImageResolver: null!,
             spotifyArtistService: null!,
             amazonMusicMetadataService: null!);
 
@@ -74,6 +75,7 @@ public sealed class ApiControllerDeezerRecoveryTests
             httpClientFactory: httpClientFactory,
             spotifyIdResolver: null!,
             spotifyArtworkResolver: null!,
+            lastFmArtistImageResolver: null!,
             spotifyArtistService: null!,
             amazonMusicMetadataService: null!);
 
@@ -203,6 +205,7 @@ public sealed class ApiControllerDeezerRecoveryTests
             httpClientFactory: httpClientFactory,
             spotifyIdResolver: null!,
             spotifyArtworkResolver: null!,
+            lastFmArtistImageResolver: null!,
             spotifyArtistService: null!,
             amazonMusicMetadataService: null!);
 
