@@ -39,6 +39,8 @@
         runsRequestId: 0,
         runDetailsRequestId: 0,
         lastLiveDetailsFetchedAt: 0,
+        lastHistoryDetailsFetchedAt: 0,
+        terminalHistorySyncedRunId: null,
         currentTodayToken: toDateToken(new Date())
     };
 
@@ -596,28 +598,6 @@
         }
     }
 
-    function renderLiveRunSelection(job, logs) {
-        const liveSummary = buildSummaryFromLiveJob(job);
-        if (!liveSummary?.id) {
-            return;
-        }
-
-        state.selectedRunId = liveSummary.id;
-        state.selectedDate = getLiveRunDateToken(job);
-        state.historyStatus = Array.isArray(job?.statusHistory)
-            ? job.statusHistory.slice().reverse()
-            : [];
-        renderRunSummary(liveSummary, {
-            summary: liveSummary,
-            statusHistory: job?.statusHistory || [],
-            logs
-        });
-        updateFilterCountsFromHistory();
-        renderFilteredHistory();
-        renderRunList(state.archivedRuns);
-        highlightSelectedRun();
-    }
-
     function buildSummaryFromLiveJob(job) {
         if (!job?.id) {
             return null;
@@ -665,95 +645,26 @@
         };
     }
 
-    async function loadLiveRunDetails(runId) {
-        const liveJob = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(runId)}?includeLogs=true&includeStatusHistory=true`);
-        const liveSummary = buildSummaryFromLiveJob(liveJob);
-        state.selectedRunId = liveJob?.id || runId;
-        state.historyStatus = Array.isArray(liveJob?.statusHistory) ? liveJob.statusHistory.slice().reverse() : [];
-        state.lastLiveDetailsFetchedAt = Date.now();
-        renderRunSummary(liveSummary, {
-            summary: liveSummary,
-            statusHistory: liveJob?.statusHistory || [],
-            logs: liveJob?.logs || []
-        });
-        updateFilterCountsFromHistory();
-        renderFilteredHistory();
-        highlightSelectedRun();
-    }
-
     function isStaleRunDetailsRequest(requestId) {
         return requestId !== state.runDetailsRequestId;
     }
 
-    function canUseLiveRunSelection(runId) {
-        return Boolean(state.liveJobId && runId === state.liveJobId && hasActiveLiveRun());
-    }
-
-    async function tryLoadPreferredLiveRun(runId, requestId) {
-        if (!canUseLiveRunSelection(runId)) {
-            return false;
-        }
-
-        return tryLoadLiveRunDetailsForSelection(
-            runId,
-            requestId,
-            "Failed to load selected live AutoTag run");
-    }
-
-    async function tryLoadArchiveThenLiveFallback(runId, requestId) {
-        try {
-            await tryLoadArchiveRunDetails(runId, requestId);
-            return true;
-        } catch (error) {
-            const loadedLive = await tryLoadLiveRunDetailsForSelection(
-                runId,
-                requestId,
-                "Failed to load live AutoTag run fallback");
-            if (!loadedLive) {
-                console.warn("Failed to load archived AutoTag run", error);
-                clearRunSelection("Failed to load the full AutoTag log.");
-            }
-            return loadedLive;
-        }
-    }
-
-    async function tryLoadLiveRunDetailsForSelection(runId, requestId, warnMessage) {
-        try {
-            await loadLiveRunDetails(runId);
-            return !isStaleRunDetailsRequest(requestId);
-        } catch (error) {
-            console.warn(warnMessage, error);
-            return false;
-        }
-    }
-
-    async function tryLoadArchiveRunDetails(runId, requestId) {
+    async function fetchRunHistorySnapshot(runId, requestId) {
         const archive = await fetchJson(`/api/autotag/history/runs/${encodeURIComponent(runId)}`);
         if (isStaleRunDetailsRequest(requestId)) {
-            return false;
+            return null;
         }
 
         const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];
-        if (archivedStatusHistory.length === 0) {
-            const loadedLiveFallback = await tryLoadLiveRunDetailsForSelection(
-                runId,
-                requestId,
-                "Failed to load live AutoTag run fallback for empty archive history");
-            if (loadedLiveFallback && Array.isArray(state.historyStatus) && state.historyStatus.length > 0) {
-                return true;
-            }
+        const expectedStatusCount = Number(archive?.summary?.statusEntryCount || 0);
+        if (expectedStatusCount > archivedStatusHistory.length) {
+            throw new Error(`Incomplete AutoTag history snapshot: expected ${expectedStatusCount}, received ${archivedStatusHistory.length}`);
         }
 
-        state.selectedRunId = archive?.summary?.id || runId;
-        state.historyStatus = archivedStatusHistory.slice().reverse();
-        renderRunSummary(archive?.summary || null, archive || null);
-        updateFilterCountsFromHistory();
-        renderFilteredHistory();
-        highlightSelectedRun();
-        return true;
+        return archive;
     }
 
-    function clearRunSelection(message) {
+    function resetRunSelection(message) {
         state.selectedRunId = null;
         state.historyStatus = [];
         state.runSelectionMessage = message || "Select a run to load full AutoTag history.";
@@ -764,14 +675,35 @@
 
     async function loadRunDetails(runId) {
         if (!runId) {
-            clearRunSelection();
-            return;
+            return false;
         }
+
         const requestId = ++state.runDetailsRequestId;
-        if (await tryLoadPreferredLiveRun(runId, requestId)) {
-            return;
+        try {
+            const archive = await fetchRunHistorySnapshot(runId, requestId);
+            if (!archive || isStaleRunDetailsRequest(requestId)) {
+                return false;
+            }
+
+            const archivedStatusHistory = Array.isArray(archive.statusHistory) ? archive.statusHistory : [];
+            state.selectedRunId = archive?.summary?.id || runId;
+            state.historyStatus = archivedStatusHistory.slice().reverse();
+            state.lastHistoryDetailsFetchedAt = Date.now();
+            renderRunSummary(archive?.summary || null, archive);
+            updateFilterCountsFromHistory();
+            renderFilteredHistory();
+            highlightSelectedRun();
+            return true;
+        } catch (error) {
+            if (!isStaleRunDetailsRequest(requestId)) {
+                console.warn("Failed to load AutoTag run history; retaining the last successful snapshot", error);
+                if (!Array.isArray(state.historyStatus) || state.historyStatus.length === 0) {
+                    state.runSelectionMessage = "Failed to load the full AutoTag log. Retrying will not clear the selected run.";
+                    renderFilteredHistory();
+                }
+            }
+            return false;
         }
-        await tryLoadArchiveThenLiveFallback(runId, requestId);
     }
 
     function highlightSelectedRun() {
@@ -791,8 +723,7 @@
 
         if (!runsForDisplay.length) {
             list.innerHTML = '<div class="autotag-run-empty">No AutoTag runs were saved on this date.</div>';
-            clearRunSelection("No AutoTag log was saved on this date.");
-            return;
+            return runsForDisplay;
         }
 
         list.innerHTML = runsForDisplay.map((run) => {
@@ -816,13 +747,8 @@
             </button>`;
         }).join("");
 
-        const preferred = runsForDisplay.find((run) => run.id === state.selectedRunId) || runsForDisplay[0];
-        const needsReload = preferred.id !== state.selectedRunId || !Array.isArray(state.historyStatus) || state.historyStatus.length === 0;
-        if (needsReload) {
-            void loadRunDetails(preferred.id);
-        } else {
-            highlightSelectedRun();
-        }
+        highlightSelectedRun();
+        return runsForDisplay;
     }
 
     async function loadRunsForDate(date, options = {}) {
@@ -837,8 +763,30 @@
             if (requestId !== state.runsRequestId) {
                 return;
             }
-            renderRunList(payload?.runs || []);
+            const runsForDisplay = renderRunList(payload?.runs || []);
             highlightSelectedDay();
+            const selectedRun = runsForDisplay.find((run) => normalizeRunId(run?.id) === normalizeRunId(state.selectedRunId));
+            if (selectedRun) {
+                highlightSelectedRun();
+                return;
+            }
+
+            if (options.preserveSelection === true && state.selectedRunId) {
+                return;
+            }
+
+            if (runsForDisplay.length > 0) {
+                await loadRunDetails(runsForDisplay[0].id);
+                return;
+            }
+
+            if (options.manual === true) {
+                resetRunSelection("No AutoTag log was saved on this date.");
+            } else if (!state.selectedRunId) {
+                state.runSelectionMessage = "No AutoTag log was saved on this date.";
+                renderFilteredHistory();
+                updateFilterCountsFromHistory();
+            }
         } catch (error) {
             if (requestId !== state.runsRequestId) {
                 return;
@@ -848,7 +796,10 @@
             if (list) {
                 list.innerHTML = '<div class="autotag-run-empty">Failed to load AutoTag runs for this date.</div>';
             }
-            clearRunSelection("Failed to load the full AutoTag log.");
+            if (!Array.isArray(state.historyStatus) || state.historyStatus.length === 0) {
+                state.runSelectionMessage = "Failed to load the full AutoTag log.";
+                renderFilteredHistory();
+            }
         }
     }
 
@@ -908,7 +859,7 @@
         }));
     }
 
-    async function loadCalendar() {
+    async function loadCalendar(options = {}) {
         const year = state.calendarMonth.getFullYear();
         const month = state.calendarMonth.getMonth() + 1;
         const loadKey = `${year}-${month}`;
@@ -935,11 +886,14 @@
                 .filter(Boolean)
                 .sort()
                 .reverse();
-            const selectedStillVisible = state.selectedDate
-                && availableDates.includes(state.selectedDate)
+            const selectedDateInViewedMonth = state.selectedDate
                 && state.selectedDate.startsWith(`${year}-${String(month).padStart(2, "0")}`);
+            const selectedStillVisible = selectedDateInViewedMonth
+                && (availableDates.includes(state.selectedDate) || options.preserveSelection === true);
             if (selectedStillVisible) {
-                await loadRunsForDate(state.selectedDate);
+                await loadRunsForDate(state.selectedDate, {
+                    preserveSelection: options.preserveSelection === true
+                });
                 return;
             }
 
@@ -968,7 +922,10 @@
             if (container) {
                 container.innerHTML = '<div class="autotag-run-empty">Failed to load AutoTag calendar.</div>';
             }
-            clearRunSelection("Failed to load the full AutoTag log.");
+            if (!Array.isArray(state.historyStatus) || state.historyStatus.length === 0) {
+                state.runSelectionMessage = "Failed to load the full AutoTag log.";
+                renderFilteredHistory();
+            }
         } finally {
             if (state.calendarLoadKey === loadKey) {
                 state.calendarLoadKey = "";
@@ -996,15 +953,11 @@
 
         const now = Date.now();
         const refreshIntervalMs = getLiveDetailRefreshIntervalMs(state.liveJobSummary?.status);
-        if (!force && (now - state.lastLiveDetailsFetchedAt) < refreshIntervalMs) {
+        if (!force && (now - state.lastHistoryDetailsFetchedAt) < refreshIntervalMs) {
             return;
         }
 
-        try {
-            await loadLiveRunDetails(state.selectedRunId);
-        } catch (error) {
-            console.warn("Failed to refresh selected live run", error);
-        }
+        await loadRunDetails(state.selectedRunId);
     }
 
     function shouldHydrateLiveRunDetails(job) {
@@ -1129,16 +1082,24 @@
         updateLiveMetadata(hasLogsPayload ? { ...job, logs } : job);
         updateProgressBar(job);
         const hasDetails = hasLiveDetailPayload(job);
-        if (shouldFollowLiveRunInHistory() && hasDetails) {
-            renderLiveRunSelection(job, logs);
-        } else if (hasActiveLiveRun() && isHistoryTabActive() && isTodayDateToken(state.selectedDate)) {
-            renderRunList(state.archivedRuns);
+        if (hasActiveLiveRun()) {
+            state.terminalHistorySyncedRunId = null;
         }
-        if (hasActiveLiveRun() && hasDetails) {
-            syncSelectedRunWithLiveJob(job, logs);
+        if (shouldFollowLiveRunInHistory()) {
+            state.selectedRunId = job.id;
+            state.selectedDate = getLiveRunDateToken(job);
+            renderRunList(state.archivedRuns);
+            await refreshHistoryIfSelectedLiveRun();
         }
         if (job.status === STATUS_RUNNING && !shouldFollowLiveRunInHistory() && hasDetails) {
             await refreshHistoryIfSelectedLiveRun();
+        }
+        const selectedRunCompleted = isHistoryTabActive()
+            && isTerminalRunStatus(job.status)
+            && normalizeRunId(state.selectedRunId) === normalizeRunId(job.id)
+            && state.terminalHistorySyncedRunId !== normalizeRunId(job.id);
+        if (selectedRunCompleted && await loadRunDetails(job.id)) {
+            state.terminalHistorySyncedRunId = normalizeRunId(job.id);
         }
 
         globalThis.dispatchEvent(new CustomEvent("deezspotag:activities-live-update", {
@@ -1148,24 +1109,6 @@
                 runId: job?.id || ""
             }
         }));
-    }
-
-    function syncSelectedRunWithLiveJob(job, logs) {
-        if (!state.selectedRunId || state.selectedRunId !== job.id) {
-            return;
-        }
-
-        state.historyStatus = Array.isArray(job.statusHistory)
-            ? job.statusHistory.slice().reverse()
-            : [];
-        const liveSummary = buildSummaryFromLiveJob(job);
-        renderRunSummary(liveSummary, {
-            summary: liveSummary,
-            statusHistory: job.statusHistory || [],
-            logs
-        });
-        updateFilterCountsFromHistory();
-        renderFilteredHistory();
     }
 
     function schedulePoll() {
@@ -1220,10 +1163,7 @@
             return;
         }
 
-        await loadCalendar();
-        if (runDate && runDate === state.selectedDate) {
-            await loadRunsForDate(runDate);
-        }
+        await loadCalendar({ preserveSelection: true });
         await refreshRealtimeRunDetails(runId, runDate);
     }
 
@@ -1671,8 +1611,8 @@
             const summaryEl = document.createElement("div");
             summaryEl.className = "autotag-diff-empty";
             summaryEl.textContent = diff?.isFinalPlatformDiff
-                ? `Final comparison: ${diff?.basePlatform || "original"} -> ${diff.targetPlatform}.`
-                : `Platform comparison: ${diff?.basePlatform || "previous"} -> ${diff.targetPlatform}.`;
+                ? `Final cumulative comparison: ${diff?.basePlatform || "original"} -> ${diff.targetPlatform}.`
+                : `Cumulative comparison: ${diff?.basePlatform || "original"} -> ${diff.targetPlatform}.`;
             container.appendChild(summaryEl);
         }
 

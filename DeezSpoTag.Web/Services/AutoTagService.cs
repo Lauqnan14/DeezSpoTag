@@ -1492,48 +1492,52 @@ public partial class AutoTagService
             return null;
         }
 
-        var summary = LoadRunSummary(id);
-        if (summary == null)
+        var archiveLock = _archiveLocks.GetOrAdd(id, static _ => new object());
+        lock (archiveLock)
         {
-            return null;
-        }
-        if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ResolveArchivedRunRetentionPeriod())))
-        {
-            DeleteArchivedRunFiles(summary.Id);
-            PruneExpiredArchivedRuns(force: true);
-            return null;
-        }
-
-        var logs = ReadRunLogLines(id);
-        var statusHistory = ReadRunStatusHistory(id);
-        var job = (logs.Count == 0 || statusHistory.Count == 0)
-            ? GetJob(id) ?? LoadJob(id)
-            : null;
-        if (logs.Count == 0 && summary.LogCount > 0 && job?.Logs.Count > 0)
-        {
-            logs = job.Logs
-                .Where(line => !string.IsNullOrWhiteSpace(line))
-                .ToList();
-            if (logs.Count > 0)
+            var summary = LoadRunSummary(id);
+            if (summary == null)
             {
-                _ = TryRepairArchivedLogsFromJob(id, GetRunLogPath(id));
+                return null;
             }
-        }
-        if (statusHistory.Count == 0 && summary.StatusEntryCount > 0 && job?.StatusHistory.Count > 0)
-        {
-            statusHistory = job.StatusHistory.ToList();
-            if (statusHistory.Count > 0)
+            if (IsExpiredArchivedRun(summary, DateTimeOffset.UtcNow.Subtract(ResolveArchivedRunRetentionPeriod())))
             {
-                _ = TryRepairArchivedStatusFromJob(id, GetRunStatusHistoryPath(id));
+                DeleteArchivedRunFiles(summary.Id);
+                PruneExpiredArchivedRuns(force: true);
+                return null;
             }
-        }
 
-        return new AutoTagRunArchive
-        {
-            Summary = summary,
-            Logs = logs,
-            StatusHistory = statusHistory
-        };
+            var logs = ReadRunLogLines(id);
+            var statusHistory = ReadRunStatusHistory(id);
+            var job = (logs.Count == 0 || statusHistory.Count == 0)
+                ? GetJob(id) ?? LoadJob(id)
+                : null;
+            if (logs.Count == 0 && summary.LogCount > 0 && job?.Logs.Count > 0)
+            {
+                logs = job.Logs
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .ToList();
+                if (logs.Count > 0)
+                {
+                    _ = TryRepairArchivedLogsFromJob(id, GetRunLogPath(id));
+                }
+            }
+            if (statusHistory.Count == 0 && summary.StatusEntryCount > 0 && job?.StatusHistory.Count > 0)
+            {
+                statusHistory = job.StatusHistory.ToList();
+                if (statusHistory.Count > 0)
+                {
+                    _ = TryRepairArchivedStatusFromJob(id, GetRunStatusHistoryPath(id));
+                }
+            }
+
+            return new AutoTagRunArchive
+            {
+                Summary = summary,
+                Logs = logs,
+                StatusHistory = statusHistory
+            };
+        }
     }
 
     public AutoTagTagDiff? GetTagDiff(string jobId, string path, string? platform = null)
@@ -1640,31 +1644,28 @@ public partial class AutoTagService
 
         var target = completed[targetIndex];
         var isFinal = targetIndex == completed.Count - 1;
-        var baseSnapshot = target.Before
-            ?? (targetIndex > 0 ? completed[targetIndex - 1].After : stored.Before);
-
-        var basePlatform = "original";
-        if (targetIndex > 0)
-        {
-            basePlatform = completed[targetIndex - 1].Platform;
-        }
+        var baseSnapshot = stored.Before ?? completed[0].Before ?? target.Before;
+        var cumulativeSteps = completed
+            .Take(targetIndex + 1)
+            .Select(ClonePlatformDiff)
+            .ToList();
 
         var selected = new AutoTagTagDiff
         {
             Path = stored.Path,
-            LastPlatform = stored.LastPlatform,
+            LastPlatform = target.Platform,
             TargetPlatform = target.Platform,
             IsFinalPlatformDiff = isFinal,
-            BasePlatform = basePlatform,
+            BasePlatform = "original",
             Before = baseSnapshot,
             After = target.After,
-            PlatformDiffs = completed.Select(ClonePlatformDiff).ToList()
+            PlatformDiffs = cumulativeSteps
         };
 
-        if (isFinal && selected.After != null)
+        if (selected.After != null)
         {
             selected.RetainedSources = ComputeRetainedSources(
-                stored.Before ?? selected.Before,
+                selected.Before,
                 selected.After,
                 selected.PlatformDiffs);
         }

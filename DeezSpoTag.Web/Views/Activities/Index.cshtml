@@ -3369,7 +3369,7 @@ let queueHydrationRefreshTimer = null;
 let lastQueueHydrationRefreshAt = 0;
 const activityLazyScripts = new Map();
 const activityLazyScriptUrls = {
-    autoTagStatus: '@Url.Content("~/js/autotag-status.js")',
+    autoTagStatus: '@AssetUrl.Versioned(ViewContext, Url, "~/js/autotag-status.js")',
     watchlistHistory: '@Url.Content("~/js/watchlist-history.js")',
     meloday: '@AssetUrl.Versioned(ViewContext, Url, "~/js/meloday.js")'
 };

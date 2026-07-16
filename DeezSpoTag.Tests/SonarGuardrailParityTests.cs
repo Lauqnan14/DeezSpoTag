@@ -162,6 +162,10 @@ public sealed class SonarGuardrailParityTests
         Assert.Contains("const encodedPlatform = platform && platform !== \"--\" ? encodeURIComponent(platform) : \"\";", source, StringComparison.Ordinal);
         Assert.Contains("data-platform=\"${encodedPlatform}\"", source, StringComparison.Ordinal);
         Assert.Contains("showTagDiff(decodeURIComponent(encodedPath), decodeURIComponent(encodedPlatform));", source, StringComparison.Ordinal);
+        Assert.Contains("resultNormalized === STATUS_TAGGED || resultNormalized === STATUS_OK || resultNormalized === STATUS_REVIEW", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("resultNormalized === STATUS_SKIPPED", source, StringComparison.Ordinal);
+        Assert.Contains("Cumulative comparison:", source, StringComparison.Ordinal);
+        Assert.Contains("Final cumulative comparison:", source, StringComparison.Ordinal);
         Assert.DoesNotContain("showTagDiff(decodeURIComponent(encodedPath), null);", source, StringComparison.Ordinal);
     }
 
@@ -179,18 +183,19 @@ public sealed class SonarGuardrailParityTests
     }
 
     [Fact]
-    public void AutoTagService_PlatformDiffUsesThatProvidersImmediateBeforeSnapshot()
+    public void AutoTagService_PlatformDiffUsesOriginalBaselineAndCumulativeStages()
     {
         var root = FindRepoRoot();
         var servicePath = Path.Combine(root, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
         Assert.True(File.Exists(servicePath), $"File not found: {servicePath}");
 
         var source = File.ReadAllText(servicePath);
-        Assert.Contains("var baseSnapshot = target.Before", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("baseSnapshot = stored.Before ?? completed.FirstOrDefault()?.Before", source, StringComparison.Ordinal);
-        Assert.Contains("if (targetIndex > 0)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("if (!isFinal && targetIndex > 0)", source, StringComparison.Ordinal);
-        Assert.Contains("stored.Before ?? selected.Before", source, StringComparison.Ordinal);
+        Assert.Contains("var baseSnapshot = stored.Before ?? completed[0].Before ?? target.Before;", source, StringComparison.Ordinal);
+        Assert.Contains(".Take(targetIndex + 1)", source, StringComparison.Ordinal);
+        Assert.Contains("BasePlatform = \"original\"", source, StringComparison.Ordinal);
+        Assert.Contains("Before = baseSnapshot", source, StringComparison.Ordinal);
+        Assert.Contains("After = target.After", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("completed[targetIndex - 1].After", source, StringComparison.Ordinal);
     }
 
     [Fact]

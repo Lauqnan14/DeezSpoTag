@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -189,6 +190,128 @@ public sealed class AutoTagServiceEligibilityTests
         var reason = InvokeStatic<string?>("EvaluateIdentityReviewGuard", diff);
 
         Assert.Null(reason);
+    }
+
+    [Fact]
+    public void SelectRequestedPlatformDiff_ReturnsOriginalToRequestedCumulativeState()
+    {
+        var original = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["ARTIST"] = ["Original Artist"]
+        });
+        var platform1 = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["ARTIST"] = ["Original Artist"],
+            ["SPOTIFY_URL"] = ["spotify:track:1"]
+        });
+        var platform2 = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["ARTIST"] = ["Original Artist"],
+            ["SPOTIFY_URL"] = ["spotify:track:1"],
+            ["GENRE"] = ["Dance"]
+        });
+        var platform4 = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["ARTIST"] = ["Original Artist"],
+            ["SPOTIFY_URL"] = ["spotify:track:1"],
+            ["GENRE"] = ["Dance"],
+            ["LABEL"] = ["Example Label"]
+        });
+        var stored = new AutoTagTagDiff
+        {
+            Path = "/music/track.flac",
+            Before = original,
+            After = platform4,
+            LastPlatform = "platform4",
+            PlatformDiffs =
+            [
+                PlatformStep("platform1", original, platform1),
+                PlatformStep("platform2", platform1, platform2),
+                PlatformStep("platform4", platform2, platform4)
+            ]
+        };
+
+        var selected = InvokeStatic<AutoTagTagDiff>("SelectRequestedPlatformDiff", stored, "platform2");
+
+        Assert.Same(original, selected.Before);
+        Assert.Same(platform2, selected.After);
+        Assert.Equal("original", selected.BasePlatform);
+        Assert.Equal("platform2", selected.TargetPlatform);
+        Assert.Equal("platform2", selected.LastPlatform);
+        Assert.False(selected.IsFinalPlatformDiff);
+        Assert.Equal(["platform1", "platform2"], selected.PlatformDiffs.Select(step => step.Platform));
+        var selectedAfter = Assert.IsType<AutoTagTagSnapshot>(selected.After);
+        Assert.Equal(["spotify:track:1"], selectedAfter.Tags["SPOTIFY_URL"]);
+        Assert.Equal(["Dance"], selectedAfter.Tags["GENRE"]);
+        Assert.False(selectedAfter.Tags.ContainsKey("LABEL"));
+    }
+
+    [Fact]
+    public void SelectRequestedPlatformDiff_IgnoresSkippedPlatformsWithoutSnapshots()
+    {
+        var original = SnapshotWithTags("Track", new Dictionary<string, string[]>());
+        var platform1 = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["SPOTIFY_URL"] = ["spotify:track:1"]
+        });
+        var platform2 = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["SPOTIFY_URL"] = ["spotify:track:1"],
+            ["GENRE"] = ["Dance"]
+        });
+        var platform4 = SnapshotWithTags("Track", new Dictionary<string, string[]>
+        {
+            ["SPOTIFY_URL"] = ["spotify:track:1"],
+            ["GENRE"] = ["Dance"],
+            ["LABEL"] = ["Example Label"]
+        });
+        var stored = new AutoTagTagDiff
+        {
+            Before = original,
+            After = platform4,
+            PlatformDiffs =
+            [
+                PlatformStep("platform1", original, platform1),
+                PlatformStep("platform2", platform1, platform2),
+                new AutoTagPlatformDiffSnapshot { Platform = "platform3", Status = "skipped" },
+                PlatformStep("platform4", platform2, platform4)
+            ]
+        };
+
+        var selected = InvokeStatic<AutoTagTagDiff>("SelectRequestedPlatformDiff", stored, "platform4");
+
+        Assert.Same(original, selected.Before);
+        Assert.Same(platform4, selected.After);
+        Assert.Equal(["platform1", "platform2", "platform4"], selected.PlatformDiffs.Select(step => step.Platform));
+        Assert.True(selected.IsFinalPlatformDiff);
+    }
+
+    private static AutoTagPlatformDiffSnapshot PlatformStep(
+        string platform,
+        AutoTagTagSnapshot before,
+        AutoTagTagSnapshot after)
+    {
+        return new AutoTagPlatformDiffSnapshot
+        {
+            Platform = platform,
+            Status = "tagged",
+            Before = before,
+            After = after
+        };
+    }
+
+    private static AutoTagTagSnapshot SnapshotWithTags(
+        string title,
+        Dictionary<string, string[]> tags)
+    {
+        return new AutoTagTagSnapshot
+        {
+            Meta = new QuickTagDumpMeta { Title = title },
+            Tags = tags.ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value.ToList(),
+                StringComparer.OrdinalIgnoreCase)
+        };
     }
 
     private static AutoTagTagSnapshot Snapshot(string title, string[] artists, string[] albumArtists)

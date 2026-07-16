@@ -56,29 +56,62 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
-    public void AutoTagStatusScript_FallsBackToLiveJobWhenArchivedRunHasNoStatusHistory()
+    public void AutoTagStatusScript_UsesOneHistoryEndpointForActiveAndCompletedRuns()
     {
         var repoRoot = ResolveRepoRoot();
         var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
         Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
 
         var source = File.ReadAllText(scriptPath);
-        Assert.Contains("const archivedStatusHistory = Array.isArray(archive?.statusHistory) ? archive.statusHistory : [];", source, StringComparison.Ordinal);
-        Assert.Contains("if (archivedStatusHistory.length === 0)", source, StringComparison.Ordinal);
-        Assert.Contains("tryLoadLiveRunDetailsForSelection", source, StringComparison.Ordinal);
+        var loadMethod = ExtractFunction(source, "async function loadRunDetails");
+        Assert.Contains("fetchRunHistorySnapshot(runId, requestId)", loadMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/autotag/jobs/", loadMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("fallback", loadMethod, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("tryLoadLiveRunDetailsForSelection", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("tryLoadArchiveThenLiveFallback", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AutoTagStatusScript_OnlyTreatsActiveRunsAsLiveHistorySource()
+    public void AutoTagStatusScript_DoesNotClearSelectedHistoryDuringListRefresh()
     {
         var repoRoot = ResolveRepoRoot();
         var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
         Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
 
         var source = File.ReadAllText(scriptPath);
-        Assert.Contains("return isHistoryTabActive() && !state.manualHistorySelection && hasActiveLiveRun();", source, StringComparison.Ordinal);
-        Assert.Contains("function canUseLiveRunSelection(runId)", source, StringComparison.Ordinal);
-        Assert.Contains("if (!canUseLiveRunSelection(runId))", source, StringComparison.Ordinal);
+        var renderMethod = ExtractFunction(source, "function renderRunList");
+        var loadMethod = ExtractFunction(source, "async function loadRunDetails");
+        Assert.DoesNotContain("resetRunSelection", renderMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("state.historyStatus = []", renderMethod, StringComparison.Ordinal);
+        Assert.Contains("retaining the last successful snapshot", loadMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("resetRunSelection", loadMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_OnlyClearsHistoryForAnExplicitEmptyDateSelection()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        var loadRunsMethod = ExtractFunction(source, "async function loadRunsForDate");
+        Assert.Contains("if (options.manual === true) {\n                resetRunSelection", loadRunsMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("resetRunSelection", ExtractFunction(source, "async function loadCalendar"), StringComparison.Ordinal);
+        Assert.DoesNotContain("resetRunSelection", ExtractFunction(source, "async function refreshAutoTagRunHistory"), StringComparison.Ordinal);
+        Assert.DoesNotContain("resetRunSelection", ExtractFunction(source, "async function applyPolledJob"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ActivitiesPage_VersionsLazyLoadedAutoTagStatusScript()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var viewPath = Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Activities", "Index.cshtml");
+        Assert.True(File.Exists(viewPath), $"Missing Activities view: {viewPath}");
+
+        var source = File.ReadAllText(viewPath);
+        Assert.Contains("autoTagStatus: '@AssetUrl.Versioned(ViewContext, Url, \"~/js/autotag-status.js\")'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("autoTagStatus: '@Url.Content(\"~/js/autotag-status.js\")'", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -294,15 +327,51 @@ public sealed class AutoTagStatusRefreshGuardrailTests
     }
 
     [Fact]
-    public void AutoTagStatusScript_DoesNotOverwriteArchivedHistoryFromCompletedLatestPoll()
+    public void AutoTagStatusScript_RefreshesSelectedHistoryOnceRunBecomesTerminal()
     {
         var repoRoot = ResolveRepoRoot();
         var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
         Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
 
         var source = File.ReadAllText(scriptPath);
-        Assert.Contains("if (hasActiveLiveRun() && hasDetails) {", source, StringComparison.Ordinal);
-        Assert.Contains("syncSelectedRunWithLiveJob(job, logs);", source, StringComparison.Ordinal);
+        var pollMethod = ExtractFunction(source, "async function applyPolledJob");
+        Assert.Contains("isTerminalRunStatus(job.status)", pollMethod, StringComparison.Ordinal);
+        Assert.Contains("normalizeRunId(state.selectedRunId) === normalizeRunId(job.id)", pollMethod, StringComparison.Ordinal);
+        Assert.Contains("await loadRunDetails(job.id)", pollMethod, StringComparison.Ordinal);
+        Assert.Contains("state.terminalHistorySyncedRunId", pollMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("syncSelectedRunWithLiveJob", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusScript_CoalescesRealtimeCalendarAndRunListRefresh()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scriptPath = Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js");
+        Assert.True(File.Exists(scriptPath), $"Missing status script: {scriptPath}");
+
+        var source = File.ReadAllText(scriptPath);
+        var refreshMethod = ExtractFunction(source, "async function refreshAutoTagRunHistory");
+        Assert.Contains("await loadCalendar({ preserveSelection: true });", refreshMethod, StringComparison.Ordinal);
+        Assert.Contains("await refreshRealtimeRunDetails(runId, runDate);", refreshMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("loadRunsForDate", refreshMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagService_ReadsEachRunHistoryAsOneLockedSnapshot()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var servicePath = Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        Assert.True(File.Exists(servicePath), $"Missing AutoTag service source: {servicePath}");
+
+        var source = File.ReadAllText(servicePath);
+        var methodStart = source.IndexOf("public AutoTagRunArchive? GetArchivedRun(string id)", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("\n    public AutoTagTagDiff? GetTagDiff", methodStart, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = source.Substring(methodStart, methodEnd - methodStart);
+        Assert.Contains("_archiveLocks.GetOrAdd(id", method, StringComparison.Ordinal);
+        Assert.Contains("lock (archiveLock)", method, StringComparison.Ordinal);
+        Assert.True(method.IndexOf("lock (archiveLock)", StringComparison.Ordinal) < method.IndexOf("LoadRunSummary(id)", StringComparison.Ordinal));
+        Assert.True(method.IndexOf("lock (archiveLock)", StringComparison.Ordinal) < method.IndexOf("ReadRunStatusHistory(id)", StringComparison.Ordinal));
     }
 
     [Fact]
