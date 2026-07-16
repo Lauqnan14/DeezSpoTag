@@ -628,7 +628,7 @@ public class AudioTagger
 
             if (save.Cover)
             {
-                await AttachCoverArtAsync(tag, track.Album?.EmbeddedCoverPath, save);
+                await AttachCoverArtAsync(file.Tag, track.Album?.EmbeddedCoverPath, save);
             }
 
             file.Save();

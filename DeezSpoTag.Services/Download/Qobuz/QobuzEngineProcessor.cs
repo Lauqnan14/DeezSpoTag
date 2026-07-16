@@ -712,6 +712,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             outputPath,
             _logger,
             () => ApplyPostDownloadSettingsAsync(
+                queueUuid,
                 context,
                 payload,
                 outputPath,
@@ -732,17 +733,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
-        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, outputPath, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(prefetchFailure))
-        {
-            _logger.LogWarning(
-                "Qobuz sidecar prefetch failed for {QueueUuid}: {Reason}",
-                queueUuid,
-                prefetchFailure);
-            _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
-            throw new InvalidOperationException(
-                $"{EngineName} required artwork prefetch failed for {queueUuid}: {prefetchFailure}");
-        }
+        await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(queueUuid, cancellationToken);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<QobuzQueueItem>(
                 _queueRepository,
@@ -1038,6 +1029,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     }
 
     private async Task<string> ApplyPostDownloadSettingsAsync(
+        string queueUuid,
         EngineAudioPostDownloadHelper.EngineTrackContext context,
         QobuzQueueItem payload,
         string outputPath,
@@ -1046,6 +1038,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         CancellationToken cancellationToken)
     {
         var request = new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+            queueUuid,
             context,
             payload,
             outputPath,

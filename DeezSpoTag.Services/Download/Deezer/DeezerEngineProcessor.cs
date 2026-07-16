@@ -567,25 +567,8 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
                 EngineName),
             cancellationToken);
 
-        await ThrowTrackPrefetchFailureIfAnyAsync(request.QueueUuid, expectedOutputPath, cancellationToken);
+        await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(request.QueueUuid, cancellationToken);
         EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(request.Payload, result.GeneratedPathResult, result.Path!);
-    }
-
-    private async Task ThrowTrackPrefetchFailureIfAnyAsync(string queueUuid, string outputPath, CancellationToken cancellationToken)
-    {
-        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, outputPath, cancellationToken);
-        if (string.IsNullOrWhiteSpace(prefetchFailure))
-        {
-            return;
-        }
-
-        _logger.LogWarning(
-            "Deezer sidecar prefetch failed for {QueueUuid}: {Reason}",
-            queueUuid,
-            prefetchFailure);
-        _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
-        throw new InvalidOperationException(
-            $"{EngineName} required artwork prefetch failed for {queueUuid}: {prefetchFailure}");
     }
 
     private async Task UpdateCompletedTrackQueueStateAsync(

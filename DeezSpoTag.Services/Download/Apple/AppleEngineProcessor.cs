@@ -622,6 +622,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
                 outputPath,
                 _logger,
                 () => ApplyPostDownloadSettingsAsync(
+                    queueUuid,
                     trackContext,
                     queueContext.Payload,
                     outputPath,
@@ -712,17 +713,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         AppleQueueItem payload,
         CancellationToken itemToken)
     {
-        var prefetchFailure = await EnsureRequiredPrefetchCompletedAsync(queueUuid, itemToken);
-        if (!string.IsNullOrWhiteSpace(prefetchFailure))
-        {
-            _logger.LogWarning(
-                "Apple sidecar prefetch failed for {QueueUuid}: {Reason}",
-                queueUuid,
-                prefetchFailure);
-            _activityLog.Warn($"Sidecar prefetch failed (engine={EngineName}): {queueUuid} {prefetchFailure}");
-            throw new InvalidOperationException(
-                $"{EngineName} required artwork prefetch failed for {queueUuid}: {prefetchFailure}");
-        }
+        await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(queueUuid, itemToken);
         payload.Progress = 100;
         payload.Downloaded = Math.Max(payload.Size, 1);
         payload.Status = AppleDownloadStatus.Completed;
@@ -763,11 +754,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         await _queueRepository.UpdateStatusAsync(queueUuid, CancelledStatus, "Cancelled", cancellationToken: CancellationToken.None);
         await ScheduleRetryIfEligibleAsync(queueUuid, CancelledStatus, CancellationToken.None);
-    }
-
-    private async Task<string?> EnsureRequiredPrefetchCompletedAsync(string queueUuid, CancellationToken cancellationToken)
-    {
-        return await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(queueUuid, cancellationToken: cancellationToken);
     }
 
     private static void ClearPrefetchGate(string queueUuid)
@@ -903,6 +889,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     }
 
     private async Task<string> ApplyPostDownloadSettingsAsync(
+        string queueUuid,
         EngineAudioPostDownloadHelper.EngineTrackContext context,
         AppleQueueItem payload,
         string outputPath,
@@ -912,6 +899,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
     {
         return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(
             new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+                queueUuid,
                 context,
                 payload,
                 outputPath,

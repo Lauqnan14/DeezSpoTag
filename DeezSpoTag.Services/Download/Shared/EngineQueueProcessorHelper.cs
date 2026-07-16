@@ -324,6 +324,7 @@ internal static class EngineQueueProcessorHelper
 
         using var scope = workContext.Deps.ServiceProvider.CreateScope();
         var postDownloadRequest = new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+            workContext.Item.QueueUuid,
             context,
             workContext.Payload,
             outputPath,
@@ -371,22 +372,9 @@ internal static class EngineQueueProcessorHelper
             throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
         }
 
-        var prefetchFailure = await EngineAudioPostDownloadHelper.EnsureArtworkPrefetchCompletedAsync(
+        await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(
             workContext.Item.QueueUuid,
-            outputPath,
             workContext.ItemToken);
-        if (!string.IsNullOrWhiteSpace(prefetchFailure))
-        {
-            workContext.Deps.Logger.LogWarning(
-                "{Engine} sidecar prefetch failed for {QueueUuid}: {Reason}",
-                workContext.EngineName,
-                workContext.Item.QueueUuid,
-                prefetchFailure);
-            workContext.Deps.ActivityLog.Warn(
-                $"Sidecar prefetch failed (engine={workContext.EngineName}): {workContext.Item.QueueUuid} {prefetchFailure}");
-            throw new InvalidOperationException(
-                $"{workContext.EngineName} required artwork prefetch failed for {workContext.Item.QueueUuid}: {prefetchFailure}");
-        }
 
         ActualDownloadQualityLabel.ApplyTo(workContext.Payload, outputPath);
         FallbackAttemptRecorder.RecordCurrent(

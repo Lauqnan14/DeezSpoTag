@@ -563,7 +563,8 @@ public class TrackDownloader
     private static void EnsureRequiredEmbeddedCoverForTagging(TrackDownloadExecutionContext context)
     {
         EnsureTrackEmbeddedCoverPathForTagging(context.Track, context.Album);
-        if (!context.TagSettings.Cover)
+        if (!context.TagSettings.Cover
+            || (context.Playlist != null && !context.Settings.DlAlbumcoverForPlaylist))
         {
             return;
         }
@@ -883,7 +884,10 @@ public class TrackDownloader
         CancellationToken cancellationToken)
     {
         var coverAlbum = album ?? track.Album ?? new Album("Unknown Album");
-        var fallbackOrder = ResolveArtworkFallbackOrder(settings);
+        var allowAlbumArtwork = playlist == null || settings.DlAlbumcoverForPlaylist;
+        var fallbackOrder = allowAlbumArtwork
+            ? ResolveArtworkFallbackOrder(settings)
+            : Array.Empty<string>();
         var artistFallbackOrder = ArtworkFallbackHelper.ResolveArtistOrder(settings);
         var albumConstraint = ArtworkFallbackHelper.ResolveAlbumConstraintForArtwork(coverAlbum.Title);
         var hasDeezerCover = coverAlbum.Pic != null && !string.IsNullOrEmpty(coverAlbum.Pic.Md5);
@@ -892,20 +896,22 @@ public class TrackDownloader
         var deezerTrackId = ArtworkFallbackHelper.TryExtractDeezerTrackId(track);
 
         var deezerClient = await TryGetDeezerArtworkClientAsync(fallbackOrder, artistFallbackOrder);
-        var coverResolution = await ResolveCoverArtworkAsync(
-            new CoverResolutionRequest
-            {
-                Track = track,
-                Settings = settings,
-                FallbackOrder = fallbackOrder,
-                CoverAlbum = coverAlbum,
-                AlbumConstraint = albumConstraint,
-                HasDeezerCover = hasDeezerCover,
-                AppleTrackId = appleTrackId,
-                DeezerTrackId = deezerTrackId,
-                DeezerClient = deezerClient
-            },
-            cancellationToken);
+        var coverResolution = allowAlbumArtwork
+            ? await ResolveCoverArtworkAsync(
+                new CoverResolutionRequest
+                {
+                    Track = track,
+                    Settings = settings,
+                    FallbackOrder = fallbackOrder,
+                    CoverAlbum = coverAlbum,
+                    AlbumConstraint = albumConstraint,
+                    HasDeezerCover = hasDeezerCover,
+                    AppleTrackId = appleTrackId,
+                    DeezerTrackId = deezerTrackId,
+                    DeezerClient = deezerClient
+                },
+                cancellationToken)
+            : (null, false, false, null);
 
         var (resolvedCoverUrl, coverIsApple, useDeezerCover, spotifyId) = coverResolution;
         var artistResolution = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
@@ -935,6 +941,16 @@ public class TrackDownloader
         result.ArtistArtworkSourceUrl = artistResolution?.Url;
         result.ArtistArtworkResolutionMethod = artistResolution?.ResolutionMethod;
         PopulateArtistArtworkResult(result, settings, pathResult, coverAlbum, resolvedArtistUrl, artistIsApple, useDeezerArtist);
+
+        if (!allowAlbumArtwork)
+        {
+            coverAlbum.EmbeddedCoverPath = null;
+            if (track.Album != null)
+            {
+                track.Album.EmbeddedCoverPath = null;
+            }
+            return;
+        }
 
         if (!TryResolveAlbumMd5(coverAlbum, resolvedCoverUrl, useDeezerCover, out var albumMd5))
         {
