@@ -1853,7 +1853,12 @@ globalThis.DeezSpoTag = {
     },
 
     applyCredentialPlatformStatus(authData, connected, platformStates) {
-        this.applySimpleCredentialState(authData.discogs?.token, connected, platformStates, 'discogs', 'token');
+        this.applySimpleCredentialState(
+            authData.discogs?.tokenSaved === true,
+            connected,
+            platformStates,
+            'discogs',
+            'token');
 
         const lastFmApiKey = typeof authData.lastFm?.apiKey === 'string'
             ? authData.lastFm.apiKey.trim()
@@ -1866,12 +1871,17 @@ globalThis.DeezSpoTag = {
             'api-key');
 
         this.applySimpleCredentialState(
-            authData.bpmSupreme?.email && authData.bpmSupreme?.password,
+            authData.bpmSupreme?.email && authData.bpmSupreme?.passwordSaved === true,
             connected,
             platformStates,
             'bpmsupreme',
             'credentials');
-        this.applySimpleCredentialState(authData.plex?.url && authData.plex?.token, connected, platformStates, 'plex', 'credentials');
+        this.applySimpleCredentialState(
+            authData.plex?.url && authData.plex?.tokenSaved === true,
+            connected,
+            platformStates,
+            'plex',
+            'credentials');
         this.applySimpleCredentialState(
             authData.jellyfin?.url && (authData.jellyfin?.apiKey || authData.jellyfin?.username),
             connected,

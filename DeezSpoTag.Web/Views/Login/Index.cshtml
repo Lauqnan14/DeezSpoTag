@@ -2543,10 +2543,11 @@ async function loadPlatformAuthState() {
 
         const data = await response.json();
         if (data.discogs) {
-            document.getElementById('discogsToken').value = data.discogs.token || '';
-            setStatus('discogsStatus', data.discogs.token);
+            const discogsConnected = data.discogs.tokenSaved === true;
+            document.getElementById('discogsToken').value = '';
+            setStatus('discogsStatus', discogsConnected);
             renderDiscogsInfo(data.discogs);
-            togglePlatformLoginState('discogs', Boolean(data.discogs.token));
+            togglePlatformLoginState('discogs', discogsConnected);
         }
         if (data.lastFm) {
             const hasLastFmApiKey = Boolean(data.lastFm.hasApiKey ?? data.lastFm.apiKey);
@@ -2557,19 +2558,21 @@ async function loadPlatformAuthState() {
             togglePlatformLoginState('lastfm', hasLastFmApiKey);
         }
         if (data.bpmSupreme) {
+            const bpmConnected = Boolean(data.bpmSupreme.email && data.bpmSupreme.passwordSaved === true);
             document.getElementById('bpmEmail').value = data.bpmSupreme.email || '';
-            document.getElementById('bpmPassword').value = data.bpmSupreme.password || '';
+            document.getElementById('bpmPassword').value = '';
             setLoginDropdownValue('bpmLibrary', data.bpmSupreme.library || 'Supreme');
-            setStatus('bpmStatus', data.bpmSupreme.email && data.bpmSupreme.password);
+            setStatus('bpmStatus', bpmConnected);
             renderBpmInfo(data.bpmSupreme);
-            togglePlatformLoginState('bpm', Boolean(data.bpmSupreme.email && data.bpmSupreme.password));
+            togglePlatformLoginState('bpm', bpmConnected);
         }
         if (data.plex) {
             document.getElementById('plexUrl').value = data.plex.url || '';
-            document.getElementById('plexToken').value = data.plex.token || '';
-            setStatus('plexStatus', data.plex.url && data.plex.token);
+            const plexConnected = Boolean(data.plex.url && data.plex.tokenSaved === true);
+            document.getElementById('plexToken').value = '';
+            setStatus('plexStatus', plexConnected);
             renderPlexInfo(data.plex);
-            togglePlatformLoginState('plex', Boolean(data.plex.url && data.plex.token));
+            togglePlatformLoginState('plex', plexConnected);
         }
         if (data.jellyfin) {
             document.getElementById('jellyfinUrl').value = data.jellyfin.url || '';
