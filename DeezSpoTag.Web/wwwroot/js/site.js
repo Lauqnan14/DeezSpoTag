@@ -990,12 +990,11 @@ globalThis.DeezSpoTag = {
         this.updateThemedPlatformIcons();
         this.initializeCrossDeviceSync();
         if (this.isLoginRoute()) {
-            globalThis.setTimeout(() => this.loadConnectedPlatforms({ force: true, reason: 'login-init' }), 350);
+            globalThis.setTimeout(() => this.loadConnectedPlatforms({ force: true, checkPublicApis: true, reason: 'login-init' }), 350);
         } else {
-            this.loadConnectedPlatforms({ force: true, reason: 'init' });
+            this.loadConnectedPlatforms({ force: true, checkPublicApis: true, reason: 'init' });
             this.startConnectedPlatformsAutoRefresh();
         }
-        this.startPublicApiStatusAutoRefresh();
         this.initializePwaInstallPrompt();
         console.log('DeezSpoTag initialized');
     },
@@ -1144,10 +1143,8 @@ globalThis.DeezSpoTag = {
 
     platformDisplayOrder: [],
 
-    connectedPlatformsRefreshIntervalMs: 300000,
-    publicApiStatusRefreshIntervalMs: 180000,
+    connectedPlatformsRefreshIntervalMs: 180000,
     connectedPlatformsProbeMinIntervalMs: 30000,
-    connectedPlatformsCacheMaxAgeMs: 300000,
     connectedPlatformsRefreshTimerId: null,
     connectedPlatformsRefreshInFlight: false,
     connectedPlatformsRefreshPending: null,
@@ -1156,8 +1153,6 @@ globalThis.DeezSpoTag = {
     connectedPlatformsLastProbeAt: 0,
     connectedPlatformsHasRendered: false,
     connectedPlatformsLastRenderSignature: null,
-    publicApiStatusRefreshTimerId: null,
-    publicApiStatusRefreshInFlight: false,
     platformRegistryLoaded: false,
     platformRegistryLoadPromise: null,
 
@@ -1323,7 +1318,12 @@ globalThis.DeezSpoTag = {
 
         const states = {};
         this.getPlatformDisplayOrder(Array.from(ids)).forEach((id) => {
-            states[id] = { active: false, reason: null, publicApiStatus: null, publicApiOnlineCount: null };
+            states[id] = {
+                active: false,
+                reason: null,
+                publicApiStatus: ['qobuz', 'tidal', 'amazonmusic'].includes(id) ? 'unknown' : null,
+                publicApiOnlineCount: null
+            };
         });
 
         return states;
@@ -1456,8 +1456,7 @@ globalThis.DeezSpoTag = {
                 return {
                     platforms: parsed,
                     statuses: null,
-                    updatedAt: null,
-                    isFresh: false
+                    publicApiCheckedAt: null
                 };
             }
 
@@ -1465,14 +1464,12 @@ globalThis.DeezSpoTag = {
                 return null;
             }
 
-            const updatedAt = Number(parsed.updatedAt || 0);
             return {
                 platforms: parsed.platforms,
                 statuses: parsed.statuses && typeof parsed.statuses === 'object'
                     ? parsed.statuses
                     : null,
-                updatedAt: updatedAt || null,
-                isFresh: updatedAt > 0 && (Date.now() - updatedAt) <= this.connectedPlatformsCacheMaxAgeMs
+                publicApiCheckedAt: Number(parsed.publicApiCheckedAt || 0) || null
             };
         } catch {
             return null;
@@ -1486,7 +1483,7 @@ globalThis.DeezSpoTag = {
                 statuses: snapshot?.statuses && typeof snapshot.statuses === 'object'
                     ? snapshot.statuses
                     : {},
-                updatedAt: snapshot?.updatedAt || Date.now()
+                publicApiCheckedAt: snapshot?.publicApiCheckedAt || null
             };
             localStorage.setItem('connected-platforms-cache', JSON.stringify(payload));
         } catch {
@@ -1625,99 +1622,21 @@ globalThis.DeezSpoTag = {
         this.connectedPlatformsLastProbeAt = timestamp;
     },
 
-    startPublicApiStatusAutoRefresh() {
-        if (this.publicApiStatusRefreshTimerId !== null) {
-            return;
-        }
-
-        if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-            this.refreshPublicApiSidebarStatus({ check: true });
-        }
-        this.publicApiStatusRefreshTimerId = globalThis.setInterval(() => {
-            if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-                this.refreshPublicApiSidebarStatus({ check: true });
-            }
-        }, this.publicApiStatusRefreshIntervalMs);
-    },
-
-    async refreshPublicApiSidebarStatus(options = {}) {
-        if (document.visibilityState === 'hidden'
-            || this.publicApiStatusRefreshInFlight
-            || this.connectedPlatformsRefreshInFlight) {
-            return;
-        }
-
-        this.publicApiStatusRefreshInFlight = true;
-        try {
-            await this.ensurePlatformRegistryLoaded();
-            const endpoint = options?.check === true
-                ? '/api/platform-auth/public-providers/status?check=true'
-                : '/api/platform-auth/public-providers/status';
-            const response = await fetch(endpoint, {
-                cache: 'no-store',
-                credentials: 'same-origin',
-                headers: { Accept: 'application/json' }
-            });
-            if (!response.ok) {
-                return;
-            }
-
-            const data = await this.parseJsonSafely(response, '/api/platform-auth/public-providers/status');
-            if (!data) {
-                return;
-            }
-
-            const selected = this.getAutoTagSelectedPlatforms();
-            const cached = this.getCachedConnectedPlatformsSnapshot();
-            const platformStates = this.resolveConnectedPlatformStates(cached, selected);
-            this.setPlatformPublicApiStatus(
-                platformStates,
-                'qobuz',
-                data.qobuz?.status,
-                data.qobuz?.onlineCount);
-            this.setPlatformPublicApiStatus(
-                platformStates,
-                'tidal',
-                data.tidal?.status,
-                data.tidal?.onlineCount);
-            this.setPlatformPublicApiStatus(
-                platformStates,
-                'amazonmusic',
-                data.amazonMusic?.status,
-                data.amazonMusic?.onlineCount);
-
-            const connected = Object.entries(platformStates)
-                .filter(([, status]) => status?.active === true)
-                .map(([id]) => id);
-            this.setCachedConnectedPlatforms({
-                platforms: connected,
-                statuses: platformStates,
-                updatedAt: Date.now()
-            });
-            this.renderConnectedPlatforms(platformStates);
-        } catch (error) {
-            console.warn('Failed to refresh public API sidebar status', error);
-        } finally {
-            this.publicApiStatusRefreshInFlight = false;
-        }
-    },
-
     startConnectedPlatformsAutoRefresh() {
         if (this.connectedPlatformsRefreshTimerId !== null) {
             return;
         }
 
         this.connectedPlatformsRefreshTimerId = globalThis.setInterval(() => {
-            if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-                this.loadConnectedPlatforms({ force: true, reason: 'timer' });
+            if (document.visibilityState === 'visible') {
+                this.loadConnectedPlatforms({ force: true, checkPublicApis: true, reason: 'timer' });
             }
         }, this.connectedPlatformsRefreshIntervalMs);
 
         if (!this.connectedPlatformsFocusHandler) {
             this.connectedPlatformsFocusHandler = () => {
-                if (document.visibilityState === 'visible' && this.tryAcquireConnectedPlatformsPollingLease()) {
-                    this.loadConnectedPlatforms({ reason: 'focus' });
-                    this.refreshPublicApiSidebarStatus();
+                if (document.visibilityState === 'visible') {
+                    this.loadConnectedPlatforms({ checkPublicApis: true, reason: 'focus' });
                 }
             };
             globalThis.addEventListener('focus', this.connectedPlatformsFocusHandler);
@@ -1726,10 +1645,7 @@ globalThis.DeezSpoTag = {
         if (!this.connectedPlatformsVisibilityHandler) {
             this.connectedPlatformsVisibilityHandler = () => {
                 if (document.visibilityState === 'visible') {
-                    if (this.tryAcquireConnectedPlatformsPollingLease()) {
-                        this.loadConnectedPlatforms({ reason: 'visibility' });
-                        this.refreshPublicApiSidebarStatus();
-                    }
+                    this.loadConnectedPlatforms({ checkPublicApis: true, reason: 'visibility' });
                 }
             };
             document.addEventListener('visibilitychange', this.connectedPlatformsVisibilityHandler);
@@ -1747,11 +1663,11 @@ globalThis.DeezSpoTag = {
 
         const probePlan = this.resolveConnectedPlatformsProbePlan(options);
         const registryPromise = this.ensurePlatformRegistryLoaded();
+        const cached = this.getCachedConnectedPlatformsSnapshot();
         if (!probePlan.shouldProbe) {
             await registryPromise;
             const selected = this.getAutoTagSelectedPlatforms();
             const initialStates = this.buildInitialPlatformStates(selected);
-            const cached = this.getCachedConnectedPlatformsSnapshot();
             this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
             return;
         }
@@ -1761,7 +1677,6 @@ globalThis.DeezSpoTag = {
             await registryPromise;
             const selected = this.getAutoTagSelectedPlatforms();
             const initialStates = this.buildInitialPlatformStates(selected);
-            const cached = this.getCachedConnectedPlatformsSnapshot();
             this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
             return;
         }
@@ -1772,13 +1687,17 @@ globalThis.DeezSpoTag = {
             credentials: 'same-origin',
             headers: { Accept: 'application/json' }
         };
-        const authResponsesPromise = this.fetchConnectedPlatformResponses(fetchOptions);
+        const publicApiCheckDue = options?.checkPublicApis === true
+            && (!cached?.publicApiCheckedAt
+                || (Date.now() - cached.publicApiCheckedAt) >= this.connectedPlatformsRefreshIntervalMs);
+        const statusResponsesPromise = this.fetchConnectedPlatformResponses(fetchOptions, {
+            checkPublicApis: publicApiCheckDue
+        });
         let platformStates = null;
         try {
             await registryPromise;
             const selected = this.getAutoTagSelectedPlatforms();
             const initialStates = this.buildInitialPlatformStates(selected);
-            const cached = this.getCachedConnectedPlatformsSnapshot();
             this.renderConnectedPlatformsFromSnapshot(cached, selected, initialStates);
 
             platformStates = this.resolveConnectedPlatformStates(cached, selected);
@@ -1788,15 +1707,21 @@ globalThis.DeezSpoTag = {
                     .map(([id]) => id));
             this.seedSelectedConnectedPlatforms(selected, connected, platformStates);
 
-            const settledResponses = await authResponsesPromise;
+            const settledResponses = await statusResponsesPromise;
             await this.applyAuthStatus(settledResponses.authResponse, settledResponses.authOk, connected, platformStates);
+            await this.applyPublicApiStatus(
+                settledResponses.publicApiResponse,
+                settledResponses.publicApiOk,
+                platformStates);
             const resolved = Array.from(connected);
-            const requiredChecksCompleted = settledResponses.authCompleted;
+            const requiredChecksCompleted = settledResponses.authCompleted || settledResponses.publicApiCompleted;
             const preserveIfEmpty = !requiredChecksCompleted;
             this.setCachedConnectedPlatforms({
                 platforms: resolved,
                 statuses: platformStates,
-                updatedAt: Date.now()
+                publicApiCheckedAt: publicApiCheckDue && settledResponses.publicApiOk
+                    ? Date.now()
+                    : cached?.publicApiCheckedAt
             });
             this.renderConnectedPlatforms(platformStates, { preserveIfEmpty });
         } catch (error) {
@@ -1820,6 +1745,9 @@ globalThis.DeezSpoTag = {
             if (options?.force === true) {
                 this.connectedPlatformsRefreshPending.force = true;
             }
+            if (options?.checkPublicApis === true) {
+                this.connectedPlatformsRefreshPending.checkPublicApis = true;
+            }
             return;
         }
 
@@ -1827,10 +1755,10 @@ globalThis.DeezSpoTag = {
     },
 
     resolveConnectedPlatformStates(cached, selected) {
-        if (cached?.isFresh === true && cached?.statuses) {
+        if (cached?.statuses) {
             return this.buildCachedPlatformStates(cached.statuses, selected);
         }
-        if (cached?.isFresh === true && cached?.platforms?.length) {
+        if (cached?.platforms?.length) {
             return this.buildCachedPlatformStates(cached.platforms, selected);
         }
         return this.buildInitialPlatformStates(selected);
@@ -1865,39 +1793,25 @@ globalThis.DeezSpoTag = {
         });
     },
 
-    async fetchConnectedPlatformResponses(fetchOptions) {
-        const [authResult] = await Promise.allSettled([
-            fetch('/api/platform-auth', fetchOptions)
+    async fetchConnectedPlatformResponses(fetchOptions, options = {}) {
+        const publicApiEndpoint = options?.checkPublicApis === true
+            ? '/api/platform-auth/public-providers/status?check=true'
+            : '/api/platform-auth/public-providers/status';
+        const [authResult, publicApiResult] = await Promise.allSettled([
+            fetch('/api/platform-auth', fetchOptions),
+            fetch(publicApiEndpoint, fetchOptions)
         ]);
 
         const authResponse = authResult.status === 'fulfilled' ? authResult.value : null;
+        const publicApiResponse = publicApiResult.status === 'fulfilled' ? publicApiResult.value : null;
         return {
             authResponse,
             authCompleted: authResult.status === 'fulfilled',
-            authOk: Boolean(authResponse?.ok)
+            authOk: Boolean(authResponse?.ok),
+            publicApiResponse,
+            publicApiCompleted: publicApiResult.status === 'fulfilled',
+            publicApiOk: Boolean(publicApiResponse?.ok)
         };
-    },
-
-    tryAcquireConnectedPlatformsPollingLease() {
-        const key = 'deezspotag.connected-platforms-poll-lease';
-        const now = Date.now();
-        const leaseMs = 60_000;
-        this.connectedPlatformsTabId ??= globalThis.crypto?.randomUUID?.()
-            ?? `${now}-${Math.random().toString(16).slice(2)}`;
-        try {
-            const current = JSON.parse(globalThis.localStorage.getItem(key) || '{}');
-            if (current.owner && current.owner !== this.connectedPlatformsTabId
-                && Number(current.expiresAt || 0) > now) {
-                return false;
-            }
-            globalThis.localStorage.setItem(key, JSON.stringify({
-                owner: this.connectedPlatformsTabId,
-                expiresAt: now + leaseMs
-            }));
-            return true;
-        } catch {
-            return true;
-        }
     },
 
     async applyAuthStatus(authResponse, authOk, connected, platformStates) {
@@ -1914,6 +1828,28 @@ globalThis.DeezSpoTag = {
         this.applyStreamingPlatformStatus(authData, connected, platformStates);
 
         return authData;
+    },
+
+    async applyPublicApiStatus(publicApiResponse, publicApiOk, platformStates) {
+        if (!publicApiOk) {
+            return null;
+        }
+
+        const data = await this.parseJsonSafely(
+            publicApiResponse,
+            '/api/platform-auth/public-providers/status');
+        if (!data) {
+            return null;
+        }
+
+        this.setPlatformPublicApiStatus(platformStates, 'qobuz', data.qobuz?.status, data.qobuz?.onlineCount);
+        this.setPlatformPublicApiStatus(platformStates, 'tidal', data.tidal?.status, data.tidal?.onlineCount);
+        this.setPlatformPublicApiStatus(
+            platformStates,
+            'amazonmusic',
+            data.amazonMusic?.status,
+            data.amazonMusic?.onlineCount);
+        return data;
     },
 
     applyCredentialPlatformStatus(authData, connected, platformStates) {

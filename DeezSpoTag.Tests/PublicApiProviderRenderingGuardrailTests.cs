@@ -151,6 +151,14 @@ public sealed class PublicApiProviderRenderingGuardrailTests
         var site = ReadSource("DeezSpoTag.Web/wwwroot/js/site.js");
 
         Assert.Contains("/api/platform-auth/public-providers/status", site, StringComparison.Ordinal);
+        Assert.Contains("/api/platform-auth/public-providers/status?check=true", site, StringComparison.Ordinal);
+        Assert.Contains("const [authResult, publicApiResult] = await Promise.allSettled", site, StringComparison.Ordinal);
+        Assert.Contains("await this.applyPublicApiStatus(", site, StringComparison.Ordinal);
+        Assert.Contains("publicApiStatus: ['qobuz', 'tidal', 'amazonmusic'].includes(id) ? 'unknown' : null", site, StringComparison.Ordinal);
+        Assert.Contains("publicApiCheckedAt: Number(parsed.publicApiCheckedAt || 0) || null", site, StringComparison.Ordinal);
+        Assert.Contains("const publicApiCheckDue = options?.checkPublicApis === true", site, StringComparison.Ordinal);
+        Assert.DoesNotContain("refreshPublicApiSidebarStatus", site, StringComparison.Ordinal);
+        Assert.DoesNotContain("tryAcquireConnectedPlatformsPollingLease", site, StringComparison.Ordinal);
         Assert.DoesNotContain("authData.qobuz?.publicApiStatus", site, StringComparison.Ordinal);
         Assert.DoesNotContain("authData.tidal?.publicApiStatus", site, StringComparison.Ordinal);
         Assert.DoesNotContain("authData.amazonMusic?.publicApiStatus", site, StringComparison.Ordinal);

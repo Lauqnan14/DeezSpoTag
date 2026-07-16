@@ -114,15 +114,15 @@ public sealed class DeezerLoginStatusBehaviorTests
         Assert.Contains(ValidateStatusUrl, loginSource, StringComparison.Ordinal);
         Assert.DoesNotContain($"'{ConnectedPlatformsCacheKey}',", layoutSource, StringComparison.Ordinal);
         Assert.Contains("deezerConnectionStateChanged", siteSource, StringComparison.Ordinal);
-        Assert.Contains("connectedPlatformsCacheMaxAgeMs", siteSource, StringComparison.Ordinal);
+        Assert.Contains("publicApiCheckedAt", siteSource, StringComparison.Ordinal);
         Assert.DoesNotContain("deezerConnected", siteSource, StringComparison.Ordinal);
         Assert.DoesNotContain("forceDeep", siteSource, StringComparison.Ordinal);
         Assert.DoesNotContain("runDeepChecks", siteSource, StringComparison.Ordinal);
 
         var registryStart = siteSource.IndexOf("const registryPromise = this.ensurePlatformRegistryLoaded()", StringComparison.Ordinal);
-        var authStart = siteSource.IndexOf("const authResponsesPromise = this.fetchConnectedPlatformResponses(fetchOptions)", StringComparison.Ordinal);
-        var registryAwait = siteSource.IndexOf("await registryPromise", authStart, StringComparison.Ordinal);
-        Assert.True(registryStart >= 0 && authStart > registryStart && registryAwait > authStart);
+        var statusStart = siteSource.IndexOf("const statusResponsesPromise = this.fetchConnectedPlatformResponses(fetchOptions, {", StringComparison.Ordinal);
+        var registryAwait = siteSource.IndexOf("await registryPromise", statusStart, StringComparison.Ordinal);
+        Assert.True(registryStart >= 0 && statusStart > registryStart && registryAwait > statusStart);
     }
 
     [Fact]
