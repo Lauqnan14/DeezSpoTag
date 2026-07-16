@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-
 namespace DeezSpoTag.Services.Download;
 
 public interface IDownloadApiHealthTracker
@@ -16,7 +15,6 @@ public sealed class DownloadApiHealthTracker : IDownloadApiHealthTracker
 {
     private static readonly TimeSpan RecentSuccessWindow = TimeSpan.FromMinutes(5);
     private readonly ConcurrentDictionary<string, HealthEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
-
     public void ReportSuccess(string engine)
     {
         var normalized = NormalizeEngine(engine);

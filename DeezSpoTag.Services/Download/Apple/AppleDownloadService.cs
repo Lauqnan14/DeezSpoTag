@@ -213,18 +213,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return null;
         }
 
-        if (AllowsAacFallback(request)
-            && !string.IsNullOrWhiteSpace(request.MediaUserToken)
-            && !string.IsNullOrWhiteSpace(request.AuthorizationToken))
-        {
-            _logger.LogWarning(
-                "Apple enhanced HLS unavailable for {AppleId} (requested {Profile}). Device wrapper not available - falling back to AAC-LC via WebPlayback.",
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(appleId),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.PreferredProfile ?? "default"));
-            return await DownloadAacLcFromWebPlaybackAsync(request, appleId, cancellationToken);
-        }
-
-        return AppleDownloadResult.Fail("Apple manifest URL missing. Enhanced HLS not available and no tokens configured for AAC-LC fallback.");
+        return AppleDownloadResult.Fail("Apple manifest URL missing for the requested quality.");
     }
 
     private void LogManifestResolved(string appleId)
@@ -609,7 +598,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
 
         if (profile.Contains("alac", StringComparison.OrdinalIgnoreCase))
         {
-            return new List<string> { "alac", "aac" };
+            return new List<string> { "alac" };
         }
 
         if (profile.Contains("aac", StringComparison.OrdinalIgnoreCase))
@@ -617,20 +606,7 @@ public sealed class AppleDownloadService : IAppleDownloadService
             return new List<string> { "aac" };
         }
 
-        return new List<string> { "alac", "aac" };
-    }
-
-    private static bool AllowsAacFallback(AppleDownloadRequest request)
-    {
-        var profile = request.PreferredProfile?.Trim().ToLowerInvariant() ?? string.Empty;
-        if (profile.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return profile.Contains("alac", StringComparison.OrdinalIgnoreCase)
-               || profile.Contains("aac", StringComparison.OrdinalIgnoreCase)
-               || string.IsNullOrWhiteSpace(profile);
+        return new List<string> { "alac" };
     }
 
     private static bool IsAtmosProfile(string? profile)

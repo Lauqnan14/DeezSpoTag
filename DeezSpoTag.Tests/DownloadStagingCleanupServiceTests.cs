@@ -14,6 +14,28 @@ namespace DeezSpoTag.Tests;
 public sealed class DownloadStagingCleanupServiceTests
 {
     [Fact]
+    public async Task CleanupAsync_DeletesFormatPreservingEngineStagingFiles()
+    {
+        await using var context = CreateContext();
+        var albumFolder = Path.Join(context.DownloadRoot, "Artist", "Album");
+        Directory.CreateDirectory(albumFolder);
+        var expectedAudioPath = Path.Join(albumFolder, "Song.flac");
+        var qobuzPartPath = Path.Join(albumFolder, "Song.part.flac");
+        var tidalPartPath = Path.Join(albumFolder, "Song.candidate-1.part.flac");
+        File.WriteAllText(qobuzPartPath, "partial");
+        File.WriteAllText(tidalPartPath, "partial");
+
+        var result = await context.CleanupService.CleanupAsync(
+            "queue-format-staging",
+            BuildPayload(expectedAudioPath),
+            CancellationToken.None);
+
+        Assert.Equal(DownloadStagingCleanupService.CompletedStatus, result.Status);
+        Assert.False(File.Exists(qobuzPartPath));
+        Assert.False(File.Exists(tidalPartPath));
+    }
+
+    [Fact]
     public async Task CleanupAsync_DeletesOwnedRemnantFolder_WhenNoAudioRemains()
     {
         await using var context = CreateContext();

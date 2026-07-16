@@ -307,7 +307,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             await FailQueueAsync(queueUuid, ex.Message, notify: true, cancellationToken);
             if (!isEpisodePayload)
             {
-                _retryScheduler.ScheduleRetry(queueUuid, EngineName, ex.Message);
+                await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, ex.Message, cancellationToken);
             }
         }
     }
@@ -485,7 +485,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             DownloadObject: preparation.DownloadObject,
             Settings: request.Settings,
             Listener: new DownloadListenerAdapter(_listener),
-            AllowInEngineBitrateFallback: ShouldUseInEngineQualityFallback(request.Payload),
+            AllowInEngineBitrateFallback: false,
             CancellationToken: cancellationToken));
     }
 
@@ -615,6 +615,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             cancellationToken);
 
         await _queueRepository.UpdateStatusAsync(request.QueueUuid, CompletedStatus, cancellationToken: cancellationToken);
+        await _retryScheduler.ClearAsync(request.QueueUuid, cancellationToken);
         await request.Context.UpdateWatchlistTrackStatusAsync(request.PayloadJson, CompletedStatus, cancellationToken);
         _listener.Send(UpdateQueueEvent, new
         {
@@ -649,7 +650,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         CancellationToken cancellationToken)
     {
         await FailQueueAsync(queueUuid, message, notify, cancellationToken);
-        _retryScheduler.ScheduleRetry(queueUuid, EngineName, retryReason);
+        await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, retryReason, cancellationToken);
     }
 
     private async Task<bool> TryFallbackAsync(string queueUuid, string engine, DeezerQueueItem payload, CancellationToken cancellationToken)
@@ -660,10 +661,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             if (advanced)
             {
                 _activityLog.Info($"Fallback advanced: {queueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
-                if (!payload.FallbackQueuedExternally)
-                {
-                    _listener.SendAddedToQueue(payload.ToQueuePayload());
-                }
+                _listener.SendAddedToQueue(payload.ToQueuePayload());
             }
             return advanced;
         }
@@ -688,12 +686,6 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 
         return !string.IsNullOrWhiteSpace(payload.SourceUrl)
                && payload.SourceUrl.Contains("/episode/", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool ShouldUseInEngineQualityFallback(DeezerQueueItem payload)
-    {
-        // Preserve global AUTO fallback order for multi-engine plans.
-        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
     }
 
     private async Task<CoreTrack?> BuildTrackAsync(DeezerQueueItem payload, string? downloadTagSource)
@@ -1860,6 +1852,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
                         (item, value) => item.Downloaded = value))),
             cancellationToken);
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
+        await _retryScheduler.ClearAsync(queueUuid, cancellationToken);
     }
 
     private static string? ExtractEpisodeId(string? url)

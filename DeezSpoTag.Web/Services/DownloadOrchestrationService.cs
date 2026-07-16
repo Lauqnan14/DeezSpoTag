@@ -874,7 +874,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private async Task<bool> TryRunRetrySweepAsync(bool hasRunnableDownloads, CancellationToken cancellationToken)
     {
-        if (!_retryScheduler.HasPendingRetries || hasRunnableDownloads)
+        if (hasRunnableDownloads
+            || !await _retryScheduler.HasPendingRetriesAsync(cancellationToken))
         {
             return false;
         }
@@ -897,7 +898,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             _queueIdleSince = DateTimeOffset.UtcNow;
-            return false;
+            return true;
         }
         finally
         {

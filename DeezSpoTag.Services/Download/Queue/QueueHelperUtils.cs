@@ -215,7 +215,7 @@ internal static class QueueHelperUtils
             var safeSpeedMbps = Math.Max(0, speedMbps);
             DeezSpoTagSpeedTracker.ReportSpeed(queueUuid, safeSpeedMbps * 1024d * 1024d / 8d);
 
-            var normalized = Math.Clamp(progress, 0, 100);
+            var normalized = Math.Clamp(progress, 0, 95);
             var now = DateTimeOffset.UtcNow;
             var shouldSend = false;
             var progressToSend = 0d;

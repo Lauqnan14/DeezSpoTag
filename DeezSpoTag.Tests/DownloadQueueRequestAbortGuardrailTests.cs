@@ -64,8 +64,8 @@ public sealed class DownloadQueueRequestAbortGuardrailTests
         Assert.Contains("PreferredEngine = preferredEngine", deezerApiSource, StringComparison.Ordinal);
         Assert.Contains("ApplyManualDownloadPreferenceIfMissing(intent, settings)", downloadIntentSource, StringComparison.Ordinal);
         Assert.Contains("intent.PreferredEngine = ManualDownloadPreferenceResolver.ResolvePreferredEngine(settings);", downloadIntentSource, StringComparison.Ordinal);
-        Assert.Contains("settings.DownloadEngineOrder?.Enabled == true", resolverSource, StringComparison.Ordinal);
-        Assert.Contains("\"auto\" or \"amazon\" or \"apple\" or \"deezer\" or \"qobuz\" or \"tidal\"", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeSourcePolicy(settings.Service)", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("\"auto\" or \"custom\" or \"amazon\" or \"apple\" or \"deezer\" or \"qobuz\" or \"tidal\"", resolverSource, StringComparison.Ordinal);
     }
 
     [Fact]

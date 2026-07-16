@@ -3998,7 +3998,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         }
         else if (string.Equals(normalizedPreferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal))
         {
-            intent.PreferredEngine = DownloadSourceCatalog.Auto;
+            intent.PreferredEngine = DownloadSourceCatalog.Custom;
             intent.DownloadEngineOrder = options.DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
         }
         else if (!string.IsNullOrWhiteSpace(normalizedPreferredEngine))

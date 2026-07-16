@@ -303,7 +303,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 PausedStatus,
                 "Paused by user",
                 cancellationToken: CancellationToken.None);
-            _retryScheduler.Clear(item.QueueUuid);
+            await _retryScheduler.ClearAsync(item.QueueUuid, CancellationToken.None);
             return;
         }
 
@@ -314,7 +314,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 CanceledStatus,
                 "Canceled by user",
                 cancellationToken: CancellationToken.None);
-            _retryScheduler.Clear(item.QueueUuid);
+            await _retryScheduler.ClearAsync(item.QueueUuid, CancellationToken.None);
             _cancellationRegistry.ClearUserCanceled(item.QueueUuid);
             return;
         }
@@ -330,7 +330,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
                 : "Queue processor cancellation escaped engine for {QueueUuid}",
             item.QueueUuid);
 
-        if (await TryAdvanceFallbackAfterEscapedCancellationAsync(item))
+        if (await TryAdvanceFallbackAsync(item))
         {
             return;
         }
@@ -338,7 +338,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         await MarkQueueItemAsFailedAndRetryAsync(item, timeoutException.Message);
     }
 
-    private async Task<bool> TryAdvanceFallbackAfterEscapedCancellationAsync(DownloadQueueItem item)
+    private async Task<bool> TryAdvanceFallbackAsync(DownloadQueueItem item)
     {
         if (string.IsNullOrWhiteSpace(item.PayloadJson))
         {
@@ -376,7 +376,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             item.Engine,
             payload,
             CancellationToken.None);
-        if (advanced && !payload.FallbackQueuedExternally)
+        if (advanced)
         {
             Listener?.SendAddedToQueue(BuildFallbackQueuePayload(payload));
         }
@@ -413,7 +413,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             FailedStatus,
             string.IsNullOrWhiteSpace(error) ? "Unhandled processor failure." : error,
             cancellationToken: CancellationToken.None);
-        _retryScheduler.ScheduleRetry(item.QueueUuid, item.Engine ?? "unknown", error);
+        await _retryScheduler.ScheduleRetryAsync(item.QueueUuid, item.Engine ?? "unknown", error, CancellationToken.None);
     }
 
     public async Task ProcessQueueItemAsync(DownloadQueueItem nextItem, CancellationToken cancellationToken = default)
@@ -425,10 +425,11 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             var effectiveItem = await NormalizeFallbackPayloadAsync(nextItem, cancellationToken);
             if (string.Equals(effectiveItem.Status, FailedStatus, StringComparison.OrdinalIgnoreCase))
             {
-                _retryScheduler.ScheduleRetry(
+                await _retryScheduler.ScheduleRetryAsync(
                     effectiveItem.QueueUuid,
                     effectiveItem.Engine ?? "unknown",
-                    effectiveItem.Error ?? "Track unavailable in enabled download sources.");
+                    effectiveItem.Error ?? "Track unavailable in enabled download sources.",
+                    cancellationToken);
                 return;
             }
             if (string.Equals(effectiveItem.Status, UnavailableStatus, StringComparison.OrdinalIgnoreCase))
@@ -450,7 +451,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             {
                 _logger.LogWarning("Unsupported engine '{Engine}' for queue item {QueueUuid}", effectiveItem.Engine, effectiveItem.QueueUuid);
                 await _queueRepository.UpdateStatusAsync(effectiveItem.QueueUuid, FailedStatus, "Unsupported engine", cancellationToken: cancellationToken);
-                _retryScheduler.ScheduleRetry(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", "unsupported engine");
+                await _retryScheduler.ScheduleRetryAsync(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", "unsupported engine", cancellationToken);
                 return;
             }
 
@@ -462,7 +463,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             {
                 _logger.LogError(ex, "Engine processing failed for {QueueUuid}", effectiveItem.QueueUuid);
                 await _queueRepository.UpdateStatusAsync(effectiveItem.QueueUuid, FailedStatus, ex.Message, cancellationToken: cancellationToken);
-                _retryScheduler.ScheduleRetry(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", ex.Message);
+                await _retryScheduler.ScheduleRetryAsync(effectiveItem.QueueUuid, effectiveItem.Engine ?? "unknown", ex.Message, cancellationToken);
             }
         }
         finally
@@ -512,14 +513,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
 
         var resolutionStatus = QueuePreResolutionPayload.ReadStatus(payloadObj);
-        var state = FallbackPayloadNormalizer.ResolveCanonicalState(item, Settings, payloadObj);
-        var changed = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, state, resetIndexAndHistory: false);
-        var normalizedPayload = changed ? payloadObj.ToJsonString() : item.PayloadJson;
-        var normalizedItem = changed ? item with { PayloadJson = normalizedPayload } : item;
-        if (changed)
-        {
-            await _queueRepository.UpdatePayloadAsync(item.QueueUuid, normalizedPayload!, cancellationToken);
-        }
+        var normalizedItem = item;
 
         if (string.Equals(resolutionStatus, QueuePreResolutionPayload.Resolved, StringComparison.OrdinalIgnoreCase))
         {
@@ -559,7 +553,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
     {
         var queueItem = await _queueRepository.GetByUuidAsync(uuid, CancellationToken.None);
         _cancellationRegistry.MarkUserCanceled(uuid);
-        _retryScheduler.Clear(uuid);
+        await _retryScheduler.ClearAsync(uuid, CancellationToken.None);
         var activeCancellationRequested = _cancellationRegistry.Cancel(uuid);
         if (activeCancellationRequested)
         {
@@ -585,7 +579,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         }
 
         _cancellationRegistry.MarkUserPaused(uuid);
-        _retryScheduler.Clear(uuid);
+        await _retryScheduler.ClearAsync(uuid, CancellationToken.None);
         if (_cancellationRegistry.Cancel(uuid))
         {
             Listener?.Send("cancellingCurrentItem", uuid);
@@ -632,22 +626,30 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return false;
         }
 
-        var settings = _settingsService.LoadSettings();
-        var canonicalState = FallbackPayloadNormalizer.ResolveCanonicalState(queueItem, settings, payloadObj);
-        _ = FallbackPayloadNormalizer.ApplyCanonicalState(payloadObj, canonicalState, resetIndexAndHistory: true);
+        var plan = DownloadExecutionPlan.Read(payloadObj);
+        if (plan.Count == 0)
+        {
+            _logger.LogWarning("Manual retry blocked for {QueueUuid}: execution plan is missing.", safeUuid);
+            return false;
+        }
+
+        payloadObj["AutoIndex"] = 0;
+        payloadObj["autoIndex"] = 0;
+        payloadObj["FallbackHistory"] = new JsonArray();
+        payloadObj["fallbackHistory"] = new JsonArray();
         ResetPayloadRetryState(payloadObj);
 
         updatedPayloadForWatchlist = payloadObj.ToJsonString();
         await _queueRepository.UpdatePayloadAsync(uuid, updatedPayloadForWatchlist, cancellationToken);
 
-        firstStepEngine = canonicalState.FirstStep.Source;
-        firstStepQuality = canonicalState.FirstStep.Quality ?? string.Empty;
+        firstStepEngine = plan[0].Engine;
+        firstStepQuality = plan[0].Quality ?? string.Empty;
         if (!string.IsNullOrWhiteSpace(firstStepEngine))
         {
             await _queueRepository.UpdateEngineAsync(uuid, firstStepEngine, cancellationToken);
         }
 
-        _retryScheduler.Clear(uuid);
+        await _retryScheduler.ClearAsync(uuid, cancellationToken);
         _cancellationRegistry.ClearUserCanceled(uuid);
         await _queueRepository.ClearRetryArtifactsAsync(uuid, cancellationToken);
 

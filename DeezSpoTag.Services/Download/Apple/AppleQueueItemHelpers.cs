@@ -110,7 +110,7 @@ internal static class AppleQueueItemHelpers
         public bool TryBuildSnapshot(double progress, double speedMbps, DateTimeOffset now, out ProgressSnapshot snapshot)
         {
             snapshot = default;
-            var normalized = Math.Clamp(progress, 0, 100);
+            var normalized = Math.Clamp(progress, 0, 95);
             var (segmentTotal, segmentCompleted) = ParseSegmentProgress(speedMbps);
 
             lock (_gate)

@@ -24,7 +24,6 @@ public sealed class EngineFallbackCoordinator
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
         string CurrentEngine,
-        List<string> AutoSources,
         int AutoIndex,
         string SourceUrl,
         string SpotifyId,
@@ -44,7 +43,6 @@ public sealed class EngineFallbackCoordinator
         List<FallbackPlanStep> FallbackPlan);
     private sealed record FallbackPayloadMutators(
         Action<(string Source, string? Quality, int Index)> ApplyStep,
-        Action<List<string>> ApplyAutoSources,
         Action<string> SetSourceUrl);
     private sealed record FallbackStepExecutionContext(
         FallbackPayloadMutators Mutators,
@@ -98,7 +96,6 @@ public sealed class EngineFallbackCoordinator
         var request = new FallbackAdvanceRequest(
             QueueUuid: queueUuid,
             CurrentEngine: currentEngine,
-            AutoSources: payload.AutoSources,
             AutoIndex: payload.AutoIndex,
             SourceUrl: payload.SourceUrl,
             SpotifyId: payload.SpotifyId,
@@ -126,7 +123,6 @@ public sealed class EngineFallbackCoordinator
                 payload.AutoIndex = step.Index;
                 TrySetDeezerBitrate(payload, step.Source, step.Quality);
             },
-            ApplyAutoSources: sources => payload.AutoSources = sources,
             SetSourceUrl: url => payload.SourceUrl = url);
 
         return TryAdvanceCoreAsync(
@@ -157,7 +153,6 @@ public sealed class EngineFallbackCoordinator
         }
 
         var nextIndex = ResolveNextPlanIndex(planSteps, request);
-        mutators.ApplyAutoSources(EncodePlanSteps(planSteps));
         var userCountry = settings.DeezerCountry;
 
         var resolutionRequest = BuildSourceResolutionRequest(
@@ -208,11 +203,6 @@ public sealed class EngineFallbackCoordinator
             cancellationToken);
         return false;
     }
-
-    private static List<string> EncodePlanSteps(List<(string Source, string? Quality)> planSteps)
-        => planSteps
-            .Select(step => DownloadSourceOrder.EncodeAutoSource(step.Source, step.Quality))
-            .ToList();
 
     private DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings ResolveEffectiveSettings(FallbackAdvanceRequest request)
     {
@@ -531,6 +521,8 @@ public sealed class EngineFallbackCoordinator
         return await _queueRepository.RequeueAsync(
             queueUuid,
             QueueRequeueOrigin.FallbackAdvance,
+            requeueToFront: false,
+            newestFirst: string.Equals(_settingsService.LoadSettings().QueueOrder, "recent", StringComparison.OrdinalIgnoreCase),
             cancellationToken);
     }
 
@@ -543,16 +535,7 @@ public sealed class EngineFallbackCoordinator
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var atmosOnly = IsAtmosRequest(request);
 
-        if (request.AutoSources.Count > 0)
-        {
-            foreach (var encodedSource in request.AutoSources)
-            {
-                var step = DownloadSourceOrder.DecodeAutoSource(encodedSource);
-                AppendPlanStep(steps, seen, step.Source, step.Quality, atmosOnly);
-            }
-        }
-
-        if (steps.Count == 0 && request.FallbackPlan != null && request.FallbackPlan.Count > 0)
+        if (request.FallbackPlan != null && request.FallbackPlan.Count > 0)
         {
             foreach (var step in request.FallbackPlan)
             {

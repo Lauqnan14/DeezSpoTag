@@ -43,9 +43,10 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string WatchlistUnavailableSettingsFingerprint { get; set; } = "";
     public string Cover { get; set; } = "";
     public QueueSourceSettingsSnapshot SourceSettingsSnapshot { get; set; } = new();
-    public List<string> AutoSources { get; set; } = new();
     public int AutoIndex { get; set; }
     public string Quality { get; set; } = "";
+    public string RequestedQuality { get; set; } = "";
+    public string DeliveredQuality { get; set; } = "";
     public string LyricsStatus { get; set; } = "";
     public List<Dictionary<string, object>> Files { get; set; } = new();
     public int DurationSeconds { get; set; }
@@ -78,7 +79,6 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public long? DestinationFolderId { get; set; }
     public List<DeezSpoTag.Services.Download.Fallback.FallbackPlanStep> FallbackPlan { get; set; } = new();
     public List<DeezSpoTag.Services.Download.Fallback.FallbackAttempt> FallbackHistory { get; set; } = new();
-    public bool FallbackQueuedExternally { get; set; }
     public string ResolutionStatus { get; set; } = "";
     public DateTimeOffset? ResolvedAtUtc { get; set; }
     public string ResolvedEngine { get; set; } = "";
@@ -91,11 +91,9 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     {
         var extras = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["autoSources"] = AutoSources,
             ["autoIndex"] = AutoIndex,
             ["fallbackPlan"] = FallbackPlan,
             ["fallbackHistory"] = FallbackHistory,
-            ["fallbackQueuedExternally"] = FallbackQueuedExternally,
             ["sourceSettingsSnapshot"] = SourceSettingsSnapshot,
             ["resolutionStatus"] = ResolutionStatus,
             ["resolvedAtUtc"] = ResolvedAtUtc,
@@ -104,6 +102,8 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["resolvedQuality"] = ResolvedQuality,
             ["resolvedAutoIndex"] = ResolvedAutoIndex,
             ["resolutionError"] = ResolutionError,
+            ["requestedQuality"] = RequestedQuality,
+            ["deliveredQuality"] = DeliveredQuality,
             ["appleId"] = AppleId,
             ["appleAlbumId"] = AppleAlbumId,
             ["appleAlbumName"] = AppleAlbumName,

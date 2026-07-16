@@ -845,6 +845,13 @@ public class DeezSpoTagSettingsService : ISettingsService
         DeezSpoTagSettings settings,
         SettingsFixTracker fixes)
     {
+        if (settings.DownloadEngineOrder?.Enabled == true
+            && string.Equals(settings.Service, DownloadSourceCatalog.Auto, StringComparison.OrdinalIgnoreCase))
+        {
+            settings.Service = DownloadSourceCatalog.Custom;
+            fixes.Mark(nameof(settings.Service));
+        }
+
         var normalized = DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
         if (!AreDownloadEngineOrderSettingsEqual(settings.DownloadEngineOrder, normalized))
         {

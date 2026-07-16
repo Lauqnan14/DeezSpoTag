@@ -67,7 +67,7 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
     }
 
     [Fact]
-    public void PublicProviderHealthAndWaitingQueue_RespectDownloadCooldowns()
+    public void PublicProviderHealth_UsesCanonicalRetryPathInsteadOfRegistryRequeue()
     {
         var controller = ReadSource("DeezSpoTag.Web/Controllers/Api/PlatformAuthApiController.cs");
         var registries = new[]
@@ -83,9 +83,15 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
 
         foreach (var registry in registries)
         {
-            Assert.Contains("updatedProviders.Any(IsDownloadAvailable)", registry, StringComparison.Ordinal);
-            Assert.Contains("provider.CooldownUntil.Value <= DateTimeOffset.UtcNow", registry, StringComparison.Ordinal);
+            Assert.DoesNotContain("RequeueProviderWaitingAsync", registry, StringComparison.Ordinal);
+            Assert.DoesNotContain("IsDownloadAvailable", registry, StringComparison.Ordinal);
         }
+
+        var healthTracker = ReadSource("DeezSpoTag.Services/Download/DownloadApiHealthTracker.cs");
+        Assert.DoesNotContain("IsReadyAsync", healthTracker, StringComparison.Ordinal);
+
+        var queueRunner = ReadSource("DeezSpoTag.Services/Download/Shared/DeezSpoTagApp.cs");
+        Assert.DoesNotContain("Configured engine has no ready download provider", queueRunner, StringComparison.Ordinal);
     }
 
     private static string ReadSource(string relativePath)

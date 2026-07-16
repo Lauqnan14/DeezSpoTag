@@ -3034,7 +3034,7 @@ public static partial class EngineAudioPostDownloadHelper
         if (payload == null)
         {
             await context.QueueRepository.UpdateStatusAsync(queueItem.QueueUuid, FailedStatus, "Invalid payload", cancellationToken: cancellationToken);
-            context.RetryScheduler.ScheduleRetry(queueItem.QueueUuid, context.EngineName, "invalid payload");
+            await context.RetryScheduler.ScheduleRetryAsync(queueItem.QueueUuid, context.EngineName, "invalid payload", cancellationToken);
             return null;
         }
 
@@ -3051,15 +3051,12 @@ public static partial class EngineAudioPostDownloadHelper
             if (advanced)
             {
                 context.ActivityLog.Info($"Fallback advanced: {queueItem.QueueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
-                if (!payload.FallbackQueuedExternally)
-                {
-                    context.Listener.SendAddedToQueue(context.QueuePayloadFactory(payload));
-                }
+                context.Listener.SendAddedToQueue(context.QueuePayloadFactory(payload));
                 return null;
             }
 
             await context.QueueRepository.UpdateStatusAsync(queueItem.QueueUuid, FailedStatus, message, cancellationToken: cancellationToken);
-            context.RetryScheduler.ScheduleRetry(queueItem.QueueUuid, context.EngineName, message);
+            await context.RetryScheduler.ScheduleRetryAsync(queueItem.QueueUuid, context.EngineName, message, cancellationToken);
             return null;
         }
 
@@ -3117,7 +3114,7 @@ public static partial class EngineAudioPostDownloadHelper
             await UpdateWatchlistTrackStatusAsync(payload, CancelledStatus, context.ServiceProvider, cancellationToken);
         }
 
-        context.RetryScheduler.ScheduleRetry(queueUuid, context.EngineName, CancelledStatus);
+        await context.RetryScheduler.ScheduleRetryAsync(queueUuid, context.EngineName, CancelledStatus, cancellationToken);
     }
 
     public static async Task HandleFailureAsync<TPayload>(
@@ -3132,6 +3129,14 @@ public static partial class EngineAudioPostDownloadHelper
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
+            if (exception is not DeliveredAudioQualityBelowPlanStepException)
+            {
+                FallbackAttemptRecorder.RecordCurrent(
+                    payload,
+                    "failed",
+                    "download_failed",
+                    exception.Message);
+            }
             context.ActivityLog.Warn($"Download failed (engine={context.EngineName} quality={quality}): {queueUuid} {exception.Message}");
             var advanced = await context.TryAdvanceAsync(
                 queueUuid,
@@ -3141,34 +3146,9 @@ public static partial class EngineAudioPostDownloadHelper
             if (advanced)
             {
                 context.ActivityLog.Info($"Fallback advanced: {queueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
-                if (!payload.FallbackQueuedExternally)
-                {
-                    context.Listener.SendAddedToQueue(context.QueuePayloadFactory(payload));
-                }
+                context.Listener.SendAddedToQueue(context.QueuePayloadFactory(payload));
                 return;
             }
-        }
-
-        if (IsProviderUnavailableFailure(exception))
-        {
-            await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
-            var waitingMessage = BuildProviderWaitingMessage(context.EngineName);
-            await context.QueueRepository.MarkProviderWaitingAsync(
-                queueUuid,
-                context.EngineName,
-                waitingMessage,
-                CancellationToken.None);
-            context.ActivityLog.Warn($"Download waiting (engine={context.EngineName}): {queueUuid} {waitingMessage}");
-            context.Listener.Send(UpdateQueueEvent, new
-            {
-                uuid = queueUuid,
-                status = "waiting",
-                progress = 0,
-                downloaded = 0,
-                failed = 0,
-                error = waitingMessage
-            });
-            return;
         }
 
         await CancelPrefetchAndWaitAsync(queueUuid, PrefetchCancelDrainTimeout, CancellationToken.None);
@@ -3200,7 +3180,7 @@ public static partial class EngineAudioPostDownloadHelper
             && !IsRateLimitedFailure(exception)
             && !IsFinalDestinationDedupeBlock(failureMessage))
         {
-            context.RetryScheduler.ScheduleRetry(queueUuid, context.EngineName, failureMessage);
+            await context.RetryScheduler.ScheduleRetryAsync(queueUuid, context.EngineName, failureMessage, CancellationToken.None);
         }
     }
 
@@ -3247,21 +3227,6 @@ public static partial class EngineAudioPostDownloadHelper
             || normalized.Contains("could not resolve this track", StringComparison.Ordinal)
             || normalized.Contains("could not be resolved for this download", StringComparison.Ordinal);
     }
-
-    private static bool IsProviderUnavailableFailure(Exception exception)
-    {
-        var message = exception.Message;
-        return message.Contains("No Tidal download provider is currently available", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("No Qobuz public download provider is currently available", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("No enabled Amazon public download API provider", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("Amazon public download verification requires an interactive challenge", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("Amazon public download verification could not be completed automatically", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("provider is cooling down", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("no public download provider", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string BuildProviderWaitingMessage(string engineName)
-        => $"{engineName} public download provider is unavailable. Waiting for provider health to recover.";
 
     private static PrefetchRequirements BuildPrefetchRequirements(PrefetchRequest request)
     {

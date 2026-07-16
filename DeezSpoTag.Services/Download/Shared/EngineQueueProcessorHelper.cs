@@ -220,6 +220,13 @@ internal static class EngineQueueProcessorHelper
             workContext.Settings,
             executionState.ProgressReporter,
             itemToken);
+        await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
+            workContext.Payload,
+            outputPath,
+            workContext.Item.QueueUuid,
+            workContext.Deps.QueueRepository,
+            workContext.Deps.Listener,
+            itemToken);
         outputPath = await ApplyPostDownloadSettingsSafelyAsync(
             workContext,
             outputPath,
@@ -382,6 +389,11 @@ internal static class EngineQueueProcessorHelper
         }
 
         ActualDownloadQualityLabel.ApplyTo(workContext.Payload, outputPath);
+        FallbackAttemptRecorder.RecordCurrent(
+            workContext.Payload,
+            "completed",
+            "none",
+            BuildCompletedQualityDetail(workContext.Payload));
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<TPayload>(
                 workContext.Deps.QueueRepository,
@@ -418,7 +430,7 @@ internal static class EngineQueueProcessorHelper
         workContext.Deps.ServiceProvider
             .GetService<IDownloadApiHealthTracker>()
             ?.ReportSuccess(completedEngine);
-        workContext.Deps.RetryScheduler.Clear(workContext.Item.QueueUuid);
+        await workContext.Deps.RetryScheduler.ClearAsync(workContext.Item.QueueUuid, workContext.ItemToken);
         workContext.Deps.Listener.Send("updateQueue", new
         {
             uuid = workContext.Item.QueueUuid,
@@ -427,11 +439,27 @@ internal static class EngineQueueProcessorHelper
             downloaded = 1,
             failed = 0,
             engine = workContext.Payload.Engine,
-            quality = workContext.Payload.Quality
+            quality = workContext.Payload.Quality,
+            requestedQuality = workContext.Payload.RequestedQuality,
+            deliveredQuality = workContext.Payload.DeliveredQuality,
+            autoIndex = workContext.Payload.AutoIndex,
+            fallbackPlan = workContext.Payload.FallbackPlan,
+            fallbackHistory = workContext.Payload.FallbackHistory
         });
         workContext.Deps.Listener.SendFinishDownload(
             workContext.Item.QueueUuid,
             workContext.Callbacks.ResolveFinishTitle(workContext.Payload) ?? string.Empty);
+    }
+
+    private static string BuildCompletedQualityDetail(EngineQueueItemBase payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.DeliveredQuality)
+            && !string.Equals(payload.DeliveredQuality, payload.Quality, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Source delivered {payload.DeliveredQuality}; final output is {payload.Quality}.";
+        }
+
+        return $"Delivered {payload.Quality}.";
     }
 
     private static async Task HandleCanceledProcessingAsync<TPayload>(

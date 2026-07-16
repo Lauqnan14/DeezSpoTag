@@ -109,7 +109,6 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             Isrc = "ZA56E2420399",
             DeezerId = "3094483121",
             Quality = "27",
-            AutoSources = new List<string> { "qobuz|27", "deezer|9" },
             AutoIndex = 0,
             FallbackPlan = new List<FallbackPlanStep>
             {
@@ -148,7 +147,10 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             Title = "Timeout Track",
             Artist = "Timeout Artist",
             Quality = "27",
-            AutoSources = new List<string> { "qobuz|27" }
+            FallbackPlan = new List<FallbackPlanStep>
+            {
+                new("qobuz-27", "qobuz", "27", QobuzSourceUrlInput, "direct_url")
+            }
         };
 
         await EnqueueRunningItemAsync(queueUuid, payload);

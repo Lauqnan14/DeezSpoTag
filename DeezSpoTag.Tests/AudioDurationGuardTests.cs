@@ -61,13 +61,37 @@ public sealed class AudioDurationGuardTests : IDisposable
     }
 
     [Fact]
-    public void ValidateAgainstPreview_AllowsMissingExpectedDuration()
+    public void ValidateAgainstPreview_RejectsMissingFileEvenWithoutExpectedDuration()
     {
         var result = AudioDurationGuard.ValidateAgainstPreview(
             Path.Combine(_tempDir, "missing.wav"),
             expectedDurationSeconds: 0);
 
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void ValidateAgainstPreview_AllowsLongerLegitimateVersion()
+    {
+        var path = Path.Combine(_tempDir, "extended.wav");
+        WriteSilentWav(path, TimeSpan.FromSeconds(180));
+
+        var result = AudioDurationGuard.ValidateAgainstPreview(path, expectedDurationSeconds: 145);
+
         Assert.True(result.Success);
+        Assert.True(result.Conclusive);
+    }
+
+    [Fact]
+    public void ValidateAgainstPreview_UnreadableNonEmptyFileIsInconclusive()
+    {
+        var path = Path.Combine(_tempDir, "audio.flac");
+        File.WriteAllBytes(path, [1, 2, 3, 4]);
+
+        var result = AudioDurationGuard.ValidateAgainstPreview(path, expectedDurationSeconds: 145);
+
+        Assert.True(result.Success);
+        Assert.False(result.Conclusive);
     }
 
     public void Dispose()

@@ -115,7 +115,7 @@ public sealed class DownloadQueueRecoveryService
             error = message
         });
         _runtime.ActivityLog.Error($"Queue recovery failed (engine={engine}): {queueUuid} {message}");
-        _runtime.RetryScheduler.ScheduleRetry(queueUuid, engine, message);
+        await _runtime.RetryScheduler.ScheduleRetryAsync(queueUuid, engine, message, CancellationToken.None);
     }
 
     private static string NormalizeEngineName(string? engine)

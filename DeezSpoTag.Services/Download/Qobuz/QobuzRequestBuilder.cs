@@ -17,8 +17,6 @@ public static class QobuzRequestBuilder
             request.TrackUrl = $"https://play.qobuz.com/track/{Uri.EscapeDataString(request.QobuzId)}";
         }
 
-        request.AllowQualityFallback = settings.FallbackBitrate
-            && !string.Equals(settings.Service, "auto", StringComparison.OrdinalIgnoreCase);
         return request;
     }
 }
@@ -28,7 +26,6 @@ public sealed class QobuzDownloadRequest : EngineDownloadRequestBase
     public string Quality { get; set; } = "";
     public string? TrackUrl { get; set; }
     public bool EmbedMaxQualityCover { get; set; }
-    public bool AllowQualityFallback { get; set; } = true;
     public Func<string, Task>? SelectedQualityCallback { get; set; }
     public TagSettings? TagSettings { get; set; }
     public Func<double, double, Task>? ProgressCallback { get; set; }

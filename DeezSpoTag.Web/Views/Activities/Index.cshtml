@@ -900,6 +900,23 @@
     border-color: var(--accent-blue);
 }
 
+.downloads-tab .badge-fallback-step.is-rejected {
+    background: rgba(255, 59, 92, 0.18);
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.downloads-tab .badge-fallback-step.is-skipped {
+    opacity: 0.58;
+    text-decoration: line-through;
+}
+
+.downloads-tab .badge-fallback-step.is-completed {
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    border-color: #10b981;
+}
+
 .downloads-tab .badge-lyrics-synced {
     background: rgba(16, 185, 129, 0.2);
     color: #10b981;
@@ -3363,6 +3380,7 @@ let queueState = 'paused';
 let tasks = [];
 let queuePollTimeoutId = null;
 let queuePollInFlight = false;
+let queuePollRefreshPending = false;
 let queueLoadRequestSequence = 0;
 let queueVisibilityHandlerAttached = false;
 const queueProgressCache = {};
@@ -4837,10 +4855,30 @@ async function clearCanceledTasks() {
 	    }
 
 	    const currentIndex = Number.isFinite(Number(task?.autoIndex)) ? Number(task.autoIndex) : -1;
+	    const history = Array.isArray(task?.fallbackHistory) ? task.fallbackHistory : [];
+	    const attemptByStep = new Map();
+	    history.forEach(attempt => {
+	        const stepId = String(attempt?.stepId ?? attempt?.StepId ?? '').trim();
+	        if (stepId) {
+	            attemptByStep.set(stepId, attempt);
+	        }
+	    });
 	    const badges = rawPlan.map((step, index) => {
 	        const label = escapeHtml(formatFallbackStepLabel(step));
-	        const activeClass = index === currentIndex ? ' is-active' : '';
-	        return `<span class="badge badge-fallback-step${activeClass}" title="${escapeHtml(`${step.engine}${step.quality ? ` | ${step.quality}` : ''}`)}">${label}</span>`;
+	        const attempt = attemptByStep.get(`step-${index}`);
+	        const attemptStatus = String(attempt?.status ?? attempt?.Status ?? '').trim().toLowerCase();
+	        const stateClass = attemptStatus === 'completed'
+	            ? ' is-completed'
+	            : attemptStatus === 'rejected' || attemptStatus === 'failed'
+	            ? ' is-rejected'
+	            : attemptStatus === 'skipped'
+	                ? ' is-skipped'
+	                : index === currentIndex
+	                    ? ' is-active'
+	                    : '';
+	        const detail = String(attempt?.detail ?? attempt?.Detail ?? '').trim();
+	        const title = detail || `${step.engine}${step.quality ? ` | ${step.quality}` : ''}`;
+	        return `<span class="badge badge-fallback-step${stateClass}" title="${escapeHtml(title)}">${label}</span>`;
 	    });
 
 	    return badges.join('');
@@ -5378,7 +5416,8 @@ async function cancelTask(taskId) {
 
 async function loadQueueFromServer(options) {
     const force = options?.force === true;
-    if (queuePollInFlight && !force) {
+    if (queuePollInFlight) {
+        queuePollRefreshPending ||= force;
         return;
     }
     const requestSequence = ++queueLoadRequestSequence;
@@ -5441,6 +5480,10 @@ async function loadQueueFromServer(options) {
         console.error('Failed to load queue:', error);
     } finally {
         queuePollInFlight = false;
+        if (queuePollRefreshPending) {
+            queuePollRefreshPending = false;
+            queueMicrotask(() => void loadQueueFromServer());
+        }
     }
 }
 
@@ -5507,6 +5550,11 @@ function mapQueueItem(item) {
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         canMonitorUnavailable: getQueueBoolFlag(item, 'canMonitorUnavailable', 'CanMonitorUnavailable'),
         lyricsBadges,
+        fallbackPlan: item.fallbackPlan ?? item.FallbackPlan ?? [],
+        fallbackHistory: item.fallbackHistory ?? item.FallbackHistory ?? [],
+        autoIndex: Number(item.autoIndex ?? item.AutoIndex ?? -1),
+        requestedQuality: readQueueItemText(item, ['requestedQuality', 'RequestedQuality']),
+        deliveredQuality: readQueueItemText(item, ['deliveredQuality', 'DeliveredQuality']),
         cover: getCoverFromPayload(item)
     };
 }
@@ -5640,6 +5688,15 @@ function mergeQueueTask(existing, incoming) {
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
         lyricsBadges: Array.isArray(incoming.lyricsBadges) ? incoming.lyricsBadges : [],
+        fallbackPlan: Array.isArray(incoming.fallbackPlan) && incoming.fallbackPlan.length > 0
+            ? incoming.fallbackPlan
+            : existing.fallbackPlan,
+        fallbackHistory: Array.isArray(incoming.fallbackHistory)
+            ? incoming.fallbackHistory
+            : existing.fallbackHistory,
+        autoIndex: Number.isFinite(Number(incoming.autoIndex)) ? Number(incoming.autoIndex) : existing.autoIndex,
+        requestedQuality: String(incoming.requestedQuality || '').trim() || existing.requestedQuality,
+        deliveredQuality: String(incoming.deliveredQuality || '').trim() || existing.deliveredQuality,
         cover: String(incoming.cover || '').trim() || existing.cover
     };
 }
@@ -5866,7 +5923,8 @@ function mapStatus(status) {
         canceled: 'canceled',
         skipped: 'complete',
 	        paused: 'paused',
-	        retrying: 'retrying'
+	        retrying: 'retrying',
+	        retry_waiting: 'retrying'
 	    };
 	    return map[normalized] || 'queued';
 	}
@@ -6311,6 +6369,31 @@ function applyQueueRealtimeUpdate(payload) {
         task.engine = nextEngine;
         taskChanged = true;
     }
+    const nextFallbackPlan = update?.fallbackPlan ?? update?.FallbackPlan;
+    if (Array.isArray(nextFallbackPlan)) {
+        task.fallbackPlan = nextFallbackPlan;
+        taskChanged = true;
+    }
+    const nextFallbackHistory = update?.fallbackHistory ?? update?.FallbackHistory;
+    if (Array.isArray(nextFallbackHistory)) {
+        task.fallbackHistory = nextFallbackHistory;
+        taskChanged = true;
+    }
+    const nextAutoIndex = Number(update?.autoIndex ?? update?.AutoIndex);
+    if (Number.isFinite(nextAutoIndex) && task.autoIndex !== nextAutoIndex) {
+        task.autoIndex = nextAutoIndex;
+        taskChanged = true;
+    }
+    const nextRequestedQuality = readQueueItemText(update, ['requestedQuality', 'RequestedQuality']);
+    if (nextRequestedQuality && task.requestedQuality !== nextRequestedQuality) {
+        task.requestedQuality = nextRequestedQuality;
+        taskChanged = true;
+    }
+    const nextDeliveredQuality = readQueueItemText(update, ['deliveredQuality', 'DeliveredQuality']);
+    if (nextDeliveredQuality && task.deliveredQuality !== nextDeliveredQuality) {
+        task.deliveredQuality = nextDeliveredQuality;
+        taskChanged = true;
+    }
     const nextRawQuality = resolveQueueRawQuality(update, nextEngine || task.engine);
     if (nextRawQuality) {
         const nextContentType = String(update?.contentType || update?.ContentType || '').toLowerCase();
@@ -6487,8 +6570,13 @@ function initQueueRealtimeEvents() {
         const options = action ? { action } : undefined;
         window.DeezSpoTag.showNotification(message, type, options);
     });
-    connection.on('addedToQueue', () => {
-        void loadQueueFromServer({ force: true });
+    connection.on('addedToQueue', (payload) => {
+        if (normalizeQueueEventUuid(payload)) {
+            applyQueueRealtimeUpdate(payload);
+            return;
+        }
+
+        scheduleQueueHydrationRefresh();
     });
     connection.on('startDownload', (payload) => {
         const taskId = normalizeQueueEventUuid(payload);

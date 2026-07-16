@@ -28,10 +28,10 @@ public sealed class DownloadSourceOrderFallbackParityTests
     {
         "qobuz|27",
         "tidal|HI_RES_LOSSLESS",
-        "apple|ALAC",
         "qobuz|7",
         "tidal|HI_RES",
         "amazon|ULTRA_HD_FLAC",
+        "apple|ALAC",
         "qobuz|6",
         "tidal|LOSSLESS",
         "amazon|HD_FLAC",
@@ -64,7 +64,7 @@ public sealed class DownloadSourceOrderFallbackParityTests
 
         Assert.Equal("qobuz|27", sources[0]);
         Assert.Equal("tidal|HI_RES_LOSSLESS", sources[1]);
-        Assert.Equal("apple|ALAC", sources[2]);
+        Assert.True(sources.IndexOf("amazon|ULTRA_HD_FLAC") < sources.IndexOf("apple|ALAC"));
         Assert.Contains("qobuz|6", sources);
         Assert.Contains("tidal|LOSSLESS", sources);
         Assert.Contains("deezer|9", sources);

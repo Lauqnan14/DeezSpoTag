@@ -7,19 +7,24 @@ public static class AudioDurationGuard
 {
     public static AudioDurationGuardResult ValidateAgainstPreview(string filePath, int expectedDurationSeconds)
     {
-        if (expectedDurationSeconds <= 0)
-        {
-            return AudioDurationGuardResult.Ok();
-        }
-
         if (string.IsNullOrWhiteSpace(filePath) || !IOFile.Exists(filePath))
         {
             return AudioDurationGuardResult.Fail("Audio validation failed: output file is missing.");
         }
 
+        if (new FileInfo(filePath).Length == 0)
+        {
+            return AudioDurationGuardResult.Fail("Audio validation failed: output file is empty.");
+        }
+
+        if (expectedDurationSeconds <= 0)
+        {
+            return AudioDurationGuardResult.Ok();
+        }
+
         if (!TryReadDurationSeconds(filePath, out var actualDurationSeconds))
         {
-            return AudioDurationGuardResult.Fail("Audio validation failed: unable to read output duration.");
+            return AudioDurationGuardResult.Inconclusive("Audio duration could not be read; duration validation was skipped.");
         }
 
         if (IsExpectedDurationAcceptable(actualDurationSeconds, expectedDurationSeconds))
@@ -40,7 +45,9 @@ public static class AudioDurationGuard
             durationSeconds = file.Properties.Duration.TotalSeconds;
             return durationSeconds > 0;
         }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        catch (Exception ex) when (ex is CorruptFileException
+                                   or UnsupportedFormatException
+                                   || DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             return false;
         }
@@ -58,14 +65,26 @@ public static class AudioDurationGuard
             return false;
         }
 
-        var allowedDelta = Math.Max(5d, expectedSeconds * 0.12d);
-        return Math.Abs(actualSeconds - expectedSeconds) <= allowedDelta;
+        if (actualSeconds >= expectedSeconds)
+        {
+            return true;
+        }
+
+        var missingSeconds = expectedSeconds - actualSeconds;
+        var ratio = actualSeconds / expectedSeconds;
+        var canonicalPreviewLength = new[] { 30d, 60d, 90d, 120d }
+            .Any(length => Math.Abs(actualSeconds - length) <= 2d);
+        var severelyTruncated = ratio <= 0.5d && missingSeconds >= 25d;
+        var previewLengthTruncated = canonicalPreviewLength && ratio <= 0.75d && missingSeconds >= 25d;
+        return !severelyTruncated && !previewLengthTruncated;
     }
 }
 
-public sealed record AudioDurationGuardResult(bool Success, string Message)
+public sealed record AudioDurationGuardResult(bool Success, bool Conclusive, string Message)
 {
-    public static AudioDurationGuardResult Ok() => new(true, string.Empty);
+    public static AudioDurationGuardResult Ok() => new(true, true, string.Empty);
 
-    public static AudioDurationGuardResult Fail(string message) => new(false, message);
+    public static AudioDurationGuardResult Inconclusive(string message) => new(true, false, message);
+
+    public static AudioDurationGuardResult Fail(string message) => new(false, true, message);
 }

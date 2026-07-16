@@ -214,10 +214,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
 
         var requestedQuality = NormalizeQobuzQualityCode(request.Quality);
-        var qualityOrder = GetQualityFallbackOrder(requestedQuality, request.AllowQualityFallback);
         Exception? lastFailure = null;
 
-        foreach (var qualityCode in qualityOrder)
+        var qualityCode = requestedQuality;
         {
             var officialAttempt = await TryDownloadWithOfficialCredentialsAsync(
                 trackId,
@@ -238,26 +237,27 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             if (providers.Length == 0)
             {
                 lastFailure = new InvalidOperationException("No Qobuz public download provider is currently available.");
-                continue;
             }
-
-            foreach (var provider in providers)
+            else
             {
-                var attempt = await TryDownloadWithProviderAsync(
-                    provider,
-                    trackId,
-                    qualityCode,
-                    request,
-                    outputPath,
-                    cancellationToken);
-                if (attempt.Succeeded)
+                foreach (var provider in providers)
                 {
-                    return;
-                }
+                    var attempt = await TryDownloadWithProviderAsync(
+                        provider,
+                        trackId,
+                        qualityCode,
+                        request,
+                        outputPath,
+                        cancellationToken);
+                    if (attempt.Succeeded)
+                    {
+                        return;
+                    }
 
-                if (attempt.Failure != null)
-                {
-                    lastFailure = attempt.Failure;
+                    if (attempt.Failure != null)
+                    {
+                        lastFailure = attempt.Failure;
+                    }
                 }
             }
         }
@@ -321,7 +321,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            DownloadFileUtilities.TryDeleteFile(outputPath);
             _logger.LogWarning(
                 ex,
                 "Qobuz official credentials stream failed for track {TrackId} quality {Quality}.",
@@ -370,7 +369,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            DownloadFileUtilities.TryDeleteFile(outputPath);
             await _publicProviderRegistry.RecordFailureAsync(
                 provider.Id,
                 ClassifyProviderFailure(ex),
@@ -412,60 +410,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return false;
     }
 
-    private async Task DownloadFileWithRetryAsync(
-        string url,
-        string outputPath,
-        Func<double, double, Task>? progressCallback,
-        CancellationToken cancellationToken)
-    {
-        const int maxAttempts = 3;
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
-        {
-            try
-            {
-                await DownloadFileAsync(url, outputPath, progressCallback, cancellationToken);
-                return;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception) when (attempt < maxAttempts)
-            {
-                DownloadFileUtilities.TryDeleteFile(outputPath);
-                await Task.Delay(TimeSpan.FromSeconds(attempt), cancellationToken);
-            }
-        }
-
-        await DownloadFileAsync(url, outputPath, progressCallback, cancellationToken);
-    }
-
     private static string NormalizeQobuzQualityCode(string? quality) => QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "6");
-
-    private static List<string> GetQualityFallbackOrder(string quality, bool allowQualityFallback)
-    {
-        if (!allowQualityFallback)
-        {
-            return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
-        }
-
-        if (string.Equals(quality, "27", StringComparison.OrdinalIgnoreCase))
-        {
-            return new List<string> { "27", "7", "6" };
-        }
-
-        if (string.Equals(quality, "7", StringComparison.OrdinalIgnoreCase))
-        {
-            return new List<string> { "7", "6" };
-        }
-
-        if (string.Equals(quality, "6", StringComparison.OrdinalIgnoreCase))
-        {
-            return new List<string> { "6" };
-        }
-
-        return new List<string> { string.IsNullOrWhiteSpace(quality) ? "6" : quality };
-    }
 
     private sealed record ProviderResolutionAttempt(string? DownloadUrl, Exception? Failure);
 
@@ -1200,35 +1145,45 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         DownloadExecutionContext context,
         CancellationToken cancellationToken)
     {
+        var stagingPath = DownloadFileUtilities.BuildFormatPreservingStagingPath(context.OutputPath);
+        DownloadFileUtilities.TryDeleteFile(stagingPath);
         try
         {
-            await DownloadFileWithRetryAsync(
+            await DownloadFileAsync(
                 context.DownloadUrl,
-                context.OutputPath,
+                stagingPath,
                 context.Request.ProgressCallback,
                 cancellationToken);
 
             var durationValidation = AudioDurationGuard.ValidateAgainstPreview(
-                context.OutputPath,
+                stagingPath,
                 context.Request.DurationSeconds);
             if (!durationValidation.Success)
             {
-                DownloadFileUtilities.TryDeleteFile(context.OutputPath);
                 throw new InvalidOperationException(durationValidation.Message);
+            }
+            if (!durationValidation.Conclusive)
+            {
+                _logger.LogDebug("Qobuz duration validation was inconclusive for {Output}: {Reason}", context.OutputPath, durationValidation.Message);
             }
 
             var identityValidation = ValidateDownloadedAudioIdentity(
-                context.OutputPath,
+                stagingPath,
                 context.Request);
             if (!identityValidation.Success)
             {
-                DownloadFileUtilities.TryDeleteFile(context.OutputPath);
                 throw new InvalidOperationException(identityValidation.Message);
             }
+            if (!identityValidation.Conclusive)
+            {
+                _logger.LogDebug("Qobuz identity validation was inconclusive for {Output}: {Reason}", context.OutputPath, identityValidation.Message);
+            }
+
+            IOFile.Move(stagingPath, context.OutputPath, overwrite: false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch
         {
-            DownloadFileUtilities.TryDeleteFile(context.OutputPath);
+            DownloadFileUtilities.TryDeleteFile(stagingPath);
             throw;
         }
     }
@@ -1252,14 +1207,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         try
         {
             using var tagFile = TagLib.File.Create(filePath);
+            var mismatches = new List<string>();
             var expectedIsrc = request.Isrc?.Trim();
             var actualIsrc = tagFile.Tag.ISRC?.Trim();
             if (!string.IsNullOrWhiteSpace(expectedIsrc)
                 && !string.IsNullOrWhiteSpace(actualIsrc)
                 && !string.Equals(actualIsrc, expectedIsrc, StringComparison.OrdinalIgnoreCase))
             {
-                return AudioIdentityGuardResult.Fail(
-                    $"Audio identity validation failed: ISRC mismatch (expected {expectedIsrc}, got {actualIsrc}).");
+                mismatches.Add($"ISRC (expected {expectedIsrc}, got {actualIsrc})");
             }
 
             var expectedTitle = request.TrackName?.Trim();
@@ -1268,8 +1223,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 && !string.IsNullOrWhiteSpace(actualTitle)
                 && !QobuzTitlesMatch(expectedTitle, actualTitle))
             {
-                return AudioIdentityGuardResult.Fail(
-                    $"Audio identity validation failed: title mismatch (expected '{expectedTitle}', got '{actualTitle}').");
+                mismatches.Add($"title (expected '{expectedTitle}', got '{actualTitle}')");
             }
 
             var expectedArtist = request.ArtistName?.Trim();
@@ -1280,15 +1234,18 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 && !string.IsNullOrWhiteSpace(actualArtist)
                 && !QobuzArtistsMatch(expectedArtist, actualArtist))
             {
-                return AudioIdentityGuardResult.Fail(
-                    $"Audio identity validation failed: artist mismatch (expected '{expectedArtist}', got '{actualArtist}').");
+                mismatches.Add($"artist (expected '{expectedArtist}', got '{actualArtist}')");
             }
 
-            return AudioIdentityGuardResult.Ok();
+            return mismatches.Count >= 2
+                ? AudioIdentityGuardResult.Fail($"Audio identity validation failed: {string.Join("; ", mismatches)}.")
+                : mismatches.Count == 1
+                    ? AudioIdentityGuardResult.Inconclusive($"One embedded identity field disagreed: {mismatches[0]}.")
+                    : AudioIdentityGuardResult.Ok();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return AudioIdentityGuardResult.Fail($"Audio identity validation failed: {ex.Message}");
+            return AudioIdentityGuardResult.Inconclusive($"Embedded identity could not be read: {ex.Message}");
         }
     }
 
@@ -1297,10 +1254,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
     }
 
-    private sealed record AudioIdentityGuardResult(bool Success, string Message)
+    private sealed record AudioIdentityGuardResult(bool Success, bool Conclusive, string Message)
     {
-        public static AudioIdentityGuardResult Ok() => new(true, string.Empty);
-        public static AudioIdentityGuardResult Fail(string message) => new(false, message);
+        public static AudioIdentityGuardResult Ok() => new(true, true, string.Empty);
+        public static AudioIdentityGuardResult Inconclusive(string message) => new(true, false, message);
+        public static AudioIdentityGuardResult Fail(string message) => new(false, true, message);
     }
 
     private static string GetTrackArtist(QobuzTrack track)

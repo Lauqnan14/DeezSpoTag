@@ -237,10 +237,6 @@
     overflow: hidden;
 }
 
-.engine-order-item.dragging {
-    opacity: 0.65;
-}
-
 .engine-order-header {
     display: grid;
     grid-template-columns: auto auto 1fr auto;
@@ -248,13 +244,6 @@
     gap: 10px;
     min-height: 44px;
     padding: 8px 10px;
-}
-
-.engine-order-handle {
-    color: var(--text-muted);
-    cursor: grab;
-    font-family: 'Material Icons';
-    font-size: 20px;
 }
 
 .engine-order-title {
@@ -1020,9 +1009,9 @@
                     <div class="engine-order-toggle">
                         <div>
                             <div class="form-label">Custom download sources</div>
-                            <div class="warning-text">Drag engines into priority order. Quality choices are shown only for enabled engines. Existing queued items keep the order stored when they were queued.</div>
+                            <div class="warning-text">Choose which engines and qualities Custom mode may use. Quality priority is always highest available first. Existing queued items keep the selection stored when they were queued.</div>
                         </div>
-                        <button type="button" class="action-btn action-btn-sm" id="downloadEngineOrderToggle" aria-expanded="false">Edit order</button>
+                        <button type="button" class="action-btn action-btn-sm" id="downloadEngineOrderToggle" aria-expanded="false">Edit selection</button>
                     </div>
                     <div class="engine-order-summary" id="downloadEngineOrderSummary"></div>
                     <div class="engine-order-editor" id="downloadEngineOrderEditor" hidden>
@@ -2417,10 +2406,6 @@ function isAtmosDownloadSource(value) {
 
 function resolveDownloadSourceService(value) {
     const normalized = String(value || '').trim().toLowerCase();
-    if (normalized === 'custom') {
-        return 'auto';
-    }
-
     if (normalized === 'atmos:auto') {
         return 'auto';
     }
@@ -2627,7 +2612,7 @@ function setDownloadEngineOrderEditorExpanded(expanded, editor, toggle) {
         resolvedEditor.hidden = !expanded;
     }
     if (resolvedToggle) {
-        resolvedToggle.textContent = expanded ? 'Done' : 'Edit order';
+        resolvedToggle.textContent = expanded ? 'Done' : 'Edit selection';
         resolvedToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     }
 }
@@ -2709,11 +2694,9 @@ function renderDownloadEngineOrder(config) {
     normalized.engines.forEach(engine => {
         const row = document.createElement('div');
         row.className = `engine-order-item${engine.enabled ? '' : ' engine-disabled'}`;
-        row.draggable = true;
         row.dataset.engine = engine.engine;
         row.innerHTML = `
             <div class="engine-order-header">
-                <span class="engine-order-handle" aria-hidden="true">drag_indicator</span>
                 <input type="checkbox" class="engine-order-enabled" ${engine.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)}">
                 <span class="engine-order-title">${escapeHtml(engine.label)}</span>
                 <span class="engine-order-status">${engine.enabled ? 'enabled' : 'disabled'}</span>
@@ -2735,28 +2718,7 @@ function renderDownloadEngineOrder(config) {
 }
 
 function bindDownloadEngineOrderControls(list) {
-    let dragged = null;
     list.querySelectorAll('.engine-order-item').forEach(item => {
-        item.addEventListener('dragstart', () => {
-            dragged = item;
-            item.classList.add('dragging');
-        });
-        item.addEventListener('dragend', () => {
-            item.classList.remove('dragging');
-            dragged = null;
-            updateDownloadEngineOrderSummary(list);
-        });
-        item.addEventListener('dragover', event => {
-            event.preventDefault();
-            if (!dragged || dragged === item) {
-                return;
-            }
-
-            const rect = item.getBoundingClientRect();
-            const before = event.clientY < rect.top + rect.height / 2;
-            list.insertBefore(dragged, before ? item : item.nextSibling);
-        });
-
         item.querySelector('.engine-order-enabled')?.addEventListener('change', event => {
             const checked = event.target?.checked === true;
             item.classList.toggle('engine-disabled', !checked);
@@ -2791,7 +2753,7 @@ function updateDownloadEngineOrderSummary(list, summary) {
         .map(row => row.querySelector('.engine-order-title')?.textContent?.trim())
         .filter(Boolean);
     const engineSummary = engineLabels.length > 0
-        ? engineLabels.join(' -> ')
+        ? engineLabels.join(', ')
         : 'No enabled sources';
     resolvedSummary.textContent = `${enabledEngines.length} enabled source${enabledEngines.length === 1 ? '' : 's'}, ${enabledQualityCount} enabled qualit${enabledQualityCount === 1 ? 'y' : 'ies'}: ${engineSummary}.`;
 }
@@ -4477,7 +4439,6 @@ function collectFormData() {
         spotifyArtistMetadataFetchBatchSize: getNumber('spotifyArtistMetadataFetchBatchSize', baseSettings.spotifyArtistMetadataFetchBatchSize ?? 25),
         tidalQuality: getValue('multisource-tidalQuality', baseSettings.tidalQuality || 'HI_RES_LOSSLESS'),
         qobuzQuality: getValue('multisource-qobuzQuality', baseSettings.qobuzQuality || '27'),
-        strictEngineQuality: false,
         downloadEngineOrder: collectDownloadEngineOrder(),
 
         appleMusic: {

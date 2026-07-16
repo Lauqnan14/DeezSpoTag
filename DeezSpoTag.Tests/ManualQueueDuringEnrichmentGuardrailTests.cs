@@ -297,10 +297,11 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
         var retrySchedulerSource = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadRetryScheduler.cs");
 
-        Assert.Contains("_retryScheduler.HasPendingRetries", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("_retryScheduler.HasPendingRetriesAsync", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("RunRetrySweepAsync", retrySchedulerSource, StringComparison.Ordinal);
-        Assert.Contains("_pendingRetries", retrySchedulerSource, StringComparison.Ordinal);
-        Assert.Contains("Auto-retry scheduled for queue-drain sweep", retrySchedulerSource, StringComparison.Ordinal);
+        Assert.Contains("ScheduleRetryAsync", retrySchedulerSource, StringComparison.Ordinal);
+        Assert.Contains("GetDueRetryQueueUuidsAsync", retrySchedulerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ConcurrentDictionary", retrySchedulerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ExecuteScheduledRetryAsync", retrySchedulerSource, StringComparison.Ordinal);
     }
 

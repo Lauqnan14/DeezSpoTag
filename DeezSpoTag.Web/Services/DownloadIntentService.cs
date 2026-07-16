@@ -466,7 +466,6 @@ public sealed class DownloadIntentService
             intent.Artist,
             settings.Tags?.SingleAlbumArtist != false);
         var payload = BuildVisiblePreResolutionPayload(intent, settings, engine, selectedQuality);
-        payload.AutoSources = primaryFallback.AutoSources;
         payload.AutoIndex = primaryFallback.AutoIndex;
         payload.FallbackPlan = primaryFallback.FallbackPlan;
         payload.DestinationFolderId = primaryDestinationFolderId;
@@ -540,14 +539,14 @@ public sealed class DownloadIntentService
             return await ResolveQueuedTidalAtmosPayloadAsync(item, intent, cancellationToken);
         }
 
-        var savedAutoSources = ReadQueuedAutoSources(payload);
-        if (savedAutoSources.Count > 0)
+        var savedPlan = DownloadExecutionPlan.Read(payload);
+        if (savedPlan.Count > 0)
         {
             return await ResolveQueuedPayloadFromSavedPlanAsync(
                 item,
                 intent,
                 payload,
-                savedAutoSources,
+                savedPlan,
                 cancellationToken);
         }
 
@@ -673,7 +672,7 @@ public sealed class DownloadIntentService
         DownloadQueueItem item,
         DownloadIntent intent,
         JsonObject payload,
-        List<string> autoSources,
+        List<FallbackPlanStep> savedPlan,
         CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
@@ -684,35 +683,32 @@ public sealed class DownloadIntentService
         }
 
         NormalizeEnqueueSettings(settings);
-        var fallbackPlan = FallbackPayloadNormalizer.ReadFallbackPlan(payload);
-        if (fallbackPlan.Count == 0)
-        {
-            fallbackPlan = BuildFallbackPlanFromSources(intent, autoSources, settings.FallbackSearch);
-        }
+        var fallbackPlan = savedPlan;
+        var startIndex = ResolveSavedPlanStartIndex(item, payload, fallbackPlan);
 
         string? lastSkipReason = null;
-        for (var index = 0; index < autoSources.Count; index++)
+        for (var index = startIndex; index < fallbackPlan.Count; index++)
         {
-            var step = DownloadSourceOrder.DecodeAutoSource(autoSources[index]);
-            if (string.IsNullOrWhiteSpace(step.Source))
+            var step = fallbackPlan[index];
+            if (string.IsNullOrWhiteSpace(step.Engine))
             {
                 continue;
             }
 
             var candidate = await ResolveIntentAsync(
                 intent,
-                step.Source,
+                step.Engine,
                 preferIsrcOnly: false,
                 preResolved: null,
                 effectiveSettings: settings,
                 cancellationToken);
-            if (!TryAcceptResolvedCandidate(step.Source, candidate, out var skipReason))
+            if (!TryAcceptResolvedCandidate(step.Engine, candidate, out var skipReason))
             {
                 lastSkipReason = skipReason;
                 continue;
             }
 
-            var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, step.Source)
+            var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, step.Engine)
                 ?? candidate.SourceUrl
                 ?? intent.SourceUrl;
             var qobuzId = FirstNonEmpty(
@@ -724,7 +720,7 @@ public sealed class DownloadIntentService
             var amazonId = EngineLinkParser.NormalizeAmazonTrackId(intent.AmazonId)
                 ?? EngineLinkParser.TryExtractAmazonTrackId(sourceUrl, RegexTimeout);
             var identityError = ValidateQueuedResolvedIdentity(
-                step.Source,
+                step.Engine,
                 sourceUrl,
                 intent.DeezerId,
                 intent.AppleId,
@@ -738,7 +734,7 @@ public sealed class DownloadIntentService
             }
 
             return new QueuePreResolutionPayload.ResolutionResult(
-                step.Source,
+                step.Engine,
                 sourceUrl,
                 step.Quality,
                 index,
@@ -791,19 +787,85 @@ public sealed class DownloadIntentService
             ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
     }
 
-    private static List<string> ReadQueuedAutoSources(JsonObject payload)
+    internal static int ResolveSavedPlanStartIndex(
+        DownloadQueueItem item,
+        JsonObject payload,
+        IReadOnlyList<FallbackPlanStep> fallbackPlan)
     {
-        var node = payload["AutoSources"] ?? payload["autoSources"];
-        if (node is not JsonArray array)
+        if (fallbackPlan.Count == 0)
         {
-            return new List<string>();
+            return 0;
         }
 
-        return array
-            .Select(item => item?.ToString())
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value!.Trim())
-            .ToList();
+        var persistedIndex = ReadPayloadInt(payload, "AutoIndex", "autoIndex");
+        var currentQuality = ReadPayloadString(payload, "Quality", "quality");
+        if (persistedIndex >= 0 && persistedIndex < fallbackPlan.Count)
+        {
+            var indexedStep = fallbackPlan[persistedIndex];
+            if (PlanStepMatches(indexedStep, item.Engine, currentQuality))
+            {
+                return persistedIndex;
+            }
+        }
+
+        var exactIndex = fallbackPlan
+            .Select((step, index) => (step, index))
+            .FirstOrDefault(candidate => PlanStepMatches(candidate.step, item.Engine, currentQuality))
+            .index;
+        if (exactIndex > 0
+            || PlanStepMatches(fallbackPlan[0], item.Engine, currentQuality))
+        {
+            return exactIndex;
+        }
+
+        var engineIndex = fallbackPlan
+            .Select((step, index) => (step, index))
+            .FirstOrDefault(candidate => string.Equals(
+                candidate.step.Engine,
+                item.Engine,
+                StringComparison.OrdinalIgnoreCase))
+            .index;
+        return engineIndex > 0
+            || string.Equals(fallbackPlan[0].Engine, item.Engine, StringComparison.OrdinalIgnoreCase)
+                ? engineIndex
+                : Math.Clamp(persistedIndex, 0, fallbackPlan.Count - 1);
+    }
+
+    private static bool PlanStepMatches(FallbackPlanStep step, string? engine, string? quality)
+        => string.Equals(step.Engine, engine, StringComparison.OrdinalIgnoreCase)
+           && (string.IsNullOrWhiteSpace(quality)
+               || string.Equals(step.Quality, quality, StringComparison.OrdinalIgnoreCase));
+
+    private static int ReadPayloadInt(JsonObject payload, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (payload[key] is JsonValue value && value.TryGetValue<int>(out var parsed))
+            {
+                return parsed;
+            }
+
+            if (int.TryParse(payload[key]?.ToString(), out parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return 0;
+    }
+
+    private static string? ReadPayloadString(JsonObject payload, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var value = payload[key]?.ToString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
     }
 
     private static string? ValidateQueuedResolvedIdentity(
@@ -1144,7 +1206,7 @@ public sealed class DownloadIntentService
         DeezSpoTagSettings settings)
     {
         var isAuto = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty)
-            && (routing.IntentRequestsAuto || string.Equals(settings.Service, AutoService, StringComparison.OrdinalIgnoreCase));
+            && (routing.IntentRequestsAuto || IsMultiEngineService(settings.Service));
         var allowCrossEngineFallback = !IsIntentPodcast(intent, intent.SourceUrl ?? string.Empty) && isAuto;
         var autoIndex = ResolveAutoStartIndex(intent.PreferredEngine, routing.PreferredEngine, routing.AutoSources);
         var selectedEngine = routing.AppleOnlyRequired
@@ -1626,8 +1688,8 @@ public sealed class DownloadIntentService
         var normalized = DownloadSourceOrder.NormalizeDownloadEngineOrderSettings(intent.DownloadEngineOrder);
         normalized.Enabled = true;
         settings.DownloadEngineOrder = normalized;
-        settings.Service = AutoService;
-        intent.PreferredEngine = AutoService;
+        settings.Service = DownloadSourceCatalog.Custom;
+        intent.PreferredEngine = DownloadSourceCatalog.Custom;
     }
 
     private static void NormalizeEnqueueSettings(DeezSpoTagSettings settings)
@@ -1889,7 +1951,9 @@ public sealed class DownloadIntentService
             return normalizedPreferredEngine;
         }
 
-        var shouldUseAutoSource = string.IsNullOrWhiteSpace(normalizedPreferredEngine) || intentRequestsAuto;
+        var shouldUseAutoSource = string.IsNullOrWhiteSpace(normalizedPreferredEngine)
+            || intentRequestsAuto
+            || IsMultiEngineService(normalizedPreferredEngine);
         return shouldUseAutoSource
             ? DownloadSourceOrder.DecodeAutoSource(autoSources[0]).Source
             : normalizedPreferredEngine;
@@ -4731,7 +4795,7 @@ public sealed class DownloadIntentService
         var sourceList = sources
             .Where(source => !string.IsNullOrWhiteSpace(source))
             .ToList();
-        if (allowCrossEngineFallback || IsAutoService(settings.Service) || settings.DownloadEngineOrder?.Enabled == true)
+        if (allowCrossEngineFallback || IsMultiEngineService(settings.Service))
         {
             return sourceList;
         }
@@ -4744,6 +4808,10 @@ public sealed class DownloadIntentService
 
     private static bool IsAutoService(string? service)
         => string.Equals(service?.Trim(), AutoService, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsMultiEngineService(string? service)
+        => IsAutoService(service)
+           || string.Equals(service?.Trim(), DownloadSourceCatalog.Custom, StringComparison.OrdinalIgnoreCase);
 
     private static void ApplyDeezerCoreMetadata(DownloadIntent intent, DeezSpoTag.Core.Models.Deezer.ApiTrack track, string sourceUrl, bool overwriteExisting)
     {
@@ -5357,7 +5425,7 @@ public sealed class DownloadIntentService
         var targetQuality = string.IsNullOrWhiteSpace(intent.Quality) ? null : intent.Quality;
         var shouldUseConfiguredOrder = string.Equals(normalizedPreferredEngine, AutoService, StringComparison.OrdinalIgnoreCase)
             || settings.DownloadEngineOrder?.Enabled == true
-            || IsAutoService(settings.Service);
+            || IsMultiEngineService(settings.Service);
         if (shouldUseConfiguredOrder)
         {
             var configuredSources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: targetQuality);
@@ -5494,7 +5562,7 @@ public sealed class DownloadIntentService
 
         var useCrossEngineOrder = IsMusicIntent(intent)
             && !IsVideoIntent(intent)
-            && (IsAutoService(settings.Service) || settings.DownloadEngineOrder?.Enabled == true);
+            && IsMultiEngineService(settings.Service);
         if (useCrossEngineOrder)
         {
             var sources = DownloadSourceOrder.ResolveQualityAutoSources(
@@ -5935,7 +6003,6 @@ public sealed class DownloadIntentService
             AutoSources: autoSources,
             Availability: request.Availability));
         payload.FallbackPlan = fallbackInfo.FallbackPlan;
-        payload.AutoSources = fallbackInfo.AutoSources;
         payload.AutoIndex = fallbackInfo.AutoIndex;
 
         var enqueueDecision = await EnqueueItemAsync(
@@ -6890,7 +6957,6 @@ public sealed class DownloadIntentService
             ?? string.Empty;
         payload.ContentType = context.ContentType;
         payload.Cover = intent.Cover ?? string.Empty;
-        payload.AutoSources = context.AutoSources;
         payload.AutoIndex = Math.Max(0, context.SelectedAutoIndex);
         payload.FallbackPlan = context.FallbackPlan;
         payload.ReleaseDate = context.ReleaseDate;

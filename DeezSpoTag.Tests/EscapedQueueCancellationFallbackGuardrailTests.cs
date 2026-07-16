@@ -21,7 +21,7 @@ public sealed class EscapedQueueCancellationFallbackGuardrailTests
             "private async Task HandleUnhandledProcessorCancellationAsync",
             StringComparison.Ordinal);
         var fallbackIndex = source.IndexOf(
-            "await TryAdvanceFallbackAfterEscapedCancellationAsync(item)",
+            "await TryAdvanceFallbackAsync(item)",
             handlerStart,
             StringComparison.Ordinal);
         var failureIndex = source.IndexOf(

@@ -151,7 +151,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         await QueuePrefetchIfNeededAsync(next.QueueUuid, queueContext, requestContext.TrackContext);
-        var result = await ExecuteDownloadWithFallbackAsync(next.QueueUuid, queueContext.Payload, requestContext.Request, itemToken);
+        var result = await _downloadService.DownloadAsync(requestContext.Request, itemToken);
         if (!result.Success)
         {
             await HandleDownloadFailureAsync(next, queueContext.Payload, result.Message, stoppingToken, itemToken);
@@ -217,7 +217,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             TimeSpan.FromSeconds(15),
             CancellationToken.None);
         await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, message, cancellationToken: CancellationToken.None);
-        ScheduleRetryIfEligible(next.QueueUuid, message);
+        await ScheduleRetryIfEligibleAsync(next.QueueUuid, message, CancellationToken.None);
     }
 
     private static void RestoreOriginalDownloadLocation(QueueInitializationContext? queueContext)
@@ -236,7 +236,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         if (payload == null)
         {
             await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, InvalidPayloadMessage, cancellationToken: itemToken);
-            ScheduleRetryIfEligible(next.QueueUuid, "invalid payload");
+            await ScheduleRetryIfEligibleAsync(next.QueueUuid, "invalid payload", itemToken);
             return null;
         }
 
@@ -410,18 +410,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         if (!AreWrapperStreamPortsReachable(request, out var wrapperPortReason))
         {
-            if (TryApplyWrapperAacFallback(
-                next,
-                queueContext,
-                request,
-                wrapperPortReason,
-                "wrapper_stream_fallback",
-                "Wrapper stream ports unavailable, falling back to AAC stereo.",
-                includeReasonInLog: true))
-            {
-                return true;
-            }
-
             await HandleDownloadFailureAsync(next, queueContext.Payload, wrapperPortReason, stoppingToken, itemToken, quality: null);
             return false;
         }
@@ -432,64 +420,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             return true;
         }
 
-        if (TryApplyWrapperAacFallback(
-            next,
-            queueContext,
-            request,
-            "Start the Apple wrapper to restore ALAC/Atmos downloads.",
-            "wrapper_fallback",
-            "Wrapper offline, falling back to AAC stereo.",
-            includeReasonInLog: false))
-        {
-            return true;
-        }
-
         var reason = wrapperStatus.NeedsTwoFactor
             ? "Apple wrapper requires 2FA verification."
             : wrapperStatus.Message;
         await HandleDownloadFailureAsync(next, queueContext.Payload, reason, stoppingToken, itemToken, quality: null);
         return false;
-    }
-
-    private bool TryApplyWrapperAacFallback(
-        DownloadQueueItem next,
-        QueueInitializationContext queueContext,
-        AppleDownloadRequest request,
-        string warningReason,
-        string warningCode,
-        string warningMessage,
-        bool includeReasonInLog)
-    {
-        var isVideoRequest = request.IsVideo || queueContext.VideoPayload;
-        if (isVideoRequest || !CanFallbackToAacStereo(request) || !ShouldUseInEngineAppleAacFallback(queueContext.Payload))
-        {
-            return false;
-        }
-
-        ApplyAacStereoFallback(request);
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            if (includeReasonInLog)
-            {
-                _logger.LogInformation(
-                    "Apple wrapper stream ports unavailable; falling back to AAC stereo for {QueueUuid}. Reason: {Reason}",
-                    next.QueueUuid,
-                    warningReason);
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "Apple wrapper unavailable; falling back to AAC stereo for {QueueUuid}.",
-                    next.QueueUuid);
-            }
-        }
-
-        _deezspotagListener.SendDownloadWarn(
-            next.QueueUuid,
-            new { message = warningMessage },
-            warningCode,
-            warningReason);
-        return true;
     }
 
     private static bool AreWrapperStreamPortsReachable(AppleDownloadRequest request, out string reason)
@@ -575,23 +510,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             expectedOutputPath);
     }
 
-    private async Task<AppleDownloadResult> ExecuteDownloadWithFallbackAsync(
-        string queueUuid,
-        AppleQueueItem payload,
-        AppleDownloadRequest request,
-        CancellationToken itemToken)
-    {
-        var result = await _downloadService.DownloadAsync(request, itemToken);
-        if (!result.Success && CanFallbackToAacStereo(request) && ShouldUseInEngineAppleAacFallback(payload))
-        {
-            _logger.LogWarning("Apple download failed for {QueueUuid}, retrying with AAC stereo. Error: {Message}", queueUuid, result.Message);
-            ApplyAacStereoFallback(request);
-            result = await _downloadService.DownloadAsync(request, itemToken);
-        }
-
-        return result;
-    }
-
     private async Task HandleDownloadFailureAsync(
         DownloadQueueItem next,
         AppleQueueItem payload,
@@ -634,7 +552,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         _deezspotagListener.Send(UpdateQueueEvent, payload.ToQueuePayload());
         if (!EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(reason))
         {
-            ScheduleRetryIfEligible(next.QueueUuid, reason);
+            await ScheduleRetryIfEligibleAsync(next.QueueUuid, reason, itemToken);
         }
     }
 
@@ -654,10 +572,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         _activityLog.Info($"Fallback advanced: {next.QueueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
-        if (!payload.FallbackQueuedExternally)
-        {
-            _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
-        }
+        _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
 
         return true;
     }
@@ -820,7 +735,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             _serviceProvider,
             itemToken,
             queueUuid);
-        _retryScheduler.Clear(queueUuid);
+        await _retryScheduler.ClearAsync(queueUuid, itemToken);
     }
 
     private async Task HandleCanceledQueueItemAsync(string queueUuid)
@@ -848,7 +763,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         await _queueRepository.UpdateStatusAsync(queueUuid, CancelledStatus, "Cancelled", cancellationToken: CancellationToken.None);
-        ScheduleRetryIfEligible(queueUuid, CancelledStatus);
+        await ScheduleRetryIfEligibleAsync(queueUuid, CancelledStatus, CancellationToken.None);
     }
 
     private async Task<string?> EnsureRequiredPrefetchCompletedAsync(string queueUuid, CancellationToken cancellationToken)
@@ -861,7 +776,10 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         EngineAudioPostDownloadHelper.ClearPrefetchState(queueUuid);
     }
 
-    private void ScheduleRetryIfEligible(string queueUuid, string? reason)
+    private async Task ScheduleRetryIfEligibleAsync(
+        string queueUuid,
+        string? reason,
+        CancellationToken cancellationToken)
     {
         if (!ShouldScheduleRetry(reason))
         {
@@ -869,7 +787,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             return;
         }
 
-        _retryScheduler.ScheduleRetry(queueUuid, EngineName, reason ?? string.Empty);
+        await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, reason ?? string.Empty, cancellationToken);
     }
 
     private static bool ShouldScheduleRetry(string? reason)
@@ -983,36 +901,6 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         return AppleVideoClassifier.IsVideo(payload.SourceUrl, payload.CollectionType, payload.ContentType);
-    }
-
-    private static bool CanFallbackToAacStereo(AppleDownloadRequest request)
-    {
-        var profile = request.PreferredProfile?.ToLowerInvariant() ?? string.Empty;
-        if (profile.Contains(AtmosKeyword, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (request.IsVideo || AppleVideoClassifier.IsVideoUrl(request.ServiceUrl))
-        {
-            return false;
-        }
-
-        return profile.Contains(AacKeyword, StringComparison.OrdinalIgnoreCase)
-               || profile.Contains(AlacKeyword, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool ShouldUseInEngineAppleAacFallback(AppleQueueItem payload)
-    {
-        // Preserve global AUTO fallback order when multiple engines are present.
-        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
-    }
-
-    private static void ApplyAacStereoFallback(AppleDownloadRequest request)
-    {
-        request.PreferredProfile = "AAC";
-        request.AacType = AacLcType;
-        request.GetM3u8FromDevice = false;
     }
 
     private async Task<string> ApplyPostDownloadSettingsAsync(

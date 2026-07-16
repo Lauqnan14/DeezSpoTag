@@ -7,24 +7,27 @@ internal static class ActualDownloadQualityLabel
 {
     public static void ApplyTo(EngineQueueItemBase payload, string filePath)
     {
-        var label = payload is AmazonQueueItem
-            ? TryBuildAmazon(filePath)
-            : TryBuild(filePath);
+        var label = Inspect(payload, filePath)?.Label;
         if (!string.IsNullOrWhiteSpace(label))
         {
             payload.Quality = label;
+            return;
+        }
+
+        if (!payload.Quality.Contains("ATMOS", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(payload.ContentType, "video", StringComparison.OrdinalIgnoreCase))
+        {
+            payload.Quality = "Quality unverified";
         }
     }
 
     public static string? TryBuild(string filePath)
-        => TryBuildCore(filePath, TryBuildLosslessLabel);
+        => TryInspect(filePath, amazon: false)?.Label;
 
-    private static string? TryBuildAmazon(string filePath)
-        => TryBuildCore(filePath, TryBuildAmazonLosslessLabel);
+    public static ActualAudioQuality? Inspect(EngineQueueItemBase payload, string filePath)
+        => TryInspect(filePath, payload is AmazonQueueItem);
 
-    private static string? TryBuildCore(
-        string filePath,
-        Func<int, int, string, string, string?> losslessLabelBuilder)
+    private static ActualAudioQuality? TryInspect(string filePath, bool amazon)
     {
         var ioPath = DeezSpoTag.Services.Download.Utils.DownloadPathResolver.ResolveIoPath(filePath);
         if (string.IsNullOrWhiteSpace(ioPath) || !System.IO.File.Exists(ioPath))
@@ -41,7 +44,6 @@ internal static class ActualDownloadQualityLabel
             var bitrate = properties.AudioBitrate;
             var extension = System.IO.Path.GetExtension(ioPath);
             var codec = ResolveCodecText(properties);
-
             if (IsFlac(extension, codec)
                 && (bitsPerSample <= 0 || sampleRate <= 0)
                 && TryReadFlacProperties(ioPath, out var flacBitsPerSample, out var flacSampleRate))
@@ -50,13 +52,15 @@ internal static class ActualDownloadQualityLabel
                 sampleRate = flacSampleRate;
             }
 
-            if (IsLossy(extension, codec))
-            {
-                return TryBuildLossyLabel(bitrate, extension, codec);
-            }
-
-            return losslessLabelBuilder(bitsPerSample, sampleRate, extension, codec)
-                   ?? TryBuildLossyLabel(bitrate, extension, codec);
+            var lossy = IsLossy(extension, codec);
+            var label = lossy
+                ? TryBuildLossyLabel(bitrate, extension, codec)
+                : amazon
+                    ? TryBuildAmazonLosslessLabel(bitsPerSample, sampleRate, extension, codec)
+                    : TryBuildLosslessLabel(bitsPerSample, sampleRate, extension, codec);
+            return string.IsNullOrWhiteSpace(label)
+                ? null
+                : new ActualAudioQuality(label, bitsPerSample, sampleRate, bitrate, !lossy);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -237,3 +241,10 @@ internal static class ActualDownloadQualityLabel
         }
     }
 }
+
+internal sealed record ActualAudioQuality(
+    string Label,
+    int BitsPerSample,
+    int SampleRate,
+    int BitrateKbps,
+    bool IsLossless);

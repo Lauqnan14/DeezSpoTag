@@ -34,7 +34,7 @@ public static class DownloadStreamHelper
 
         if (progressCallback != null)
         {
-            await progressCallback(100, 0);
+            await progressCallback(95, 0);
         }
     }
 
@@ -77,7 +77,7 @@ public static class DownloadStreamHelper
         var now = DateTimeOffset.UtcNow;
         if (totalBytes.HasValue && totalBytes.Value > 0)
         {
-            var percent = (int)Math.Floor(readTotal * 100d / totalBytes.Value);
+            var percent = Math.Min(95, (int)Math.Floor(readTotal * 100d / totalBytes.Value));
             if (percent != state.LastPercent || (now - state.LastReportAt).TotalSeconds >= 1)
             {
                 state.LastPercent = percent;

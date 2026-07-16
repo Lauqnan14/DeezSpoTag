@@ -1148,11 +1148,11 @@ public class ActivitiesController : Controller
         EnsurePayloadField(payload, "contentType", "ContentType", "content_type");
         EnsurePayloadField(payload, "collectionType", "CollectionType", "collection_type");
         EnsurePayloadField(payload, "quality", QualityTitleKey, "bitrate", "Bitrate");
-        EnsurePayloadFieldRaw(payload, "autoSources", "AutoSources");
+        EnsurePayloadField(payload, "requestedQuality", "RequestedQuality");
+        EnsurePayloadField(payload, "deliveredQuality", "DeliveredQuality");
         EnsurePayloadFieldRaw(payload, "autoIndex", "AutoIndex");
         EnsurePayloadFieldRaw(payload, "fallbackPlan", "FallbackPlan");
         EnsurePayloadFieldRaw(payload, "fallbackHistory", "FallbackHistory");
-        EnsurePayloadFieldRaw(payload, "fallbackQueuedExternally", "FallbackQueuedExternally");
         EnsurePayloadField(payload, "videoResolution", "VideoResolution", "videoResolutionTier", "VideoResolutionTier");
         EnsurePayloadField(payload, "videoHdr", "VideoHdr");
         EnsurePayloadField(payload, "videoAudioProfile", "VideoAudioProfile");
@@ -1256,7 +1256,7 @@ public class ActivitiesController : Controller
             ResolvingStatus or QueuedStatus or InQueueStatus => ActivityStatus.Queued,
             RunningStatus or DownloadingStatus => ActivityStatus.Running,
             PausedStatus => ActivityStatus.Paused,
-            RetryingStatus => ActivityStatus.Retrying,
+            RetryingStatus or "retry_waiting" => ActivityStatus.Retrying,
             CompletedStatus or CompleteStatus or FinishedStatus or DownloadFinishedStatus or DoneStatus or SuccessStatus or SkippedStatus => ActivityStatus.Complete,
             UnavailableStatus => ActivityStatus.Unavailable,
             FailedStatus or ErrorStatus => ActivityStatus.Failed,

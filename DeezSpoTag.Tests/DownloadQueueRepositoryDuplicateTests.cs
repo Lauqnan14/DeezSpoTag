@@ -829,6 +829,68 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task ScheduleRetryAsync_PersistsDelayAndRemovesItemFromRunnableQueue()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("durable-retry", "Artist", "Retry", null) with { Status = "failed" },
+            CancellationToken.None);
+
+        var scheduled = await context.QueueRepository.ScheduleRetryAsync(
+            "durable-retry",
+            "qobuz",
+            "temporary provider failure",
+            maxAttempts: 3,
+            CancellationToken.None);
+
+        Assert.True(scheduled);
+        Assert.True(await context.QueueRepository.HasScheduledRetriesAsync(CancellationToken.None));
+        Assert.Equal(0, await context.QueueRepository.GetRunnableDownloadCountAsync(CancellationToken.None));
+        var persisted = await context.QueueRepository.GetByUuidAsync("durable-retry", CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.Equal("retry_waiting", persisted!.Status);
+        Assert.Equal("temporary provider failure", persisted.Error);
+
+        Assert.True(await context.QueueRepository.ScheduleRetryAsync(
+            "durable-retry",
+            "qobuz",
+            "second temporary failure",
+            maxAttempts: 2,
+            CancellationToken.None));
+        Assert.False(await context.QueueRepository.ScheduleRetryAsync(
+            "durable-retry",
+            "qobuz",
+            "must be exhausted",
+            maxAttempts: 2,
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task UpdateStatusAsync_ReservesOneHundredPercentForCompletedAudio()
+    {
+        await using var context = await CreateContextAsync();
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("validation-progress", "Artist", "Validation", null),
+            CancellationToken.None);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "validation-progress",
+            "running",
+            progress: 100,
+            cancellationToken: CancellationToken.None);
+        var running = await context.QueueRepository.GetByUuidAsync("validation-progress", CancellationToken.None);
+        Assert.Equal(95, running!.Progress);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            "validation-progress",
+            "completed",
+            progress: 95,
+            cancellationToken: CancellationToken.None);
+        var completed = await context.QueueRepository.GetByUuidAsync("validation-progress", CancellationToken.None);
+        Assert.Equal(100, completed!.Progress);
+    }
+
+    [Fact]
     public async Task UpdateQueueMetadataAsync_ProtectsCompletedRowWhenDestinationIsRecovered()
     {
         await using var context = await CreateContextAsync();

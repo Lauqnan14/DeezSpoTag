@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Diagnostics;
 using System.Net;
 using DeezSpoTag.Integrations.Qobuz;
-using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Security;
 using Microsoft.AspNetCore.DataProtection;
 
@@ -21,19 +20,16 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILogger<QobuzPublicProviderRegistry> _logger;
-    private readonly DownloadQueueRepository _queueRepository;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     public QobuzPublicProviderRegistry(
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
         ILogger<QobuzPublicProviderRegistry> logger,
-        IHttpClientFactory httpClientFactory,
-        DownloadQueueRepository queueRepository)
+        IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
-        _queueRepository = queueRepository;
         _store = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
         _path = Path.Join(AppDataPaths.GetDataRoot(environment), "autotag", FileName);
     }
@@ -88,19 +84,8 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
             .ToArray();
 
         await Task.WhenAll(providers.Select(provider => CheckProviderAsync(provider, cancellationToken)));
-        var updatedProviders = await GetProvidersAsync(cancellationToken);
-        if (updatedProviders.Any(IsDownloadAvailable))
-        {
-            await _queueRepository.RequeueProviderWaitingAsync(["qobuz"], cancellationToken);
-        }
-
-        return updatedProviders;
+        return await GetProvidersAsync(cancellationToken);
     }
-
-    private static bool IsDownloadAvailable(QobuzPublicProvider provider)
-        => provider.Enabled
-           && string.Equals(provider.Status, "online", StringComparison.OrdinalIgnoreCase)
-           && (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow);
 
     public Task RecordSuccessAsync(string providerId, long responseTimeMs, CancellationToken cancellationToken)
         => UpdateDownloadOutcomeAsync(providerId, null, null, cancellationToken);

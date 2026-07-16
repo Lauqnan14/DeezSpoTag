@@ -182,7 +182,7 @@ public sealed class AppleExternalToolRunner
         var duration = await TryReadDurationSecondsAsync(mediaPath, cancellationToken);
         if (!duration.HasValue)
         {
-            return AudioDecodeValidationResult.Fail("Audio validation failed: unable to read output duration with ffprobe.");
+            return AudioDecodeValidationResult.Ok();
         }
 
         if (!LooksLikePreviewDuration(duration.Value, expectedDurationSeconds))
@@ -208,6 +208,11 @@ public sealed class AppleExternalToolRunner
             return AudioDecodeValidationResult.Fail("Audio validation failed: output file is missing.");
         }
 
+        if (new FileInfo(mediaPath).Length == 0)
+        {
+            return AudioDecodeValidationResult.Fail("Audio validation failed: output file is empty.");
+        }
+
         var ffmpegResult = await TryRunToolAsync(
             "ffmpeg",
             Array.Empty<string>(),
@@ -227,10 +232,10 @@ public sealed class AppleExternalToolRunner
 
         if (!ffmpegResult.ToolFound)
         {
-            _logger.LogWarning(
-                "ffmpeg executable not found; Apple decode validation failed for {MediaPath}.",
+            _logger.LogDebug(
+                "ffmpeg executable not found; Apple decode validation skipped for {MediaPath}.",
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(mediaPath));
-            return AudioDecodeValidationResult.Fail("Audio validation failed: ffmpeg executable not found.");
+            return AudioDecodeValidationResult.Ok();
         }
 
         if (ffmpegResult.Success)

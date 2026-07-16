@@ -11,12 +11,8 @@ namespace DeezSpoTag.Tests;
 
 public sealed class QobuzQualityFallbackTests
 {
-    private static readonly string[] ExpectedHiResFallbackOrder = ["27", "7", "6"];
-    private static readonly string[] ExpectedSingleQualityOrder = ["27"];
-    private static readonly string[] ExpectedMidTierFallbackOrder = ["7", "6"];
-
     [Fact]
-    public void BuildRequest_EnablesQualityFallback_WhenServiceIsQobuz()
+    public void BuildRequest_UsesOnlyTheCurrentPersistedPlanQuality()
     {
         var request = QobuzRequestBuilder.BuildRequest(
             new QobuzQueueItem
@@ -30,57 +26,14 @@ public sealed class QobuzQualityFallbackTests
             {
                 Service = "qobuz",
                 FallbackBitrate = true,
-                QobuzQuality = "27"
+                QobuzQuality = "6"
             });
 
-        Assert.True(request.AllowQualityFallback);
         Assert.Equal("27", request.Quality);
-    }
-
-    [Fact]
-    public void BuildRequest_DisablesQualityFallback_WhenServiceIsAuto()
-    {
-        var request = QobuzRequestBuilder.BuildRequest(
-            new QobuzQueueItem
-            {
-                Title = "Track",
-                Artist = "Artist",
-                Album = "Album",
-                Quality = "27"
-            },
-            new DeezSpoTagSettings
-            {
-                Service = "auto",
-                FallbackBitrate = true,
-                QobuzQuality = "27"
-            });
-
-        Assert.False(request.AllowQualityFallback);
-        Assert.Equal("27", request.Quality);
-    }
-
-    [Fact]
-    public void GetQualityFallbackOrder_UsesQobuzHiResThenLowerTiers_WhenEnabled()
-    {
-        var order = InvokeGetQualityFallbackOrder("27", allowQualityFallback: true);
-
-        Assert.Equal(ExpectedHiResFallbackOrder, order);
-    }
-
-    [Fact]
-    public void GetQualityFallbackOrder_RespectsDisabledFallback_WhenDisabled()
-    {
-        var order = InvokeGetQualityFallbackOrder("27", allowQualityFallback: false);
-
-        Assert.Equal(ExpectedSingleQualityOrder, order);
-    }
-
-    [Fact]
-    public void GetQualityFallbackOrder_UsesCDFallbackForMidTierQuality_WhenEnabled()
-    {
-        var order = InvokeGetQualityFallbackOrder("7", allowQualityFallback: true);
-
-        Assert.Equal(ExpectedMidTierFallbackOrder, order);
+        Assert.Null(typeof(QobuzDownloadRequest).GetProperty("AllowQualityFallback"));
+        Assert.Null(typeof(QobuzDownloadService).GetMethod(
+            "GetQualityFallbackOrder",
+            BindingFlags.NonPublic | BindingFlags.Static));
     }
 
     [Theory]
@@ -174,20 +127,6 @@ public sealed class QobuzQualityFallbackTests
         Assert.Contains("\"QobuzQuality\":\"27\"", json);
         Assert.Contains("\"FallbackSearch\":true", json);
         Assert.Contains("\"DownloadEngineOrder\"", json);
-    }
-
-    private static List<string> InvokeGetQualityFallbackOrder(string quality, bool allowQualityFallback)
-    {
-        var method = typeof(QobuzDownloadService).GetMethod(
-            "GetQualityFallbackOrder",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(method);
-
-        var result = method!.Invoke(null, new object[] { quality, allowQualityFallback });
-        Assert.NotNull(result);
-
-        return Assert.IsAssignableFrom<List<string>>(result);
     }
 
     private static string InvokeMapCatalogQuality(int bitDepth, double sampleRate)

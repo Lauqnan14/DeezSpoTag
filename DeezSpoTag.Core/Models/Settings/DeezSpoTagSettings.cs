@@ -48,7 +48,6 @@ public class DeezSpoTagSettings
     public bool FallbackBitrate { get; set; } = true;
     public bool FallbackSearch { get; set; } = false;
     public bool FallbackISRC { get; set; } = false;
-    public bool StrictEngineQuality { get; set; } = false;
     public bool LogErrors { get; set; } = true;
     public bool LogSearched { get; set; } = false;
     public string OverwriteFile { get; set; } = "n"; // OverwriteOption.DONT_OVERWRITE

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Utils;
@@ -41,7 +42,6 @@ public sealed class DownloadQueueRepository
     private const string MoveStatusMoved = "moved";
     private const string MoveStatusBlocked = "blocked";
     private const string StatusFailed = "failed";
-    private const string StatusWaiting = "waiting";
     private const string MoveStatusFailed = StatusFailed;
     private const string StereoContentType = "stereo";
     private const string MoveStatusNotRequired = "not_required";
@@ -163,7 +163,9 @@ SELECT CASE
 
         var queueOrder = requeueToFront
             ? await GetFrontQueueOrderAsync(connection, newestFirst, cancellationToken)
-            : await GetExistingQueueOrderAsync(connection, queueUuid, cancellationToken);
+            : origin is QueueRequeueOrigin.FallbackAdvance or QueueRequeueOrigin.AutoRetry
+                ? await GetBackQueueOrderAsync(connection, newestFirst, cancellationToken)
+                : await GetExistingQueueOrderAsync(connection, queueUuid, cancellationToken);
         const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET status = 'queued',
     error = NULL,
@@ -179,6 +181,9 @@ SET status = 'queued',
         ELSE '" + EnrichmentStatusNotRequired + @"'
     END,
     queue_order = @queueOrder,
+    retry_next_at = NULL,
+    retry_reason = NULL,
+    retry_engine = NULL,
     activities_cleared_at = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE queue_uuid = @queueUuid;";
@@ -431,81 +436,6 @@ WHERE lower(status) IN ('resolving', 'queued', 'inqueue', 'running', 'downloadin
         return paths.ToList();
     }
 
-    public async Task MarkProviderWaitingAsync(
-        string queueUuid,
-        string engine,
-        string error,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(queueUuid))
-        {
-            return;
-        }
-
-        await EnsureSchemaAsync(cancellationToken);
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-UPDATE download_task
-SET status = '" + StatusWaiting + @"',
-    engine = CASE WHEN @engine = '' THEN engine ELSE @engine END,
-    error = @error,
-    progress = 0,
-    downloaded = 0,
-    failed = 0,
-    updated_at = CURRENT_TIMESTAMP
-WHERE queue_uuid = @queueUuid;";
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("queueUuid", queueUuid);
-        command.Parameters.AddWithValue("engine", NormalizeEngine(engine));
-        command.Parameters.AddWithValue("error", string.IsNullOrWhiteSpace(error) ? "Download provider unavailable." : error);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-        PublishQueueStateChanged(queueUuid, StatusWaiting);
-        _queueWakeSignal?.Pulse();
-    }
-
-    public async Task<int> RequeueProviderWaitingAsync(
-        IReadOnlyCollection<string> engines,
-        CancellationToken cancellationToken = default)
-    {
-        var normalizedEngines = engines
-            .Where(static engine => !string.IsNullOrWhiteSpace(engine))
-            .Select(static engine => engine.Trim().ToLowerInvariant())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (normalizedEngines.Length == 0)
-        {
-            return 0;
-        }
-
-        await EnsureSchemaAsync(cancellationToken);
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        var placeholders = string.Join(", ", normalizedEngines.Select((_, index) => $"@engine{index}"));
-        var sql = @"
-UPDATE download_task
-SET status = 'queued',
-    error = NULL,
-    progress = 0,
-    downloaded = 0,
-    failed = 0,
-    updated_at = CURRENT_TIMESTAMP
-WHERE lower(status) = '" + StatusWaiting + @"'
-  AND lower(engine) IN (" + placeholders + @");";
-        await using var command = new SqliteCommand(sql, connection);
-        for (var index = 0; index < normalizedEngines.Length; index++)
-        {
-            command.Parameters.AddWithValue($"engine{index}", normalizedEngines[index]);
-        }
-
-        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
-        if (affected > 0)
-        {
-            PublishQueueStateChanged(string.Empty, "queued");
-            _queueWakeSignal?.Pulse();
-        }
-
-        return affected;
-    }
-
     public async Task<IReadOnlyList<DownloadQueueItem>> GetPreResolutionWindowAsync(
         bool newestFirst,
         int limit,
@@ -596,6 +526,97 @@ WHERE status IN ('queued', 'resolving')
         command.Parameters.AddWithValue("engine", engine);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
+    public async Task<bool> ScheduleRetryAsync(
+        string queueUuid,
+        string engine,
+        string reason,
+        int maxAttempts,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = 'retry_waiting',
+    progress = 0,
+    downloaded = 0,
+    failed = 0,
+    retry_next_at = strftime(
+        '%Y-%m-%dT%H:%M:%fZ',
+        'now',
+        '+' || MIN(300, 15 * (1 << retry_attempt_count)) || ' seconds'),
+    retry_attempt_count = retry_attempt_count + 1,
+    retry_reason = @reason,
+    retry_engine = @engine,
+    error = @reason,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid
+  AND retry_attempt_count < @maxAttempts
+  AND lower(status) NOT IN ('completed', 'complete', 'canceled', 'cancelled');";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("maxAttempts", Math.Max(0, maxAttempts));
+        command.Parameters.AddWithValue("reason", reason ?? string.Empty);
+        command.Parameters.AddWithValue("engine", engine ?? string.Empty);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (affected > 0)
+        {
+            PublishQueueStateChanged(queueUuid, "retry_waiting");
+        }
+        return affected > 0;
+    }
+
+    public async Task<bool> HasScheduledRetriesAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(
+            "SELECT 1 FROM download_task WHERE status = 'retry_waiting' LIMIT 1;",
+            connection);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    public async Task<IReadOnlyList<string>> GetDueRetryQueueUuidsAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT queue_uuid
+FROM download_task
+WHERE status = 'retry_waiting'
+  AND retry_next_at IS NOT NULL
+  AND datetime(retry_next_at) <= datetime('now')
+ORDER BY datetime(retry_next_at), id;";
+        var result = new List<string>();
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(reader.GetString(0));
+        }
+        return result;
+    }
+
+    public async Task ClearRetryScheduleAsync(
+        string queueUuid,
+        bool resetAttempts,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET retry_attempt_count = CASE WHEN @resetAttempts = 1 THEN 0 ELSE retry_attempt_count END,
+    retry_next_at = NULL,
+    retry_reason = NULL,
+    retry_engine = NULL
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("resetAttempts", resetAttempts ? 1 : 0);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<int> GetQueuedCountAsync(CancellationToken cancellationToken = default)
@@ -725,6 +746,15 @@ LIMIT 1;";
 
     public async Task UpdateStatusAsync(string queueUuid, string status, string? error = null, int? downloaded = null, int? failed = null, double? progress = null, CancellationToken cancellationToken = default)
     {
+        var completed = string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "complete", StringComparison.OrdinalIgnoreCase);
+        if (progress.HasValue)
+        {
+            progress = completed
+                ? 100d
+                : Math.Clamp(progress.Value, 0d, 95d);
+        }
+
         await EnsureSchemaAsync(cancellationToken);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
@@ -2611,16 +2641,93 @@ CREATE TABLE IF NOT EXISTS " + DownloadTaskTable + @" (
         await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_error", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "staging_cleanup_at", "TEXT", cancellationToken);
         await EnsureColumnAsync(connection, DownloadTaskTable, "activities_cleared_at", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "retry_attempt_count", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "retry_next_at", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "retry_reason", "TEXT", cancellationToken);
+        await EnsureColumnAsync(connection, DownloadTaskTable, "retry_engine", "TEXT", cancellationToken);
         await EnsureIndexesAsync(connection, cancellationToken);
         await NormalizeLegacyPlaceholderIdsAsync(connection, cancellationToken);
         await NormalizeLegacyAtmosContentTypesAsync(connection, cancellationToken);
         await NormalizeLegacyEnrichmentStatusesAsync(connection, cancellationToken);
         await NormalizeCompletedFinalizationStatusesAsync(connection, cancellationToken);
         await BackfillMissingIdentityFromPayloadAsync(connection, cancellationToken);
+        await NormalizeLegacyExecutionPlansAsync(connection, cancellationToken);
 
         lock (_schemaLock)
         {
             _schemaEnsured = true;
+        }
+    }
+
+    private static async Task NormalizeLegacyExecutionPlansAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string selectSql = @"
+SELECT queue_uuid, payload
+FROM download_task
+WHERE payload IS NOT NULL AND trim(payload) <> '';";
+        var updates = new List<(string QueueUuid, string Payload)>();
+        await using (var select = new SqliteCommand(selectSql, connection))
+        await using (var reader = await select.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var queueUuid = reader.GetString(0);
+                var raw = reader.IsDBNull(1) ? null : reader.GetString(1);
+                JsonObject? payload;
+                try
+                {
+                    payload = JsonNode.Parse(raw ?? string.Empty) as JsonObject;
+                }
+                catch (JsonException)
+                {
+                    continue;
+                }
+
+                if (payload == null)
+                {
+                    continue;
+                }
+
+                var changed = false;
+                var plan = DownloadExecutionPlan.Read(payload);
+                var legacySources = payload["AutoSources"] as JsonArray
+                    ?? payload["autoSources"] as JsonArray;
+                if (plan.Count == 0 && legacySources != null)
+                {
+                    var encoded = legacySources
+                        .Select(static node => node?.ToString())
+                        .Where(static value => !string.IsNullOrWhiteSpace(value))
+                        .Select(static value => value!)
+                        .ToList();
+                    plan = DownloadExecutionPlan.FromEncodedSources(encoded);
+                    if (plan.Count > 0)
+                    {
+                        payload["FallbackPlan"] = JsonSerializer.SerializeToNode(plan);
+                        payload["fallbackPlan"] = JsonSerializer.SerializeToNode(plan);
+                        changed = true;
+                    }
+                }
+
+                changed |= payload.Remove("AutoSources");
+                changed |= payload.Remove("autoSources");
+                changed |= payload.Remove("FallbackQueuedExternally");
+                changed |= payload.Remove("fallbackQueuedExternally");
+                if (changed)
+                {
+                    updates.Add((queueUuid, payload.ToJsonString()));
+                }
+            }
+        }
+
+        const string updateSql = "UPDATE download_task SET payload = @payload WHERE queue_uuid = @queueUuid;";
+        foreach (var update in updates)
+        {
+            await using var command = new SqliteCommand(updateSql, connection);
+            command.Parameters.AddWithValue("payload", update.Payload);
+            command.Parameters.AddWithValue("queueUuid", update.QueueUuid);
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
 
@@ -3294,6 +3401,25 @@ LIMIT 1;";
         CancellationToken cancellationToken)
     {
         if (newestFirst)
+        {
+            return await GetNextQueueOrderAsync(connection, cancellationToken);
+        }
+
+        const string sql = @"
+SELECT COALESCE(MIN(queue_order), 0) - 1
+FROM " + DownloadTaskTable + @"
+WHERE queue_order IS NOT NULL;";
+        await using var command = new SqliteCommand(sql, connection);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? 0 : Convert.ToInt32(result);
+    }
+
+    private static async Task<int> GetBackQueueOrderAsync(
+        SqliteConnection connection,
+        bool newestFirst,
+        CancellationToken cancellationToken)
+    {
+        if (!newestFirst)
         {
             return await GetNextQueueOrderAsync(connection, cancellationToken);
         }

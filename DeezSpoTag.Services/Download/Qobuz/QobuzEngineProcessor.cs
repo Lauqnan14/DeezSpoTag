@@ -153,6 +153,11 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var qualityDecision = await ApplyCatalogQualityDecisionAsync(next.QueueUuid, payload, request, resolvedTrack, itemToken);
         if (qualityDecision.SkipCurrentPlanStep)
         {
+            FallbackAttemptRecorder.RecordCurrent(
+                payload,
+                "skipped",
+                "catalog_quality_below_requested",
+                qualityDecision.Message);
             throw new QobuzCatalogQualityBelowPlanStepException(qualityDecision.Message);
         }
         await QueueHelperUtils.PersistExpectedStagingPathAsync(
@@ -173,7 +178,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var sourceSelection = ResolveQobuzSource(payload);
         await QueuePrefetchAsync(next.QueueUuid, context, payload, settings);
 
-        var outputPath = await DownloadWithFallbackAsync(
+        var outputPath = await DownloadOnceAsync(
             payload,
             request,
             settings,
@@ -181,8 +186,23 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             sourceSelection,
             progressReporter,
             itemToken);
+        await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
+            payload,
+            outputPath,
+            next.QueueUuid,
+            _queueRepository,
+            _deezspotagListener,
+            itemToken);
         outputPath = await TryApplyPostDownloadSettingsAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken);
         ActualDownloadQualityLabel.ApplyTo(payload, outputPath);
+        FallbackAttemptRecorder.RecordCurrent(
+            payload,
+            "completed",
+            "none",
+            !string.IsNullOrWhiteSpace(payload.DeliveredQuality)
+            && !string.Equals(payload.DeliveredQuality, payload.Quality, StringComparison.OrdinalIgnoreCase)
+                ? $"Source delivered {payload.DeliveredQuality}; final output is {payload.Quality}."
+                : $"Delivered {payload.Quality}.");
         if (!string.Equals(payload.Quality, request.Quality, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogInformation(
@@ -237,7 +257,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         if (payload == null)
         {
             await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, InvalidPayloadMessage, cancellationToken: itemToken);
-            _retryScheduler.ScheduleRetry(next.QueueUuid, EngineName, "invalid payload");
+            await _retryScheduler.ScheduleRetryAsync(next.QueueUuid, EngineName, "invalid payload", itemToken);
             return null;
         }
 
@@ -432,7 +452,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         await QueueParallelPostDownloadPrefetchAsync(queueUuid, context, payload, settings, expectedOutputPath);
     }
 
-    private async Task<string> DownloadWithFallbackAsync(
+    private Task<string> DownloadOnceAsync(
         QobuzQueueItem payload,
         QobuzDownloadRequest request,
         DeezSpoTagSettings settings,
@@ -450,25 +470,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             progressReporter,
             cancellationToken);
 
-        try
-        {
-            return await DownloadWithQualityAsync(context, request.Quality);
-        }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
-                                   && settings.FallbackBitrate
-                                   && ShouldUseInEngineQualityFallback(payload))
-        {
-            var fallbackQuality = EngineQualityFallback.GetNextLowerQuality(EngineName, request.Quality);
-            if (string.IsNullOrWhiteSpace(fallbackQuality))
-            {
-                throw;
-            }
-
-            _logger.LogWarning(ex, "Qobuz download failed at quality {Quality}, retrying at {Fallback}", request.Quality, fallbackQuality);
-            request.Quality = fallbackQuality;
-            payload.Quality = fallbackQuality;
-            return await DownloadWithQualityAsync(context, fallbackQuality);
-        }
+        return DownloadWithQualityAsync(context, request.Quality);
     }
 
     private async Task<QobuzQualityDecisionResult> ApplyCatalogQualityDecisionAsync(
@@ -501,7 +503,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
         var selectedQuality = SelectQualityWithinCatalogCeiling(requestedQuality, catalogQuality);
         var lowersRequestedQuality = !string.Equals(selectedQuality, requestedQuality, StringComparison.OrdinalIgnoreCase);
-        if (lowersRequestedQuality && !ShouldUseInEngineQualityFallback(payload))
+        if (lowersRequestedQuality)
         {
             payload.QobuzQualityDecisionReason = "catalog_quality_lower_than_requested_global_plan_preserved";
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
@@ -632,13 +634,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
     }
 
-    private static bool ShouldUseInEngineQualityFallback(QobuzQueueItem payload)
-    {
-        // If the queue item is in a multi-engine fallback plan (e.g. qobuz -> tidal -> apple),
-        // do not do in-engine quality step-down first; let the global coordinator preserve source order.
-        return EngineFallbackPlanPolicy.ShouldUseInEngineFallback(payload, EngineName);
-    }
-
     private async Task<string> DownloadWithQualityAsync(DownloadWithQualityContext context, string quality)
     {
         var requestPayload = BuildDownloadPayload(
@@ -696,7 +691,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             SpotifyTrackNumber = request.SpotifyTrackNumber,
             SpotifyDiscNumber = request.SpotifyDiscNumber,
             SpotifyTotalTracks = request.SpotifyTotalTracks,
-            AllowQualityFallback = request.AllowQualityFallback,
             SelectedQualityCallback = request.SelectedQualityCallback,
             TagSettings = settings.Tags,
             ProgressCallback = progressReporter
@@ -769,7 +763,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             cancellationToken);
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: cancellationToken);
         await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, CompletedStatus, _serviceProvider, cancellationToken, queueUuid);
-        _retryScheduler.Clear(queueUuid);
+        await _retryScheduler.ClearAsync(queueUuid, cancellationToken);
 
         _deezspotagListener.Send(UpdateQueueEvent, new
         {
@@ -779,7 +773,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             downloaded = 1,
             failed = 0,
             engine = payload.Engine,
-            quality = payload.Quality
+            quality = payload.Quality,
+            requestedQuality = payload.RequestedQuality,
+            deliveredQuality = payload.DeliveredQuality,
+            autoIndex = payload.AutoIndex,
+            fallbackPlan = payload.FallbackPlan,
+            fallbackHistory = payload.FallbackHistory
         });
         _deezspotagListener.SendFinishDownload(queueUuid, payload.Title);
     }
@@ -810,7 +809,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(payload, CancelledStatus, _serviceProvider, CancellationToken.None);
         }
 
-        _retryScheduler.ScheduleRetry(queueUuid, EngineName, CancelledStatus);
+        await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, CancelledStatus, CancellationToken.None);
     }
 
     private async Task HandleFailureAsync(
@@ -831,12 +830,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         if (IsRateLimitFailure(ex))
         {
             await MarkRateLimitFailureAsync(next.QueueUuid, payload, ex);
-            return;
-        }
-
-        if (IsProviderUnavailableFailure(ex))
-        {
-            await MarkProviderWaitingAsync(next.QueueUuid, ex);
             return;
         }
 
@@ -869,6 +862,14 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var failureKind = IsRateLimitFailure(ex) ? "throttled" : "failed";
         if (ex is not QobuzCatalogQualityBelowPlanStepException)
         {
+            if (ex is not DeliveredAudioQualityBelowPlanStepException)
+            {
+                FallbackAttemptRecorder.RecordCurrent(
+                    payload,
+                    "failed",
+                    "download_failed",
+                    ex.Message);
+            }
             _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");
         }
 
@@ -883,10 +884,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
 
         _activityLog.Info($"Fallback advanced: {queueUuid} -> {payload.Engine} (auto_index={payload.AutoIndex})");
-        if (!payload.FallbackQueuedExternally)
-        {
-            _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
-        }
+        _deezspotagListener.SendAddedToQueue(payload.ToQueuePayload());
 
         return true;
     }
@@ -900,30 +898,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var quality = payload == null || string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
         _activityLog.Warn($"Download throttled (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");
         await MarkQueueFailedAsync(queueUuid, payload, ex.Message);
-    }
-
-    private async Task MarkProviderWaitingAsync(string queueUuid, Exception ex)
-    {
-        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
-            queueUuid,
-            PrefetchCancelDrainTimeout,
-            CancellationToken.None);
-        var message = BuildProviderWaitingMessage();
-        await _queueRepository.MarkProviderWaitingAsync(
-            queueUuid,
-            EngineName,
-            message,
-            CancellationToken.None);
-        _activityLog.Warn($"Download waiting (engine={EngineName}): {queueUuid} {ex.Message}");
-        _deezspotagListener.Send(UpdateQueueEvent, new
-        {
-            uuid = queueUuid,
-            status = "waiting",
-            progress = 0,
-            downloaded = 0,
-            failed = 0,
-            error = message
-        });
+        await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, ex.Message, CancellationToken.None);
     }
 
     private async Task MarkFinalFailureAsync(string queueUuid, QobuzQueueItem? payload, Exception ex)
@@ -940,7 +915,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         if (!EngineAudioPostDownloadHelper.IsTrackUnavailableFailure(error)
             && !EngineAudioPostDownloadHelper.IsFinalDestinationDedupeBlock(error))
         {
-            _retryScheduler.ScheduleRetry(queueUuid, EngineName, error);
+            await _retryScheduler.ScheduleRetryAsync(queueUuid, EngineName, error, CancellationToken.None);
         }
     }
 
@@ -968,17 +943,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
     private static bool IsRateLimitFailure(Exception exception)
         => exception is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests };
-
-    private static bool IsProviderUnavailableFailure(Exception exception)
-    {
-        var message = exception.Message;
-        return message.Contains("No Qobuz public download provider is currently available", StringComparison.OrdinalIgnoreCase)
-               || message.Contains("Qobuz provider", StringComparison.OrdinalIgnoreCase)
-               && message.Contains("cooling down", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string BuildProviderWaitingMessage()
-        => "Qobuz public download provider is unavailable. Waiting for provider health to recover.";
 
     private readonly record struct QobuzSourceSelection(string TrackUrl, bool HasTrackUrl);
 

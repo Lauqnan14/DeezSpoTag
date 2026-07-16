@@ -5,6 +5,15 @@ namespace DeezSpoTag.Services.Download.Shared.Utils;
 
 internal static class DownloadFileUtilities
 {
+    public static string BuildFormatPreservingStagingPath(string outputPath, string marker = "part")
+    {
+        var directory = Path.GetDirectoryName(outputPath) ?? string.Empty;
+        var extension = Path.GetExtension(outputPath);
+        var stem = Path.GetFileNameWithoutExtension(outputPath);
+        var safeMarker = string.IsNullOrWhiteSpace(marker) ? "part" : marker.Trim().Trim('.');
+        return Path.Join(directory, $"{stem}.{safeMarker}{extension}");
+    }
+
     public static string SanitizeFilename(string? value, string fallback = "unknown")
     {
         return CjkFilenameSanitizer.SanitizeSegment(

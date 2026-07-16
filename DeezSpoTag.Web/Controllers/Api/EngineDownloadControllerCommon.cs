@@ -185,9 +185,8 @@ internal static class EngineDownloadControllerCommon
         payload.AlbumArtist = track.AlbumArtist ?? track.Artist ?? string.Empty;
         payload.Isrc = track.Isrc ?? string.Empty;
         payload.Cover = track.Cover ?? string.Empty;
-        payload.AutoSources = autoSources;
         payload.AutoIndex = autoIndex;
-        payload.FallbackPlan = FallbackPayloadNormalizer.BuildDirectUrlPlanFromAutoSources(autoSources);
+        payload.FallbackPlan = DownloadExecutionPlan.FromEncodedSources(autoSources);
         payload.ReleaseDate = track.ReleaseDate ?? string.Empty;
         payload.DurationSeconds = ResolveDurationSeconds(track.DurationSeconds, track.DurationMs);
         payload.Position = track.Position;

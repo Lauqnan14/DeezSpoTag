@@ -372,40 +372,16 @@ public sealed class TidalDownloadService
         await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
 
         var expectedDurationSeconds = Math.Max(0, request.DurationSeconds);
-        var manifestAttempts = isAtmosRequest ? 3 : 1;
-        for (var attempt = 1; attempt <= manifestAttempts; attempt++)
-        {
-            var candidateUrls = await GetDownloadUrlCandidatesAsync(trackId, request.Quality, cancellationToken);
-            try
-            {
-                await DownloadValidatedFileAsync(
-                    candidateUrls,
-                    outputPath,
-                    expectedDurationSeconds,
-                    isAtmosRequest,
-                    progressCallback,
-                    cancellationToken);
-                return outputPath;
-            }
-            catch (InvalidOperationException ex) when (isAtmosRequest
-                && attempt < manifestAttempts
-                && IsWrongDurationFailure(ex))
-            {
-                DeleteCandidateArtifacts(outputPath);
-                _logger.LogWarning(
-                    ex,
-                    "Tidal Atmos manifest candidate failed duration validation for track {TrackId}; retrying manifest fetch ({Attempt}/{Attempts}).",
-                    trackId,
-                    attempt + 1,
-                    manifestAttempts);
-            }
-        }
-
+        var candidateUrls = await GetDownloadUrlCandidatesAsync(trackId, request.Quality, cancellationToken);
+        await DownloadValidatedFileAsync(
+            candidateUrls,
+            outputPath,
+            expectedDurationSeconds,
+            isAtmosRequest,
+            progressCallback,
+            cancellationToken);
         return outputPath;
     }
-
-    private static bool IsWrongDurationFailure(Exception exception)
-        => exception.Message.Contains("wrong duration", StringComparison.OrdinalIgnoreCase);
 
     private static TrackCandidateValidationResult ValidateResolvedTrack(
         TidalTrack track,
@@ -1505,19 +1481,15 @@ public sealed class TidalDownloadService
         for (var index = 0; index < candidateUrls.Count; index++)
         {
             var candidateUrl = candidateUrls[index];
-            var candidateOutputPath = candidateUrls.Count == 1
-                ? outputPath
-                : $"{outputPath}.candidate-{index + 1}.tmp";
+            var candidateOutputPath = DownloadFileUtilities.BuildFormatPreservingStagingPath(
+                outputPath,
+                $"candidate-{index + 1}.part");
             try
             {
                 await DownloadManifestCandidateAsync(candidateUrl, candidateOutputPath, preserveManifestAudio, progressCallback, cancellationToken);
                 if (IsDownloadedCandidateAcceptable(candidateOutputPath, expectedDurationSeconds, preserveManifestAudio, out var actualDurationSeconds))
                 {
-                    if (!string.Equals(candidateOutputPath, outputPath, StringComparison.Ordinal))
-                    {
-                        IOFile.Move(candidateOutputPath, outputPath, overwrite: true);
-                    }
-
+                    IOFile.Move(candidateOutputPath, outputPath, overwrite: false);
                     return;
                 }
 
@@ -1537,10 +1509,7 @@ public sealed class TidalDownloadService
             }
             finally
             {
-                if (!string.Equals(candidateOutputPath, outputPath, StringComparison.Ordinal))
-                {
-                    DeleteCandidateArtifacts(candidateOutputPath);
-                }
+                DeleteCandidateArtifacts(candidateOutputPath);
             }
         }
 
@@ -2100,44 +2069,34 @@ public sealed class TidalDownloadService
     private static bool IsDurationAcceptable(string filePath, int expectedDurationSeconds, out double actualDurationSeconds)
     {
         actualDurationSeconds = 0;
-        if (expectedDurationSeconds <= 0 || !IOFile.Exists(filePath))
-        {
-            return true;
-        }
-
-        try
-        {
-            using var file = TagLib.File.Create(filePath);
-            actualDurationSeconds = file.Properties.Duration.TotalSeconds;
-            if (actualDurationSeconds <= 0)
-            {
-                return false;
-            }
-
-            var allowedDelta = Math.Max(5d, expectedDurationSeconds * 0.12d);
-            return Math.Abs(actualDurationSeconds - expectedDurationSeconds) <= allowedDelta;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        if (!IOFile.Exists(filePath))
         {
             return false;
         }
+
+        var validation = AudioDurationGuard.ValidateAgainstPreview(filePath, expectedDurationSeconds);
+        return validation.Success;
     }
 
     private static bool IsAtmosDurationAcceptable(string filePath, int expectedDurationSeconds, out double actualDurationSeconds)
     {
         actualDurationSeconds = 0;
-        if (expectedDurationSeconds <= 0 || !IOFile.Exists(filePath))
+        if (!IOFile.Exists(filePath) || new FileInfo(filePath).Length == 0)
+        {
+            return false;
+        }
+
+        if (expectedDurationSeconds <= 0)
         {
             return true;
         }
 
         if (!TryReadFfprobeAtmosAudio(filePath, out actualDurationSeconds))
         {
-            return false;
+            return true;
         }
 
-        var allowedDelta = Math.Max(5d, expectedDurationSeconds * 0.12d);
-        return Math.Abs(actualDurationSeconds - expectedDurationSeconds) <= allowedDelta;
+        return AudioDurationGuard.IsExpectedDurationAcceptable(actualDurationSeconds, expectedDurationSeconds);
     }
 
     private static bool TryReadFfprobeAtmosAudio(string filePath, out double durationSeconds)

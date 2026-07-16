@@ -777,7 +777,7 @@ function createWatchlistDownloadEngineOrderSection(config, defaults) {
     const editButton = document.createElement('button');
     editButton.type = 'button';
     editButton.className = 'btn btn-secondary action-btn btn-sm watchlist-engine-order-edit';
-    editButton.textContent = 'Edit order';
+    editButton.textContent = 'Edit selection';
     editButton.setAttribute('aria-expanded', 'false');
     toggle.appendChild(title);
     toggle.appendChild(editButton);
@@ -790,7 +790,7 @@ function createWatchlistDownloadEngineOrderSection(config, defaults) {
     list.className = 'watchlist-engine-order-list';
     const footer = document.createElement('div');
     footer.className = 'watchlist-engine-order-footer';
-    footer.textContent = 'Drag sources into monitored playlist download priority order.';
+    footer.textContent = 'Choose which sources and qualities Custom mode may use. Highest available quality remains the fixed priority.';
     panel.appendChild(list);
     panel.appendChild(footer);
     section.appendChild(toggle);
@@ -803,7 +803,7 @@ function createWatchlistDownloadEngineOrderSection(config, defaults) {
     editButton.addEventListener('click', () => {
         panel.hidden = !panel.hidden;
         const expanded = !panel.hidden;
-        editButton.textContent = expanded ? 'Done' : 'Edit order';
+        editButton.textContent = expanded ? 'Done' : 'Edit selection';
         editButton.setAttribute('aria-expanded', expanded ? 'true' : 'false');
     });
     return { section, list, panel, summary, editButton };
@@ -815,11 +815,9 @@ function renderWatchlistDownloadEngineOrder(list, config, defaults, onChange) {
     normalized.engines.forEach(engine => {
         const row = document.createElement('div');
         row.className = `watchlist-engine-order-item${engine.enabled ? '' : ' is-disabled'}`;
-        row.draggable = true;
         row.dataset.engine = engine.engine;
         row.innerHTML = `
             <div class="watchlist-engine-order-header">
-                <span class="watchlist-engine-order-handle" aria-hidden="true"><i class="fa-solid fa-grip-vertical"></i></span>
                 <input type="checkbox" class="watchlist-engine-order-enabled" ${engine.enabled ? 'checked' : ''} aria-label="Enable ${escapeHtml(engine.label)}">
                 <span class="watchlist-engine-order-title">${escapeHtml(engine.label)}</span>
                 <span class="watchlist-engine-order-status">${engine.enabled ? 'enabled' : 'disabled'}</span>
@@ -839,28 +837,7 @@ function renderWatchlistDownloadEngineOrder(list, config, defaults, onChange) {
 }
 
 function bindWatchlistDownloadEngineOrderControls(list, onChange) {
-    let dragged = null;
     list.querySelectorAll('.watchlist-engine-order-item').forEach(item => {
-        item.addEventListener('dragstart', () => {
-            dragged = item;
-            item.classList.add('is-dragging');
-        });
-        item.addEventListener('dragend', () => {
-            item.classList.remove('is-dragging');
-            dragged = null;
-            onChange?.();
-        });
-        item.addEventListener('dragover', event => {
-            event.preventDefault();
-            if (!dragged || dragged === item) {
-                return;
-            }
-
-            const rect = item.getBoundingClientRect();
-            const before = event.clientY < rect.top + rect.height / 2;
-            list.insertBefore(dragged, before ? item : item.nextSibling);
-        });
-
         item.querySelector('.watchlist-engine-order-enabled')?.addEventListener('change', event => {
             const checked = event.target?.checked === true;
             item.classList.toggle('is-disabled', !checked);
@@ -889,7 +866,7 @@ function updateWatchlistDownloadEngineOrderSummary(list, summary) {
         .map(row => row.querySelector('.watchlist-engine-order-title')?.textContent?.trim())
         .filter(Boolean);
     const engineSummary = engineLabels.length > 0
-        ? engineLabels.join(' -> ')
+        ? engineLabels.join(', ')
         : 'No enabled sources';
     summary.textContent = `${enabledEngines.length} enabled source${enabledEngines.length === 1 ? '' : 's'}, ${enabledQualityCount} enabled qualit${enabledQualityCount === 1 ? 'y' : 'ies'}: ${engineSummary}.`;
 }

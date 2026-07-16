@@ -188,8 +188,7 @@ public sealed class CredentialProtectionTests : IDisposable
             new StubWebHostEnvironment(_tempRoot),
             _dataProtectionProvider,
             NullLogger<QobuzPublicProviderRegistry>.Instance,
-            new FixedHttpClientFactory(),
-            CreateDownloadQueueRepository());
+            new FixedHttpClientFactory());
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
         Assert.DoesNotContain(providers, provider => provider.Id.Contains("squid", StringComparison.OrdinalIgnoreCase));
@@ -247,8 +246,7 @@ public sealed class CredentialProtectionTests : IDisposable
             new StubWebHostEnvironment(_tempRoot),
             _dataProtectionProvider,
             NullLogger<TidalPublicProviderRegistry>.Instance,
-            new FixedHttpClientFactory(),
-            CreateDownloadQueueRepository());
+            new FixedHttpClientFactory());
 
         var providers = await registry.GetProvidersAsync(CancellationToken.None);
         var provider = providers[0];

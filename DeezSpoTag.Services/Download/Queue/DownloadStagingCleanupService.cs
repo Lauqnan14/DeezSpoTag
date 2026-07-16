@@ -506,6 +506,14 @@ public sealed class DownloadStagingCleanupService
         {
             yield return rawFilePath + suffix;
         }
+
+        var directory = Path.GetDirectoryName(rawFilePath) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(rawFilePath);
+        yield return Path.Join(directory, $"{stem}.part{extension}");
+        for (var candidateIndex = 1; candidateIndex <= 20; candidateIndex++)
+        {
+            yield return Path.Join(directory, $"{stem}.candidate-{candidateIndex}.part{extension}");
+        }
     }
 
     private static int DeleteEmptyParents(string startDirectory, string rootPath, List<string> errors)
