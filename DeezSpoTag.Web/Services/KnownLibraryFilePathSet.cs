@@ -41,7 +41,7 @@ public static class KnownLibraryFilePathSet
             return false;
         }
 
-        var extension = Path.GetExtension(path);
+        var extension = Path.GetExtension(path).ToLowerInvariant();
         return extension is ".mp3" or ".flac" or ".m4a" or ".m4b" or ".wav" or ".ogg" or ".opus" or ".aiff" or ".aif" or ".alac" or ".aac";
     }
 

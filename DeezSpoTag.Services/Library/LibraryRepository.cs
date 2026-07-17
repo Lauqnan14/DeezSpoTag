@@ -9909,38 +9909,6 @@ WHERE lower(status) IN ('completed', 'complete', 'failed', 'cancelled', 'cancele
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         var nowUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-        if (normalizedKind == "all")
-        {
-            await using var clearTargeted = new SqliteCommand(
-                "DELETE FROM watchlist_reconciliation_request WHERE kind <> 'all';",
-                connection,
-                transaction);
-            await clearTargeted.ExecuteNonQueryAsync(cancellationToken);
-        }
-        else
-        {
-            await using var globalExists = new SqliteCommand(
-                "SELECT 1 FROM watchlist_reconciliation_request WHERE kind='all' LIMIT 1;",
-                connection,
-                transaction);
-            if (await globalExists.ExecuteScalarAsync(cancellationToken) is not null)
-            {
-                await using var refreshGlobal = new SqliteCommand(
-                    @"UPDATE watchlist_reconciliation_request
-SET updated_at=@nowUtc,
-    next_attempt_utc=@nowUtc,
-    status=CASE WHEN lower(status)='processing' THEN 'processing' ELSE 'pending' END,
-    last_error=NULL
-WHERE kind='all';",
-                    connection,
-                    transaction);
-                refreshGlobal.Parameters.AddWithValue("nowUtc", nowUtc);
-                await refreshGlobal.ExecuteNonQueryAsync(cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
-                return false;
-            }
-        }
-
         const string existsSql = @"
 SELECT 1 FROM watchlist_reconciliation_request
 WHERE kind=@kind AND source=@source AND identifier=@identifier LIMIT 1;";
@@ -10159,8 +10127,7 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         await using var command = new SqliteCommand(@"
 SELECT 1
 FROM watchlist_reconciliation_request
-WHERE kind='all'
-   OR (kind=@kind AND source=@source AND identifier=@identifier)
+WHERE kind=@kind AND source=@source AND identifier=@identifier
 LIMIT 1;", connection);
         command.Parameters.AddWithValue("kind", kind.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue(SourceField, NormalizePlaylistWatchSource(source));
@@ -11523,8 +11490,10 @@ LIMIT 200;";
         string trackTitle,
         int? durationMs,
         string? artistPrimaryName = null,
+        string? audioVariant = null,
         CancellationToken cancellationToken = default)
     {
+        var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = $@"
 SELECT MAX(af.quality_rank)
@@ -11542,12 +11511,32 @@ WHERE (
         )
       )
   AND LOWER(t.title) = LOWER(@trackTitle)
-  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000);";
+  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
+  AND (
+      @{RequireAtmosField} IS NULL
+      OR (
+          CASE
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'stereo' THEN 0
+              WHEN LOWER(COALESCE(af.codec, '')) LIKE '%dolby atmos%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%joc%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%atmos%'
+                   OR ((LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+                        OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.mlp'))
+                       AND COALESCE(af.channels, 0) > 2)
+                  THEN 1
+              ELSE 0
+          END
+      ) = @{RequireAtmosField}
+  );";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("artistName", artistName);
         command.Parameters.AddWithValue("artistPrimaryName", string.IsNullOrWhiteSpace(artistPrimaryName) ? (object)DBNull.Value : artistPrimaryName.Trim());
         command.Parameters.AddWithValue("trackTitle", trackTitle);
         command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is DBNull or null ? null : Convert.ToInt32(result);
     }
@@ -12515,11 +12504,10 @@ SELECT f.root_path, af.relative_path, af.path
         return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
     }
 
-    public async Task<bool> ExistsTrackByMetadataInFolderAsync(
+    public async Task<bool> ExistsTrackByMetadataAsync(
         string trackTitle,
         string artistName,
         int? durationMs,
-        long folderId,
         string? audioVariant = null,
         CancellationToken cancellationToken = default)
     {
@@ -12548,8 +12536,7 @@ JOIN artist ar ON ar.id = al.artist_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
-WHERE af.folder_id = @folderId
-  AND (
+WHERE (
       LOWER(ar.name) LIKE LOWER(@artistSearch)
       OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(@artistSearch)
       OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(@artistSearch)
@@ -12604,7 +12591,6 @@ WHERE af.folder_id = @folderId
 LIMIT 200;";
 
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(FolderIdParameter, folderId);
         command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
         command.Parameters.AddWithValue(DurationMsField, durationMs.HasValue ? durationMs.Value : (object)DBNull.Value);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);

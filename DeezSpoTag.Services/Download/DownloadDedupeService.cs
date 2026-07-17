@@ -81,9 +81,12 @@ public sealed class DownloadDedupeService
             return DownloadDedupeDecision.AllowedDecision;
         }
 
-        var exists = request.DestinationFolderId.HasValue
-            ? await ExistsLibraryDuplicateInFolderAsync(request, request.DestinationFolderId.Value, cancellationToken)
-            : await ExistsLibraryDuplicateGloballyAsync(request, cancellationToken);
+        // Destination routing must not narrow duplicate detection. A matching
+        // variant anywhere in the configured library is already owned by the
+        // user; the destination folder only decides where a genuinely new
+        // download is written. Variant and quality upgrade eligibility are
+        // evaluated before this presence check.
+        var exists = await ExistsLibraryDuplicateGloballyAsync(request, cancellationToken);
         return exists
             ? DownloadDedupeDecision.Rejected("library_duplicate", "Skipped: matching file already exists in library.", "library")
             : DownloadDedupeDecision.AllowedDecision;
@@ -284,6 +287,7 @@ public sealed class DownloadDedupeService
                 request.TrackTitle,
                 request.DurationMs,
                 artistPrimaryName: request.TrackPrimaryArtist,
+                audioVariant: request.RequestedAudioVariant,
                 cancellationToken: cancellationToken);
             if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value <= bestLocalQualityRank.Value)
             {
@@ -367,62 +371,6 @@ public sealed class DownloadDedupeService
         };
     }
 
-    private async Task<bool> ExistsLibraryDuplicateInFolderAsync(
-        DownloadDedupeRequest request,
-        long destinationFolderId,
-        CancellationToken cancellationToken)
-    {
-        foreach (var (source, value) in BuildSourceChecks(request))
-        {
-            if (!string.IsNullOrWhiteSpace(value)
-                && await _libraryRepository.ExistsTrackSourceInFolderAsync(
-                    source,
-                    value,
-                    destinationFolderId,
-                    audioVariant: request.RequestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        foreach (var (source, albumId, artistId) in BuildAlbumChecks(request))
-        {
-            if (!string.IsNullOrWhiteSpace(albumId)
-                && await _libraryRepository.ExistsTrackByAlbumSourceInFolderAsync(
-                    source,
-                    albumId,
-                    request.TrackTitle,
-                    artistId,
-                    destinationFolderId,
-                    audioVariant: request.RequestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        var metadataArtists = BuildMetadataArtists(request)
-            .Where(static artist => !string.IsNullOrWhiteSpace(artist))
-            .ToArray();
-        for (var index = 0; index < metadataArtists.Length; index++)
-        {
-            var artist = metadataArtists[index];
-            if (await _libraryRepository.ExistsTrackByMetadataInFolderAsync(
-                    request.TrackTitle,
-                    artist,
-                    request.DurationMs,
-                    destinationFolderId,
-                    audioVariant: request.RequestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private async Task<bool> ExistsLibraryDuplicateGloballyAsync(
         DownloadDedupeRequest request,
         CancellationToken cancellationToken)
@@ -457,13 +405,12 @@ public sealed class DownloadDedupeService
 
         foreach (var artist in BuildMetadataArtists(request))
         {
-            var result = await _libraryRepository.ExistsInLibraryAsync(
-                new[]
-                {
-                    new LibraryRepository.LibraryExistenceInput(null, request.TrackTitle, artist, request.DurationMs)
-                },
-                cancellationToken);
-            if (result.Count > 0 && result[0])
+            if (await _libraryRepository.ExistsTrackByMetadataAsync(
+                    request.TrackTitle,
+                    artist,
+                    request.DurationMs,
+                    audioVariant: request.RequestedAudioVariant,
+                    cancellationToken: cancellationToken))
             {
                 return true;
             }

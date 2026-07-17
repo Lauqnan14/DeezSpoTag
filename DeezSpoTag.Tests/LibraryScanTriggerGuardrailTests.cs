@@ -253,6 +253,24 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void WatchlistRecovery_RefreshesCanonicalIndexAndReplaysFinalizationWithoutQueueRow()
+    {
+        var coordinator = ReadSource("DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs");
+        var postDownload = ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs");
+
+        Assert.Contains("RefreshWatchlistIdentityIndexAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("GetLocalScanFileStatesAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("IngestAndVerifyAsync", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", coordinator, StringComparison.Ordinal);
+        Assert.True(
+            coordinator.IndexOf("await RefreshWatchlistIdentityIndexAsync(", StringComparison.Ordinal)
+            < coordinator.IndexOf("var playlistItems = BuildPlaylistWatchItems", StringComparison.Ordinal),
+            "The canonical library index must be refreshed before watchlist missing-track selection.");
+        Assert.Contains("?? BuildOutboxQueueItem(work.QueueUuid, work.PayloadJson)", postDownload, StringComparison.Ordinal);
+        Assert.DoesNotContain("Queue item is not currently available", postDownload, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PlaylistWatch_DoesNotRunPreQueueMediaServerSync()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");

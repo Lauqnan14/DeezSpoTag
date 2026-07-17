@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.Data.Sqlite;
@@ -81,13 +82,69 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
             1, TimeSpan.FromMinutes(1), "worker-c"));
         Assert.Equal("all", global.Kind);
         await Task.Delay(5);
-        Assert.False(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
-        Assert.Equal(0, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([global], "worker-c"));
-        var refreshedGlobal = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+        Assert.False(await _repository.HasWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
+        Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
+        Assert.True(await _repository.HasWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
+        Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([global], "worker-c"));
+
+        var originalListB = Assert.Single(initiallyClaimed, request => request.Identifier == "list-b");
+        Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([originalListB], "worker-a"));
+        var targeted = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
             1, TimeSpan.FromMinutes(1), "worker-d"));
-        Assert.Equal("all", refreshedGlobal.Kind);
-        Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([refreshedGlobal], "worker-d"));
+        Assert.Equal("list-c", targeted.Identifier);
+        Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([targeted], "worker-d"));
         Assert.Equal(0, await _repository.GetWatchlistReconciliationRequestCountAsync());
+    }
+
+    [Fact]
+    public async Task WatchlistDedupe_IsGlobalAcrossDestinationFoldersAndPreservesAudioVariants()
+    {
+        var firstRoot = Path.Join(_tempRoot, "library-a");
+        var secondRoot = Path.Join(_tempRoot, "library-b");
+        Directory.CreateDirectory(firstRoot);
+        Directory.CreateDirectory(secondRoot);
+        var existingPath = Path.Join(firstRoot, "Existing Track.flac");
+        await File.WriteAllBytesAsync(existingPath, [1, 2, 3, 4]);
+
+        var firstFolder = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            firstRoot, "Library A", true, "Library A", "27", false, null, null, "profile-a"));
+        var secondFolder = await _repository.AddFolderAsync(new LibraryRepository.FolderUpsertInput(
+            secondRoot, "Library B", true, "Library B", "27", false, null, null, "profile-b"));
+        await ExecuteSqlAsync(@"
+INSERT INTO artist (id, name) VALUES (9001, 'Existing Artist');
+INSERT INTO album (id, artist_id, title) VALUES (9001, 9001, 'Existing Album');
+INSERT INTO track (id, album_id, title, duration_ms) VALUES (9001, 9001, 'Existing Track', 180000);
+INSERT INTO audio_file (id, path, relative_path, folder_id, duration_ms, extension, audio_variant, quality_rank)
+VALUES (9001, @path, 'Existing Track.flac', @folderId, 180000, '.flac', 'stereo', 3);
+INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
+            ("path", existingPath),
+            ("folderId", firstFolder.Id));
+
+        var dedupe = new DownloadDedupeService(null!, _repository, NullLogger<DownloadDedupeService>.Instance);
+        var stereoDecision = await dedupe.CheckLibraryPresenceAsync(new DownloadDedupeRequest
+        {
+            TrackTitle = "Existing Track",
+            TrackArtist = "Existing Artist",
+            DurationMs = 180000,
+            DestinationFolderId = secondFolder.Id,
+            RequestedAudioVariant = "stereo"
+        });
+        var atmosDecision = await dedupe.CheckLibraryPresenceAsync(new DownloadDedupeRequest
+        {
+            TrackTitle = "Existing Track",
+            TrackArtist = "Existing Artist",
+            DurationMs = 180000,
+            DestinationFolderId = secondFolder.Id,
+            RequestedAudioVariant = "atmos"
+        });
+
+        Assert.False(stereoDecision.Allowed);
+        Assert.Equal("library_duplicate", stereoDecision.ReasonCode);
+        Assert.True(atmosDecision.Allowed);
+        Assert.Equal(3, await _repository.GetBestLocalQualityRankAsync(
+            "Existing Artist", "Existing Track", 180000, audioVariant: "stereo"));
+        Assert.Null(await _repository.GetBestLocalQualityRankAsync(
+            "Existing Artist", "Existing Track", 180000, audioVariant: "atmos"));
     }
 
     [Fact]

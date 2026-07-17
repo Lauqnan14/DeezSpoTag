@@ -1,6 +1,7 @@
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
+using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -215,18 +216,8 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             try
             {
                 var queueRepository = scope.ServiceProvider.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadQueueRepository>();
-                var item = await queueRepository.GetByUuidAsync(work.QueueUuid, cancellationToken);
-                if (item == null)
-                {
-                    await repository.RetryWatchlistFinalizationOutboxAsync(
-                        work.Id,
-                        _leaseOwner,
-                        work.AttemptCount + 1,
-                        DateTimeOffset.UtcNow.AddMinutes(1),
-                        "Queue item is not currently available.",
-                        cancellationToken);
-                    continue;
-                }
+                var item = await queueRepository.GetByUuidAsync(work.QueueUuid, cancellationToken)
+                    ?? BuildOutboxQueueItem(work.QueueUuid, work.PayloadJson);
 
                 var sent = await scope.ServiceProvider.GetRequiredService<WatchlistFinalizationService>()
                     .NotifyQueueItemFinalizedAsync(
@@ -263,6 +254,90 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                     cancellationToken);
             }
         }
+    }
+
+    private static DeezSpoTag.Services.Download.Queue.DownloadQueueItem BuildOutboxQueueItem(
+        string queueUuid,
+        string? payloadJson)
+    {
+        string ReadString(JsonElement root, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    return value.GetString() ?? string.Empty;
+                }
+            }
+            return string.Empty;
+        }
+
+        long? destinationFolderId = null;
+        var artist = string.Empty;
+        var title = string.Empty;
+        var isrc = string.Empty;
+        var spotifyId = string.Empty;
+        var durationMs = (int?)null;
+        if (!string.IsNullOrWhiteSpace(payloadJson))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(payloadJson);
+                var root = document.RootElement;
+                artist = ReadString(root, "Artist", "artist");
+                title = ReadString(root, "Title", "title", "trackTitle");
+                isrc = ReadString(root, "Isrc", "isrc", "ISRC");
+                spotifyId = ReadString(root, "SpotifyId", "spotifyId", "spotifyTrackId");
+                if (root.TryGetProperty("DestinationFolderId", out var folder)
+                    || root.TryGetProperty("destinationFolderId", out folder))
+                {
+                    destinationFolderId = folder.ValueKind == JsonValueKind.Number && folder.TryGetInt64(out var parsed)
+                        ? parsed
+                        : null;
+                }
+                if (root.TryGetProperty("DurationMs", out var duration)
+                    || root.TryGetProperty("durationMs", out duration))
+                {
+                    durationMs = duration.ValueKind == JsonValueKind.Number && duration.TryGetInt32(out var parsed)
+                        ? parsed
+                        : null;
+                }
+            }
+            catch (JsonException)
+            {
+                // Claims and finalized paths remain sufficient for durable replay.
+            }
+        }
+
+        return new DeezSpoTag.Services.Download.Queue.DownloadQueueItem(
+            Id: 0,
+            QueueUuid: queueUuid,
+            Engine: string.Empty,
+            ArtistName: artist,
+            TrackTitle: title,
+            Isrc: isrc,
+            DeezerTrackId: null,
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: spotifyId,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: durationMs,
+            DestinationFolderId: destinationFolderId,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: null,
+            Status: "completed",
+            PayloadJson: payloadJson,
+            Progress: 100,
+            Downloaded: 1,
+            Failed: 0,
+            Error: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
     }
 
     private async Task RepairMissingFinalizationOutboxAsync(CancellationToken cancellationToken)

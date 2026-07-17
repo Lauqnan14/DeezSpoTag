@@ -62,6 +62,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private readonly ConcurrentDictionary<string, DateTimeOffset> _nextAllowedRun = new();
     private readonly string _reconciliationLeaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
     private int _artistRoundRobinIndex;
     private readonly object _runtimeHealthGate = new();
     private WatchlistRuntimeHealth _runtimeHealth = new(false, false, null, null, null, 0);
@@ -414,6 +415,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         var profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         await TryRepairWatchlistDestinationIntegrityAsync(repository, profileResolutionService, stoppingToken);
+        await RefreshWatchlistIdentityIndexAsync(
+            serviceProvider,
+            profileResolutionService,
+            stoppingToken);
         var playlistItems = BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken));
         var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
         var hasGlobalRequest = reconciliationRequests.Any(request => request.Kind == "all");
@@ -468,22 +473,41 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             queueAdmission,
             requestedArtistIds,
             stoppingToken);
-        var allRequestedItemsSucceeded = playlistRunResult.ProcessedKeys.Count >= playlistItems.Count
-            && processedArtistIds.Count >= artistItems.Count;
-        var completedRequests = hasGlobalRequest
-            ? (allRequestedItemsSucceeded ? reconciliationRequests : [])
-            : reconciliationRequests.Where(request =>
-                request.Kind == PlaylistKind
+        if (hasGlobalRequest)
+        {
+            foreach (var item in playlistItems.Where(item => !playlistRunResult.ProcessedKeys.Contains(item.Key)))
+            {
+                await repository.EnqueueWatchlistReconciliationRequestAsync(
+                    PlaylistKind,
+                    item.Playlist?.Source,
+                    item.Playlist?.SourceId,
+                    stoppingToken);
+            }
+
+            foreach (var item in artistItems.Where(item =>
+                         item.Artist is not null
+                         && !processedArtistIds.Contains(item.Artist.ArtistId)))
+            {
+                await repository.EnqueueWatchlistReconciliationRequestAsync(
+                    ArtistKind,
+                    "artist",
+                    item.Artist!.ArtistId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    stoppingToken);
+            }
+        }
+
+        var completedRequests = reconciliationRequests.Where(request =>
+                request.Kind == "all"
+                || (request.Kind == PlaylistKind
                     ? !playlistItems.Any(item => string.Equals(
-                            item.Key,
-                            $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}",
-                            StringComparison.Ordinal))
+                          item.Key,
+                          $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}",
+                          StringComparison.Ordinal))
                       || playlistRunResult.ProcessedKeys.Contains($"playlist:{NormalizeSource(request.Source)}:{request.Identifier}")
-                    : request.Kind == ArtistKind
-                        ? !long.TryParse(request.Identifier, out var artistId)
-                          || !artistItems.Any(item => item.Artist?.ArtistId == artistId)
-                          || processedArtistIds.Contains(artistId)
-                        : true).ToList();
+                    : request.Kind != ArtistKind
+                      || !long.TryParse(request.Identifier, out var artistId)
+                      || !artistItems.Any(item => item.Artist?.ArtistId == artistId)
+                      || processedArtistIds.Contains(artistId))).ToList();
         await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
             completedRequests,
             _reconciliationLeaseOwner,
@@ -496,6 +520,66 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             stoppingToken);
         var remainingRequests = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingRequests });
+    }
+
+    private async Task RefreshWatchlistIdentityIndexAsync(
+        IServiceProvider serviceProvider,
+        AutoTagProfileResolutionService profileResolutionService,
+        CancellationToken cancellationToken)
+    {
+        if (DateTimeOffset.UtcNow - _lastIdentityIndexRefreshUtc < TimeSpan.FromMinutes(10))
+        {
+            return;
+        }
+
+        var ingestionService = serviceProvider.GetService<KnownLibraryFileIngestionService>();
+        if (ingestionService is null)
+        {
+            return;
+        }
+
+        var folderIds = await ResolveWatchlistDestinationFolderIdsAsync(
+            profileResolutionService,
+            cancellationToken);
+        if (folderIds.Count == 0)
+        {
+            return;
+        }
+
+        var repository = serviceProvider.GetRequiredService<LibraryRepository>();
+        var folders = (await repository.GetFoldersAsync(cancellationToken))
+            .Where(folder => folder.Enabled && folderIds.Contains(folder.Id) && Directory.Exists(folder.RootPath))
+            .ToList();
+        var missingFilesByFolder = new Dictionary<long, List<string>>();
+        foreach (var folder in folders)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var indexedFiles = await repository.GetLocalScanFileStatesAsync(folder.Id, cancellationToken);
+            try
+            {
+                var missingFiles = Directory
+                    .EnumerateFiles(folder.RootPath, "*", SearchOption.AllDirectories)
+                    .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
+                    .Select(Path.GetFullPath)
+                    .Where(path => !indexedFiles.ContainsKey(path))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (missingFiles.Count > 0)
+                {
+                    missingFilesByFolder[folder.Id] = missingFiles;
+                }
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                _logger.LogWarning(ex, "Watchlist identity index inspection failed for folder {FolderId}.", folder.Id);
+            }
+        }
+
+        if (missingFilesByFolder.Count > 0)
+        {
+            await ingestionService.IngestAndVerifyAsync(missingFilesByFolder, cancellationToken);
+        }
+        _lastIdentityIndexRefreshUtc = DateTimeOffset.UtcNow;
     }
 
     private async Task TryRepairWatchlistDestinationIntegrityAsync(
