@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using DeezSpoTag.Core.Models.Settings;
 using System.Linq;
 using DeezSpoTag.Services.Download.Shared;
@@ -63,6 +64,7 @@ public class LyricsService
     private DateTimeOffset _cachedSpotifyAccessTokenExpiry = DateTimeOffset.MinValue;
     private string? _cachedSpotifyAccessTokenKey;
     private string? _cachedMusixmatchUserToken;
+    private string? _cachedMusixmatchSecret;
     private const int GwTokenTtlMinutes = 45;
     private const string DefaultSpotifyWebPlayerUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
     private const string AppleProvider = "apple";
@@ -70,12 +72,14 @@ public class LyricsService
     private const string SpotifyProvider = "spotify";
     private const string LrclibProvider = "lrclib";
     private const string MusixmatchProvider = "musixmatch";
+    private const string MusixmatchBaseUrl = "https://apic.musixmatch.com/ws/1.1/";
+    private const string MusixmatchWebSearchUrl = "https://www.musixmatch.com/search";
+    private const string MusixmatchDefaultSecret = "b3dc8788299f5806a70a6a20a0cb0ffc";
+    private const string MusixmatchUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
     private const string PaxsenixBaseUrl = "https://lyrics.paxsenix.org";
     private const string ApplicationJson = "application/json";
     private const string LyricsClientName = "LyricsService";
     private const string UserAgentHeader = "User-Agent";
-    private const string AuthorityHeader = "authority";
-    private const string CookieHeader = "cookie";
     private const string LyricsType = "lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
@@ -954,7 +958,7 @@ public class LyricsService
             return LyricsNew.CreateError("Track artist is required for Musixmatch lyrics");
         }
 
-        var body = await FetchMusixmatchLyricsPayloadAsync(track.Title, artist, cancellationToken);
+        var body = await FetchMusixmatchLyricsPayloadAsync(track, track.Title, artist, cancellationToken);
         if (body == null)
         {
             return LyricsNew.CreateError("No Musixmatch lyrics payload");
@@ -1019,81 +1023,137 @@ public class LyricsService
         return track.ArtistString;
     }
 
-    private async Task<MusixmatchMacroCallsBody?> FetchMusixmatchLyricsPayloadAsync(
+    private async Task<MusixmatchLyricsPayload?> FetchMusixmatchLyricsPayloadAsync(
+        Track expected,
         string title,
         string artist,
         CancellationToken cancellationToken,
-        int retryCount = 0)
+        bool tokenRetryUsed = false)
     {
-        using var document = await GetMusixmatchJsonAsync(
-            "macro.subtitles.get",
-            new Dictionary<string, string>
-            {
-                ["format"] = "json",
-                ["namespace"] = "lyrics_richsynced",
-                ["optional_calls"] = "track.richsync,track.lyrics,matcher.track.get",
-                ["subtitle_format"] = "lrc",
-                ["q_artist"] = artist,
-                ["q_track"] = title
-            },
-            cancellationToken);
-
-        if (document == null)
+        var token = await EnsureMusixmatchTokenAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
         {
             return null;
         }
 
-        if (TryReadMusixmatchRootStatus(document.RootElement, out var statusCode)
-            && statusCode == (int)HttpStatusCode.Unauthorized)
-        {
-            _cachedMusixmatchUserToken = null;
-            if (retryCount >= 3)
+        using var searchDocument = await GetMusixmatchSignedJsonAsync(
+            "track.search",
+            new List<KeyValuePair<string, string>>
             {
-                return null;
-            }
+                new("q_track", title),
+                new("q_artist", artist),
+                new("f_has_lyrics", "true"),
+                new("page_size", "10"),
+                new("usertoken", token)
+            },
+            cancellationToken);
 
-            var delay = TimeSpan.FromSeconds(Math.Pow(2, retryCount + 3));
-            await Task.Delay(delay, cancellationToken);
-            return await FetchMusixmatchLyricsPayloadAsync(title, artist, cancellationToken, retryCount + 1);
+        if (searchDocument == null)
+        {
+            return null;
         }
 
-        return ParseMusixmatchMacroCallsBody(document.RootElement);
+        if (IsMusixmatchAuthRejected(searchDocument.RootElement))
+        {
+            ClearMusixmatchAuthCache();
+            return tokenRetryUsed
+                ? null
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+        }
+
+        var selectedTrack = SelectMusixmatchTrack(expected, ParseMusixmatchSearchTracks(searchDocument.RootElement));
+        if (selectedTrack == null || selectedTrack.TrackId == null)
+        {
+            return null;
+        }
+
+        var trackId = selectedTrack.TrackId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var duration = ResolveMusixmatchDuration(expected, selectedTrack);
+        var payload = new MusixmatchLyricsPayload { Track = selectedTrack };
+
+        var richsyncDocument = await GetMusixmatchSignedJsonAsync(
+            "track.richsync.get",
+            new List<KeyValuePair<string, string>>
+            {
+                new("track_id", trackId),
+                new("usertoken", token),
+                new("f_richsync_length", duration),
+                new("f_richsync_length_max_deviation", "10")
+            },
+            cancellationToken);
+        if (richsyncDocument != null && IsMusixmatchAuthRejected(richsyncDocument.RootElement))
+        {
+            ClearMusixmatchAuthCache();
+            return tokenRetryUsed
+                ? payload
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+        }
+
+        payload.RichsyncBody = TryReadMusixmatchRichsyncBody(richsyncDocument?.RootElement);
+
+        var subtitleDocument = await GetMusixmatchSignedJsonAsync(
+            "track.subtitle.get",
+            new List<KeyValuePair<string, string>>
+            {
+                new("track_id", trackId),
+                new("usertoken", token),
+                new("f_subtitle_length", duration),
+                new("f_subtitle_length_max_deviation", "10")
+            },
+            cancellationToken);
+        if (subtitleDocument != null && IsMusixmatchAuthRejected(subtitleDocument.RootElement))
+        {
+            ClearMusixmatchAuthCache();
+            return tokenRetryUsed
+                ? payload
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+        }
+
+        payload.SubtitleBody = TryReadMusixmatchSubtitleBody(subtitleDocument?.RootElement);
+
+        var lyricsDocument = await GetMusixmatchSignedJsonAsync(
+            "track.lyrics.get",
+            new List<KeyValuePair<string, string>>
+            {
+                new("track_id", trackId),
+                new("usertoken", token)
+            },
+            cancellationToken);
+        if (lyricsDocument != null && IsMusixmatchAuthRejected(lyricsDocument.RootElement))
+        {
+            ClearMusixmatchAuthCache();
+            return tokenRetryUsed
+                ? payload
+                : await FetchMusixmatchLyricsPayloadAsync(expected, title, artist, cancellationToken, tokenRetryUsed: true);
+        }
+
+        payload.LyricsBody = TryReadMusixmatchLyricsBody(lyricsDocument?.RootElement);
+        return payload;
     }
 
-    private async Task<JsonDocument?> GetMusixmatchJsonAsync(
+    private async Task<JsonDocument?> GetMusixmatchSignedJsonAsync(
         string action,
-        Dictionary<string, string> query,
+        IReadOnlyList<KeyValuePair<string, string>> query,
         CancellationToken cancellationToken)
     {
-        await EnsureMusixmatchTokenAsync(action, cancellationToken);
-
-        query["app_id"] = "web-desktop-app-v1.0";
-        if (!string.IsNullOrWhiteSpace(_cachedMusixmatchUserToken))
-        {
-            query["usertoken"] = _cachedMusixmatchUserToken!;
-        }
-
-        query["t"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
-        var queryString = string.Join("&", query.Select(static kvp => kvp.Key + "=" + Uri.EscapeDataString(kvp.Value)));
-        var url = $"https://apic-desktop.musixmatch.com/ws/1.1/{action}?{queryString}";
+        var secret = await GetMusixmatchSecretAsync(cancellationToken);
+        var url = BuildMusixmatchSignedUrl(action, query, secret);
 
         using var client = _httpClientFactory.CreateClient(LyricsClientName);
-        if (!client.DefaultRequestHeaders.Contains(AuthorityHeader))
-        {
-            client.DefaultRequestHeaders.TryAddWithoutValidation(AuthorityHeader, "apic-desktop.musixmatch.com");
-        }
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation(UserAgentHeader, MusixmatchUserAgent);
+        request.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+        request.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+        request.Headers.TryAddWithoutValidation("Origin", "https://www.musixmatch.com");
+        request.Headers.TryAddWithoutValidation("Referer", "https://www.musixmatch.com/");
 
-        if (!client.DefaultRequestHeaders.Contains(CookieHeader))
-        {
-            client.DefaultRequestHeaders.TryAddWithoutValidation(CookieHeader, "AWSELBCORS=0; AWSELB=0");
-        }
-
-        using var response = await client.GetAsync(url, cancellationToken);
+        using var response = await client.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
             {
-                _logger.LogDebug("Musixmatch request {Action} failed with status {StatusCode}", action, response.StatusCode);            }
+                _logger.LogDebug("Musixmatch request {Action} failed with status {StatusCode}", action, response.StatusCode);
+            }
             return null;
         }
 
@@ -1101,69 +1161,151 @@ public class LyricsService
         return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
     }
 
-    private MusixmatchMacroCallsBody? ParseMusixmatchMacroCallsBody(JsonElement root)
+    private async Task<string> GetMusixmatchSecretAsync(CancellationToken cancellationToken)
     {
-        if (!TryGetMusixmatchMacroCallsElement(root, out var macroCallsElement))
+        if (!string.IsNullOrWhiteSpace(_cachedMusixmatchSecret))
         {
-            return null;
-        }
-
-        var body = new MusixmatchMacroCallsBody
-        {
-            MacroCalls = new Dictionary<string, MusixmatchMacroCallResponse>(StringComparer.OrdinalIgnoreCase)
-        };
-
-        foreach (var macroCall in macroCallsElement.EnumerateObject())
-        {
-            body.MacroCalls[macroCall.Name] = ParseMusixmatchMacroCallResponse(macroCall.Value, macroCall.Name);
-        }
-
-        return body;
-    }
-
-    private MusixmatchMacroCallResponse ParseMusixmatchMacroCallResponse(JsonElement macroCallValue, string macroCallName)
-    {
-        var response = new MusixmatchMacroCallResponse
-        {
-            Message = new MusixmatchMacroCallMessage()
-        };
-        if (!macroCallValue.TryGetProperty(MessagePropertyName, out var message)
-            || !message.TryGetProperty("body", out var bodyElement))
-        {
-            return response;
-        }
-
-        if (bodyElement.ValueKind == JsonValueKind.Null)
-        {
-            return response;
-        }
-
-        if (bodyElement.ValueKind != JsonValueKind.Object)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Musixmatch macro body for {MacroCall} returned {BodyKind}; skipping strict body mapping.",
-                    macroCallName,
-                    bodyElement.ValueKind);
-            }
-
-            return response;
+            return _cachedMusixmatchSecret!;
         }
 
         try
         {
-            response.Message.Body = bodyElement.Deserialize<MusixmatchBody>();
+            using var client = _httpClientFactory.CreateClient(LyricsClientName);
+            using var searchRequest = new HttpRequestMessage(HttpMethod.Get, MusixmatchWebSearchUrl);
+            searchRequest.Headers.TryAddWithoutValidation(UserAgentHeader, MusixmatchUserAgent);
+            searchRequest.Headers.TryAddWithoutValidation("Cookie", "mxm_bab=AB");
+            searchRequest.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            searchRequest.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+
+            using var searchResponse = await client.SendAsync(searchRequest, cancellationToken);
+            searchResponse.EnsureSuccessStatusCode();
+            var searchPage = await searchResponse.Content.ReadAsStringAsync(cancellationToken);
+            var appJsMatch = Regex.Match(
+                searchPage,
+                "src=\"(?<url>[^\"]*/_next/static/chunks/pages/_app-[^\"]+\\.js)\"",
+                RegexOptions.None,
+                TimeSpan.FromMilliseconds(500));
+            if (!appJsMatch.Success)
+            {
+                return CacheMusixmatchSecret(MusixmatchDefaultSecret);
+            }
+
+            using var jsRequest = new HttpRequestMessage(HttpMethod.Get, appJsMatch.Groups["url"].Value);
+            jsRequest.Headers.TryAddWithoutValidation(UserAgentHeader, MusixmatchUserAgent);
+            jsRequest.Headers.TryAddWithoutValidation("Accept", "*/*");
+            jsRequest.Headers.TryAddWithoutValidation("Accept-Language", "en-US,en;q=0.9");
+
+            using var jsResponse = await client.SendAsync(jsRequest, cancellationToken);
+            jsResponse.EnsureSuccessStatusCode();
+            var jsContent = await jsResponse.Content.ReadAsStringAsync(cancellationToken);
+            var secretMatch = Regex.Match(
+                jsContent,
+                "from\\(\\s*\"(?<secret>.*?)\"\\s*\\.split",
+                RegexOptions.None,
+                TimeSpan.FromMilliseconds(500));
+            if (!secretMatch.Success)
+            {
+                return CacheMusixmatchSecret(MusixmatchDefaultSecret);
+            }
+
+            var encodedSecret = secretMatch.Groups["secret"].Value;
+            var reversed = new string(encodedSecret.Reverse().ToArray());
+            var decoded = Convert.FromBase64String(reversed);
+            return CacheMusixmatchSecret(Encoding.UTF8.GetString(decoded));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(
-                ex,
-                "Musixmatch macro body parsing failed for {MacroCall}; continuing with partial response.",
-                macroCallName);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Musixmatch web secret lookup failed; using bundled signing secret.");
+            }
+            return CacheMusixmatchSecret(MusixmatchDefaultSecret);
+        }
+    }
+
+    private string CacheMusixmatchSecret(string secret)
+    {
+        _cachedMusixmatchSecret = string.IsNullOrWhiteSpace(secret) ? MusixmatchDefaultSecret : secret;
+        return _cachedMusixmatchSecret;
+    }
+
+    private async Task<string?> EnsureMusixmatchTokenAsync(CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(_cachedMusixmatchUserToken))
+        {
+            return _cachedMusixmatchUserToken;
         }
 
-        return response;
+        await _musixmatchTokenGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_cachedMusixmatchUserToken))
+            {
+                return _cachedMusixmatchUserToken;
+            }
+
+            using var tokenDocument = await GetMusixmatchSignedJsonAsync(
+                "token.get",
+                Array.Empty<KeyValuePair<string, string>>(),
+                cancellationToken);
+            if (tokenDocument == null || IsMusixmatchAuthRejected(tokenDocument.RootElement))
+            {
+                ClearMusixmatchAuthCache();
+                return null;
+            }
+
+            if (!TryGetMusixmatchBody(tokenDocument.RootElement, out var body)
+                || !body.TryGetProperty("user_token", out var tokenElement))
+            {
+                return null;
+            }
+
+            _cachedMusixmatchUserToken = tokenElement.GetString();
+            return _cachedMusixmatchUserToken;
+        }
+        finally
+        {
+            _musixmatchTokenGate.Release();
+        }
+    }
+
+    private void ClearMusixmatchAuthCache()
+    {
+        _cachedMusixmatchUserToken = null;
+        _cachedMusixmatchSecret = null;
+    }
+
+    private static string BuildMusixmatchSignedUrl(string action, IReadOnlyList<KeyValuePair<string, string>> query, string secret)
+    {
+        var parameters = new List<KeyValuePair<string, string>>(query.Count + 2)
+        {
+            new("app_id", "web-desktop-app-v1.0"),
+            new("format", "json")
+        };
+        parameters.AddRange(query.Where(static pair => !string.IsNullOrWhiteSpace(pair.Key)));
+
+        var queryString = string.Join("&", parameters.Select(static pair =>
+            pair.Key + "=" + Uri.EscapeDataString(pair.Value ?? string.Empty)));
+        var unsignedUrl = MusixmatchBaseUrl + action + "?" + queryString;
+        return SignMusixmatchUrl(unsignedUrl, secret);
+    }
+
+    private static string SignMusixmatchUrl(string unsignedUrl, string secret)
+    {
+        var normalizedUrl = unsignedUrl.Replace("%20", "+", StringComparison.Ordinal).Replace(" ", "+", StringComparison.Ordinal);
+        var date = DateTimeOffset.UtcNow.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+        var message = normalizedUrl + date;
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
+        var signature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(message)));
+        return normalizedUrl
+            + "&signature=" + Uri.EscapeDataString(signature)
+            + "&signature_protocol=sha256";
+    }
+
+    private static bool IsMusixmatchAuthRejected(JsonElement root)
+    {
+        return TryReadMusixmatchRootStatus(root, out var statusCode)
+            && (statusCode == (int)HttpStatusCode.Unauthorized || statusCode == (int)HttpStatusCode.PaymentRequired);
     }
 
     private static bool TryReadMusixmatchRootStatus(JsonElement root, out int statusCode)
@@ -1180,108 +1322,150 @@ public class LyricsService
         return statusCodeElement.TryGetInt32(out statusCode);
     }
 
-    private static bool TryGetMusixmatchMacroCallsElement(JsonElement root, out JsonElement macroCallsElement)
+    private static bool TryGetMusixmatchBody(JsonElement root, out JsonElement body)
     {
-        macroCallsElement = default;
-        if (!root.TryGetProperty(MessagePropertyName, out var message)
-            || !message.TryGetProperty("body", out var body)
-            || !body.TryGetProperty("macro_calls", out var macroCalls)
-            || macroCalls.ValueKind != JsonValueKind.Object)
-        {
-            return false;
-        }
-
-        macroCallsElement = macroCalls;
-        return true;
+        body = default;
+        return root.TryGetProperty(MessagePropertyName, out var message)
+            && message.TryGetProperty("body", out body)
+            && body.ValueKind == JsonValueKind.Object;
     }
 
-    private async Task EnsureMusixmatchTokenAsync(string action, CancellationToken cancellationToken)
+    private static IReadOnlyList<MusixmatchTrack> ParseMusixmatchSearchTracks(JsonElement root)
     {
-        if (string.Equals(action, "token.get", StringComparison.OrdinalIgnoreCase))
+        if (!TryGetMusixmatchBody(root, out var body)
+            || !body.TryGetProperty("track_list", out var trackList)
+            || trackList.ValueKind != JsonValueKind.Array)
         {
-            return;
+            return Array.Empty<MusixmatchTrack>();
         }
 
-        if (!string.IsNullOrWhiteSpace(_cachedMusixmatchUserToken))
+        var tracks = new List<MusixmatchTrack>();
+        foreach (var item in trackList.EnumerateArray())
         {
-            return;
+            if (!item.TryGetProperty("track", out var trackElement) || trackElement.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            try
+            {
+                var track = trackElement.Deserialize<MusixmatchTrack>();
+                if (track != null)
+                {
+                    tracks.Add(track);
+                }
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
         }
 
-        await _musixmatchTokenGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(_cachedMusixmatchUserToken))
-            {
-                return;
-            }
-
-            using var tokenDocument = await FetchMusixmatchTokenDocumentAsync(cancellationToken);
-            var root = tokenDocument.RootElement;
-            if (!root.TryGetProperty(MessagePropertyName, out var message)
-                || !message.TryGetProperty("header", out var header)
-                || !header.TryGetProperty("status_code", out var statusCodeElement))
-            {
-                return;
-            }
-
-            if (statusCodeElement.GetInt32() == (int)HttpStatusCode.Unauthorized)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(10), cancellationToken);
-                return;
-            }
-
-            if (!message.TryGetProperty("body", out var body)
-                || !body.TryGetProperty("user_token", out var tokenElement))
-            {
-                return;
-            }
-
-            _cachedMusixmatchUserToken = tokenElement.GetString();
-        }
-        finally
-        {
-            _musixmatchTokenGate.Release();
-        }
+        return tracks;
     }
 
-    private async Task<JsonDocument> FetchMusixmatchTokenDocumentAsync(CancellationToken cancellationToken)
+    private static MusixmatchTrack? SelectMusixmatchTrack(Track expected, IReadOnlyList<MusixmatchTrack> candidates)
     {
-        var query = new Dictionary<string, string>
-        {
-            ["user_language"] = "en",
-            ["app_id"] = "web-desktop-app-v1.0",
-            ["t"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString()
-        };
-
-        var queryString = string.Join("&", query.Select(static kvp => kvp.Key + "=" + Uri.EscapeDataString(kvp.Value)));
-        var url = $"https://apic-desktop.musixmatch.com/ws/1.1/token.get?{queryString}";
-
-        using var client = _httpClientFactory.CreateClient(LyricsClientName);
-        if (!client.DefaultRequestHeaders.Contains(AuthorityHeader))
-        {
-            client.DefaultRequestHeaders.TryAddWithoutValidation(AuthorityHeader, "apic-desktop.musixmatch.com");
-        }
-
-        if (!client.DefaultRequestHeaders.Contains(CookieHeader))
-        {
-            client.DefaultRequestHeaders.TryAddWithoutValidation(CookieHeader, "AWSELBCORS=0; AWSELB=0");
-        }
-
-        using var response = await client.GetAsync(url, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return candidates
+            .Select(candidate => new
+            {
+                Track = candidate,
+                Validation = ValidateMusixmatchTrack(expected, candidate),
+                DurationDelta = ResolveMusixmatchDurationDelta(expected, candidate)
+            })
+            .Where(candidate => candidate.Validation.IsMatch)
+            .OrderByDescending(candidate => candidate.Validation.Score)
+            .ThenBy(candidate => candidate.DurationDelta)
+            .Select(candidate => candidate.Track)
+            .FirstOrDefault();
     }
 
-    private static bool TryReadMusixmatchUnsynced(MusixmatchMacroCallsBody body, out string? unsyncedLyrics)
+    private static LyricsIdentityValidationResult ValidateMusixmatchTrack(Track expected, MusixmatchTrack track)
+    {
+        return LyricsIdentityValidator.ValidateSearchCandidate(
+            expected,
+            new LyricsCandidateIdentity(
+                MusixmatchProvider,
+                track.TrackId?.ToString() ?? track.CommonTrackId?.ToString(),
+                track.TrackName,
+                track.ArtistName,
+                track.AlbumName,
+                track.TrackLength.HasValue ? (int)Math.Round(track.TrackLength.Value) : null,
+                track.TrackIsrc),
+            durationToleranceSeconds: 10,
+            requireArtist: true);
+    }
+
+    private static int ResolveMusixmatchDurationDelta(Track expected, MusixmatchTrack track)
+    {
+        if (expected.Duration <= 0 || !track.TrackLength.HasValue || track.TrackLength.Value <= 0)
+        {
+            return int.MaxValue;
+        }
+
+        return Math.Abs(expected.Duration - (int)Math.Round(track.TrackLength.Value));
+    }
+
+    private static string ResolveMusixmatchDuration(Track expected, MusixmatchTrack track)
+    {
+        var duration = track.TrackLength.HasValue && track.TrackLength.Value > 0
+            ? (int)Math.Round(track.TrackLength.Value)
+            : expected.Duration;
+        return Math.Max(0, duration).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string? TryReadMusixmatchLyricsBody(JsonElement? root)
+    {
+        if (root == null
+            || !TryGetMusixmatchBody(root.Value, out var body)
+            || !body.TryGetProperty("lyrics", out var lyrics)
+            || lyrics.ValueKind != JsonValueKind.Object
+            || !lyrics.TryGetProperty("lyrics_body", out var lyricsBodyElement)
+            || lyricsBodyElement.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var lyricsBody = lyricsBodyElement.GetString();
+        return string.IsNullOrWhiteSpace(lyricsBody) ? null : lyricsBody;
+    }
+
+    private static string? TryReadMusixmatchSubtitleBody(JsonElement? root)
+    {
+        if (root == null
+            || !TryGetMusixmatchBody(root.Value, out var body)
+            || !body.TryGetProperty("subtitle", out var subtitle)
+            || subtitle.ValueKind != JsonValueKind.Object
+            || !subtitle.TryGetProperty("subtitle_body", out var subtitleBodyElement)
+            || subtitleBodyElement.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var subtitleBody = subtitleBodyElement.GetString();
+        return string.IsNullOrWhiteSpace(subtitleBody) ? null : subtitleBody;
+    }
+
+    private static string? TryReadMusixmatchRichsyncBody(JsonElement? root)
+    {
+        if (root == null
+            || !TryGetMusixmatchBody(root.Value, out var body)
+            || !body.TryGetProperty("richsync", out var richsync)
+            || richsync.ValueKind != JsonValueKind.Object
+            || !richsync.TryGetProperty("richsync_body", out var richsyncBodyElement)
+            || richsyncBodyElement.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var richsyncBody = richsyncBodyElement.GetString();
+        return string.IsNullOrWhiteSpace(richsyncBody) ? null : richsyncBody;
+    }
+
+    private static bool TryReadMusixmatchUnsynced(MusixmatchLyricsPayload body, out string? unsyncedLyrics)
     {
         unsyncedLyrics = null;
-        if (!TryGetMusixmatchCallBody(body, "track.lyrics.get", out var callBody))
-        {
-            return false;
-        }
-
-        var lyricsBody = callBody.Lyrics?.LyricsBody;
+        var lyricsBody = body.LyricsBody;
         if (string.IsNullOrWhiteSpace(lyricsBody))
         {
             return false;
@@ -1296,15 +1480,10 @@ public class LyricsService
         return true;
     }
 
-    private static bool TryReadMusixmatchSubtitles(MusixmatchMacroCallsBody body, out List<SynchronizedLyric> lines)
+    private static bool TryReadMusixmatchSubtitles(MusixmatchLyricsPayload body, out List<SynchronizedLyric> lines)
     {
         lines = new List<SynchronizedLyric>();
-        if (!TryGetMusixmatchCallBody(body, "track.subtitles.get", out var callBody))
-        {
-            return false;
-        }
-
-        var subtitleBody = callBody.SubtitleList?.FirstOrDefault()?.Subtitle?.SubtitleBody;
+        var subtitleBody = body.SubtitleBody;
         if (string.IsNullOrWhiteSpace(subtitleBody))
         {
             return false;
@@ -1330,21 +1509,21 @@ public class LyricsService
             }
 
             var text = line[(closingBracketIndex + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
             lines.Add(new SynchronizedLyric(text, SynchronizedLyric.BuildLrcTimestamp(milliseconds), milliseconds));
         }
 
         return lines.Count > 0;
     }
 
-    private static bool TryReadMusixmatchRichsync(MusixmatchMacroCallsBody body, out List<SynchronizedLyric> lines)
+    private static bool TryReadMusixmatchRichsync(MusixmatchLyricsPayload body, out List<SynchronizedLyric> lines)
     {
         lines = new List<SynchronizedLyric>();
-        if (!TryGetMusixmatchCallBody(body, "track.richsync.get", out var callBody))
-        {
-            return false;
-        }
-
-        var richsyncBody = callBody.Richsync?.RichsyncBody;
+        var richsyncBody = body.RichsyncBody;
         if (string.IsNullOrWhiteSpace(richsyncBody))
         {
             return false;
@@ -1394,102 +1573,35 @@ public class LyricsService
         var secondsParts = parts[1].Split('.', StringSplitOptions.TrimEntries);
         if (secondsParts.Length != 2
             || !int.TryParse(secondsParts[0], out var seconds)
-            || !int.TryParse(secondsParts[1], out var hundredths))
+            || !int.TryParse(secondsParts[1], out var fraction))
         {
             return false;
         }
 
-        milliseconds = (minutes * 60 * 1000) + (seconds * 1000) + (hundredths * 10);
-        return true;
-    }
-
-    private static bool TryGetMusixmatchCallBody(
-        MusixmatchMacroCallsBody body,
-        string key,
-        out MusixmatchBody callBody)
-    {
-        callBody = new MusixmatchBody();
-        if (body.MacroCalls == null
-            || !body.MacroCalls.TryGetValue(key, out var response)
-            || response?.Message?.Body == null)
+        var millisecondsFraction = secondsParts[1].Length switch
         {
-            return false;
-        }
+            1 => fraction * 100,
+            2 => fraction * 10,
+            _ => int.Parse(secondsParts[1][..Math.Min(3, secondsParts[1].Length)], System.Globalization.CultureInfo.InvariantCulture)
+        };
 
-        callBody = response.Message.Body;
+        milliseconds = (minutes * 60 * 1000) + (seconds * 1000) + millisecondsFraction;
         return true;
     }
 
     private static LyricsIdentityValidationResult ValidateMusixmatchPayload(
         Track expected,
-        MusixmatchMacroCallsBody body)
+        MusixmatchLyricsPayload body)
     {
-        var track = ResolveMusixmatchTrack(body);
-        if (track == null)
-        {
-            return new LyricsIdentityValidationResult(
-                false,
-                "Musixmatch response did not include matched track metadata.",
-                0);
-        }
-
-        return LyricsIdentityValidator.ValidateSearchCandidate(
-            expected,
-            new LyricsCandidateIdentity(
-                MusixmatchProvider,
-                track.TrackId?.ToString() ?? track.CommonTrackId?.ToString(),
-                track.TrackName,
-                track.ArtistName,
-                track.AlbumName,
-                track.TrackLength.HasValue ? (int)Math.Round(track.TrackLength.Value) : null),
-            durationToleranceSeconds: 10,
-            requireArtist: true);
+        return ValidateMusixmatchTrack(expected, body.Track);
     }
 
-    private static MusixmatchTrack? ResolveMusixmatchTrack(MusixmatchMacroCallsBody body)
+    private sealed class MusixmatchLyricsPayload
     {
-        if (body.MacroCalls == null)
-        {
-            return null;
-        }
-
-        return body.MacroCalls.Values
-            .Select(static response => response?.Message?.Body?.Track)
-            .FirstOrDefault(static track => track != null
-                && (!string.IsNullOrWhiteSpace(track.TrackName) || !string.IsNullOrWhiteSpace(track.ArtistName)));
-    }
-
-    private sealed class MusixmatchMacroCallsBody
-    {
-        [JsonPropertyName("macro_calls")]
-        public Dictionary<string, MusixmatchMacroCallResponse>? MacroCalls { get; set; }
-    }
-
-    private sealed class MusixmatchMacroCallResponse
-    {
-        [JsonPropertyName(MessagePropertyName)]
-        public MusixmatchMacroCallMessage? Message { get; set; }
-    }
-
-    private sealed class MusixmatchMacroCallMessage
-    {
-        [JsonPropertyName("body")]
-        public MusixmatchBody? Body { get; set; }
-    }
-
-    private sealed class MusixmatchBody
-    {
-        [JsonPropertyName("track")]
-        public MusixmatchTrack? Track { get; set; }
-
-        [JsonPropertyName("lyrics")]
-        public MusixmatchLyrics? Lyrics { get; set; }
-
-        [JsonPropertyName("subtitle_list")]
-        public List<MusixmatchSubtitleWrap>? SubtitleList { get; set; }
-
-        [JsonPropertyName("richsync")]
-        public MusixmatchRichsync? Richsync { get; set; }
+        public required MusixmatchTrack Track { get; init; }
+        public string? RichsyncBody { get; set; }
+        public string? SubtitleBody { get; set; }
+        public string? LyricsBody { get; set; }
     }
 
     private sealed class MusixmatchTrack
@@ -1511,30 +1623,9 @@ public class LyricsService
 
         [JsonPropertyName("track_length")]
         public double? TrackLength { get; set; }
-    }
 
-    private sealed class MusixmatchLyrics
-    {
-        [JsonPropertyName("lyrics_body")]
-        public string? LyricsBody { get; set; }
-    }
-
-    private sealed class MusixmatchSubtitleWrap
-    {
-        [JsonPropertyName("subtitle")]
-        public MusixmatchSubtitle? Subtitle { get; set; }
-    }
-
-    private sealed class MusixmatchSubtitle
-    {
-        [JsonPropertyName("subtitle_body")]
-        public string? SubtitleBody { get; set; }
-    }
-
-    private sealed class MusixmatchRichsync
-    {
-        [JsonPropertyName("richsync_body")]
-        public string? RichsyncBody { get; set; }
+        [JsonPropertyName("track_isrc")]
+        public string? TrackIsrc { get; set; }
     }
 
     private sealed class MusixmatchRichsyncLine

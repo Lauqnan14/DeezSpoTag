@@ -857,6 +857,99 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void BuildMusixmatchSignedUrl_DoesNotAppendTimestampParameter()
+    {
+        var signedUrl = InvokeStatic<string>(
+            "BuildMusixmatchSignedUrl",
+            "track.search",
+            new List<KeyValuePair<string, string>>
+            {
+                new("q_track", "Blinding Lights"),
+                new("q_artist", "The Weeknd"),
+                new("usertoken", "token")
+            },
+            "b3dc8788299f5806a70a6a20a0cb0ffc");
+
+        Assert.StartsWith("https://apic.musixmatch.com/ws/1.1/track.search?", signedUrl);
+        Assert.Contains("app_id=web-desktop-app-v1.0", signedUrl);
+        Assert.Contains("format=json", signedUrl);
+        Assert.Contains("q_track=Blinding+Lights", signedUrl);
+        Assert.Contains("q_artist=The+Weeknd", signedUrl);
+        Assert.Contains("signature=", signedUrl);
+        Assert.Contains("signature_protocol=sha256", signedUrl);
+        Assert.DoesNotContain("&t=", signedUrl);
+        Assert.DoesNotContain("user_language=", signedUrl);
+        Assert.DoesNotContain("apic-desktop.musixmatch.com", signedUrl);
+    }
+
+    [Fact]
+    public void ParseMusixmatchSearchTracks_SelectsIdentityMatchedCandidate()
+    {
+        using var doc = JsonDocument.Parse("""
+            {
+              "message": {
+                "header": { "status_code": 200 },
+                "body": {
+                  "track_list": [
+                    {
+                      "track": {
+                        "track_id": 1,
+                        "track_name": "Wrong Song",
+                        "artist_name": "The Weeknd",
+                        "album_name": "Wrong Album",
+                        "track_length": 200
+                      }
+                    },
+                    {
+                      "track": {
+                        "track_id": 2,
+                        "track_name": "Blinding Lights",
+                        "artist_name": "The Weeknd",
+                        "album_name": "After Hours",
+                        "track_length": 200,
+                        "track_isrc": "USUG11904206"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+            """);
+
+        var tracks = GetStaticMethod("ParseMusixmatchSearchTracks").Invoke(null, [doc.RootElement])
+            ?? throw new InvalidOperationException("ParseMusixmatchSearchTracks returned null.");
+        var selected = GetStaticMethod("SelectMusixmatchTrack").Invoke(
+            null,
+            [
+                new Track
+                {
+                    Title = "Blinding Lights",
+                    ArtistString = "The Weeknd",
+                    Duration = 200,
+                    ISRC = "USUG11904206"
+                },
+                tracks
+            ]);
+
+        Assert.NotNull(selected);
+        var trackId = selected.GetType().GetProperty("TrackId")?.GetValue(selected);
+        Assert.Equal(2L, trackId);
+    }
+
+    [Fact]
+    public void TryParseLrcTimestampMilliseconds_AcceptsHundredthsAndMilliseconds()
+    {
+        var method = GetStaticMethod("TryParseLrcTimestampMilliseconds");
+        object?[] hundredthsArgs = ["01:02.34", 0];
+        object?[] millisecondsArgs = ["01:02.345", 0];
+
+        Assert.True((bool)method.Invoke(null, hundredthsArgs)!);
+        Assert.True((bool)method.Invoke(null, millisecondsArgs)!);
+        Assert.Equal(62340, hundredthsArgs[1]);
+        Assert.Equal(62345, millisecondsArgs[1]);
+    }
+
+    [Fact]
     public async Task ResolveLoadedLyricsOrNullAsync_ReturnsNull_WhenResolverReturnsNull()
     {
         var resolver = (Func<Task<LyricsBase>>)(() => Task.FromResult<LyricsBase>(null!));
