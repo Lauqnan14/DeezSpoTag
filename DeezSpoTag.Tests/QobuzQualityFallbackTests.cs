@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
@@ -39,7 +41,7 @@ public sealed class QobuzQualityFallbackTests
     [Theory]
     [InlineData(16, 44.1, "6")]
     [InlineData(24, 48, "7")]
-    [InlineData(24, 96, "27")]
+    [InlineData(24, 96, "7")]
     [InlineData(32, 192, "27")]
     public void MapCatalogQuality_MapsQobuzMetadataToEngineQuality(int bitDepth, double sampleRate, string expected)
     {
@@ -85,6 +87,26 @@ public sealed class QobuzQualityFallbackTests
         Assert.Contains("\"qobuzMaximumSamplingRate\":44.1", json);
         Assert.Contains("\"qobuzCatalogQuality\":\"6\"", json);
         Assert.Contains("\"qobuzQualityDecisionReason\":\"catalog_quality_lower_than_requested\"", json);
+    }
+
+    [Fact]
+    public void CatalogUnknownPath_DoesNotContinueToAudioDownload()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        var source = File.ReadAllText(sourcePath);
+        var unknownBranchStart = source.IndexOf(
+            "payload.QobuzQualityDecisionReason = \"catalog_quality_unknown\";",
+            StringComparison.Ordinal);
+
+        Assert.True(unknownBranchStart >= 0);
+        var unknownBranchEnd = source.IndexOf("var catalogQuality =", unknownBranchStart, StringComparison.Ordinal);
+        Assert.True(unknownBranchEnd > unknownBranchStart);
+        var unknownBranch = source[unknownBranchStart..unknownBranchEnd];
+
+        Assert.Contains("QobuzQualityDecisionResult.Skip", unknownBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("QobuzQualityDecisionResult.Continue", unknownBranch, StringComparison.Ordinal);
     }
 
     [Fact]

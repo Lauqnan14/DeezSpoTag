@@ -1,7 +1,6 @@
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared.Models;
-using DeezSpoTag.Services.Download.Shared.Utils;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
@@ -41,11 +40,6 @@ internal static class DeliveredAudioQualityGuard
             fallbackPlan = payload.FallbackPlan,
             fallbackHistory = payload.FallbackHistory
         });
-        await EngineAudioPostDownloadHelper.CancelPrefetchAndWaitAsync(
-            queueUuid,
-            TimeSpan.FromSeconds(15),
-            CancellationToken.None);
-        DownloadFileUtilities.TryDeleteFile(filePath);
         throw new DeliveredAudioQualityBelowPlanStepException(result.Message);
     }
 
@@ -58,8 +52,7 @@ internal static class DeliveredAudioQualityGuard
             return DeliveredAudioQualityResult.Inconclusive(requestedQuality);
         }
 
-        if (!RequiresTwentyFourBit(requestedQuality)
-            || actual.IsLossless && actual.BitsPerSample >= 24)
+        if (IsDeliveredQualityAccepted(requestedQuality, actual))
         {
             return DeliveredAudioQualityResult.Accepted(requestedQuality, actual.Label);
         }
@@ -96,9 +89,26 @@ internal static class DeliveredAudioQualityGuard
         return payload.Quality;
     }
 
-    private static bool RequiresTwentyFourBit(string? quality)
-        => (quality ?? string.Empty).Trim().ToUpperInvariant() is
-            "27" or "7" or "HI_RES_LOSSLESS" or "HI_RES" or "ULTRA_HD_FLAC";
+    private static bool IsDeliveredQualityAccepted(string? requestedQuality, ActualAudioQuality actual)
+    {
+        var normalized = (requestedQuality ?? string.Empty).Trim().ToUpperInvariant();
+        return normalized switch
+        {
+            "27" or "HI_RES_LOSSLESS" => actual.IsLossless
+                && actual.BitsPerSample >= 24
+                && actual.SampleRate > 96000,
+            "7" or "HI_RES" or "ULTRA_HD_FLAC" => actual.IsLossless
+                && actual.BitsPerSample >= 24
+                && actual.SampleRate > 0
+                && actual.SampleRate <= 96000,
+            "6" or "LOSSLESS" or "HD_FLAC" or "9" or "ALAC" => actual.IsLossless
+                && actual.BitsPerSample > 0
+                && actual.BitsPerSample <= 16,
+            "5" or "HIGH" or "3" => !actual.IsLossless || actual.BitrateKbps >= 256,
+            "LOW" or "1" or "AAC" or "OPUS" => true,
+            _ => true
+        };
+    }
 
     private static string FormatRequestedQuality(string? engine, string? quality)
     {

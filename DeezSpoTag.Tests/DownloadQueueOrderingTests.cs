@@ -165,6 +165,29 @@ public sealed class DownloadQueueOrderingTests
         Assert.True(DateTimeOffset.UtcNow - startedAt < TimeSpan.FromSeconds(1));
     }
 
+    [Fact]
+    public async Task RequeueAsync_FallbackAdvancePreservesQueuePosition()
+    {
+        await using var context = CreateContext();
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-head"), CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-fallback"), CancellationToken.None);
+        await context.QueueRepository.EnqueueAsync(CreateQueueItem("queue-tail"), CancellationToken.None);
+        var before = await context.QueueRepository.GetByUuidAsync("queue-fallback", CancellationToken.None);
+
+        var requeued = await context.QueueRepository.RequeueAsync(
+            "queue-fallback",
+            QueueRequeueOrigin.FallbackAdvance,
+            requeueToFront: false,
+            newestFirst: false,
+            CancellationToken.None);
+        var after = await context.QueueRepository.GetByUuidAsync("queue-fallback", CancellationToken.None);
+
+        Assert.True(requeued);
+        Assert.NotNull(before);
+        Assert.NotNull(after);
+        Assert.Equal(before!.QueueOrder, after!.QueueOrder);
+    }
+
     private static TestContext CreateContext(DownloadQueueWakeSignal? wakeSignal = null)
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-queue-order-tests-" + Path.GetRandomFileName());

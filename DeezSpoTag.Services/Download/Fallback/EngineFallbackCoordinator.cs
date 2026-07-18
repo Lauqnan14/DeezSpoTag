@@ -171,6 +171,12 @@ public sealed class EngineFallbackCoordinator
         for (var stepIndex = nextIndex; stepIndex < planSteps.Count; stepIndex++)
         {
             var step = planSteps[stepIndex];
+            var stepId = $"step-{stepIndex}";
+            if (IsExhaustedStep(stepContext.PayloadForSerialization, stepId))
+            {
+                continue;
+            }
+
             if (ShouldSkipStep(step, request.CurrentEngine, settings.FallbackBitrate))
             {
                 AddFallbackAttempt(
@@ -289,6 +295,43 @@ public sealed class EngineFallbackCoordinator
 
         return !fallbackBitrateEnabled
             && string.Equals(step.Source, currentEngine, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsExhaustedStep(object payloadForSerialization, string stepId)
+    {
+        if (payloadForSerialization is not EngineQueueItemBase payload)
+        {
+            return false;
+        }
+
+        return payload.FallbackHistory.Any(attempt =>
+            string.Equals(attempt.StepId, stepId, StringComparison.OrdinalIgnoreCase)
+            && IsTerminalFallbackAttempt(attempt));
+    }
+
+    private static bool IsTerminalFallbackAttempt(FallbackAttempt attempt)
+    {
+        if (string.Equals(attempt.Status, "completed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(attempt.Status, "tagged", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return (attempt.ErrorClass ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "quality_below_requested" => true,
+            "catalog_quality_below_requested" => true,
+            "same_engine_blocked" => true,
+            "unresolved" => true,
+            "unsupported" => true,
+            "unavailable" => true,
+            "not_configured" => true,
+            "authentication_required" => true,
+            "download_failed" => true,
+            _ => string.Equals(attempt.Status, "rejected", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(attempt.Status, "failed", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(attempt.Status, "skipped", StringComparison.OrdinalIgnoreCase)
+        };
     }
 
     private async Task<bool> TryAdvanceToStepAsync(

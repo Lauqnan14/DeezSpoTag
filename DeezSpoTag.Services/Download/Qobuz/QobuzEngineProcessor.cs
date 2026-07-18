@@ -493,7 +493,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             payload.QobuzMaximumBitDepth = 0;
             payload.QobuzMaximumSamplingRate = 0;
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
-            return QobuzQualityDecisionResult.Continue();
+            return QobuzQualityDecisionResult.Skip(
+                $"Qobuz catalog quality is unknown for current plan step {requestedQuality}; skipping download before audio transfer.");
         }
 
         var catalogQuality = MapCatalogQuality(signal.Value.BitDepth, signal.Value.SampleRate);
@@ -598,7 +599,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     {
         if (bitDepth >= 24)
         {
-            return sampleRate >= 96 ? "27" : "7";
+            return sampleRate > 96 ? "27" : "7";
         }
 
         return "6";

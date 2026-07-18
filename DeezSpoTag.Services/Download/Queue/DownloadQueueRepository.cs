@@ -162,9 +162,7 @@ SELECT CASE
 
         var queueOrder = requeueToFront
             ? await GetFrontQueueOrderAsync(connection, newestFirst, cancellationToken)
-            : origin is QueueRequeueOrigin.FallbackAdvance or QueueRequeueOrigin.AutoRetry
-                ? await GetBackQueueOrderAsync(connection, newestFirst, cancellationToken)
-                : await GetExistingQueueOrderAsync(connection, queueUuid, cancellationToken);
+            : await GetExistingQueueOrderAsync(connection, queueUuid, cancellationToken);
         const string sql = UpdateDownloadTaskSqlPrefix + @"
 SET status = 'queued',
     error = NULL,
@@ -3483,25 +3481,6 @@ LIMIT 1;";
         CancellationToken cancellationToken)
     {
         if (newestFirst)
-        {
-            return await GetNextQueueOrderAsync(connection, cancellationToken);
-        }
-
-        const string sql = @"
-SELECT COALESCE(MIN(queue_order), 0) - 1
-FROM " + DownloadTaskTable + @"
-WHERE queue_order IS NOT NULL;";
-        await using var command = new SqliteCommand(sql, connection);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null or DBNull ? 0 : Convert.ToInt32(result);
-    }
-
-    private static async Task<int> GetBackQueueOrderAsync(
-        SqliteConnection connection,
-        bool newestFirst,
-        CancellationToken cancellationToken)
-    {
-        if (!newestFirst)
         {
             return await GetNextQueueOrderAsync(connection, cancellationToken);
         }

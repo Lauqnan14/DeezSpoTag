@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using DeezSpoTag.Core.Models.Settings;
@@ -189,6 +190,21 @@ public sealed class DownloadSourceOrderFallbackParityTests
         var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
 
         Assert.Equal(ExpectedAppleOnlyOrder, sources);
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_CustomOrderEnabled_DoesNotReaddOmittedDefaultEngines()
+    {
+        var settings = CreateCustomOrderSettings(
+            ("qobuz", true, new[] { ("27", true), ("7", false), ("6", false), ("5", false) }));
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(settings, includeDeezer: true, targetQuality: null);
+
+        Assert.Equal(new[] { "qobuz|27" }, sources);
+        Assert.DoesNotContain(sources, source => source.StartsWith("apple|", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(sources, source => source.StartsWith("tidal|", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(sources, source => source.StartsWith("amazon|", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(sources, source => source.StartsWith("deezer|", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

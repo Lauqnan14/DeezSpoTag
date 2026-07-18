@@ -77,13 +77,20 @@ public sealed class WatchlistFinalizationService
         var localTrackIds = await _libraryRepository.GetTrackIdsByFilePathsAsync(
             verifiedAudioPaths,
             cancellationToken);
-        var localTrackId = localTrackIds.Values.FirstOrDefault();
-        var persistedIdentity = localTrackId > 0
-            ? await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken)
-            : null;
-        var identity = persistedIdentity == null
-            ? BuildFinalizedTrackIdentity(item, payloadJson)
-            : BuildFinalizedTrackIdentity(persistedIdentity);
+        var expectedIdentity = BuildFinalizedTrackIdentity(item, payloadJson);
+        var selected = await SelectVerifiedFinalAudioPathsAsync(
+            item.QueueUuid,
+            verifiedAudioPaths,
+            localTrackIds,
+            expectedIdentity,
+            cancellationToken);
+        if (selected.Paths.Count == 0)
+        {
+            return 0;
+        }
+
+        var localTrackId = selected.LocalTrackId;
+        var identity = selected.Identity;
         notifications = await VerifyNotificationsAsync(
             notifications,
             identity,
@@ -104,7 +111,7 @@ public sealed class WatchlistFinalizationService
                 notification.TrackId,
                 item.QueueUuid,
                 notification.DestinationFolderId,
-                verifiedAudioPaths,
+                selected.Paths,
                 cancellationToken);
             await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 item.QueueUuid,
@@ -234,7 +241,7 @@ public sealed class WatchlistFinalizationService
         }
 
         _logger.LogWarning(
-            "Watchlist finalization skipped for queue {QueueUuid} because {MissingCount}/{AudioCount} final audio file(s) are not in the library DB.",
+            "Watchlist finalization ignored {MissingCount}/{AudioCount} final audio file(s) for queue {QueueUuid} because they are not in the library DB.",
             queueUuid,
             missingPaths.Count,
             audioPaths.Count);
@@ -243,7 +250,64 @@ public sealed class WatchlistFinalizationService
             _logger.LogWarning("Watchlist finalization missing library DB file: {Path}", missingPath);
         }
 
-        return [];
+        return audioPaths
+            .Where(path => trackIds.ContainsKey(path))
+            .ToList();
+    }
+
+    private async Task<VerifiedFinalAudioSelection> SelectVerifiedFinalAudioPathsAsync(
+        string queueUuid,
+        IReadOnlyList<string> verifiedAudioPaths,
+        IReadOnlyDictionary<string, long> localTrackIds,
+        FinalizedTrackIdentity expectedIdentity,
+        CancellationToken cancellationToken)
+    {
+        var matches = new List<(string Path, long LocalTrackId, FinalizedTrackIdentity Identity)>();
+        foreach (var path in verifiedAudioPaths)
+        {
+            if (!localTrackIds.TryGetValue(path, out var localTrackId) || localTrackId <= 0)
+            {
+                continue;
+            }
+
+            var persistedIdentity = await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken);
+            if (persistedIdentity == null)
+            {
+                continue;
+            }
+
+            var identity = BuildFinalizedTrackIdentity(persistedIdentity);
+            if (IsIdentityMatch(expectedIdentity, identity))
+            {
+                matches.Add((path, localTrackId, identity));
+            }
+        }
+
+        if (matches.Count > 0)
+        {
+            var selectedIdentity = matches[0].Identity;
+            return new VerifiedFinalAudioSelection(
+                matches.Select(match => match.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                matches[0].LocalTrackId,
+                selectedIdentity);
+        }
+
+        if (verifiedAudioPaths.Count == 1
+            && localTrackIds.TryGetValue(verifiedAudioPaths[0], out var onlyTrackId)
+            && onlyTrackId > 0)
+        {
+            var persistedIdentity = await _libraryRepository.GetLocalTrackIdentityAsync(onlyTrackId, cancellationToken);
+            return new VerifiedFinalAudioSelection(
+                [verifiedAudioPaths[0]],
+                onlyTrackId,
+                persistedIdentity == null ? expectedIdentity : BuildFinalizedTrackIdentity(persistedIdentity));
+        }
+
+        _logger.LogWarning(
+            "Watchlist finalization skipped for queue {QueueUuid} because none of {AudioCount} indexed final audio file(s) matched the queue identity.",
+            queueUuid,
+            verifiedAudioPaths.Count);
+        return new VerifiedFinalAudioSelection([], null, expectedIdentity);
     }
 
     public async Task<int> RepairPlaylistAsync(
@@ -480,6 +544,74 @@ public sealed class WatchlistFinalizationService
         if (identity.DurationMs.HasValue
             && candidate.DurationMs.HasValue
             && Math.Abs(identity.DurationMs.Value - candidate.DurationMs.Value) > 3000)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsIdentityMatch(FinalizedTrackIdentity expected, FinalizedTrackIdentity actual)
+    {
+        if (!string.IsNullOrWhiteSpace(expected.SpotifyTrackId)
+            && string.Equals(expected.SpotifyTrackId, actual.SpotifyTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.DeezerTrackId)
+            && string.Equals(expected.DeezerTrackId, actual.DeezerTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.AppleTrackId)
+            && string.Equals(expected.AppleTrackId, actual.AppleTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.BoomplayTrackId)
+            && string.Equals(expected.BoomplayTrackId, actual.BoomplayTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.QobuzTrackId)
+            && string.Equals(expected.QobuzTrackId, actual.QobuzTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.TidalTrackId)
+            && string.Equals(expected.TidalTrackId, actual.TidalTrackId, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.Isrc)
+            && string.Equals(expected.Isrc, actual.Isrc, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(expected.Title)
+            || string.IsNullOrWhiteSpace(expected.Artist)
+            || string.IsNullOrWhiteSpace(actual.Title)
+            || string.IsNullOrWhiteSpace(actual.Artist))
+        {
+            return false;
+        }
+
+        if (!TrackTitleMatcher.TitlesMatch(expected.Title, actual.Title)
+            || !TrackTitleMatcher.ArtistsMatch(expected.Artist, actual.Artist))
+        {
+            return false;
+        }
+
+        if (expected.DurationMs.HasValue
+            && actual.DurationMs.HasValue
+            && Math.Abs(expected.DurationMs.Value - actual.DurationMs.Value) > 3000)
         {
             return false;
         }
@@ -765,6 +897,11 @@ public sealed class WatchlistFinalizationService
         string PlaylistId,
         string TrackId,
         long? DestinationFolderId);
+
+    private sealed record VerifiedFinalAudioSelection(
+        List<string> Paths,
+        long? LocalTrackId,
+        FinalizedTrackIdentity Identity);
 
     private sealed record FinalizedTrackIdentity(
         string? SpotifyTrackId,

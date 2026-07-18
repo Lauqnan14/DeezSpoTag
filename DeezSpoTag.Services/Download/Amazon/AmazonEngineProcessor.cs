@@ -63,6 +63,14 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
         CancellationToken cancellationToken)
     {
         var amazonRequest = (AmazonDownloadRequest)request;
+        if (RequiresStrictPreflight(amazonRequest.Quality))
+        {
+            payload.RequestedQuality = amazonRequest.Quality;
+            payload.DeliveredQuality = "Quality not preflighted";
+            throw new InvalidOperationException(
+                "Amazon Ultra HD FLAC requires verified 24-bit catalog quality before download; current public provider does not expose bit-depth preflight.");
+        }
+
         return await _amazonDownloader.DownloadAsync(
             amazonRequest,
             settings.EmbedMaxQualityCover,
@@ -70,6 +78,12 @@ public sealed class AmazonEngineProcessor : QueueEngineProcessorBase
             progressReporter,
             cancellationToken);
     }
+
+    private static bool RequiresStrictPreflight(string? quality)
+        => string.Equals(
+            (quality ?? string.Empty).Trim(),
+            "ULTRA_HD_FLAC",
+            StringComparison.OrdinalIgnoreCase);
 
     private static string ResolveAmazonSourceId(AmazonQueueItem payload)
     {

@@ -49,6 +49,9 @@ public static class DownloadSourceOrder
         new(AmazonSource, "Amazon Dolby Atmos", "DOLBY_ATMOS", null)
     ];
 
+    private static readonly DownloadProfile[] KnownProfiles =
+        StereoPriority.Concat(AtmosPriority).ToArray();
+
     public static string ResolveService(DeezSpoTagSettings settings)
     {
         var service = settings.Service?.Trim().ToLowerInvariant();
@@ -296,7 +299,7 @@ public static class DownloadSourceOrder
             }
         }
 
-        var normalized = NormalizeDownloadEngineOrderSettings(configured);
+        var normalized = NormalizeDownloadEngineOrderSettingsForExecution(configured);
         if (!normalized.Enabled)
         {
             return new DownloadEngineOrderValidationResult(true, null);
@@ -453,7 +456,7 @@ public static class DownloadSourceOrder
             return StereoPriority;
         }
 
-        var normalized = NormalizeDownloadEngineOrderSettings(settings.DownloadEngineOrder);
+        var normalized = NormalizeDownloadEngineOrderSettingsForExecution(settings.DownloadEngineOrder);
         var enabledProfiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var engine in normalized.Engines)
         {
@@ -475,7 +478,7 @@ public static class DownloadSourceOrder
             }
         }
 
-        return StereoPriority
+        return KnownProfiles
             .Where(profile => !string.IsNullOrWhiteSpace(profile.Quality)
                 && enabledProfiles.Contains(BuildProfileKey(profile.Source, profile.Quality)))
             .ToArray();
@@ -541,6 +544,70 @@ public static class DownloadSourceOrder
             {
                 Quality = quality,
                 Enabled = defaultQuality.Enabled
+            });
+        }
+
+        return normalized;
+    }
+
+    private static DownloadEngineOrderSettings NormalizeDownloadEngineOrderSettingsForExecution(
+        DownloadEngineOrderSettings? configured)
+    {
+        if (configured == null)
+        {
+            return DownloadEngineOrderSettings.CreateDefault();
+        }
+
+        if (!configured.Enabled)
+        {
+            return NormalizeDownloadEngineOrderSettings(configured);
+        }
+
+        var defaults = DownloadEngineOrderSettings.CreateDefault();
+        var defaultByEngine = defaults.Engines.ToDictionary(
+            item => NormalizeEngine(item.Engine),
+            item => item,
+            StringComparer.OrdinalIgnoreCase);
+        var seenEngines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new DownloadEngineOrderSettings
+        {
+            Enabled = true,
+            Engines = new List<DownloadEngineOrderItem>()
+        };
+
+        foreach (var incoming in configured.Engines ?? Enumerable.Empty<DownloadEngineOrderItem>())
+        {
+            var engine = NormalizeEngine(incoming.Engine);
+            if (!defaultByEngine.TryGetValue(engine, out var defaultEngine) || !seenEngines.Add(engine))
+            {
+                continue;
+            }
+
+            var validQualities = defaultEngine.Qualities
+                .Select(quality => NormalizeQuality(engine, quality.Quality))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var seenQualities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var qualities = new List<DownloadEngineQualityItem>();
+            foreach (var incomingQuality in incoming.Qualities ?? Enumerable.Empty<DownloadEngineQualityItem>())
+            {
+                var quality = NormalizeQuality(engine, incomingQuality.Quality);
+                if (!validQualities.Contains(quality) || !seenQualities.Add(quality))
+                {
+                    continue;
+                }
+
+                qualities.Add(new DownloadEngineQualityItem
+                {
+                    Quality = quality,
+                    Enabled = incomingQuality.Enabled
+                });
+            }
+
+            normalized.Engines.Add(new DownloadEngineOrderItem
+            {
+                Engine = engine,
+                Enabled = incoming.Enabled,
+                Qualities = qualities
             });
         }
 
