@@ -1495,7 +1495,6 @@
     --ops-surface: color-mix(in srgb, var(--bg-tertiary) 94%, transparent);
     --ops-border: color-mix(in srgb, var(--primary-color) 22%, var(--border-secondary));
     --ops-glow: 0 18px 32px rgba(0, 0, 0, 0.32);
-    min-height: 70vh;
     background: radial-gradient(120% 120% at 10% 0%, color-mix(in srgb, var(--primary-color) 10%, transparent), transparent 45%),
                 radial-gradient(90% 90% at 90% 10%, color-mix(in srgb, var(--primary-color) 12%, transparent), transparent 55%);
     padding: 8px;
@@ -1576,7 +1575,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 18px;
     margin-top: 20px;
-    align-items: stretch;
+    align-items: start;
 }
 
 .media-operations-tab .ops-primary,
@@ -1599,15 +1598,15 @@
 
 .media-operations-tab .ops-secondary {
     grid-column: 2;
-    align-content: stretch;
+    align-self: start;
+    align-content: start;
 }
 
 .media-operations-tab .ops-secondary .mini-grid {
     display: grid;
     grid-template-columns: 1fr;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, auto);
     gap: 18px;
-    height: 100%;
 }
 
 .media-operations-tab .ops-secondary .tool-card {
@@ -1623,19 +1622,18 @@
 }
 
 .media-operations-tab #meloday-card {
-    align-self: stretch;
-    height: 100%;
+    align-self: start;
 }
 
 .media-operations-tab #meloday-card .tool-card-body {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-height: 0;
 }
 
 .media-operations-tab #meloday-card .tool-card-footer {
-    margin-top: auto;
+    margin-top: 6px;
 }
 
 .media-operations-tab #meloday-card .meloday-summary-grid {
@@ -2237,16 +2235,79 @@
 }
 
 .media-operations-tab .metadata-updater-option {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 8px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
+    border-radius: 10px;
+    padding: 8px 10px;
+    min-height: 36px;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 500;
+    font-family: inherit;
+    overflow: hidden;
 }
 
 .media-operations-tab .metadata-updater-option input {
-    width: auto;
+    width: 16px;
+    height: 16px;
     min-width: 0;
+    padding: 0;
+    flex: 0 0 auto;
+}
+
+.media-operations-tab .metadata-updater-option span:not(.metadata-updater-tooltip-icon) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.media-operations-tab .metadata-updater-select-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    width: 100%;
+}
+
+.media-operations-tab .metadata-updater-option-group {
+    display: grid;
+    gap: 6px;
+    width: 100%;
+}
+
+.media-operations-tab .metadata-updater-group-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.media-operations-tab .metadata-updater-checkbox-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px 14px;
+    width: 100%;
+}
+
+.media-operations-tab .metadata-updater-tooltip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--primary-color);
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: help;
+    flex: 0 0 auto;
+    margin-left: auto;
 }
 
 .media-operations-tab .tool-card-progress-section {
@@ -2555,6 +2616,16 @@
     .media-operations-tab .tool-card-controls button {
         width: 100%;
         min-width: 0;
+    }
+
+    .media-operations-tab .metadata-updater-option input {
+        width: 16px;
+        min-width: 16px;
+    }
+
+    .media-operations-tab .metadata-updater-checkbox-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
     }
 
     .media-operations-tab .field-input {
@@ -4035,7 +4106,7 @@ function initMetadataUpdater() {
         const source = sourceSelect?.value || 'auto';
         const intervalDays = Number(intervalSelect?.value || 30);
         const folderId = Number(folderSelect?.value || 0);
-        const targets = missingArtistArtworkOnly ? ['plex'] : getMetadataUpdaterTargets();
+        const targets = getMetadataUpdaterTargets();
         if (targets.length === 0) {
             notifyActivity('Select at least one target server.', 'error');
             return;

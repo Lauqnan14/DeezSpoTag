@@ -1,61 +1,75 @@
 <p class="metadata-updater-description tool-card-info">Refresh artist metadata and rotate avatar/background artwork before pushing updates to your selected media server.</p>
-<select id="metadata-source-platform">
-    <option value="auto" selected>Auto source</option>
-    <option value="spotify">Spotify</option>
-    <option value="deezer">Deezer</option>
-    <option value="apple">Apple Music</option>
-    <option value="tidal">Tidal</option>
-    <option value="qobuz">Qobuz</option>
-    <option value="lastfm">Last.fm</option>
-</select>
-<select id="metadata-refresh-interval">
-    <option value="180">6 months</option>
-    <option value="90">3 months</option>
-    <option value="30" selected>1 month</option>
-    <option value="14">2 weeks</option>
-    <option value="7">1 week</option>
-    <option value="0">Full refresh</option>
-</select>
-<select id="metadata-library-folder" aria-label="Artist metadata library folder">
-    <option value="">All music libraries</option>
-</select>
-<div id="metadata-target-server" class="metadata-target-checkboxes" role="group" aria-label="Target servers">
-    <label class="metadata-updater-option">
-        <input type="checkbox" data-metadata-target="plex" checked />
-        <span>Plex</span>
-    </label>
-    <label class="metadata-updater-option">
-        <input type="checkbox" data-metadata-target="jellyfin" />
-        <span>Jellyfin</span>
-    </label>
-    <label class="metadata-updater-option">
-        <input type="checkbox" data-metadata-target="navidrome" />
-        <span>Navidrome</span>
-    </label>
+<div class="metadata-updater-select-row">
+    <select id="metadata-source-platform">
+        <option value="auto" selected>Auto source</option>
+        <option value="spotify">Spotify</option>
+        <option value="deezer">Deezer</option>
+        <option value="apple">Apple Music</option>
+        <option value="tidal">Tidal</option>
+        <option value="qobuz">Qobuz</option>
+        <option value="lastfm">Last.fm</option>
+    </select>
+    <select id="metadata-refresh-interval">
+        <option value="180">6 months</option>
+        <option value="90">3 months</option>
+        <option value="30" selected>1 month</option>
+        <option value="14">2 weeks</option>
+        <option value="7">1 week</option>
+        <option value="0">Full refresh</option>
+    </select>
+    <select id="metadata-library-folder" aria-label="Artist metadata library folder">
+        <option value="">All music libraries</option>
+    </select>
 </div>
-<div id="metadata-rotation-fields" class="metadata-target-checkboxes" role="group" aria-label="Artist metadata fields">
-    <label class="metadata-updater-option">
-        <input type="checkbox" id="metadata-include-avatar" checked />
-        <span>Artist art</span>
-    </label>
-    <label class="metadata-updater-option">
-        <input type="checkbox" id="metadata-include-background" checked />
-        <span>Background art</span>
-    </label>
-    <label class="metadata-updater-option">
-        <input type="checkbox" id="metadata-include-bio" />
-        <span>Biography</span>
-    </label>
+<div class="metadata-updater-option-group">
+    <div class="metadata-updater-group-label">Targets</div>
+    <div id="metadata-target-server" class="metadata-target-checkboxes metadata-updater-checkbox-grid" role="group" aria-label="Target servers">
+        <label class="metadata-updater-option">
+            <input type="checkbox" data-metadata-target="plex" checked />
+            <span>Plex</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" data-metadata-target="jellyfin" />
+            <span>Jellyfin</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" data-metadata-target="navidrome" />
+            <span>Navidrome</span>
+        </label>
+    </div>
 </div>
-<label class="metadata-updater-option">
-    <input type="checkbox" id="metadata-include-popular-songs" />
-    <span>Sync popular songs</span>
-</label>
-<label class="metadata-updater-option">
-    <input type="checkbox" id="metadata-missing-artist-art-only" />
-    <span>Only artists missing artist art (Plex)</span>
-</label>
-<label class="metadata-updater-option">
-    <input type="checkbox" id="metadata-ocr-text-art-blocking" checked />
-    <span>Block artwork with text</span>
-</label>
+<div class="metadata-updater-option-group">
+    <div class="metadata-updater-group-label">Update fields</div>
+    <div id="metadata-rotation-fields" class="metadata-target-checkboxes metadata-updater-checkbox-grid" role="group" aria-label="Artist metadata fields">
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-include-avatar" checked />
+            <span>Artist art</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-include-background" checked />
+            <span>Background art</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-include-bio" />
+            <span>Biography</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-include-popular-songs" />
+            <span>Sync popular songs</span>
+        </label>
+    </div>
+</div>
+<div class="metadata-updater-option-group">
+    <div class="metadata-updater-group-label">Filters</div>
+    <div class="metadata-updater-checkbox-grid">
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-missing-artist-art-only" />
+            <span>Missing artist art targets</span>
+            <span class="metadata-updater-tooltip-icon" title="Filters the run to artists missing main artist artwork on the selected server(s). If multiple servers are selected, the server with the most missing artwork chooses the artist list. The selected update fields still apply." aria-label="Filters the run to artists missing main artist artwork on the selected server(s). If multiple servers are selected, the server with the most missing artwork chooses the artist list. The selected update fields still apply.">?</span>
+        </label>
+        <label class="metadata-updater-option">
+            <input type="checkbox" id="metadata-ocr-text-art-blocking" checked />
+            <span>Block artwork with text</span>
+        </label>
+    </div>
+</div>

@@ -259,7 +259,8 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 return;
             }
 
-            var runPreparation = await PrepareRunAsync(request, cancellationToken);
+            var auth = await _platformAuthService.LoadAsync();
+            var runPreparation = await PrepareRunAsync(request, auth, cancellationToken);
             if (runPreparation is null)
             {
                 return;
@@ -267,7 +268,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
             var state = runPreparation.State;
             var allCandidates = runPreparation.Candidates;
-            var auth = await _platformAuthService.LoadAsync();
             var counters = new MetadataRunCounters(allCandidates.Count);
 
             foreach (var tracked in allCandidates)
@@ -358,11 +358,12 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
     private async Task<PreparedRunState?> PrepareRunAsync(
         MetadataUpdaterRunRequest request,
+        PlatformAuthState auth,
         CancellationToken cancellationToken)
     {
         var state = await LoadStateAsync(cancellationToken);
         var missingArtistIds = request.MissingArtistArtworkOnly == true
-            ? await SeedMissingArtistArtworkCandidatesAsync(state, request, cancellationToken)
+            ? await SeedMissingArtistArtworkCandidatesAsync(state, request, auth, cancellationToken)
             : null;
         if (request.MissingArtistArtworkOnly != true
             && (request.IncludeAllArtists == true || state.Artists.Count == 0))
@@ -459,6 +460,11 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         DateTimeOffset nowUtc)
     {
         if (request.Force == true)
+        {
+            return false;
+        }
+
+        if (request.MissingArtistArtworkOnly == true)
         {
             return false;
         }
@@ -826,39 +832,244 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private async Task<IReadOnlySet<long>> SeedMissingArtistArtworkCandidatesAsync(
         MetadataUpdaterState state,
         MetadataUpdaterRunRequest request,
+        PlatformAuthState auth,
+        CancellationToken cancellationToken)
+    {
+        var plan = await BuildMissingArtistArtworkPlanAsync(request, auth, cancellationToken);
+        var scopedIds = plan.ArtistIds;
+        var artists = (await _libraryRepository.GetArtistsAsync("all", request.FolderId, cancellationToken))
+            .Where(artist => scopedIds.Contains(artist.Id))
+            .ToList();
+        SeedTrackedArtists(state, request, artists);
+        await SaveStateAsync(state, cancellationToken);
+        var counts = string.Join(", ", plan.MissingCounts.Select(pair => $"{pair.Key} {pair.Value}"));
+        var message = $"Missing artist art driver: {plan.DriverTarget}. Missing counts: {counts}. Selected candidates: {scopedIds.Count}.";
+        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(DateTimeOffset.UtcNow, "info", message));
+        if (plan.Warnings.Count > 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "warn",
+                $"Missing artist art planning warnings: {string.Join(" ", plan.Warnings)}"));
+        }
+
+        UpdateStatus(_status with { Message = message });
+        return scopedIds;
+    }
+
+    private async Task<MissingArtistArtworkPlan> BuildMissingArtistArtworkPlanAsync(
+        MetadataUpdaterRunRequest request,
+        PlatformAuthState auth,
         CancellationToken cancellationToken)
     {
         var artists = await _libraryRepository.GetArtistsAsync("all", request.FolderId, cancellationToken);
-        var missingArtists = artists
-            .Where(static artist => string.IsNullOrWhiteSpace(artist.PreferredImagePath))
+        var scopedArtists = artists
+            .Where(static artist => artist.Id > 0 && !string.IsNullOrWhiteSpace(artist.Name))
             .ToList();
-        var plexOnlyRequest = CloneAsPlexMissingArtworkRequest(request);
-        SeedTrackedArtists(state, plexOnlyRequest, missingArtists);
-        await SaveStateAsync(state, cancellationToken);
-        return missingArtists
-            .Where(static artist => artist.Id > 0)
-            .Select(static artist => artist.Id)
-            .ToHashSet();
+        var selectedTargets = NormalizeTargets(request.Targets, request.Target);
+        var warnings = new List<string>();
+        var missingByTarget = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var target in selectedTargets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            missingByTarget[target] = target switch
+            {
+                PlexTarget => await FindPlexMissingArtistArtworkAsync(scopedArtists, auth.Plex, warnings, cancellationToken),
+                JellyfinTarget => await FindJellyfinMissingArtistArtworkAsync(scopedArtists, auth.Jellyfin, warnings, cancellationToken),
+                NavidromeTarget => await FindNavidromeMissingArtistArtworkAsync(scopedArtists, auth.Navidrome, warnings, cancellationToken),
+                _ => new HashSet<long>()
+            };
+        }
+
+        var driverTarget = selectedTargets
+            .Select((target, index) => new { Target = target, Index = index })
+            .OrderByDescending(item => missingByTarget.TryGetValue(item.Target, out var ids) ? ids.Count : 0)
+            .ThenBy(item => item.Index)
+            .Select(item => item.Target)
+            .FirstOrDefault() ?? PlexTarget;
+        var driverIds = missingByTarget.TryGetValue(driverTarget, out var selectedIds)
+            ? selectedIds
+            : new HashSet<long>();
+        var counts = missingByTarget.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.Count,
+            StringComparer.OrdinalIgnoreCase);
+        return new MissingArtistArtworkPlan(driverTarget, counts, driverIds, warnings);
     }
 
-    private static MetadataUpdaterRunRequest CloneAsPlexMissingArtworkRequest(MetadataUpdaterRunRequest request)
-        => new()
+    private async Task<HashSet<long>> FindPlexMissingArtistArtworkAsync(
+        IReadOnlyList<ArtistDto> artists,
+        PlexAuth? plex,
+        List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        var missing = new HashSet<long>();
+        if (!TryGetPlexConnection(plex, out var plexUrl, out var plexToken))
         {
-            ArtistId = request.ArtistId,
-            Source = request.Source,
-            Target = PlexTarget,
-            Targets = new List<string> { PlexTarget },
-            FolderId = request.FolderId,
-            MissingArtistArtworkOnly = true,
-            IntervalDays = request.IntervalDays,
-            IncludeAvatar = request.IncludeAvatar,
-            IncludeBackground = request.IncludeBackground,
-            IncludeBio = request.IncludeBio,
-            IncludePopularSongs = request.IncludePopularSongs,
-            OcrTextArtBlockingEnabled = request.OcrTextArtBlockingEnabled,
-            IncludeAllArtists = true,
-            Force = true
-        };
+            warnings.Add("Plex missing-art audit skipped because Plex is not configured.");
+            return missing;
+        }
+
+        foreach (var artist in artists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var locations = await _plexClient.FindArtistLocationsAsync(plexUrl, plexToken, artist.Name, cancellationToken);
+                if (locations.Count == 0)
+                {
+                    missing.Add(artist.Id);
+                    continue;
+                }
+
+                var hasArtwork = false;
+                foreach (var location in locations)
+                {
+                    var metadata = await _plexClient.GetArtistMetadataAsync(plexUrl, plexToken, location.RatingKey, cancellationToken);
+                    hasArtwork = hasArtwork || !string.IsNullOrWhiteSpace(metadata?.Thumb);
+                    if (hasArtwork)
+                    {
+                        break;
+                    }
+                }
+
+                if (!hasArtwork)
+                {
+                    missing.Add(artist.Id);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Plex missing-art audit failed for artist {ArtistId}", artist.Id);
+                warnings.Add($"Plex missing-art audit failed for {artist.Name}.");
+            }
+        }
+
+        return missing;
+    }
+
+    private async Task<HashSet<long>> FindJellyfinMissingArtistArtworkAsync(
+        IReadOnlyList<ArtistDto> artists,
+        JellyfinAuth? jellyfin,
+        List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        var missing = new HashSet<long>();
+        if (jellyfin is null
+            || string.IsNullOrWhiteSpace(jellyfin.Url)
+            || string.IsNullOrWhiteSpace(jellyfin.ApiKey)
+            || string.IsNullOrWhiteSpace(jellyfin.UserId))
+        {
+            warnings.Add("Jellyfin missing-art audit skipped because Jellyfin is not configured.");
+            return missing;
+        }
+
+        foreach (var artist in artists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var artistIds = await _jellyfinClient.FindArtistIdsAsync(jellyfin.Url, jellyfin.ApiKey, artist.Name, cancellationToken);
+                if (artistIds.Count == 0)
+                {
+                    missing.Add(artist.Id);
+                    continue;
+                }
+
+                var hasArtwork = false;
+                foreach (var artistId in artistIds)
+                {
+                    var item = await _jellyfinClient.GetItemAsync(
+                        jellyfin.Url,
+                        jellyfin.ApiKey,
+                        jellyfin.UserId,
+                        artistId,
+                        cancellationToken);
+                    hasArtwork = hasArtwork || item?.ImageTags?.ContainsKey("Primary") == true;
+                    if (hasArtwork)
+                    {
+                        break;
+                    }
+                }
+
+                if (!hasArtwork)
+                {
+                    missing.Add(artist.Id);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Jellyfin missing-art audit failed for artist {ArtistId}", artist.Id);
+                warnings.Add($"Jellyfin missing-art audit failed for {artist.Name}.");
+            }
+        }
+
+        return missing;
+    }
+
+    private async Task<HashSet<long>> FindNavidromeMissingArtistArtworkAsync(
+        IReadOnlyList<ArtistDto> artists,
+        NavidromeAuth? navidrome,
+        List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        var missing = new HashSet<long>();
+        if (navidrome is null
+            || string.IsNullOrWhiteSpace(navidrome.Url)
+            || string.IsNullOrWhiteSpace(navidrome.Username)
+            || string.IsNullOrWhiteSpace(navidrome.Password))
+        {
+            warnings.Add("Navidrome missing-art audit skipped because Navidrome is not configured.");
+            return missing;
+        }
+
+        foreach (var artist in artists)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var matches = await _navidromeClient.SearchArtistsAsync(
+                    navidrome.Url,
+                    navidrome.Username,
+                    navidrome.Password,
+                    artist.Name,
+                    cancellationToken);
+                var match = matches.FirstOrDefault(candidate => string.Equals(candidate.Name.Trim(), artist.Name.Trim(), StringComparison.OrdinalIgnoreCase))
+                    ?? matches.FirstOrDefault();
+                if (match is null)
+                {
+                    missing.Add(artist.Id);
+                    continue;
+                }
+
+                var hasArtwork = !string.IsNullOrWhiteSpace(match.CoverArt);
+                if (!hasArtwork)
+                {
+                    var info = await _navidromeClient.GetArtistInfoAsync(
+                        navidrome.Url,
+                        navidrome.Username,
+                        navidrome.Password,
+                        match.Id,
+                        cancellationToken);
+                    hasArtwork = !string.IsNullOrWhiteSpace(info?.SmallImageUrl)
+                        || !string.IsNullOrWhiteSpace(info?.MediumImageUrl)
+                        || !string.IsNullOrWhiteSpace(info?.LargeImageUrl);
+                }
+
+                if (!hasArtwork)
+                {
+                    missing.Add(artist.Id);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(ex, "Navidrome missing-art audit failed for artist {ArtistId}", artist.Id);
+                warnings.Add($"Navidrome missing-art audit failed for {artist.Name}.");
+            }
+        }
+
+        return missing;
+    }
 
     private static void SeedTrackedArtists(
         MetadataUpdaterState state,
@@ -1843,24 +2054,10 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 }
             }
 
-            var navidromeBiographyAvailable = false;
-            var navidromeBackgroundAvailable = false;
-            foreach (var artistId in artistIds)
+            if (!string.IsNullOrWhiteSpace(request.Biography))
             {
-                var artistInfo = await _navidromeClient.GetArtistInfoAsync(
-                    navidrome.Url,
-                    navidrome.Username,
-                    navidrome.Password,
-                    artistId,
-                    cancellationToken);
-                navidromeBiographyAvailable = navidromeBiographyAvailable
-                    || (!string.IsNullOrWhiteSpace(request.Biography) && !string.IsNullOrWhiteSpace(artistInfo?.Biography));
-                navidromeBackgroundAvailable = navidromeBackgroundAvailable
-                    || (HasLocalFile(request.BackgroundPath) && !string.IsNullOrWhiteSpace(artistInfo?.LargeImageUrl));
+                warnings.Add("Navidrome biography is read-only and was not updated.");
             }
-
-            updates.BioUpdated = navidromeBiographyAvailable || updates.BioUpdated;
-            updates.BackgroundUpdated = navidromeBackgroundAvailable || updates.BackgroundUpdated;
 
             var scanStarted = await _navidromeClient.StartScanAsync(
                 navidrome.Url,
@@ -2550,6 +2747,11 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
     private sealed record PreparedVisuals(string? AvatarPath, string? BackgroundPath, int NextAvatarIndex, int NextBackgroundIndex);
     private sealed record ArtworkBandAnalysis(double EdgeDensity, double TransitionDensity);
+    private sealed record MissingArtistArtworkPlan(
+        string DriverTarget,
+        IReadOnlyDictionary<string, int> MissingCounts,
+        IReadOnlySet<long> ArtistIds,
+        IReadOnlyList<string> Warnings);
     private sealed record PlexArtworkUpdates(bool AvatarUpdated, bool BackgroundUpdated)
     {
         public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated;
