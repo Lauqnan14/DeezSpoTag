@@ -2610,11 +2610,6 @@ public partial class AutoTagService
         var hasEnhancementWork = context.IncludesEnhancementStage
             || context.IncludesEnhancementWorkflows
             || isManualEnrichment;
-        await RefreshEnhancementLibraryIndexAsync(
-            job,
-            context.ConfigPath,
-            hasEnhancementWork,
-            cancellationToken);
         if (autoMove.Completed && !isManualEnrichment)
         {
             await TriggerPlexScanAfterMoveAsync(job, cancellationToken);
@@ -7536,6 +7531,11 @@ public partial class AutoTagService
     private static DateTimeOffset GetLastProgressTimestamp(AutoTagJob job, string? jobPath = null)
     {
         var timestamp = job.StartedAt;
+        if (job.LastActivityAt > timestamp)
+        {
+            timestamp = job.LastActivityAt;
+        }
+
         if (job.ResumeCheckpoint?.UpdatedAt > timestamp)
         {
             timestamp = job.ResumeCheckpoint.UpdatedAt;

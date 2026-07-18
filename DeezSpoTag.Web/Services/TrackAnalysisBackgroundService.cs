@@ -91,6 +91,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     private CancellationTokenSource? _activeRunCancellation;
     private bool _manualRunPending;
     private int _manualRunBatchSize;
+    private bool _manualRunForceWhenDisabled;
     private string _runtimeState = VibeAnalysisRuntimeStates.Idle;
     private LatestTrackAnalysisDto? _currentAnalysis;
     private LatestTrackAnalysisDto? _latestAnalysis;
@@ -135,6 +136,12 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
     }
 
     public bool TryStartManualAnalysis(int batchSize)
+        => TryQueueAnalysisRun(batchSize, forceWhenDisabled: true);
+
+    public bool TrySignalBackgroundAnalysis(int batchSize)
+        => TryQueueAnalysisRun(batchSize, forceWhenDisabled: false);
+
+    private bool TryQueueAnalysisRun(int batchSize, bool forceWhenDisabled)
     {
         var shouldSignal = false;
         lock (_runtimeLock)
@@ -145,6 +152,7 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
             }
 
             _manualRunBatchSize = Math.Clamp(batchSize, 10, 500);
+            _manualRunForceWhenDisabled = forceWhenDisabled;
             _manualRunPending = true;
             _runtimeUpdatedAtUtc = DateTimeOffset.UtcNow;
             shouldSignal = true;
@@ -304,9 +312,9 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         {
             try
             {
-                if (TryConsumeManualRun(out var manualBatchSize))
+                if (TryConsumeManualRun(out var manualBatchSize, out var forceWhenDisabled))
                 {
-                    await AnalyzeNowAsync(manualBatchSize, stoppingToken, forceWhenDisabled: true);
+                    await AnalyzeNowAsync(manualBatchSize, stoppingToken, forceWhenDisabled);
                     continue;
                 }
 
@@ -346,19 +354,22 @@ public sealed class TrackAnalysisBackgroundService : BackgroundService
         }
     }
 
-    private bool TryConsumeManualRun(out int batchSize)
+    private bool TryConsumeManualRun(out int batchSize, out bool forceWhenDisabled)
     {
         lock (_runtimeLock)
         {
             if (!_manualRunPending)
             {
                 batchSize = 0;
+                forceWhenDisabled = false;
                 return false;
             }
 
             batchSize = _manualRunBatchSize;
+            forceWhenDisabled = _manualRunForceWhenDisabled;
             _manualRunPending = false;
             _manualRunBatchSize = 0;
+            _manualRunForceWhenDisabled = false;
             return true;
         }
     }

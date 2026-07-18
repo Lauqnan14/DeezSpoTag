@@ -1957,12 +1957,13 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var vibeSettings = await _vibeSettingsStore.LoadAsync();
         if (vibeSettings.Enabled)
         {
+            var signaled = _analysisService.TrySignalBackgroundAnalysis(Math.Clamp(vibeSettings.BatchSize, 10, 500));
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
-                "info",
-                "Automation: vibe analysis starting after direct library ingestion completed."));
-
-            await _analysisService.AnalyzeNowAsync(Math.Clamp(vibeSettings.BatchSize, 10, 500), cancellationToken);
+                signaled ? "info" : "warning",
+                signaled
+                    ? "Automation: vibe analysis signaled after direct library ingestion completed."
+                    : "Automation: vibe analysis signal skipped because analysis is already running or queued."));
         }
         else
         {

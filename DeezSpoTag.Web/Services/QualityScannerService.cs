@@ -341,7 +341,8 @@ public sealed class QualityScannerService
             options.MinFormat,
             options.MinBitDepth,
             options.MinSampleRateHz,
-            cancellationToken)).ToList();
+            cancellationToken,
+            targetTrackIds: options.TargetTrackIds)).ToList();
         if (options.FolderIds.Count > 1)
         {
             tracks = tracks
@@ -354,13 +355,6 @@ public sealed class QualityScannerService
             tracks = tracks
             .Where(track => options.TechnicalProfiles.Contains(QualityScanTrackFormatter.FormatTechnicalProfile(track)))
             .ToList();
-        }
-
-        if (options.TargetTrackIds.Count > 0)
-        {
-            tracks = tracks
-                .Where(track => options.TargetTrackIds.Contains(track.TrackId))
-                .ToList();
         }
 
         return tracks;

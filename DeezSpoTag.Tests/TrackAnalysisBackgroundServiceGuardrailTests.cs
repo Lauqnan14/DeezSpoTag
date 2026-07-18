@@ -35,6 +35,20 @@ public sealed class TrackAnalysisBackgroundServiceGuardrailTests
     }
 
     [Fact]
+    public void BackgroundAnalysisSignal_UsesExistingWorkerQueueWithoutForcingDisabledAnalysis()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "TrackAnalysisBackgroundService.cs"));
+
+        Assert.Contains("public bool TrySignalBackgroundAnalysis(int batchSize)", source, StringComparison.Ordinal);
+        Assert.Contains("=> TryQueueAnalysisRun(batchSize, forceWhenDisabled: false);", source, StringComparison.Ordinal);
+        Assert.Contains("public bool TryStartManualAnalysis(int batchSize)", source, StringComparison.Ordinal);
+        Assert.Contains("=> TryQueueAnalysisRun(batchSize, forceWhenDisabled: true);", source, StringComparison.Ordinal);
+        Assert.Contains("out var forceWhenDisabled", source, StringComparison.Ordinal);
+        Assert.Contains("await AnalyzeNowAsync(manualBatchSize, stoppingToken, forceWhenDisabled);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void VibeAnalysisRuntime_IsCancellableAndDoesNotReadStaleProcessingRowsForCurrentTrack()
     {
         var repoRoot = ResolveRepoRoot();

@@ -59,6 +59,12 @@ public partial class AutoTagService
             return;
         }
 
+        if (!ShouldPrepareMissingCoreMetadataTargets(job, enhancementRoot)
+            || ReadStringList(root, AutoTagLiterals.TargetFilesKey).Count > 0)
+        {
+            return;
+        }
+
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
         var scopedFolders = ResolveEnhancementJobFolders(job, enhancementRoot, enabledFolders);
         if (scopedFolders.Count == 0)
@@ -66,24 +72,8 @@ public partial class AutoTagService
             throw new InvalidOperationException("Enhancement could not resolve an enabled music folder scope.");
         }
 
-        SetEnhancementPhase(job, "library-index-refresh", 0, scopedFolders.Count);
-        for (var index = 0; index < scopedFolders.Count; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var folder = scopedFolders[index];
-            SetEnhancementPhase(job, "library-index-refresh", index, scopedFolders.Count);
-            AppendLog(job, $"enhancement library index refresh starting: {folder.RootPath}");
-            await _libraryScanRunner.RunFolderScanAndWaitAsync(folder.Id, skipSpotifyFetch: true, cancellationToken);
-        }
-        SetEnhancementPhase(job, "library-index-refresh", scopedFolders.Count, scopedFolders.Count);
-
-        if (!ShouldPrepareMissingCoreMetadataTargets(job, enhancementRoot)
-            || ReadStringList(root, AutoTagLiterals.TargetFilesKey).Count > 0)
-        {
-            return;
-        }
-
-        SetEnhancementPhase(job, "missing-core-metadata-discovery", 0, 1);
+        SetEnhancementPhase(job, "missing-core-metadata-db-audit", 0, 1);
+        AppendLog(job, $"enhancement missing core metadata DB audit starting for {scopedFolders.Count} indexed folder scope(s).");
         var missingFiles = await _libraryRepository.GetMissingCoreMetadataFilesAsync(
             scopedFolders.Select(folder => folder.Id).ToList(),
             cancellationToken);
@@ -93,42 +83,11 @@ public partial class AutoTagService
             AutoTagLiterals.TargetFilesKey,
             missingFiles
                 .Select(file => file.FilePath)
-                .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
                 .Distinct(StringComparer.OrdinalIgnoreCase));
         File.WriteAllText(configPath, root.ToJsonString(_jsonOptions), new System.Text.UTF8Encoding(false));
-        AppendLog(job, $"enhancement missing core metadata targets prepared: {missingFiles.Count} file(s)");
-        SetEnhancementPhase(job, "missing-core-metadata-discovery", 1, 1);
-    }
-
-    private async Task RefreshEnhancementLibraryIndexAsync(
-        AutoTagJob job,
-        string configPath,
-        bool hasEnhancementWork,
-        CancellationToken cancellationToken)
-    {
-        if (!hasEnhancementWork || !IsEnhancementRunIntent(job.RunIntent))
-        {
-            return;
-        }
-
-        var root = LoadConfigRoot(configPath);
-        if (root?[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
-        {
-            return;
-        }
-
-        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
-        var scopedFolders = ResolveEnhancementJobFolders(job, enhancementRoot, enabledFolders);
-        SetEnhancementPhase(job, "final-library-reindex", 0, scopedFolders.Count);
-        for (var index = 0; index < scopedFolders.Count; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await _libraryScanRunner.RunFolderScanAndWaitAsync(
-                scopedFolders[index].Id,
-                skipSpotifyFetch: true,
-                cancellationToken);
-            SetEnhancementPhase(job, "final-library-reindex", index + 1, scopedFolders.Count);
-        }
+        AppendLog(job, $"enhancement missing core metadata DB audit finished: {missingFiles.Count} indexed file(s)");
+        SetEnhancementPhase(job, "missing-core-metadata-db-audit", 1, 1);
     }
 
     private static bool ShouldPrepareMissingCoreMetadataTargets(AutoTagJob job, JsonObject enhancementRoot)
@@ -862,7 +821,7 @@ public partial class AutoTagService
             .Distinct()
             .ToList();
 
-        await ReportMissingCoreMetadataScanIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
+        await ReportMissingCoreMetadataAuditIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
         await RunFolderTagAlignmentIfRequestedAsync(job, configPath, options, scopedFolders, cancellationToken);
         await RunQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken);
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
@@ -899,7 +858,7 @@ public partial class AutoTagService
             TechnicalProfiles: technicalProfiles);
     }
 
-    private async Task ReportMissingCoreMetadataScanIfRequestedAsync(
+    private async Task ReportMissingCoreMetadataAuditIfRequestedAsync(
         AutoTagJob job,
         QualityCheckOptions options,
         List<long> scopedFolderIds,
@@ -921,7 +880,7 @@ public partial class AutoTagService
             ? "none"
             : string.Join(", ", missingFieldSummary);
         AppendLog(job,
-            $"enhancement workflow: missing core metadata scan finished (files={missingFiles.Count}, fields={summary}).");
+            $"enhancement workflow: missing core metadata DB audit finished (files={missingFiles.Count}, fields={summary}).");
     }
 
     private static bool IsCoverMaintenanceWorkflowEnabled(JsonObject enhancementRoot)

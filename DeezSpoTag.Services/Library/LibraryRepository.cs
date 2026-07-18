@@ -11547,14 +11547,20 @@ WHERE (
         string? minFormat = null,
         int? minBitDepth = null,
         int? minSampleRateHz = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<long>? targetTrackIds = null)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var normalizedMinFormatRank = NormalizeQualityScanFormatRank(minFormat);
         var normalizedMinBitDepth = NormalizePositiveInt(minBitDepth);
         var normalizedMinSampleRateHz = NormalizePositiveInt(minSampleRateHz);
+        var normalizedTargetTrackIds = targetTrackIds?
+            .Where(static id => id > 0)
+            .Distinct()
+            .OrderBy(static id => id)
+            .ToList();
         const string sql = @"
-WITH track_rows AS (
+	WITH track_rows AS (
     SELECT t.id AS track_id,
            t.title AS track_title,
            t.tag_isrc AS isrc,
@@ -11634,11 +11640,12 @@ WITH track_rows AS (
     JOIN track_local tl ON tl.track_id = t.id
     JOIN audio_file af ON af.id = tl.audio_file_id
     JOIN folder f ON f.id = af.folder_id
-    LEFT JOIN artist_watchlist aw ON aw.artist_id = ar.id
-    WHERE (@folderId IS NULL OR f.id = @folderId)
-      AND LOWER(COALESCE(f.desired_quality_value, '')) NOT IN ('video', 'podcast')
-      AND (@scope <> 'watchlist' OR aw.artist_id IS NOT NULL)
-),
+	    LEFT JOIN artist_watchlist aw ON aw.artist_id = ar.id
+	    WHERE (@folderId IS NULL OR f.id = @folderId)
+	      AND (@targetTrackIdsJson IS NULL OR t.id IN (SELECT value FROM json_each(@targetTrackIdsJson)))
+	      AND LOWER(COALESCE(f.desired_quality_value, '')) NOT IN ('video', 'podcast')
+	      AND (@scope <> 'watchlist' OR aw.artist_id IS NOT NULL)
+	),
 best_track_rows AS (
     SELECT tr.*,
            ROW_NUMBER() OVER (
@@ -11709,6 +11716,9 @@ ORDER BY br.artist_name, br.track_title;";
         command.Parameters.AddWithValue("minFormatRank", (object?)normalizedMinFormatRank ?? DBNull.Value);
         command.Parameters.AddWithValue("minBitDepth", (object?)normalizedMinBitDepth ?? DBNull.Value);
         command.Parameters.AddWithValue("minSampleRateHz", (object?)normalizedMinSampleRateHz ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "targetTrackIdsJson",
+            normalizedTargetTrackIds is { Count: > 0 } ? SerializeJsonArray(normalizedTargetTrackIds) : DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var results = new List<QualityScanTrackDto>();
         while (await reader.ReadAsync(cancellationToken))

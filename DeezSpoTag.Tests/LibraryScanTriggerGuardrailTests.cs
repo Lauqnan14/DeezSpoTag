@@ -206,14 +206,18 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void AutoTagEnhancementRefresh_UsesSingleConfiguredServerCompletionPath()
+    public void AutoTagEnhancementRefresh_UsesSingleConfiguredServerCompletionPathWithoutLibraryReindex()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var workflowSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs");
 
         Assert.Contains("public List<string> EnhancedFilePaths", source, StringComparison.Ordinal);
         Assert.Contains("TrackEnhancedFilePath(job, stageName, status)", source, StringComparison.Ordinal);
-        Assert.Contains("RefreshEnhancementLibraryIndexAsync", source, StringComparison.Ordinal);
         Assert.Contains("RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshEnhancementLibraryIndexAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("final-library-reindex", workflowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("library-index-refresh", workflowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunFolderScanAndWaitAsync", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("QueueEnhancementPlexRefreshBatchIfDue", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TriggerTargetedPlexRefreshForEnhancedFilesAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("LastPlexRefreshEnhancedFileCount", source, StringComparison.Ordinal);
@@ -232,6 +236,17 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("CancellationToken cancellationToken", source, StringComparison.Ordinal);
         Assert.Contains("cancellationToken.ThrowIfCancellationRequested();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadOrchestration_SignalsVibeAnalysisWithoutAwaitingItAfterIngestion()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var methodBody = ExtractMethodBody(source, "private async Task RunPostAutoTagStagesAsync");
+
+        Assert.Contains("_analysisService.TrySignalBackgroundAnalysis", methodBody, StringComparison.Ordinal);
+        Assert.Contains("vibe analysis signaled after direct library ingestion completed", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _analysisService.AnalyzeNowAsync", methodBody, StringComparison.Ordinal);
     }
 
     [Fact]

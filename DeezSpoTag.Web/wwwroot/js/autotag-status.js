@@ -148,12 +148,10 @@
                 return "Quality Checks";
             case "cover-maintenance":
                 return "Cover Maintenance";
-            case "library-index-refresh":
-                return "Library Index Refresh";
             case "missing-core-metadata-discovery":
                 return "Missing Core Metadata Discovery";
-            case "final-library-reindex":
-                return "Final Library Reindex";
+            case "missing-core-metadata-db-audit":
+                return "Missing Core Metadata DB Audit";
             case "lyrics-refresh":
                 return "Lyrics Refresh";
             case "folder-tag-alignment":

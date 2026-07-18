@@ -366,6 +366,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
         var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
         var autoTagServiceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var prepareRunBody = ExtractMethodBody(workflowSource, "private async Task PrepareEnhancementRunAsync");
 
         Assert.DoesNotContain("GetMissingCoreMetadataFilesAsync", controllerSource, StringComparison.Ordinal);
         Assert.Contains("GetMissingCoreMetadataFilesAsync", workflowSource, StringComparison.Ordinal);
@@ -378,7 +379,9 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("COALESCE(t.tag_track_no, 0) <= 0", repositorySource, StringComparison.Ordinal);
         Assert.DoesNotContain("var runQualityUpgradeStage = flagMissingTags", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("var runQualityScanner = flagMissingTags", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("ReportMissingCoreMetadataScanIfRequestedAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ReportMissingCoreMetadataAuditIfRequestedAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("missing core metadata DB audit", workflowSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("File.Exists", prepareRunBody, StringComparison.Ordinal);
         Assert.Contains("RefreshConfiguredServersAsync", autoTagServiceSource, StringComparison.Ordinal);
     }
 
@@ -441,6 +444,32 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("BuildEnhancementFeatureConfig", orchestrationSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void QualityScanner_TargetTrackIdsAreAppliedInRepositoryQuery()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var scannerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "QualityScannerService.cs"));
+        var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var loadRunTracksBody = ExtractMethodBody(scannerSource, "private async Task<List<QualityScanTrackDto>> LoadRunTracksAsync");
+
+        Assert.Contains("targetTrackIds: options.TargetTrackIds", loadRunTracksBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("options.TargetTrackIds.Contains(track.TrackId)", loadRunTracksBody, StringComparison.Ordinal);
+        Assert.Contains("IReadOnlyCollection<long>? targetTrackIds = null", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("@targetTrackIdsJson IS NULL OR t.id IN (SELECT value FROM json_each(@targetTrackIdsJson))", repositorySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStuckWatchdog_UsesLastActivityHeartbeatForNonTaggingEnhancementPhases()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var serviceSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var progressTimestampBody = ExtractMethodBody(serviceSource, "private static DateTimeOffset GetLastProgressTimestamp");
+
+        Assert.Contains("if (job.LastActivityAt > timestamp)", progressTimestampBody, StringComparison.Ordinal);
+        Assert.Contains("timestamp = job.LastActivityAt;", progressTimestampBody, StringComparison.Ordinal);
+        Assert.Contains("job.LastActivityAt = DateTimeOffset.UtcNow;", serviceSource, StringComparison.Ordinal);
+    }
+
     private static long[] ReadLongArray(JsonElement element)
     {
         return element
@@ -464,5 +493,33 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         }
 
         throw new InvalidOperationException("Unable to locate repository root from test output path.");
+    }
+
+    private static string ExtractMethodBody(string source, string methodSignature)
+    {
+        var start = source.IndexOf(methodSignature, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Method marker not found: {methodSignature}");
+
+        var braceStart = source.IndexOf('{', start);
+        Assert.True(braceStart >= 0, $"Method body not found: {methodSignature}");
+
+        var depth = 0;
+        for (var index = braceStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source[braceStart..(index + 1)];
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Method body was not closed: {methodSignature}");
     }
 }
