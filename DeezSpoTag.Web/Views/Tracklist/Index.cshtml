@@ -2784,16 +2784,44 @@ function normalizeCoverUrl(value) {
 }
 
 function mapLibraryStyleTracks(tracks) {
-    return (tracks || []).map((track, index) => ({
-        id: track.trackId || '',
-        title: track.title || 'Unknown',
-        artist: { name: track.artistName || 'Unknown', id: '' },
-        album: { title: track.albumTitle || 'Unknown', cover_medium: normalizeCoverUrl(track.coverPath || '') },
-        duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
-        durationMs: track.durationMs || 0,
-        preview: '',
-        track_position: index + 1
-    }));
+    return (tracks || []).map((track, index) => {
+        const trackId = String(track.trackId || '').trim();
+        const audioFileId = String(track.audioFileId || '').trim();
+        const filePath = String(track.filePath || '').trim();
+        const localPlaybackUrl = buildLocalTrackPlaybackUrl(trackId, audioFileId, filePath);
+        return {
+            id: trackId,
+            title: track.title || 'Unknown',
+            artist: { name: track.artistName || 'Unknown', id: '' },
+            album: { title: track.albumTitle || 'Unknown', cover_medium: normalizeCoverUrl(track.coverPath || '') },
+            duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
+            durationMs: track.durationMs || 0,
+            preview: localPlaybackUrl,
+            localPlaybackUrl,
+            localTrackId: trackId,
+            audioFileId,
+            filePath,
+            audioVariant: track.audioVariant || '',
+            variantKey: track.variantKey || (audioFileId ? `${trackId}:${audioFileId}` : `${trackId}:0`),
+            track_position: index + 1
+        };
+    });
+}
+
+function buildLocalTrackPlaybackUrl(trackId, audioFileId, filePath) {
+    if (!trackId) {
+        return '';
+    }
+
+    const params = new URLSearchParams();
+    if (audioFileId) {
+        params.set('audioFileId', audioFileId);
+    } else if (filePath) {
+        params.set('filePath', filePath);
+    }
+
+    const query = params.toString();
+    return `/api/library/analysis/track/${encodeURIComponent(trackId)}/audio${query ? `?${query}` : ''}`;
 }
 
 async function loadRecommendationsTracklist() {
@@ -2898,6 +2926,10 @@ async function loadPlexTracklist() {
     const payload = await response.json();
     if (!payload.playlist) {
         throw new Error('Plex tracklist unavailable.');
+    }
+    if (payload.playlist.itemLoad && payload.playlist.itemLoad.success === false) {
+        const status = payload.playlist.itemLoad.statusCode ? `HTTP ${payload.playlist.itemLoad.statusCode}` : 'request failed';
+        throw new Error(`Plex playlist tracks could not be loaded (${status}).`);
     }
     const mapped = mapPlexTracklist(payload.playlist);
     await loadIgnoredTracks();
@@ -6223,12 +6255,18 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         if (deezerId && playbackContext) {
             deezerPlaybackContextCache.set(deezerId, playbackContext);
         }
-        const streamTrackIdAttr = playbackContext?.streamTrackId
-            ? ` data-stream-track-id="${escapeHtml(playbackContext.streamTrackId)}"`
-            : '';
-        const trackTokenAttr = playbackContext?.trackToken
-            ? ` data-track-token="${escapeHtml(playbackContext.trackToken)}"`
-            : '';
+	        const streamTrackIdAttr = playbackContext?.streamTrackId
+	            ? ` data-stream-track-id="${escapeHtml(playbackContext.streamTrackId)}"`
+	            : '';
+	        const localTrackId = String(track.localTrackId || (isLocalSource ? track.id : '') || '').trim();
+	        const localAudioFileId = String(track.audioFileId || '').trim();
+	        const localVariantKey = String(track.variantKey || '').trim();
+	        const localPlaybackAttr = isLocalSource && localTrackId
+	            ? ` data-local-track-id="${escapeHtml(localTrackId)}"${localAudioFileId ? ` data-local-audio-file-id="${escapeHtml(localAudioFileId)}"` : ''}${localVariantKey ? ` data-local-variant-key="${escapeHtml(localVariantKey)}"` : ''}`
+	            : '';
+	        const trackTokenAttr = playbackContext?.trackToken
+	            ? ` data-track-token="${escapeHtml(playbackContext.trackToken)}"`
+	            : '';
         const md5OriginAttr = playbackContext?.md5origin
             ? ` data-md5-origin="${escapeHtml(playbackContext.md5origin)}"`
             : '';
@@ -6302,7 +6340,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                 : `<td class="track-album" onclick="openAlbum('${albumId}')"><span class="track-cell-text">${albumTitle}</span></td>`)
             : '';
         return `
-        <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityAppleAttr}${availabilityTidalAttr}${availabilityQobuzAttr}${availabilityAmazonAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
+	        <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityAppleAttr}${availabilityTidalAttr}${availabilityQobuzAttr}${availabilityAmazonAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${localPlaybackAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
             <td class="track-number">
                 <span class="track-num">${track.track_position || index + 1}</span>
                 <span class="material-icons preview-controls${previewClass}"
@@ -6743,12 +6781,18 @@ function buildTracklistPlaybackRequest(control) {
         return null;
     }
 
-    const row = control.closest('tr');
-    const deezerId = String(row?.querySelector('.track-checkbox')?.dataset.trackId || row?.dataset.availabilityDeezerId || '').trim();
-    const previewUrl = String(control.getAttribute('data-preview') || '').trim();
-    const initialKey = deezerId
-        ? `deezer:${deezerId}`
-        : (previewUrl ? `preview:${previewUrl}` : `tracklist:${row?.dataset?.availabilityKey || ''}`);
+	    const row = control.closest('tr');
+	    const deezerId = String(row?.querySelector('.track-checkbox')?.dataset.trackId || row?.dataset.availabilityDeezerId || '').trim();
+	    const previewUrl = String(control.getAttribute('data-preview') || '').trim();
+	    const localTrackId = String(row?.dataset.localTrackId || '').trim();
+	    const localVariantKey = String(row?.dataset.localVariantKey || '').trim();
+	    const localAudioFileId = String(row?.dataset.localAudioFileId || '').trim();
+	    const localKey = localTrackId
+	        ? `library:${localTrackId}:${localVariantKey || (localAudioFileId ? `audio:${localAudioFileId}` : previewUrl)}`
+	        : '';
+	    const initialKey = localKey || (deezerId
+	        ? `deezer:${deezerId}`
+	        : (previewUrl ? `preview:${previewUrl}` : `tracklist:${row?.dataset?.availabilityKey || ''}`));
 
     return {
         page: 'tracklist',
@@ -6787,11 +6831,17 @@ function buildTracklistPlaybackRequest(control) {
             }
 
             const resolvedDeezerId = String(currentRow.querySelector('.track-checkbox')?.dataset.trackId || currentRow.dataset.availabilityDeezerId || '').trim();
-            return {
-                url: resolvedPreviewUrl,
-                deezerId: resolvedDeezerId,
-                key: resolvedDeezerId ? `deezer:${resolvedDeezerId}` : `preview:${resolvedPreviewUrl}`
-            };
+	            const currentLocalTrackId = String(currentRow.dataset.localTrackId || '').trim();
+	            const currentLocalVariantKey = String(currentRow.dataset.localVariantKey || '').trim();
+	            const currentLocalAudioFileId = String(currentRow.dataset.localAudioFileId || '').trim();
+	            const currentLocalKey = currentLocalTrackId
+	                ? `library:${currentLocalTrackId}:${currentLocalVariantKey || (currentLocalAudioFileId ? `audio:${currentLocalAudioFileId}` : resolvedPreviewUrl)}`
+	                : '';
+	            return {
+	                url: resolvedPreviewUrl,
+	                deezerId: resolvedDeezerId,
+	                key: currentLocalKey || (resolvedDeezerId ? `deezer:${resolvedDeezerId}` : `preview:${resolvedPreviewUrl}`)
+	            };
         },
         getNextRequest: () => {
             const currentRow = control.closest('tr');

@@ -60,4 +60,33 @@ public class MelodayApiController : ControllerBase
     {
         return Ok(await _melodayService.GetStatusAsync());
     }
+
+    [HttpGet("diagnostics")]
+    public async Task<IActionResult> Diagnostics()
+    {
+        var status = await _melodayService.GetStatusAsync();
+        return Ok(new
+        {
+            status.Enabled,
+            status.CurrentPeriod,
+            status.LastRunUtc,
+            status.LastMessage,
+            sources = status.HistorySources.Select(static source => new
+            {
+                source.Service,
+                source.Configured,
+                source.Available,
+                source.EndpointStatus,
+                source.MappingStatus,
+                source.Status,
+                source.RemoteLibraries,
+                source.Fetched,
+                source.Imported,
+                source.Resolved,
+                source.Ambiguous,
+                source.Unresolved,
+                source.Error
+            })
+        });
+    }
 }

@@ -20,6 +20,9 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("data-metadata-target=\"plex\"", controls);
         Assert.Contains("data-metadata-target=\"jellyfin\"", controls);
         Assert.Contains("data-metadata-target=\"navidrome\"", controls);
+        Assert.Contains("id=\"metadata-library-folder\"", controls);
+        Assert.Contains("id=\"metadata-missing-artist-art-only\"", controls);
+        Assert.Contains("Only artists missing artist art (Plex)", controls);
         Assert.Contains("id=\"metadata-include-avatar\" checked", controls);
         Assert.Contains("id=\"metadata-include-background\" checked", controls);
         Assert.Contains("id=\"metadata-include-bio\"", controls);
@@ -64,9 +67,16 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("body: JSON.stringify({ targets: getArtistSyncTargets() })", libraryJs);
         Assert.Contains("const targets = getMetadataUpdaterTargets();", activities);
         Assert.Contains("targets,", activities);
+        Assert.Contains("const missingArtistArtworkOnly = missingArtistArtOnlyCheckbox?.checked === true;", activities);
+        Assert.Contains("const targets = missingArtistArtworkOnly ? ['plex'] : getMetadataUpdaterTargets();", activities);
+        Assert.Contains("folderId: folderId > 0 ? folderId : null", activities);
+        Assert.Contains("missingArtistArtworkOnly,", activities);
         Assert.Contains("includeAvatar: includeAvatarCheckbox?.checked !== false", activities);
         Assert.Contains("includeBackground: includeBackgroundCheckbox?.checked !== false", activities);
         Assert.Contains("includeBio: includeBioCheckbox?.checked === true", activities);
+        Assert.Contains("includePopularSongs: popularSongsCheckbox?.checked === true", activities);
+        Assert.Contains("loadMetadataUpdaterFolders", activities);
+        Assert.Contains("/api/library/folders?contentType=music", activities);
     }
 
     [Fact]
@@ -86,6 +96,16 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
 
         Assert.Matches(new Regex("normalized\\s*==\\s*\"both\"", RegexOptions.Multiline), controller);
         Assert.Contains("LegacyBothTargets = \"both\"", updater);
+        Assert.Contains("MissingArtistArtworkOnly", updater);
+        Assert.Contains("SeedMissingArtistArtworkCandidatesAsync", updater);
+        Assert.Contains("Target = PlexTarget", updater);
+        Assert.Contains("Targets = new List<string> { PlexTarget }", updater);
+        Assert.Contains("IncludeAvatar = request.IncludeAvatar", updater);
+        Assert.Contains("IncludeBackground = request.IncludeBackground", updater);
+        Assert.Contains("IncludeBio = request.IncludeBio", updater);
+        Assert.Contains("IncludePopularSongs = request.IncludePopularSongs", updater);
+        Assert.Contains("string.IsNullOrWhiteSpace(artist.PreferredImagePath)", updater);
+        Assert.Contains("GetArtistsAsync(\"all\", request.FolderId", updater);
         Assert.Contains("server = \"navidrome\"", controller);
         Assert.Contains("Navidrome exposes one artist image slot", controller);
         Assert.Contains("large artist image is used as the background-equivalent", controller);

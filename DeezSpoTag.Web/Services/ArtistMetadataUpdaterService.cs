@@ -361,13 +361,17 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         CancellationToken cancellationToken)
     {
         var state = await LoadStateAsync(cancellationToken);
-        if (request.IncludeAllArtists == true || state.Artists.Count == 0)
+        var missingArtistIds = request.MissingArtistArtworkOnly == true
+            ? await SeedMissingArtistArtworkCandidatesAsync(state, request, cancellationToken)
+            : null;
+        if (request.MissingArtistArtworkOnly != true
+            && (request.IncludeAllArtists == true || state.Artists.Count == 0))
         {
             await SeedArtistsFromLibraryAsync(state, request, cancellationToken);
             await SaveStateAsync(state, cancellationToken);
         }
 
-        var allCandidates = BuildRunCandidates(state.Artists, request);
+        var allCandidates = BuildRunCandidates(state.Artists, request, missingArtistIds);
         UpdateStatus(_status with { TotalArtists = allCandidates.Count });
         if (allCandidates.Count == 0)
         {
@@ -386,11 +390,18 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
     private static List<MetadataUpdaterTrackedArtist> BuildRunCandidates(
         IReadOnlyCollection<MetadataUpdaterTrackedArtist> artists,
-        MetadataUpdaterRunRequest request)
+        MetadataUpdaterRunRequest request,
+        IReadOnlySet<long>? scopedArtistIds = null)
     {
         var candidates = artists
             .Where(artist => artist.ArtistId > 0 && !string.IsNullOrWhiteSpace(artist.ArtistName))
             .ToList();
+        if (scopedArtistIds is not null)
+        {
+            candidates = candidates
+                .Where(artist => scopedArtistIds.Contains(artist.ArtistId))
+                .ToList();
+        }
         if (!request.ArtistId.HasValue)
         {
             return candidates;
@@ -808,7 +819,52 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         MetadataUpdaterRunRequest request,
         CancellationToken cancellationToken)
     {
-        var artists = await _libraryRepository.GetArtistsAsync("all", cancellationToken);
+        var artists = await _libraryRepository.GetArtistsAsync("all", request.FolderId, cancellationToken);
+        SeedTrackedArtists(state, request, artists);
+    }
+
+    private async Task<IReadOnlySet<long>> SeedMissingArtistArtworkCandidatesAsync(
+        MetadataUpdaterState state,
+        MetadataUpdaterRunRequest request,
+        CancellationToken cancellationToken)
+    {
+        var artists = await _libraryRepository.GetArtistsAsync("all", request.FolderId, cancellationToken);
+        var missingArtists = artists
+            .Where(static artist => string.IsNullOrWhiteSpace(artist.PreferredImagePath))
+            .ToList();
+        var plexOnlyRequest = CloneAsPlexMissingArtworkRequest(request);
+        SeedTrackedArtists(state, plexOnlyRequest, missingArtists);
+        await SaveStateAsync(state, cancellationToken);
+        return missingArtists
+            .Where(static artist => artist.Id > 0)
+            .Select(static artist => artist.Id)
+            .ToHashSet();
+    }
+
+    private static MetadataUpdaterRunRequest CloneAsPlexMissingArtworkRequest(MetadataUpdaterRunRequest request)
+        => new()
+        {
+            ArtistId = request.ArtistId,
+            Source = request.Source,
+            Target = PlexTarget,
+            Targets = new List<string> { PlexTarget },
+            FolderId = request.FolderId,
+            MissingArtistArtworkOnly = true,
+            IntervalDays = request.IntervalDays,
+            IncludeAvatar = request.IncludeAvatar,
+            IncludeBackground = request.IncludeBackground,
+            IncludeBio = request.IncludeBio,
+            IncludePopularSongs = request.IncludePopularSongs,
+            OcrTextArtBlockingEnabled = request.OcrTextArtBlockingEnabled,
+            IncludeAllArtists = true,
+            Force = true
+        };
+
+    private static void SeedTrackedArtists(
+        MetadataUpdaterState state,
+        MetadataUpdaterRunRequest request,
+        IReadOnlyList<ArtistDto> artists)
+    {
         var targets = NormalizeTargets(request.Targets, request.Target);
         var target = ToLegacyTarget(targets);
         var hasSourceOverride = !string.IsNullOrWhiteSpace(request.Source);
@@ -2552,6 +2608,8 @@ public sealed class MetadataUpdaterRunRequest
     public bool? OcrTextArtBlockingEnabled { get; set; }
     public bool? IncludeAllArtists { get; set; }
     public bool? Force { get; set; }
+    public long? FolderId { get; set; }
+    public bool? MissingArtistArtworkOnly { get; set; }
 }
 
 public sealed class ManualPushRegistrationRequest

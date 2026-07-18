@@ -436,11 +436,16 @@ public sealed class MelodayService
         var firstPlaylistId = successful
             .Select(static result => result.PlaylistId)
             .FirstOrDefault(static playlistId => !string.IsNullOrWhiteSpace(playlistId));
-        var degraded = _lastImportResults.Any(static result => result.Configured
-            && (result.Status == "degraded" || !result.Available));
+        var endpointUnavailable = _lastImportResults.Any(static result => result.Configured
+            && !string.Equals(result.EndpointStatus, "available", StringComparison.OrdinalIgnoreCase));
+        var mappingDegraded = _lastImportResults.Any(static result => result.Configured
+            && string.Equals(result.MappingStatus, "degraded", StringComparison.OrdinalIgnoreCase));
+        var degraded = endpointUnavailable || mappingDegraded;
         if (degraded)
         {
-            _lastMessage += " History refresh was degraded; see source diagnostics.";
+            _lastMessage += endpointUnavailable
+                ? " History refresh has unavailable source endpoints; see source diagnostics."
+                : " History refresh has unresolved local mappings; see source diagnostics.";
         }
         return new MelodayRunResult(
             true,

@@ -90,23 +90,32 @@ public class AutoPlaylistsApiController : ControllerBase
             return NotFound();
         }
 
-        var tracks = await _plexApiClient.GetPlaylistItemsAsync(plex.Url, plex.Token, id, cancellationToken);
-        var libraryInfo = await ResolveLibraryInfoAsync(tracks, cancellationToken);
+        var items = await _plexApiClient.GetPlaylistItemsDetailedAsync(plex.Url, plex.Token, playlist, cancellationToken);
+        var libraryInfo = await ResolveLibraryInfoAsync(items.Tracks, cancellationToken);
         return Ok(new
         {
             playlist = new
             {
                 id = playlist.Id,
+                key = playlist.Key,
                 name = playlist.Title,
                 description = playlist.Summary,
                 trackCount = playlist.TrackCount,
                 duration = FormatDuration(playlist.DurationMs),
                 updated = playlist.UpdatedAt?.ToString("MMM d, yyyy"),
+                smart = playlist.Smart,
                 coverUrl = BuildPlexImageProxyUrl(playlist.CoverUrl, playlist.UpdatedAt),
                 librarySectionId = playlist.LibrarySectionId,
                 libraryId = libraryInfo?.Id,
                 libraryName = libraryInfo?.Name,
-                tracks = tracks.Select(t => new
+                itemLoad = new
+                {
+                    success = items.Success,
+                    statusCode = items.StatusCode,
+                    endpoint = items.Endpoint,
+                    error = items.Error
+                },
+                tracks = items.Tracks.Select(t => new
                 {
                     id = t.Id,
                     title = t.Title,
@@ -116,6 +125,68 @@ public class AutoPlaylistsApiController : ControllerBase
                     durationMs = t.DurationMs,
                     streamUrl = BuildPlexStreamProxyUrl(t.StreamUrl),
                     filePath = t.FilePath
+                })
+            }
+        });
+    }
+
+    [HttpGet("{id}/diagnostics")]
+    public async Task<IActionResult> GetPlaylistDiagnostics(string id, CancellationToken cancellationToken)
+    {
+        var state = await _authService.LoadAsync();
+        var plex = state.Plex;
+        if (string.IsNullOrWhiteSpace(plex?.Url) || string.IsNullOrWhiteSpace(plex.Token))
+        {
+            return Ok(new
+            {
+                configured = false,
+                available = false,
+                playlist = default(object),
+                itemLoad = default(object)
+            });
+        }
+
+        var playlist = await _plexApiClient.GetPlaylistAsync(plex.Url, plex.Token, id, cancellationToken);
+        if (playlist is null)
+        {
+            return Ok(new
+            {
+                configured = true,
+                available = false,
+                playlist = default(object),
+                itemLoad = default(object)
+            });
+        }
+
+        var items = await _plexApiClient.GetPlaylistItemsDetailedAsync(plex.Url, plex.Token, playlist, cancellationToken);
+        return Ok(new
+        {
+            configured = true,
+            available = true,
+            playlist = new
+            {
+                id = playlist.Id,
+                key = playlist.Key,
+                title = playlist.Title,
+                type = playlist.PlaylistType,
+                smart = playlist.Smart,
+                trackCount = playlist.TrackCount,
+                librarySectionId = playlist.LibrarySectionId
+            },
+            itemLoad = new
+            {
+                success = items.Success,
+                statusCode = items.StatusCode,
+                endpoint = items.Endpoint,
+                error = items.Error,
+                tracksReturned = items.Tracks.Count,
+                sampleTracks = items.Tracks.Take(5).Select(static track => new
+                {
+                    id = track.Id,
+                    title = track.Title,
+                    artist = track.Artist,
+                    album = track.Album,
+                    hasFilePath = !string.IsNullOrWhiteSpace(track.FilePath)
                 })
             }
         });

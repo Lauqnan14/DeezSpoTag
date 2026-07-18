@@ -4004,11 +4004,13 @@ function initMetadataUpdater() {
     const cancelButton = document.getElementById('metadata-cancel-button');
     const sourceSelect = document.getElementById('metadata-source-platform');
     const intervalSelect = document.getElementById('metadata-refresh-interval');
+    const folderSelect = document.getElementById('metadata-library-folder');
     const targetContainer = document.getElementById('metadata-target-server');
     const includeAvatarCheckbox = document.getElementById('metadata-include-avatar');
     const includeBackgroundCheckbox = document.getElementById('metadata-include-background');
     const includeBioCheckbox = document.getElementById('metadata-include-bio');
     const popularSongsCheckbox = document.getElementById('metadata-include-popular-songs');
+    const missingArtistArtOnlyCheckbox = document.getElementById('metadata-missing-artist-art-only');
     const ocrTextArtBlockingCheckbox = document.getElementById('metadata-ocr-text-art-blocking');
     const phaseLabel = document.getElementById('metadata-phase-label');
     const progressLabel = document.getElementById('metadata-progress-label');
@@ -4024,12 +4026,16 @@ function initMetadataUpdater() {
     const includeBackgroundKey = 'deezspotag-metadata-updater-include-background';
     const includeBioKey = 'deezspotag-metadata-updater-include-bio';
     const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
+    const missingArtistArtOnlyKey = 'deezspotag-metadata-updater-missing-artist-art-only';
+    const folderKey = 'deezspotag-metadata-updater-folder';
     const ocrTextArtBlockingKey = 'deezspotag-metadata-updater-ocr-text-art-blocking';
 
     const runMetadataUpdater = async () => {
+        const missingArtistArtworkOnly = missingArtistArtOnlyCheckbox?.checked === true;
         const source = sourceSelect?.value || 'auto';
         const intervalDays = Number(intervalSelect?.value || 30);
-        const targets = getMetadataUpdaterTargets();
+        const folderId = Number(folderSelect?.value || 0);
+        const targets = missingArtistArtworkOnly ? ['plex'] : getMetadataUpdaterTargets();
         if (targets.length === 0) {
             notifyActivity('Select at least one target server.', 'error');
             return;
@@ -4038,13 +4044,15 @@ function initMetadataUpdater() {
             source,
             intervalDays,
             targets,
+            folderId: folderId > 0 ? folderId : null,
+            missingArtistArtworkOnly,
             includeAvatar: includeAvatarCheckbox?.checked !== false,
             includeBackground: includeBackgroundCheckbox?.checked !== false,
             includeBio: includeBioCheckbox?.checked === true,
             includePopularSongs: popularSongsCheckbox?.checked === true,
             ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false,
             includeAllArtists: true,
-            force: intervalDays === 0
+            force: missingArtistArtworkOnly || intervalDays === 0
         };
 
         try {
@@ -4121,6 +4129,15 @@ function initMetadataUpdater() {
         });
     }
 
+    if (folderSelect) {
+        const savedFolder = localStorage.getItem(folderKey) || '';
+        void loadMetadataUpdaterFolders(folderSelect, savedFolder);
+        folderSelect.addEventListener('change', () => {
+            localStorage.setItem(folderKey, folderSelect.value || '');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterFolderId', folderSelect.value || null);
+        });
+    }
+
     [
         [includeAvatarCheckbox, includeAvatarKey, true, 'metadataUpdaterIncludeAvatar'],
         [includeBackgroundCheckbox, includeBackgroundKey, true, 'metadataUpdaterIncludeBackground'],
@@ -4142,6 +4159,14 @@ function initMetadataUpdater() {
         popularSongsCheckbox.addEventListener('change', () => {
             localStorage.setItem(popularSongsKey, popularSongsCheckbox.checked ? 'true' : 'false');
             if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterPopularSongs', popularSongsCheckbox.checked);
+        });
+    }
+
+    if (missingArtistArtOnlyCheckbox) {
+        missingArtistArtOnlyCheckbox.checked = localStorage.getItem(missingArtistArtOnlyKey) === 'true';
+        missingArtistArtOnlyCheckbox.addEventListener('change', () => {
+            localStorage.setItem(missingArtistArtOnlyKey, missingArtistArtOnlyCheckbox.checked ? 'true' : 'false');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterMissingArtistArtworkOnly', missingArtistArtOnlyCheckbox.checked);
         });
     }
 
@@ -4167,6 +4192,34 @@ function initMetadataUpdater() {
         const refreshed = await refreshLibraryScanAndMetadataStatus();
         updateButton.disabled = refreshed?.metadataRunning === true;
     });
+}
+
+async function loadMetadataUpdaterFolders(folderSelect, savedValue) {
+    if (!folderSelect) {
+        return;
+    }
+
+    try {
+        const response = await activityFetch('/api/library/folders?contentType=music');
+        if (!response.ok) {
+            throw new Error(await response.text());
+        }
+        const folders = await response.json();
+        folderSelect.innerHTML = '<option value="">All music libraries</option>';
+        if (Array.isArray(folders)) {
+            folders.forEach(folder => {
+                const option = document.createElement('option');
+                option.value = String(folder.id);
+                option.textContent = folder.displayName || folder.libraryName || folder.rootPath || `Folder ${folder.id}`;
+                folderSelect.appendChild(option);
+            });
+        }
+        if (savedValue) {
+            folderSelect.value = savedValue;
+        }
+    } catch (error) {
+        console.error('Failed to load library folders for artist metadata updater:', error);
+    }
 }
 
 async function loadDatabaseUpdaterFolders() {

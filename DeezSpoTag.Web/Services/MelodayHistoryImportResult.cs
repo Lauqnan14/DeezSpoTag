@@ -20,6 +20,18 @@ public sealed record MelodayHistoryImportResult(
                 ? "degraded"
                 : "complete";
 
+    public string EndpointStatus => !Configured
+        ? "not-configured"
+        : !Available || !string.IsNullOrWhiteSpace(Error)
+            ? "unavailable"
+            : "available";
+
+    public string MappingStatus => !Configured || !Available
+        ? "not-checked"
+        : Ambiguous > 0 || Unresolved > 0
+            ? "degraded"
+            : "complete";
+
     public static MelodayHistoryImportResult NotConfigured(string service)
         => new(service, false, false, 0, 0, 0, 0, 0, 0, null);
 

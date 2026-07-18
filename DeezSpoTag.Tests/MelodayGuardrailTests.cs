@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -54,11 +55,39 @@ public sealed class MelodayGuardrailTests
     public void Meloday_Tracklist_Rows_Are_Local_And_Not_Deezer_Matched_External_Rows()
     {
         var view = ReadTracklistView();
+        var models = ReadSource("DeezSpoTag.Services", "Library", "Models.cs");
+        var repository = ReadLibraryRepository();
 
         Assert.Contains("tracklistSource === 'mix' || tracklistSource === 'meloday'", view, StringComparison.Ordinal);
         Assert.Contains("function isLocalTracklistSource(source)", view, StringComparison.Ordinal);
         Assert.Contains("normalized === 'meloday'", view, StringComparison.Ordinal);
         Assert.Contains("source: 'meloday'", view, StringComparison.Ordinal);
+        Assert.Contains("long? AudioFileId = null", models, StringComparison.Ordinal);
+        Assert.Contains("string? FilePath = null", models, StringComparison.Ordinal);
+        Assert.Contains("string? VariantKey = null", models, StringComparison.Ordinal);
+        Assert.Contains("selected_audio.audio_file_id", repository, StringComparison.Ordinal);
+        var localMapper = ExtractMethodBody(view, "function mapLibraryStyleTracks");
+        Assert.Contains("function buildLocalTrackPlaybackUrl(trackId, audioFileId, filePath)", view, StringComparison.Ordinal);
+        Assert.Contains("/api/library/analysis/track/${encodeURIComponent(trackId)}/audio", view, StringComparison.Ordinal);
+        Assert.Contains("data-local-track-id", view, StringComparison.Ordinal);
+        Assert.Contains("library:${localTrackId}", view, StringComparison.Ordinal);
+        Assert.Contains("preview: localPlaybackUrl", localMapper, StringComparison.Ordinal);
+        Assert.DoesNotContain("preview: '',", localMapper, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Status_Exposes_ReadOnly_Source_Diagnostics()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "MelodayApiController.cs");
+        var resultModel = ReadSource("DeezSpoTag.Web", "Services", "MelodayHistoryImportResult.cs");
+
+        Assert.Contains("[HttpGet(\"diagnostics\")]", controller, StringComparison.Ordinal);
+        Assert.Contains("GetStatusAsync()", controller, StringComparison.Ordinal);
+        Assert.Contains("EndpointStatus", controller, StringComparison.Ordinal);
+        Assert.Contains("MappingStatus", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunAsync(refreshHistory: true", ExtractMethodBody(controller, "public async Task<IActionResult> Diagnostics"), StringComparison.Ordinal);
+        Assert.Contains("public string EndpointStatus", resultModel, StringComparison.Ordinal);
+        Assert.Contains("public string MappingStatus", resultModel, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -251,6 +280,12 @@ public sealed class MelodayGuardrailTests
     {
         var repoRoot = ResolveRepoRoot();
         return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "auto-playlists.js"));
+    }
+
+    private static string ReadSource(params string[] relativeParts)
+    {
+        var repoRoot = ResolveRepoRoot();
+        return File.ReadAllText(Path.Join(new[] { repoRoot }.Concat(relativeParts).ToArray()));
     }
 
     private static string ResolveRepoRoot()

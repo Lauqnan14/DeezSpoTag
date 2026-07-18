@@ -113,13 +113,14 @@ async function loadMelodayStatus() {
         if (historySourcesEl) {
             const sources = Array.isArray(status.historySources) ? status.historySources : [];
             historySourcesEl.textContent = sources.length > 0
-                ? sources.map(source => {
-                    const service = String(source.service || 'server');
-                    const sourceStatus = String(source.status || 'unknown');
-                    const resolved = Number(source.resolved || 0);
-                    const fetched = Number(source.fetched || 0);
-                    return `${service}: ${sourceStatus} (${resolved}/${fetched} resolved)`;
-                }).join(' • ')
+	                ? sources.map(source => {
+	                    const service = String(source.service || 'server');
+	                    const endpointStatus = String(source.endpointStatus || source.status || 'unknown');
+	                    const mappingStatus = String(source.mappingStatus || source.status || 'unknown');
+	                    const resolved = Number(source.resolved || 0);
+	                    const fetched = Number(source.fetched || 0);
+	                    return `${service}: endpoint ${endpointStatus}, mapping ${mappingStatus} (${resolved}/${fetched} resolved)`;
+	                }).join(' • ')
                 : 'Not checked';
         }
         if (settingsSummaryEl) {

@@ -3302,19 +3302,49 @@ ORDER BY decade DESC;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT t.id,
-       t.title,
-       ar.name,
-       a.title,
-       a.preferred_cover_path,
-       t.duration_ms
-FROM track t
-JOIN album a ON a.id = t.album_id
-JOIN artist ar ON ar.id = a.artist_id
-WHERE t.id IN (
-    SELECT CAST(value AS INTEGER)
-    FROM json_each(@trackIdsJson)
-);";
+	SELECT t.id,
+	       t.title,
+	       ar.name,
+	       a.title,
+	       a.preferred_cover_path,
+	       t.duration_ms,
+	       selected_audio.audio_file_id,
+	       selected_audio.file_path,
+	       selected_audio.audio_variant
+	FROM track t
+	JOIN album a ON a.id = t.album_id
+	JOIN artist ar ON ar.id = a.artist_id
+	LEFT JOIN (
+	    SELECT track_id,
+	           audio_file_id,
+	           audio_variant,
+	           file_path
+	    FROM (
+	        SELECT tl.track_id,
+	               af.id AS audio_file_id,
+	               af.audio_variant,
+	               COALESCE(
+	                   CASE
+	                       WHEN f.root_path IS NOT NULL AND af.relative_path IS NOT NULL AND TRIM(af.relative_path) <> ''
+	                       THEN rtrim(f.root_path, '/\') || '/' || af.relative_path
+	                   END,
+	                   af.path) AS file_path,
+	               ROW_NUMBER() OVER (
+	                   PARTITION BY tl.track_id
+	                   ORDER BY f.enabled DESC,
+	                            af.quality_rank DESC NULLS LAST,
+	                            af.size DESC,
+	                            af.id DESC) AS rn
+	        FROM track_local tl
+	        JOIN audio_file af ON af.id = tl.audio_file_id
+	        LEFT JOIN folder f ON f.id = af.folder_id
+	    )
+	    WHERE rn = 1
+	) selected_audio ON selected_audio.track_id = t.id
+	WHERE t.id IN (
+	    SELECT CAST(value AS INTEGER)
+	    FROM json_each(@trackIdsJson)
+	);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -3325,9 +3355,13 @@ WHERE t.id IN (
                 reader.GetInt64(0),
                 reader.GetString(1),
                 reader.GetString(2),
-                reader.GetString(3),
-                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
-                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5)));
+	                reader.GetString(3),
+	                await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetString(4),
+	                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetInt32(5),
+	                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt64(6),
+	                await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7),
+	                await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
+	                BuildVariantKey(reader.GetInt64(0), await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt64(6), 0)));
         }
 
         var order = new Dictionary<long, int>();
@@ -5622,15 +5656,45 @@ SELECT mi.position,
        t.id,
        t.title,
        ar.name,
-       al.title,
-       al.preferred_cover_path,
-       t.duration_ms
-FROM mix_item mi
-LEFT JOIN track t ON t.id = mi.track_id
-LEFT JOIN album al ON al.id = t.album_id
-LEFT JOIN artist ar ON ar.id = al.artist_id
-WHERE mi.mix_cache_id = @mixCacheId
-ORDER BY mi.position;";
+	       al.title,
+	       al.preferred_cover_path,
+	       t.duration_ms,
+	       selected_audio.audio_file_id,
+	       selected_audio.file_path,
+	       selected_audio.audio_variant
+	FROM mix_item mi
+	LEFT JOIN track t ON t.id = mi.track_id
+	LEFT JOIN album al ON al.id = t.album_id
+	LEFT JOIN artist ar ON ar.id = al.artist_id
+	LEFT JOIN (
+	    SELECT track_id,
+	           audio_file_id,
+	           audio_variant,
+	           file_path
+	    FROM (
+	        SELECT tl.track_id,
+	               af.id AS audio_file_id,
+	               af.audio_variant,
+	               COALESCE(
+	                   CASE
+	                       WHEN f.root_path IS NOT NULL AND af.relative_path IS NOT NULL AND TRIM(af.relative_path) <> ''
+	                       THEN rtrim(f.root_path, '/\') || '/' || af.relative_path
+	                   END,
+	                   af.path) AS file_path,
+	               ROW_NUMBER() OVER (
+	                   PARTITION BY tl.track_id
+	                   ORDER BY f.enabled DESC,
+	                            af.quality_rank DESC NULLS LAST,
+	                            af.size DESC,
+	                            af.id DESC) AS rn
+	        FROM track_local tl
+	        JOIN audio_file af ON af.id = tl.audio_file_id
+	        LEFT JOIN folder f ON f.id = af.folder_id
+	    )
+	    WHERE rn = 1
+	) selected_audio ON selected_audio.track_id = t.id
+	WHERE mi.mix_cache_id = @mixCacheId
+	ORDER BY mi.position;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("mixCacheId", mixCacheId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -5644,10 +5708,14 @@ ORDER BY mi.position;";
             tracks.Add(new MixTrackDto(
                 reader.GetInt64(1),
                 await reader.IsDBNullAsync(2, cancellationToken) ? "Unknown" : reader.GetString(2),
-                await reader.IsDBNullAsync(3, cancellationToken) ? "Unknown" : reader.GetString(3),
-                await reader.IsDBNullAsync(4, cancellationToken) ? "Unknown" : reader.GetString(4),
-                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
-                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6)));
+	                await reader.IsDBNullAsync(3, cancellationToken) ? "Unknown" : reader.GetString(3),
+	                await reader.IsDBNullAsync(4, cancellationToken) ? "Unknown" : reader.GetString(4),
+	                await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+	                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
+	                await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetInt64(7),
+	                await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8),
+	                await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
+	                BuildVariantKey(reader.GetInt64(1), await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetInt64(7), 0)));
         }
         return tracks;
     }
@@ -11215,6 +11283,11 @@ ORDER BY t.id,
 
     private static string? NormalizeAudioVariant(string? value)
         => AudioVariantResolver.NormalizeAudioVariant(value);
+
+    private static string BuildVariantKey(long trackId, long? audioFileId, int fallbackIndex)
+        => audioFileId.HasValue && audioFileId.Value > 0
+            ? $"{trackId}:{audioFileId.Value}"
+            : $"{trackId}:{fallbackIndex}";
 
     public async Task<IReadOnlyDictionary<long, TrackSourceLinksDto>> GetAlbumTrackSourceLinksAsync(long albumId, CancellationToken cancellationToken = default)
     {

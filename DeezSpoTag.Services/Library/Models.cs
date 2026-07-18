@@ -53,7 +53,11 @@ public sealed record MixTrackDto(
     string ArtistName,
     string AlbumTitle,
     string? CoverPath,
-    int? DurationMs);
+    int? DurationMs,
+    long? AudioFileId = null,
+    string? FilePath = null,
+    string? AudioVariant = null,
+    string? VariantKey = null);
 
 public sealed record MixDetailDto(
     MixSummaryDto Summary,

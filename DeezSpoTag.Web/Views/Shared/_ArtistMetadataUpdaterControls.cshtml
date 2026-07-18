@@ -16,6 +16,9 @@
     <option value="7">1 week</option>
     <option value="0">Full refresh</option>
 </select>
+<select id="metadata-library-folder" aria-label="Artist metadata library folder">
+    <option value="">All music libraries</option>
+</select>
 <div id="metadata-target-server" class="metadata-target-checkboxes" role="group" aria-label="Target servers">
     <label class="metadata-updater-option">
         <input type="checkbox" data-metadata-target="plex" checked />
@@ -47,6 +50,10 @@
 <label class="metadata-updater-option">
     <input type="checkbox" id="metadata-include-popular-songs" />
     <span>Sync popular songs</span>
+</label>
+<label class="metadata-updater-option">
+    <input type="checkbox" id="metadata-missing-artist-art-only" />
+    <span>Only artists missing artist art (Plex)</span>
 </label>
 <label class="metadata-updater-option">
     <input type="checkbox" id="metadata-ocr-text-art-blocking" checked />
