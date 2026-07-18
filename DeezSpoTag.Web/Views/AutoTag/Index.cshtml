@@ -207,7 +207,7 @@
                     <div class="download-section">
                         <div class="download-section-title">Profiles</div>
                         <div class="download-grid download-grid-2">
-                            <div class="form-group">
+                            <div class="form-group" id="lyricsTypeGroup">
                                 <label for="autotag-profile-select">Saved profiles</label>
                                 <select id="autotag-profile-select"></select>
                             </div>
@@ -1699,57 +1699,64 @@
                     <div class="download-section">
                         <div class="download-section-title">Format</div>
                         <div class="download-grid download-grid-3 technical-checkbox-grid">
-                            <div class="form-group">
+                            <div class="form-group" id="lyricsTypeGroup">
                                 <label for="lrcType">
                                     Lyrics type
-                                    <span class="autotag-tooltip-icon ms-1" title="When both .lrc and .ttml are saved, unsynced .txt lyrics are skipped." aria-label="When both .lrc and .ttml are saved, unsynced .txt lyrics are skipped.">
+                                    <span class="autotag-tooltip-icon ms-1" title="Select which lyric types are allowed from providers. Unsynced .txt lyrics are used only when synchronized lyrics are unavailable." aria-label="Select which lyric types are allowed from providers. Unsynced .txt lyrics are used only when synchronized lyrics are unavailable.">
                                         <i class="fas fa-question-circle"></i>
                                     </span>
                                 </label>
-                                <div class="dropdown-select lyrics-type-dropdown" id="lyricsTypeDropdown">
-                                    <button type="button" class="dropdown-trigger" id="lyricsTypeTrigger">Synced Lyrics, Time Synced Lyrics, Unsynced Lyrics</button>
-                                    <div class="dropdown-menu lyrics-type-menu" id="lyricsTypeMenu">
-                                        <div class="lyrics-order-hint">Select one or more types</div>
-                                        <ul class="lyrics-type-list" id="lyricsTypeList">
-                                            <li class="lyrics-type-item">
-                                                <label>
-                                                    <input type="checkbox" data-value="lyrics" checked />
-                                                    <span>Synced Lyrics</span>
-                                                </label>
-                                            </li>
-                                            <li class="lyrics-type-item">
-                                                <label>
-                                                    <input type="checkbox" data-value="syllable-lyrics" checked />
-                                                    <span>Time Synced Lyrics</span>
-                                                </label>
-                                            </li>
-                                            <li class="lyrics-type-item">
-                                                <label>
-                                                    <input type="checkbox" data-value="unsynced-lyrics" checked />
-                                                    <span>Unsynced Lyrics</span>
-                                                </label>
-                                            </li>
-                                        </ul>
+                                <div class="lyrics-type-options lyrics-type-card-grid" id="lyricsTypeOptions">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-type-standard" data-value="lyrics" checked />
+                                        <label for="lyrics-type-standard">Standard synchronized lyrics</label>
                                     </div>
-                                    <input type="hidden" id="lrcType" value="lyrics,syllable-lyrics,unsynced-lyrics" />
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-type-enhanced" data-value="syllable-lyrics" checked />
+                                        <label for="lyrics-type-enhanced">Enhanced Synced Lyrics</label>
+                                    </div>
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-type-ttml" data-value="ttml-lyrics" checked />
+                                        <label for="lyrics-type-ttml">TTML lyrics</label>
+                                    </div>
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-type-unsynced" data-value="unsynced-lyrics" checked />
+                                        <label for="lyrics-type-unsynced">Unsynced lyrics</label>
+                                    </div>
                                 </div>
+                                <input type="hidden" id="lrcType" value="lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics" />
                             </div>
                             <div class="form-group" id="embedLyricsFormatGroup" style="display: none;">
-                                <label for="lrcFormat">Embedded lyrics format</label>
-                                <select id="lrcFormat">
-                                    <option value="both">LRC + TTML</option>
-                                    <option value="lrc">LRC</option>
-                                    <option value="ttml">TTML</option>
-                                </select>
-                            </div>
-                            <div class="checkbox-group align-self-start" id="synthesizeTtmlLyricsGroup" style="display: none;">
-                                <input type="checkbox" id="synthesizeTtmlLyrics" />
-                                <label for="synthesizeTtmlLyrics">
-                                    Synthesize TTML from synced lyrics
-                                    <span class="autotag-tooltip-icon ms-1" title="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly." aria-label="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly.">
+                                <label for="lrcFormat">
+                                    Lyrics output
+                                    <span class="autotag-tooltip-icon ms-1" title="Select one or more sidecars. Standard synchronized lyrics write .lrc, Enhanced Synced Lyrics writes .elrc, and TTML writes .ttml." aria-label="Select one or more sidecars. Standard synchronized lyrics write .lrc, Enhanced Synced Lyrics writes .elrc, and TTML writes .ttml.">
                                         <i class="fas fa-question-circle"></i>
                                     </span>
                                 </label>
+                                <div class="lyrics-format-options lyrics-format-card-grid" id="lyricsFormatOptions">
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-format-lrc" data-value="lrc" checked />
+                                        <label for="lyrics-format-lrc">Standard synchronized lyrics (.lrc)</label>
+                                    </div>
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-format-elrc" data-value="elrc" />
+                                        <label for="lyrics-format-elrc">Enhanced Synced Lyrics (.elrc)</label>
+                                    </div>
+                                    <div class="checkbox-group">
+                                        <input type="checkbox" id="lyrics-format-ttml" data-value="ttml" checked />
+                                        <label for="lyrics-format-ttml">TTML lyrics (.ttml)</label>
+                                    </div>
+                                    <div class="checkbox-group" id="synthesizeTtmlLyricsGroup" style="display: none;">
+                                        <input type="checkbox" id="synthesizeTtmlLyrics" />
+                                        <label for="synthesizeTtmlLyrics">
+                                            Synthesize TTML from synced lyrics
+                                            <span class="autotag-tooltip-icon ms-1" title="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly." aria-label="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly.">
+                                                <i class="fas fa-question-circle"></i>
+                                            </span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="lrcFormat" value="lrc,elrc,ttml" />
                             </div>
                         </div>
                     </div>

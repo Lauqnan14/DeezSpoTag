@@ -45,7 +45,7 @@ public static class QueuePayloadFileHelper
         if (!string.IsNullOrWhiteSpace(dir))
         {
             var baseName = Path.GetFileNameWithoutExtension(outputIo);
-            foreach (var ext in new[] { ".ttml", ".lrc", ".txt" })
+            foreach (var ext in new[] { ".ttml", ".elrc", ".lrc", ".txt" })
             {
                 var lyricIo = Path.Join(dir, baseName + ext);
                 if (!File.Exists(lyricIo))

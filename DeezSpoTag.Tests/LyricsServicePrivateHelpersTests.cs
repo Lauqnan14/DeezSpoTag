@@ -254,6 +254,7 @@ public sealed class LyricsServicePrivateHelpersTests
 
         Assert.Contains("lyrics", selected);
         Assert.Contains("syllable-lyrics", selected);
+        Assert.Contains("ttml-lyrics", selected);
         Assert.Contains("unsynced-lyrics", selected);
     }
 
@@ -262,23 +263,27 @@ public sealed class LyricsServicePrivateHelpersTests
     {
         var settings = new DeezSpoTagSettings
         {
-            LrcType = "synced-lyrics,time_synced_lyrics,unsynchronized-lyrics,lyrics,UNSYNCED"
+            LrcType = "synced-lyrics,time_synced_lyrics,ttmllyrics,unsynchronized-lyrics,lyrics,UNSYNCED"
         };
 
         var selected = InvokeStatic<HashSet<string>>("ParseSelectedLyricsTypes", settings);
 
-        Assert.Equal(3, selected.Count);
+        Assert.Equal(4, selected.Count);
         Assert.Contains("lyrics", selected);
         Assert.Contains("syllable-lyrics", selected);
+        Assert.Contains("ttml-lyrics", selected);
         Assert.Contains("unsynced-lyrics", selected);
     }
 
     [Theory]
-    [InlineData("lyrics", "both")]
+    [InlineData("lyrics", "richlyrics")]
     [InlineData("lrc", "lrc")]
+    [InlineData("elrc", "elrc")]
     [InlineData("ttml", "ttml")]
     [InlineData("lrc+ttml", "both")]
-    [InlineData("unknown-format", "both")]
+    [InlineData("both", "richlyrics")]
+    [InlineData("richlyrics", "richlyrics")]
+    [InlineData("unknown-format", "richlyrics")]
     public void NormalizeLyricsOutputFormat_NormalizesExpectedValues(string value, string expected)
     {
         var actual = InvokeStatic<string>("NormalizeLyricsOutputFormat", value);
@@ -391,21 +396,55 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
-    public void ResolveOutputRequirements_RequiresBoth_WhenBothTechnicalTypesAreEnabled()
+    public void ResolveOutputRequirements_RequiresRichLyrics_WhenRichFormatsAreEnabled()
     {
         var settings = new DeezSpoTagSettings
         {
             SyncedLyrics = true,
             SaveLyrics = true,
-            LrcType = "lyrics,unsynced-lyrics",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
             LrcFormat = "both"
         };
 
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
 
         AssertRequirement(requirements, "WantsLrcLyrics", expected: true);
+        AssertRequirement(requirements, "WantsEnhancedSynchronizedLyrics", expected: true);
         AssertRequirement(requirements, "WantsTtmlLyrics", expected: true);
         AssertRequirement(requirements, "WantsPlainLyrics", expected: true);
+    }
+
+    [Fact]
+    public void MergeLyricsData_UpgradesLineSyncedLyricsWithEnhancedWordTiming()
+    {
+        var target = new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("AJE line", "[00:01.00]", 1000, 2000)
+            ],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
+        };
+        var candidate = new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("AJE line", "[00:01.00]", 1000, 2000)
+                {
+                    Words =
+                    [
+                        new SynchronizedLyricWord("AJE", 1000, 1400),
+                        new SynchronizedLyricWord(" line", 1400, 2000)
+                    ]
+                }
+            ],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson
+        };
+
+        GetStaticMethod("MergeLyricsData").Invoke(null, [target, candidate]);
+
+        Assert.True(target.HasEnhancedSynchronizedLyrics());
+        Assert.Equal(LyricsSourceFormat.ProviderSyncedJson, target.SyncedLyricsSourceFormat);
     }
 
     [Fact]
@@ -415,7 +454,7 @@ public sealed class LyricsServicePrivateHelpersTests
         {
             SyncedLyrics = true,
             SaveLyrics = false,
-            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
             LrcFormat = "both"
         };
         var requirements = InvokeStatic<object>("ResolveOutputRequirements", settings);
@@ -465,7 +504,7 @@ public sealed class LyricsServicePrivateHelpersTests
         var settings = new DeezSpoTagSettings
         {
             SyncedLyrics = true,
-            LrcType = "lyrics",
+            LrcType = "lyrics,ttml-lyrics",
             LrcFormat = format
         };
         var appleLyrics = new LyricsSource
@@ -596,7 +635,7 @@ public sealed class LyricsServicePrivateHelpersTests
             var settings = new DeezSpoTagSettings
             {
                 SyncedLyrics = true,
-                LrcType = "lyrics",
+                LrcType = "lyrics,ttml-lyrics",
                 LrcFormat = "ttml"
             };
             var lyrics = new LyricsSource
@@ -634,7 +673,7 @@ public sealed class LyricsServicePrivateHelpersTests
             {
                 SyncedLyrics = true,
                 SaveLyrics = true,
-                LrcType = "lyrics,unsynced-lyrics",
+                LrcType = "lyrics,ttml-lyrics,unsynced-lyrics",
                 LrcFormat = "ttml"
             };
             var lyrics = new LyricsSource
@@ -666,7 +705,7 @@ public sealed class LyricsServicePrivateHelpersTests
             {
                 SyncedLyrics = true,
                 SaveLyrics = true,
-                LrcType = "lyrics,unsynced-lyrics",
+                LrcType = "lyrics,ttml-lyrics,unsynced-lyrics",
                 LrcFormat = "lrc"
             };
             var lyrics = new LyricsSource
@@ -713,6 +752,106 @@ public sealed class LyricsServicePrivateHelpersTests
             Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
             Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
             Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_EnhancedSynchronizedLyrics_WritesElrcOnly()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "elrc"
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics =
+                [
+                    new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                    {
+                        Words =
+                        [
+                            new SynchronizedLyricWord("Oh", 1000, 1300),
+                            new SynchronizedLyricWord(" ", 1300, 1301),
+                            new SynchronizedLyricWord("yeah", 1400, 2500)
+                        ]
+                    }
+                ],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
+                UnsyncedLyrics = "Plain"
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.True(File.Exists(Path.Join(directory, "track.elrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
+            Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+            var elrc = await File.ReadAllTextAsync(Path.Join(directory, "track.elrc"));
+            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", elrc);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_AllRichFormats_WritesLrcElrcAndTtml()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,ttml-lyrics,unsynced-lyrics",
+                LrcFormat = "lrc,elrc,ttml",
+                SynthesizeTtmlLyrics = true
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics =
+                [
+                    new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                    {
+                        Words =
+                        [
+                            new SynchronizedLyricWord("Oh", 1000, 1300),
+                            new SynchronizedLyricWord(" ", 1300, 1301),
+                            new SynchronizedLyricWord("yeah", 1400, 2500)
+                        ]
+                    }
+                ],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
+                UnsyncedLyrics = "Plain"
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.True(File.Exists(Path.Join(directory, "track.elrc")));
+            Assert.True(File.Exists(Path.Join(directory, "track.ttml")));
+            Assert.False(File.Exists(Path.Join(directory, "track.txt")));
+            var lrc = await File.ReadAllTextAsync(Path.Join(directory, "track.lrc"));
+            var elrc = await File.ReadAllTextAsync(Path.Join(directory, "track.elrc"));
+            var ttml = await File.ReadAllTextAsync(Path.Join(directory, "track.ttml"));
+            Assert.Contains("[00:01.00]Oh yeah", lrc);
+            Assert.DoesNotContain("<00:01.000>", lrc);
+            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", elrc);
+            Assert.DoesNotContain("<span", ttml);
         }
         finally
         {
@@ -823,6 +962,101 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void GenerateLrcContent_RemainsLineOnly_WhenEnhancedWordsAreAvailable()
+    {
+        var lyrics = new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("Oh yeah,", "[00:01.00]", 1000, 2000)
+                {
+                    Words =
+                    [
+                        new SynchronizedLyricWord("Oh", 1000, 1300),
+                        new SynchronizedLyricWord(" ", 1300, 1301),
+                        new SynchronizedLyricWord("yeah,", 1400, 2000)
+                    ]
+                }
+            ]
+        };
+
+        var lrc = lyrics.GenerateLrcContent("AJE", "Alikiba", "So Hot");
+
+        Assert.Contains("[ti:AJE]", lrc);
+        Assert.Contains("[00:01.00]Oh yeah,", lrc);
+        Assert.DoesNotContain("<00:01.000>", lrc);
+    }
+
+    [Fact]
+    public void GenerateEnhancedLrcContent_UsesEnhancedWordTimestamps_WhenAvailable()
+    {
+        var lyrics = new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("Oh yeah,", "[00:01.00]", 1000, 2000)
+                {
+                    Words =
+                    [
+                        new SynchronizedLyricWord("Oh", 1000, 1300),
+                        new SynchronizedLyricWord(" ", 1300, 1301),
+                        new SynchronizedLyricWord("yeah,", 1400, 2000)
+                    ]
+                }
+            ]
+        };
+
+        var elrc = lyrics.GenerateEnhancedLrcContent("AJE", "Alikiba", "So Hot");
+
+        Assert.Contains("[ti:AJE]", elrc);
+        Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah,", elrc);
+    }
+
+    [Fact]
+    public void GenerateLrcContent_KeepsLineOnlyOutput_WhenWordsAreUnavailable()
+    {
+        var lyrics = new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("Line only", "[00:01.00]", 1000, 2000)
+            ]
+        };
+
+        var lrc = lyrics.GenerateLrcContent();
+
+        Assert.Contains("[00:01.00]Line only", lrc);
+        Assert.DoesNotContain("<00:01.000>", lrc);
+    }
+
+    [Fact]
+    public void TryBuildTtmlFromSyncedLyrics_DoesNotUseEnhancedWordSpans()
+    {
+        var lyrics = new LyricsSource
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                {
+                    Words =
+                    [
+                        new SynchronizedLyricWord("Oh", 1000, 1300),
+                        new SynchronizedLyricWord(" ", 1300, 1301),
+                        new SynchronizedLyricWord("yeah", 1400, 2500)
+                    ]
+                }
+            ]
+        };
+
+        var ttml = InvokeStatic<string?>("TryBuildTtmlFromSyncedLyrics", lyrics);
+
+        Assert.NotNull(ttml);
+        Assert.Contains("<p begin=\"00:00:01.000\" end=\"00:00:03.000\">", ttml);
+        Assert.Contains(">Oh yeah</p>", ttml);
+        Assert.DoesNotContain("<span", ttml);
+    }
+
+    [Fact]
     public void ShouldSynthesizeTtmlBySettings_IsDisabledByDefault()
     {
         var settings = new DeezSpoTagSettings
@@ -848,6 +1082,7 @@ public sealed class LyricsServicePrivateHelpersTests
         var ttml = new DeezSpoTagSettings
         {
             SyncedLyrics = true,
+            LrcType = "ttml-lyrics",
             LrcFormat = "ttml",
             SynthesizeTtmlLyrics = true
         };

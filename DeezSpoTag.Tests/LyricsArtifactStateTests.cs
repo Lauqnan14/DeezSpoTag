@@ -14,14 +14,15 @@ public sealed class LyricsArtifactStateTests
     [Theory]
     [InlineData("lrc", "lrc")]
     [InlineData("ttml", "ttml")]
-    [InlineData("both", "ttml,lrc")]
+    [InlineData("both", "ttml,elrc,lrc")]
+    [InlineData("richlyrics", "ttml,elrc,lrc")]
     public void DescribeResolutionPlan_UsesRequestedRichFormats(string format, string expected)
     {
         var plan = LyricsService.DescribeResolutionPlan(new DeezSpoTagSettings
         {
             SyncedLyrics = true,
             SaveLyrics = true,
-            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
             LrcFormat = format,
             LyricsFallbackEnabled = true,
             LyricsFallbackOrder = "lrclib,apple"

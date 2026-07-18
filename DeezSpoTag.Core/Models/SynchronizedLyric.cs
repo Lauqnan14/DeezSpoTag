@@ -33,6 +33,12 @@ public class SynchronizedLyric
     public int Duration { get; set; }
 
     /// <summary>
+    /// Optional word/chunk-level timing for enhanced LRC and TTML output.
+    /// </summary>
+    [JsonPropertyName("words")]
+    public List<SynchronizedLyricWord>? Words { get; set; }
+
+    /// <summary>
     /// Offset as TimeSpan for easier manipulation
     /// </summary>
     [JsonIgnore]
@@ -67,6 +73,12 @@ public class SynchronizedLyric
         return $"[{timeSpan.Minutes:D2}:{timeSpan.Seconds:D2}.{timeSpan.Milliseconds / 10:D2}]";
     }
 
+    public static string BuildEnhancedLrcTimestamp(int milliseconds)
+    {
+        var timeSpan = TimeSpan.FromMilliseconds(Math.Max(0, milliseconds));
+        return $"<{timeSpan.Minutes:D2}:{timeSpan.Seconds:D2}.{timeSpan.Milliseconds:D3}>";
+    }
+
     /// <summary>
     /// Create from refreezer JSON format
     /// </summary>
@@ -97,4 +109,32 @@ public class SynchronizedLyric
     {
         return $"{LrcTimestamp}{Text}";
     }
+}
+
+public sealed class SynchronizedLyricWord
+{
+    [JsonPropertyName("text")]
+    public string? Text { get; set; }
+
+    [JsonPropertyName("startMilliseconds")]
+    public int StartMilliseconds { get; set; }
+
+    [JsonPropertyName("endMilliseconds")]
+    public int EndMilliseconds { get; set; }
+
+    public SynchronizedLyricWord()
+    {
+    }
+
+    public SynchronizedLyricWord(string? text, int startMilliseconds, int endMilliseconds)
+    {
+        Text = text;
+        StartMilliseconds = startMilliseconds;
+        EndMilliseconds = endMilliseconds;
+    }
+
+    public bool IsValid()
+        => !string.IsNullOrWhiteSpace(Text)
+           && StartMilliseconds >= 0
+           && EndMilliseconds > StartMilliseconds;
 }

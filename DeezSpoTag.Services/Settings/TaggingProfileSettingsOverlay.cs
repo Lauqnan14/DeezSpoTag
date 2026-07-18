@@ -31,8 +31,8 @@ public static class TaggingProfileSettingsOverlay
         settings.ArtistCasing = technical.ArtistCasing ?? defaultArtistCasing;
         settings.SyncedLyrics = technical.SyncedLyrics;
         settings.SaveLyrics = technical.SaveLyrics;
-        settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,unsynced-lyrics";
-        settings.LrcFormat = technical.LrcFormat ?? "both";
+        settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
+        settings.LrcFormat = technical.LrcFormat ?? "richlyrics";
         settings.SynthesizeTtmlLyrics = technical.SynthesizeTtmlLyrics;
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
         settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? "apple,deezer,spotify,lrclib,musixmatch";

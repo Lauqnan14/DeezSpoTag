@@ -127,7 +127,7 @@ public sealed class LocalLibraryScanner
         @"^\s*(?<track>\d{1,3})\s*[-._]\s*(?<title>.+?)\s*$",
         RegexOptions.Compiled,
         TimeSpan.FromMilliseconds(250));
-    private static readonly string[] LyricsSidecarExtensions = new[] { ".lrc", ".ttml" };
+    private static readonly string[] LyricsSidecarExtensions = new[] { ".lrc", ".elrc", ".ttml" };
     private static readonly char[] TagValueSeparators = [';', ',', '/', '|'];
     private static readonly char[] DeezerUrlTerminatorChars = ['?', '/', '#'];
     private static readonly string[] WindowsFfprobeCandidates = ["ffprobe.exe", "ffprobe"];

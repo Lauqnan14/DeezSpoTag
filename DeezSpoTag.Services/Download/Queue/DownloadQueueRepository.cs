@@ -2428,11 +2428,19 @@ ORDER BY
                 continue;
             }
 
+            if (IsStaleCompletedDuplicate(item))
+            {
+                continue;
+            }
+
             return item;
         }
 
         return null;
     }
+
+    private static bool IsStaleCompletedDuplicate(DownloadQueueItem item)
+        => IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item);
 
     private static bool MatchesDuplicateRequest(DuplicateLookupRequest request, DownloadQueueItem item)
     {
@@ -2867,10 +2875,12 @@ WHERE json_valid(payload)
             if (normalized is "time-synced" or "timesynced" or "ttml" or "syllable-lyrics") formats.Add("ttml");
             else if (normalized is "synced" or "lrc" or "lyrics") formats.Add("lrc");
             else if (normalized is "unsynced" or "txt" or "unsynced-lyrics") formats.Add("txt");
-            else if (normalized == "both")
+            else if (normalized is "both" or "richlyrics" or "rich-lyrics")
             {
                 formats.Add("lrc");
+                formats.Add("elrc");
                 formats.Add("txt");
+                formats.Add("ttml");
             }
         }
     }
@@ -2892,6 +2902,7 @@ WHERE json_valid(payload)
             var format = Path.GetExtension(path ?? string.Empty).ToLowerInvariant() switch
             {
                 ".ttml" => "ttml",
+                ".elrc" => "elrc",
                 ".lrc" => "lrc",
                 ".txt" => "txt",
                 _ => string.Empty

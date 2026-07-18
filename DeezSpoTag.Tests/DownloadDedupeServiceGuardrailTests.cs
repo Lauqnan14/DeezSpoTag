@@ -37,13 +37,15 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
-    public void QueueDuplicateLookup_TreatsAllRowsAsAuthoritativeUntilCleared()
+    public void QueueDedupe_IgnoresCompletedRowsAfterMaterializedFilesAreGone()
     {
         var source = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
+        var orchestration = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
-        Assert.Contains("Math.Abs(item.DurationMs.Value - request.DurationMs.Value) <= 2000", source, StringComparison.Ordinal);
-        Assert.Contains("AddFinalDestinationPaths(item.FinalDestinationsJson, paths);", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item)", source, StringComparison.Ordinal);
+        Assert.Contains("IsStaleCompletedDuplicate(item)", source, StringComparison.Ordinal);
+        Assert.Contains("IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item)", source, StringComparison.Ordinal);
+        Assert.Contains("HasRecordedFinalDestination(item)", orchestration, StringComparison.Ordinal);
+        Assert.Contains("already recorded final destinations; no staging artifact remains to finalize", orchestration, StringComparison.Ordinal);
     }
 
     [Fact]

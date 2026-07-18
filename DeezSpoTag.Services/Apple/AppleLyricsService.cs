@@ -23,6 +23,7 @@ public sealed class AppleLyricsService
     private const string DefaultLanguage = "en-US";
     private const string SyncedLyricsType = "lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
+    private const string TtmlLyricsType = "ttml-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const int MinMediaUserTokenLength = 50;
     private const string DefaultWrapperHost = "127.0.0.1";
@@ -262,6 +263,7 @@ public sealed class AppleLyricsService
         {
             selected.Add(SyncedLyricsType);
             selected.Add(SyllableLyricsType);
+            selected.Add(TtmlLyricsType);
             selected.Add(UnsyncedLyricsType);
             return selected;
         }
@@ -275,6 +277,7 @@ public sealed class AppleLyricsService
         {
             selected.Add(SyncedLyricsType);
             selected.Add(SyllableLyricsType);
+            selected.Add(TtmlLyricsType);
             selected.Add(UnsyncedLyricsType);
         }
 
@@ -297,6 +300,10 @@ public sealed class AppleLyricsService
             "timesynced-lyrics" => SyllableLyricsType,
             "time_synced_lyrics" => SyllableLyricsType,
             "syllablelyrics" => SyllableLyricsType,
+            TtmlLyricsType => TtmlLyricsType,
+            "ttml" => TtmlLyricsType,
+            "ttmllyrics" => TtmlLyricsType,
+            "ttml_lyrics" => TtmlLyricsType,
             UnsyncedLyricsType => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,
@@ -316,6 +323,7 @@ public sealed class AppleLyricsService
         return normalizedType switch
         {
             SyllableLyricsType => SyllableLyricsType,
+            TtmlLyricsType => SyncedLyricsType,
             UnsyncedLyricsType => SyncedLyricsType,
             _ => SyncedLyricsType
         };

@@ -29,6 +29,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string ContainerDownloadsPath = "/downloads";
     private const string LegacyContainerDownloadsPath = "/data/downloads";
     private const string SyllableLyricsType = "syllable-lyrics";
+    private const string TtmlLyricsType = "ttml-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string AppleLyricsProvider = "apple";
     private const string LRCLibLyricsProvider = "lrclib";
@@ -40,8 +41,8 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string WatchCompilationGroup = "compilation";
     private const string WatchAppearsOnGroup = "appears_on";
     private static readonly string[] CanonicalLyricsProviders = { AppleLyricsProvider, "deezer", "spotify", LRCLibLyricsProvider, "musixmatch" };
-    private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, UnsyncedLyricsType };
-    private static readonly string[] CanonicalLyricsFormats = { "both", "lrc", "ttml" };
+    private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, TtmlLyricsType, UnsyncedLyricsType };
+    private static readonly string[] CanonicalLyricsFormats = { "lrc", "elrc", "ttml" };
     private static readonly JsonSerializerOptions SettingsDeserializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -1701,6 +1702,9 @@ public class DeezSpoTagSettingsService : ISettingsService
             "timesynced-lyrics" => SyllableLyricsType,
             "time_synced_lyrics" => SyllableLyricsType,
             "syllablelyrics" => SyllableLyricsType,
+            "ttml" => TtmlLyricsType,
+            "ttmllyrics" => TtmlLyricsType,
+            "ttml_lyrics" => TtmlLyricsType,
             "unsunsynced-lyrics" => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,
@@ -1712,18 +1716,47 @@ public class DeezSpoTagSettingsService : ISettingsService
 
     private static string NormalizeLyricsFormatSelection(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        var parsed = new List<string>();
+        foreach (var token in (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            return "both";
+            parsed.AddRange(NormalizeLyricsFormatToken(token));
         }
 
-        return value.Trim().ToLowerInvariant() switch
+        parsed = parsed
+            .Where(static format => !string.IsNullOrWhiteSpace(format))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (parsed.Count == 0)
         {
-            var known when CanonicalLyricsFormats.Contains(known, StringComparer.OrdinalIgnoreCase) => known,
-            "lyrics" => "both",
-            "lrc+ttml" => "both",
-            "ttml+lrc" => "both",
-            _ => "both"
+            parsed.Add("lrc");
+            parsed.Add("elrc");
+            parsed.Add("ttml");
+        }
+
+        return string.Join(",", parsed);
+    }
+
+    private static IReadOnlyList<string> NormalizeLyricsFormatToken(string? token)
+    {
+        var normalized = token?.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            var known when !string.IsNullOrWhiteSpace(known) && CanonicalLyricsFormats.Contains(known, StringComparer.OrdinalIgnoreCase) => [known],
+            "standard-lrc" => ["lrc"],
+            "synced" => ["lrc"],
+            "synced-lyrics" => ["lrc"],
+            "enhanced-lrc" => ["elrc"],
+            "enhanced-synchronized-lyrics" => ["elrc"],
+            "enhanced-synchronised-lyrics" => ["elrc"],
+            "both" => ["lrc", "elrc", "ttml"],
+            "richlyrics" => ["lrc", "elrc", "ttml"],
+            "rich-lyrics" => ["lrc", "elrc", "ttml"],
+            "lyrics" => ["lrc", "elrc", "ttml"],
+            "lrc+ttml" => ["lrc", "ttml"],
+            "ttml+lrc" => ["lrc", "ttml"],
+            "all" => ["lrc", "elrc", "ttml"],
+            _ => []
         };
     }
 

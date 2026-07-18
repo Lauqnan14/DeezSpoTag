@@ -377,7 +377,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
-    public async Task ExistsDuplicateAsync_MatchesCompletedRowEvenWhenPayloadFileIsMissing()
+    public async Task ExistsDuplicateAsync_IgnoresCompletedRowWhenPayloadFileIsMissing()
     {
         await using var context = await CreateContextAsync();
         var missingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Missing.flac");
@@ -407,7 +407,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             },
             CancellationToken.None);
 
-        Assert.True(exists);
+        Assert.False(exists);
     }
 
     [Fact]
@@ -480,18 +480,23 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         Directory.CreateDirectory(Path.GetDirectoryName(finalLibraryPath)!);
         await File.WriteAllTextAsync(finalLibraryPath, "audio", CancellationToken.None);
 
+        var queueUuid = "completed-final-destination";
         await context.QueueRepository.EnqueueAsync(
             CreateQueueItem(
-                queueUuid: "completed-final-destination",
+                queueUuid: queueUuid,
                 artist: "Shared Artist",
                 title: "Original Title",
                 destinationFolderId: 9,
                 deezerTrackId: "dz-track-final") with
             {
                 Status = "completed",
-                PayloadJson = $$"""{ "FilePath": "{{staleStagingPath}}" }""",
-                FinalDestinationsJson = $$"""{ "{{staleStagingPath}}": "{{finalLibraryPath}}" }"""
+                PayloadJson = $$"""{ "FilePath": "{{staleStagingPath}}" }"""
             },
+            CancellationToken.None);
+        await context.QueueRepository.UpdateFinalDestinationsAsync(
+            queueUuid,
+            $$"""{ "{{staleStagingPath}}": "{{finalLibraryPath}}" }""",
+            null,
             CancellationToken.None);
 
         var exists = await context.QueueRepository.ExistsDuplicateAsync(

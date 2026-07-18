@@ -60,8 +60,8 @@ public sealed class TechnicalLyricsSettingsApplierTests
             SaveLyrics = true,
             SyncedLyrics = true,
             EmbedLyrics = false,
-            LrcType = "lyrics,syllable-lyrics,unsynced-lyrics",
-            LrcFormat = "both",
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LrcFormat = "richlyrics",
             SynthesizeTtmlLyrics = true,
             LyricsFallbackEnabled = true,
             ArtworkFallbackEnabled = true,
@@ -91,8 +91,8 @@ public sealed class TechnicalLyricsSettingsApplierTests
         Assert.True(settings.LyricsFallbackEnabled);
         Assert.True(settings.ArtworkFallbackEnabled);
         Assert.True(settings.ArtistArtworkFallbackEnabled);
-        Assert.Equal("lyrics,syllable-lyrics,unsynced-lyrics", settings.LrcType);
-        Assert.Equal("both", settings.LrcFormat);
+        Assert.Equal("lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics", settings.LrcType);
+        Assert.Equal("richlyrics", settings.LrcFormat);
         Assert.True(settings.SynthesizeTtmlLyrics);
         Assert.Equal("apple,lrclib,musixmatch,deezer", settings.LyricsFallbackOrder);
         Assert.Equal("apple,deezer,shazam", settings.ArtworkFallbackOrder);

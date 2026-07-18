@@ -899,6 +899,12 @@
     border: 1px solid #22d3ee;
 }
 
+.downloads-tab .badge-lyrics-enhanced {
+    background: rgba(168, 85, 247, 0.2);
+    color: #c084fc;
+    border: 1px solid #c084fc;
+}
+
 .downloads-tab .badge-lyrics-unsynced {
     background: rgba(249, 115, 22, 0.2);
     color: #f97316;
@@ -5062,9 +5068,14 @@ async function clearCanceledTasks() {
                                 const kind = label.toLowerCase();
                                 const cls = kind === 'time-synced'
                                     ? 'badge-lyrics-timesynced'
-                                    : kind === 'synced'
-                                        ? 'badge-lyrics-synced'
-                                        : 'badge-lyrics-unsynced';
+                                    : kind === 'enhanced-synchronized'
+                                        ? 'badge-lyrics-enhanced'
+                                        : kind === 'synced'
+                                            ? 'badge-lyrics-synced'
+                                            : 'badge-lyrics-unsynced';
+                                if (kind === 'enhanced-synchronized') {
+                                    return `<span class="badge ${cls}">Enhanced Synced Lyrics</span>`;
+                                }
                                 const text = kind === 'time-synced' ? 'Time-Synced' : label;
                                 return `<span class="badge ${cls}">${text} lyrics</span>`;
                             }).join('')
@@ -6684,12 +6695,14 @@ function getLyricsBadgesFromArtifacts(artifacts) {
         : (Array.isArray(artifacts.DownloadedFormats) ? artifacts.DownloadedFormats : []);
     const formats = resolved.concat(downloaded)
         .map(value => String(value || '').trim().toLowerCase())
-        .filter(value => value === 'ttml' || value === 'lrc' || value === 'txt');
+        .filter(value => value === 'ttml' || value === 'elrc' || value === 'lrc' || value === 'txt');
     const unique = formats.filter((value, index, list) => list.indexOf(value) === index);
-    const hasRich = unique.includes('ttml') || unique.includes('lrc');
+    const hasRich = unique.includes('ttml') || unique.includes('elrc') || unique.includes('lrc');
     return unique
         .filter(value => value !== 'txt' || !hasRich)
-        .map(value => value === 'ttml' ? 'time-synced' : (value === 'lrc' ? 'synced' : 'unsynced'));
+        .map(value => value === 'ttml'
+            ? 'time-synced'
+            : (value === 'elrc' ? 'enhanced-synchronized' : (value === 'lrc' ? 'synced' : 'unsynced')));
 }
 
 function getLyricsArtifactRevision(artifacts) {

@@ -108,6 +108,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string SpotifyPlatform = "spotify";
     private const string LyricsTag = "lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
+    private const string TtmlLyricsType = "ttml-lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string AlbumArtistTag = "albumArtist";
     private const string TrackTotalTag = "trackTotal";
@@ -2820,7 +2821,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             DeezerCountry = baseSettings.DeezerCountry,
             AppleMusic = baseSettings.AppleMusic,
             Video = baseSettings.Video,
-            SyncedLyrics = allowsSyncedBySettings && wantsSynced,
+            SyncedLyrics = allowsSyncedBySettings && (wantsSynced || wantsTtml),
             SaveLyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
             SynthesizeTtmlLyrics = baseSettings.SynthesizeTtmlLyrics,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
@@ -2829,12 +2830,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 : baseSettings.LyricsFallbackOrder,
             LrcFormat = NormalizeLyricsFormat(baseSettings.LrcFormat),
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)
-                ? "lyrics,syllable-lyrics,unsynced-lyrics"
+                ? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics"
                 : baseSettings.LrcType,
             Tags = new TagSettings
             {
                 Lyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
-                SyncedLyrics = allowsSyncedBySettings && wantsSynced
+                SyncedLyrics = allowsSyncedBySettings && (wantsSynced || wantsTtml)
             }
         };
     }
@@ -3038,7 +3039,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var selectedTypes = ParseLyricsTypeSelection(settings.LrcType);
         var allowsSyncedTypes = selectedTypes.Contains(LyricsTag) || selectedTypes.Contains(SyllableLyricsType);
         var allowsUnsyncedTypes = selectedTypes.Contains(UnsyncedLyricsType);
-        var normalizedFormat = NormalizeLyricsFormat(settings.LrcFormat);
+        var allowsTtmlTypes = selectedTypes.Contains(TtmlLyricsType);
+        var selectedFormats = ParseLyricsFormatSelection(settings.LrcFormat);
 
         return requestFlags with
         {
@@ -3046,8 +3048,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             WantsUnsynced = requestFlags.WantsUnsynced && allowsUnsyncedByToggle && allowsUnsyncedTypes,
             WantsTtml = requestFlags.WantsTtml
                 && allowsSyncedByToggle
-                && allowsSyncedTypes
-                && (normalizedFormat == "both" || normalizedFormat == "ttml")
+                && allowsTtmlTypes
+                && selectedFormats.Contains("ttml")
         };
     }
 
@@ -3069,6 +3071,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             selected.Add(LyricsTag);
             selected.Add(SyllableLyricsType);
+            selected.Add(TtmlLyricsType);
             selected.Add(UnsyncedLyricsType);
             return selected;
         }
@@ -3081,6 +3084,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 {
                     "synced-lyrics" => LyricsTag,
                     "time-synced-lyrics" or "timesynced-lyrics" or "time_synced_lyrics" => SyllableLyricsType,
+                    "ttml" or "ttmllyrics" or "ttml_lyrics" => TtmlLyricsType,
                     "unsyncedlyrics" or "unsynced" => UnsyncedLyricsType,
                     _ => normalized
                 };
@@ -3093,6 +3097,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             selected.Add(LyricsTag);
             selected.Add(SyllableLyricsType);
+            selected.Add(TtmlLyricsType);
             selected.Add(UnsyncedLyricsType);
         }
 
@@ -3101,14 +3106,71 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static string NormalizeLyricsFormat(string? raw)
     {
-        var normalized = raw?.Trim().ToLowerInvariant();
-        return normalized switch
+        var formats = ParseLyricsFormatSelection(raw);
+        if (formats.Contains("lrc") && formats.Contains("elrc") && formats.Contains("ttml"))
         {
-            "lrc" => "lrc",
-            "ttml" => "ttml",
-            _ => "both"
-        };
+            return "richlyrics";
+        }
+
+        if (formats.Contains("lrc") && formats.Contains("ttml"))
+        {
+            return "both";
+        }
+
+        if (formats.Contains("ttml"))
+        {
+            return "ttml";
+        }
+
+        if (formats.Contains("elrc"))
+        {
+            return "elrc";
+        }
+
+        return "lrc";
     }
+
+    private static HashSet<string> ParseLyricsFormatSelection(string? raw)
+    {
+        var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in (raw ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (var normalized in NormalizeLyricsFormatToken(token))
+            {
+                selected.Add(normalized);
+            }
+        }
+
+        if (selected.Count == 0)
+        {
+            selected.Add("lrc");
+            selected.Add("elrc");
+            selected.Add("ttml");
+        }
+
+        return selected;
+    }
+
+    private static IReadOnlyList<string> NormalizeLyricsFormatToken(string? token)
+        => token?.Trim().ToLowerInvariant() switch
+        {
+            "lrc" => ["lrc"],
+            "standard-lrc" => ["lrc"],
+            "synced" => ["lrc"],
+            "synced-lyrics" => ["lrc"],
+            "elrc" => ["elrc"],
+            "enhanced-lrc" => ["elrc"],
+            "enhanced-synchronized-lyrics" => ["elrc"],
+            "ttml" => ["ttml"],
+            "both" => ["lrc", "elrc", "ttml"],
+            "richlyrics" => ["lrc", "elrc", "ttml"],
+            "rich-lyrics" => ["lrc", "elrc", "ttml"],
+            "lyrics" => ["lrc", "elrc", "ttml"],
+            "lrc+ttml" => ["lrc", "ttml"],
+            "ttml+lrc" => ["lrc", "ttml"],
+            "all" => ["lrc", "elrc", "ttml"],
+            _ => []
+        };
 
     private static IEnumerable<string> EnumerateAudioFiles(string rootPath, bool includeSubfolders)
     {
@@ -5210,7 +5272,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var allowsSyncedType = allowsSyncedByToggle
             && (selectedLyricsTypes.Contains(LyricsTag) || selectedLyricsTypes.Contains(SyllableLyricsType));
         var allowsUnsyncedType = allowsUnsyncedByToggle && selectedLyricsTypes.Contains(UnsyncedLyricsType);
-        var allowsTtmlByFormat = allowsSyncedByToggle && NormalizeLyricsFormat(request.Settings.LrcFormat) is "both" or "ttml";
+        var allowsTtmlByFormat = allowsSyncedByToggle
+            && selectedLyricsTypes.Contains(TtmlLyricsType)
+            && ParseLyricsFormatSelection(request.Settings.LrcFormat).Contains("ttml");
         var sidecarState = GetLyricsSidecarState(request.FilePath);
 
         return new TagWriteExecutionContext
@@ -6228,7 +6292,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void MoveAdjacentSidecars(string sourcePath, string destinationPath)
     {
-        foreach (var extension in new[] { ".lrc", TtmlExtension, ".txt" })
+        foreach (var extension in new[] { ".lrc", ".elrc", TtmlExtension, ".txt" })
         {
             var sourceSidecar = Path.ChangeExtension(sourcePath, extension);
             if (!IOFile.Exists(sourceSidecar))
@@ -6500,6 +6564,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (!context.SidecarState.HasTxt
             || (!context.SidecarState.HasLrc
+                && !context.SidecarState.HasElrc
                 && !context.SidecarState.HasTtml
                 && !sidecarWriteResult.WroteLrcSidecar
                 && !sidecarWriteResult.WroteTtmlSidecar))
@@ -6565,15 +6630,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             || key.Equals(SyncedLyricsSourceFormatTag, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static (bool HasAny, bool HasLrc, bool HasTtml, bool HasTxt, string TxtPath) GetLyricsSidecarState(string filePath)
+    private static (bool HasAny, bool HasLrc, bool HasElrc, bool HasTtml, bool HasTxt, string TxtPath) GetLyricsSidecarState(string filePath)
     {
         var lrcPath = Path.ChangeExtension(filePath, ".lrc");
+        var elrcPath = Path.ChangeExtension(filePath, ".elrc");
         var ttmlPath = Path.ChangeExtension(filePath, TtmlExtension);
         var txtPath = Path.ChangeExtension(filePath, ".txt");
         var hasLrc = IOFile.Exists(lrcPath);
+        var hasElrc = IOFile.Exists(elrcPath);
         var hasTtml = HasTimedTtmlSidecar(ttmlPath);
         var hasTxt = IOFile.Exists(txtPath);
-        return (hasLrc || hasTtml || hasTxt, hasLrc, hasTtml, hasTxt, txtPath);
+        return (hasLrc || hasElrc || hasTtml || hasTxt, hasLrc, hasElrc, hasTtml, hasTxt, txtPath);
     }
 
     private static bool HasTimedTtmlSidecar(string path)
@@ -7453,7 +7520,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required bool AllowsSyncedType { get; init; }
         public required bool AllowsUnsyncedType { get; init; }
         public required bool AllowsTtmlByFormat { get; init; }
-        public required (bool HasAny, bool HasLrc, bool HasTtml, bool HasTxt, string TxtPath) SidecarState { get; init; }
+        public required (bool HasAny, bool HasLrc, bool HasElrc, bool HasTtml, bool HasTxt, string TxtPath) SidecarState { get; init; }
         public required bool ShouldSkipEmbeddedLyrics { get; init; }
     }
 

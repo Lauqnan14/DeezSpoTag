@@ -281,7 +281,7 @@
     const HIDDEN_SPOTIFY_AUDIO_FEATURE_TAG_SET = new Set(
         HIDDEN_SPOTIFY_AUDIO_FEATURE_TAGS.map((tag) => String(tag).toLowerCase())
     );
-    const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,unsynced-lyrics";
+    const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
     const DEFAULT_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify", "lrclib", "musixmatch"]);
@@ -319,9 +319,15 @@
     ]);
 
     const LYRICS_TYPE_OPTIONS = [
-        { value: "lyrics", label: "Synced Lyrics" },
-        { value: "syllable-lyrics", label: "Time Synced Lyrics" },
-        { value: "unsynced-lyrics", label: "Unsynced Lyrics" }
+        { value: "lyrics", label: "Standard synchronized lyrics" },
+        { value: "syllable-lyrics", label: "Enhanced Synced Lyrics" },
+        { value: "ttml-lyrics", label: "TTML lyrics" },
+        { value: "unsynced-lyrics", label: "Unsynced lyrics" }
+    ];
+    const LYRICS_FORMAT_OPTIONS = [
+        { value: "lrc", label: "Standard synchronized lyrics (.lrc)" },
+        { value: "elrc", label: "Enhanced Synced Lyrics (.elrc)" },
+        { value: "ttml", label: "TTML lyrics (.ttml)" }
     ];
 
     const LYRICS_TYPE_ALIASES = {
@@ -330,6 +336,10 @@
         "timesynced-lyrics": "syllable-lyrics",
         "time_synced_lyrics": "syllable-lyrics",
         "syllablelyrics": "syllable-lyrics",
+        "ttml": "ttml-lyrics",
+        "ttml-lyrics": "ttml-lyrics",
+        "ttmllyrics": "ttml-lyrics",
+        "ttml_lyrics": "ttml-lyrics",
         "unsynced-lyrics": "unsynced-lyrics",
         "unsyncedlyrics": "unsynced-lyrics",
         "unsynced": "unsynced-lyrics",
@@ -5338,14 +5348,34 @@
     }
 
     function normalizeEmbedLyricsFormat(value) {
-        const normalized = String(value || "").trim().toLowerCase();
-        if (normalized === "both") {
-            return "both";
+        const selected = [];
+        String(value || "")
+            .split(",")
+            .map((token) => token.trim().toLowerCase())
+            .filter(Boolean)
+            .forEach((token) => {
+                let values = [];
+                if (token === "both" || token === "richlyrics" || token === "rich-lyrics" || token === "lyrics" || token === "all") {
+                    values = ["lrc", "elrc", "ttml"];
+                } else if (token === "lrc+ttml" || token === "ttml+lrc") {
+                    values = ["lrc", "ttml"];
+                } else if (token === "lrc" || token === "standard-lrc" || token === "synced" || token === "synced-lyrics") {
+                    values = ["lrc"];
+                } else if (token === "elrc" || token === "enhanced-lrc" || token === "enhanced-synchronized-lyrics") {
+                    values = ["elrc"];
+                } else if (token === "ttml") {
+                    values = ["ttml"];
+                }
+                values.forEach((format) => {
+                    if (!selected.includes(format)) {
+                        selected.push(format);
+                    }
+                });
+            });
+        if (selected.length === 0) {
+            selected.push("lrc", "ttml");
         }
-        if (normalized === "ttml") {
-            return "ttml";
-        }
-        return "lrc";
+        return selected.join(",");
     }
 
     function normalizeLyricsTypeToken(value) {
@@ -5387,37 +5417,23 @@
     }
 
     function setupLyricsTypeDropdown() {
-        const dropdown = document.getElementById("lyricsTypeDropdown");
-        const trigger = document.getElementById("lyricsTypeTrigger");
-        const menu = document.getElementById("lyricsTypeMenu");
-        const list = document.getElementById("lyricsTypeList");
+        const container = document.getElementById("lyricsTypeOptions");
         const input = document.getElementById("lrcType");
-        if (!dropdown || !trigger || !menu || !list || !input) {
+        if (!container || !input) {
             return;
         }
 
-        const labelsByValue = new Map(LYRICS_TYPE_OPTIONS.map((option) => [option.value, option.label]));
-
-        trigger.addEventListener("click", (event) => {
-            event.stopPropagation();
-            menu.classList.toggle("show");
-        });
-
-        menu.addEventListener("click", (event) => {
-            event.stopPropagation();
-        });
-
-        document.addEventListener("click", () => {
-            menu.classList.remove("show");
-        });
+        const checkboxes = Array.from(container.querySelectorAll("input[type=\"checkbox\"][data-value]"))
+            .filter((checkbox) => checkbox instanceof HTMLInputElement);
 
         const updateValue = () => {
-            let selected = Array.from(list.querySelectorAll("input[type=\"checkbox\"][data-value]:checked"))
+            let selected = checkboxes
+                .filter((checkbox) => checkbox.checked)
                 .map((checkbox) => normalizeLyricsTypeToken(checkbox.dataset.value))
                 .filter(Boolean);
 
             if (selected.length === 0) {
-                const defaultCheckbox = list.querySelector("input[type=\"checkbox\"][data-value=\"lyrics\"]");
+                const defaultCheckbox = checkboxes.find((checkbox) => checkbox.dataset.value === "lyrics");
                 if (defaultCheckbox) {
                     defaultCheckbox.checked = true;
                 }
@@ -5425,21 +5441,18 @@
             }
 
             input.value = normalizeLyricsTypeSetting(selected.join(","));
-
-            const labels = parseLyricsTypeSetting(input.value).map((value) => labelsByValue.get(value) || value);
-            trigger.textContent = labels.join(", ");
         };
 
         const syncFromInput = () => {
             const selected = new Set(parseLyricsTypeSetting(input.value));
-            list.querySelectorAll("input[type=\"checkbox\"][data-value]").forEach((checkbox) => {
+            checkboxes.forEach((checkbox) => {
                 const value = normalizeLyricsTypeToken(checkbox.dataset.value);
                 checkbox.checked = selected.has(value);
             });
             updateValue();
         };
 
-        list.addEventListener("change", (event) => {
+        container.addEventListener("change", (event) => {
             if (event.target instanceof HTMLInputElement && event.target.type === "checkbox") {
                 updateValue();
             }
@@ -5449,9 +5462,54 @@
         syncFromInput();
     }
 
+    function setupLyricsFormatOptions() {
+        const input = document.getElementById("lrcFormat");
+        const container = document.getElementById("lyricsFormatOptions");
+        if (!(input instanceof HTMLInputElement) || !container) {
+            return;
+        }
+
+        const checkboxes = Array.from(container.querySelectorAll("input[type=\"checkbox\"][data-value]"))
+            .filter((checkbox) => checkbox instanceof HTMLInputElement);
+        const allowed = new Set(LYRICS_FORMAT_OPTIONS.map((option) => option.value));
+
+        const updateValue = () => {
+            let selected = checkboxes
+                .filter((checkbox) => checkbox.checked)
+                .map((checkbox) => String(checkbox.dataset.value || "").trim().toLowerCase())
+                .filter((value) => allowed.has(value));
+
+            if (selected.length === 0) {
+                const defaultCheckbox = checkboxes.find((checkbox) => checkbox.dataset.value === "lrc");
+                if (defaultCheckbox) {
+                    defaultCheckbox.checked = true;
+                }
+                selected = ["lrc"];
+            }
+
+            input.value = normalizeEmbedLyricsFormat(selected.join(","));
+        };
+
+        const syncFromInput = () => {
+            const selected = new Set(normalizeEmbedLyricsFormat(input.value).split(",").filter(Boolean));
+            checkboxes.forEach((checkbox) => {
+                checkbox.checked = selected.has(String(checkbox.dataset.value || "").trim().toLowerCase());
+            });
+            updateValue();
+        };
+
+        checkboxes.forEach((checkbox) => {
+            checkbox.addEventListener("change", updateValue);
+        });
+
+        state.syncLyricsFormatOptions = syncFromInput;
+        syncFromInput();
+    }
+
     function updateEmbedLyricsFormatVisibility() {
         const saveLyrics = document.getElementById("saveLyrics");
         const embedLyricsFormatGroup = document.getElementById("embedLyricsFormatGroup");
+        const lyricsFormatOptions = document.getElementById("lyricsFormatOptions");
         const synthesizeTtmlLyricsGroup = document.getElementById("synthesizeTtmlLyricsGroup");
         const lrcFormat = document.getElementById("lrcFormat");
         const synthesizeTtmlLyrics = document.getElementById("synthesizeTtmlLyrics");
@@ -5466,6 +5524,11 @@
         }
         if (lrcFormat) {
             lrcFormat.disabled = !show;
+        }
+        if (lyricsFormatOptions) {
+            lyricsFormatOptions.querySelectorAll("input[type=\"checkbox\"]").forEach((checkbox) => {
+                checkbox.disabled = !show;
+            });
         }
         if (synthesizeTtmlLyrics) {
             synthesizeTtmlLyrics.disabled = !show;
@@ -5531,6 +5594,7 @@
 
     function setupDownloadTagsUi() {
         setupLyricsTypeDropdown();
+        setupLyricsFormatOptions();
 
         const saveLyrics = document.getElementById("saveLyrics");
         if (saveLyrics) {
@@ -5661,7 +5725,7 @@
         applyFieldCheckedWhenBoolean("saveLyrics", technical.saveLyrics ?? technical.syncedLyrics);
         applyFieldCheckedWhenBoolean("embedLyrics", technical.embedLyrics ?? true);
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
-        applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "both"));
+        applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "richlyrics"));
         applyFieldCheckedWhenBoolean("synthesizeTtmlLyrics", technical.synthesizeTtmlLyrics ?? false);
         applyFieldCheckedWhenBoolean("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
         applyFieldValueIfPresent("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
@@ -5676,6 +5740,9 @@
         syncDefaultSourceSelectFromOrder("lyricsDefaultSource", technical.lyricsFallbackOrder, LYRICS_SOURCE_ORDER);
         if (state.syncLyricsTypeSelection) {
             state.syncLyricsTypeSelection();
+        }
+        if (state.syncLyricsFormatOptions) {
+            state.syncLyricsFormatOptions();
         }
         if (state.syncArtworkFallbackOrder) {
             state.syncArtworkFallbackOrder();
@@ -5786,7 +5853,7 @@
         technical.syncedLyrics = technical.saveLyrics;
         technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
         technical.lrcType = normalizeLyricsTypeSetting(getValue("lrcType", technical.lrcType ?? DEFAULT_LYRICS_TYPE_SELECTION));
-        technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "both"));
+        technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "richlyrics"));
         technical.synthesizeTtmlLyrics = getChecked("synthesizeTtmlLyrics", technical.synthesizeTtmlLyrics ?? false);
         technical.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled ?? true);
         technical.lyricsFallbackOrder = resolveSavedFallbackOrder({

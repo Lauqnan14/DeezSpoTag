@@ -76,10 +76,11 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     {
         var selected = InvokeStatic<HashSet<string>>(
             "ParseLyricsTypeSelection",
-            "synced-lyrics, time_synced_lyrics, unsynced");
+            "synced-lyrics, time_synced_lyrics, ttmllyrics, unsynced");
 
         Assert.Contains("lyrics", selected);
         Assert.Contains("syllable-lyrics", selected);
+        Assert.Contains("ttml-lyrics", selected);
         Assert.Contains("unsynced-lyrics", selected);
     }
 
@@ -90,15 +91,19 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
 
         Assert.Contains("lyrics", selected);
         Assert.Contains("syllable-lyrics", selected);
+        Assert.Contains("ttml-lyrics", selected);
         Assert.Contains("unsynced-lyrics", selected);
     }
 
     [Fact]
-    public void NormalizeLyricsFormat_MapsKnownValuesAndDefaultsToBoth()
+    public void NormalizeLyricsFormat_MapsKnownValuesAndDefaultsToRichLyrics()
     {
         Assert.Equal("lrc", InvokeStatic<string>("NormalizeLyricsFormat", "LRC"));
+        Assert.Equal("elrc", InvokeStatic<string>("NormalizeLyricsFormat", "elrc"));
         Assert.Equal("ttml", InvokeStatic<string>("NormalizeLyricsFormat", " ttml "));
-        Assert.Equal("both", InvokeStatic<string>("NormalizeLyricsFormat", "unknown"));
+        Assert.Equal("richlyrics", InvokeStatic<string>("NormalizeLyricsFormat", "both"));
+        Assert.Equal("richlyrics", InvokeStatic<string>("NormalizeLyricsFormat", "richlyrics"));
+        Assert.Equal("richlyrics", InvokeStatic<string>("NormalizeLyricsFormat", "unknown"));
     }
 
     [Fact]
@@ -159,6 +164,24 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.True(result.WantsSynced);
         Assert.False(result.WantsUnsynced);
         Assert.False(result.WantsTtml);
+    }
+
+    [Fact]
+    public void ApplyLyricsPreferenceGate_AllowsTtmlOnlyWhenTtmlTypeAndOutputAreSelected()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LrcType = "ttml-lyrics",
+            LrcFormat = "ttml"
+        };
+
+        var result = ApplyLyricsPreferenceGate(settings, true, true, true);
+
+        Assert.False(result.WantsSynced);
+        Assert.False(result.WantsUnsynced);
+        Assert.True(result.WantsTtml);
     }
 
     [Fact]

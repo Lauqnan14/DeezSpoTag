@@ -1215,6 +1215,22 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 continue;
             }
 
+            if (HasRecordedFinalDestination(item))
+            {
+                await _queueRepository.MarkMoveNotRequiredAsync(item.QueueUuid, cancellationToken);
+                await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusNotRequired, cancellationToken);
+                var marker = BuildCompletionMarker(item);
+                if (!string.IsNullOrWhiteSpace(marker))
+                {
+                    closedMarkers[marker] = item.UpdatedAt;
+                }
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: completed download {item.QueueUuid} already recorded final destinations; no staging artifact remains to finalize."));
+                continue;
+            }
+
             await _queueRepository.MarkMoveFailedAsync(item.QueueUuid, cancellationToken);
             await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusInterrupted, cancellationToken);
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -1268,6 +1284,43 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
                 var destinationIo = DownloadPathResolver.ResolveIoPath(destination);
                 if (!string.IsNullOrWhiteSpace(destinationIo) && File.Exists(destinationIo))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static bool HasRecordedFinalDestination(DownloadQueueItem item)
+    {
+        if (string.IsNullOrWhiteSpace(item.FinalDestinationsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(item.FinalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var destination = property.Value.GetString();
+                if (!string.IsNullOrWhiteSpace(destination))
                 {
                     return true;
                 }

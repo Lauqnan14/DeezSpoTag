@@ -96,9 +96,10 @@ public sealed class LyricsArtifactState
     {
         Revision++;
         var normalizedBaseName = Path.GetFileNameWithoutExtension(baseFileName);
-        var downloaded = new List<string>(3);
+        var downloaded = new List<string>(4);
         var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         AddExisting("ttml", Path.Join(directoryPath, normalizedBaseName + ".ttml"), downloaded, files);
+        AddExisting("elrc", Path.Join(directoryPath, normalizedBaseName + ".elrc"), downloaded, files);
         AddExisting("lrc", Path.Join(directoryPath, normalizedBaseName + ".lrc"), downloaded, files);
         AddExisting("txt", Path.Join(directoryPath, normalizedBaseName + ".txt"), downloaded, files);
         DownloadedFormats = downloaded;
@@ -121,8 +122,10 @@ public sealed class LyricsArtifactState
     private void SuppressPlainWhenRichExists()
     {
         var hasRich = ResolvedFormats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
+            || ResolvedFormats.Contains("elrc", StringComparer.OrdinalIgnoreCase)
             || ResolvedFormats.Contains("lrc", StringComparer.OrdinalIgnoreCase)
             || DownloadedFormats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
+            || DownloadedFormats.Contains("elrc", StringComparer.OrdinalIgnoreCase)
             || DownloadedFormats.Contains("lrc", StringComparer.OrdinalIgnoreCase);
         if (!hasRich)
         {
@@ -151,7 +154,7 @@ public sealed class LyricsArtifactState
 
     private static List<string> NormalizeFormats(IEnumerable<string> formats)
         => formats.Select(static value => value.Trim().ToLowerInvariant())
-            .Where(static value => value is "ttml" or "lrc" or "txt")
+            .Where(static value => value is "ttml" or "elrc" or "lrc" or "txt")
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 

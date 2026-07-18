@@ -83,6 +83,7 @@ public class LyricsService
     private const string LyricsType = "lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
+    private const string TtmlLyricsType = "ttml-lyrics";
     private const string MessagePropertyName = "message";
     private const string SpotifyDataDir = "spotify";
     private const string BlobsDir = "blobs";
@@ -244,10 +245,14 @@ public class LyricsService
     public static LyricsResolutionPlan DescribeResolutionPlan(DeezSpoTagSettings settings)
     {
         var requirements = ResolveOutputRequirements(settings);
-        var requested = new List<string>(3);
+        var requested = new List<string>(4);
         if (requirements.WantsTtmlLyrics)
         {
             requested.Add("ttml");
+        }
+        if (requirements.WantsEnhancedSynchronizedLyrics)
+        {
+            requested.Add("elrc");
         }
         if (requirements.WantsLrcLyrics)
         {
@@ -271,13 +276,18 @@ public class LyricsService
         LyricsOutputRequirements requirements,
         string? error)
     {
-        var resolved = new List<string>(3);
+        var resolved = new List<string>(4);
         var lyrics = state.ResolvedLyrics;
         var hasTtml = lyrics != null && AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics);
+        var hasEnhanced = lyrics?.HasEnhancedSynchronizedLyrics() == true;
         var hasLrc = lyrics?.CanSaveLrcSidecar() == true;
         if (requirements.WantsTtmlLyrics && hasTtml)
         {
             resolved.Add("ttml");
+        }
+        if (requirements.WantsEnhancedSynchronizedLyrics && hasEnhanced)
+        {
+            resolved.Add("elrc");
         }
         if (requirements.WantsLrcLyrics && hasLrc)
         {
@@ -338,10 +348,11 @@ public class LyricsService
 
     private readonly record struct LyricsOutputRequirements(
         bool WantsLrcLyrics,
+        bool WantsEnhancedSynchronizedLyrics,
         bool WantsTtmlLyrics,
         bool WantsPlainLyrics)
     {
-        public bool WantsRichLyrics => WantsLrcLyrics || WantsTtmlLyrics;
+        public bool WantsRichLyrics => WantsLrcLyrics || WantsEnhancedSynchronizedLyrics || WantsTtmlLyrics;
     }
 
     private static bool ShouldReturnResolvedLyrics(
@@ -356,8 +367,14 @@ public class LyricsService
         }
 
         var hasTtml = DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics);
+        var hasEnhanced = lyrics.HasEnhancedSynchronizedLyrics();
         var hasRealLrc = lyrics.CanSaveLrcSidecar();
         if (requireAllRequestedRichLyrics && requirements.WantsTtmlLyrics && !hasTtml)
+        {
+            return false;
+        }
+
+        if (requireAllRequestedRichLyrics && requirements.WantsEnhancedSynchronizedLyrics && !hasEnhanced)
         {
             return false;
         }
@@ -370,6 +387,7 @@ public class LyricsService
         if (requirements.WantsRichLyrics)
         {
             return (requirements.WantsTtmlLyrics && hasTtml)
+                || (requirements.WantsEnhancedSynchronizedLyrics && hasEnhanced)
                 || (requirements.WantsLrcLyrics && hasRealLrc);
         }
 
@@ -464,6 +482,10 @@ public class LyricsService
         {
             state.SourcesByFormat.TryAdd("ttml", provider);
         }
+        if (providerLyrics.HasEnhancedSynchronizedLyrics())
+        {
+            state.SourcesByFormat.TryAdd("elrc", provider);
+        }
         if (providerLyrics.CanSaveLrcSidecar())
         {
             state.SourcesByFormat.TryAdd("lrc", provider);
@@ -497,13 +519,18 @@ public class LyricsService
     {
         var selectedTypes = ParseSelectedLyricsTypes(settings);
         var wantsTimedLyrics = settings.SyncedLyrics
-            && (selectedTypes.Contains(LyricsType) || selectedTypes.Contains(SyllableLyricsType));
-        var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
-        var wantsLrcLyrics = wantsTimedLyrics && outputFormat is "lrc" or "both";
-        var wantsTtmlLyrics = wantsTimedLyrics && outputFormat is "ttml" or "both";
+            && (selectedTypes.Contains(LyricsType)
+                || selectedTypes.Contains(SyllableLyricsType)
+                || selectedTypes.Contains(TtmlLyricsType));
+        var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
+        var wantsLrcLyrics = wantsTimedLyrics && outputFormats.Contains("lrc");
+        var wantsEnhancedSynchronizedLyrics = wantsTimedLyrics && outputFormats.Contains("elrc");
+        var wantsTtmlLyrics = settings.SyncedLyrics
+            && selectedTypes.Contains(TtmlLyricsType)
+            && outputFormats.Contains("ttml");
         var wantsPlainLyrics = settings.SaveLyrics
             && selectedTypes.Contains(UnsyncedLyricsType);
-        return new LyricsOutputRequirements(wantsLrcLyrics, wantsTtmlLyrics, wantsPlainLyrics);
+        return new LyricsOutputRequirements(wantsLrcLyrics, wantsEnhancedSynchronizedLyrics, wantsTtmlLyrics, wantsPlainLyrics);
     }
 
     private static LrclibLyricsService.LrclibRequestOptions? BuildLrclibRequestOptions(
@@ -537,6 +564,11 @@ public class LyricsService
         }
 
         if (!HasLyricsLines(target.SyncedLyrics) && HasLyricsLines(candidate.SyncedLyrics))
+        {
+            target.SyncedLyrics = candidate.SyncedLyrics;
+            target.SyncedLyricsSourceFormat = candidate.SyncedLyricsSourceFormat;
+        }
+        else if (!target.HasEnhancedSynchronizedLyrics() && candidate.HasEnhancedSynchronizedLyrics())
         {
             target.SyncedLyrics = candidate.SyncedLyrics;
             target.SyncedLyricsSourceFormat = candidate.SyncedLyricsSourceFormat;
@@ -1551,14 +1583,57 @@ public class LyricsService
                 continue;
             }
 
-            var milliseconds = (int)Math.Round(richsyncLine.Ts * 1000d);
+            var milliseconds = ConvertMusixmatchSecondsToMilliseconds(richsyncLine.Ts);
+            var endMilliseconds = richsyncLine.Te > richsyncLine.Ts
+                ? ConvertMusixmatchSecondsToMilliseconds(richsyncLine.Te)
+                : milliseconds;
+            var words = BuildMusixmatchTimedWords(richsyncLine, milliseconds, endMilliseconds);
             lines.Add(new SynchronizedLyric(
                 richsyncLine.Text.Trim(),
                 SynchronizedLyric.BuildLrcTimestamp(milliseconds),
-                milliseconds));
+                milliseconds,
+                Math.Max(0, endMilliseconds - milliseconds))
+            {
+                Words = words.Count > 0 ? words : null
+            });
         }
 
         return lines.Count > 0;
+    }
+
+    private static int ConvertMusixmatchSecondsToMilliseconds(double seconds)
+        => (int)Math.Round(Math.Max(0d, seconds) * 1000d);
+
+    private static List<SynchronizedLyricWord> BuildMusixmatchTimedWords(
+        MusixmatchRichsyncLine richsyncLine,
+        int lineStartMilliseconds,
+        int lineEndMilliseconds)
+    {
+        var sourceWords = richsyncLine.Words?
+            .Where(static word => !string.IsNullOrEmpty(word.Text) && word.Offset >= 0)
+            .OrderBy(static word => word.Offset)
+            .ToList();
+        if (sourceWords == null || sourceWords.Count == 0)
+        {
+            return new List<SynchronizedLyricWord>();
+        }
+
+        var words = new List<SynchronizedLyricWord>(sourceWords.Count);
+        for (var i = 0; i < sourceWords.Count; i++)
+        {
+            var sourceWord = sourceWords[i];
+            var startMilliseconds = lineStartMilliseconds + ConvertMusixmatchSecondsToMilliseconds(sourceWord.Offset);
+            var nextStartMilliseconds = i + 1 < sourceWords.Count
+                ? lineStartMilliseconds + ConvertMusixmatchSecondsToMilliseconds(sourceWords[i + 1].Offset)
+                : lineEndMilliseconds;
+            var endMilliseconds = Math.Max(startMilliseconds + 1, nextStartMilliseconds);
+            words.Add(new SynchronizedLyricWord(sourceWord.Text, startMilliseconds, endMilliseconds));
+        }
+
+        return words
+            .Where(static word => !string.IsNullOrEmpty(word.Text)
+                && (string.IsNullOrWhiteSpace(word.Text) || word.IsValid()))
+            .ToList();
     }
 
     private static bool TryParseLrcTimestampMilliseconds(string value, out int milliseconds)
@@ -1631,10 +1706,25 @@ public class LyricsService
     private sealed class MusixmatchRichsyncLine
     {
         [JsonPropertyName("ts")]
-        public float Ts { get; set; }
+        public double Ts { get; set; }
+
+        [JsonPropertyName("te")]
+        public double Te { get; set; }
 
         [JsonPropertyName("x")]
         public string? Text { get; set; }
+
+        [JsonPropertyName("l")]
+        public List<MusixmatchRichsyncWord>? Words { get; set; }
+    }
+
+    private sealed class MusixmatchRichsyncWord
+    {
+        [JsonPropertyName("c")]
+        public string? Text { get; set; }
+
+        [JsonPropertyName("o")]
+        public double Offset { get; set; }
     }
 
     private static string? ResolveDeezerLyricsTrackId(Track track)
@@ -2804,6 +2894,16 @@ public class LyricsService
         return lyrics.GenerateLrcContent(title, artist, album);
     }
 
+    public string GenerateEnhancedLrcContent(LyricsBase lyrics, string? title = null, string? artist = null, string? album = null)
+    {
+        if (!ShouldCreateLrcFile(lyrics) || !lyrics.HasEnhancedSynchronizedLyrics())
+        {
+            return string.Empty;
+        }
+
+        return lyrics.GenerateEnhancedLrcContent(title, artist, album);
+    }
+
     /// <summary>
     /// Save lyrics to file using priority implementation
     /// Priority: .lrc for synchronized lyrics, .txt for unsynchronized lyrics as fallback
@@ -2877,10 +2977,12 @@ public class LyricsService
         var saveState = new LyricsSaveState(paths, settings);
         var overwriteSidecar = ShouldOverwriteLyricsSidecar(settings);
         saveState.HadExistingLrc = System.IO.File.Exists(saveState.LrcPath);
+        saveState.HadExistingElrc = System.IO.File.Exists(saveState.ElrcPath);
         saveState.HadExistingTtml = System.IO.File.Exists(saveState.TtmlPath);
         saveState.HadExistingTxt = System.IO.File.Exists(saveState.TxtPath);
 
         await TrySaveSyncedLrcAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
+        await TrySaveEnhancedSynchronizedLyricsAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
         EnsureTtmlFromSyncedLyricsWhenRequested(lyrics, track, settings);
         await TrySaveTtmlAsync(lyrics, settings, overwriteSidecar, saveState, cancellationToken);
         await TrySaveUnsyncedTxtAsync(lyrics, track, settings, overwriteSidecar, saveState, cancellationToken);
@@ -2896,14 +2998,17 @@ public class LyricsService
     private sealed class LyricsSaveState((string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths, DeezSpoTagSettings settings)
     {
         public string LrcPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.lrc");
+        public string ElrcPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.elrc");
         public string TtmlPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.ttml");
         public string TxtPath { get; } = Path.Join(paths.FilePath, $"{paths.Filename}.txt");
-        public bool RichOutputRequested { get; } = ShouldSaveSyncedLrc(settings) || ShouldOutputTtmlBySettings(settings);
+        public bool RichOutputRequested { get; } = ShouldSaveSyncedLrc(settings) || ShouldSaveEnhancedSynchronizedLyrics(settings) || ShouldOutputTtmlBySettings(settings);
         public bool HadExistingLrc { get; set; }
+        public bool HadExistingElrc { get; set; }
         public bool HadExistingTtml { get; set; }
         public bool HadExistingTxt { get; set; }
         public bool SavedLyrics { get; set; }
         public bool SavedLrc { get; set; }
+        public bool SavedElrc { get; set; }
         public bool SavedTtml { get; set; }
     }
 
@@ -2952,6 +3057,53 @@ public class LyricsService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Error downloading synchronized lyrics.");
+        }
+    }
+
+    private async Task TrySaveEnhancedSynchronizedLyricsAsync(
+        LyricsBase lyrics,
+        Track track,
+        DeezSpoTagSettings settings,
+        bool overwriteSidecar,
+        LyricsSaveState state,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldSaveEnhancedSynchronizedLyrics(settings) || !lyrics.HasEnhancedSynchronizedLyrics())
+        {
+            return;
+        }
+
+        try
+        {
+            var elrcContent = GenerateEnhancedLrcContent(lyrics, track.Title, track.MainArtist?.Name, track.Album?.Title);
+            if (string.IsNullOrEmpty(elrcContent))
+            {
+                _logger.LogWarning("Generated enhanced synchronized lyrics content is empty for track {TrackId}", track.Id);
+                return;
+            }
+
+            if (!overwriteSidecar && state.HadExistingElrc)
+            {
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Keeping existing enhanced synchronized lyrics sidecar at {ElrcPath}", state.ElrcPath);
+                }
+            }
+            else
+            {
+                await System.IO.File.WriteAllTextAsync(state.ElrcPath, elrcContent, cancellationToken);
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    _logger.LogInformation("Successfully saved enhanced synchronized lyrics to {ElrcPath}", state.ElrcPath);
+                }
+            }
+
+            state.SavedLyrics = true;
+            state.SavedElrc = true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Error downloading enhanced synchronized lyrics.");
         }
     }
 
@@ -3040,12 +3192,15 @@ public class LyricsService
     private static bool ShouldSkipUnsyncedTxtWrite(LyricsSaveState state)
     {
         var hasExistingRichLyrics = state.SavedLrc
+            || state.SavedElrc
             || state.SavedTtml
             || state.HadExistingLrc
+            || state.HadExistingElrc
             || state.HadExistingTtml
             || System.IO.File.Exists(state.LrcPath)
+            || System.IO.File.Exists(state.ElrcPath)
             || System.IO.File.Exists(state.TtmlPath);
-        return state.RichOutputRequested && (state.SavedLrc || state.SavedTtml || hasExistingRichLyrics);
+        return state.RichOutputRequested && (state.SavedLrc || state.SavedElrc || state.SavedTtml || hasExistingRichLyrics);
     }
 
     private async Task TryWriteUnsyncedTxtAsync(
@@ -3080,7 +3235,7 @@ public class LyricsService
     private void RemoveTxtWhenRichLyricsExist(LyricsSaveState state)
     {
         if (!state.RichOutputRequested
-            || !(state.SavedLrc || state.SavedTtml || state.HadExistingLrc || state.HadExistingTtml)
+            || !(state.SavedLrc || state.SavedElrc || state.SavedTtml || state.HadExistingLrc || state.HadExistingElrc || state.HadExistingTtml)
             || !System.IO.File.Exists(state.TxtPath))
         {
             return;
@@ -3118,10 +3273,20 @@ public class LyricsService
 
     private static bool ShouldSaveSyncedLrc(DeezSpoTagSettings settings)
     {
-        var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
+        var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
         return settings.SyncedLyrics
             && IsLyricsGateEnabled(settings)
-            && outputFormat is "lrc" or "both"
+            && outputFormats.Contains("lrc")
+            && (IsLyricsTypeSelected(settings, LyricsType)
+                || IsLyricsTypeSelected(settings, SyllableLyricsType));
+    }
+
+    private static bool ShouldSaveEnhancedSynchronizedLyrics(DeezSpoTagSettings settings)
+    {
+        var outputFormats = ParseLyricsOutputFormats(settings.LrcFormat);
+        return settings.SyncedLyrics
+            && IsLyricsGateEnabled(settings)
+            && outputFormats.Contains("elrc")
             && (IsLyricsTypeSelected(settings, LyricsType)
                 || IsLyricsTypeSelected(settings, SyllableLyricsType));
     }
@@ -3143,8 +3308,8 @@ public class LyricsService
             return false;
         }
 
-        var outputFormat = NormalizeLyricsOutputFormat(settings.LrcFormat);
-        return outputFormat is "ttml" or "both";
+        return IsLyricsTypeSelected(settings, TtmlLyricsType)
+            && ParseLyricsOutputFormats(settings.LrcFormat).Contains("ttml");
     }
 
     private static bool ShouldSynthesizeTtmlBySettings(DeezSpoTagSettings settings)
@@ -3174,11 +3339,13 @@ public class LyricsService
         {
             var line = syncedLines[i]!;
             var beginMs = Math.Max(0, line.Milliseconds);
-            var endMs = beginMs + 4000;
+            var endMs = line.Duration > 0 ? beginMs + line.Duration : beginMs + 4000;
             if (i + 1 < syncedLines.Count)
             {
                 var nextStart = Math.Max(beginMs + 1, syncedLines[i + 1]!.Milliseconds);
-                endMs = Math.Max(beginMs + 1, nextStart);
+                endMs = line.Duration > 0
+                    ? Math.Min(Math.Max(beginMs + 1, endMs), nextStart)
+                    : Math.Max(beginMs + 1, nextStart);
             }
 
             var text = WebUtility.HtmlEncode(line.Text!.Trim());
@@ -3205,19 +3372,74 @@ public class LyricsService
         return $"{(int)ts.TotalHours:00}:{ts.Minutes:00}:{ts.Seconds:00}.{ts.Milliseconds:000}";
     }
 
+    private static HashSet<string> ParseLyricsOutputFormats(string? value)
+    {
+        var formats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            foreach (var normalized in NormalizeLyricsOutputFormatToken(token))
+            {
+                formats.Add(normalized);
+            }
+        }
+
+        if (formats.Count == 0)
+        {
+            formats.Add("lrc");
+            formats.Add("elrc");
+            formats.Add("ttml");
+        }
+
+        return formats;
+    }
+
     private static string NormalizeLyricsOutputFormat(string? value)
     {
-        return value?.Trim().ToLowerInvariant() switch
+        var formats = ParseLyricsOutputFormats(value);
+        if (formats.Contains("lrc") && formats.Contains("elrc") && formats.Contains("ttml"))
         {
-            "lrc" => "lrc",
-            "ttml" => "ttml",
-            "both" => "both",
-            LyricsType => "both",
-            "lrc+ttml" => "both",
-            "ttml+lrc" => "both",
-            _ => "both"
-        };
+            return "richlyrics";
+        }
+
+        if (formats.Contains("lrc") && formats.Contains("ttml"))
+        {
+            return "both";
+        }
+
+        if (formats.Contains("ttml"))
+        {
+            return "ttml";
+        }
+
+        if (formats.Contains("elrc"))
+        {
+            return "elrc";
+        }
+
+        return "lrc";
     }
+
+    private static IReadOnlyList<string> NormalizeLyricsOutputFormatToken(string? value)
+        => value?.Trim().ToLowerInvariant() switch
+        {
+            "lrc" => ["lrc"],
+            "standard-lrc" => ["lrc"],
+            "synced" => ["lrc"],
+            "synced-lyrics" => ["lrc"],
+            "elrc" => ["elrc"],
+            "enhanced-lrc" => ["elrc"],
+            "enhanced-synchronized-lyrics" => ["elrc"],
+            "enhanced-synchronised-lyrics" => ["elrc"],
+            "ttml" => ["ttml"],
+            "both" => ["lrc", "elrc", "ttml"],
+            "richlyrics" => ["lrc", "elrc", "ttml"],
+            "rich-lyrics" => ["lrc", "elrc", "ttml"],
+            LyricsType => ["lrc", "elrc", "ttml"],
+            "lrc+ttml" => ["lrc", "ttml"],
+            "ttml+lrc" => ["lrc", "ttml"],
+            "all" => ["lrc", "elrc", "ttml"],
+            _ => []
+        };
 
     private static bool ShouldHandleLyricsBySettings(DeezSpoTagSettings settings)
     {
@@ -3249,6 +3471,7 @@ public class LyricsService
         {
             selected.Add(LyricsType);
             selected.Add(SyllableLyricsType);
+            selected.Add(TtmlLyricsType);
             selected.Add(UnsyncedLyricsType);
         }
 
@@ -3271,6 +3494,10 @@ public class LyricsService
             "timesynced-lyrics" => SyllableLyricsType,
             "time_synced_lyrics" => SyllableLyricsType,
             "syllablelyrics" => SyllableLyricsType,
+            TtmlLyricsType => TtmlLyricsType,
+            "ttml" => TtmlLyricsType,
+            "ttmllyrics" => TtmlLyricsType,
+            "ttml_lyrics" => TtmlLyricsType,
             UnsyncedLyricsType => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,

@@ -1590,12 +1590,13 @@ public static partial class EngineAudioPostDownloadHelper
         }
 
         var lrcPath = Path.Join(directory, $"{baseName}.lrc");
+        var elrcPath = Path.Join(directory, $"{baseName}.elrc");
         var ttmlPath = Path.Join(directory, $"{baseName}.ttml");
         var txtPath = Path.Join(directory, $"{baseName}.txt");
 
         if (tagSettings.SyncedLyrics && !HasSyncedLyrics(track))
         {
-            var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, ttmlPath);
+            var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, elrcPath, ttmlPath);
             if (syncedLines.Count > 0)
             {
                 track.Lyrics!.Sync = string.Join(Environment.NewLine, syncedLines);
@@ -1609,7 +1610,7 @@ public static partial class EngineAudioPostDownloadHelper
 
         if (tagSettings.Lyrics && string.IsNullOrWhiteSpace(track.Lyrics!.Unsync))
         {
-            var unsyncedText = ResolveUnsyncedTextFromSidecars(txtPath, lrcPath, ttmlPath);
+            var unsyncedText = ResolveUnsyncedTextFromSidecars(txtPath, lrcPath, elrcPath, ttmlPath);
             if (!string.IsNullOrWhiteSpace(unsyncedText))
             {
                 track.Lyrics.Unsync = unsyncedText;
@@ -1621,11 +1622,16 @@ public static partial class EngineAudioPostDownloadHelper
         }
     }
 
-    private static List<string> ResolveSyncedLinesFromSidecars(string lrcPath, string ttmlPath)
+    private static List<string> ResolveSyncedLinesFromSidecars(string lrcPath, string elrcPath, string ttmlPath)
     {
         if (File.Exists(lrcPath))
         {
             return NormalizeLrcLines(File.ReadAllLines(lrcPath));
+        }
+
+        if (File.Exists(elrcPath))
+        {
+            return NormalizeLrcLines(File.ReadAllLines(elrcPath));
         }
 
         if (!File.Exists(ttmlPath))
@@ -1636,14 +1642,14 @@ public static partial class EngineAudioPostDownloadHelper
         return new List<string>();
     }
 
-    private static string ResolveUnsyncedTextFromSidecars(string txtPath, string lrcPath, string ttmlPath)
+    private static string ResolveUnsyncedTextFromSidecars(string txtPath, string lrcPath, string elrcPath, string ttmlPath)
     {
         if (File.Exists(txtPath))
         {
             return (File.ReadAllText(txtPath) ?? string.Empty).Trim();
         }
 
-        var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, ttmlPath);
+        var syncedLines = ResolveSyncedLinesFromSidecars(lrcPath, elrcPath, ttmlPath);
         if (syncedLines.Count == 0)
         {
             return string.Empty;

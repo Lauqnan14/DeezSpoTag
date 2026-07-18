@@ -73,11 +73,12 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
     {
         using var tmp = new TemporaryDirectory();
         var lrcPath = Path.Join(tmp.Path, "track.lrc");
+        var elrcPath = Path.Join(tmp.Path, "track.elrc");
         var ttmlPath = Path.Join(tmp.Path, "track.ttml");
         File.WriteAllText(lrcPath, "[00:01.00]Line A\n[00:02.00]Line B\n");
         File.WriteAllText(ttmlPath, "<tt><body><div><p begin=\"00:00:03.000\">Ignored</p></div></body></tt>");
 
-        var lines = InvokeStatic<List<string>>("ResolveSyncedLinesFromSidecars", lrcPath, ttmlPath);
+        var lines = InvokeStatic<List<string>>("ResolveSyncedLinesFromSidecars", lrcPath, elrcPath, ttmlPath);
 
         Assert.Equal(2, lines.Count);
         Assert.Equal("[00:01.00]Line A", lines[0]);
@@ -89,10 +90,11 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
     {
         using var tmp = new TemporaryDirectory();
         var lrcPath = Path.Join(tmp.Path, "track.lrc");
+        var elrcPath = Path.Join(tmp.Path, "track.elrc");
         var ttmlPath = Path.Join(tmp.Path, "track.ttml");
         File.WriteAllText(ttmlPath, "<tt><body><div><p begin=\"00:00:03.000\">Ignored</p></div></body></tt>");
 
-        var lines = InvokeStatic<List<string>>("ResolveSyncedLinesFromSidecars", lrcPath, ttmlPath);
+        var lines = InvokeStatic<List<string>>("ResolveSyncedLinesFromSidecars", lrcPath, elrcPath, ttmlPath);
 
         Assert.Empty(lines);
     }
@@ -103,17 +105,18 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
         using var tmp = new TemporaryDirectory();
         var txtPath = Path.Join(tmp.Path, "track.txt");
         var lrcPath = Path.Join(tmp.Path, "track.lrc");
+        var elrcPath = Path.Join(tmp.Path, "track.elrc");
         var ttmlPath = Path.Join(tmp.Path, "track.ttml");
 
         File.WriteAllText(lrcPath, "[00:01.00]Line A\n[00:02.00]Line B\n");
         File.WriteAllText(txtPath, " Unsynced from txt ");
 
-        var fromTxt = InvokeStatic<string>("ResolveUnsyncedTextFromSidecars", txtPath, lrcPath, ttmlPath);
+        var fromTxt = InvokeStatic<string>("ResolveUnsyncedTextFromSidecars", txtPath, lrcPath, elrcPath, ttmlPath);
         Assert.Equal("Unsynced from txt", fromTxt);
 
         File.Delete(txtPath);
 
-        var fromSynced = InvokeStatic<string>("ResolveUnsyncedTextFromSidecars", txtPath, lrcPath, ttmlPath);
+        var fromSynced = InvokeStatic<string>("ResolveUnsyncedTextFromSidecars", txtPath, lrcPath, elrcPath, ttmlPath);
         Assert.Equal($"Line A{Environment.NewLine}Line B", fromSynced);
     }
 

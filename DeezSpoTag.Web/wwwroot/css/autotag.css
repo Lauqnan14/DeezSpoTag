@@ -854,6 +854,46 @@ body.autotag-col-resizing * {
     accent-color: var(--primary-color);
 }
 
+.lyrics-format-card-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+}
+
+#embedLyricsFormatGroup {
+    grid-column: 1 / -1;
+}
+
+#lyricsTypeGroup {
+    grid-column: 1 / -1;
+}
+
+.lyrics-format-card-grid > .checkbox-group {
+    align-items: center;
+    min-height: 38px;
+    padding: 9px 11px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.lyrics-format-card-grid > .checkbox-group label {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.lyrics-format-card-grid > .checkbox-group input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin-top: 0;
+}
+
 .technical-profile-options {
     display: grid;
     grid-template-columns: 1fr;
@@ -885,42 +925,36 @@ body.autotag-col-resizing * {
     text-align: right;
 }
 
-.lyrics-type-dropdown .dropdown-menu {
-    min-width: 100%;
-    max-width: none;
-    width: 100%;
-    padding: 10px 12px;
-    color: var(--text-primary);
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-secondary);
-}
-
-.lyrics-type-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
+.lyrics-type-card-grid {
     display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 8px;
-    width: 100%;
+    margin-top: 8px;
 }
 
-.lyrics-type-item label {
-    display: flex;
+.lyrics-type-card-grid > .checkbox-group {
     align-items: center;
-    gap: 10px;
-    margin: 0;
-    padding: 6px 8px;
+    min-height: 38px;
+    padding: 9px 11px;
     border: 1px solid var(--border-secondary);
-    border-radius: 8px;
+    border-radius: 10px;
     background: var(--bg-tertiary);
-    color: var(--text-primary);
-    cursor: pointer;
+    overflow: hidden;
 }
 
-.lyrics-type-item input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--primary-color);
+.lyrics-type-card-grid > .checkbox-group label {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.lyrics-type-card-grid > .checkbox-group input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin-top: 0;
 }
 
 .lyrics-order-item,

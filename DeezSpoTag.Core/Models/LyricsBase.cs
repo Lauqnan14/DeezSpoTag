@@ -138,6 +138,68 @@ public abstract class LyricsBase
         return lrcBuilder.ToString();
     }
 
+    public virtual bool HasEnhancedSynchronizedLyrics()
+    {
+        return SyncedLyrics?.Any(static lyric => lyric.Words?.Any(static word => word.IsValid()) == true) == true;
+    }
+
+    public virtual string GenerateEnhancedLrcContent(string? title = null, string? artist = null, string? album = null)
+    {
+        if (!IsSynced() || !HasEnhancedSynchronizedLyrics())
+        {
+            return string.Empty;
+        }
+
+        var lrcBuilder = new System.Text.StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(artist))
+            lrcBuilder.AppendLine($"[ar:{artist}]");
+        if (!string.IsNullOrWhiteSpace(album))
+            lrcBuilder.AppendLine($"[al:{album}]");
+        if (!string.IsNullOrWhiteSpace(title))
+            lrcBuilder.AppendLine($"[ti:{title}]");
+
+        foreach (var lyric in SyncedLyrics?.Where(l => l.IsValid() && l.Words?.Any(w => w.IsValid()) == true) ?? Enumerable.Empty<SynchronizedLyric>())
+        {
+            lrcBuilder.AppendLine(GenerateEnhancedLrcLine(lyric));
+        }
+
+        return lrcBuilder.ToString();
+    }
+
+    private static string GenerateEnhancedLrcLine(SynchronizedLyric lyric)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(lyric.LrcTimestamp);
+        var words = lyric.Words?
+            .OrderBy(static word => word.StartMilliseconds)
+            .Where(static word => !string.IsNullOrEmpty(word.Text))
+            .ToList();
+        if (words == null || words.Count == 0)
+        {
+            return $"{lyric.LrcTimestamp}{lyric.Text}";
+        }
+
+        foreach (var word in words)
+        {
+            if (string.IsNullOrWhiteSpace(word.Text))
+            {
+                builder.Append(word.Text);
+                continue;
+            }
+
+            if (!word.IsValid())
+            {
+                continue;
+            }
+
+            builder.Append(SynchronizedLyric.BuildEnhancedLrcTimestamp(word.StartMilliseconds));
+            builder.Append(word.Text);
+        }
+
+        return builder.ToString();
+    }
+
     /// <summary>
     /// Convert legacy deezspotag sync format to new format
     /// </summary>
