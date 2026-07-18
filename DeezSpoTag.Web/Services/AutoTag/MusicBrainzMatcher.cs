@@ -8,6 +8,11 @@ public sealed class MusicBrainzMatcher
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex VariantSegmentRegex = CreateVariantRegex(@"(?:\(|\[|\{)(?<value>[^)\]\}]+)(?:\)|\]|\})");
     private static readonly Regex TrailingVariantRegex = CreateVariantRegex(@"\b(?<value>instrumental|radio edit|radio version|club version|club mix|extended mix|extended version|live|acoustic|karaoke|remix|remastered)\b$");
+    private static readonly Regex TitleVariantTextRegex = CreateVariantRegex(
+        @"(?:\s*[-–—]\s*|\s*[\(\[\{]\s*|\s+)\b(?:instrumental|radio\s+(?:edit|version|mix)|club\s+(?:version|mix|edit)|extended\s+(?:mix|version|edit)?|live|acoustic|karaoke|remix(?:ed)?|remaster(?:ed)?)\b\s*[\)\]\}]?\s*$");
+    private static readonly Regex NonAlphanumericRegex = CreateVariantRegex(@"[^\p{L}\p{Nd}]+");
+    private const double ShortTitleMinimumSimilarity = 0.92d;
+    private const double GeneralTitleMinimumSimilarity = 0.86d;
     private static readonly (string Key, Regex Pattern)[] VariantPatterns =
     [
         ("instrumental", CreateVariantRegex(@"\binstrumental\b")),
@@ -622,16 +627,9 @@ public sealed class MusicBrainzMatcher
 
         if (!string.IsNullOrWhiteSpace(info.Title) && !string.IsNullOrWhiteSpace(track.Title))
         {
-            var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
-            var candidateTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(track.Title));
-            if (!string.IsNullOrWhiteSpace(sourceTitle) && !string.IsNullOrWhiteSpace(candidateTitle))
+            if (!HasCompatibleTitleIdentity(info.Title, track.Title, config))
             {
-                var titleScore = AutoTagSimilarity.ComputeScore(sourceTitle, candidateTitle);
-                var minTitleScore = Math.Clamp(config.Strictness - 0.05d, 0.70d, 0.96d);
-                if (titleScore < minTitleScore)
-                {
-                    return false;
-                }
+                return false;
             }
         }
 
@@ -655,6 +653,57 @@ public sealed class MusicBrainzMatcher
 
         return true;
     }
+
+    private static bool HasCompatibleTitleIdentity(
+        string sourceTitle,
+        string candidateTitle,
+        AutoTagMatchingConfig config)
+    {
+        var sourceTitleNormalized = NormalizeMusicBrainzTitleForIdentity(sourceTitle);
+        var candidateTitleNormalized = NormalizeMusicBrainzTitleForIdentity(candidateTitle);
+        if (string.IsNullOrWhiteSpace(sourceTitleNormalized) || string.IsNullOrWhiteSpace(candidateTitleNormalized))
+        {
+            return true;
+        }
+
+        if (string.Equals(sourceTitleNormalized, candidateTitleNormalized, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var titleScore = AutoTagSimilarity.ComputeScore(sourceTitleNormalized, candidateTitleNormalized);
+        var minTitleScore = ResolveMusicBrainzTitleMinimumSimilarity(sourceTitleNormalized, candidateTitleNormalized, config);
+        return titleScore >= minTitleScore;
+    }
+
+    private static double ResolveMusicBrainzTitleMinimumSimilarity(
+        string sourceTitle,
+        string candidateTitle,
+        AutoTagMatchingConfig config)
+    {
+        var shortestLength = Math.Min(sourceTitle.Length, candidateTitle.Length);
+        var shortestWordCount = Math.Min(CountWords(sourceTitle), CountWords(candidateTitle));
+        var baseline = shortestLength <= 10 || shortestWordCount <= 2
+            ? ShortTitleMinimumSimilarity
+            : GeneralTitleMinimumSimilarity;
+        return Math.Clamp(Math.Max(baseline, config.Strictness + 0.12d), baseline, 0.98d);
+    }
+
+    private static string NormalizeMusicBrainzTitleForIdentity(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return string.Empty;
+        }
+
+        var cleaned = OneTaggerMatching.CleanTitleMatching(title);
+        cleaned = TitleVariantTextRegex.Replace(cleaned, string.Empty);
+        cleaned = NonAlphanumericRegex.Replace(cleaned, " ").Trim();
+        return AutoTagSimilarity.NormalizeText(cleaned);
+    }
+
+    private static int CountWords(string value) =>
+        value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Length;
 
     private static HashSet<string> ExtractVariantMarkers(string? title)
     {

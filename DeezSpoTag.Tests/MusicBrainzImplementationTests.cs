@@ -121,6 +121,65 @@ public sealed class MusicBrainzImplementationTests
     }
 
     [Fact]
+    public void CandidateGuard_RejectsSameArtistDifferentShortTitle()
+    {
+        var method = typeof(MusicBrainzMatcher).GetMethod("IsCandidateCompatibleWithSource", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("MusicBrainzMatcher.IsCandidateCompatibleWithSource not found.");
+        var info = new AutoTagAudioInfo
+        {
+            Title = "Hey Girl",
+            Artist = "Same Artist",
+            Artists = ["Same Artist"]
+        };
+        var candidate = new MusicBrainzTrack
+        {
+            Title = "She's Hot",
+            Artists = ["Same Artist"]
+        };
+        var config = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var compatible = (bool)method.Invoke(null, [info, candidate, config])!;
+
+        Assert.False(compatible);
+    }
+
+    [Theory]
+    [InlineData("Hey Girl", "Hey, Girl")]
+    [InlineData("She's Hot", "Shes Hot")]
+    [InlineData("Sweet Love (Radio Edit)", "Sweet Love - Radio Version")]
+    public void CandidateGuard_AllowsEquivalentTitles(string sourceTitle, string candidateTitle)
+    {
+        var method = typeof(MusicBrainzMatcher).GetMethod("IsCandidateCompatibleWithSource", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("MusicBrainzMatcher.IsCandidateCompatibleWithSource not found.");
+        var info = new AutoTagAudioInfo
+        {
+            Title = sourceTitle,
+            Artist = "Same Artist",
+            Artists = ["Same Artist"]
+        };
+        var candidate = new MusicBrainzTrack
+        {
+            Title = candidateTitle,
+            Artists = ["Same Artist"]
+        };
+        var config = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var compatible = (bool)method.Invoke(null, [info, candidate, config])!;
+
+        Assert.True(compatible);
+    }
+
+    [Fact]
     public async Task SearchAsync_UsesConfiguredLimitInRequest()
     {
         Uri? capturedUri = null;
