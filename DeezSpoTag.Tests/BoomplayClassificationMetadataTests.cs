@@ -162,6 +162,79 @@ public sealed class BoomplayClassificationMetadataTests
     }
 
     [Fact]
+    public void ParseMoodPlaylistCatalog_AcceptsCurrentOpaquePlaylistIds()
+    {
+        const string html = """
+        <html><body>
+          <a href="/playlists/EQFOEFsjM2myXi6sep7Es2PV"><strong>Happy Friday</strong></a>
+          <a href="/playlists/EQGotCY_McLD4xus1knG0tgx"><strong>Relax</strong></a>
+        </body></html>
+        """;
+
+        var catalog = Assert.IsAssignableFrom<IReadOnlyList<(string Id, string Name)>>(
+            ParseMoodPlaylistCatalog.Invoke(null, new object?[] { html }));
+
+        Assert.Contains(("EQFOEFsjM2myXi6sep7Es2PV", "Happy Friday"), catalog);
+        Assert.Contains(("EQGotCY_McLD4xus1knG0tgx", "Relax"), catalog);
+    }
+
+    [Fact]
+    public async Task SearchSongs_UsesTypedMusicSearchAndDoesNotHydrateEveryHintCandidate()
+    {
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-search-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            using var httpClientFactory = new RoutingHttpClientFactory(request =>
+            {
+                var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+                if (path.StartsWith("/search/music/", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                    <html><body>
+                      <ol>
+                        <li class="clearfix play_one" data-id="259135741"
+                            data-data="259135741%40%2B%235%40%2B%23135395273%40%2B%23https%3A%2F%2Fsource.boomplaymusic.com%2Fgroup10%2FM00%2Fcover.jpg%40%2B%23Pombe%20Niache%40%2B%23Ay%20Masta%40%2B%23EQLU2jB3HIL4wueamgx1kH9F%40%2B%2303%3A15@+#OMS@+#0@+#EQvxdsV7BtNqM5LQor545Dvb">
+                          <a href="/songs/EQvxdsV7BtNqM5LQor545Dvb?from=search" class="songName">Pombe Niache</a>
+                          <a class="artistName" href="/artists/EQLU2jB3HIL4wueamgx1kH9F?from=search">Ay Masta</a>
+                        </li>
+                      </ol>
+                    </body></html>
+                    """;
+                }
+
+                if (path.StartsWith("/songs/", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("SearchSongsAsync must not hydrate each hinted search candidate.");
+                }
+
+                return string.Empty;
+            });
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+
+            var tracks = await service.SearchSongsAsync("AY Masta Pombe Niache", 12, CancellationToken.None);
+
+            var track = Assert.Single(tracks);
+            Assert.Equal("259135741", track.Id);
+            Assert.Equal("Pombe Niache", track.Title);
+            Assert.Equal("Ay Masta", track.Artist);
+            Assert.Equal("https://www.boomplay.com/songs/EQvxdsV7BtNqM5LQor545Dvb?from=search", track.Url);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ApplyStreamTags_OverridesGenreAndRecordsOptionalMood()
     {
         var track = new BoomplayTrackMetadata { Genres = new List<string> { "Pop" } };
@@ -388,6 +461,27 @@ public sealed class BoomplayClassificationMetadataTests
         public HttpClient CreateClient(string name) => _client;
 
         public void Dispose() => _client.Dispose();
+    }
+
+    private sealed class RoutingHttpClientFactory(Func<HttpRequestMessage, string> route) : IHttpClientFactory, IDisposable
+    {
+        private readonly HttpClient _client = new(new RoutingHandler(route)) { Timeout = TimeSpan.FromSeconds(30) };
+
+        public HttpClient CreateClient(string name) => _client;
+
+        public void Dispose() => _client.Dispose();
+    }
+
+    private sealed class RoutingHandler(Func<HttpRequestMessage, string> route) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = route(request);
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body)
+            });
+        }
     }
 
     private sealed class TestWebHostEnvironment(string contentRootPath) : IWebHostEnvironment

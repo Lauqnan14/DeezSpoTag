@@ -201,14 +201,15 @@ public sealed class BoomplayMatcher
             && IsUsableTrack(track));
         if (exact != null)
         {
+            var hydratedExact = await HydrateSelectedTrackAsync(exact, cancellationToken);
             return new AutoTagMatchResult
             {
                 Accuracy = 1.0,
-                Track = ToAutoTagTrack(exact)
+                Track = ToAutoTagTrack(hydratedExact)
             };
         }
 
-        return TrySelectBySimilarity(info, config, tracks);
+        return await TrySelectBySimilarityAsync(info, config, tracks, cancellationToken);
     }
 
     private async Task<AutoTagMatchResult?> TryMatchByQueryAsync(
@@ -226,7 +227,7 @@ public sealed class BoomplayMatcher
             await AppendQueryTracksAsync(query, searchLimit, seen, allTracks, cancellationToken);
         }
 
-        return TrySelectBySimilarity(info, config, allTracks);
+        return await TrySelectBySimilarityAsync(info, config, allTracks, cancellationToken);
     }
 
     private async Task AppendQueryTracksAsync(
@@ -440,10 +441,11 @@ public sealed class BoomplayMatcher
         allTracks.Add(track);
     }
 
-    private static AutoTagMatchResult? TrySelectBySimilarity(
+    private async Task<AutoTagMatchResult?> TrySelectBySimilarityAsync(
         AutoTagAudioInfo info,
         AutoTagMatchingConfig config,
-        IReadOnlyList<BoomplayTrackMetadata> tracks)
+        IReadOnlyList<BoomplayTrackMetadata> tracks,
+        CancellationToken cancellationToken)
     {
         var candidates = tracks
             .Where(IsUsableTrack)
@@ -470,11 +472,44 @@ public sealed class BoomplayMatcher
             return null;
         }
 
+        var selectedTrack = await HydrateSelectedTrackAsync(match.Track.Track, cancellationToken);
         return new AutoTagMatchResult
         {
             Accuracy = match.Accuracy,
-            Track = ToAutoTagTrack(match.Track.Track)
+            Track = ToAutoTagTrack(selectedTrack)
         };
+    }
+
+    private async Task<BoomplayTrackMetadata> HydrateSelectedTrackAsync(
+        BoomplayTrackMetadata selected,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(selected.Id))
+        {
+            return selected;
+        }
+
+        try
+        {
+            var hydrated = await _metadataService.GetSongAutoTagMetadataAsync(selected.Id, cancellationToken);
+            if (hydrated != null && IsUsableTrack(hydrated))
+            {
+                return hydrated;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Boomplay selected candidate hydration failed for {TrackId}", selected.Id);
+            }
+        }
+
+        return selected;
     }
 
     private static AutoTagTrack ToAutoTagTrack(BoomplayTrackMetadata track)

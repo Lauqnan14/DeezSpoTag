@@ -41,10 +41,10 @@ public sealed class BoomplayMetadataService
     private static readonly Regex SongPathRegex = CreateRegex(@"(?:^|/)songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PlaylistPathRegex = CreateRegex(@"(?:^|/)playlists/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PublicSongPathRegex = CreateRegex(
-        @"(?:^|/)songs/(?<id>[A-Za-z0-9_-]{1,80})(?:/|$)",
+        @"(?:^|/)songs/(?<id>[A-Za-z0-9_-]{1,80})(?=[/?#]|$)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex PublicPlaylistPathRegex = CreateRegex(
-        @"(?:^|/)playlists/(?<id>[A-Za-z0-9_-]{1,80})(?:/|$)",
+        @"(?:^|/)playlists/(?<id>[A-Za-z0-9_-]{1,80})(?=[/?#]|$)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex TrendingSongsPathRegex = CreateRegex(@"(?:^|/)trending-songs(?:/)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex SongIdInHtmlRegex = CreateRegex(@"/songs/(?<id>\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -341,6 +341,21 @@ public sealed class BoomplayMetadataService
             cancellationToken: cancellationToken);
     }
 
+    public Task<BoomplayTrackMetadata?> GetSongAutoTagMetadataAsync(
+        string songId,
+        CancellationToken cancellationToken)
+    {
+        return GetSongWithPolicyAsync(
+            songId,
+            bypassCache: false,
+            maxAttempts: 1,
+            streamTagAttempts: 0,
+            cacheLowConfidence: true,
+            cancellationToken: cancellationToken,
+            includeStreamTags: false,
+            includeMoodContexts: false);
+    }
+
     public async Task<string?> ResolveSongStreamUrlAsync(string songId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(songId))
@@ -531,6 +546,7 @@ public sealed class BoomplayMetadataService
         var encodedQuery = Uri.EscapeDataString(query.Trim());
         var searchUrls = new[]
         {
+            $"{BoomplayBaseUrl}/search/music/{encodedQuery}",
             $"{BoomplayBaseUrl}/search/default/{encodedQuery}",
             $"{BoomplayBaseUrl}/search/{encodedQuery}",
             $"{BoomplayBaseUrl}/search?q={encodedQuery}"
@@ -575,9 +591,11 @@ public sealed class BoomplayMetadataService
         }
 
         var fetchIds = songHints.Count > 0
-            ? songIds.Take(limit).ToList()
+            ? new List<string>()
             : songIds;
-        var fetchedTracks = await GetSongsAsync(fetchIds, cancellationToken);
+        var fetchedTracks = fetchIds.Count == 0
+            ? Array.Empty<BoomplayTrackMetadata>()
+            : await GetSongsAsync(fetchIds, cancellationToken);
         var tracks = MergeSearchTracks(songIds, fetchedTracks, songHints, limit);
 
         _searchCache.Set(cacheKey, tracks, BuildSearchCacheOptions());
@@ -721,7 +739,9 @@ public sealed class BoomplayMetadataService
         int maxAttempts,
         int streamTagAttempts,
         bool cacheLowConfidence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool includeStreamTags = true,
+        bool includeMoodContexts = true)
     {
         if (string.IsNullOrWhiteSpace(songId))
         {
@@ -736,13 +756,15 @@ public sealed class BoomplayMetadataService
         var url = $"{BoomplayBaseUrl}/songs/{songId}";
         BoomplayTrackMetadata? best = null;
         maxAttempts = Math.Max(1, maxAttempts);
-        streamTagAttempts = Math.Max(1, streamTagAttempts);
+        streamTagAttempts = Math.Max(0, streamTagAttempts);
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             var attemptContext = new SongAttemptContext(
                 Attempt: attempt,
                 MaxAttempts: maxAttempts,
-                StreamTagAttempts: streamTagAttempts);
+                StreamTagAttempts: streamTagAttempts,
+                IncludeStreamTags: includeStreamTags,
+                IncludeMoodContexts: includeMoodContexts);
             var attemptOutcome = await EvaluateSongAttemptAsync(
                 songId,
                 url,
@@ -812,6 +834,7 @@ public sealed class BoomplayMetadataService
         string url,
         string html,
         int streamTagAttempts,
+        bool includeMoodContexts,
         CancellationToken cancellationToken)
     {
         var parsed = ParseSongHtml(songId, html, url);
@@ -826,8 +849,15 @@ public sealed class BoomplayMetadataService
             MergeOfficialSongMetadata(parsed, official);
         }
 
-        await ApplyStreamTagsAsync(parsed.Id, parsed, streamTagAttempts, cancellationToken);
-        await ApplyBoomplayMoodContextsAsync(parsed, cancellationToken);
+        if (streamTagAttempts > 0)
+        {
+            await ApplyStreamTagsAsync(parsed.Id, parsed, streamTagAttempts, cancellationToken);
+        }
+
+        if (includeMoodContexts)
+        {
+            await ApplyBoomplayMoodContextsAsync(parsed, cancellationToken);
+        }
         return new SongAttemptParseResult(parsed);
     }
 
@@ -927,7 +957,7 @@ public sealed class BoomplayMetadataService
         document.LoadHtml(html);
         return (document.DocumentNode.SelectNodes("//a[contains(@href, '/playlists/')][strong]")?.AsEnumerable() ?? Enumerable.Empty<HtmlNode>())
             .Select(static node => (
-                Id: PlaylistPathRegex.Match(node.GetAttributeValue("href", string.Empty)).Groups["id"].Value,
+                Id: PublicPlaylistPathRegex.Match(node.GetAttributeValue("href", string.Empty)).Groups["id"].Value,
                 Name: DecodeAndTrim(node.SelectSingleNode("./strong")?.InnerText)))
             .Where(static item => !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Name))
             .DistinctBy(static item => item.Id)
@@ -1073,7 +1103,8 @@ public sealed class BoomplayMetadataService
             songId,
             url,
             html!,
-            context.StreamTagAttempts,
+            context.IncludeStreamTags ? context.StreamTagAttempts : 0,
+            context.IncludeMoodContexts,
             cancellationToken);
         var parsed = parseResult.Metadata;
         if (IsSongMetadataEmpty(parsed))
@@ -1117,7 +1148,9 @@ public sealed class BoomplayMetadataService
     private readonly record struct SongAttemptContext(
         int Attempt,
         int MaxAttempts,
-        int StreamTagAttempts);
+        int StreamTagAttempts,
+        bool IncludeStreamTags,
+        bool IncludeMoodContexts);
 
     private static async Task DelayIfRetryAvailableAsync(int attempt, int maxAttempts, CancellationToken cancellationToken)
     {
