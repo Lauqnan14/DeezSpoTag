@@ -352,7 +352,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         Assert.Contains("{ value: '', label: 'Follow global download source' }", uiSource, StringComparison.Ordinal);
         Assert.Contains("preferredEngine: value?.preferredEngine || null", uiSource, StringComparison.Ordinal);
-        Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(_settingsService.LoadSettings())", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("var globalSettings = _settingsService.LoadSettings();", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("ManualDownloadPreferenceResolver.ResolvePreferredEngine(globalSettings)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("itemDownloadEngineOrder ?? globalSettings.DownloadEngineOrder", serviceSource, StringComparison.Ordinal);
     }
 
     [Fact]

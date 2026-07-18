@@ -3484,13 +3484,14 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private QueueWatchOptions BuildQueueWatchOptions(QueueWatchOptionsInput input)
     {
-        var preferredEngine = ResolveAutomaticPreferredEngine(input.PreferredEngine);
+        var globalSettings = _settingsService.LoadSettings();
+        var preferredEngine = ResolveAutomaticPreferredEngine(input.PreferredEngine, globalSettings);
         return new QueueWatchOptions(
             input.SourceLabel,
             input.WatchlistSource,
             input.WatchlistPlaylistId,
             preferredEngine,
-            ResolveDownloadEngineOrder(preferredEngine, input.DownloadEngineOrder),
+            ResolveDownloadEngineOrder(preferredEngine, input.DownloadEngineOrder, globalSettings),
             input.DownloadVariantMode,
             input.AtmosDestinationFolderId,
             input.RuleSet?.RoutingRules,
@@ -3502,17 +3503,18 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private static DownloadEngineOrderSettings? ResolveDownloadEngineOrder(
         string? resolvedPreferredEngine,
-        DownloadEngineOrderSettings? itemDownloadEngineOrder)
+        DownloadEngineOrderSettings? itemDownloadEngineOrder,
+        DeezSpoTagSettings globalSettings)
     {
         if (!string.Equals(resolvedPreferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal))
         {
             return null;
         }
 
-        return itemDownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
+        return itemDownloadEngineOrder ?? globalSettings.DownloadEngineOrder ?? DownloadEngineOrderSettings.CreateDefault();
     }
 
-    private string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine)
+    private static string? ResolveAutomaticPreferredEngine(string? itemPreferredEngine, DeezSpoTagSettings globalSettings)
     {
         var normalizedItemEngine = NormalizePreferredEngine(itemPreferredEngine);
         if (!string.IsNullOrWhiteSpace(normalizedItemEngine))
@@ -3520,7 +3522,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return normalizedItemEngine;
         }
 
-        return ManualDownloadPreferenceResolver.ResolvePreferredEngine(_settingsService.LoadSettings());
+        return ManualDownloadPreferenceResolver.ResolvePreferredEngine(globalSettings);
     }
 
     private static long? ResolveRoutingFolderId(DownloadIntent intent, IReadOnlyList<PlaylistTrackRoutingRule>? rules, long? defaultFolderId)
