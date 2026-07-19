@@ -108,7 +108,9 @@ public sealed class MelodaySettingsStore
         SonicSimilarityDistance = MelodayClamp.PositiveOrDefault(stored.SonicSimilarityDistance, defaults.SonicSimilarityDistance, 0.05d, 1d),
         UpdateIntervalMinutes = MelodayClamp.PositiveOrDefault(stored.UpdateIntervalMinutes, defaults.UpdateIntervalMinutes, 5, 1440),
         Mode = MelodayModes.Normalize(string.IsNullOrWhiteSpace(stored.Mode) ? defaults.Mode : stored.Mode),
-        MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath
+        MoodMapPath = string.IsNullOrWhiteSpace(stored.MoodMapPath) ? defaults.MoodMapPath : stored.MoodMapPath,
+        TargetServers = MelodayTargetServers.Normalize(stored.TargetServers, defaultToAll: true),
+        TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds(stored.TargetLibraryIds)
     };
 
     private static MelodayOptions Clone(MelodayOptions source) => new()
@@ -124,6 +126,8 @@ public sealed class MelodaySettingsStore
         SonicSimilarityDistance = source.SonicSimilarityDistance,
         UpdateIntervalMinutes = source.UpdateIntervalMinutes,
         Mode = MelodayModes.Normalize(source.Mode),
-        MoodMapPath = source.MoodMapPath
+        MoodMapPath = source.MoodMapPath,
+        TargetServers = MelodayTargetServers.Normalize(source.TargetServers, defaultToAll: true),
+        TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds(source.TargetLibraryIds)
     };
 }

@@ -74,7 +74,8 @@ const melodayDefaults = {
     maxTracks: 50,
     historyLookbackDays: 30,
     excludePlayedDays: 4,
-    mode: 'sonic'
+    mode: 'sonic',
+    targetServers: ['plex', 'jellyfin', 'navidrome']
 };
 
 function melodayLog(level, message, timestamp) {
@@ -186,6 +187,93 @@ function melodayGetMode() {
     return melodayNormalizeMode(document.querySelector('input[name="meloday-mode"]:checked')?.value || melodayDefaults.mode);
 }
 
+function melodayNormalizeTargetServers(values, defaultToAll = true) {
+    const allowed = new Set(melodayDefaults.targetServers);
+    const normalized = [];
+    (Array.isArray(values) ? values : []).forEach((value) => {
+        const target = String(value || '').trim().toLowerCase();
+        if (allowed.has(target) && !normalized.includes(target)) {
+            normalized.push(target);
+        }
+    });
+    return normalized.length > 0 || !defaultToAll
+        ? normalized
+        : [...melodayDefaults.targetServers];
+}
+
+function melodaySetTargetServers(values) {
+    const selected = melodayNormalizeTargetServers(values, true);
+    document.querySelectorAll('[data-meloday-target-server]').forEach((input) => {
+        const target = String(input.getAttribute('data-meloday-target-server') || '').trim().toLowerCase();
+        input.checked = selected.includes(target);
+    });
+}
+
+function melodayGetTargetServers() {
+    return melodayNormalizeTargetServers(
+        Array.from(document.querySelectorAll('[data-meloday-target-server]'))
+            .filter(input => input && input.checked)
+            .map(input => input.getAttribute('data-meloday-target-server')),
+        false);
+}
+
+function melodayNormalizeTargetLibraryIds(values) {
+    const normalized = [];
+    (Array.isArray(values) ? values : []).forEach((value) => {
+        const id = Number(value);
+        if (Number.isFinite(id) && id > 0 && !normalized.includes(id)) {
+            normalized.push(id);
+        }
+    });
+    return normalized.sort((a, b) => a - b);
+}
+
+function melodayGetTargetLibraryIds() {
+    return melodayNormalizeTargetLibraryIds(
+        Array.from(document.querySelectorAll('[data-meloday-target-library]'))
+            .filter(input => input && input.checked)
+            .map(input => input.getAttribute('data-meloday-target-library')));
+}
+
+async function loadMelodayLibraries(selectedLibraryIds) {
+    const container = document.getElementById('meloday-target-libraries');
+    if (!container) {
+        return;
+    }
+
+    try {
+        const libraries = await melodayFetchJson('/api/meloday/settings/libraries');
+        const selected = melodayNormalizeTargetLibraryIds(selectedLibraryIds);
+        const selectedSet = new Set(selected);
+        container.innerHTML = '';
+        if (!Array.isArray(libraries) || libraries.length === 0) {
+            container.textContent = 'No nonempty configured music libraries found.';
+            return;
+        }
+
+        libraries.forEach((library) => {
+            const id = Number(library?.id || 0);
+            if (!Number.isFinite(id) || id <= 0) {
+                return;
+            }
+
+            const label = document.createElement('label');
+            label.className = 'metadata-updater-option';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.setAttribute('data-meloday-target-library', String(id));
+            input.checked = selectedSet.size === 0 || selectedSet.has(id);
+            const text = document.createElement('span');
+            text.textContent = library?.name || `Library ${id}`;
+            label.append(input, text);
+            container.appendChild(label);
+        });
+    } catch (error) {
+        container.textContent = 'Failed to load Meloday libraries.';
+        melodayLog('error', `Failed to load Meloday libraries: ${error.message}`);
+    }
+}
+
 async function loadMelodaySettings() {
     const enabledEl = document.getElementById('meloday-enabled');
     if (!enabledEl) {
@@ -206,6 +294,8 @@ async function loadMelodaySettings() {
         const similarLimit = document.getElementById('meloday-similar-limit');
         const historicalRatio = document.getElementById('meloday-historical-ratio');
         melodaySetMode(settings.mode || melodayDefaults.mode);
+        melodaySetTargetServers(settings.targetServers);
+        await loadMelodayLibraries(settings.targetLibraryIds);
         if (playlistPrefix) playlistPrefix.value = settings.playlistPrefix || '';
         if (maxTracks) maxTracks.value = settings.maxTracks ?? 50;
         if (lookback) lookback.value = settings.historyLookbackDays ?? 30;
@@ -221,8 +311,18 @@ async function loadMelodaySettings() {
 
 function buildMelodayPayload(enabledOverride) {
     const enabledEl = document.getElementById('meloday-enabled');
+    const enabled = enabledOverride ?? enabledEl?.checked ?? true;
+    const targetServers = melodayGetTargetServers();
+    const targetLibraryIds = melodayGetTargetLibraryIds();
+    if (enabled && targetServers.length === 0) {
+        throw new Error('Select at least one Meloday target server.');
+    }
+    if (enabled && targetLibraryIds.length === 0) {
+        throw new Error('Select at least one Meloday target library.');
+    }
+
     return {
-        enabled: enabledOverride ?? enabledEl?.checked ?? true,
+        enabled,
         playlistPrefix: document.getElementById('meloday-playlist-prefix')?.value || '',
         maxTracks: melodayParseNumber(document.getElementById('meloday-max-tracks')?.value, 50),
         historyLookbackDays: melodayParseNumber(document.getElementById('meloday-lookback-days')?.value, 30),
@@ -231,7 +331,9 @@ function buildMelodayPayload(enabledOverride) {
         sonicSimilarityDistance: melodayParseNumber(document.getElementById('meloday-similarity-distance')?.value, 0.35),
         sonicSimilarLimit: melodayParseNumber(document.getElementById('meloday-similar-limit')?.value, 8),
         historicalRatio: melodayParseNumber(document.getElementById('meloday-historical-ratio')?.value, 0.3),
-        mode: melodayGetMode()
+        mode: melodayGetMode(),
+        targetServers,
+        targetLibraryIds
     };
 }
 
@@ -272,10 +374,6 @@ async function saveMelodaySettings() {
 }
 
 function buildMelodayTogglePayload(enabled) {
-    if (melodayState.settings) {
-        return { ...melodayState.settings, enabled };
-    }
-    // Fallback to current form/defaults if settings have not been loaded yet
     return buildMelodayPayload(enabled);
 }
 

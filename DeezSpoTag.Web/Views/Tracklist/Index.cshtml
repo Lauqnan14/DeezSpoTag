@@ -2783,6 +2783,19 @@ function normalizeCoverUrl(value) {
     return '';
 }
 
+function normalizeLocalLibraryCoverUrl(value) {
+    const normalized = normalizeCoverUrl(value);
+    if (!normalized || /^https?:\/\//i.test(normalized) || /^data:image\//i.test(normalized)) {
+        return normalized;
+    }
+
+    if (normalized.startsWith('/api/library/image')) {
+        return normalized;
+    }
+
+    return `/api/library/image?path=${encodeURIComponent(normalized)}&size=240`;
+}
+
 function mapLibraryStyleTracks(tracks) {
     return (tracks || []).map((track, index) => {
         const trackId = String(track.trackId || '').trim();
@@ -2793,7 +2806,7 @@ function mapLibraryStyleTracks(tracks) {
             id: trackId,
             title: track.title || 'Unknown',
             artist: { name: track.artistName || 'Unknown', id: '' },
-            album: { title: track.albumTitle || 'Unknown', cover_medium: normalizeCoverUrl(track.coverPath || '') },
+            album: { title: track.albumTitle || 'Unknown', cover_medium: normalizeLocalLibraryCoverUrl(track.coverPath || '') },
             duration: track.durationMs ? Math.round(track.durationMs / 1000) : 0,
             durationMs: track.durationMs || 0,
             preview: localPlaybackUrl,
@@ -3249,7 +3262,10 @@ function scheduleExternalTracklistMatches(tracks, source) {
     }
 
     const normalizedSource = String(source || '').trim().toLowerCase();
-    if (!normalizedSource || normalizedSource === 'deezer' || normalizedSource === 'apple') {
+    if (!normalizedSource
+        || normalizedSource === 'deezer'
+        || normalizedSource === 'apple'
+        || isLocalTracklistSource(normalizedSource)) {
         return;
     }
 
@@ -3484,9 +3500,8 @@ function renderTracklist(data, options = {}) {
     startManualUnavailableRetryCountdowns();
     scheduleAvailabilityChecks(tracks, isLocalSource);
 
-    const externalSource = (tracklistSource || '').toLowerCase();
-    if (externalSource && externalSource !== 'deezer' && !isRecommendationTracklistContext() && !isManualUnavailableTracklist()) {
-        scheduleExternalTracklistMatches(tracks, externalSource);
+    if (!isRecommendationTracklistContext() && !isManualUnavailableTracklist()) {
+        scheduleExternalTracklistMatches(tracks, tracklistSource);
     }
 
     preloadDeezerPlaybackContextsForVisibleRows();

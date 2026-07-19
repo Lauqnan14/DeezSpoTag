@@ -25,6 +25,8 @@ public sealed class MelodayOptions
     public int UpdateIntervalMinutes { get; set; } = 30;
     public string Mode { get; set; } = MelodayModes.Sonic;
     public string MoodMapPath { get; set; } = "Resources/meloday/assets/moodmap.json";
+    public List<string> TargetServers { get; set; } = new() { MelodayTargetServers.Plex, MelodayTargetServers.Jellyfin, MelodayTargetServers.Navidrome };
+    public List<long> TargetLibraryIds { get; set; } = new();
 }
 
 public sealed record MelodayRunResult(
@@ -59,6 +61,33 @@ public static class MelodayModes
             Sonic => Sonic,
             _ => Sonic
         };
+    }
+}
+
+public static class MelodayTargetServers
+{
+    public const string Plex = "plex";
+    public const string Jellyfin = "jellyfin";
+    public const string Navidrome = "navidrome";
+
+    public static IReadOnlyList<string> All { get; } = new[] { Plex, Jellyfin, Navidrome };
+
+    public static List<string> Normalize(IEnumerable<string>? values, bool defaultToAll)
+    {
+        var normalized = new List<string>();
+        foreach (var value in values ?? Array.Empty<string>())
+        {
+            var target = (value ?? string.Empty).Trim().ToLowerInvariant();
+            if (target is Plex or Jellyfin or Navidrome
+                && !normalized.Contains(target, StringComparer.OrdinalIgnoreCase))
+            {
+                normalized.Add(target);
+            }
+        }
+
+        return normalized.Count == 0 && defaultToAll
+            ? All.ToList()
+            : normalized;
     }
 }
 
@@ -243,22 +272,30 @@ public sealed class MelodayService
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
+        var selectedServers = MelodayTargetServers.Normalize(effective.TargetServers, defaultToAll: true);
         var auth = await _authService.LoadAsync();
-        var targets = ResolveTargetServers(auth);
+        var targets = ResolveTargetServers(auth, selectedServers);
         if (targets.Count == 0)
         {
-            _lastMessage = "Plex, Jellyfin, or Navidrome auth missing.";
+            _lastMessage = "Selected Meloday target server auth is missing.";
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
         if (refreshHistory)
         {
-            var importResults = new List<MelodayHistoryImportResult>
+            var importResults = new List<MelodayHistoryImportResult>();
+            if (selectedServers.Contains(MelodayTargetServers.Plex, StringComparer.OrdinalIgnoreCase))
             {
-                await _historyImportService.ImportDetailedAsync(cancellationToken),
-                await _jellyfinHistoryImportService.ImportDetailedAsync(cancellationToken),
-                await _navidromeHistoryImportService.ImportDetailedAsync(cancellationToken)
-            };
+                importResults.Add(await _historyImportService.ImportDetailedAsync(cancellationToken));
+            }
+            if (selectedServers.Contains(MelodayTargetServers.Jellyfin, StringComparer.OrdinalIgnoreCase))
+            {
+                importResults.Add(await _jellyfinHistoryImportService.ImportDetailedAsync(cancellationToken));
+            }
+            if (selectedServers.Contains(MelodayTargetServers.Navidrome, StringComparer.OrdinalIgnoreCase))
+            {
+                importResults.Add(await _navidromeHistoryImportService.ImportDetailedAsync(cancellationToken));
+            }
 
             _lastImportResults = importResults;
             var configuredImports = importResults.Where(static result => result.Configured).ToList();
@@ -282,12 +319,13 @@ public sealed class MelodayService
                 configuredFolders.Add(folder);
             }
         }
-        var libraries = ResolveMelodayLibraries(configuredFolders);
+        var configuredLibraries = ResolveMelodayLibraries(configuredFolders);
+        var libraries = ResolveMelodayLibraries(configuredFolders, effective.TargetLibraryIds);
         await _libraryRepository.DeleteInactiveMelodayMixesAsync(
-            libraries.Select(static library => library.Id).ToList(), cancellationToken);
+            configuredLibraries.Select(static library => library.Id).ToList(), cancellationToken);
         if (libraries.Count == 0)
         {
-            _lastMessage = "No nonempty configured music libraries were found.";
+            _lastMessage = "No selected nonempty configured music libraries were found.";
             return new MelodayRunResult(false, _lastMessage, null);
         }
 
@@ -431,6 +469,14 @@ public sealed class MelodayService
                 .Select(static result => result.Message)
                 .Where(static message => !string.IsNullOrWhiteSpace(message));
             _lastMessage += $" {string.Join(" ", failureMessages)}";
+        }
+        var targetSyncWarnings = successful
+            .Where(static result => string.IsNullOrWhiteSpace(result.PlaylistId))
+            .Select(static result => result.Message)
+            .Where(static message => !string.IsNullOrWhiteSpace(message));
+        if (targetSyncWarnings.Any())
+        {
+            _lastMessage += $" {string.Join(" ", targetSyncWarnings)}";
         }
 
         var firstPlaylistId = successful
@@ -613,34 +659,42 @@ public sealed class MelodayService
         SonicSimilarityDistance = source.SonicSimilarityDistance,
         UpdateIntervalMinutes = source.UpdateIntervalMinutes,
         Mode = source.Mode,
-        MoodMapPath = source.MoodMapPath
+        MoodMapPath = source.MoodMapPath,
+        TargetServers = MelodayTargetServers.Normalize(source.TargetServers, defaultToAll: true),
+        TargetLibraryIds = NormalizeTargetLibraryIds(source.TargetLibraryIds)
     };
 
-    private static IReadOnlyList<MediaServerTarget> ResolveTargetServers(PlatformAuthState auth)
+    private static IReadOnlyList<MediaServerTarget> ResolveTargetServers(
+        PlatformAuthState auth,
+        IReadOnlyCollection<string>? selectedServers = null)
     {
+        var selected = MelodayTargetServers.Normalize(selectedServers, defaultToAll: true);
         var targets = new List<MediaServerTarget>();
-        if (TryGetPlexConnection(auth.Plex, out var plex, out _, out _))
+        if (selected.Contains(MelodayTargetServers.Plex, StringComparer.OrdinalIgnoreCase)
+            && TryGetPlexConnection(auth.Plex, out var plex, out _, out _))
         {
             var username = !string.IsNullOrWhiteSpace(plex.Username) ? plex.Username : plex.ServerName;
-            targets.Add(new MediaServerTarget("plex", plex, null, null, username));
+            targets.Add(new MediaServerTarget(MelodayTargetServers.Plex, plex, null, null, username));
         }
 
-        if (auth.Jellyfin is { } jellyfin
+        if (selected.Contains(MelodayTargetServers.Jellyfin, StringComparer.OrdinalIgnoreCase)
+            && auth.Jellyfin is { } jellyfin
             && !string.IsNullOrWhiteSpace(jellyfin.Url)
             && !string.IsNullOrWhiteSpace(jellyfin.ApiKey)
             && !string.IsNullOrWhiteSpace(jellyfin.UserId))
         {
             var username = !string.IsNullOrWhiteSpace(jellyfin.Username) ? jellyfin.Username : jellyfin.ServerName;
-            targets.Add(new MediaServerTarget("jellyfin", null, jellyfin, null, username));
+            targets.Add(new MediaServerTarget(MelodayTargetServers.Jellyfin, null, jellyfin, null, username));
         }
 
-        if (auth.Navidrome is { } navidrome
+        if (selected.Contains(MelodayTargetServers.Navidrome, StringComparer.OrdinalIgnoreCase)
+            && auth.Navidrome is { } navidrome
             && !string.IsNullOrWhiteSpace(navidrome.Url)
             && !string.IsNullOrWhiteSpace(navidrome.Username)
             && !string.IsNullOrWhiteSpace(navidrome.Password))
         {
             var username = !string.IsNullOrWhiteSpace(navidrome.Username) ? navidrome.Username : navidrome.ServerName;
-            targets.Add(new MediaServerTarget("navidrome", null, null, navidrome, username));
+            targets.Add(new MediaServerTarget(MelodayTargetServers.Navidrome, null, null, navidrome, username));
         }
 
         return targets;
@@ -1124,15 +1178,25 @@ public sealed class MelodayService
     }
 
     private static IReadOnlyList<LibraryDto> ResolveMelodayLibraries(
-        IReadOnlyList<FolderDto> folders)
+        IReadOnlyList<FolderDto> folders,
+        IReadOnlyCollection<long>? selectedLibraryIds = null)
     {
+        var selected = NormalizeTargetLibraryIds(selectedLibraryIds).ToHashSet();
         return folders
             .Where(folder => folder.LibraryId.HasValue && !string.IsNullOrWhiteSpace(folder.LibraryName))
+            .Where(folder => selected.Count == 0 || selected.Contains(folder.LibraryId!.Value))
             .GroupBy(folder => folder.LibraryId!.Value)
             .Select(group => new LibraryDto(group.Key, group.First().LibraryName!))
             .OrderBy(library => library.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
+
+    public static List<long> NormalizeTargetLibraryIds(IEnumerable<long>? values)
+        => values?
+            .Where(static id => id > 0)
+            .Distinct()
+            .Order()
+            .ToList() ?? new List<long>();
 
     private async Task<List<long>> BuildDirectTrackSelectionAsync(
         IReadOnlyList<long> historyTrackIds,

@@ -13,7 +13,8 @@ public sealed class MelodayGuardrailTests
         var source = ReadMelodayService();
 
         Assert.Contains("ResolveTargetServers", source, StringComparison.Ordinal);
-        Assert.Contains("ResolveTargetServers(auth)", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveTargetServers(auth, selectedServers)", source, StringComparison.Ordinal);
+        Assert.Contains("MelodayTargetServers.Normalize(effective.TargetServers", source, StringComparison.Ordinal);
         Assert.Contains("auth.Navidrome", source, StringComparison.Ordinal);
         Assert.Contains("SyncMelodayToNavidromeAsync", source, StringComparison.Ordinal);
         Assert.Contains("foreach (var target in context.TargetServers)", source, StringComparison.Ordinal);
@@ -67,12 +68,20 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("string? VariantKey = null", models, StringComparison.Ordinal);
         Assert.Contains("selected_audio.audio_file_id", repository, StringComparison.Ordinal);
         var localMapper = ExtractMethodBody(view, "function mapLibraryStyleTracks");
+        var localCoverNormalizer = ExtractMethodBody(view, "function normalizeLocalLibraryCoverUrl");
+        var externalMatcher = ExtractMethodBody(view, "function scheduleExternalTracklistMatches");
+        var renderer = ExtractMethodBody(view, "function renderTracklist");
         Assert.Contains("function buildLocalTrackPlaybackUrl(trackId, audioFileId, filePath)", view, StringComparison.Ordinal);
         Assert.Contains("/api/library/analysis/track/${encodeURIComponent(trackId)}/audio", view, StringComparison.Ordinal);
         Assert.Contains("data-local-track-id", view, StringComparison.Ordinal);
         Assert.Contains("library:${localTrackId}", view, StringComparison.Ordinal);
         Assert.Contains("preview: localPlaybackUrl", localMapper, StringComparison.Ordinal);
+        Assert.Contains("normalizeLocalLibraryCoverUrl(track.coverPath || '')", localMapper, StringComparison.Ordinal);
+        Assert.Contains("/api/library/image?path=${encodeURIComponent(normalized)}&size=240", localCoverNormalizer, StringComparison.Ordinal);
+        Assert.Contains("normalized.startsWith('/api/library/image')", localCoverNormalizer, StringComparison.Ordinal);
         Assert.DoesNotContain("preview: '',", localMapper, StringComparison.Ordinal);
+        Assert.Contains("isLocalTracklistSource(normalizedSource)", externalMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("externalSource !== 'deezer'", renderer, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -91,12 +100,37 @@ public sealed class MelodayGuardrailTests
     }
 
     [Fact]
-    public void Meloday_Settings_Do_Not_Render_Target_Server_Or_Library_Mapping_Controls()
+    public void Meloday_Settings_Render_Selected_Target_Server_And_Library_Controls_Without_Manual_Mappings()
     {
         var view = ReadActivitiesView();
         var script = ReadMelodayScript();
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "MelodaySettingsApiController.cs");
+        var settingsStore = ReadSource("DeezSpoTag.Web", "Services", "MelodaySettingsStore.cs");
 
-        Assert.DoesNotContain("data-meloday-target", view, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-target-server=\"plex\"", view, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-target-server=\"jellyfin\"", view, StringComparison.Ordinal);
+        Assert.Contains("data-meloday-target-server=\"navidrome\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"meloday-target-libraries\"", view, StringComparison.Ordinal);
+        Assert.Contains("metadata-updater-option-group", view, StringComparison.Ordinal);
+        Assert.Contains("metadata-updater-checkbox-grid meloday-target-server-grid", view, StringComparison.Ordinal);
+        Assert.Contains("metadata-updater-checkbox-grid meloday-target-library-grid", view, StringComparison.Ordinal);
+        Assert.Contains("class=\"metadata-updater-option\"", view, StringComparison.Ordinal);
+        Assert.Contains("meloday-target-server-grid", view, StringComparison.Ordinal);
+        Assert.Contains("meloday-target-library-grid", view, StringComparison.Ordinal);
+        Assert.Contains("repeat(3, minmax(0, 1fr))", view, StringComparison.Ordinal);
+        Assert.Contains("repeat(auto-fit, minmax(220px, 1fr))", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-target-option", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("meloday-target-option", script, StringComparison.Ordinal);
+        Assert.Contains("melodayGetTargetServers", script, StringComparison.Ordinal);
+        Assert.Contains("melodayGetTargetLibraryIds", script, StringComparison.Ordinal);
+        Assert.Contains("/api/meloday/settings/libraries", script, StringComparison.Ordinal);
+        Assert.Contains("targetServers", script, StringComparison.Ordinal);
+        Assert.Contains("targetLibraryIds", script, StringComparison.Ordinal);
+        Assert.Contains("[HttpGet(\"libraries\")]", controller, StringComparison.Ordinal);
+        Assert.Contains("TargetServers = targetServers", controller, StringComparison.Ordinal);
+        Assert.Contains("TargetLibraryIds = targetLibraryIds", controller, StringComparison.Ordinal);
+        Assert.Contains("TargetServers = MelodayTargetServers.Normalize", settingsStore, StringComparison.Ordinal);
+        Assert.Contains("TargetLibraryIds = MelodayService.NormalizeTargetLibraryIds", settingsStore, StringComparison.Ordinal);
         Assert.DoesNotContain("meloday-library-name", view, StringComparison.Ordinal);
         Assert.DoesNotContain("melodayGetSyncTargets", script, StringComparison.Ordinal);
         Assert.DoesNotContain("syncTargets:", script, StringComparison.Ordinal);
@@ -132,6 +166,9 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("folder.LibraryName", resolverBody, StringComparison.Ordinal);
         Assert.Contains("GroupBy(folder => folder.LibraryId", resolverBody, StringComparison.Ordinal);
         Assert.Contains("GetConfiguredEnabledMusicFoldersAsync", runBody, StringComparison.Ordinal);
+        Assert.Contains("var configuredLibraries = ResolveMelodayLibraries(configuredFolders)", runBody, StringComparison.Ordinal);
+        Assert.Contains("ResolveMelodayLibraries(configuredFolders, effective.TargetLibraryIds)", runBody, StringComparison.Ordinal);
+        Assert.Contains("DeleteInactiveMelodayMixesAsync(\n            configuredLibraries.Select", runBody, StringComparison.Ordinal);
         Assert.DoesNotContain("PlexSectionId", source, StringComparison.Ordinal);
         Assert.DoesNotContain("JellyfinLibraryId", source, StringComparison.Ordinal);
         Assert.DoesNotContain("NavidromeLibraryId", source, StringComparison.Ordinal);
@@ -141,6 +178,25 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("BuildMelodayMixId(mode, context.Library.Id)", source, StringComparison.Ordinal);
         Assert.Contains("context.Library.Name} {GetModeLabel(mode)}", source, StringComparison.Ordinal);
         Assert.DoesNotContain("SelectLibraryAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Selected_Targets_Filter_History_Sources_Sync_Servers_And_Libraries()
+    {
+        var source = ReadMelodayService();
+        var runBody = ExtractMethodBody(source, "public async Task<MelodayRunResult> RunAsync");
+        var targetResolver = ExtractMethodBody(source, "private static IReadOnlyList<MediaServerTarget> ResolveTargetServers");
+        var libraryResolver = ExtractMethodBody(source, "private static IReadOnlyList<LibraryDto> ResolveMelodayLibraries");
+
+        Assert.Contains("selectedServers.Contains(MelodayTargetServers.Plex", runBody, StringComparison.Ordinal);
+        Assert.Contains("selectedServers.Contains(MelodayTargetServers.Jellyfin", runBody, StringComparison.Ordinal);
+        Assert.Contains("selectedServers.Contains(MelodayTargetServers.Navidrome", runBody, StringComparison.Ordinal);
+        Assert.Contains("ResolveTargetServers(auth, selectedServers)", runBody, StringComparison.Ordinal);
+        Assert.Contains("selected.Contains(MelodayTargetServers.Plex", targetResolver, StringComparison.Ordinal);
+        Assert.Contains("selected.Contains(MelodayTargetServers.Jellyfin", targetResolver, StringComparison.Ordinal);
+        Assert.Contains("selected.Contains(MelodayTargetServers.Navidrome", targetResolver, StringComparison.Ordinal);
+        Assert.Contains("NormalizeTargetLibraryIds(selectedLibraryIds)", libraryResolver, StringComparison.Ordinal);
+        Assert.Contains("selected.Count == 0 || selected.Contains(folder.LibraryId!.Value)", libraryResolver, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -1647,11 +1647,35 @@
 }
 
 .media-operations-tab #meloday-card .meloday-history-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.media-operations-tab #meloday-card .meloday-history-grid .form-control {
+    min-width: 0;
+    width: 100%;
+}
+
+.media-operations-tab #meloday-card .meloday-history-grid .field-input {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.media-operations-tab #meloday-card .meloday-history-grid .field-unit {
+    min-width: 0;
+    text-align: left;
+    white-space: nowrap;
 }
 
 .media-operations-tab #meloday-card .meloday-similarity-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.media-operations-tab #meloday-card .meloday-target-server-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.media-operations-tab #meloday-card .meloday-target-library-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .media-operations-tab .ops-primary .tool-card-header {
@@ -2540,8 +2564,13 @@
 
     .media-operations-tab #meloday-card .meloday-summary-grid,
     .media-operations-tab #meloday-card .meloday-history-grid,
-    .media-operations-tab #meloday-card .meloday-similarity-grid {
+    .media-operations-tab #meloday-card .meloday-similarity-grid,
+    .media-operations-tab #meloday-card .meloday-target-server-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .media-operations-tab #meloday-card .meloday-target-library-grid {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     }
 
     .media-operations-tab .meloday-settings .form-control,
@@ -2642,7 +2671,9 @@
 
     .media-operations-tab #meloday-card .meloday-summary-grid,
     .media-operations-tab #meloday-card .meloday-history-grid,
-    .media-operations-tab #meloday-card .meloday-similarity-grid {
+    .media-operations-tab #meloday-card .meloday-similarity-grid,
+    .media-operations-tab #meloday-card .meloday-target-server-grid,
+    .media-operations-tab #meloday-card .meloday-target-library-grid {
         grid-template-columns: 1fr;
     }
 
@@ -3115,6 +3146,29 @@
                                             <label class="field-label" for="meloday-playlist-prefix">Playlist prefix</label>
                                             <input id="meloday-playlist-prefix" class="form-control" type="text" />
                                         </div>
+                                    </div>
+                                    <div class="section-divider"></div>
+                                    <div class="metadata-updater-option-group">
+                                        <div class="metadata-updater-group-label">Target servers</div>
+                                        <div class="metadata-updater-checkbox-grid meloday-target-server-grid" id="meloday-target-servers" role="group" aria-label="Meloday target servers">
+                                            <label class="metadata-updater-option">
+                                                <input type="checkbox" data-meloday-target-server="plex" />
+                                                <span>Plex</span>
+                                            </label>
+                                            <label class="metadata-updater-option">
+                                                <input type="checkbox" data-meloday-target-server="jellyfin" />
+                                                <span>Jellyfin</span>
+                                            </label>
+                                            <label class="metadata-updater-option">
+                                                <input type="checkbox" data-meloday-target-server="navidrome" />
+                                                <span>Navidrome</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div class="section-divider"></div>
+                                    <div class="metadata-updater-option-group">
+                                        <div class="metadata-updater-group-label">Target libraries</div>
+                                        <div class="metadata-updater-checkbox-grid meloday-target-library-grid" id="meloday-target-libraries" role="group" aria-label="Meloday target libraries"></div>
                                     </div>
                                     <div class="section-divider"></div>
                                     <div class="settings-section">
