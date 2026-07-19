@@ -3250,7 +3250,7 @@ public static partial class EngineAudioPostDownloadHelper
                 FallbackAttemptRecorder.RecordCurrent(
                     payload,
                     "failed",
-                    "download_failed",
+                    FallbackFailureClassifier.Classify(exception),
                     exception.Message);
             }
             context.ActivityLog.Warn($"Download failed (engine={context.EngineName} quality={quality}): {queueUuid} {exception.Message}");

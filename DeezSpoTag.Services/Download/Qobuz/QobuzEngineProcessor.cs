@@ -859,7 +859,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
                 FallbackAttemptRecorder.RecordCurrent(
                     payload,
                     "failed",
-                    "download_failed",
+                    FallbackFailureClassifier.Classify(ex),
                     ex.Message);
             }
             _activityLog.Warn($"Download {failureKind} (engine={EngineName} quality={quality}): {queueUuid} {ex.Message}");

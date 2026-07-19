@@ -310,29 +310,7 @@ public sealed class EngineFallbackCoordinator
     }
 
     private static bool IsTerminalFallbackAttempt(FallbackAttempt attempt)
-    {
-        if (string.Equals(attempt.Status, "completed", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(attempt.Status, "tagged", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return (attempt.ErrorClass ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            "quality_below_requested" => true,
-            "catalog_quality_below_requested" => true,
-            "same_engine_blocked" => true,
-            "unresolved" => true,
-            "unsupported" => true,
-            "unavailable" => true,
-            "not_configured" => true,
-            "authentication_required" => true,
-            "download_failed" => true,
-            _ => string.Equals(attempt.Status, "rejected", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(attempt.Status, "failed", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(attempt.Status, "skipped", StringComparison.OrdinalIgnoreCase)
-        };
-    }
+        => FallbackFailureClassifier.IsTerminal(attempt);
 
     private async Task<bool> TryAdvanceToStepAsync(
         FallbackAdvanceRequest request,
