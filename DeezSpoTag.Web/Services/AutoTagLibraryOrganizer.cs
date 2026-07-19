@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using DeezSpoTag.Core.Models;
@@ -356,6 +357,12 @@ public class AutoTagLibraryOrganizer
         string Key,
         bool HasAudio);
 
+    private sealed record FolderIdentityContext(
+        string? Artist,
+        string? Album,
+        bool IsVariousArtistsSource,
+        bool HasLibraryArtistAlbum);
+
     private static Dictionary<string, SourceDirectoryPolicy> BuildSourceDirectoryPolicies(
         string rootPath,
         IReadOnlyCollection<string> filePaths,
@@ -629,6 +636,13 @@ public class AutoTagLibraryOrganizer
                     "organizer skipped missing core tags");
             }
 
+            ApplyFolderIdentityGuards(
+                missingTagTrack,
+                context.FullPath,
+                context.RootPath,
+                context.UsePrimaryArtistFolders,
+                context.Settings.Tags?.MultiArtistSeparator,
+                context.Log);
             return BuildMovePlanItemFromTrack(missingTagTrack, missingTagDownloadType, context);
         }
 
@@ -637,6 +651,13 @@ public class AutoTagLibraryOrganizer
             context.FullPath,
             context.UsePrimaryArtistFolders,
             context.Settings.Tags?.MultiArtistSeparator);
+        ApplyFolderIdentityGuards(
+            track,
+            context.FullPath,
+            context.RootPath,
+            context.UsePrimaryArtistFolders,
+            context.Settings.Tags?.MultiArtistSeparator,
+            context.Log);
         var downloadType = string.IsNullOrWhiteSpace(tag.Album) ? DownloadTypeTrack : DownloadTypeAlbum;
         return BuildMovePlanItemFromTrack(track, downloadType, context);
     }
@@ -801,6 +822,13 @@ public class AutoTagLibraryOrganizer
         context.Log?.Invoke(usedShazam
             ? $"organizer inferred core tags from Shazam for unreadable metadata file: {context.FullPath}"
             : $"organizer inferred core tags from path for unreadable metadata file: {context.FullPath}");
+        ApplyFolderIdentityGuards(
+            track,
+            context.FullPath,
+            context.RootPath,
+            context.UsePrimaryArtistFolders,
+            context.Settings.Tags?.MultiArtistSeparator,
+            context.Log);
         return BuildMovePlanItemFromTrack(track, downloadType, context);
     }
 
@@ -1904,9 +1932,10 @@ public class AutoTagLibraryOrganizer
         bool usePrimaryArtistFolders,
         string? multiArtistSeparator)
     {
-        var title = string.IsNullOrWhiteSpace(tag.Title)
+        var rawTitle = string.IsNullOrWhiteSpace(tag.Title)
             ? Path.GetFileNameWithoutExtension(fullPath)
             : tag.Title.Trim();
+        var (parsedTrackNumber, parsedTitle) = ExtractTrackNumberAndTitle(rawTitle);
         var albumTitle = string.IsNullOrWhiteSpace(tag.Album) ? "Unknown Album" : tag.Album.Trim();
 
         var albumArtists = (tag.AlbumArtists ?? Array.Empty<string>())
@@ -1925,6 +1954,7 @@ public class AutoTagLibraryOrganizer
             expandedArtists.Add("Unknown Artist");
         }
 
+        var title = CleanTemplateTitle(parsedTitle, expandedArtists);
         var primaryArtistName = expandedArtists[0];
         var keepBothArtistName = string.Join(GetArtistSeparator(multiArtistSeparator), expandedArtists);
         var mainArtistName = usePrimaryArtistFolders ? primaryArtistName : keepBothArtistName;
@@ -1934,7 +1964,7 @@ public class AutoTagLibraryOrganizer
         {
             Title = title,
             MainArtist = mainArtist,
-            TrackNumber = (int)tag.Track,
+            TrackNumber = tag.Track > 0 ? (int)tag.Track : parsedTrackNumber,
             DiscNumber = (int)tag.Disc,
             DiskNumber = (int)tag.Disc,
             Bpm = tag.BeatsPerMinute
@@ -2010,6 +2040,7 @@ public class AutoTagLibraryOrganizer
             expandedArtists.Add("Unknown Artist");
         }
 
+        title = CleanTemplateTitle(title, expandedArtists);
         var primaryArtistName = expandedArtists[0];
         var keepBothArtistName = string.Join(GetArtistSeparator(multiArtistSeparator), expandedArtists);
         var mainArtistName = usePrimaryArtistFolders ? primaryArtistName : keepBothArtistName;
@@ -2145,6 +2176,240 @@ public class AutoTagLibraryOrganizer
         }
 
         roleMap[FeaturedArtistRole] = artists.Skip(1).ToList();
+    }
+
+    private static void ApplyFolderIdentityGuards(
+        Track track,
+        string fullPath,
+        string rootPath,
+        bool usePrimaryArtistFolders,
+        string? multiArtistSeparator,
+        Action<string>? log)
+    {
+        var folderIdentity = BuildFolderIdentityContext(fullPath, rootPath);
+        if (!folderIdentity.HasLibraryArtistAlbum || folderIdentity.IsVariousArtistsSource)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderIdentity.Artist)
+            && ShouldRetainSourceArtistIdentity(track, folderIdentity.Artist))
+        {
+            var previousArtist = ResolveTrackMainArtistName(track);
+            SetTrackArtistIdentity(track, folderIdentity.Artist, usePrimaryArtistFolders, multiArtistSeparator);
+            log?.Invoke($"organizer retained source artist folder for unsafe artist move: {previousArtist} -> {folderIdentity.Artist}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(folderIdentity.Album)
+            && ShouldRetainSourceAlbumIdentity(track.Album?.Title, folderIdentity.Album))
+        {
+            var previousAlbum = track.Album?.Title;
+            track.Album ??= new Album(folderIdentity.Album);
+            track.Album.Title = folderIdentity.Album;
+            log?.Invoke($"organizer retained source album folder for unsafe album move: {previousAlbum} -> {folderIdentity.Album}");
+        }
+    }
+
+    private static FolderIdentityContext BuildFolderIdentityContext(string fullPath, string rootPath)
+    {
+        var relativeParts = GetRelativePathParts(fullPath, rootPath, out _);
+        var sourceArtist = relativeParts.Length >= 1 ? relativeParts[0].Trim() : null;
+        var sourceAlbum = relativeParts.Length >= 2 ? relativeParts[1].Trim() : null;
+        return new FolderIdentityContext(
+            string.IsNullOrWhiteSpace(sourceArtist) ? null : sourceArtist,
+            string.IsNullOrWhiteSpace(sourceAlbum) ? null : sourceAlbum,
+            relativeParts.Any(IsVariousArtists),
+            relativeParts.Length >= 2);
+    }
+
+    private static bool ShouldRetainSourceArtistIdentity(Track track, string sourceArtist)
+    {
+        if (string.IsNullOrWhiteSpace(sourceArtist))
+        {
+            return false;
+        }
+
+        var candidate = ResolveTrackMainArtistName(track);
+        if (IsWeakArtistIdentity(candidate) || IsVariousArtists(candidate))
+        {
+            return true;
+        }
+
+        return !AreCompatibleIdentityValues(candidate, sourceArtist);
+    }
+
+    private static bool ShouldRetainSourceAlbumIdentity(string? candidateAlbum, string sourceAlbum)
+    {
+        if (string.IsNullOrWhiteSpace(sourceAlbum))
+        {
+            return false;
+        }
+
+        if (IsWeakAlbumIdentity(candidateAlbum))
+        {
+            return true;
+        }
+
+        return !AreCompatibleIdentityValues(candidateAlbum, sourceAlbum);
+    }
+
+    private static string ResolveTrackMainArtistName(Track track)
+    {
+        if (track.Artist.TryGetValue(MainArtistRole, out var mainArtists)
+            && mainArtists.Count > 0
+            && !string.IsNullOrWhiteSpace(mainArtists[0]))
+        {
+            return mainArtists[0].Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.MainArtist?.Name))
+        {
+            return track.MainArtist.Name.Trim();
+        }
+
+        var firstArtist = track.Artists.FirstOrDefault(static artist => !string.IsNullOrWhiteSpace(artist));
+        return firstArtist?.Trim() ?? string.Empty;
+    }
+
+    private static void SetTrackArtistIdentity(
+        Track track,
+        string artistName,
+        bool usePrimaryArtistFolders,
+        string? multiArtistSeparator)
+    {
+        var expandedArtists = ExpandArtistNames(new[] { artistName });
+        if (expandedArtists.Count == 0)
+        {
+            expandedArtists.Add(artistName.Trim());
+        }
+
+        var primaryArtistName = expandedArtists[0];
+        var mainArtistName = usePrimaryArtistFolders
+            ? primaryArtistName
+            : string.Join(GetArtistSeparator(multiArtistSeparator), expandedArtists);
+        var mainArtist = new Artist(mainArtistName);
+
+        track.MainArtist = mainArtist;
+        track.Artists = expandedArtists.ToList();
+        track.Artist.Clear();
+        ApplyArtistRoles(track.Artist, track.Artists, usePrimaryArtistFolders, primaryArtistName);
+
+        track.Album ??= new Album(SinglesAlbumTitle);
+        track.Album.MainArtist = mainArtist;
+        track.Album.Artists = track.Artists.ToList();
+        track.Album.Artist.Clear();
+        ApplyArtistRoles(track.Album.Artist, track.Album.Artists, usePrimaryArtistFolders, primaryArtistName);
+        track.GenerateMainFeatStrings();
+    }
+
+    private static string CleanTemplateTitle(string title, IReadOnlyList<string> artists)
+    {
+        var working = ExtractTrackNumberAndTitle(title).Title.Trim();
+        var safety = 0;
+        while (safety++ < 8)
+        {
+            var before = working;
+            foreach (var artist in artists.Where(static value => !string.IsNullOrWhiteSpace(value)))
+            {
+                working = RemoveLeadingArtistPrefix(working, artist);
+            }
+
+            working = ExtractTrackNumberAndTitle(working).Title.Trim();
+            if (string.Equals(before, working, StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(working) ? title.Trim() : working;
+    }
+
+    private static string RemoveLeadingArtistPrefix(string value, string artist)
+    {
+        var working = value.Trim();
+        var normalizedArtist = NormalizeIdentityValue(artist);
+        if (string.IsNullOrWhiteSpace(normalizedArtist))
+        {
+            return working;
+        }
+
+        var separators = new[] { " - ", " – ", " — ", "_", "-", ":" };
+        foreach (var separator in separators)
+        {
+            if (working.Length <= artist.Length + separator.Length)
+            {
+                continue;
+            }
+
+            var prefix = working[..Math.Min(artist.Length, working.Length)];
+            if (!string.Equals(NormalizeIdentityValue(prefix), normalizedArtist, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var remaining = working[artist.Length..];
+            if (!remaining.StartsWith(separator, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return remaining[separator.Length..].Trim();
+        }
+
+        return working;
+    }
+
+    private static bool IsWeakArtistIdentity(string? value)
+    {
+        var normalized = NormalizeIdentityValue(value);
+        return string.IsNullOrWhiteSpace(normalized)
+            || normalized is "unknownartist" or "unknownalbumartist" or "unknown" or "variousartists";
+    }
+
+    private static bool IsWeakAlbumIdentity(string? value)
+    {
+        var normalized = NormalizeIdentityValue(value);
+        return string.IsNullOrWhiteSpace(normalized)
+            || normalized is "unknownalbum" or "unknown";
+    }
+
+    private static bool AreCompatibleIdentityValues(string? candidate, string? source)
+    {
+        var normalizedCandidate = NormalizeIdentityValue(candidate);
+        var normalizedSource = NormalizeIdentityValue(source);
+        if (string.IsNullOrWhiteSpace(normalizedCandidate) || string.IsNullOrWhiteSpace(normalizedSource))
+        {
+            return false;
+        }
+
+        return string.Equals(normalizedCandidate, normalizedSource, StringComparison.Ordinal)
+            || (normalizedSource.Length >= 6 && normalizedCandidate.Contains(normalizedSource, StringComparison.Ordinal))
+            || (normalizedCandidate.Length >= 6 && normalizedSource.Contains(normalizedCandidate, StringComparison.Ordinal));
+    }
+
+    private static string NormalizeIdentityValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var decomposed = value.Trim().Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(decomposed.Length);
+        foreach (var ch in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return builder.ToString();
     }
 
     private static List<string> ResolveExpandedRecognitionArtists(ShazamRecognitionInfo recognition)
