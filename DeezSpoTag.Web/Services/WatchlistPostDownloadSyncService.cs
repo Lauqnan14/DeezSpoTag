@@ -16,12 +16,10 @@ public sealed record WatchlistPostDownloadSyncHealth(
     int ConsecutiveFailures,
     string? LastError);
 
-public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatchlistPostDownloadSyncNotifier
+public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
-    private readonly WatchlistRunSignal _wakeSignal = new();
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -56,7 +54,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         var jobs = await repository.EnqueueWatchlistAllPlaylistSyncJobsAsync(cancellationToken);
         if (jobs > 0)
         {
-            SignalWorker();
+            _coordinatorSignal.Request();
         }
     }
 
@@ -68,59 +66,48 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        SignalWorker();
+        _coordinatorSignal.Request();
         return Task.CompletedTask;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public async Task ProcessDueJobsAsync(
+        CancellationToken cancellationToken,
+        int finalizationLimit = 25,
+        int syncJobLimit = 5)
     {
         UpdateHealth(health => health with { IsRunning = true, LastHeartbeatUtc = DateTimeOffset.UtcNow });
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            try
+            await ProcessDueJobsCoreAsync(
+                cancellationToken,
+                Math.Clamp(finalizationLimit, 0, 100),
+                Math.Clamp(syncJobLimit, 0, 100));
+            UpdateHealth(health => health with
             {
-                UpdateHealth(health => health with { LastHeartbeatUtc = DateTimeOffset.UtcNow });
-                if (IsWatchlistEnabled())
-                {
-                    await ProcessDueJobsAsync(stoppingToken);
-                }
-
-                UpdateHealth(health => health with
-                {
-                    LastHeartbeatUtc = DateTimeOffset.UtcNow,
-                    LastCycleCompletedUtc = DateTimeOffset.UtcNow,
-                    ConsecutiveFailures = 0
-                });
-                await WaitForWakeAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogError(ex, "Watchlist target-sync worker cycle failed; the worker will remain active and retry.");
-                UpdateHealth(health => health with
-                {
-                    LastHeartbeatUtc = DateTimeOffset.UtcNow,
-                    LastCycleCompletedUtc = DateTimeOffset.UtcNow,
-                    ConsecutiveFailures = health.ConsecutiveFailures + 1,
-                    LastError = ex.Message,
-                    IsProcessing = false,
-                    CurrentJobId = null,
-                    CurrentTarget = null
-                });
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
-            }
+                LastHeartbeatUtc = DateTimeOffset.UtcNow,
+                LastCycleCompletedUtc = DateTimeOffset.UtcNow,
+                ConsecutiveFailures = 0,
+                LastError = null
+            });
         }
-        UpdateHealth(health => health with { IsRunning = false, IsProcessing = false, LastHeartbeatUtc = DateTimeOffset.UtcNow });
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Watchlist coordinator target-sync function failed; the next coordinator cycle will retry.");
+            UpdateHealth(health => health with
+            {
+                LastHeartbeatUtc = DateTimeOffset.UtcNow,
+                LastCycleCompletedUtc = DateTimeOffset.UtcNow,
+                ConsecutiveFailures = health.ConsecutiveFailures + 1,
+                LastError = ex.Message,
+                IsProcessing = false,
+                CurrentJobId = null,
+                CurrentTarget = null
+            });
+        }
     }
 
     public WatchlistPostDownloadSyncHealth GetRuntimeHealth()
@@ -139,12 +126,15 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
     }
 
-    private async Task ProcessDueJobsAsync(CancellationToken cancellationToken)
+    private async Task ProcessDueJobsCoreAsync(
+        CancellationToken cancellationToken,
+        int finalizationLimit,
+        int syncJobLimit)
     {
         await RepairMissingFinalizationOutboxAsync(cancellationToken);
-        await ProcessFinalizationOutboxAsync(cancellationToken);
+        await ProcessFinalizationOutboxAsync(finalizationLimit, cancellationToken);
         await RepairIncompleteJobsIfNeededAsync(cancellationToken);
-        for (var processed = 0; processed < 100 && IsWatchlistEnabled(); processed++)
+        for (var processed = 0; processed < syncJobLimit && IsWatchlistEnabled(); processed++)
         {
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
@@ -178,9 +168,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
     }
 
-    private async Task ProcessFinalizationOutboxAsync(CancellationToken cancellationToken)
+    private async Task ProcessFinalizationOutboxAsync(int limit, CancellationToken cancellationToken)
     {
-        for (var processed = 0; processed < 100; processed++)
+        for (var processed = 0; processed < limit; processed++)
         {
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
@@ -481,12 +471,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             UpdateHealth(health => health with { LastHeartbeatUtc = DateTimeOffset.UtcNow });
         }
     }
-
-    private void SignalWorker()
-        => _wakeSignal.Request();
-
-    private Task WaitForWakeAsync(CancellationToken cancellationToken)
-        => _wakeSignal.WaitAsync(PollInterval, cancellationToken);
 
     private async Task<SyncAttemptOutcome> TrySyncOnceAsync(SyncRequest request, int attempt, CancellationToken cancellationToken)
     {

@@ -18,8 +18,7 @@ public enum WatchQueueStopReason
 public enum PlaylistReconciliationMode
 {
     SyncAndQueue,
-    SyncOnly,
-    QueueMissingOnly
+    SyncOnly
 }
 
 public readonly record struct WatchlistQueueAdmissionDecision(

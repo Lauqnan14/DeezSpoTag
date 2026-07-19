@@ -345,6 +345,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
 
+        if (scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetSyncWorker)
+        {
+            await targetSyncWorker.ProcessDueJobsAsync(
+                stoppingToken,
+                finalizationLimit: 25,
+                syncJobLimit: 0);
+        }
+
         var playlistReconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
         var recoveredClaims = await playlistReconciler.RecoverInvalidPendingWatchClaimsAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { LastRecoveredClaimCount = recoveredClaims });
@@ -368,6 +376,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     queueAdmission,
                     reconciliationRequests,
                     stoppingToken);
+                if (scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
+                {
+                    await targetWorker.ProcessDueJobsAsync(
+                        stoppingToken,
+                        finalizationLimit: 5,
+                        syncJobLimit: 5);
+                }
             }
             finally
             {
@@ -470,20 +485,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         CleanupStaleState(allItems);
         await SeedPersistedLastRunsAsync(allItems, repository, stoppingToken);
-        var playlistSyncResult = await ProcessPlaylistWatchItemsAsync(
-            playlistItems,
-            settings,
-            repository,
-            serviceProvider,
-            queueAdmission: null,
-            requestedPlaylistKeys: new HashSet<string>(StringComparer.Ordinal),
-            PlaylistReconciliationMode.SyncOnly,
-            stoppingToken);
-        if (playlistSyncResult.AbortedRun)
-        {
-            return;
-        }
-
         var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         var orchestrationService = serviceProvider.GetService<DownloadOrchestrationService>();
         var queueGate = orchestrationService is null
@@ -495,7 +496,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         if (!queueGate.Allowed)
         {
             UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
-            _logger.LogInformation("Watchlist queue phase deferred after playlist sync: {Reason}", queueGate.Message);
+            _logger.LogInformation("Watchlist reconciliation and queue phase deferred: {Reason}", queueGate.Message);
             await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
                 reconciliationRequests,
                 _reconciliationLeaseOwner,
@@ -512,7 +513,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             serviceProvider,
             queueAdmission,
             requestedPlaylistKeys,
-            PlaylistReconciliationMode.QueueMissingOnly,
+            PlaylistReconciliationMode.SyncAndQueue,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
@@ -692,7 +693,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return new PlaylistRunResult(AbortedRun: false, new HashSet<string>(StringComparer.Ordinal));
         }
 
-        var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
         var targetedItems = mode == PlaylistReconciliationMode.SyncAndQueue
             ? playlistItems
                 .Where(item => requestedPlaylistKeys.Contains(item.Key))
@@ -700,18 +700,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             : new List<WatchItem>();
         var targetedRun = targetedItems.Count > 0;
         var scheduledItems = targetedRun ? targetedItems : playlistItems;
-        var activeItem = (mode == PlaylistReconciliationMode.SyncOnly
-            || mode == PlaylistReconciliationMode.QueueMissingOnly)
-            ? scheduledItems[0]
-            : targetedRun
-                ? scheduledItems[0]
-                : ResolveInitialPlaylistItem(scheduledItems, schedulerState, settings);
-        if (activeItem == null)
+        if (scheduledItems.Count == 0)
         {
             return new PlaylistRunResult(AbortedRun: false, new HashSet<string>(StringComparer.Ordinal));
         }
 
-        var visited = new HashSet<string>(StringComparer.Ordinal);
         var processedKeys = new HashSet<string>(StringComparer.Ordinal);
         var processed = 0;
         var succeeded = 0;
@@ -719,14 +712,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var skippedByBackoff = 0;
         var skippedByDelayWindow = 0;
         var skippedByLockBusy = 0;
-        while (activeItem != null)
+        foreach (var activeItem in scheduledItems)
         {
             stoppingToken.ThrowIfCancellationRequested();
-            if (!visited.Add(activeItem.Key))
-            {
-                break;
-            }
-
             var sourceCircuit = await repository.GetWatchlistSourceCircuitStateAsync(
                 PlaylistWatchType,
                 activeItem.Source,
@@ -742,7 +730,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     openUntilUtc,
                     _consecutiveFailures.TryGetValue(activeItem.Key, out var circuitFailures) ? circuitFailures : 0,
                     stoppingToken);
-                activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                 continue;
             }
 
@@ -759,7 +746,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                         _consecutiveFailures.TryGetValue(activeItem.Key, out var backoffFailures) ? backoffFailures : null,
                         stoppingToken);
                     skippedByBackoff++;
-                    activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                     continue;
                 case WatchItemEligibility.DelayWindow:
                     await PersistPlaylistSchedulerStateAsync(
@@ -771,7 +757,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                         _consecutiveFailures.TryGetValue(activeItem.Key, out var pendingFailures) ? pendingFailures : 0,
                         stoppingToken);
                     skippedByDelayWindow++;
-                    activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                     continue;
             }
 
@@ -779,7 +764,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             if (execution.Outcome == WatchItemRunOutcome.LockBusy)
             {
                 skippedByLockBusy++;
-                activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                 continue;
             }
             processed++;
@@ -793,9 +777,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 failed++;
             }
 
-            var remainingBudget = mode == PlaylistReconciliationMode.QueueMissingOnly
-                ? queueAdmission?.GetRemaining() ?? int.MaxValue
-                : int.MaxValue;
+            var remainingBudget = queueAdmission?.GetRemaining() ?? int.MaxValue;
             var playlistResult = execution.PlaylistResult;
             var queuedThisAttempt = playlistResult?.QueuedTracks ?? 0;
             if (playlistResult is { SystemicFailures: > 0 } systemicFailureResult)
@@ -814,7 +796,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     lastProgressUtc: DateTimeOffset.UtcNow,
                     zeroQueueStreak: 0,
                     stoppingToken);
-                activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                 continue;
             }
 
@@ -834,23 +815,24 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     lastProgressUtc: DateTimeOffset.UtcNow,
                     zeroQueueStreak: 0,
                     stoppingToken);
-                activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                 continue;
             }
 
             var decision = ResolvePlaylistAdvanceDecision(playlistResult, remainingBudget);
             var queueProgressed = queuedThisAttempt > 0;
             var zeroQueueStreak = 0;
+            DateTimeOffset? lastProgressUtc = null;
             if (!queueProgressed)
             {
-                schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
+                var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
                 zeroQueueStreak = (schedulerState?.ZeroQueueStreak ?? 0) + 1;
+                lastProgressUtc = schedulerState?.LastProgressUtc;
                 await SaveSchedulerStateAsync(
                     repository,
                     activeSource: null,
                     activeSourceId: null,
                     activeStartedUtc: null,
-                    lastProgressUtc: schedulerState?.LastProgressUtc,
+                    lastProgressUtc,
                     zeroQueueStreak,
                     stoppingToken);
             }
@@ -860,7 +842,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 activeSource: null,
                 activeSourceId: null,
                 activeStartedUtc: null,
-                queueProgressed ? DateTimeOffset.UtcNow : schedulerState?.LastProgressUtc,
+                queueProgressed ? DateTimeOffset.UtcNow : lastProgressUtc,
                 zeroQueueStreak: queueProgressed ? 0 : zeroQueueStreak,
                 stoppingToken);
             await repository.UpsertWatchlistSourceCircuitStateAsync(
@@ -876,11 +858,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
             if (decision == PlaylistAdvanceDecision.StopRunClearActive)
             {
-                _ = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
                 break;
             }
-
-            activeItem = await AdvanceToNextPlaylistAsync(scheduledItems, repository, activeItem, stoppingToken);
         }
 
         var elapsedMs = (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds;
@@ -1307,131 +1286,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             item.Playlist.SourceId,
             cancellationToken);
         return state?.LastCheckedUtc;
-    }
-
-    private static WatchItem? ResolveInitialPlaylistItem(
-        IReadOnlyList<WatchItem> playlistItems,
-        WatchlistSchedulerStateDto? state,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
-    {
-        if (playlistItems.Count == 0)
-        {
-            return null;
-        }
-
-        if (state != null && IsRecentExplicitPlaylistFocus(state, settings))
-        {
-            return ResolvePlaylistItemFromState(playlistItems, state) ?? ResolveNextPlaylistItem(playlistItems);
-        }
-
-        return ResolveNextPlaylistItem(playlistItems);
-    }
-
-    private static bool IsRecentExplicitPlaylistFocus(
-        WatchlistSchedulerStateDto? state,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
-    {
-        if (state == null
-            || string.IsNullOrWhiteSpace(state.ActiveSource)
-            || string.IsNullOrWhiteSpace(state.ActiveSourceId))
-        {
-            return false;
-        }
-
-        if (state.LastProgressUtc.HasValue || !state.ActiveStartedUtc.HasValue)
-        {
-            return false;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var focusWindow = TimeSpan.FromSeconds(Math.Max(30, Math.Min(300, settings.WatchPollIntervalSeconds)));
-        return now - state.ActiveStartedUtc.Value <= focusWindow;
-    }
-
-    private static WatchItem? ResolvePlaylistItemFromState(
-        IReadOnlyList<WatchItem> playlistItems,
-        WatchlistSchedulerStateDto state)
-    {
-        return playlistItems.FirstOrDefault(item =>
-            item.Kind == PlaylistKind
-            && string.Equals(item.Source, NormalizeSource(state.ActiveSource), StringComparison.OrdinalIgnoreCase)
-            && string.Equals(item.Playlist?.SourceId, state.ActiveSourceId, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static WatchItem? ResolveNextPlaylistItem(IReadOnlyList<WatchItem> playlistItems)
-    {
-        if (playlistItems.Count == 0)
-        {
-            return null;
-        }
-
-        return playlistItems.FirstOrDefault(item => item.Kind == PlaylistKind && item.Playlist != null);
-    }
-
-    private static async Task<WatchItem?> AdvanceToNextPlaylistAsync(
-        IReadOnlyList<WatchItem> playlistItems,
-        LibraryRepository repository,
-        WatchItem? currentItem,
-        CancellationToken stoppingToken)
-    {
-        var nextItem = ResolveNextPlaylistItemAfter(playlistItems, currentItem) ?? ResolveNextPlaylistItem(playlistItems);
-        if (nextItem == null)
-        {
-            await SaveSchedulerStateAsync(
-                repository,
-                activeSource: null,
-                activeSourceId: null,
-                activeStartedUtc: null,
-                lastProgressUtc: DateTimeOffset.UtcNow,
-                zeroQueueStreak: 0,
-                stoppingToken);
-            return null;
-        }
-
-        await SaveSchedulerStateAsync(
-            repository,
-            nextItem.Source,
-            nextItem.Playlist?.SourceId,
-            activeStartedUtc: DateTimeOffset.UtcNow,
-            lastProgressUtc: DateTimeOffset.UtcNow,
-            zeroQueueStreak: 0,
-            stoppingToken);
-        return nextItem;
-    }
-
-    private static WatchItem? ResolveNextPlaylistItemAfter(IReadOnlyList<WatchItem> playlistItems, WatchItem? currentItem)
-    {
-        if (playlistItems.Count == 0 || currentItem == null)
-        {
-            return null;
-        }
-
-        var currentIndex = -1;
-        for (var index = 0; index < playlistItems.Count; index++)
-        {
-            if (string.Equals(playlistItems[index].Key, currentItem.Key, StringComparison.Ordinal))
-            {
-                currentIndex = index;
-                break;
-            }
-        }
-
-        if (currentIndex < 0)
-        {
-            return null;
-        }
-
-        for (var offset = 1; offset <= playlistItems.Count; offset++)
-        {
-            var index = (currentIndex + offset) % playlistItems.Count;
-            var candidate = playlistItems[index];
-            if (candidate.Kind == PlaylistKind && candidate.Playlist != null)
-            {
-                return candidate;
-            }
-        }
-
-        return null;
     }
 
     private static async Task SaveSchedulerStateAsync(

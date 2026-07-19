@@ -1603,10 +1603,6 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Playlist and artist watch polling after HTTP readiness.");
-        AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Watchlist playlist sync after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerSoundtrackCacheRepository>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerImageCacheService>();

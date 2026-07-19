@@ -84,6 +84,10 @@ public sealed record PlaylistReconciliationResult(
 [SuppressMessage("Major Code Smell", "S1192", Justification = "Watch state/status literals are shared with persisted runtime values and external diagnostics.")]
 internal sealed class WatchlistEngine
 {
+    private const string NoTargetServerSelectedMessage = "No target server selected.";
+    private const string PlaylistSyncDisabledDownloadMonitoringMessage =
+        "Playlist sync disabled; continuing with download monitoring.";
+
     private sealed record QueueWatchRuleSet(
         IReadOnlyList<PlaylistTrackRoutingRule>? RoutingRules,
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules);
@@ -479,7 +483,7 @@ internal sealed class WatchlistEngine
                 WatchlistHistoryStatus.SourceUpdated,
                 cancellationToken);
         }
-        var shouldSyncTargets = mode != PlaylistReconciliationMode.QueueMissingOnly;
+        const bool shouldSyncTargets = true;
         var shouldQueueMissing = mode != PlaylistReconciliationMode.SyncOnly;
 
         if (shouldQueueMissing && !HasDownloadDestination(preference))
@@ -601,16 +605,20 @@ internal sealed class WatchlistEngine
             ProviderReadinessRevision = providerReadinessRevision
         });
 
+        var hasConfiguredPlaylistSyncTargets = HasConfiguredPlaylistSyncTargets(preference);
         PlaylistSyncResult? syncResult = null;
-        if (shouldSyncTargets)
+        if (shouldSyncTargets && hasConfiguredPlaylistSyncTargets)
         {
-            syncResult = await TrySyncAvailablePlaylistTracksAsync(
-                currentPlaylist,
-                preference,
-                candidates,
-                forceMediaServerSync,
-                cancellationToken);
-            if (syncResult is { Success: false } || (syncResult is null && HasConfiguredPlaylistSyncTargets(preference)))
+            if (forceMediaServerSync)
+            {
+                syncResult = await TrySyncAvailablePlaylistTracksAsync(
+                    currentPlaylist,
+                    preference,
+                    candidates,
+                    forceMediaServerSync,
+                    cancellationToken);
+            }
+            else
             {
                 var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
                     source,
@@ -635,11 +643,16 @@ internal sealed class WatchlistEngine
 
         if (!shouldQueueMissing)
         {
-            var syncSucceeded = syncResult is null || syncResult.Success;
+            var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;
+            var syncSucceeded = !forcedSyncWithoutTargets
+                && (!hasConfiguredPlaylistSyncTargets || syncResult is null || syncResult.Success);
             var syncMessage = syncResult?.Message
-                ?? (HasConfiguredPlaylistSyncTargets(preference)
-                    ? "Playlist sync targets did not return a result."
-                    : "No playlist sync targets configured.");
+                ?? (forcedSyncWithoutTargets
+                    ? NoTargetServerSelectedMessage
+                    : null)
+                ?? (hasConfiguredPlaylistSyncTargets
+                    ? "Playlist target sync scheduled; continuing with download monitoring."
+                    : PlaylistSyncDisabledDownloadMonitoringMessage);
             await UpdatePlaylistStateAsync(
                 source,
                 sourceId,
@@ -650,7 +663,7 @@ internal sealed class WatchlistEngine
                 nextAttemptUtc: null,
                 consecutiveFailures: syncSucceeded ? 0 : null,
                 cancellationToken);
-            if (syncSucceeded && HasConfiguredPlaylistSyncTargets(preference))
+            if (syncSucceeded && hasConfiguredPlaylistSyncTargets)
             {
                 await AddPlaylistWatchHistoryStageAsync(
                     source,
@@ -843,11 +856,6 @@ internal sealed class WatchlistEngine
         bool forceMediaServerSync,
         CancellationToken cancellationToken)
     {
-        if (!HasConfiguredPlaylistSyncTargets(preference))
-        {
-            return null;
-        }
-
         var syncService = _serviceProvider.GetService<PlaylistSyncService>();
         if (syncService == null)
         {

@@ -223,7 +223,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains(
             logger.Entries,
             entry => entry.Message.Contains(
-                "Watchlist queue phase deferred after playlist sync",
+                "Watchlist reconciliation and queue phase deferred",
                 StringComparison.Ordinal));
     }
 
@@ -358,7 +358,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RunOnce_Restart_PreservesActivePlaylistCursor()
+    public async Task RunOnce_Restart_DoesNotPreserveActivePlaylistCursor()
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-cursor-1", new PlaylistWatchlistMetadataInput("Cursor One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-cursor-2", new PlaylistWatchlistMetadataInput("Cursor Two", null, null, null));
@@ -368,12 +368,12 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var firstHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(firstHosted);
         var schedulerBefore = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
-        Assert.NotNull(schedulerBefore?.ActiveSourceId);
+        Assert.Null(schedulerBefore?.ActiveSourceId);
 
         var restartedHosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
         await InvokeRunOnceAsync(restartedHosted);
         var schedulerAfter = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
-        Assert.Equal(schedulerBefore!.ActiveSourceId, schedulerAfter?.ActiveSourceId);
+        Assert.Null(schedulerAfter?.ActiveSourceId);
     }
 
     [Fact]
