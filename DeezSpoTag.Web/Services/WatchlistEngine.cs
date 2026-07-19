@@ -611,6 +611,12 @@ internal sealed class WatchlistEngine
                 .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
                 .ToList(),
             cancellationToken);
+        var syncResult = await TrySyncAvailablePlaylistTracksAsync(
+            currentPlaylist,
+            preference,
+            candidates,
+            forceMediaServerSync,
+            cancellationToken);
         var queueResult = await QueueWatchIntentTracksAsync(
             selection.MissingTracks,
             preference?.DestinationFolderId,
@@ -638,23 +644,26 @@ internal sealed class WatchlistEngine
             cancellationToken);
         await AddPlaylistWatchHistoryAsync(source, sourceId, currentPlaylist.Name, queueResult, cancellationToken);
 
-        var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
-            source,
-            sourceId,
-            cancellationToken);
-        if (targetJobs.Count > 0)
+        if (syncResult is { Success: false } || (syncResult is null && HasConfiguredPlaylistSyncTargets(preference)))
         {
-            if (_serviceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
-            {
-                await targetWorker.ResumePendingJobsAsync(cancellationToken);
-            }
-            await AddPlaylistWatchHistoryStageAsync(
+            var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
                 source,
                 sourceId,
-                currentPlaylist.Name,
-                candidates.Count,
-                WatchlistHistoryStatus.MediaSyncWaiting,
                 cancellationToken);
+            if (targetJobs.Count > 0)
+            {
+                if (_serviceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
+                {
+                    await targetWorker.ResumePendingJobsAsync(cancellationToken);
+                }
+                await AddPlaylistWatchHistoryStageAsync(
+                    source,
+                    sourceId,
+                    currentPlaylist.Name,
+                    candidates.Count,
+                    WatchlistHistoryStatus.MediaSyncWaiting,
+                    cancellationToken);
+            }
         }
 
         if (queueResult.QueuedCount > 0)
@@ -677,9 +686,9 @@ internal sealed class WatchlistEngine
                 liveTrackCount,
                 selection.IgnoredCount,
                 selection.LocalCount,
-                selection.UnavailableCount + queueResult.UnavailableCount,
-                queueResult.QueuedCount,
-                queueResult.CompletedCount,
+            selection.UnavailableCount + queueResult.UnavailableCount,
+            queueResult.QueuedCount,
+            queueResult.CompletedCount,
                 queueResult.FailedCount,
                 queueResult.Deferred);
         }
@@ -713,7 +722,7 @@ internal sealed class WatchlistEngine
             queueResult.QueuedCount,
             queueResult.CompletedCount,
             queueResult.FailedCount,
-            null,
+            syncResult,
             Deferred: queueResult.Deferred,
             AttemptedTracks: queueResult.AttemptedCount,
             SystemicFailures: queueResult.SystemicFailureCount,
@@ -774,6 +783,60 @@ internal sealed class WatchlistEngine
                 rule.ConditionField,
                 rule.ConditionOperator,
                 rule.ConditionValue)));
+    }
+
+    private async Task<PlaylistSyncResult?> TrySyncAvailablePlaylistTracksAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        bool forceMediaServerSync,
+        CancellationToken cancellationToken)
+    {
+        if (!HasConfiguredPlaylistSyncTargets(preference))
+        {
+            return null;
+        }
+
+        var syncService = _serviceProvider.GetService<PlaylistSyncService>();
+        if (syncService == null)
+        {
+            return PlaylistSyncResult.Failed("Playlist sync service is not available.");
+        }
+
+        try
+        {
+            return await syncService.SyncAvailablePlaylistTracksAsync(
+                playlist,
+                preference,
+                candidates,
+                forceMediaServerSync,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Watchlist immediate playlist sync failed for {Source}:{SourceId}; durable sync will retry.",
+                playlist.Source,
+                playlist.SourceId);
+            return PlaylistSyncResult.Failed(ex.Message);
+        }
+    }
+
+    private static bool HasConfiguredPlaylistSyncTargets(PlaylistWatchPreferenceDto? preference)
+    {
+        var targets = preference?.SyncTargets is { Count: > 0 }
+            ? preference.SyncTargets
+            : [preference?.Service ?? string.Empty];
+        return targets.Any(static target =>
+        {
+            var normalized = (target ?? string.Empty).Trim().ToLowerInvariant();
+            return normalized is "plex" or "jellyfin" or "navidrome";
+        });
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(

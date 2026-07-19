@@ -105,14 +105,6 @@ public sealed class WatchlistFinalizationService
                 notification.Source,
                 notification.PlaylistId,
                 cancellationToken);
-            await _notifier.NotifyFinalizedAsync(
-                notification.Source,
-                notification.PlaylistId,
-                notification.TrackId,
-                item.QueueUuid,
-                notification.DestinationFolderId,
-                selected.Paths,
-                cancellationToken);
             await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 item.QueueUuid,
                 notification.Source,
@@ -125,6 +117,7 @@ public sealed class WatchlistFinalizationService
 
         if (sent > 0)
         {
+            await _notifier.RequestAllPlaylistSyncAsync(cancellationToken);
             _runSignal.Request();
         }
 

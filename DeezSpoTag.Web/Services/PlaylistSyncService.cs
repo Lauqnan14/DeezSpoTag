@@ -769,33 +769,6 @@ public sealed class PlaylistSyncService
         return partialResult;
     }
 
-    public Task<PlaylistSyncResult> SyncAvailablePlaylistTracksToTargetAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto preference,
-        string targetService,
-        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
-        bool force,
-        CancellationToken cancellationToken)
-    {
-        var normalizedTarget = NormalizeService(targetService);
-        if (normalizedTarget is not PlexService and not JellyfinService and not NavidromeService)
-        {
-            return Task.FromResult(PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage));
-        }
-
-        var targetPreference = preference with
-        {
-            Service = normalizedTarget,
-            SyncTargets = [normalizedTarget]
-        };
-        return SyncAvailablePlaylistTracksAsync(
-            playlist,
-            targetPreference,
-            trackCandidates,
-            force,
-            cancellationToken);
-    }
-
     private async Task<PlaylistSyncResult> SyncPlaylistToTargetsAsync(
         IReadOnlyList<string> services,
         PlaylistWatchlistDto playlist,

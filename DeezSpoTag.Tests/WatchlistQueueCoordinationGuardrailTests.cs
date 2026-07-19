@@ -133,7 +133,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("PlaylistReconciliationMode", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("queuePlanningAllowed", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("SyncAvailablePlaylistTracksToTargetAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]

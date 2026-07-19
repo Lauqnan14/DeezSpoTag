@@ -596,15 +596,12 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             "spotify",
             "pl-123",
             new List<PlaylistWatchIgnoreInsert> { new("dz-song-orphan-check", null) });
-        var targetJobs = await _repository.EnqueueWatchlistSyncJobAsync(
+        var targetJobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
-            "pl-123",
-            "dz-song-orphan-check",
-            destinationFolderId: null,
-            finalFilePaths: null);
-        Assert.Equal(
-            new[] { "jellyfin", "plex" },
-            targetJobs.Select(job => job.TargetService).OrderBy(value => value).ToArray());
+            "pl-123");
+        var targetJob = Assert.Single(targetJobs);
+        Assert.Equal("all", targetJob.TargetService);
+        Assert.Equal("playlist", targetJob.TrackId);
 
         var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync(" Spotify ", " pl-123 ");
         Assert.True(removedWatchlist);

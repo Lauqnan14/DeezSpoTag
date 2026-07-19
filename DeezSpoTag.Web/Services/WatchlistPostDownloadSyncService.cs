@@ -18,7 +18,6 @@ public sealed record WatchlistPostDownloadSyncHealth(
 
 public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatchlistPostDownloadSyncNotifier
 {
-    private const string PlaylistRefreshTrackId = "__playlist_refresh__";
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
@@ -45,34 +44,17 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         _logger = logger;
     }
 
-    public async ValueTask NotifyFinalizedAsync(
-        string source,
-        string playlistId,
-        string trackId,
-        string queueUuid,
-        long? destinationFolderId,
-        IReadOnlyList<string>? finalFilePaths = null,
-        CancellationToken cancellationToken = default)
+    public async ValueTask RequestAllPlaylistSyncAsync(CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(source)
-            || string.IsNullOrWhiteSpace(playlistId)
-            || string.IsNullOrWhiteSpace(trackId))
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        if (!repository.IsConfigured)
         {
             return;
         }
 
-        using var scope = _serviceProvider.CreateScope();
-        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-        var paths = NormalizeChangedFilePaths(finalFilePaths);
-        var jobs = await repository.EnqueueWatchlistSyncJobAsync(
-            source,
-            playlistId,
-            trackId,
-            destinationFolderId,
-            paths,
-            queueUuid,
-            cancellationToken);
-        if (jobs.Count > 0)
+        var jobs = await repository.EnqueueWatchlistAllPlaylistSyncJobsAsync(cancellationToken);
+        if (jobs > 0)
         {
             SignalWorker();
         }
@@ -423,8 +405,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 job.PlaylistId,
                 job.TrackId,
                 job.TargetService,
-                job.DestinationFolderId,
-                job.FinalFilePaths,
                 job.AttemptCount);
             var outcome = await TrySyncOnceAsync(request, job.AttemptCount + 1, cancellationToken);
             switch (outcome.Kind)
@@ -441,13 +421,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                     return;
                 case SyncAttemptOutcomeKind.Obsolete:
                     await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken);
-                    return;
-                case SyncAttemptOutcomeKind.RepairRequired:
-                    await repository.MarkWatchlistSyncJobRepairRequiredAsync(
-                        job.Id,
-                        _leaseOwner,
-                        outcome.Message,
-                        cancellationToken);
                     return;
                 case SyncAttemptOutcomeKind.Blocked:
                     await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
@@ -537,18 +510,15 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
-            if (preference == null || !IsConfiguredTarget(preference, request.TargetService))
+            if (preference == null || !HasConfiguredTargets(preference))
             {
                 _logger.LogInformation(
-                    "Completing obsolete Watchlist sync job {JobId}; target {TargetService} is no longer configured for {Source}:{PlaylistId}.",
+                    "Completing obsolete Watchlist sync job {JobId}; no target server is configured for {Source}:{PlaylistId}.",
                     request.JobId,
-                    request.TargetService,
                     request.Source,
                     request.PlaylistId);
-                return SyncAttemptOutcome.Obsolete("The synchronization target is no longer configured.");
+                return SyncAttemptOutcome.Obsolete("No target server selected.");
             }
-            var effectiveRequest = ResolveEffectiveRequest(request, preference);
-            var isPlaylistRefresh = string.Equals(request.TrackId, PlaylistRefreshTrackId, StringComparison.Ordinal);
 
             if (await repository.HasWatchlistReconciliationRequestAsync(
                     "playlist",
@@ -575,46 +545,17 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 _coordinatorSignal.Request();
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
-            if (!isPlaylistRefresh && !candidates.Any(candidate => string.Equals(
-                    candidate.TrackSourceId,
-                    request.TrackId,
-                    StringComparison.OrdinalIgnoreCase)))
-            {
-                return SyncAttemptOutcome.Obsolete("The track is no longer present in the monitored source playlist.");
-            }
 
-            if (!isPlaylistRefresh
-                && effectiveRequest.DestinationFolderId.HasValue
-                && effectiveRequest.ChangedFilePaths.Count == 0)
-            {
-                var repairService = scope.ServiceProvider.GetService<WatchlistFinalizationService>();
-                var repaired = repairService == null
-                    ? 0
-                    : await repairService.RepairPlaylistAsync(playlist, cancellationToken);
-                return repaired > 0
-                    ? SyncAttemptOutcome.Completed("Finalization repair recreated the target synchronization job.")
-                    : SyncAttemptOutcome.RepairRequired("Finalized download has no recoverable destination file paths.");
-            }
-
-            if (!isPlaylistRefresh
-                && !await VerifyLocalLibraryIngestionAsync(scope.ServiceProvider, effectiveRequest, cancellationToken))
-            {
-                return SyncAttemptOutcome.Retry("Finalized files are not visible in the local library yet.");
-            }
-
-            await RefreshMediaServerAsync(scope.ServiceProvider, request.TargetService, cancellationToken);
+            await RefreshConfiguredMediaServersAsync(scope.ServiceProvider, preference, cancellationToken);
             var syncResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
-                .SyncAvailablePlaylistTracksToTargetAsync(
+                .SyncAvailablePlaylistTracksAsync(
                 playlist,
                 preference,
-                request.TargetService,
                 candidates,
                 force: false,
                 cancellationToken);
 
-            if ((isPlaylistRefresh && syncResult.Success)
-                || (!isPlaylistRefresh
-                    && await IsFinalizedTrackSyncedAsync(repository, playlist, request.TrackId, request.TargetService, cancellationToken)))
+            if (syncResult.Success)
             {
                 await TransitionPlaylistStateAsync(
                     scope.ServiceProvider,
@@ -656,11 +597,10 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         {
             _logger.LogWarning(
                 ex,
-                "Watchlist playlist sync attempt {Attempt} failed for {Source}:{PlaylistId} after finalized track {TrackId}.",
+                "Watchlist playlist sync attempt {Attempt} failed for {Source}:{PlaylistId}.",
                 attempt,
                 request.Source,
-                request.PlaylistId,
-                request.TrackId);
+                request.PlaylistId);
             return SyncAttemptOutcome.Retry(ex.Message);
         }
     }
@@ -679,25 +619,12 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<bool> IsFinalizedTrackSyncedAsync(
-        LibraryRepository repository,
-        PlaylistWatchlistDto playlist,
-        string trackId,
-        string targetService,
-        CancellationToken cancellationToken)
-        => await repository.IsPlaylistWatchTrackSyncedToTargetAsync(
-            playlist.Source,
-            playlist.SourceId,
-            trackId,
-            targetService,
-            cancellationToken);
-
-    private static bool IsConfiguredTarget(PlaylistWatchPreferenceDto preference, string targetService)
+    private static bool HasConfiguredTargets(PlaylistWatchPreferenceDto preference)
     {
         var targets = preference.SyncTargets is { Count: > 0 }
             ? preference.SyncTargets
             : [preference.Service ?? string.Empty];
-        return targets.Any(target => string.Equals(target, targetService, StringComparison.OrdinalIgnoreCase));
+        return targets.Any(target => NormalizeTargetService(target) is "plex" or "jellyfin" or "navidrome");
     }
 
     private static async Task AddPlaylistSyncHistoryAsync(
@@ -747,27 +674,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             request.PlaylistId);
     }
 
-    private SyncRequest ResolveEffectiveRequest(SyncRequest request, PlaylistWatchPreferenceDto? preference)
-    {
-        var preferenceDestinationFolderId = preference?.DestinationFolderId;
-        if (request.DestinationFolderId.HasValue || !preferenceDestinationFolderId.HasValue)
-        {
-            return request;
-        }
-
-        var destinationFolderId = preferenceDestinationFolderId.Value;
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Watchlist playlist sync resolved destination folder {DestinationFolderId} from playlist preference for {Source}:{PlaylistId}.",
-                destinationFolderId,
-                request.Source,
-                request.PlaylistId);
-        }
-
-        return request with { DestinationFolderId = destinationFolderId };
-    }
-
     private void LogSyncCompleted(SyncRequest request, int attempt, int syncedTracks)
     {
         if (!_logger.IsEnabled(LogLevel.Information))
@@ -776,10 +682,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
 
         _logger.LogInformation(
-            "Watchlist playlist sync completed for {Source}:{PlaylistId} after finalized track {TrackId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
+            "Watchlist playlist sync completed for {Source}:{PlaylistId} (attempt {Attempt}, syncedTracks={SyncedTracks}).",
             request.Source,
             request.PlaylistId,
-            request.TrackId,
             attempt,
             syncedTracks);
     }
@@ -792,10 +697,9 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
 
         _logger.LogInformation(
-            "Watchlist playlist sync not ready for {Source}:{PlaylistId} after finalized track {TrackId} (attempt {Attempt}): {Message}",
+            "Watchlist playlist sync not ready for {Source}:{PlaylistId} (attempt {Attempt}): {Message}",
             request.Source,
             request.PlaylistId,
-            request.TrackId,
             attempt,
             message);
     }
@@ -811,64 +715,34 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task<bool> VerifyLocalLibraryIngestionAsync(
+    private static async Task RefreshConfiguredMediaServersAsync(
         IServiceProvider services,
-        SyncRequest request,
-        CancellationToken cancellationToken)
-    {
-        if (!request.DestinationFolderId.HasValue)
-        {
-            return true;
-        }
-
-        var ingestionService = services.GetService<KnownLibraryFileIngestionService>();
-        if (ingestionService == null)
-        {
-            return true;
-        }
-
-        if (request.ChangedFilePaths.Count > 0)
-        {
-            var ingestion = await ingestionService.VerifyAsync(
-                new Dictionary<long, List<string>>
-                {
-                    [request.DestinationFolderId.Value] = request.ChangedFilePaths.ToList()
-                },
-                cancellationToken);
-            return ingestion.IsComplete;
-        }
-
-        // Missing final paths are a notifier bug. The sync must be driven by real destination files.
-        var configStore = services.GetService<LibraryConfigStore>();
-        configStore?.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "warning",
-            $"Watchlist playlist direct library ingestion skipped because no final file paths were provided for {request.Source}:{request.PlaylistId}:{request.TrackId} (destinationFolderId={request.DestinationFolderId})."));
-        return false;
-    }
-
-    private static List<string> NormalizeChangedFilePaths(IReadOnlyList<string>? changedFilePaths)
-    {
-        if (changedFilePaths is null || changedFilePaths.Count == 0)
-        {
-            return new List<string>();
-        }
-
-        return changedFilePaths
-            .Where(static path => !string.IsNullOrWhiteSpace(path))
-            .Select(static path => path.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-    }
-
-    private static async Task RefreshMediaServerAsync(
-        IServiceProvider services,
-        string targetService,
+        PlaylistWatchPreferenceDto preference,
         CancellationToken cancellationToken)
     {
         var refreshService = services.GetRequiredService<MediaServerLibraryRefreshService>();
-        await refreshService.RefreshAsync(targetService, cancellationToken);
+        var targets = preference.SyncTargets is { Count: > 0 }
+            ? preference.SyncTargets
+            : [preference.Service ?? string.Empty];
+        var normalized = new List<string>();
+        foreach (var target in targets)
+        {
+            var service = NormalizeTargetService(target);
+            if (service is "plex" or "jellyfin" or "navidrome"
+                && !normalized.Contains(service, StringComparer.OrdinalIgnoreCase))
+            {
+                normalized.Add(service);
+            }
+        }
+
+        foreach (var service in normalized)
+        {
+            await refreshService.RefreshAsync(service, cancellationToken);
+        }
     }
+
+    private static string NormalizeTargetService(string? target)
+        => (target ?? string.Empty).Trim().ToLowerInvariant();
 
     private sealed record SyncRequest(
         long JobId,
@@ -876,8 +750,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         string PlaylistId,
         string TrackId,
         string TargetService,
-        long? DestinationFolderId,
-        IReadOnlyList<string> ChangedFilePaths,
         int AttemptCount);
 
     private enum SyncAttemptOutcomeKind
@@ -885,7 +757,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         Completed,
         Retry,
         Obsolete,
-        RepairRequired,
         Blocked
     }
 
@@ -894,7 +765,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         public static SyncAttemptOutcome Completed(string message) => new(SyncAttemptOutcomeKind.Completed, message);
         public static SyncAttemptOutcome Retry(string message) => new(SyncAttemptOutcomeKind.Retry, message);
         public static SyncAttemptOutcome Obsolete(string message) => new(SyncAttemptOutcomeKind.Obsolete, message);
-        public static SyncAttemptOutcome RepairRequired(string message) => new(SyncAttemptOutcomeKind.RepairRequired, message);
         public static SyncAttemptOutcome Blocked(string message) => new(SyncAttemptOutcomeKind.Blocked, message);
     }
 }

@@ -44,6 +44,7 @@ public sealed class LibraryDbService
     private const string PlayHistoryIdentityMigrationId = "play-history-event-identity-v1";
     private const string MelodayAutomaticScopeMigrationId = "meloday-automatic-library-scope-v1";
     private const string WatchlistReliabilityRepairMigrationId = "watchlist-reliability-repair-v1";
+    private const string WatchlistPlaylistSyncJobMigrationId = "watchlist-playlist-sync-job-v1";
     private const string TextType = "TEXT";
     private const string IntegerType = "INTEGER";
     private const string BigIntType = "BIGINT";
@@ -510,6 +511,7 @@ CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_owner", TextType, cancellationToken);
+        await MigrateWatchlistSyncJobsToPlaylistScopeAsync(connection, cancellationToken);
         await DropIndexIfExistsAsync(connection, "idx_watchlist_sync_job_due", cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_sync_job_due", "watchlist_sync_job", "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
@@ -1127,6 +1129,80 @@ WHERE lower(trim(target.value)) IN ('plex', 'jellyfin', 'navidrome');
 DROP TABLE watchlist_sync_job_legacy;";
         await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task MigrateWatchlistSyncJobsToPlaylistScopeAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var check = new SqliteCommand(
+            "SELECT 1 FROM app_schema_migration WHERE migration_id=@migrationId LIMIT 1;",
+            connection))
+        {
+            check.Parameters.AddWithValue("migrationId", WatchlistPlaylistSyncJobMigrationId);
+            if (await check.ExecuteScalarAsync(cancellationToken) is not null)
+            {
+                return;
+            }
+        }
+
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO watchlist_sync_job (
+    source, playlist_id, track_id, target_service, attempt_count, status,
+    next_attempt_utc, last_error, created_at, updated_at)
+SELECT job.source,
+       job.playlist_id,
+       'playlist',
+       'all',
+       0,
+       'pending',
+       COALESCE(MIN(NULLIF(job.next_attempt_utc, '')), CURRENT_TIMESTAMP),
+       NULL,
+       COALESCE(MIN(NULLIF(job.created_at, '')), CURRENT_TIMESTAMP),
+       CURRENT_TIMESTAMP
+FROM watchlist_sync_job job
+WHERE NOT (job.track_id = 'playlist' AND lower(job.target_service) = 'all')
+  AND EXISTS (
+      SELECT 1
+      FROM playlist_watch_preferences preference,
+           json_each(CASE
+               WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
+                   THEN preference.sync_targets_json
+               ELSE json_array(preference.service)
+           END) configured
+      WHERE preference.source = job.source
+        AND preference.source_id = job.playlist_id
+        AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
+  )
+GROUP BY job.source, job.playlist_id
+ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
+    attempt_count = 0,
+    status = 'pending',
+    lease_owner = NULL,
+    lease_until_utc = NULL,
+    next_attempt_utc = excluded.next_attempt_utc,
+    last_error = NULL,
+    updated_at = CURRENT_TIMESTAMP;
+
+DELETE FROM watchlist_sync_job
+WHERE NOT (track_id = 'playlist' AND lower(target_service) = 'all');";
+        await using (var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction))
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var marker = new SqliteCommand(@"
+INSERT INTO app_schema_migration (migration_id,completed_at_utc)
+VALUES (@migrationId,@completedAtUtc)
+ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc=excluded.completed_at_utc;", connection, (SqliteTransaction)transaction))
+        {
+            marker.Parameters.AddWithValue("migrationId", WatchlistPlaylistSyncJobMigrationId);
+            marker.Parameters.AddWithValue("completedAtUtc", DateTimeOffset.UtcNow.ToString("O"));
+            await marker.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 

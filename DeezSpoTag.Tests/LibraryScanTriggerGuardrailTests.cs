@@ -250,21 +250,18 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void WatchlistPostDownloadSync_UsesDirectKnownFileIngestionWhenPathsAreKnown()
+    public void WatchlistPostDownloadSync_UsesCachedCandidatesForFullPlaylistSync()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs");
-        var methodBody = ExtractMethodBody(source, "private static async Task<bool> VerifyLocalLibraryIngestionAsync");
 
-        Assert.Contains("ChangedFilePaths", source, StringComparison.Ordinal);
-        Assert.Contains("await ingestionService.VerifyAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("return ingestion.IsComplete", methodBody, StringComparison.Ordinal);
-        Assert.Contains("Missing final paths are a notifier bug", methodBody, StringComparison.Ordinal);
-        Assert.Contains("Watchlist playlist direct library ingestion skipped because no final file paths were provided", methodBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("LibraryScanRunner", methodBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", methodBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunChangedFoldersAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ChangedFilePaths", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("VerifyLocalLibraryIngestionAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("LibraryScanRunner", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFilesAndWaitForIngestionAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunChangedFoldersAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("SyncAvailablePlaylistTracksToTargetAsync", source, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -333,19 +330,19 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void WatchlistPlaylistNotifier_CarriesFinalizedFilePaths()
+    public void WatchlistPlaylistNotifier_RequestsFullPlaylistSyncAfterFinalization()
     {
         var interfaceSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "IWatchlistPostDownloadSyncNotifier.cs");
         var moveSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagDownloadMoveService.cs");
         var finalizationSource = ReadSource("DeezSpoTag.Web", "Services", "WatchlistFinalizationService.cs");
 
-        Assert.Contains("NotifyFinalizedAsync", interfaceSource, StringComparison.Ordinal);
-        Assert.Contains("IReadOnlyList<string>? finalFilePaths", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("RequestAllPlaylistSyncAsync", interfaceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("IReadOnlyList<string>? finalFilePaths", interfaceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("UpdateFinalDestinationsAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("PersistWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
         Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"), StringComparison.Ordinal);
-        Assert.Contains("await _notifier.NotifyFinalizedAsync", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("await _notifier.RequestAllPlaylistSyncAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);
     }
 
