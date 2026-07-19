@@ -354,7 +354,8 @@ public sealed record MissingCoreMetadataFileDto(
     long AudioFileId,
     long FolderId,
     string FilePath,
-    IReadOnlyList<string> MissingFields);
+    IReadOnlyList<string> MissingFields,
+    int RepairScore = 0);
 
 public sealed record QualityScannerAutomationSettingsDto(
     bool Enabled,

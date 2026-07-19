@@ -372,11 +372,10 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("GetMissingCoreMetadataFilesAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("MissingCoreMetadataTags", workflowSource, StringComparison.Ordinal);
         Assert.Contains("ResolveEnhancementTargetRootPath(targetFiles)", controllerSource, StringComparison.Ordinal);
-        Assert.Contains("TRIM(COALESCE(t.tag_title", repositorySource, StringComparison.Ordinal);
-        Assert.Contains("TRIM(COALESCE(t.tag_artist", repositorySource, StringComparison.Ordinal);
-        Assert.Contains("TRIM(COALESCE(t.tag_album", repositorySource, StringComparison.Ordinal);
-        Assert.Contains("TRIM(COALESCE(t.tag_album_artist", repositorySource, StringComparison.Ordinal);
-        Assert.Contains("COALESCE(t.tag_track_no, 0) <= 0", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("BuildMissingCoreMetadataRepair", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("IsMissingOrWeakMetadata", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("RepeatedNumericFilenamePrefixRegex", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("OrderByDescending(static file => file.RepairScore)", repositorySource, StringComparison.Ordinal);
         Assert.DoesNotContain("var runQualityUpgradeStage = flagMissingTags", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("var runQualityScanner = flagMissingTags", workflowSource, StringComparison.Ordinal);
         Assert.Contains("ReportMissingCoreMetadataAuditIfRequestedAsync", workflowSource, StringComparison.Ordinal);

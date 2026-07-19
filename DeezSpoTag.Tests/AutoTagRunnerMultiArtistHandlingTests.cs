@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Web.Services.AutoTag;
@@ -43,6 +44,12 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             "ApplyPreferenceAwareArtistGuards",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplyPreferenceAwareArtistGuards not found.");
+
+    private static readonly MethodInfo ApplyFolderContextGuardsMethod =
+        typeof(LocalAutoTagRunner).GetMethod(
+            "ApplyFolderContextGuards",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.ApplyFolderContextGuards not found.");
 
     private static readonly MethodInfo BuildAlbumArtworkBaseFileNameMethod =
         typeof(LocalAutoTagRunner).GetMethod(
@@ -107,6 +114,41 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
 
         Assert.NotNull(coreTrack.Album?.MainArtist);
         Assert.Equal("2Baba", coreTrack.Album!.MainArtist!.Name);
+    }
+
+    [Fact]
+    public void ApplyFolderContextGuards_ReplacesVariousArtistsWithSpecificFolderArtist()
+    {
+        var track = new AutoTagTrack
+        {
+            Title = "Banana",
+            Artists = new List<string> { "Various Artists" },
+            AlbumArtists = new List<string> { "Various Artists" },
+            Album = "Unknown Album"
+        };
+        var filePath = Path.Join(Path.GetTempPath(), "DeezSpoTagTests", "Diamond Platnumz", "First Of All", "01 - Banana.flac");
+        var rootPath = Path.Join(Path.GetTempPath(), "DeezSpoTagTests");
+
+        ApplyFolderContextGuardsMethod.Invoke(null, new object?[] { filePath, rootPath, track });
+
+        Assert.Equal("Diamond Platnumz", Assert.Single(track.Artists));
+        Assert.Equal("Diamond Platnumz", Assert.Single(track.AlbumArtists));
+        Assert.Equal("First Of All", track.Album);
+    }
+
+    [Fact]
+    public void NormalizeTrackArtistsForTagging_TreatsUnknownArtistAsMissing()
+    {
+        var track = new AutoTagTrack
+        {
+            Artists = new List<string> { "Unknown Artist" },
+            AlbumArtists = new List<string> { "2Baba" }
+        };
+
+        NormalizeTrackArtistsForTaggingMethod.Invoke(null, new object?[] { track, true });
+
+        Assert.Equal("2Baba", Assert.Single(track.Artists));
+        Assert.Equal("2Baba", Assert.Single(track.AlbumArtists));
     }
 
     [Fact]

@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,6 +23,11 @@ public sealed class LibraryRepository
 {
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
+    private static readonly TimeSpan RepairRegexTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly Regex RepeatedNumericFilenamePrefixRegex = new(
+        @"^\s*(?:\d+\s*[-._)\]]\s*){2,}",
+        RegexOptions.Compiled,
+        RepairRegexTimeout);
 
     public sealed record BoomplayDeezerTrackMappingUpsertInput(
         string BoomplayTrackId,
@@ -11763,13 +11769,6 @@ WHERE f.id IN (
     FROM json_each(@folderIdsJson)
 )
   AND LOWER(COALESCE(f.desired_quality_value, '')) NOT IN ('video', 'podcast')
-  AND (
-      TRIM(COALESCE(t.tag_title, '')) = ''
-      OR TRIM(COALESCE(t.tag_artist, '')) = ''
-      OR TRIM(COALESCE(t.tag_album, '')) = ''
-      OR TRIM(COALESCE(t.tag_album_artist, '')) = ''
-      OR COALESCE(t.tag_track_no, 0) <= 0
-  )
 ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), t.title;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("folderIdsJson", SerializeJsonArray(scopedFolderIds));
@@ -11785,34 +11784,14 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
                 continue;
             }
 
-            var missing = new List<string>();
-            if (IsMissing(await ReadNullableStringAsync(reader, 5, cancellationToken)))
-            {
-                missing.Add("Title");
-            }
-
-            if (IsMissing(await ReadNullableStringAsync(reader, 7, cancellationToken)))
-            {
-                missing.Add("Artist");
-            }
-
-            if (IsMissing(await ReadNullableStringAsync(reader, 9, cancellationToken)))
-            {
-                missing.Add("Album");
-            }
-
-            if (IsMissing(await ReadNullableStringAsync(reader, 10, cancellationToken)))
-            {
-                missing.Add("Album Artist");
-            }
-
+            var filePath = reader.GetString(3);
+            var title = await ReadNullableStringAsync(reader, 5, cancellationToken);
+            var artist = await ReadNullableStringAsync(reader, 7, cancellationToken);
+            var album = await ReadNullableStringAsync(reader, 9, cancellationToken);
+            var albumArtist = await ReadNullableStringAsync(reader, 10, cancellationToken);
             var trackNumber = await ReadNullableIntAsync(reader, 12, cancellationToken);
-            if (!trackNumber.HasValue || trackNumber.Value <= 0)
-            {
-                missing.Add("Track number");
-            }
-
-            if (missing.Count == 0)
+            var repair = BuildMissingCoreMetadataRepair(filePath, title, artist, album, albumArtist, trackNumber);
+            if (repair.Fields.Count == 0)
             {
                 continue;
             }
@@ -11821,11 +11800,80 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
                 reader.GetInt64(0),
                 audioFileId,
                 reader.GetInt64(2),
-                reader.GetString(3),
-                missing));
+                filePath,
+                repair.Fields,
+                repair.Score));
         }
 
-        return results;
+        return results
+            .OrderByDescending(static file => file.RepairScore)
+            .ThenBy(static file => file.FolderId)
+            .ThenBy(static file => file.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static (List<string> Fields, int Score) BuildMissingCoreMetadataRepair(
+        string filePath,
+        string? title,
+        string? artist,
+        string? album,
+        string? albumArtist,
+        int? trackNumber)
+    {
+        var fields = new List<string>();
+        var score = 0;
+        AddWeakMetadataRepair(fields, ref score, "Title", title, 30);
+        AddWeakMetadataRepair(fields, ref score, "Artist", artist, 45);
+        AddWeakMetadataRepair(fields, ref score, "Album", album, 25);
+        AddWeakMetadataRepair(fields, ref score, "Album Artist", albumArtist, 55);
+        if (!trackNumber.HasValue || trackNumber.Value <= 0)
+        {
+            fields.Add("Track number");
+            score += 20;
+        }
+
+        if (HasRepeatedNumericFilenamePrefix(filePath))
+        {
+            fields.Add("Filename prefix");
+            score += 40;
+        }
+
+        return (fields, score);
+    }
+
+    private static void AddWeakMetadataRepair(
+        ICollection<string> fields,
+        ref int score,
+        string field,
+        string? value,
+        int weight)
+    {
+        if (!IsMissingOrWeakMetadata(value))
+        {
+            return;
+        }
+
+        fields.Add(field);
+        score += weight;
+    }
+
+    private static bool HasRepeatedNumericFilenamePrefix(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var fileName = Path.GetFileNameWithoutExtension(path);
+            return !string.IsNullOrWhiteSpace(fileName)
+                && RepeatedNumericFilenamePrefixRegex.IsMatch(fileName);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static async Task<QualityScanTrackDto> ReadQualityScanTrackDtoAsync(
@@ -13743,6 +13791,26 @@ RETURNING id;";
     private static bool IsMissing(params string?[] values)
     {
         return values.All(static value => string.IsNullOrWhiteSpace(value));
+    }
+
+    private static bool IsMissingOrWeakMetadata(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var normalized = value
+            .Trim()
+            .Trim('[', ']')
+            .ToLowerInvariant();
+        return normalized is "unknown"
+            or "unknown artist"
+            or "unknown album artist"
+            or "unknown album"
+            or "untitled"
+            or "track"
+            or "audio";
     }
 
     private static string[] ReadDelimitedValues(string? value)

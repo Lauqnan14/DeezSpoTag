@@ -88,6 +88,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         @"(?:\b(?:pt\.?|part|vol\.?|volume)\s*\d+\b|\b(?:ii|iii|iv|v|vi|vii|viii|ix|x)\b|\b\d{1,2}\b)\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase,
         RegexTimeout);
+    private static readonly HashSet<string> WeakMetadataValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "unknown",
+        "unknown artist",
+        "unknown album artist",
+        "unknown album",
+        "untitled",
+        "track",
+        "audio"
+    };
     private static readonly TimeSpan MatchCacheTtl = TimeSpan.FromMinutes(15);
     private static readonly JsonSerializerOptions CaseInsensitiveJsonOptions = new() { PropertyNameCaseInsensitive = true };
     private static readonly char[] LyricsLineSeparators = ['\r', '\n'];
@@ -1379,6 +1389,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             var originalFile = context.File;
             PreserveRicherArtistCreditsFromSource(info, match.Track, context.Plan.Settings);
+            ApplyFolderContextGuards(context.File, context.Plan.TargetPath, match.Track);
             if (isManualEnrichment && frozenRelease == null)
             {
                 frozenRelease = ManualReleaseIdentity.FromTrack(match.Track);
@@ -4304,19 +4315,30 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var artists = SplitArtistCredits(performerCredits);
-        var title = file.Tag.Title ?? string.Empty;
+        if (artists.Count > 0 && artists.All(IsWeakMetadataValue))
+        {
+            artists.Clear();
+        }
+
+        var firstPerformer = IsWeakMetadataValue(file.Tag.FirstPerformer)
+            ? string.Empty
+            : file.Tag.FirstPerformer ?? string.Empty;
+        var title = IsWeakMetadataValue(file.Tag.Title) ? string.Empty : file.Tag.Title ?? string.Empty;
+        var album = IsWeakMetadataValue(file.Tag.Album)
+            ? InferAlbumFromPath(filePath)
+            : file.Tag.Album;
         return new AudioInfoDraft
         {
             Title = title,
-            Artist = artists.FirstOrDefault() ?? file.Tag.FirstPerformer ?? string.Empty,
+            Artist = artists.FirstOrDefault() ?? firstPerformer,
             Artists = artists,
-            Album = string.IsNullOrWhiteSpace(file.Tag.Album)
+            Album = string.IsNullOrWhiteSpace(album)
                 ? InferAlbumFromPath(filePath)
-                : file.Tag.Album,
+                : album,
             Isrc = file.Tag.ISRC,
             TrackNumber = file.Tag.Track > 0 ? (int?)file.Tag.Track : null,
             HasEmbeddedTitle = !string.IsNullOrWhiteSpace(title),
-            HasEmbeddedArtist = artists.Count > 0 || !string.IsNullOrWhiteSpace(file.Tag.FirstPerformer),
+            HasEmbeddedArtist = artists.Count > 0,
             Tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
         };
     }
@@ -4392,7 +4414,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             draft.Isrc = ReadFirstTagValue(draft.Tags, "SHAZAM_ISRC", "ISRC");
         }
 
-        if (string.IsNullOrWhiteSpace(draft.Album))
+        if (IsWeakMetadataValue(draft.Album))
         {
             draft.Album = ReadFirstTagValue(draft.Tags, "SHAZAM_ALBUM", AlbumUpperTag);
         }
@@ -4409,7 +4431,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         bool parseFilename,
         string? tracknameTemplate)
     {
-        if (!parseFilename || (!string.IsNullOrWhiteSpace(draft.Title) && !string.IsNullOrWhiteSpace(draft.Artist)))
+        if (!parseFilename || (!IsWeakMetadataValue(draft.Title) && !IsWeakMetadataValue(draft.Artist)))
         {
             return;
         }
@@ -4420,12 +4442,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(draft.Artist))
+        if (IsWeakMetadataValue(draft.Artist))
         {
             draft.Artist = parsedArtist;
         }
 
-        if (string.IsNullOrWhiteSpace(draft.Title))
+        if (IsWeakMetadataValue(draft.Title))
         {
             draft.Title = parsedTitle;
         }
@@ -4438,13 +4460,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void EnsureArtistFallbacks(AudioInfoDraft draft, string filePath, string rootPath)
     {
-        if (draft.Artists.Count == 0 && !string.IsNullOrWhiteSpace(draft.Artist))
+        if (draft.Artists.Count > 0 && draft.Artists.All(IsWeakMetadataValue))
+        {
+            draft.Artists.Clear();
+        }
+
+        if (draft.Artists.Count == 0 && !IsWeakMetadataValue(draft.Artist))
         {
             draft.Artists = SplitArtistCredits(new[] { draft.Artist });
             draft.Artist = draft.Artists.FirstOrDefault() ?? draft.Artist;
         }
 
-        if (!string.IsNullOrWhiteSpace(draft.Artist))
+        if (!IsWeakMetadataValue(draft.Artist))
         {
             return;
         }
@@ -4459,7 +4486,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static string ResolveTitleWithFallback(string title, string filePath, string? titleRegex)
     {
-        var resolved = string.IsNullOrWhiteSpace(title)
+        var resolved = IsWeakMetadataValue(title)
             ? InferTitleFromFilename(filePath)
             : title;
 
@@ -4605,6 +4632,31 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             return string.Empty;
         }
+    }
+
+    private static bool IsSpecificFolderArtist(string? value)
+        => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value);
+
+    private static bool IsWeakMetadataValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var normalized = value.Trim().Trim('[', ']');
+        return WeakMetadataValues.Contains(normalized);
+    }
+
+    private static bool IsVariousArtistsValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim().Trim('[', ']').ToLowerInvariant();
+        return normalized is "various artists" or "various" or "va" or "v/a";
     }
 
     private static string InferTitleFromFilename(string filePath)
@@ -5201,6 +5253,38 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         track.AlbumArtists = normalizedAlbumArtists;
     }
 
+    private static void ApplyFolderContextGuards(string filePath, string rootPath, AutoTagTrack track)
+    {
+        var folderArtist = InferArtistFromPath(filePath, rootPath);
+        var folderAlbum = InferAlbumFromPath(filePath);
+        var hasSpecificFolderArtist = IsSpecificFolderArtist(folderArtist);
+        if (!string.IsNullOrWhiteSpace(folderAlbum) && IsWeakMetadataValue(track.Album))
+        {
+            track.Album = folderAlbum;
+        }
+
+        if (!hasSpecificFolderArtist)
+        {
+            return;
+        }
+
+        var normalizedArtists = SplitArtistCredits(track.Artists);
+        if (normalizedArtists.Count == 0
+            || normalizedArtists.All(IsWeakMetadataValue)
+            || normalizedArtists.All(IsVariousArtistsValue))
+        {
+            track.Artists = new List<string> { folderArtist };
+        }
+
+        var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
+        if (normalizedAlbumArtists.Count == 0
+            || normalizedAlbumArtists.All(IsWeakMetadataValue)
+            || normalizedAlbumArtists.All(IsVariousArtistsValue))
+        {
+            track.AlbumArtists = new List<string> { folderArtist };
+        }
+    }
+
     private static bool ShouldPreferSourceArtistCredits(List<string> sourceArtists, List<string> matchedArtists)
     {
         if (sourceArtists.Count == 0)
@@ -5238,6 +5322,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var normalizedArtists = SplitArtistCredits(track.Artists);
         var normalizedAlbumArtists = SplitArtistCredits(track.AlbumArtists);
+        if (normalizedArtists.Count > 0 && normalizedArtists.All(IsWeakMetadataValue))
+        {
+            normalizedArtists.Clear();
+        }
+
+        if (normalizedAlbumArtists.Count > 0 && normalizedAlbumArtists.All(IsWeakMetadataValue))
+        {
+            normalizedAlbumArtists.Clear();
+        }
 
         if (normalizedArtists.Count == 0)
         {
@@ -9440,15 +9533,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         ApplyTitleLossyOverwriteGuard(effectiveTagSettings, sourceTrack, file.Tag.Title, platformId);
 
         var existingArtistCredits = file.Tag.Performers?
-            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value))
             .ToList() ?? new List<string>();
-        if (!string.IsNullOrWhiteSpace(file.Tag.FirstPerformer))
+        if (!IsWeakMetadataValue(file.Tag.FirstPerformer) && !IsVariousArtistsValue(file.Tag.FirstPerformer))
         {
             existingArtistCredits.Add(file.Tag.FirstPerformer!);
         }
 
         var existingAlbumArtistCredits = file.Tag.AlbumArtists?
-            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value))
             .ToList() ?? new List<string>();
 
         ApplyPreferenceAwareArtistGuards(
@@ -9514,7 +9607,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        var existingArtists = SplitArtistCredits(file.Tag.Performers?.Where(value => !string.IsNullOrWhiteSpace(value)).ToList()
+        var existingArtists = SplitArtistCredits(file.Tag.Performers?.Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value)).ToList()
             ?? new List<string>());
         var incomingArtists = SplitArtistCredits(sourceTrack.Artists);
         if (effectiveTagSettings.Artist
@@ -9526,7 +9619,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             effectiveTagSettings.Artist = false;
         }
 
-        var existingAlbumArtists = SplitArtistCredits(file.Tag.AlbumArtists?.Where(value => !string.IsNullOrWhiteSpace(value)).ToList()
+        var existingAlbumArtists = SplitArtistCredits(file.Tag.AlbumArtists?.Where(value => !IsWeakMetadataValue(value) && !IsVariousArtistsValue(value)).ToList()
             ?? new List<string>());
         var incomingAlbumArtists = SplitArtistCredits(sourceTrack.AlbumArtists);
         if (effectiveTagSettings.AlbumArtist
