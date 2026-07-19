@@ -153,6 +153,35 @@ public sealed class AutoTagProviderCapabilityContractTests
     }
 
     [Fact]
+    public void AudioFilePersistenceVerifier_HandlesEveryAudioFileTagForEachSupportedFormat()
+    {
+        var source = ReadLocalAutoTagRunnerSource();
+        var audioFileTags = Enum.GetValues<SupportedTag>()
+            .Where(tag => tag is not SupportedTag.TtmlLyrics and not SupportedTag.OtherTags)
+            .ToList();
+
+        AssertSwitchHandlesEveryTag(source, "HasId3Tag", audioFileTags);
+        AssertSwitchHandlesEveryTag(source, "HasVorbisTag", audioFileTags);
+        AssertSwitchHandlesEveryTag(source, "HasMp4Tag", audioFileTags);
+    }
+
+    [Fact]
+    public void WriterVerification_UsesActualOverwriteAwareWriteContract()
+    {
+        var source = ReadLocalAutoTagRunnerSource();
+
+        Assert.Contains("var writeResult = await TagFileAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("returnedTags.IntersectWith(writeResult.AttemptedTags);", source, StringComparison.Ordinal);
+        Assert.Contains("HashSet<SupportedTag> AttemptedTags", source, StringComparison.Ordinal);
+        Assert.Contains("context.AttemptedTags.Add(tag);", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldOverwriteTag(context.Config, tag)", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldOverwriteRawTag(context.File, context.Extension, context.Config, configTagKey, rawName)", source, StringComparison.Ordinal);
+        Assert.Contains("MarkAttemptedIfPresent(context, file, SupportedTag.ReleaseDate);", source, StringComparison.Ordinal);
+        Assert.Contains("MarkAttemptedIfPresent(context, file, SupportedTag.TrackNumber);", source, StringComparison.Ordinal);
+        Assert.Contains("MarkAttemptedIfPresent(context, file, SupportedTag.AlbumArt);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveryRegisteredPlatformHasAnExplicitWritableCapabilityContract()
     {
         var descriptors = CreateAllPlatforms().Select(platform => platform.Describe()).ToList();
@@ -497,6 +526,57 @@ public sealed class AutoTagProviderCapabilityContractTests
             ?? throw new InvalidOperationException("SupportedTagMap not found.");
         return Assert.IsAssignableFrom<IDictionary>(field.GetValue(null));
     }
+
+    private static void AssertSwitchHandlesEveryTag(string source, string methodName, IReadOnlyCollection<SupportedTag> tags)
+    {
+        var body = ExtractMethodBody(source, methodName);
+        foreach (var tag in tags)
+        {
+            Assert.Contains($"SupportedTag.{tag}", body);
+        }
+    }
+
+    private static string ExtractMethodBody(string source, string methodName)
+    {
+        var methodStart = source.IndexOf($"private static bool {methodName}", StringComparison.Ordinal);
+        if (methodStart < 0)
+        {
+            throw new InvalidOperationException($"{methodName} method body was not found.");
+        }
+
+        var bodyStart = source.IndexOf('{', methodStart);
+        if (bodyStart < 0)
+        {
+            throw new InvalidOperationException($"{methodName} method body was not found.");
+        }
+
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source[bodyStart..(index + 1)];
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"{methodName} method body terminator was not found.");
+    }
+
+    private static string ReadLocalAutoTagRunnerSource()
+        => File.ReadAllText(Path.Combine(
+            ResolveRepoRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "AutoTag",
+            "LocalAutoTagRunner.cs"));
 
     private static AutoTagTrack InvokeMapper<TMatcher, TInput>(TInput input)
     {

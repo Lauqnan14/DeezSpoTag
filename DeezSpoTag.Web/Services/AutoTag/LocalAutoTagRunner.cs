@@ -1451,7 +1451,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                         context.Plan.Settings,
                         stepToken));
             }
-            await TagFileAsync(
+            var writeResult = await TagFileAsync(
                 context.File,
                 match.Track,
                 context.Plan.TagSettings,
@@ -1460,6 +1460,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 context.Platform,
                 context.Token);
             var returnedTags = ResolveReturnedEligibleTags(match.Track, tagPlan);
+            returnedTags.IntersectWith(writeResult.AttemptedTags);
             var persistenceFailures = VerifyPersistedTags(
                 context.File,
                 context.Plan.Config,
@@ -5064,7 +5065,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return settings;
     }
 
-    private async Task TagFileAsync(
+    private async Task<TagFileWriteResult> TagFileAsync(
         string filePath,
         AutoTagTrack track,
         TagSettings tagSettings,
@@ -5094,7 +5095,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             tempCoverPath = TryResolveFolderArtworkPath(filePath);
         }
 
-        await WriteTagsOnetaggerStyleAsync(
+        var writeResult = await WriteTagsOnetaggerStyleAsync(
             new TagWriteRequest
             {
                 FilePath = filePath,
@@ -5118,12 +5119,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             token);
         if (!IsMp4Family(Path.GetExtension(filePath)))
         {
-            await ApplyCustomTagsAsync(
+            writeResult.AttemptedTags.UnionWith(await ApplyCustomTagsAsync(
                 filePath,
                 track,
                 config,
                 platformId,
-                effectiveTagSettings.UseNullSeparator);
+                effectiveTagSettings.UseNullSeparator));
         }
 
         if (!string.IsNullOrWhiteSpace(tempCoverPath) && !string.Equals(Path.GetDirectoryName(tempCoverPath), Path.GetDirectoryName(filePath), StringComparison.OrdinalIgnoreCase))
@@ -5137,6 +5138,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 // best effort
             }
         }
+
+        return writeResult;
     }
 
     private static Track BuildCoreTrack(
@@ -5356,7 +5359,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         track.AlbumArtists = normalizedAlbumArtists;
     }
 
-    private async Task WriteTagsOnetaggerStyleAsync(
+    private async Task<TagFileWriteResult> WriteTagsOnetaggerStyleAsync(
         TagWriteRequest request,
         CancellationToken token)
     {
@@ -5375,7 +5378,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             context.EffectiveTagSettings.UseNullSeparator,
             context.GenreAliasMap,
             context.GenreBlockList,
-            context.SplitCompositeGenres);
+            context.SplitCompositeGenres,
+            context.AttemptedTags);
         ApplyPrimaryTagWrites(tagWriteContext, context);
         ApplyAudioFeatureTagWrites(tagWriteContext, context);
         ApplyGenreAndStyleTagWrites(file, tagWriteContext, context);
@@ -5389,6 +5393,13 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         var sidecarWriteResult = await WriteLyricsSidecarsAsync(context, token);
         CleanupUpgradedTxtSidecar(context, sidecarWriteResult);
+
+        if (sidecarWriteResult.WroteTtmlSidecar)
+        {
+            context.AttemptedTags.Add(SupportedTag.TtmlLyrics);
+        }
+
+        return new TagFileWriteResult(context.AttemptedTags);
     }
 
     private static string BuildAtlDashFieldName(string name)
@@ -5818,6 +5829,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.ReleaseDate,
             context.Config,
             context.EffectiveTagSettings.UseNullSeparator);
+        MarkAttemptedIfPresent(context, file, SupportedTag.ReleaseDate);
     }
 
     private static void WritePublishDateTag(TagLib.File file, TagWriteExecutionContext context)
@@ -5835,6 +5847,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.PublishDate,
             context.Config,
             context.EffectiveTagSettings.UseNullSeparator);
+        MarkAttemptedIfPresent(context, file, SupportedTag.PublishDate);
     }
 
     private static void WriteUrlTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -6043,6 +6056,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ResolveFirstPositiveInt(context.SourceTrack, DiscTotalTag, DiscTotalRawTag),
             SupportedTag.DiscNumber,
             isDisc: true);
+        MarkAttemptedIfPresent(context, file, SupportedTag.DiscNumber);
+        MarkAttemptedIfPresent(context, file, SupportedTag.DiscTotal);
     }
 
     private static void WriteDiscTotalTag(TagLib.File file, TagWriteExecutionContext context)
@@ -6062,6 +6077,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         SetDiscTotal(file, context, total.Value);
+        MarkAttemptedIfPresent(context, file, SupportedTag.DiscTotal);
     }
 
     private static void WriteTrackNumberTag(TagLib.File file, TagWriteExecutionContext context)
@@ -6085,6 +6101,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             total,
             SupportedTag.TrackNumber,
             isDisc: false);
+        MarkAttemptedIfPresent(context, file, SupportedTag.TrackNumber);
+        MarkAttemptedIfPresent(context, file, SupportedTag.TrackTotal);
     }
 
     private static void WriteBarcodeTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -6286,7 +6304,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        WriteLyrics(file, context.Extension, context.SourceTrack, true, context.Config);
+        if (WriteLyrics(file, context.Extension, context.SourceTrack, true, context.Config))
+        {
+            context.AttemptedTags.Add(SupportedTag.SyncedLyrics);
+        }
     }
 
     private static void WriteUnsyncedLyrics(TagLib.File file, TagWriteExecutionContext context)
@@ -6296,7 +6317,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        WriteLyrics(file, context.Extension, context.SourceTrack, false, context.Config);
+        if (WriteLyrics(file, context.Extension, context.SourceTrack, false, context.Config))
+        {
+            context.AttemptedTags.Add(SupportedTag.UnsyncedLyrics);
+        }
     }
 
     private static void WriteExplicitTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -6409,6 +6433,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ApplyAlbumArt(file, tempCoverPath, context.EffectiveTagSettings.CoverDescriptionUTF8);
         }
 
+        MarkAttemptedIfPresent(context, file, SupportedTag.AlbumArt);
+    }
+
+    private static void MarkAttemptedIfPresent(TagWriteExecutionContext context, TagLib.File file, SupportedTag tag)
+    {
+        if (HasTag(file, context.Extension, tag, context.Config, context.PlatformId))
+        {
+            context.AttemptedTags.Add(tag);
+        }
     }
 
     private static TrackPathInfo BuildTemplatePathInfo(
@@ -6933,7 +6966,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private Task ApplyCustomTagsAsync(
+    private Task<HashSet<SupportedTag>> ApplyCustomTagsAsync(
         string filePath,
         AutoTagTrack track,
         AutoTagRunnerConfig config,
@@ -6942,9 +6975,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (config.Tags.Count == 0)
         {
-            return Task.CompletedTask;
+            return Task.FromResult(new HashSet<SupportedTag>());
         }
 
+        var attemptedTags = new HashSet<SupportedTag>();
         try
         {
             var extension = Path.GetExtension(filePath);
@@ -6957,17 +6991,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
             {
                 var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
-                ApplyId3CustomTags(id3, writes, config, separator, useNullSeparator, enabledTags);
+                ApplyId3CustomTags(id3, writes, config, separator, useNullSeparator, enabledTags, attemptedTags);
             }
             else if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
             {
                 var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
-                ApplyVorbisCustomTags(vorbis, writes, config, separator, enabledTags);
+                ApplyVorbisCustomTags(vorbis, writes, config, separator, enabledTags, attemptedTags);
             }
             else if (IsMp4Family(extension))
             {
                 var apple = (TagLib.Mpeg4.AppleTag)file.GetTag(TagTypes.Apple, true);
-                ApplyAppleCustomTags(apple, writes, config, separator, enabledTags);
+                ApplyAppleCustomTags(apple, writes, config, separator, enabledTags, attemptedTags);
             }
 
             file.Save();
@@ -6978,7 +7012,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             _logger.LogWarning(ex, "Failed applying custom tags for {File}", SanitizeLogValue(filePath));
         }
 
-        return Task.CompletedTask;
+        return Task.FromResult(attemptedTags);
     }
 
     private static string ResolveStylesTagName(AutoTagRunnerConfig config, string extension)
@@ -7779,7 +7813,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required bool AllowsTtmlByFormat { get; init; }
         public required (bool HasAny, bool HasLrc, bool HasElrc, bool HasTtml, bool HasTxt, string TxtPath) SidecarState { get; init; }
         public required bool ShouldSkipEmbeddedLyrics { get; init; }
+        public HashSet<SupportedTag> AttemptedTags { get; } = new();
     }
+
+    private sealed record TagFileWriteResult(HashSet<SupportedTag> AttemptedTags);
 
     public sealed class LocalAutoTagRunnerCollaborators
     {
@@ -7816,7 +7853,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         bool UseNullSeparator,
         IReadOnlyDictionary<string, string> GenreAliasMap,
         IReadOnlyList<string> GenreBlockList,
-        bool SplitCompositeGenres);
+        bool SplitCompositeGenres,
+        HashSet<SupportedTag> AttemptedTags);
 
     private readonly record struct TagFieldBinding(
         string Id3Frame,
@@ -7857,6 +7895,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
         }
 
+        if (values.Count == 0)
+        {
+            return;
+        }
+
         if (IsMp4Family(context.Extension))
         {
             if (Mp4TagHelper.TrySetMp4Field(
@@ -7864,6 +7907,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 binding.Tag,
                 values))
             {
+                context.AttemptedTags.Add(binding.Tag);
                 return;
             }
 
@@ -7885,6 +7929,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (tag == SupportedTag.Genre || IsGenreRawTag(rawName))
         {
             values = SanitizeGenres(values, context.GenreAliasMap, context.GenreBlockList, context.SplitCompositeGenres);
+            if (values.Count == 0)
+            {
+                return;
+            }
         }
         else if (rawName.Equals(SpotifyUrlTag, StringComparison.OrdinalIgnoreCase))
         {
@@ -7904,16 +7952,19 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 if (HasRawTag(context.File, context.Extension, rawName))
                 {
+                    context.AttemptedTags.Add(tag);
                     return;
                 }
             }
             else if (HasTag(context.File, context.Extension, tag, context.Config, context.PlatformId))
             {
+                context.AttemptedTags.Add(tag);
                 return;
             }
         }
 
         WriteRawTagValues(context, rawName, values);
+        context.AttemptedTags.Add(tag);
     }
 
     private static bool HasRawTag(TagLib.File file, string extension, string rawName)
@@ -8254,27 +8305,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
     }
 
-    private static void WriteLyrics(TagLib.File file, string extension, AutoTagTrack track, bool synced, AutoTagRunnerConfig config)
+    private static bool WriteLyrics(TagLib.File file, string extension, AutoTagTrack track, bool synced, AutoTagRunnerConfig config)
     {
         if (!TryResolveLyricsLines(track, synced, out var lyricsLines))
         {
-            return;
+            return false;
         }
 
         var lyricsText = string.Join(Environment.NewLine, lyricsLines);
         if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
         {
-            WriteId3Lyrics(file, synced, config, lyricsLines, lyricsText);
-            return;
+            return WriteId3Lyrics(file, synced, config, lyricsLines, lyricsText);
         }
 
         if (extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
         {
-            WriteVorbisLyrics(file, synced, config, lyricsText);
-            return;
+            return WriteVorbisLyrics(file, synced, config, lyricsText);
         }
 
-        WriteGenericLyrics(file, synced, config, lyricsText);
+        return WriteGenericLyrics(file, synced, config, lyricsText);
     }
 
     private static bool TryResolveLyricsLines(AutoTagTrack track, bool synced, out List<string> lyricsLines)
@@ -8296,7 +8345,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return false;
     }
 
-    private static void WriteId3Lyrics(
+    private static bool WriteId3Lyrics(
         TagLib.File file,
         bool synced,
         AutoTagRunnerConfig config,
@@ -8306,24 +8355,23 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
         if (synced)
         {
-            WriteId3SyncedLyrics(id3, config, lyricsLines);
-            return;
+            return WriteId3SyncedLyrics(id3, config, lyricsLines);
         }
 
-        WriteId3UnsyncedLyrics(id3, config, lyricsText);
+        return WriteId3UnsyncedLyrics(id3, config, lyricsText);
     }
 
-    private static void WriteId3SyncedLyrics(TagLib.Id3v2.Tag id3, AutoTagRunnerConfig config, IReadOnlyList<string> lyricsLines)
+    private static bool WriteId3SyncedLyrics(TagLib.Id3v2.Tag id3, AutoTagRunnerConfig config, IReadOnlyList<string> lyricsLines)
     {
         if (!ShouldOverwriteTag(config, SupportedTag.SyncedLyrics)
             && id3.GetFrames<TagLib.Id3v2.SynchronisedLyricsFrame>("SYLT").Any())
         {
-            return;
+            return true;
         }
 
         if (!lyricsLines.Any(line => line.StartsWith('[')))
         {
-            return;
+            return false;
         }
 
         var lang = string.IsNullOrWhiteSpace(config.Id3CommLang) ? "eng" : config.Id3CommLang;
@@ -8334,6 +8382,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         frame.Text = BuildSyncedLyricsItems(lyricsLines).ToArray();
         id3.AddFrame(frame);
+        return true;
     }
 
     private static List<TagLib.Id3v2.SynchedText> BuildSyncedLyricsItems(IReadOnlyList<string> lyricsLines)
@@ -8352,40 +8401,43 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return items;
     }
 
-    private static void WriteId3UnsyncedLyrics(TagLib.Id3v2.Tag id3, AutoTagRunnerConfig config, string lyricsText)
+    private static bool WriteId3UnsyncedLyrics(TagLib.Id3v2.Tag id3, AutoTagRunnerConfig config, string lyricsText)
     {
         if (!ShouldOverwriteTag(config, SupportedTag.UnsyncedLyrics)
             && id3.GetFrames<TagLib.Id3v2.UnsynchronisedLyricsFrame>("USLT").Any())
         {
-            return;
+            return true;
         }
 
         var lang = string.IsNullOrWhiteSpace(config.Id3CommLang) ? "eng" : config.Id3CommLang;
         var frame = TagLib.Id3v2.UnsynchronisedLyricsFrame.Get(id3, string.Empty, lang, true);
         frame.Text = lyricsText;
+        return true;
     }
 
-    private static void WriteVorbisLyrics(TagLib.File file, bool synced, AutoTagRunnerConfig config, string lyricsText)
+    private static bool WriteVorbisLyrics(TagLib.File file, bool synced, AutoTagRunnerConfig config, string lyricsText)
     {
         var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
         var supportedTag = synced ? SupportedTag.SyncedLyrics : SupportedTag.UnsyncedLyrics;
         if (!ShouldOverwriteTag(config, supportedTag) && TagRawProbe.HasVorbisRaw(vorbis, LyricsUpperTag))
         {
-            return;
+            return true;
         }
 
         vorbis.SetField(LyricsUpperTag, lyricsText);
+        return true;
     }
 
-    private static void WriteGenericLyrics(TagLib.File file, bool synced, AutoTagRunnerConfig config, string lyricsText)
+    private static bool WriteGenericLyrics(TagLib.File file, bool synced, AutoTagRunnerConfig config, string lyricsText)
     {
         var supportedTag = synced ? SupportedTag.SyncedLyrics : SupportedTag.UnsyncedLyrics;
         if (!ShouldOverwriteTag(config, supportedTag) && !string.IsNullOrWhiteSpace(file.Tag.Lyrics))
         {
-            return;
+            return true;
         }
 
         file.Tag.Lyrics = lyricsText;
+        return true;
     }
 
     private static bool TryParseLrcLine(string line, out TimeSpan timestamp, out string text)
@@ -9116,7 +9168,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagRunnerConfig config,
         string separator,
         bool useNullSeparator,
-        HashSet<string> enabledTags)
+        HashSet<string> enabledTags,
+        HashSet<SupportedTag> attemptedTags)
     {
         foreach (var write in writes)
         {
@@ -9127,14 +9180,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasId3Raw(tag, write.RawTagName))
             {
+                attemptedTags.Add(write.SupportedTag);
                 continue;
             }
 
             SetId3Raw(tag, write.RawTagName, write.Values, separator, useNullSeparator);
+            attemptedTags.Add(write.SupportedTag);
         }
     }
 
-    private static void ApplyVorbisCustomTags(TagLib.Ogg.XiphComment tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags)
+    private static void ApplyVorbisCustomTags(TagLib.Ogg.XiphComment tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags, HashSet<SupportedTag> attemptedTags)
     {
         foreach (var write in writes)
         {
@@ -9145,14 +9200,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasVorbisRaw(tag, write.RawTagName))
             {
+                attemptedTags.Add(write.SupportedTag);
                 continue;
             }
 
             SetVorbisRaw(tag, write.RawTagName, write.Values, separator);
+            attemptedTags.Add(write.SupportedTag);
         }
     }
 
-    private static void ApplyAppleCustomTags(TagLib.Mpeg4.AppleTag tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags)
+    private static void ApplyAppleCustomTags(TagLib.Mpeg4.AppleTag tag, List<CustomTagWrite> writes, AutoTagRunnerConfig config, string separator, HashSet<string> enabledTags, HashSet<SupportedTag> attemptedTags)
     {
         foreach (var write in writes)
         {
@@ -9164,10 +9221,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var rawName = Mp4RawTagNameNormalizer.Normalize(write.RawTagName);
             if (!ShouldOverwriteTag(config, write.SupportedTag) && TagRawProbe.HasAppleDashBox(tag, rawName))
             {
+                attemptedTags.Add(write.SupportedTag);
                 continue;
             }
 
             TrySetAppleDashBox(tag, rawName, ApplySeparator(write.Values, separator));
+            attemptedTags.Add(write.SupportedTag);
         }
     }
 
@@ -9275,10 +9334,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (!ShouldOverwriteRawTag(context.File, context.Extension, context.Config, configTagKey, rawName))
         {
+            if (SupportedTagMap.TryGetValue(configTagKey, out var retainedTag))
+            {
+                context.AttemptedTags.Add(retainedTag);
+            }
             return;
         }
 
         WriteRawTagValues(context, rawName, values);
+        if (SupportedTagMap.TryGetValue(configTagKey, out var supportedTag))
+        {
+            context.AttemptedTags.Add(supportedTag);
+        }
     }
 
     private static void WriteRawTagValues(TagWriteContext context, string rawName, List<string> values)
