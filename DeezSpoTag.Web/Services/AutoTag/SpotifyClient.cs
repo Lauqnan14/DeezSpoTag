@@ -97,6 +97,7 @@ public sealed class SpotifyClient
             TrackTotal = summary.TrackTotal,
             ReleaseType = summary.ReleaseType,
             Label = summary.Label,
+            Copyright = summary.CopyrightText,
             Genres = summary.Genres?.ToList() ?? new List<string>()
         };
     }
@@ -189,6 +190,11 @@ public sealed class SpotifyClient
         if (string.IsNullOrWhiteSpace(track.Label))
         {
             track.Label = summary.Label;
+        }
+
+        if (string.IsNullOrWhiteSpace(track.Copyright))
+        {
+            track.Copyright = summary.CopyrightText;
         }
 
         if ((track.Genres == null || track.Genres.Count == 0) && summary.Genres is { Count: > 0 })

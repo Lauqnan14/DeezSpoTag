@@ -154,6 +154,7 @@ public sealed class ItunesSearchResult
             TrackTotal = TrackCount,
             ReleaseType = AutoTagReleaseCategory.Resolve(null, TrackCount),
             DiscNumber = DiscNumber,
+            DiscTotal = DiscCount,
             Isrc = Isrc,
             Label = string.IsNullOrWhiteSpace(RecordLabel) ? null : RecordLabel,
             Copyright = string.IsNullOrWhiteSpace(Copyright) ? null : Copyright,
@@ -238,6 +239,7 @@ public sealed class ItunesTrackInfo
     public ushort? TrackTotal { get; set; }
     public string? ReleaseType { get; set; }
     public short? DiscNumber { get; set; }
+    public short? DiscTotal { get; set; }
     public string? Isrc { get; set; }
     public string? Label { get; set; }
     public string? Copyright { get; set; }

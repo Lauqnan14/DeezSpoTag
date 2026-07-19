@@ -315,7 +315,10 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                && !settings.Lyrics
                && !settings.SyncedLyrics
                && !settings.Composer
+               && !settings.Lyricist
                && !settings.InvolvedPeople
+               && !settings.Publisher
+               && !settings.Description
                && !settings.Source
                && !settings.Url
                && !settings.TrackId

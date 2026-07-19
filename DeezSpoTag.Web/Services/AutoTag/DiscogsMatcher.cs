@@ -315,6 +315,9 @@ public sealed class DiscogsMatcher
         var position = track.Position;
         var (discNumber, trackNumber) = ResolveTrackPosition(position, trackIndex, config.TrackNumberInt);
         var other = BuildOtherFields(release, position);
+        var media = BuildMediaFormats(release);
+        var credits = BuildCreditFields((track.ExtraArtists ?? new List<DiscogsExtraArtist>())
+            .Concat(release.ExtraArtists ?? new List<DiscogsExtraArtist>()));
 
         return new DiscogsTrackInfo
         {
@@ -332,6 +335,8 @@ public sealed class DiscogsMatcher
             ReleaseDate = releaseDate,
             CatalogNumber = catalogNumber,
             ReleaseId = release.Id.ToString(CultureInfo.InvariantCulture),
+            ReleaseCountry = release.Country,
+            Media = media,
             Duration = ParseDuration(track.Duration),
             TrackNumber = config.TrackNumberInt ? (int?)int.Parse(trackNumber, CultureInfo.InvariantCulture) : null,
             DiscNumber = discNumber,
@@ -341,6 +346,11 @@ public sealed class DiscogsMatcher
                 release.Formats?.SelectMany(format =>
                     (format.Descriptions ?? new List<string>()).Append(format.Name)),
                 release.Tracks.Count),
+            Composers = credits.Composers,
+            Remixers = credits.Remixers,
+            InvolvedPeople = credits.InvolvedPeople,
+            Lyricist = string.Join("; ", credits.Lyricists),
+            Publisher = string.Join("; ", credits.Publishers),
             Other = other
         };
     }
@@ -371,19 +381,86 @@ public sealed class DiscogsMatcher
             ("VINYLTRACK", new List<string> { position })
         };
 
+        return other;
+    }
+
+    private static List<string> BuildMediaFormats(DiscogsRelease release)
+    {
         if (release.Formats == null)
         {
-            return other;
+            return new List<string>();
         }
 
-        var formats = release.Formats.Select(format =>
+        return release.Formats.Select(format =>
                 format.Descriptions != null
                     ? $"{format.Qty} x {format.Name}, {string.Join(", ", format.Descriptions)}"
                     : $"{format.Qty} x {format.Name}")
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        other.Add(("MEDIATYPE", formats));
-        return other;
     }
+
+    private static DiscogsCreditFields BuildCreditFields(IEnumerable<DiscogsExtraArtist>? extraArtists)
+    {
+        var composers = new List<string>();
+        var lyricists = new List<string>();
+        var publishers = new List<string>();
+        var remixers = new List<string>();
+        var involvedPeople = new List<string>();
+
+        foreach (var credit in extraArtists ?? Enumerable.Empty<DiscogsExtraArtist>())
+        {
+            var name = CleanArtist(credit.Name);
+            var role = credit.Role?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(role))
+            {
+                continue;
+            }
+
+            var roleLower = role.ToLowerInvariant();
+            if (roleLower.Contains("lyric", StringComparison.OrdinalIgnoreCase))
+            {
+                lyricists.Add(name);
+                continue;
+            }
+
+            if (roleLower.Contains("publish", StringComparison.OrdinalIgnoreCase))
+            {
+                publishers.Add(name);
+                continue;
+            }
+
+            if (roleLower.Contains("remix", StringComparison.OrdinalIgnoreCase))
+            {
+                remixers.Add(name);
+                continue;
+            }
+
+            if (roleLower.Contains("compos", StringComparison.OrdinalIgnoreCase)
+                || roleLower.Contains("written", StringComparison.OrdinalIgnoreCase)
+                || roleLower.Contains("songwriter", StringComparison.OrdinalIgnoreCase))
+            {
+                composers.Add(name);
+                continue;
+            }
+
+            involvedPeople.Add($"{role}: {name}");
+        }
+
+        return new DiscogsCreditFields(
+            Dedupe(composers),
+            Dedupe(lyricists),
+            Dedupe(publishers),
+            Dedupe(remixers),
+            Dedupe(involvedPeople));
+    }
+
+    private static List<string> Dedupe(IEnumerable<string> values)
+        => values
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static string CleanArtist(string input) => ArtistCleanupRegex.Replace(input, "").Trim();
 
@@ -408,7 +485,7 @@ public sealed class DiscogsMatcher
 
     private static AutoTagTrack ToAutoTagTrack(DiscogsTrackInfo track)
     {
-        return new AutoTagTrack
+        var mapped = new AutoTagTrack
         {
             Title = track.Title,
             Artists = track.Artists.ToList(),
@@ -422,16 +499,39 @@ public sealed class DiscogsMatcher
             ReleaseDate = track.ReleaseDate,
             CatalogNumber = track.CatalogNumber,
             ReleaseId = track.ReleaseId,
+            ReleaseCountry = track.ReleaseCountry,
+            Media = track.Media.ToList(),
             Duration = track.Duration,
             TrackNumber = track.TrackNumber,
             DiscNumber = track.DiscNumber,
             TrackTotal = track.TrackTotal,
             ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
+            Remixers = track.Remixers.ToList(),
+            Lyricist = track.Lyricist,
+            Publisher = track.Publisher,
             Other = track.Other.ToDictionary(k => k.Key, v => v.Values)
         };
+
+        if (track.Composers.Count > 0)
+        {
+            mapped.Other["composer"] = track.Composers.ToList();
+        }
+
+        if (track.InvolvedPeople.Count > 0)
+        {
+            mapped.Other["involvedPeople"] = track.InvolvedPeople.ToList();
+        }
+
+        return mapped;
     }
 
     private sealed record MatchCandidate(double Accuracy, DiscogsTrackInfo Track);
+    private sealed record DiscogsCreditFields(
+        List<string> Composers,
+        List<string> Lyricists,
+        List<string> Publishers,
+        List<string> Remixers,
+        List<string> InvolvedPeople);
 }
 
 public sealed class DiscogsTrackInfo
@@ -449,10 +549,17 @@ public sealed class DiscogsTrackInfo
     public DateTime? ReleaseDate { get; set; }
     public string? CatalogNumber { get; set; }
     public string ReleaseId { get; set; } = "";
+    public string? ReleaseCountry { get; set; }
+    public List<string> Media { get; set; } = new();
     public TimeSpan Duration { get; set; }
     public int? TrackNumber { get; set; }
     public int? DiscNumber { get; set; }
     public int TrackTotal { get; set; }
     public string? ReleaseType { get; set; }
+    public List<string> Composers { get; set; } = new();
+    public List<string> Remixers { get; set; } = new();
+    public List<string> InvolvedPeople { get; set; } = new();
+    public string? Lyricist { get; set; }
+    public string? Publisher { get; set; }
     public List<(string Key, List<string> Values)> Other { get; set; } = new();
 }

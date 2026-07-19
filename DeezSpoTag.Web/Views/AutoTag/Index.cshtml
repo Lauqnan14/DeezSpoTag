@@ -893,6 +893,11 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section enhancement-settings-panel folder-settings-panel">
+                        <div class="tags-toolbar">
+                            <button type="button" class="action-btn action-btn-sm" data-tags-action="enable" data-tags-target="gapFillTags">Enable all</button>
+                            <button type="button" class="action-btn action-btn-sm" data-tags-action="disable" data-tags-target="gapFillTags">Disable all</button>
+                            <button type="button" class="action-btn action-btn-sm" data-tags-action="toggle" data-tags-target="gapFillTags">Toggle</button>
+                        </div>
                         <div class="tags-grid gap-fill-tags-grid" id="gap-fill-tags"></div>
                         <section class="playlist-settings-section mt-3">
                             <div class="playlist-settings-section-title">Scope</div>
@@ -1049,27 +1054,6 @@
                                     <option value="keep_lower">Keep lower-quality duplicates</option>
                                     <option value="move_to_duplicates">Move duplicates to duplicates folder</option>
                                     <option value="keep_both">Keep both</option>
-                                </select>
-                            </div>
-                            </div>
-                        </section>
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Sidecar and Artwork Policies</div>
-                            <div class="download-grid download-grid-3">
-                            <div class="form-group">
-                                <label for="folderUniformityArtworkPolicy">Artwork policy</label>
-                                <select id="folderUniformityArtworkPolicy">
-                                    <option value="preserve_existing">Preserve existing artwork</option>
-                                    <option value="prefer_higher_resolution">Prefer higher-resolution artwork</option>
-                                    <option value="preserve_all">Preserve all artwork variants</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="folderUniformityLyricsPolicy">Lyrics sidecar policy</label>
-                                <select id="folderUniformityLyricsPolicy">
-                                    <option value="merge">Merge lyrics sidecars</option>
-                                    <option value="preserve_existing">Preserve existing lyrics sidecars</option>
-                                    <option value="prefer_incoming">Prefer incoming lyrics sidecars</option>
                                 </select>
                             </div>
                             </div>

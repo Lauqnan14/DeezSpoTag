@@ -57,6 +57,7 @@ public sealed class MusicBrainzPlatform : AutoTagPlatformBase
                 SupportedTag.TrackNumber,
                 SupportedTag.TrackTotal,
                 SupportedTag.DiscNumber,
+                SupportedTag.DiscTotal,
                 SupportedTag.ReleaseType,
                 SupportedTag.Genre,
                 SupportedTag.OtherTags),

@@ -375,6 +375,14 @@ public partial class AutoTagService
         ["label"] = "label",
         ["releaseId"] = "releaseId",
         ["trackId"] = "trackId",
+        ["recordingId"] = "recordingId",
+        ["artistId"] = "artistId",
+        ["albumArtistId"] = "albumArtistId",
+        ["releaseGroupId"] = "releaseGroupId",
+        ["albumId"] = "albumId",
+        ["releaseStatus"] = "releaseStatus",
+        ["releaseCountry"] = "releaseCountry",
+        ["media"] = "media",
         ["bpm"] = "bpm",
         ["danceability"] = "danceability",
         ["energy"] = "energy",
@@ -388,6 +396,7 @@ public partial class AutoTagService
         ["liveness"] = "liveness",
         ["key"] = "key",
         ["mood"] = "mood",
+        ["activity"] = "activity",
         ["catalogNumber"] = "catalogNumber",
         ["trackNumber"] = "trackNumber",
         ["discNumber"] = "discNumber",
@@ -414,7 +423,12 @@ public partial class AutoTagService
         ["replayGain"] = "replayGain",
         ["copyright"] = "copyright",
         ["composer"] = "composer",
+        ["lyricist"] = "lyricist",
         ["involvedPeople"] = "involvedPeople",
+        ["publisher"] = "publisher",
+        ["description"] = "description",
+        ["comment"] = "description",
+        ["comments"] = "description",
         ["source"] = "source",
         ["rating"] = "rating",
         [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
@@ -3146,9 +3160,7 @@ public partial class AutoTagService
             GenerateReconciliationReport = ReadBool(folderUniformity, "generateReconciliationReport") == true,
             UseShazamForUntaggedFiles = ReadBool(folderUniformity, "useShazamForUntaggedFiles") == true,
             DuplicateConflictPolicy = folderUniformity["duplicateConflictPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.DuplicateConflictKeepBest,
-            DuplicatesFolderName = folderUniformity["duplicatesFolderName"]?.GetValue<string>() ?? DuplicateCleanerService.DuplicatesFolderName,
-            ArtworkPolicy = folderUniformity["artworkPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.ArtworkPolicyPreserveExisting,
-            LyricsPolicy = folderUniformity["lyricsPolicy"]?.GetValue<string>() ?? AutoTagOrganizerOptions.LyricsPolicyMerge
+            DuplicatesFolderName = folderUniformity["duplicatesFolderName"]?.GetValue<string>() ?? DuplicateCleanerService.DuplicatesFolderName
         };
 
         return options;

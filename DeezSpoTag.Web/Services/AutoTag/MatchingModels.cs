@@ -55,9 +55,13 @@ public sealed class AutoTagTrack : AudioFeaturesBase
     public int? TrackTotal { get; set; }
     public string? ReleaseType { get; set; }
     public int? DiscNumber { get; set; }
+    public int? DiscTotal { get; set; }
     public string? Isrc { get; set; }
     public string? Label { get; set; }
     public string? CatalogNumber { get; set; }
+    public string? Lyricist { get; set; }
+    public string? Publisher { get; set; }
+    public string? Description { get; set; }
     public List<string> Genres { get; set; } = new();
     public List<string> Styles { get; set; } = new();
     public string? Art { get; set; }

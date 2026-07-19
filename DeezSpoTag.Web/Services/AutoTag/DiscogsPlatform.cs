@@ -28,11 +28,18 @@ public sealed class DiscogsPlatform : AutoTagPlatformBase
                 SupportedTag.ReleaseDate,
                 SupportedTag.CatalogNumber,
                 SupportedTag.ReleaseId,
+                SupportedTag.ReleaseCountry,
+                SupportedTag.Media,
                 SupportedTag.Duration,
                 SupportedTag.TrackNumber,
                 SupportedTag.DiscNumber,
                 SupportedTag.TrackTotal,
                 SupportedTag.ReleaseType,
+                SupportedTag.Composer,
+                SupportedTag.Lyricist,
+                SupportedTag.Publisher,
+                SupportedTag.Remixer,
+                SupportedTag.InvolvedPeople,
                 SupportedTag.OtherTags
             },
             CustomOptions = new PlatformCustomOptions

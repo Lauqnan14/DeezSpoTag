@@ -295,6 +295,11 @@ public sealed class SpotifyMatcher
             Genres = track.Genres.ToList()
         };
 
+        if (!string.IsNullOrWhiteSpace(track.Copyright))
+        {
+            mapped.Other["copyright"] = new List<string> { track.Copyright.Trim() };
+        }
+
         if (!string.IsNullOrWhiteSpace(normalizedTrackId))
         {
             mapped.Other["SPOTIFY_TRACK_ID"] = new List<string> { normalizedTrackId };

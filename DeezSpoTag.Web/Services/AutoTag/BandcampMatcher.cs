@@ -71,7 +71,8 @@ public sealed class BandcampMatcher
             ReleaseId = track.ReleaseId,
             TrackTotal = track.TrackTotal,
             ReleaseType = AutoTagReleaseCategory.Resolve(null, track.TrackTotal),
-            ReleaseDate = track.ReleaseDate
+            ReleaseDate = track.ReleaseDate,
+            Description = track.Description
         };
     }
 }

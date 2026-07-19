@@ -176,8 +176,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string CopyrightTag = "copyright";
     private const string CopyrightRawTag = "COPYRIGHT";
     private const string ComposerTag = "composer";
+    private const string LyricistTag = "lyricist";
+    private const string LyricistRawTag = "LYRICIST";
     private const string InvolvedPeopleTag = "involvedPeople";
     private const string InvolvedPeopleRawTag = "INVOLVEDPEOPLE";
+    private const string PublisherTag = "publisher";
+    private const string PublisherRawTag = "PUBLISHER";
+    private const string DescriptionTag = "description";
+    private const string DescriptionRawTag = "DESCRIPTION";
+    private const string CommentRawTag = "COMMENT";
     private const string SourceTag = "source";
     private const string SourceRawTag = "SOURCE";
     private const string SourceIdRawTag = "SOURCEID";
@@ -218,21 +225,60 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string VorbisFormat = "vorbis";
     private static readonly HashSet<string> FirstClassRawOtherTags = new(StringComparer.OrdinalIgnoreCase)
     {
+        RecordingIdTag,
         RecordingIdRawTag,
         "MUSICBRAINZ_RECORDINGID",
         "MUSICBRAINZ_RECORDING_ID",
+        ArtistIdTag,
         ArtistIdRawTag,
         "MUSICBRAINZ_ARTISTID",
+        AlbumArtistIdTag,
         AlbumArtistIdRawTag,
         "MUSICBRAINZ_ALBUMARTISTID",
+        ReleaseGroupIdTag,
         ReleaseGroupIdRawTag,
         "MUSICBRAINZ_RELEASEGROUPID",
+        AlbumIdTag,
         AlbumIdRawTag,
         "MUSICBRAINZ_ALBUMID",
+        ReleaseStatusTag,
         ReleaseStatusRawTag,
+        ReleaseCountryTag,
         ReleaseCountryRawTag,
+        BarcodeTag,
         BarcodeRawTag,
-        MediaRawTag
+        "upc",
+        MediaTag,
+        MediaRawTag,
+        SourceTag,
+        SourceRawTag,
+        "sourceId",
+        "SOURCE_ID",
+        SourceIdRawTag,
+        ReplayGainTag,
+        ReplayGainRawTag,
+        "gain",
+        CopyrightTag,
+        CopyrightRawTag,
+        ComposerTag,
+        ComposerUpperTag,
+        "TCOM",
+        LyricistTag,
+        LyricistRawTag,
+        "TEXT",
+        InvolvedPeopleTag,
+        InvolvedPeopleRawTag,
+        PublisherTag,
+        PublisherRawTag,
+        DescriptionTag,
+        DescriptionRawTag,
+        CommentRawTag,
+        RatingTag,
+        RatingRawTag,
+        LanguageTag,
+        LanguageRawTag,
+        DiscTotalTag,
+        DiscTotalRawTag
     };
     private static readonly Dictionary<string, Action<TagSettings>> TagSettingsAppliers = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -273,7 +319,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         [ReplayGainTag] = settings => settings.ReplayGain = true,
         [CopyrightTag] = settings => settings.Copyright = true,
         [ComposerTag] = settings => settings.Composer = true,
+        [LyricistTag] = settings => settings.Lyricist = true,
         [InvolvedPeopleTag] = settings => settings.InvolvedPeople = true,
+        [PublisherTag] = settings => settings.Publisher = true,
+        [DescriptionTag] = settings => settings.Description = true,
         [SourceTag] = settings => settings.Source = true,
         [UrlTag] = settings => settings.Url = true,
         [TrackIdTag] = settings => settings.TrackId = true,
@@ -5865,12 +5914,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         TagWriteExecutionContext context)
     {
         WriteDiscNumberTag(file, context);
+        WriteDiscTotalTag(file, context);
         WriteTrackNumberTag(file, context);
         WriteBarcodeTag(tagWriteContext, context);
         WriteReplayGainTag(tagWriteContext, context);
         WriteCopyrightTag(tagWriteContext, context);
         WriteComposerTag(tagWriteContext, context);
+        WriteLyricistTag(tagWriteContext, context);
         WriteInvolvedPeopleTag(tagWriteContext, context);
+        WritePublisherTag(tagWriteContext, context);
+        WriteDescriptionTag(tagWriteContext, context);
         WriteSourceTag(tagWriteContext, context);
         WriteRatingTag(tagWriteContext, context);
         WriteLanguageTag(tagWriteContext, context);
@@ -5897,6 +5950,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ResolveFirstPositiveInt(context.SourceTrack, DiscTotalTag, DiscTotalRawTag),
             SupportedTag.DiscNumber,
             isDisc: true);
+    }
+
+    private static void WriteDiscTotalTag(TagLib.File file, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains(DiscTotalTag)
+            || !context.EffectiveTagSettings.DiscTotal)
+        {
+            return;
+        }
+
+        var total = context.SourceTrack.DiscTotal is > 0
+            ? context.SourceTrack.DiscTotal
+            : ResolveFirstPositiveInt(context.SourceTrack, DiscTotalTag, DiscTotalRawTag);
+        if (!total.HasValue)
+        {
+            return;
+        }
+
+        SetDiscTotal(file, context, total.Value);
     }
 
     private static void WriteTrackNumberTag(TagLib.File file, TagWriteExecutionContext context)
@@ -5986,6 +6058,22 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         SetRawIfAllowed(tagWriteContext, ComposerTag, ResolveComposerRawName(context.Extension), values);
     }
 
+    private static void WriteLyricistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains(LyricistTag) || !context.EffectiveTagSettings.Lyricist)
+        {
+            return;
+        }
+
+        var values = ResolveFirstClassOrOtherValues(context.SourceTrack.Lyricist, context.SourceTrack, LyricistTag, LyricistRawTag, "TEXT");
+        if (values.Count == 0)
+        {
+            return;
+        }
+
+        SetRawIfAllowed(tagWriteContext, LyricistTag, ResolveLyricistRawName(context.Extension), values);
+    }
+
     private static void WriteInvolvedPeopleTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
     {
         if (!context.EnabledTags.Contains(InvolvedPeopleTag) || !context.EffectiveTagSettings.InvolvedPeople)
@@ -6000,6 +6088,39 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         SetRawIfAllowed(tagWriteContext, InvolvedPeopleTag, InvolvedPeopleRawTag, values);
+    }
+
+    private static void WritePublisherTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains(PublisherTag) || !context.EffectiveTagSettings.Publisher)
+        {
+            return;
+        }
+
+        var values = ResolveFirstClassOrOtherValues(context.SourceTrack.Publisher, context.SourceTrack, PublisherTag, PublisherRawTag);
+        if (values.Count == 0)
+        {
+            return;
+        }
+
+        SetRawIfAllowed(tagWriteContext, PublisherTag, PublisherRawTag, values);
+    }
+
+    private static void WriteDescriptionTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains(DescriptionTag) || !context.EffectiveTagSettings.Description)
+        {
+            return;
+        }
+
+        var values = ResolveFirstClassOrOtherValues(context.SourceTrack.Description, context.SourceTrack, DescriptionTag, DescriptionRawTag, CommentRawTag);
+        if (values.Count == 0)
+        {
+            return;
+        }
+
+        var rawName = IsMp4Family(context.Extension) ? "ldes" : DescriptionRawTag;
+        SetRawIfAllowed(tagWriteContext, DescriptionTag, rawName, values);
     }
 
     private static void WriteSourceTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
@@ -6122,7 +6243,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         foreach (var kvp in context.SourceTrack.Other)
         {
-            if (FirstClassRawOtherTags.Contains(kvp.Key))
+            if (IsFirstClassOtherRawKey(kvp.Key))
             {
                 continue;
             }
@@ -6822,7 +6943,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             [MediaTag] = SupportedTag.Media,
             [CopyrightTag] = SupportedTag.Copyright,
             [ComposerTag] = SupportedTag.Composer,
+            [LyricistTag] = SupportedTag.Lyricist,
             [InvolvedPeopleTag] = SupportedTag.InvolvedPeople,
+            [PublisherTag] = SupportedTag.Publisher,
+            [DescriptionTag] = SupportedTag.Description,
             [ReplayGainTag] = SupportedTag.ReplayGain,
             [SourceTag] = SupportedTag.Source,
             [RatingTag] = SupportedTag.Rating,
@@ -6837,7 +6961,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         map[DurationTag] = SupportedTag.Duration;
         map[TrackTotalTag] = SupportedTag.TrackTotal;
         map[ReleaseTypeTag] = SupportedTag.ReleaseType;
-        map[DiscTotalTag] = SupportedTag.DiscNumber;
+        map[DiscTotalTag] = SupportedTag.DiscTotal;
         map["isrc"] = SupportedTag.ISRC;
         map[PublishDateTag] = SupportedTag.PublishDate;
         map[ReleaseDateTag] = SupportedTag.ReleaseDate;
@@ -6930,6 +7054,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         add(ReleaseCountryTag, !string.IsNullOrWhiteSpace(track.ReleaseCountry));
         add(BarcodeTag, !string.IsNullOrWhiteSpace(track.Barcode));
         add(MediaTag, track.Media.Count > 0);
+        add(LyricistTag, !string.IsNullOrWhiteSpace(track.Lyricist));
+        add(PublisherTag, !string.IsNullOrWhiteSpace(track.Publisher));
+        add(DescriptionTag, !string.IsNullOrWhiteSpace(track.Description));
     }
 
     private static void AddAutoTagFeatureTags(AutoTagTrack track, Action<string, bool> add)
@@ -6956,7 +7083,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         add(TrackNumberTag, track.TrackNumber.HasValue && track.TrackNumber.Value > 0);
         add(TrackTotalTag, track.TrackTotal.HasValue && track.TrackTotal.Value > 0);
         add(ReleaseTypeTag, !string.IsNullOrWhiteSpace(AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal)));
-        add(DiscTotalTag, HasOtherTagValues(track, DiscTotalTag));
+        add(DiscTotalTag, track.DiscTotal.HasValue && track.DiscTotal.Value > 0 || HasOtherTagValues(track, DiscTotalTag));
         add(DiscNumberTag, track.DiscNumber.HasValue && track.DiscNumber.Value > 0);
         add(DurationTag, track.Duration.HasValue && track.Duration.Value.TotalSeconds > 0);
         add(IsrcTag, !string.IsNullOrWhiteSpace(track.Isrc));
@@ -6972,7 +7099,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         add(ReplayGainTag, HasOtherTagValues(track, ReplayGainTag));
         add(CopyrightTag, HasOtherTagValues(track, CopyrightTag));
         add(ComposerTag, HasOtherTagValues(track, ComposerTag));
+        add(LyricistTag, HasOtherTagValues(track, LyricistTag) || HasOtherTagValues(track, LyricistRawTag) || HasOtherTagValues(track, "TEXT"));
         add(InvolvedPeopleTag, HasOtherTagValues(track, InvolvedPeopleTag));
+        add(PublisherTag, HasOtherTagValues(track, PublisherTag) || HasOtherTagValues(track, PublisherRawTag));
+        add(DescriptionTag, HasOtherTagValues(track, DescriptionTag) || HasOtherTagValues(track, DescriptionRawTag) || HasOtherTagValues(track, CommentRawTag));
         add(SourceTag, HasOtherTagValues(track, SourceTag));
         add(RatingTag, HasOtherTagValues(track, RatingTag));
         add(LanguageTag, HasOtherTagValues(track, LanguageTag));
@@ -7006,7 +7136,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 || key.Equals(UnsyncedLyricsTag, StringComparison.OrdinalIgnoreCase)
                 || key.Equals(LyricsTag, StringComparison.OrdinalIgnoreCase)
                 || key.Equals(TtmlLyricsTag, StringComparison.OrdinalIgnoreCase)
-                || key.Equals(SyncedLyricsSourceFormatTag, StringComparison.OrdinalIgnoreCase))
+                || key.Equals(SyncedLyricsSourceFormatTag, StringComparison.OrdinalIgnoreCase)
+                || key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase)
+                || IsFirstClassOtherRawKey(key))
             {
                 continue;
             }
@@ -7020,6 +7152,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static bool HasOtherTagValues(AutoTagTrack track, string key)
     {
         return track.Other.TryGetValue(key, out var values) && values.Count > 0;
+    }
+
+    private static bool IsFirstClassOtherRawKey(string key)
+    {
+        if (FirstClassRawOtherTags.Contains(key))
+        {
+            return true;
+        }
+
+        return key.EndsWith("_TRACK_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_RELEASE_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_ALBUM_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_ARTIST_ID", StringComparison.OrdinalIgnoreCase)
+            || key.EndsWith("_URL", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasReleaseTypeTagEnabled(HashSet<string> enabledTags)
@@ -7111,7 +7257,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Label => TagRawProbe.HasId3Raw(tag, "TPUB"),
             SupportedTag.Copyright => TagRawProbe.HasId3Raw(tag, CopyrightRawTag),
             SupportedTag.Composer => TagRawProbe.HasId3Raw(tag, "TCOM"),
+            SupportedTag.Lyricist => TagRawProbe.HasId3Raw(tag, "TEXT") || TagRawProbe.HasId3Raw(tag, LyricistRawTag),
             SupportedTag.InvolvedPeople => TagRawProbe.HasId3Raw(tag, InvolvedPeopleRawTag),
+            SupportedTag.Publisher => TagRawProbe.HasId3Raw(tag, PublisherRawTag),
+            SupportedTag.Description => TagRawProbe.HasId3Raw(tag, DescriptionRawTag) || TagRawProbe.HasId3Raw(tag, CommentRawTag) || !string.IsNullOrWhiteSpace(tag.Comment),
             SupportedTag.ReplayGain => TagRawProbe.HasId3Raw(tag, ReplayGainRawTag),
             SupportedTag.Source => TagRawProbe.HasId3Raw(tag, SourceRawTag),
             SupportedTag.Rating => TagRawProbe.HasId3Raw(tag, RatingRawTag),
@@ -7123,6 +7272,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.TrackTotal => tag.TrackCount > 0,
             SupportedTag.ReleaseType => TagRawProbe.HasId3Raw(tag, ReleaseTypeRawTag),
             SupportedTag.DiscNumber => tag.Disc > 0,
+            SupportedTag.DiscTotal => tag.DiscCount > 0,
             SupportedTag.Duration => TagRawProbe.HasId3Raw(tag, "TLEN"),
             SupportedTag.Remixer => TagRawProbe.HasId3Raw(tag, "TPE4"),
             SupportedTag.Mood => TagRawProbe.HasId3Raw(tag, "TMOO"),
@@ -7176,7 +7326,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Label => tag.GetField(LabelUpperTag).Length > 0,
             SupportedTag.Copyright => tag.GetField(CopyrightRawTag).Length > 0,
             SupportedTag.Composer => tag.GetField(ComposerUpperTag).Length > 0,
+            SupportedTag.Lyricist => tag.GetField(LyricistRawTag).Length > 0,
             SupportedTag.InvolvedPeople => tag.GetField(InvolvedPeopleRawTag).Length > 0,
+            SupportedTag.Publisher => tag.GetField(PublisherRawTag).Length > 0,
+            SupportedTag.Description => tag.GetField(DescriptionRawTag).Length > 0 || tag.GetField(CommentRawTag).Length > 0,
             SupportedTag.ReplayGain => tag.GetField(ReplayGainRawTag).Length > 0,
             SupportedTag.Source => tag.GetField(SourceRawTag).Length > 0,
             SupportedTag.Rating => tag.GetField(RatingRawTag).Length > 0,
@@ -7188,6 +7341,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.TrackTotal => tag.GetField(TrackTotalRawTag).Length > 0,
             SupportedTag.ReleaseType => tag.GetField(ReleaseTypeRawTag).Length > 0,
             SupportedTag.DiscNumber => tag.GetField("DISCNUMBER").Length > 0,
+            SupportedTag.DiscTotal => tag.GetField(DiscTotalRawTag).Length > 0,
             SupportedTag.Duration => tag.GetField(LengthUpperTag).Length > 0,
             SupportedTag.Remixer => tag.GetField(RemixerUpperTag).Length > 0,
             SupportedTag.Mood => tag.GetField("MOOD").Length > 0,
@@ -7242,7 +7396,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.Label => Mp4TagHelper.HasRaw(file, LabelUpperTag),
             SupportedTag.Copyright => Mp4TagHelper.HasRaw(file, CopyrightRawTag),
             SupportedTag.Composer => Mp4TagHelper.HasRaw(file, "©wrt"),
+            SupportedTag.Lyricist => Mp4TagHelper.HasRaw(file, LyricistRawTag),
             SupportedTag.InvolvedPeople => Mp4TagHelper.HasRaw(file, InvolvedPeopleRawTag),
+            SupportedTag.Publisher => Mp4TagHelper.HasRaw(file, PublisherRawTag),
+            SupportedTag.Description => Mp4TagHelper.HasRaw(file, "ldes") || Mp4TagHelper.HasRaw(file, DescriptionRawTag),
             SupportedTag.ReplayGain => Mp4TagHelper.HasRaw(file, ReplayGainRawTag),
             SupportedTag.Source => Mp4TagHelper.HasRaw(file, SourceRawTag),
             SupportedTag.Rating => Mp4TagHelper.HasRaw(file, RatingRawTag),
@@ -7254,6 +7411,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SupportedTag.TrackTotal => Mp4TagHelper.HasField(file, supportedTag),
             SupportedTag.ReleaseType => Mp4TagHelper.HasRaw(file, ReleaseTypeRawTag),
             SupportedTag.DiscNumber => Mp4TagHelper.HasField(file, supportedTag),
+            SupportedTag.DiscTotal => file.Tag.DiscCount > 0,
             SupportedTag.Duration => Mp4TagHelper.HasRaw(file, LengthUpperTag),
             SupportedTag.Remixer => Mp4TagHelper.HasRaw(file, RemixerUpperTag),
             SupportedTag.Mood => Mp4TagHelper.HasRaw(file, "MOOD"),
@@ -7395,6 +7553,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AddSingleValueCustomTagWrite(writes, ReleaseStatusTag, SupportedTag.ReleaseStatus, ReleaseStatusRawTag, track.ReleaseStatus);
         AddSingleValueCustomTagWrite(writes, ReleaseCountryTag, SupportedTag.ReleaseCountry, ReleaseCountryRawTag, track.ReleaseCountry);
         AddSingleValueCustomTagWrite(writes, BarcodeTag, SupportedTag.Barcode, BarcodeRawTag, track.Barcode);
+        AddSingleValueCustomTagWrite(writes, LyricistTag, SupportedTag.Lyricist, ResolveFieldRawName(SupportedTag.Lyricist, format, config), track.Lyricist);
+        AddSingleValueCustomTagWrite(writes, PublisherTag, SupportedTag.Publisher, ResolveFieldRawName(SupportedTag.Publisher, format, config), track.Publisher);
+        AddSingleValueCustomTagWrite(writes, DescriptionTag, SupportedTag.Description, ResolveFieldRawName(SupportedTag.Description, format, config), track.Description);
         if (track.Media.Count > 0)
         {
             writes.Add(new CustomTagWrite(MediaTag, SupportedTag.Media, MediaRawTag, track.Media.ToList()));
@@ -7422,7 +7583,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static void AddOtherTagWrites(List<CustomTagWrite> writes, IReadOnlyDictionary<string, List<string>> otherTags)
     {
-        foreach (var kvp in otherTags.Where(kvp => kvp.Value.Count > 0 && !FirstClassRawOtherTags.Contains(kvp.Key)))
+        foreach (var kvp in otherTags.Where(kvp => kvp.Value.Count > 0 && !IsFirstClassOtherRawKey(kvp.Key)))
         {
             var isReleaseType = kvp.Key.Equals(ReleaseTypeRawTag, StringComparison.OrdinalIgnoreCase);
             writes.Add(new CustomTagWrite(
@@ -7481,6 +7642,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 VorbisFormat => "MOOD",
                 _ => "MOOD"
             },
+            SupportedTag.Lyricist => format == "id3" ? "TEXT" : LyricistRawTag,
+            SupportedTag.Publisher => PublisherRawTag,
+            SupportedTag.Description => format == "mp4" ? "ldes" : DescriptionRawTag,
             SupportedTag.Activity => "ACTIVITY",
             SupportedTag.CatalogNumber => CatalogNumberUpperTag,
             _ => tag.ToString()
@@ -7886,6 +8050,50 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         frame.Text = new[] { value };
     }
 
+    private static void SetDiscTotal(TagLib.File file, TagWriteExecutionContext context, int total)
+    {
+        if (context.Extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            var id3 = (TagLib.Id3v2.Tag)file.GetTag(TagTypes.Id3v2, true);
+            if (!ShouldOverwriteTag(context.Config, SupportedTag.DiscTotal) && id3.DiscCount > 0)
+            {
+                return;
+            }
+
+            var discNumber = file.Tag.Disc > 0
+                ? file.Tag.Disc
+                : context.SourceTrack.DiscNumber is > 0
+                    ? (uint)context.SourceTrack.DiscNumber.Value
+                    : 0;
+            var frame = TagLib.Id3v2.TextInformationFrame.Get(id3, "TPOS", true);
+            frame.Text = new[] { discNumber > 0 ? $"{discNumber}/{total}" : $"0/{total}" };
+            return;
+        }
+
+        if (context.Extension.Equals(FlacExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            var vorbis = (TagLib.Ogg.XiphComment)file.GetTag(TagTypes.Xiph, true);
+            if (!ShouldOverwriteTag(context.Config, SupportedTag.DiscTotal)
+                && TagRawProbe.HasVorbisRaw(vorbis, DiscTotalRawTag))
+            {
+                return;
+            }
+
+            SetVorbisRaw(vorbis, DiscTotalRawTag, new List<string> { total.ToString(CultureInfo.InvariantCulture) }, "");
+            return;
+        }
+
+        if (IsMp4Family(context.Extension))
+        {
+            if (!ShouldOverwriteTag(context.Config, SupportedTag.DiscTotal) && file.Tag.DiscCount > 0)
+            {
+                return;
+            }
+
+            file.Tag.DiscCount = (uint)total;
+        }
+    }
+
     private static void WriteVorbisTrackNumber(
         TagLib.File file,
         string numberText,
@@ -7904,7 +8112,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         SetVorbisRaw(vorbis, field, new List<string> { numberText }, "");
         if (isDisc
             && total.HasValue
-            && (ShouldOverwriteTag(config, SupportedTag.DiscNumber) || !TagRawProbe.HasVorbisRaw(vorbis, DiscTotalRawTag)))
+            && (ShouldOverwriteTag(config, SupportedTag.DiscTotal) || !TagRawProbe.HasVorbisRaw(vorbis, DiscTotalRawTag)))
         {
             SetVorbisRaw(vorbis, DiscTotalRawTag, new List<string> { total.Value.ToString(CultureInfo.InvariantCulture) }, "");
         }
@@ -8354,6 +8562,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 SupportedTag.TrackNumber => file.Tag.Track > 0,
                 SupportedTag.TrackTotal => file.Tag.TrackCount > 0,
                 SupportedTag.DiscNumber => file.Tag.Disc > 0,
+                SupportedTag.DiscTotal => file.Tag.DiscCount > 0,
                 SupportedTag.UnsyncedLyrics => !string.IsNullOrWhiteSpace(file.Tag.Lyrics),
                 SupportedTag.AlbumArt => file.Tag.Pictures?.Length > 0,
                 _ => false
@@ -8413,6 +8622,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     if (int.TryParse(values.FirstOrDefault(), out var disc))
                     {
                         context.File.Tag.Disc = (uint)disc;
+                    }
+                    return true;
+                case SupportedTag.DiscTotal:
+                    if (int.TryParse(values.FirstOrDefault(), out var discTotal))
+                    {
+                        context.File.Tag.DiscCount = (uint)discTotal;
                     }
                     return true;
                 default:
@@ -9076,6 +9291,21 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return values;
     }
 
+    private static List<string> ResolveFirstClassOrOtherValues(string? firstClassValue, AutoTagTrack track, params string[] keys)
+    {
+        var values = ResolveOtherValues(track, keys);
+        if (!string.IsNullOrWhiteSpace(firstClassValue))
+        {
+            values.Insert(0, firstClassValue.Trim());
+        }
+
+        return values
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private static IEnumerable<string> SplitCompositeRawValues(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -9106,6 +9336,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return "©wrt";
+    }
+
+    private static string ResolveLyricistRawName(string extension)
+    {
+        if (extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase))
+        {
+            return "TEXT";
+        }
+
+        return LyricistRawTag;
     }
 
     private static void ApplyOverwriteRule(

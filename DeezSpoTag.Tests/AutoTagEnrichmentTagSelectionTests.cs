@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Web.Services.AutoTag;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -166,6 +168,27 @@ public sealed class AutoTagEnrichmentTagSelectionTests
     [InlineData("length", "duration")]
     [InlineData("lyrics", "unsyncedLyrics")]
     [InlineData("cover", "albumArt")]
+    [InlineData("recordingId", "recordingId")]
+    [InlineData("artistId", "artistId")]
+    [InlineData("albumArtistId", "albumArtistId")]
+    [InlineData("releaseGroupId", "releaseGroupId")]
+    [InlineData("albumId", "albumId")]
+    [InlineData("releaseStatus", "releaseStatus")]
+    [InlineData("releaseCountry", "releaseCountry")]
+    [InlineData("media", "media")]
+    [InlineData("activity", "activity")]
+    [InlineData("discTotal", "discTotal")]
+    [InlineData("copyright", "copyright")]
+    [InlineData("composer", "composer")]
+    [InlineData("lyricist", "lyricist")]
+    [InlineData("involvedPeople", "involvedPeople")]
+    [InlineData("publisher", "publisher")]
+    [InlineData("description", "description")]
+    [InlineData("comment", "description")]
+    [InlineData("comments", "description")]
+    [InlineData("replayGain", "replayGain")]
+    [InlineData("language", "language")]
+    [InlineData("rating", "rating")]
     public void NormalizeSupportedTagKey_MapsAliasesToCanonicalKeys(string input, string expected)
     {
         var method = typeof(AutoTagService).GetMethod(
@@ -175,6 +198,64 @@ public sealed class AutoTagEnrichmentTagSelectionTests
 
         var actual = method!.Invoke(null, new object?[] { input }) as string;
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void LocalRunner_DiscTotalMapsToItsOwnSupportedTag()
+    {
+        var field = typeof(LocalAutoTagRunner).GetField(
+            "SupportedTagMap",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+
+        var map = Assert.IsAssignableFrom<IReadOnlyDictionary<string, SupportedTag>>(field!.GetValue(null));
+
+        Assert.True(map.TryGetValue("discTotal", out var tag));
+        Assert.Equal(SupportedTag.DiscTotal, tag);
+    }
+
+    [Fact]
+    public void EnhancementFolderUniformity_DoesNotExposeLyricsOrArtworkBehaviorPolicies()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.DoesNotContain("folderUniformityArtworkPolicy", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformityLyricsPolicy", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformityArtworkPolicy", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformityLyricsPolicy", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformity.artworkPolicy", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformity.lyricsPolicy", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformity[\"artworkPolicy\"]", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("folderUniformity[\"lyricsPolicy\"]", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementTagList_DoesNotExposeUnbackedAudioFeatureTags()
+    {
+        var repoRoot = FindRepoRoot();
+        var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var tagList = ExtractConstArray(script, "const TAGS = [");
+        var unbacked = new[]
+        {
+            "danceability",
+            "energy",
+            "valence",
+            "acousticness",
+            "instrumentalness",
+            "speechiness",
+            "loudness",
+            "tempo",
+            "timeSignature",
+            "liveness"
+        };
+
+        foreach (var tag in unbacked)
+        {
+            Assert.DoesNotContain($"tag: \"{tag}\"", tagList, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -213,5 +294,38 @@ public sealed class AutoTagEnrichmentTagSelectionTests
             }));
 
         Assert.Equal(ExpectedReleaseDateOnly, actual);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = AppContext.BaseDirectory;
+        while (!string.IsNullOrEmpty(dir))
+        {
+            if (Directory.Exists(Path.Combine(dir, "DeezSpoTag.Web")))
+            {
+                return dir;
+            }
+
+            dir = Directory.GetParent(dir)?.FullName ?? string.Empty;
+        }
+
+        throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+
+    private static string ExtractConstArray(string source, string marker)
+    {
+        var start = source.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            throw new InvalidOperationException($"{marker} was not found.");
+        }
+
+        var end = source.IndexOf("];", start, StringComparison.Ordinal);
+        if (end < 0)
+        {
+            throw new InvalidOperationException($"{marker} terminator was not found.");
+        }
+
+        return source[start..(end + 2)];
     }
 }

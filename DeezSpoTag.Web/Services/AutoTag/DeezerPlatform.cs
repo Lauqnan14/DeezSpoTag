@@ -59,7 +59,6 @@ public sealed class DeezerPlatform : AutoTagPlatformBase
                     "trackTotal",
                     "releaseType",
                     "discNumber",
-                    "discTotal",
                     "genre",
                     "year",
                     "date",

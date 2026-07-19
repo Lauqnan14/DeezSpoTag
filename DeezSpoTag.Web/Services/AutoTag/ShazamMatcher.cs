@@ -100,7 +100,9 @@ public sealed class ShazamMatcher
             TrackNumber = recognized.TrackNumber,
             DiscNumber = recognized.DiscNumber,
             Explicit = recognized.Explicit,
-            Key = recognized.Key
+            Key = recognized.Key,
+            Lyricist = recognized.Lyricist,
+            Publisher = recognized.Publisher
         };
 
         ApplyConfiguredMetadata(track, recognized, resolvedConfig);
@@ -377,6 +379,10 @@ public sealed class ShazamMatcher
         AddOtherIfNotEmpty(track, "SHAZAM_COMPOSER", recognized.Composer);
         AddOtherIfNotEmpty(track, "SHAZAM_LYRICIST", recognized.Lyricist);
         AddOtherIfNotEmpty(track, "SHAZAM_PUBLISHER", recognized.Publisher);
+        AddOtherIfNotEmpty(track, "language", recognized.Language);
+        AddOtherIfNotEmpty(track, "composer", recognized.Composer);
+        AddOtherIfNotEmpty(track, "lyricist", recognized.Lyricist);
+        AddOtherIfNotEmpty(track, "publisher", recognized.Publisher);
         AddOtherIfNotEmpty(track, "SHAZAM_ALBUM_ADAM_ID", recognized.AlbumAdamId);
         if (recognized.TrackNumber is > 0)
         {

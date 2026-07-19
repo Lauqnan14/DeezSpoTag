@@ -22,5 +22,8 @@ public sealed class AutoTagSharedClassificationToggleContractTests
         Assert.Contains("state.config.gapFillTags = normalizeAutoTagSelectionList(getCheckedTags(\"gapFillTags\"))", script, StringComparison.Ordinal);
         Assert.Contains("id=\"autotag-tags\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"gap-fill-tags\"", view, StringComparison.Ordinal);
+        Assert.Contains("data-tags-action=\"enable\" data-tags-target=\"gapFillTags\"", view, StringComparison.Ordinal);
+        Assert.Contains("data-tags-action=\"disable\" data-tags-target=\"gapFillTags\"", view, StringComparison.Ordinal);
+        Assert.Contains("data-tags-action=\"toggle\" data-tags-target=\"gapFillTags\"", view, StringComparison.Ordinal);
     }
 }

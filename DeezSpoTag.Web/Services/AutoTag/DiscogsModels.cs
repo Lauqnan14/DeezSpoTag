@@ -50,6 +50,8 @@ public sealed class DiscogsTrack
     public string Position { get; set; } = "";
     public string Title { get; set; } = "";
     public List<DiscogsExtraArtist>? Artists { get; set; }
+    [JsonPropertyName("extraartists")]
+    public List<DiscogsExtraArtist>? ExtraArtists { get; set; }
     public string Duration { get; set; } = "";
 }
 

@@ -125,7 +125,8 @@ public sealed class BandcampTrack
             ReleaseId = InAlbum.Id ?? string.Empty,
             TrackTotal = InAlbum.NumTracks,
             ReleaseDate = releaseDate,
-            ReleaseYear = releaseDate?.Year
+            ReleaseYear = releaseDate?.Year,
+            Description = Description
         };
     }
 
@@ -194,6 +195,7 @@ public sealed class BandcampTrackInfo
     public int? TrackTotal { get; set; }
     public DateTime? ReleaseDate { get; set; }
     public int? ReleaseYear { get; set; }
+    public string? Description { get; set; }
 }
 
 public static class BandcampText

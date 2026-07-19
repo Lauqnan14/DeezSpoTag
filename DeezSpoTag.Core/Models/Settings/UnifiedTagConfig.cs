@@ -44,7 +44,10 @@ public class UnifiedTagConfig
     public TagSource SyncedLyrics { get; set; } = TagSource.DownloadSource;
 
     public TagSource Composer { get; set; } = TagSource.DownloadSource;
+    public TagSource Lyricist { get; set; } = TagSource.DownloadSource;
     public TagSource InvolvedPeople { get; set; } = TagSource.DownloadSource;
+    public TagSource Publisher { get; set; } = TagSource.DownloadSource;
+    public TagSource Description { get; set; } = TagSource.DownloadSource;
 
     public TagSource Source { get; set; } = TagSource.DownloadSource;
     public TagSource Explicit { get; set; } = TagSource.DownloadSource;

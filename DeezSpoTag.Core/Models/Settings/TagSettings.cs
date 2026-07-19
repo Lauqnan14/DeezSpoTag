@@ -147,8 +147,17 @@ public class TagSettings
     [JsonPropertyName("composer")]
     public bool Composer { get; set; } = false;
 
+    [JsonPropertyName("lyricist")]
+    public bool Lyricist { get; set; } = false;
+
     [JsonPropertyName("involvedPeople")]
     public bool InvolvedPeople { get; set; } = false;
+
+    [JsonPropertyName("publisher")]
+    public bool Publisher { get; set; } = false;
+
+    [JsonPropertyName("description")]
+    public bool Description { get; set; } = false;
 
     // Source and rating
     [JsonPropertyName("source")]

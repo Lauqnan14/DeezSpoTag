@@ -34,6 +34,7 @@ public enum SupportedTag
     TrackTotal,
     ReleaseType,
     DiscNumber,
+    DiscTotal,
     Mood,
     Activity,
     SyncedLyrics,
@@ -64,7 +65,10 @@ public enum SupportedTag
     ReplayGain,
     Source,
     Rating,
-    Language
+    Language,
+    Lyricist,
+    Publisher,
+    Description
 }
 
 public sealed class PlatformInfo

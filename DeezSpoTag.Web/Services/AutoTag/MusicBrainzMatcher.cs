@@ -341,6 +341,7 @@ public sealed class MusicBrainzMatcher
         if (release.Media.Count > 0)
         {
             track.DiscNumber ??= 1;
+            track.DiscTotal = release.Media.Count;
         }
 
         track.Genres = release.Genres.Select(genre => genre.Name).ToList();
@@ -899,6 +900,7 @@ public sealed class MusicBrainzMatcher
             TrackTotal = track.TrackTotal,
             ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
             DiscNumber = track.DiscNumber,
+            DiscTotal = track.DiscTotal,
             Isrc = track.Isrc,
             Label = track.Label,
             CatalogNumber = track.CatalogNumber,

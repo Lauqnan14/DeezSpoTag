@@ -70,8 +70,6 @@
                 generateReconciliationReport: false,
                 useShazamForUntaggedFiles: false,
                 duplicateConflictPolicy: "keep_best",
-                artworkPolicy: "preserve_existing",
-                lyricsPolicy: "merge",
                 runDedupe: true,
                 useShazamForDedupe: false,
                 duplicatesFolderName: "%duplicates%",
@@ -136,6 +134,7 @@
         { tag: "catalogNumber", label: "Catalog Number" },
         { tag: "trackNumber", label: "Track Number" },
         { tag: "discNumber", label: "Disc Number" },
+        { tag: "discTotal", label: "Disc Total" },
         { tag: "duration", label: "Duration" },
         { tag: "trackTotal", label: "Track Total" },
         { tag: "releaseType", label: "Release Type", tooltip: "Writes RELEASETYPE as album, single, EP, or compilation when identified by the metadata provider." },
@@ -145,6 +144,15 @@
         { tag: "year", label: "Year", tooltip: "Alias of release date. Use Date Format = Y for year-only output." },
         { tag: "date", label: "Date (full)", tooltip: "Alias of release date. Use Date Format for final write format." },
         { tag: "explicit", label: "Explicit" },
+        { tag: "copyright", label: "Copyright" },
+        { tag: "composer", label: "Composer" },
+        { tag: "lyricist", label: "Lyricist" },
+        { tag: "involvedPeople", label: "Credits (producer, mixer, etc.)" },
+        { tag: "publisher", label: "Publisher" },
+        { tag: "description", label: "Description / Comment" },
+        { tag: "replayGain", label: "ReplayGain" },
+        { tag: "language", label: "Language" },
+        { tag: "rating", label: "Rating" },
         { tag: "url", label: "URL" },
         { tag: "otherTags", label: "Other Tags", tooltip: "Specific tags only for some platforms (Beatport, Discogs)" },
         { tag: "metaTags", label: "OneTagger Tags", tooltip: "Adds 1T_TAGGEDDATE tag with timestamp" },
@@ -191,7 +199,10 @@
         ttmlLyrics: "TTML Lyrics",
         copyright: "Copyright",
         composer: "Composer",
+        lyricist: "Lyricist",
         involvedPeople: "Credits (producer, mixer, etc.)",
+        publisher: "Publisher",
+        description: "Description / Comment",
         cover: "Cover Art",
         source: "Source ID",
         url: "Source URL",
@@ -258,6 +269,15 @@
         "year",
         "date",
         "explicit",
+        "copyright",
+        "composer",
+        "lyricist",
+        "involvedPeople",
+        "publisher",
+        "description",
+        "replayGain",
+        "language",
+        "rating",
         "url",
         "lyrics",
         "unsyncedLyrics",
@@ -2088,8 +2108,6 @@
         folderUniformity.generateReconciliationReport = folderUniformity.generateReconciliationReport === true;
         folderUniformity.useShazamForUntaggedFiles = folderUniformity.useShazamForUntaggedFiles === true;
         folderUniformity.duplicateConflictPolicy = String(folderUniformity.duplicateConflictPolicy || "keep_best").trim().toLowerCase() || "keep_best";
-        folderUniformity.artworkPolicy = String(folderUniformity.artworkPolicy || "preserve_existing").trim().toLowerCase() || "preserve_existing";
-        folderUniformity.lyricsPolicy = String(folderUniformity.lyricsPolicy || "merge").trim().toLowerCase() || "merge";
         folderUniformity.runDedupe = folderUniformity.runDedupe !== false;
         folderUniformity.useShazamForDedupe = folderUniformity.useShazamForDedupe === true;
         folderUniformity.includeSubfolders = folderUniformity.includeSubfolders !== false;
@@ -2949,8 +2967,6 @@
         setChecked("folderUniformityGenerateReport", state.config.enhancement.folderUniformity.generateReconciliationReport);
         setChecked("folderUniformityUseShazamForUntaggedFiles", state.config.enhancement.folderUniformity.useShazamForUntaggedFiles);
         setValue("folderUniformityDuplicateConflictPolicy", state.config.enhancement.folderUniformity.duplicateConflictPolicy || "keep_best");
-        setValue("folderUniformityArtworkPolicy", state.config.enhancement.folderUniformity.artworkPolicy || "preserve_existing");
-        setValue("folderUniformityLyricsPolicy", state.config.enhancement.folderUniformity.lyricsPolicy || "merge");
         setChecked("runFolderUniformityDedupe", state.config.enhancement.folderUniformity.runDedupe);
         setChecked("folderUniformityUseShazamForDedupe", state.config.enhancement.folderUniformity.useShazamForDedupe);
         setValue("folderUniformityDuplicatesFolderName", state.config.enhancement.folderUniformity.duplicatesFolderName || "%duplicates%");
@@ -4020,8 +4036,6 @@
         folderUniformity.generateReconciliationReport = getChecked("folderUniformityGenerateReport", folderUniformity.generateReconciliationReport);
         folderUniformity.useShazamForUntaggedFiles = getChecked("folderUniformityUseShazamForUntaggedFiles", folderUniformity.useShazamForUntaggedFiles);
         folderUniformity.duplicateConflictPolicy = getValue("folderUniformityDuplicateConflictPolicy", folderUniformity.duplicateConflictPolicy || "keep_best").trim() || "keep_best";
-        folderUniformity.artworkPolicy = getValue("folderUniformityArtworkPolicy", folderUniformity.artworkPolicy || "preserve_existing").trim() || "preserve_existing";
-        folderUniformity.lyricsPolicy = getValue("folderUniformityLyricsPolicy", folderUniformity.lyricsPolicy || "merge").trim() || "merge";
         folderUniformity.runDedupe = getChecked("runFolderUniformityDedupe", folderUniformity.runDedupe);
         folderUniformity.useShazamForDedupe = getChecked("folderUniformityUseShazamForDedupe", folderUniformity.useShazamForDedupe);
         folderUniformity.duplicatesFolderName = getValue(

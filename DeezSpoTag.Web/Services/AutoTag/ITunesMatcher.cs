@@ -134,6 +134,7 @@ public sealed class ItunesMatcher
             TrackTotal = track.TrackTotal,
             ReleaseType = AutoTagReleaseCategory.Resolve(track.ReleaseType, track.TrackTotal),
             DiscNumber = track.DiscNumber,
+            DiscTotal = track.DiscTotal,
             Isrc = track.Isrc,
             Label = track.Label,
             Explicit = track.Explicit,

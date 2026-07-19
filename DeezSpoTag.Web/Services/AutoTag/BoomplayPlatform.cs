@@ -30,6 +30,8 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 "label",
                 "bpm",
                 "key",
+                "mood",
+                "activity",
                 "composer",
                 "language",
                 "source",

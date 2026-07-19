@@ -108,6 +108,7 @@ public sealed class MusicBrainzTrack
     public int? TrackTotal { get; set; }
     public string? ReleaseType { get; set; }
     public int? DiscNumber { get; set; }
+    public int? DiscTotal { get; set; }
     public List<string> Genres { get; set; } = new();
     public string? Art { get; set; }
     public List<(string Key, List<string> Values)> Other { get; set; } = new();
