@@ -28,7 +28,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var intentSource = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
 
-        Assert.Contains("EvaluateDownloadGateAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("EvaluateQueueGateAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("HasActiveDownloadPipelineAsync", ReadSource("DeezSpoTag.Services/Download/Queue/DownloadQueueRepository.cs"), StringComparison.Ordinal);
         Assert.Contains("EnqueueAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("EnqueueManualAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("ShouldDeferWatchTrack", watchSource, StringComparison.Ordinal);
@@ -95,33 +96,37 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_ChecksExistingWatchlistDownloadsBeforeOpeningRunBudget()
+    public void HostedCycle_SyncsPlaylistsBeforeOpeningQueuePhase()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
-        var activeCheckIndex = admissionSource.IndexOf("HasActiveWatchlistDownloadsAsync", StringComparison.Ordinal);
-        var evaluateIndex = hostedSource.IndexOf("EvaluateBatchAsync", StringComparison.Ordinal);
+        var syncPhaseIndex = hostedSource.IndexOf("PlaylistReconciliationMode.SyncOnly", StringComparison.Ordinal);
+        var evaluateIndex = hostedSource.IndexOf("EvaluateQueueGateAsync", StringComparison.Ordinal);
         var beginRunIndex = hostedSource.IndexOf("queueAdmission.BeginRun", StringComparison.Ordinal);
 
-        Assert.True(activeCheckIndex >= 0);
+        Assert.True(syncPhaseIndex >= 0);
         Assert.True(evaluateIndex >= 0);
-        Assert.True(beginRunIndex > evaluateIndex);
-        Assert.Contains("WatchQueueStopReason.PreviousWatchlistRunActive", admissionSource, StringComparison.Ordinal);
+        Assert.True(evaluateIndex > syncPhaseIndex);
+        Assert.True(beginRunIndex >= 0);
+        Assert.Contains("HasActiveDownloadPipelineAsync", admissionSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("EvaluateBatchAsync", admissionSource, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void HostedCycle_BlocksPlaylistProcessingWhenPreviousBatchWorkIsActive()
+    public void HostedCycle_BlocksQueuePhaseAfterPlaylistSyncWhenDownloadsAreActive()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
-        var batchGateIndex = hostedSource.IndexOf("EvaluateBatchAsync", StringComparison.Ordinal);
+        var syncPhaseIndex = hostedSource.IndexOf("PlaylistReconciliationMode.SyncOnly", StringComparison.Ordinal);
+        var batchGateIndex = hostedSource.IndexOf("EvaluateQueueGateAsync", StringComparison.Ordinal);
         var processPlaylistIndex = hostedSource.IndexOf("var playlistRunResult = await ProcessPlaylistWatchItemsAsync(", StringComparison.Ordinal);
 
+        Assert.True(syncPhaseIndex >= 0);
         Assert.True(batchGateIndex >= 0);
+        Assert.True(batchGateIndex > syncPhaseIndex);
         Assert.True(processPlaylistIndex > batchGateIndex);
         Assert.DoesNotContain("HasPendingPlaylistWatchBatchWorkAsync", admissionSource, StringComparison.Ordinal);
         Assert.Contains("RecoverInvalidPendingWatchClaimsAsync", hostedSource, StringComparison.Ordinal);
-        Assert.True(hostedSource.IndexOf("RecoverInvalidPendingWatchClaimsAsync", StringComparison.Ordinal) < batchGateIndex);
     }
 
     [Fact]
@@ -130,7 +135,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
 
-        Assert.DoesNotContain("PlaylistReconciliationMode", watchSource, StringComparison.Ordinal);
+        Assert.Contains("PlaylistReconciliationMode.SyncOnly", watchSource, StringComparison.Ordinal);
+        Assert.Contains("PlaylistReconciliationMode.QueueMissingOnly", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("queuePlanningAllowed", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", postDownloadSource, StringComparison.Ordinal);
@@ -138,12 +144,12 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void PreviousWatchlistRunBlock_HasSpecificNonFailureStatusAndMessage()
+    public void PreviousWatchlistRunBlock_UsesUnifiedDownloadGate()
     {
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
 
-        Assert.Contains("Waiting for downloads from the previous Watchlist run to finish.", admissionSource, StringComparison.Ordinal);
+        Assert.Contains("Waiting for active downloads, moves, or enrichment to finish.", admissionSource, StringComparison.Ordinal);
         Assert.DoesNotContain("queue_deferred_previous_watchlist_active", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("WatchQueueStopReason.PreviousWatchlistRunActive", watchSource, StringComparison.Ordinal);
     }

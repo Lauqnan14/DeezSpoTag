@@ -681,6 +681,38 @@ FROM download_task
         return result is not null && result is not DBNull;
     }
 
+    public async Task<bool> HasActiveDownloadPipelineAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT 1
+FROM download_task
+WHERE lower(status) IN ('queued', 'resolving', 'preparing', 'prepared', 'inqueue', 'running', 'downloading', 'paused', 'retrying')
+   OR (
+       lower(status) IN ('completed', 'complete')
+       AND destination_folder_id IS NOT NULL
+       AND (
+           lower(COALESCE(move_status, '')) = 'running'
+           OR lower(COALESCE(enrichment_status, '')) = 'running'
+           OR (
+               datetime(updated_at) >= datetime(@postDownloadLeaseUtc)
+               AND (
+                   lower(COALESCE(move_status, '')) IN ('', 'pending')
+                   OR lower(COALESCE(enrichment_status, '')) IN ('', 'pending')
+               )
+           )
+       )
+   )
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(
+            "postDownloadLeaseUtc",
+            (DateTimeOffset.UtcNow - DownloadQueueRecoveryPolicy.PostDownloadPendingLease).ToString("O"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result is not DBNull;
+    }
+
     public async Task<bool> HasActiveWatchlistDownloadsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);

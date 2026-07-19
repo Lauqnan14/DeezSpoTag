@@ -497,7 +497,13 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var summaryAfterRestart = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(0, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
+        var plexOnlyStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var plexOnlyTrack = Assert.Single(plexOnlyStatuses, status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("playlist_synced", plexOnlyTrack.SyncStatus);
+        Assert.Equal("plex", plexOnlyTrack.TargetService);
+        Assert.Equal("plex-track-1", plexOnlyTrack.TargetItemId);
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
@@ -534,7 +540,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var summaryWithReview = Assert.Single(
             await _repository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(0, summaryWithReview.SyncedTrackCount);
+        Assert.Equal(1, summaryWithReview.SyncedTrackCount);
 
         await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
             " SPOTIFY ",

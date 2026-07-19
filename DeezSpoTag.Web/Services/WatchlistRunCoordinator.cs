@@ -301,12 +301,36 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var settings = settingsService.LoadSettings();
         if (!settings.WatchEnabled)
         {
+            var disabledRepository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            if (disabledRepository.IsConfigured)
+            {
+                var cleanup = await disabledRepository.ClearDisabledWatchlistRuntimeAsync(stoppingToken);
+                _consecutiveFailures.Clear();
+                _nextAllowedRun.Clear();
+                _lastRun.Clear();
+                if (_logger.IsEnabled(LogLevel.Information)
+                    && (cleanup.ReconciliationRequestsDeleted > 0
+                        || cleanup.SyncJobsDeleted > 0
+                        || cleanup.ClaimsDeleted > 0
+                        || cleanup.SchedulerRowsDeleted > 0
+                        || cleanup.SourceCircuitsDeleted > 0
+                        || cleanup.PlaylistStatesUpdated > 0))
+                {
+                    _logger.LogInformation(
+                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, playlistStates={PlaylistStates}.",
+                        cleanup.ReconciliationRequestsDeleted,
+                        cleanup.SyncJobsDeleted,
+                        cleanup.ClaimsDeleted,
+                        cleanup.SchedulerRowsDeleted,
+                        cleanup.SourceCircuitsDeleted,
+                        cleanup.PlaylistStatesUpdated);
+                }
+            }
             _logger.LogDebug("Watchlist disabled in settings.");
             return;
         }
 
         var queueAdmission = scope.ServiceProvider.GetRequiredService<WatchlistQueueAdmissionService>();
-        var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
         var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
         if (!repository.IsConfigured)
         {
@@ -324,13 +348,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var playlistReconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
         var recoveredClaims = await playlistReconciler.RecoverInvalidPendingWatchClaimsAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { LastRecoveredClaimCount = recoveredClaims });
-        var admission = await queueAdmission.EvaluateBatchAsync(queueRepository, stoppingToken);
-        if (!admission.Allowed)
-        {
-            UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = admission.Message });
-            _logger.LogInformation("Watchlist queue admission deferred: {Reason}", admission.Message);
-            return;
-        }
 
         var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
         var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
@@ -453,6 +470,41 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         CleanupStaleState(allItems);
         await SeedPersistedLastRunsAsync(allItems, repository, stoppingToken);
+        var playlistSyncResult = await ProcessPlaylistWatchItemsAsync(
+            playlistItems,
+            settings,
+            repository,
+            serviceProvider,
+            queueAdmission: null,
+            requestedPlaylistKeys: new HashSet<string>(StringComparer.Ordinal),
+            PlaylistReconciliationMode.SyncOnly,
+            stoppingToken);
+        if (playlistSyncResult.AbortedRun)
+        {
+            return;
+        }
+
+        var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        var orchestrationService = serviceProvider.GetService<DownloadOrchestrationService>();
+        var queueGate = orchestrationService is null
+            ? await queueAdmission.EvaluateQueueGateAsync(queueRepository, stoppingToken)
+            : await queueAdmission.EvaluateQueueGateAsync(
+                queueRepository,
+                orchestrationService,
+                stoppingToken);
+        if (!queueGate.Allowed)
+        {
+            UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
+            _logger.LogInformation("Watchlist queue phase deferred after playlist sync: {Reason}", queueGate.Message);
+            await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
+                reconciliationRequests,
+                _reconciliationLeaseOwner,
+                stoppingToken);
+            var remainingWhenDeferred = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
+            UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingWhenDeferred });
+            return;
+        }
+
         var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
             playlistItems,
             settings,
@@ -460,6 +512,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             serviceProvider,
             queueAdmission,
             requestedPlaylistKeys,
+            PlaylistReconciliationMode.QueueMissingOnly,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
@@ -630,6 +683,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         IServiceProvider serviceProvider,
         WatchlistQueueAdmissionService? queueAdmission,
         IReadOnlySet<string> requestedPlaylistKeys,
+        PlaylistReconciliationMode mode,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
@@ -639,14 +693,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         var schedulerState = await repository.GetWatchlistSchedulerStateAsync(PlaylistWatchType, stoppingToken);
-        var targetedItems = playlistItems
-            .Where(item => requestedPlaylistKeys.Contains(item.Key))
-            .ToList();
+        var targetedItems = mode == PlaylistReconciliationMode.SyncAndQueue
+            ? playlistItems
+                .Where(item => requestedPlaylistKeys.Contains(item.Key))
+                .ToList()
+            : new List<WatchItem>();
         var targetedRun = targetedItems.Count > 0;
         var scheduledItems = targetedRun ? targetedItems : playlistItems;
-        var activeItem = targetedRun
+        var activeItem = (mode == PlaylistReconciliationMode.SyncOnly
+            || mode == PlaylistReconciliationMode.QueueMissingOnly)
             ? scheduledItems[0]
-            : ResolveInitialPlaylistItem(scheduledItems, schedulerState, settings);
+            : targetedRun
+                ? scheduledItems[0]
+                : ResolveInitialPlaylistItem(scheduledItems, schedulerState, settings);
         if (activeItem == null)
         {
             return new PlaylistRunResult(AbortedRun: false, new HashSet<string>(StringComparer.Ordinal));
@@ -716,7 +775,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     continue;
             }
 
-            var execution = await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken);
+            var execution = await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken, mode);
             if (execution.Outcome == WatchItemRunOutcome.LockBusy)
             {
                 skippedByLockBusy++;
@@ -734,7 +793,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 failed++;
             }
 
-            var remainingBudget = queueAdmission?.GetRemaining() ?? int.MaxValue;
+            var remainingBudget = mode == PlaylistReconciliationMode.QueueMissingOnly
+                ? queueAdmission?.GetRemaining() ?? int.MaxValue
+                : int.MaxValue;
             var playlistResult = execution.PlaylistResult;
             var queuedThisAttempt = playlistResult?.QueuedTracks ?? 0;
             if (playlistResult is { SystemicFailures: > 0 } systemicFailureResult)
@@ -937,7 +998,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         WatchItem item,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IServiceProvider serviceProvider,
-        CancellationToken stoppingToken)
+        CancellationToken stoppingToken,
+        PlaylistReconciliationMode mode = PlaylistReconciliationMode.SyncAndQueue)
     {
         var itemLock = _itemLocks.GetOrAdd(item.Key, _ => new SemaphoreSlim(1, 1));
         if (!await itemLock.WaitAsync(0, stoppingToken))
@@ -961,7 +1023,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 "reconciling",
                 startedUtc.AddMinutes(15),
                 stoppingToken);
-            var playlistResult = await RunItemAsync(item, serviceProvider, itemTimeout.Token);
+            var playlistResult = await RunItemAsync(item, serviceProvider, itemTimeout.Token, mode);
             _lastRun[item.Key] = DateTimeOffset.UtcNow;
             _consecutiveFailures.TryRemove(item.Key, out _);
             _nextAllowedRun.TryRemove(item.Key, out _);
@@ -1516,12 +1578,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private static async Task<PlaylistReconciliationResult?> RunItemAsync(
         WatchItem item,
         IServiceProvider serviceProvider,
-        CancellationToken stoppingToken)
+        CancellationToken stoppingToken,
+        PlaylistReconciliationMode mode)
     {
         if (item.Kind == PlaylistKind && item.Playlist != null)
         {
             var watcher = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
-            return await watcher.ReconcilePlaylistAsync(item.Playlist, stoppingToken);
+            return await watcher.ReconcilePlaylistAsync(item.Playlist, stoppingToken, mode: mode);
         }
 
         if (item.Kind == ArtistKind && item.Artist != null)

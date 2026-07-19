@@ -52,7 +52,11 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
 
-        Assert.Contains("EvaluateDownloadGateAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EvaluateQueueGateAsync", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "HasActiveDownloadPipelineAsync",
+            ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs"),
+            StringComparison.Ordinal);
         Assert.Contains("intentService.EnqueueAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("intentService.EnqueueManualAsync", source, StringComparison.Ordinal);
     }

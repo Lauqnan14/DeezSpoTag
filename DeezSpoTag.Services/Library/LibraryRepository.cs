@@ -7084,32 +7084,19 @@ LEFT JOIN (
     WHERE lower(COALESCE(track.identity_status, '')) <> 'review'
       AND EXISTS (
           SELECT 1
-          FROM json_each(CASE
+          FROM playlist_watch_target_membership membership
+          JOIN json_each(CASE
               WHEN json_valid(preference.sync_targets_json)
                    AND json_array_length(preference.sync_targets_json) > 0
                   THEN preference.sync_targets_json
               ELSE json_array(preference.service)
           END) configured
-          WHERE lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
-      )
-      AND NOT EXISTS (
-          SELECT 1
-          FROM json_each(CASE
-              WHEN json_valid(preference.sync_targets_json)
-                   AND json_array_length(preference.sync_targets_json) > 0
-                  THEN preference.sync_targets_json
-              ELSE json_array(preference.service)
-          END) configured
-          WHERE lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
-            AND NOT EXISTS (
-                SELECT 1
-                FROM playlist_watch_target_membership membership
-                WHERE membership.source = track.source
-                  AND membership.source_id = track.source_id
-                  AND membership.track_source_id = track.track_source_id
-                  AND lower(membership.target_service) = lower(trim(configured.value))
-                  AND lower(membership.sync_status) = 'playlist_synced'
-            )
+            ON lower(membership.target_service) = lower(trim(configured.value))
+         WHERE membership.source = track.source
+           AND membership.source_id = track.source_id
+           AND membership.track_source_id = track.track_source_id
+           AND lower(membership.sync_status) = 'playlist_synced'
+           AND lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
       )
     GROUP BY track.source, track.source_id
 ) track_summary
@@ -8773,14 +8760,21 @@ SELECT track_source_id,
        local_track_id,
        identity_status,
        identity_reason,
-       (SELECT group_concat(lower(trim(configured.value)), ', ')
-          FROM json_each(CASE
-              WHEN json_valid(preference.sync_targets_json)
-                   AND json_array_length(preference.sync_targets_json) > 0
-                  THEN preference.sync_targets_json
-              ELSE json_array(preference.service)
-          END) configured
-         WHERE lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')) AS target_service,
+       COALESCE(
+           (SELECT group_concat(m.target_service, ', ')
+              FROM playlist_watch_target_membership m
+             WHERE m.source = playlist_watch_track.source
+               AND m.source_id = playlist_watch_track.source_id
+               AND m.track_source_id = playlist_watch_track.track_source_id
+               AND lower(m.sync_status) = 'playlist_synced'),
+           (SELECT group_concat(lower(trim(configured.value)), ', ')
+              FROM json_each(CASE
+                  WHEN json_valid(preference.sync_targets_json)
+                       AND json_array_length(preference.sync_targets_json) > 0
+                      THEN preference.sync_targets_json
+                  ELSE json_array(preference.service)
+              END) configured
+             WHERE lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome'))) AS target_service,
        (SELECT group_concat(m.target_playlist_id, ', ')
           FROM playlist_watch_target_membership m
          WHERE m.source = playlist_watch_track.source
@@ -8796,27 +8790,20 @@ SELECT track_source_id,
        CASE
          WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
          WHEN EXISTS (
-             SELECT 1 FROM playlist_watch_target_membership m
+             SELECT 1
+             FROM playlist_watch_target_membership m
+             JOIN json_each(CASE
+              WHEN json_valid(preference.sync_targets_json)
+                   AND json_array_length(preference.sync_targets_json) > 0
+                  THEN preference.sync_targets_json
+              ELSE json_array(preference.service)
+              END) configured
+               ON lower(m.target_service) = lower(trim(configured.value))
              WHERE m.source = playlist_watch_track.source
                AND m.source_id = playlist_watch_track.source_id
                AND m.track_source_id = playlist_watch_track.track_source_id
-               AND lower(m.sync_status) = 'playlist_synced')
-          AND NOT EXISTS (
-              SELECT 1
-              FROM json_each(CASE
-                  WHEN json_valid(preference.sync_targets_json)
-                       AND json_array_length(preference.sync_targets_json) > 0
-                      THEN preference.sync_targets_json
-                  ELSE json_array(preference.service)
-              END) configured
-              WHERE lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
-                AND NOT EXISTS (
-                    SELECT 1 FROM playlist_watch_target_membership m
-                    WHERE m.source = playlist_watch_track.source
-                      AND m.source_id = playlist_watch_track.source_id
-                      AND m.track_source_id = playlist_watch_track.track_source_id
-                      AND lower(m.target_service) = lower(trim(configured.value))
-                      AND lower(m.sync_status) = 'playlist_synced')) THEN 'playlist_synced'
+               AND lower(m.sync_status) = 'playlist_synced'
+               AND lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')) THEN 'playlist_synced'
          WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
          ELSE status
        END AS sync_status,
@@ -10409,6 +10396,83 @@ WHERE EXISTS (
 ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
  attempt_count=0, status='pending', lease_owner=NULL, lease_until_utc=NULL,
  next_attempt_utc=CURRENT_TIMESTAMP, last_error=NULL, updated_at=CURRENT_TIMESTAMP;", connection);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public sealed record WatchlistRuntimeCleanupResult(
+        int ReconciliationRequestsDeleted,
+        int SyncJobsDeleted,
+        int ClaimsDeleted,
+        int SchedulerRowsDeleted,
+        int SourceCircuitsDeleted,
+        int PlaylistStatesUpdated);
+
+    public async Task<WatchlistRuntimeCleanupResult> ClearDisabledWatchlistRuntimeAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+        var reconciliationRequestsDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            "DELETE FROM watchlist_reconciliation_request;",
+            cancellationToken);
+        var syncJobsDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            @"
+DELETE FROM watchlist_sync_job
+WHERE lower(COALESCE(status, 'pending')) <> 'processing';",
+            cancellationToken);
+        var claimsDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            @"
+DELETE FROM playlist_watch_download_claim
+WHERE lower(COALESCE(status, 'pending')) NOT IN ('pending', 'processing');",
+            cancellationToken);
+        var schedulerRowsDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            "DELETE FROM watchlist_scheduler_state;",
+            cancellationToken);
+        var sourceCircuitsDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            "DELETE FROM watchlist_source_circuit_state;",
+            cancellationToken);
+        var playlistStatesUpdated = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            @"
+UPDATE playlist_watch_state
+SET last_run_status='watchlist_disabled',
+    last_run_message='Watchlist disabled; runtime state cleared.',
+    next_attempt_utc=NULL,
+    consecutive_failures=0,
+    current_phase='watchlist_disabled',
+    heartbeat_utc=CURRENT_TIMESTAMP,
+    deadline_utc=NULL;",
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return new WatchlistRuntimeCleanupResult(
+            reconciliationRequestsDeleted,
+            syncJobsDeleted,
+            claimsDeleted,
+            schedulerRowsDeleted,
+            sourceCircuitsDeleted,
+            playlistStatesUpdated);
+    }
+
+    private static async Task<int> ExecuteRuntimeCleanupAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand(sql, connection, transaction);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

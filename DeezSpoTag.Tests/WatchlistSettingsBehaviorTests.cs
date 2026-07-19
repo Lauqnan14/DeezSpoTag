@@ -323,9 +323,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
         Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
         Assert.True(
-            source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal)
-            < source.IndexOf("EnqueueWatchlistPlaylistSyncJobsAsync", StringComparison.Ordinal),
-            "Missing-track selection and queueing must precede durable remote target refresh work.");
+            source.IndexOf("TrySyncAvailablePlaylistTracksAsync(", StringComparison.Ordinal)
+            < source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal),
+            "Playlist target sync must run before missing-track queue planning.");
+        Assert.Contains("mode != PlaylistReconciliationMode.QueueMissingOnly", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
         Assert.Contains("public static DownloadDedupeRequest FromDownloadIntent(", dedupeSource, StringComparison.Ordinal);
@@ -909,7 +910,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.False(File.Exists(Path.Join(serviceRoot, "WatchlistRunQueueBudgetService.cs")));
         Assert.Contains("WatchlistTriggerRequest", coordinator, StringComparison.Ordinal);
         Assert.Contains("TriggerPlaylistOnceAsync", coordinator, StringComparison.Ordinal);
-        Assert.Contains("EvaluateBatchAsync", admission, StringComparison.Ordinal);
+        Assert.Contains("EvaluateQueueGateAsync", admission, StringComparison.Ordinal);
+        Assert.DoesNotContain("EvaluateBatchAsync", admission, StringComparison.Ordinal);
         Assert.Contains("WatchlistStateService", admission, StringComparison.Ordinal);
         Assert.Contains("WatchlistHistoryService", postSync, StringComparison.Ordinal);
         Assert.Contains("PlaylistWatchReconciler", playlist, StringComparison.Ordinal);

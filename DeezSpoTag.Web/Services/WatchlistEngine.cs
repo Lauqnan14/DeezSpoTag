@@ -268,7 +268,8 @@ internal sealed class WatchlistEngine
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
+        bool forceMediaServerSync = false,
+        PlaylistReconciliationMode mode = PlaylistReconciliationMode.SyncAndQueue)
     {
         if (playlist == null)
         {
@@ -478,7 +479,10 @@ internal sealed class WatchlistEngine
                 WatchlistHistoryStatus.SourceUpdated,
                 cancellationToken);
         }
-        if (!HasDownloadDestination(preference))
+        var shouldSyncTargets = mode != PlaylistReconciliationMode.QueueMissingOnly;
+        var shouldQueueMissing = mode != PlaylistReconciliationMode.SyncOnly;
+
+        if (shouldQueueMissing && !HasDownloadDestination(preference))
         {
             const string configurationMessage = "Select a destination folder before Watchlist can plan downloads.";
             await UpdatePlaylistStateAsync(
@@ -597,6 +601,81 @@ internal sealed class WatchlistEngine
             ProviderReadinessRevision = providerReadinessRevision
         });
 
+        PlaylistSyncResult? syncResult = null;
+        if (shouldSyncTargets)
+        {
+            syncResult = await TrySyncAvailablePlaylistTracksAsync(
+                currentPlaylist,
+                preference,
+                candidates,
+                forceMediaServerSync,
+                cancellationToken);
+            if (syncResult is { Success: false } || (syncResult is null && HasConfiguredPlaylistSyncTargets(preference)))
+            {
+                var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
+                    source,
+                    sourceId,
+                    cancellationToken);
+                if (targetJobs.Count > 0)
+                {
+                    if (_serviceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
+                    {
+                        await targetWorker.ResumePendingJobsAsync(cancellationToken);
+                    }
+                    await AddPlaylistWatchHistoryStageAsync(
+                        source,
+                        sourceId,
+                        currentPlaylist.Name,
+                        candidates.Count,
+                        WatchlistHistoryStatus.MediaSyncWaiting,
+                        cancellationToken);
+                }
+            }
+        }
+
+        if (!shouldQueueMissing)
+        {
+            var syncSucceeded = syncResult is null || syncResult.Success;
+            var syncMessage = syncResult?.Message
+                ?? (HasConfiguredPlaylistSyncTargets(preference)
+                    ? "Playlist sync targets did not return a result."
+                    : "No playlist sync targets configured.");
+            await UpdatePlaylistStateAsync(
+                source,
+                sourceId,
+                liveTrackCount,
+                liveSnapshot.SnapshotId,
+                syncSucceeded ? WatchlistPlaylistState.MediaSyncCompleted : WatchlistPlaylistState.MediaSyncWaiting,
+                syncMessage,
+                nextAttemptUtc: null,
+                consecutiveFailures: syncSucceeded ? 0 : null,
+                cancellationToken);
+            if (syncSucceeded && HasConfiguredPlaylistSyncTargets(preference))
+            {
+                await AddPlaylistWatchHistoryStageAsync(
+                    source,
+                    sourceId,
+                    currentPlaylist.Name,
+                    syncResult?.SyncedTracks ?? 0,
+                    WatchlistHistoryStatus.MediaSyncCompleted,
+                    cancellationToken);
+            }
+
+            return new PlaylistReconciliationResult(
+                syncSucceeded,
+                syncMessage,
+                liveTrackCount,
+                syncResult?.MissingTracks ?? 0,
+                IgnoredTracks: 0,
+                syncResult?.LocalMatches ?? 0,
+                QueuedTracks: 0,
+                CompletedTracks: 0,
+                FailedTracks: syncSucceeded ? 0 : 1,
+                syncResult,
+                QueueStopReason: WatchQueueStopReason.Completed.ToString(),
+                RemainingQueueableTracks: 0);
+        }
+
         var selection = await SelectMissingPlaylistTracksAsync(
             source,
             sourceId,
@@ -610,12 +689,6 @@ internal sealed class WatchlistEngine
             selection.MissingTracks
                 .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
                 .ToList(),
-            cancellationToken);
-        var syncResult = await TrySyncAvailablePlaylistTracksAsync(
-            currentPlaylist,
-            preference,
-            candidates,
-            forceMediaServerSync,
             cancellationToken);
         var queueResult = await QueueWatchIntentTracksAsync(
             selection.MissingTracks,
@@ -643,28 +716,6 @@ internal sealed class WatchlistEngine
             consecutiveFailures: 0,
             cancellationToken);
         await AddPlaylistWatchHistoryAsync(source, sourceId, currentPlaylist.Name, queueResult, cancellationToken);
-
-        if (syncResult is { Success: false } || (syncResult is null && HasConfiguredPlaylistSyncTargets(preference)))
-        {
-            var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
-                source,
-                sourceId,
-                cancellationToken);
-            if (targetJobs.Count > 0)
-            {
-                if (_serviceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
-                {
-                    await targetWorker.ResumePendingJobsAsync(cancellationToken);
-                }
-                await AddPlaylistWatchHistoryStageAsync(
-                    source,
-                    sourceId,
-                    currentPlaylist.Name,
-                    candidates.Count,
-                    WatchlistHistoryStatus.MediaSyncWaiting,
-                    cancellationToken);
-            }
-        }
 
         if (queueResult.QueuedCount > 0)
         {
@@ -3891,7 +3942,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         QueueWatchOptions options,
         CancellationToken cancellationToken)
     {
-        var admission = await _queueAdmission.EvaluateDownloadGateAsync(
+        using var scope = _serviceProvider.CreateScope();
+        var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
+        var admission = await _queueAdmission.EvaluateQueueGateAsync(
+            queueRepository,
             orchestrationService,
             cancellationToken);
         if (admission.Allowed)
@@ -5065,8 +5119,9 @@ public sealed class PlaylistWatchReconciler
     public Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
         PlaylistWatchlistDto playlist,
         CancellationToken cancellationToken,
-        bool forceMediaServerSync = false)
-        => _engine.ReconcilePlaylistAsync(playlist, cancellationToken, forceMediaServerSync);
+        bool forceMediaServerSync = false,
+        PlaylistReconciliationMode mode = PlaylistReconciliationMode.SyncAndQueue)
+        => _engine.ReconcilePlaylistAsync(playlist, cancellationToken, forceMediaServerSync, mode);
 
     public Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
         PlaylistWatchlistDto playlist,

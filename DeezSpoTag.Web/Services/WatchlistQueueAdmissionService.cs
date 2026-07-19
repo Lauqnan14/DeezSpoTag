@@ -8,12 +8,18 @@ public enum WatchQueueStopReason
     None,
     WatchlistDisabled,
     DownloadGate,
-    PreviousWatchlistRunActive,
     RunBudget,
     TrackDeferred,
     SystemicFailure,
     Completed,
     TrackFailures
+}
+
+public enum PlaylistReconciliationMode
+{
+    SyncAndQueue,
+    SyncOnly,
+    QueueMissingOnly
 }
 
 public readonly record struct WatchlistQueueAdmissionDecision(
@@ -193,23 +199,6 @@ public sealed class WatchlistQueueAdmissionService
     private int _limit;
     private int _remaining;
 
-    public async Task<WatchlistQueueAdmissionDecision> EvaluateBatchAsync(
-        DownloadQueueRepository queueRepository,
-        CancellationToken cancellationToken)
-    {
-        if (await queueRepository.HasActiveWatchlistDownloadsAsync(cancellationToken))
-        {
-            return new WatchlistQueueAdmissionDecision(
-                false,
-                WatchQueueStopReason.PreviousWatchlistRunActive,
-                null,
-                false,
-                "Waiting for downloads from the previous Watchlist run to finish.");
-        }
-
-        return WatchlistQueueAdmissionDecision.Allow();
-    }
-
     public async Task<WatchlistQueueAdmissionDecision> EvaluateDownloadGateAsync(
         DownloadOrchestrationService orchestrationService,
         CancellationToken cancellationToken)
@@ -223,6 +212,37 @@ public sealed class WatchlistQueueAdmissionService
                 null,
                 true,
                 gate.Message);
+    }
+
+    public async Task<WatchlistQueueAdmissionDecision> EvaluateQueueGateAsync(
+        DownloadQueueRepository queueRepository,
+        DownloadOrchestrationService orchestrationService,
+        CancellationToken cancellationToken)
+    {
+        var repositoryGate = await EvaluateQueueGateAsync(queueRepository, cancellationToken);
+        if (!repositoryGate.Allowed)
+        {
+            return repositoryGate;
+        }
+
+        return await EvaluateDownloadGateAsync(orchestrationService, cancellationToken);
+    }
+
+    public async Task<WatchlistQueueAdmissionDecision> EvaluateQueueGateAsync(
+        DownloadQueueRepository queueRepository,
+        CancellationToken cancellationToken)
+    {
+        if (await queueRepository.HasActiveDownloadPipelineAsync(cancellationToken))
+        {
+            return new WatchlistQueueAdmissionDecision(
+                false,
+                WatchQueueStopReason.DownloadGate,
+                null,
+                true,
+                "Waiting for active downloads, moves, or enrichment to finish.");
+        }
+
+        return WatchlistQueueAdmissionDecision.Allow();
     }
 
     public WatchlistQueueAdmissionDecision TryAdmitTrack(int queueItemCount = 1)

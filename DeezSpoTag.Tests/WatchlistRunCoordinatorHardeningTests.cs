@@ -205,8 +205,10 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RunOnce_DefersAdmissionWhenPreviousWatchlistDownloadIsActive()
+    public async Task RunOnce_DefersQueuePhaseWhenPreviousWatchlistDownloadIsActive()
     {
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-queue-gate", new PlaylistWatchlistMetadataInput("Queue Gate", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-queue-gate");
         await _queueRepository.EnqueueAsync(
             CreateQueueItem(
                 "previous-watch-active",
@@ -221,7 +223,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains(
             logger.Entries,
             entry => entry.Message.Contains(
-                "previous Watchlist run to finish",
+                "Watchlist queue phase deferred after playlist sync",
                 StringComparison.Ordinal));
     }
 
@@ -406,7 +408,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RunOnce_RecentExplicitPlaylistFocus_CanOverridePriorityOrderOnce()
+    public async Task RunOnce_RecentExplicitPlaylistFocus_DoesNotOverridePriorityOrder()
     {
         var settings = _settingsService.LoadSettings();
         settings.WatchMaxTracksPerPlaylistCheck = 1;
@@ -433,7 +435,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var explicitFocusState = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-explicit-focus-target", CancellationToken.None);
         Assert.NotNull(explicitFocusState?.LastCheckedUtc);
         Assert.NotNull(firstState?.LastCheckedUtc);
-        Assert.True(explicitFocusState!.LastCheckedUtc <= firstState!.LastCheckedUtc);
+        Assert.True(firstState!.LastCheckedUtc <= explicitFocusState!.LastCheckedUtc);
     }
 
     [Fact]
