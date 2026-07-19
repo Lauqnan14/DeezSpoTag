@@ -196,6 +196,18 @@ public sealed class UserPreferencesDto
     public string? SpotifyCacheSchedule { get; set; }
     public long? SpotifyCacheLastRun { get; set; }
 
+    // Activities / Artist Metadata Updater
+    public List<string> MetadataUpdaterTargets { get; set; } = new() { "plex" };
+    public string MetadataUpdaterSource { get; set; } = "auto";
+    public string? MetadataUpdaterFolderId { get; set; }
+    public int MetadataUpdaterIntervalDays { get; set; } = 30;
+    public bool MetadataUpdaterIncludeAvatar { get; set; } = true;
+    public bool MetadataUpdaterIncludeBackground { get; set; } = true;
+    public bool MetadataUpdaterIncludeBio { get; set; } = false;
+    public bool MetadataUpdaterIncludePopularSongs { get; set; } = false;
+    public bool MetadataUpdaterMissingArtistArtworkOnly { get; set; } = false;
+    public bool MetadataUpdaterOcrTextArtBlocking { get; set; } = true;
+
     // Home / Search
     public JsonElement? SpotiflacRecentSearches { get; set; }
 

@@ -39,6 +39,16 @@ globalThis.UserPrefs = (function () {
         'previewVolume':                         'previewVolume',
         'deezspotag-spotify-cache-schedule':     'spotifyCacheSchedule',
         'deezspotag-spotify-cache-last-run':     'spotifyCacheLastRun',
+        'deezspotag-metadata-updater-targets':   'metadataUpdaterTargets',
+        'deezspotag-metadata-updater-source':    'metadataUpdaterSource',
+        'deezspotag-metadata-updater-folder':    'metadataUpdaterFolderId',
+        'deezspotag-metadata-updater-interval-days': 'metadataUpdaterIntervalDays',
+        'deezspotag-metadata-updater-include-avatar': 'metadataUpdaterIncludeAvatar',
+        'deezspotag-metadata-updater-include-background': 'metadataUpdaterIncludeBackground',
+        'deezspotag-metadata-updater-include-bio': 'metadataUpdaterIncludeBio',
+        'deezspotag-metadata-updater-popular-songs': 'metadataUpdaterIncludePopularSongs',
+        'deezspotag-metadata-updater-missing-artist-art-only': 'metadataUpdaterMissingArtistArtworkOnly',
+        'deezspotag-metadata-updater-ocr-text-art-blocking': 'metadataUpdaterOcrTextArtBlocking',
         'multisource_recent_searches':           'spotiflacRecentSearches'
     };
 

@@ -293,7 +293,8 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 CurrentArtist = null,
                 CompletedAtUtc = DateTimeOffset.UtcNow,
                 Phase = "Metadata update completed",
-                Message = $"Processed {counters.ProcessedArtists} artists ({counters.SuccessfulArtists} success, {counters.FailedArtists} failed, {counters.SkippedArtists} skipped)."
+                Message = BuildCompletionMessage(counters),
+                SkipReasons = counters.SkipReasonsSnapshot()
             });
         }
         catch (OperationCanceledException)
@@ -334,6 +335,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             SuccessfulArtists = 0,
             FailedArtists = 0,
             SkippedArtists = 0,
+            SkipReasons = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
             TotalArtists = 0,
             CurrentArtist = null
         });
@@ -424,7 +426,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         if (ShouldSkipTrackedArtist(tracked, request, effectiveIntervalDays, nowUtc))
         {
             tracked.IntervalDays = effectiveIntervalDays;
-            return ArtistProcessingOutcome.Skipped;
+            return ArtistProcessingOutcome.SkippedNotDue;
         }
 
         ApplyRequestOverrides(tracked, request, effectiveIntervalDays);
@@ -816,9 +818,25 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         {
             SuccessfulArtists = counters.SuccessfulArtists,
             FailedArtists = counters.FailedArtists,
-            SkippedArtists = counters.SkippedArtists
+            SkippedArtists = counters.SkippedArtists,
+            SkipReasons = counters.SkipReasonsSnapshot()
         });
     }
+
+    private static string BuildCompletionMessage(MetadataRunCounters counters)
+    {
+        var skippedSuffix = counters.SkippedArtists > 0 && counters.SkipReasons.Count > 0
+            ? $": {string.Join(", ", counters.SkipReasons.Select(pair => $"{pair.Value} {FormatSkipReason(pair.Key)}"))}"
+            : string.Empty;
+        return $"Processed {counters.ProcessedArtists} artists ({counters.SuccessfulArtists} success, {counters.FailedArtists} failed, {counters.SkippedArtists} skipped{skippedSuffix}).";
+    }
+
+    private static string FormatSkipReason(string reason)
+        => reason switch
+        {
+            MetadataSkipReasons.NotDue => "not due",
+            _ => reason
+        };
 
     private async Task SeedArtistsFromLibraryAsync(
         MetadataUpdaterState state,
@@ -2711,10 +2729,18 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     {
         Succeeded,
         Failed,
-        Skipped
+        SkippedNotDue
     }
+
+    private static class MetadataSkipReasons
+    {
+        public const string NotDue = "notDue";
+    }
+
     private sealed class MetadataRunCounters
     {
+        private readonly Dictionary<string, int> _skipReasons = new(StringComparer.OrdinalIgnoreCase);
+
         public MetadataRunCounters(int totalArtists)
         {
             TotalArtists = totalArtists;
@@ -2725,6 +2751,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         public int SuccessfulArtists { get; private set; }
         public int FailedArtists { get; private set; }
         public int SkippedArtists { get; private set; }
+        public IReadOnlyDictionary<string, int> SkipReasons => _skipReasons;
 
         public void Apply(ArtistProcessingOutcome outcome)
         {
@@ -2736,12 +2763,22 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 case ArtistProcessingOutcome.Failed:
                     FailedArtists++;
                     return;
-                case ArtistProcessingOutcome.Skipped:
+                case ArtistProcessingOutcome.SkippedNotDue:
                     SkippedArtists++;
+                    AddSkipReason(MetadataSkipReasons.NotDue);
                     return;
                 default:
                     return;
             }
+        }
+
+        public Dictionary<string, int> SkipReasonsSnapshot()
+            => new(_skipReasons, StringComparer.OrdinalIgnoreCase);
+
+        private void AddSkipReason(string reason)
+        {
+            _skipReasons.TryGetValue(reason, out var count);
+            _skipReasons[reason] = count + 1;
         }
     }
 
@@ -2867,6 +2904,8 @@ public sealed record MetadataUpdaterStatusSnapshot(
     int SkippedArtists,
     string? CurrentArtist)
 {
+    public Dictionary<string, int> SkipReasons { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
     public static MetadataUpdaterStatusSnapshot Idle()
         => new(
             Running: false,

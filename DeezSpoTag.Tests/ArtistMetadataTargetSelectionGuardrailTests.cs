@@ -16,6 +16,12 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
             "Views",
             "Shared",
             "_ArtistMetadataUpdaterControls.cshtml"));
+        var activities = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Views",
+            "Activities",
+            "Index.cshtml"));
 
         Assert.Contains("data-metadata-target=\"plex\"", controls);
         Assert.Contains("data-metadata-target=\"jellyfin\"", controls);
@@ -31,6 +37,8 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("id=\"metadata-include-background\" checked", controls);
         Assert.Contains("id=\"metadata-include-bio\"", controls);
         Assert.Contains("id=\"metadata-ocr-text-art-blocking\" checked", controls);
+        Assert.Contains("id=\"metadata-save-settings-button\"", activities);
+        Assert.Contains("Save Settings", activities);
         Assert.DoesNotContain("<option value=\"both\">", controls, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -81,6 +89,76 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("includePopularSongs: popularSongsCheckbox?.checked === true", activities);
         Assert.Contains("loadMetadataUpdaterFolders", activities);
         Assert.Contains("/api/library/folders?contentType=music", activities);
+        Assert.Contains("await persistMetadataUpdaterSettings();", activities);
+        Assert.Contains("await runMetadataUpdater(true);", activities);
+        Assert.Contains("force: forceManualRun === true || missingArtistArtworkOnly || intervalDays === 0", activities);
+    }
+
+    [Fact]
+    public void Artist_metadata_updater_preferences_are_persisted_and_hydrated()
+    {
+        var preferences = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "UserPreferencesStore.cs"));
+        var layout = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Views",
+            "Shared",
+            "_Layout.cshtml"));
+        var userPreferencesJs = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "user-preferences.js"));
+
+        Assert.Contains("public List<string> MetadataUpdaterTargets", preferences);
+        Assert.Contains("public string MetadataUpdaterSource", preferences);
+        Assert.Contains("public string? MetadataUpdaterFolderId", preferences);
+        Assert.Contains("public int MetadataUpdaterIntervalDays", preferences);
+        Assert.Contains("public bool MetadataUpdaterIncludeAvatar", preferences);
+        Assert.Contains("public bool MetadataUpdaterIncludeBackground", preferences);
+        Assert.Contains("public bool MetadataUpdaterIncludeBio", preferences);
+        Assert.Contains("public bool MetadataUpdaterIncludePopularSongs", preferences);
+        Assert.Contains("public bool MetadataUpdaterMissingArtistArtworkOnly", preferences);
+        Assert.Contains("public bool MetadataUpdaterOcrTextArtBlocking", preferences);
+
+        Assert.Contains("'deezspotag-metadata-updater-targets': 'metadataUpdaterTargets'", layout);
+        Assert.Contains("'deezspotag-metadata-updater-targets':   'metadataUpdaterTargets'", userPreferencesJs);
+        Assert.Contains("'deezspotag-metadata-updater-interval-days': 'metadataUpdaterIntervalDays'", layout);
+        Assert.Contains("'deezspotag-metadata-updater-interval-days': 'metadataUpdaterIntervalDays'", userPreferencesJs);
+        Assert.Contains("window.UserPrefs.set('metadataUpdaterTargets', targets);", File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Views",
+            "Activities",
+            "Index.cshtml")));
+    }
+
+    [Fact]
+    public void Artist_metadata_updater_reports_not_due_skips()
+    {
+        var updater = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "ArtistMetadataUpdaterService.cs"));
+        var activities = File.ReadAllText(Path.Combine(
+            RepositoryRoot(),
+            "DeezSpoTag.Web",
+            "Views",
+            "Activities",
+            "Index.cshtml"));
+
+        Assert.Contains("SkippedNotDue", updater);
+        Assert.Contains("public const string NotDue = \"notDue\";", updater);
+        Assert.Contains("SkipReasons", updater);
+        Assert.Contains("BuildCompletionMessage(counters)", updater);
+        Assert.Contains("formatMetadataSkipReason", activities);
+        Assert.Contains("case 'notDue':", activities);
     }
 
     [Fact]

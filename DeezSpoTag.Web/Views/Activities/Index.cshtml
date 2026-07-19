@@ -3232,6 +3232,7 @@
                                 </div>
                                 <div class="tool-card-footer">
                                     <button id="metadata-update-button" class="action-btn action-btn-sm" type="button">Begin Update</button>
+                                    <button id="metadata-save-settings-button" class="action-btn action-btn-sm" type="button">Save Settings</button>
                                     <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Cache</button>
                                     <button id="metadata-cancel-button" class="action-btn action-btn-sm" type="button" disabled>Cancel Scan</button>
                                 </div>
@@ -4028,6 +4029,11 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
     const currentArtist = status.currentArtist || '';
     const phase = status.phase || (running ? 'Metadata update running' : 'Metadata updater idle');
     const message = status.message || '';
+    const skipReasons = status.skipReasons || {};
+    const skipReasonText = Object.entries(skipReasons)
+        .filter(([, count]) => Number(count || 0) > 0)
+        .map(([reason, count]) => `${count} ${formatMetadataSkipReason(reason)}`)
+        .join(', ');
 
     if (phaseLabel) {
         if (running && currentArtist) {
@@ -4039,7 +4045,8 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
 
     if (progressLabel) {
         if (total > 0) {
-            progressLabel.textContent = `${processed} / ${total} artists (${succeeded} success, ${failed} failed, ${skipped} skipped)`;
+            const skippedText = skipReasonText ? `${skipped} skipped: ${skipReasonText}` : `${skipped} skipped`;
+            progressLabel.textContent = `${processed} / ${total} artists (${succeeded} success, ${failed} failed, ${skippedText})`;
         } else if (message) {
             progressLabel.textContent = message;
         } else {
@@ -4050,6 +4057,15 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
     if (progressBar) {
         const percent = total > 0 ? Math.min(100, Math.max(0, (processed / total) * 100)) : (running ? 8 : 0);
         progressBar.style.width = `${percent}%`;
+    }
+}
+
+function formatMetadataSkipReason(reason) {
+    switch (String(reason || '').trim()) {
+        case 'notDue':
+            return 'not due';
+        default:
+            return String(reason || 'skipped');
     }
 }
 
@@ -4077,6 +4093,7 @@ function safeParseJsonArray(value) {
 
 function initMetadataUpdater() {
     const updateButton = document.getElementById('metadata-update-button');
+    const saveSettingsButton = document.getElementById('metadata-save-settings-button');
     const refreshCacheButton = document.getElementById('metadata-refresh-cache-button');
     const cancelButton = document.getElementById('metadata-cancel-button');
     const sourceSelect = document.getElementById('metadata-source-platform');
@@ -4105,9 +4122,37 @@ function initMetadataUpdater() {
     const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
     const missingArtistArtOnlyKey = 'deezspotag-metadata-updater-missing-artist-art-only';
     const folderKey = 'deezspotag-metadata-updater-folder';
+    const intervalKey = 'deezspotag-metadata-updater-interval-days';
     const ocrTextArtBlockingKey = 'deezspotag-metadata-updater-ocr-text-art-blocking';
 
-    const runMetadataUpdater = async () => {
+    const persistMetadataUpdaterSettings = async () => {
+        const targets = getMetadataUpdaterTargets();
+        localStorage.setItem(targetKey, JSON.stringify(targets));
+        localStorage.setItem(sourceKey, sourceSelect?.value || 'auto');
+        localStorage.setItem(folderKey, folderSelect?.value || '');
+        localStorage.setItem(intervalKey, String(Number(intervalSelect?.value || 30)));
+        localStorage.setItem(includeAvatarKey, includeAvatarCheckbox?.checked !== false ? 'true' : 'false');
+        localStorage.setItem(includeBackgroundKey, includeBackgroundCheckbox?.checked !== false ? 'true' : 'false');
+        localStorage.setItem(includeBioKey, includeBioCheckbox?.checked === true ? 'true' : 'false');
+        localStorage.setItem(popularSongsKey, popularSongsCheckbox?.checked === true ? 'true' : 'false');
+        localStorage.setItem(missingArtistArtOnlyKey, missingArtistArtOnlyCheckbox?.checked === true ? 'true' : 'false');
+        localStorage.setItem(ocrTextArtBlockingKey, ocrTextArtBlockingCheckbox?.checked !== false ? 'true' : 'false');
+        if (window.UserPrefs) {
+            window.UserPrefs.set('metadataUpdaterTargets', targets);
+            window.UserPrefs.set('metadataUpdaterSource', sourceSelect?.value || 'auto');
+            window.UserPrefs.set('metadataUpdaterFolderId', folderSelect?.value || null);
+            window.UserPrefs.set('metadataUpdaterIntervalDays', Number(intervalSelect?.value || 30));
+            window.UserPrefs.set('metadataUpdaterIncludeAvatar', includeAvatarCheckbox?.checked !== false);
+            window.UserPrefs.set('metadataUpdaterIncludeBackground', includeBackgroundCheckbox?.checked !== false);
+            window.UserPrefs.set('metadataUpdaterIncludeBio', includeBioCheckbox?.checked === true);
+            window.UserPrefs.set('metadataUpdaterIncludePopularSongs', popularSongsCheckbox?.checked === true);
+            window.UserPrefs.set('metadataUpdaterMissingArtistArtworkOnly', missingArtistArtOnlyCheckbox?.checked === true);
+            window.UserPrefs.set('metadataUpdaterOcrTextArtBlocking', ocrTextArtBlockingCheckbox?.checked !== false);
+            await window.UserPrefs.flush(false);
+        }
+    };
+
+    const runMetadataUpdater = async (forceManualRun) => {
         const missingArtistArtworkOnly = missingArtistArtOnlyCheckbox?.checked === true;
         const source = sourceSelect?.value || 'auto';
         const intervalDays = Number(intervalSelect?.value || 30);
@@ -4129,7 +4174,7 @@ function initMetadataUpdater() {
             includePopularSongs: popularSongsCheckbox?.checked === true,
             ocrTextArtBlockingEnabled: ocrTextArtBlockingCheckbox?.checked !== false,
             includeAllArtists: true,
-            force: missingArtistArtworkOnly || intervalDays === 0
+            force: forceManualRun === true || missingArtistArtworkOnly || intervalDays === 0
         };
 
         try {
@@ -4215,6 +4260,17 @@ function initMetadataUpdater() {
         });
     }
 
+    if (intervalSelect) {
+        const savedInterval = localStorage.getItem(intervalKey);
+        if (savedInterval !== null) {
+            intervalSelect.value = savedInterval;
+        }
+        intervalSelect.addEventListener('change', () => {
+            localStorage.setItem(intervalKey, intervalSelect.value || '30');
+            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterIntervalDays', Number(intervalSelect.value || 30));
+        });
+    }
+
     [
         [includeAvatarCheckbox, includeAvatarKey, true, 'metadataUpdaterIncludeAvatar'],
         [includeBackgroundCheckbox, includeBackgroundKey, true, 'metadataUpdaterIncludeBackground'],
@@ -4265,9 +4321,26 @@ function initMetadataUpdater() {
         phaseLabel && (phaseLabel.textContent = 'Metadata update started');
         progressLabel && (progressLabel.textContent = 'Preparing run...');
         progressBar && (progressBar.style.width = '5%');
-        await runMetadataUpdater(false);
+        await persistMetadataUpdaterSettings();
+        await runMetadataUpdater(true);
         const refreshed = await refreshLibraryScanAndMetadataStatus();
         updateButton.disabled = refreshed?.metadataRunning === true;
+    });
+
+    saveSettingsButton?.addEventListener('click', async () => {
+        if (saveSettingsButton.disabled) {
+            return;
+        }
+
+        saveSettingsButton.disabled = true;
+        try {
+            await persistMetadataUpdaterSettings();
+            notifyActivity('Artist metadata updater settings saved.');
+        } catch (error) {
+            notifyActivity(`Artist metadata updater settings failed to save: ${error?.message || error}`, 'error');
+        } finally {
+            saveSettingsButton.disabled = false;
+        }
     });
 }
 
