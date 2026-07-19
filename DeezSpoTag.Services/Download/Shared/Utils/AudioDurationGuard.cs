@@ -17,14 +17,17 @@ public static class AudioDurationGuard
             return AudioDurationGuardResult.Fail("Audio validation failed: output file is empty.");
         }
 
-        if (expectedDurationSeconds <= 0)
-        {
-            return AudioDurationGuardResult.Ok();
-        }
-
         if (!TryReadDurationSeconds(filePath, out var actualDurationSeconds))
         {
             return AudioDurationGuardResult.Inconclusive("Audio duration could not be read; duration validation was skipped.");
+        }
+
+        if (expectedDurationSeconds <= 0)
+        {
+            return IsObviousUnknownDurationPreview(actualDurationSeconds)
+                ? AudioDurationGuardResult.Fail(
+                    $"Audio validation failed: output duration is {actualDurationSeconds:F1}s with no expected duration. Refusing likely preview download.")
+                : AudioDurationGuardResult.Ok();
         }
 
         if (IsExpectedDurationAcceptable(actualDurationSeconds, expectedDurationSeconds))
@@ -35,6 +38,9 @@ public static class AudioDurationGuard
         return AudioDurationGuardResult.Fail(
             $"Audio validation failed: output duration is {actualDurationSeconds:F1}s but expected about {expectedDurationSeconds}s. Refusing likely preview download.");
     }
+
+    private static bool IsObviousUnknownDurationPreview(double actualSeconds)
+        => actualSeconds is >= 25d and <= 35d;
 
     private static bool TryReadDurationSeconds(string filePath, out double durationSeconds)
     {

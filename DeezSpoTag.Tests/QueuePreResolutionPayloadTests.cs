@@ -83,6 +83,8 @@ public sealed class QueuePreResolutionPayloadTests
         Assert.Equal("B0TEST1234", payload["AmazonId"]?.ToString());
         Assert.Equal("B0TEST1234", payload["amazonId"]?.ToString());
         Assert.Equal("205000", payload["DurationMs"]?.ToString());
+        Assert.Equal("205", payload["DurationSeconds"]?.ToString());
+        Assert.Equal("205", payload["durationSeconds"]?.ToString());
         Assert.Equal("1", payload["DestinationFolderId"]?.ToString());
         Assert.Equal("stereo", payload["ContentType"]?.ToString());
         Assert.Equal("2", payload["AutoIndex"]?.ToString());

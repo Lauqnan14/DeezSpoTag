@@ -71,6 +71,29 @@ public sealed class AudioDurationGuardTests : IDisposable
     }
 
     [Fact]
+    public void ValidateAgainstPreview_RejectsThirtySecondOutputWithoutExpectedDuration()
+    {
+        var path = Path.Combine(_tempDir, "unknown-duration-preview.wav");
+        WriteSilentWav(path, TimeSpan.FromSeconds(30));
+
+        var result = AudioDurationGuard.ValidateAgainstPreview(path, expectedDurationSeconds: 0);
+
+        Assert.False(result.Success);
+        Assert.Contains("Refusing likely preview", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateAgainstPreview_AllowsOneMinuteOutputWithoutExpectedDuration()
+    {
+        var path = Path.Combine(_tempDir, "unknown-duration-one-minute.wav");
+        WriteSilentWav(path, TimeSpan.FromSeconds(60));
+
+        var result = AudioDurationGuard.ValidateAgainstPreview(path, expectedDurationSeconds: 0);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
     public void ValidateAgainstPreview_AllowsLongerLegitimateVersion()
     {
         var path = Path.Combine(_tempDir, "extended.wav");

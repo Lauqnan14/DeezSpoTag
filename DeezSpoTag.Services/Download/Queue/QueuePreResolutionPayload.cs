@@ -162,6 +162,8 @@ public static class QueuePreResolutionPayload
         if (result.DurationMs.HasValue && result.DurationMs.Value > 0)
         {
             SetResolutionPair(payload, "DurationMs", "durationMs", result.DurationMs.Value);
+            var durationSeconds = Math.Max(1, (int)Math.Round(result.DurationMs.Value / 1000d));
+            SetResolutionPair(payload, "DurationSeconds", "durationSeconds", durationSeconds);
         }
 
         if (result.DestinationFolderId.HasValue && result.DestinationFolderId.Value > 0)

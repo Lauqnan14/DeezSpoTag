@@ -71,7 +71,7 @@ internal static class RequestBuilderCommon
         request.ReleaseDate = item.ReleaseDate;
         request.CoverUrl = item.Cover;
         request.Isrc = item.Isrc;
-        request.DurationSeconds = item.DurationSeconds;
+        request.DurationSeconds = ResolveDurationSeconds(item);
         request.SpotifyTrackNumber = item.SpotifyTrackNumber;
         request.SpotifyDiscNumber = item.SpotifyDiscNumber;
         request.SpotifyTotalTracks = item.SpotifyTotalTracks;
@@ -89,6 +89,18 @@ internal static class RequestBuilderCommon
         var request = new TRequest();
         PopulateCommonFields(request, item, settings);
         return request;
+    }
+
+    private static int ResolveDurationSeconds(EngineQueueItemBase item)
+    {
+        if (item.DurationSeconds > 0)
+        {
+            return item.DurationSeconds;
+        }
+
+        return item.AppleDurationMs is > 0
+            ? Math.Max(1, (int)Math.Round(item.AppleDurationMs.Value / 1000d))
+            : 0;
     }
 
     public static string ResolvePreferredQuality(string? itemQuality, string? settingsQuality, string fallbackQuality)
