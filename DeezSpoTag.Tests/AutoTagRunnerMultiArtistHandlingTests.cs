@@ -677,12 +677,32 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
         };
         var tagSettings = new TagSettings
         {
-            MultiArtistSeparator = "default"
+            MultiArtistSeparator = "default",
+            SingleAlbumArtist = false
         };
 
         var values = Assert.IsType<List<string>>(ResolveArtistValuesMethod.Invoke(null, new object?[] { coreTrack, tagSettings }));
 
         Assert.Equal(Artists2BabaAndFalz, values);
+    }
+
+    [Fact]
+    public void ResolveArtistValues_ReturnsPrimaryArtist_WhenSingleAlbumArtistIsEnabled()
+    {
+        var coreTrack = new CoreTrack
+        {
+            Artists = new List<string> { "MADTRAXX", "Masauti" },
+            MainArtist = new DeezSpoTag.Core.Models.Artist("MADTRAXX")
+        };
+        var tagSettings = new TagSettings
+        {
+            MultiArtistSeparator = " & ",
+            SingleAlbumArtist = true
+        };
+
+        var values = Assert.IsType<List<string>>(ResolveArtistValuesMethod.Invoke(null, new object?[] { coreTrack, tagSettings }));
+
+        Assert.Equal(new[] { "MADTRAXX" }, values);
     }
 
     [Fact]
@@ -701,6 +721,26 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
         var values = Assert.IsType<List<string>>(ResolveArtistValuesMethod.Invoke(null, new object?[] { coreTrack, tagSettings }));
 
         Assert.Equal(Artist2BabaOnly, values);
+    }
+
+    [Fact]
+    public void ResolveArtistValues_ReturnsJoinedArtistsOnlyWhenSingleAlbumArtistIsDisabledAndCustomSeparatorIsSelected()
+    {
+        var coreTrack = new CoreTrack
+        {
+            Artists = new List<string> { "MADTRAXX", "Masauti" },
+            MainArtist = new DeezSpoTag.Core.Models.Artist("MADTRAXX"),
+            ArtistsString = "MADTRAXX & Masauti"
+        };
+        var tagSettings = new TagSettings
+        {
+            MultiArtistSeparator = " & ",
+            SingleAlbumArtist = false
+        };
+
+        var values = Assert.IsType<List<string>>(ResolveArtistValuesMethod.Invoke(null, new object?[] { coreTrack, tagSettings }));
+
+        Assert.Equal(new[] { "MADTRAXX & Masauti" }, values);
     }
 
     [Fact]

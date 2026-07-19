@@ -5502,6 +5502,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return new List<string>();
         }
 
+        if (tagSettings.SingleAlbumArtist)
+        {
+            var primary = coreTrack.MainArtist?.Name;
+            return string.IsNullOrWhiteSpace(primary)
+                ? new List<string> { artists[0] }
+                : new List<string> { primary.Trim() };
+        }
+
         if (string.Equals(tagSettings.MultiArtistSeparator, MultiArtistSeparatorDefault, StringComparison.OrdinalIgnoreCase))
         {
             return artists;
@@ -10015,7 +10023,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return config.Separators.Mp4 ?? "";
         }
 
-        return config.Separators.Id3 ?? "";
+        return config.Separators.Vorbis ?? "";
     }
 
     private static List<string> ReadAppleDashBox(TagLib.Mpeg4.AppleTag tag, string name)

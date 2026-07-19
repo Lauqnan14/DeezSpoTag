@@ -474,6 +474,20 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
+    public void EnhancementArtistSeparator_UsesVorbisSeparatorForNonMp3NonMp4Files()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+        var body = ExtractMethodBody(source, "private static string ResolveArtistSeparator");
+
+        Assert.Contains("return config.Separators.Vorbis ?? \"\";", body, StringComparison.Ordinal);
+        Assert.Contains("return config.Separators.Id3 ?? \"\";", body, StringComparison.Ordinal);
+        Assert.True(
+            body.LastIndexOf("return config.Separators.Vorbis ?? \"\";", StringComparison.Ordinal)
+            > body.LastIndexOf("return config.Separators.Id3 ?? \"\";", StringComparison.Ordinal),
+            "Non-MP3/non-MP4 formats must fall through to Vorbis separators after the MP3 branch.");
+    }
+
+    [Fact]
     public void AutomaticEnrichment_AttemptsAppleExtrasOnlyOncePerFile()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
