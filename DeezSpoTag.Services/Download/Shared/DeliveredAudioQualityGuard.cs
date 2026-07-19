@@ -52,7 +52,7 @@ internal static class DeliveredAudioQualityGuard
             return DeliveredAudioQualityResult.Inconclusive(requestedQuality);
         }
 
-        if (IsDeliveredQualityAccepted(requestedQuality, actual))
+        if (IsDeliveredQualityAccepted(payload.Engine, requestedQuality, actual))
         {
             return DeliveredAudioQualityResult.Accepted(requestedQuality, actual.Label);
         }
@@ -89,9 +89,24 @@ internal static class DeliveredAudioQualityGuard
         return payload.Quality;
     }
 
-    private static bool IsDeliveredQualityAccepted(string? requestedQuality, ActualAudioQuality actual)
+    private static bool IsDeliveredQualityAccepted(string? engine, string? requestedQuality, ActualAudioQuality actual)
     {
         var normalized = (requestedQuality ?? string.Empty).Trim().ToUpperInvariant();
+        if (IsAmazonEngine(engine))
+        {
+            return normalized switch
+            {
+                "ULTRA_HD_FLAC" => actual.IsLossless
+                    && actual.BitsPerSample >= 24
+                    && actual.SampleRate > 0,
+                "HD_FLAC" => actual.IsLossless
+                    && actual.BitsPerSample > 0
+                    && actual.SampleRate > 0,
+                "OPUS" => true,
+                _ => true
+            };
+        }
+
         return normalized switch
         {
             "27" or "HI_RES_LOSSLESS" => actual.IsLossless
@@ -109,6 +124,9 @@ internal static class DeliveredAudioQualityGuard
             _ => true
         };
     }
+
+    private static bool IsAmazonEngine(string? engine)
+        => string.Equals(engine?.Trim(), "amazon", StringComparison.OrdinalIgnoreCase);
 
     private static string FormatRequestedQuality(string? engine, string? quality)
     {

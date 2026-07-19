@@ -2,8 +2,11 @@ using System;
 using System.IO;
 using System.Reflection;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Shared.Models;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -67,6 +70,61 @@ public sealed class DeliveredAudioQualityGuardTests : IDisposable
     }
 
     [Fact]
+    public void AmazonHdFlacPlanStep_AcceptsDeliveredSixteenBitLosslessAudio()
+    {
+        var path = Path.Combine(_tempDirectory, "amazon-hd-sixteen-bit.wav");
+        WriteWave(path, bitsPerSample: 16);
+
+        var result = Validate(CreateAmazonPayload("HD_FLAC"), path);
+
+        Assert.True(ReadBool(result, "Success"));
+        Assert.Contains("16-bit", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AmazonHdFlacPlanStep_AcceptsDeliveredTwentyFourBitLosslessAudio()
+    {
+        var path = Path.Combine(_tempDirectory, "amazon-hd-twenty-four-bit.wav");
+        WriteWave(path, bitsPerSample: 24);
+
+        var result = Validate(CreateAmazonPayload("HD_FLAC"), path);
+
+        Assert.True(ReadBool(result, "Success"));
+        Assert.Contains("24-bit", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AmazonHdFlacPlanStep_RejectsDeliveredLossyAudio()
+    {
+        Assert.False(IsDeliveredQualityAccepted(
+            "amazon",
+            "HD_FLAC",
+            label: "MP3 320 kbps",
+            bitsPerSample: 0,
+            sampleRate: 44100,
+            bitrateKbps: 320,
+            isLossless: false));
+    }
+
+    [Fact]
+    public void AmazonUltraHdFlacPlanStep_RequiresDeliveredTwentyFourBitLosslessAudio()
+    {
+        var sixteenBitPath = Path.Combine(_tempDirectory, "amazon-ultra-sixteen-bit.wav");
+        WriteWave(sixteenBitPath, bitsPerSample: 16);
+
+        var rejected = Validate(CreateAmazonPayload("ULTRA_HD_FLAC"), sixteenBitPath);
+
+        Assert.False(ReadBool(rejected, "Success"));
+
+        var twentyFourBitPath = Path.Combine(_tempDirectory, "amazon-ultra-twenty-four-bit.wav");
+        WriteWave(twentyFourBitPath, bitsPerSample: 24);
+
+        var accepted = Validate(CreateAmazonPayload("ULTRA_HD_FLAC"), twentyFourBitPath);
+
+        Assert.True(ReadBool(accepted, "Success"));
+    }
+
+    [Fact]
     public void QualityRejectedAudio_IsNotDeletedByGuard()
     {
         var sourcePath = Path.GetFullPath(Path.Combine(
@@ -95,13 +153,53 @@ public sealed class DeliveredAudioQualityGuardTests : IDisposable
         ]
     };
 
-    private static object Validate(QobuzQueueItem payload, string path)
+    private static AmazonQueueItem CreateAmazonPayload(string quality) => new()
+    {
+        Engine = "amazon",
+        Quality = quality,
+        AutoIndex = 0,
+        FallbackPlan =
+        [
+            new FallbackPlanStep("step-0", "amazon", quality, [], "direct_url"),
+            new FallbackPlanStep("step-1", "tidal", "LOSSLESS", [], "direct_url")
+        ]
+    };
+
+    private static object Validate(EngineQueueItemBase payload, string path)
     {
         var type = typeof(QualityCatalog).Assembly.GetType(
             "DeezSpoTag.Services.Download.Shared.DeliveredAudioQualityGuard",
             throwOnError: true)!;
         var method = type.GetMethod("Validate", BindingFlags.Public | BindingFlags.Static)!;
         return method.Invoke(null, [payload, path])!;
+    }
+
+    private static bool IsDeliveredQualityAccepted(
+        string engine,
+        string requestedQuality,
+        string label,
+        int bitsPerSample,
+        int sampleRate,
+        int bitrateKbps,
+        bool isLossless)
+    {
+        var assembly = typeof(QualityCatalog).Assembly;
+        var guardType = assembly.GetType(
+            "DeezSpoTag.Services.Download.Shared.DeliveredAudioQualityGuard",
+            throwOnError: true)!;
+        var actualType = assembly.GetType(
+            "DeezSpoTag.Services.Download.Shared.ActualAudioQuality",
+            throwOnError: true)!;
+        var actual = Activator.CreateInstance(
+            actualType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [label, bitsPerSample, sampleRate, bitrateKbps, isLossless],
+            culture: null)!;
+        var method = guardType.GetMethod(
+            "IsDeliveredQualityAccepted",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        return (bool)method.Invoke(null, [engine, requestedQuality, actual])!;
     }
 
     private static bool ReadBool(object value, string property)
