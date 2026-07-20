@@ -311,15 +311,17 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 if (_logger.IsEnabled(LogLevel.Information)
                     && (cleanup.ReconciliationRequestsDeleted > 0
                         || cleanup.SyncJobsDeleted > 0
+                        || cleanup.FinalizationOutboxDeleted > 0
                         || cleanup.ClaimsDeleted > 0
                         || cleanup.SchedulerRowsDeleted > 0
                         || cleanup.SourceCircuitsDeleted > 0
                         || cleanup.PlaylistStatesUpdated > 0))
                 {
                     _logger.LogInformation(
-                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, playlistStates={PlaylistStates}.",
+                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, finalizationOutbox={FinalizationOutbox}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, playlistStates={PlaylistStates}.",
                         cleanup.ReconciliationRequestsDeleted,
                         cleanup.SyncJobsDeleted,
+                        cleanup.FinalizationOutboxDeleted,
                         cleanup.ClaimsDeleted,
                         cleanup.SchedulerRowsDeleted,
                         cleanup.SourceCircuitsDeleted,
@@ -341,6 +343,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         if (staleWorkRecovered > 0)
         {
             _logger.LogWarning("Recovered {Count} Watchlist items whose persisted execution deadlines expired.", staleWorkRecovered);
+        }
+        if (scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>() is { } coordinatorWork)
+        {
+            await coordinatorWork.ProcessCoordinatorWorkAsync(
+                finalizationLimit: 25,
+                syncJobLimit: 5,
+                stoppingToken);
         }
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });

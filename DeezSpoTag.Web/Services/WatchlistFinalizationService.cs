@@ -235,9 +235,9 @@ public sealed class WatchlistFinalizationService
 
         _logger.LogWarning(
             "Watchlist finalization ignored {MissingCount}/{AudioCount} final audio file(s) for queue {QueueUuid} because they are not in the library DB.",
-            queueUuid,
             missingPaths.Count,
-            audioPaths.Count);
+            audioPaths.Count,
+            queueUuid);
         foreach (var missingPath in missingPaths.Take(10))
         {
             _logger.LogWarning("Watchlist finalization missing library DB file: {Path}", missingPath);

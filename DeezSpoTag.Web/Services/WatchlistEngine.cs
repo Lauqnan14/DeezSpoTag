@@ -626,10 +626,7 @@ internal sealed class WatchlistEngine
                     cancellationToken);
                 if (targetJobs.Count > 0)
                 {
-                    if (_serviceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
-                    {
-                        await targetWorker.ResumePendingJobsAsync(cancellationToken);
-                    }
+                    _serviceProvider.GetService<WatchlistRunSignal>()?.Request();
                     await AddPlaylistWatchHistoryStageAsync(
                         source,
                         sourceId,
@@ -3843,24 +3840,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         using var scope = _serviceProvider.CreateScope();
         var intentService = scope.ServiceProvider.GetRequiredService<DownloadIntentService>();
-        var orchestrationService = scope.ServiceProvider.GetRequiredService<DownloadOrchestrationService>();
         var normalizedPreferredEngine = NormalizePreferredEngine(options.PreferredEngine);
         var normalizedDownloadVariantMode = NormalizeDownloadVariantMode(options.DownloadVariantMode);
-        if (!await CanQueueWatchItemsAsync(orchestrationService, options, cancellationToken))
-        {
-            return new QueueWatchResult(
-                0,
-                0,
-                0,
-                Deferred: true,
-                AttemptedCount: 0,
-                SystemicFailureCount: 0,
-                FirstSystemicFailureFingerprint: null,
-                FirstFailureMessage: null,
-                StopReason: WatchQueueStopReason.DownloadGate,
-                RemainingQueueableCount: tracks.Count,
-                UnavailableCount: 0);
-        }
 
         var queueContext = new QueuedWatchIntentContext(intentService, options, normalizedDownloadVariantMode);
         var trackList = tracks as IReadOnlyList<WatchIntentTrack> ?? tracks.ToList();
@@ -4010,26 +3991,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : WatchQueueStopReason.Completed;
     }
 
-    private async Task<bool> CanQueueWatchItemsAsync(
-        DownloadOrchestrationService orchestrationService,
-        QueueWatchOptions options,
-        CancellationToken cancellationToken)
-    {
-        using var scope = _serviceProvider.CreateScope();
-        var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
-        var admission = await _queueAdmission.EvaluateQueueGateAsync(
-            queueRepository,
-            orchestrationService,
-            cancellationToken);
-        if (admission.Allowed)
-        {
-            return true;
-        }
-
-        LogDownloadGateDeferred(options.SourceLabel, admission.Message);
-        return false;
-    }
-
     private void LogWatchRunQueueAdmissionDeferred(
         QueueWatchOptions options,
         int queuedCount)
@@ -4043,19 +4004,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             "{Source} watch queue reached per-run budget. queuedThisRun={QueuedThisRun}",
             options.SourceLabel,
             queuedCount);
-    }
-
-    private void LogDownloadGateDeferred(string sourceLabel, string? message)
-    {
-        if (!_logger.IsEnabled(LogLevel.Information))
-        {
-            return;
-        }
-
-        _logger.LogInformation(
-            "{Source} watch queue deferred because downloads are currently gated: {Reason}",
-            sourceLabel,
-            ResolveDeferredDownloadReason(message));
     }
 
     private static string ResolveDeferredDownloadReason(string? message)

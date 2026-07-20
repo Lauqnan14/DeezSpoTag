@@ -10402,6 +10402,7 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
     public sealed record WatchlistRuntimeCleanupResult(
         int ReconciliationRequestsDeleted,
         int SyncJobsDeleted,
+        int FinalizationOutboxDeleted,
         int ClaimsDeleted,
         int SchedulerRowsDeleted,
         int SourceCircuitsDeleted,
@@ -10424,6 +10425,11 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
             @"
 DELETE FROM watchlist_sync_job
 WHERE lower(COALESCE(status, 'pending')) <> 'processing';",
+            cancellationToken);
+        var finalizationOutboxDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            "DELETE FROM watchlist_finalization_outbox;",
             cancellationToken);
         var claimsDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
@@ -10460,6 +10466,7 @@ SET last_run_status='watchlist_disabled',
         return new WatchlistRuntimeCleanupResult(
             reconciliationRequestsDeleted,
             syncJobsDeleted,
+            finalizationOutboxDeleted,
             claimsDeleted,
             schedulerRowsDeleted,
             sourceCircuitsDeleted,

@@ -24,7 +24,6 @@ public sealed class LibraryPlaylistWatchlistDependencies
     public required BoomplayMetadataService BoomplayMetadataService { get; init; }
     public WatchlistFinalizationService? WatchlistFinalizationService { get; init; }
     public WatchlistRunCoordinator? WatchlistRunCoordinator { get; init; }
-    public WatchlistPostDownloadSyncService? WatchlistPostDownloadSyncService { get; init; }
 }
 
 [Route("api/library/playlists")]
@@ -47,7 +46,6 @@ public partial class WatchlistApiController : ControllerBase
     private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly WatchlistFinalizationService? _watchlistFinalizationService;
     private readonly WatchlistRunCoordinator? _watchlistCoordinator;
-    private readonly WatchlistPostDownloadSyncService? _watchlistPostDownloadSyncService;
 
     public WatchlistApiController(LibraryPlaylistWatchlistDependencies dependencies)
     {
@@ -61,7 +59,6 @@ public partial class WatchlistApiController : ControllerBase
         _queueRepository = dependencies.QueueRepository;
         _watchlistFinalizationService = dependencies.WatchlistFinalizationService;
         _watchlistCoordinator = dependencies.WatchlistRunCoordinator;
-        _watchlistPostDownloadSyncService = dependencies.WatchlistPostDownloadSyncService;
     }
 
     [HttpGet]
@@ -156,7 +153,6 @@ public partial class WatchlistApiController : ControllerBase
         {
             runtime = runtime with { PendingReconciliationRequests = pendingReconciliationRequests };
         }
-        var targetSyncWorker = _watchlistPostDownloadSyncService?.GetRuntimeHealth();
         var playlists = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
         var sources = playlists
             .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
@@ -201,7 +197,6 @@ public partial class WatchlistApiController : ControllerBase
                 },
             circuits,
             runtime,
-            targetSyncWorker,
             claims = new
             {
                 pending = pendingClaims.Count,
@@ -612,10 +607,6 @@ public partial class WatchlistApiController : ControllerBase
 
         _watchlistCoordinator?.ResetPlaylistRuntimeStateForAll(watchlist);
         var recoveredClaims = await _playlistWatchReconciler.RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
-        if (_watchlistPostDownloadSyncService != null)
-        {
-            await _watchlistPostDownloadSyncService.ResumePendingJobsAsync(cancellationToken);
-        }
         WatchlistTriggerResult? trigger = null;
         if (_watchlistCoordinator != null)
         {
@@ -659,10 +650,6 @@ public partial class WatchlistApiController : ControllerBase
         }
         _watchlistCoordinator?.ResetPlaylistRuntimeState(item.Source, item.SourceId);
         var recoveredClaims = await _playlistWatchReconciler.RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
-        if (_watchlistPostDownloadSyncService != null)
-        {
-            await _watchlistPostDownloadSyncService.ResumePendingJobsAsync(cancellationToken);
-        }
 
         WatchlistTriggerResult? trigger = null;
         if (_watchlistCoordinator != null)

@@ -5,32 +5,16 @@ using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed record WatchlistPostDownloadSyncHealth(
-    bool IsRunning,
-    bool IsProcessing,
-    DateTimeOffset? LastHeartbeatUtc,
-    DateTimeOffset? LastCycleCompletedUtc,
-    DateTimeOffset? LastSuccessfulJobUtc,
-    long? CurrentJobId,
-    string? CurrentTarget,
-    int ConsecutiveFailures,
-    string? LastError);
-
-public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatchlistPostDownloadSyncNotifier
+public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan SyncJobExecutionTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(30);
-    private readonly SemaphoreSlim _workSignal = new(0, 1);
-    private int _workSignalPending;
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<WatchlistPostDownloadSyncService> _logger;
     private readonly string _leaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
-    private readonly object _healthGate = new();
-    private WatchlistPostDownloadSyncHealth _health = new(false, false, null, null, null, null, null, 0, null);
     private DateTimeOffset _lastRepairAttemptUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastOutboxRepairUtc = DateTimeOffset.MinValue;
 
@@ -48,6 +32,11 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
 
     public async ValueTask RequestAllPlaylistSyncAsync(CancellationToken cancellationToken = default)
     {
+        if (!IsWatchlistEnabled())
+        {
+            return;
+        }
+
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
         if (!repository.IsConfigured)
@@ -58,56 +47,21 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         var jobs = await repository.EnqueueWatchlistAllPlaylistSyncJobsAsync(cancellationToken);
         if (jobs > 0)
         {
-            SignalWorker();
+            _coordinatorSignal.Request();
         }
     }
 
-    public Task ResumePendingJobsAsync(CancellationToken cancellationToken = default)
+    public async Task ProcessCoordinatorWorkAsync(
+        int finalizationLimit,
+        int syncJobLimit,
+        CancellationToken cancellationToken)
     {
-        if (!IsWatchlistEnabled())
-        {
-            return Task.CompletedTask;
-        }
-
-        cancellationToken.ThrowIfCancellationRequested();
-        SignalWorker();
-        return Task.CompletedTask;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        _logger.LogInformation("Watchlist target-sync worker started.");
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            await ProcessDueJobsAsync(stoppingToken);
-            try
-            {
-                await WaitForWorkAsync(stoppingToken);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                break;
-            }
-        }
-        _logger.LogInformation("Watchlist target-sync worker stopped.");
-    }
-
-    private async Task ProcessDueJobsAsync(CancellationToken cancellationToken)
-    {
-        UpdateHealth(health => health with { IsRunning = true, LastHeartbeatUtc = DateTimeOffset.UtcNow });
         try
         {
             await ProcessDueJobsCoreAsync(
                 cancellationToken,
-                finalizationLimit: 25,
-                syncJobLimit: 5);
-            UpdateHealth(health => health with
-            {
-                LastHeartbeatUtc = DateTimeOffset.UtcNow,
-                LastCycleCompletedUtc = DateTimeOffset.UtcNow,
-                ConsecutiveFailures = 0,
-                LastError = null
-            });
+                finalizationLimit,
+                syncJobLimit);
         }
         catch (OperationCanceledException)
         {
@@ -115,56 +69,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Watchlist coordinator target-sync function failed; the next coordinator cycle will retry.");
-            UpdateHealth(health => health with
-            {
-                LastHeartbeatUtc = DateTimeOffset.UtcNow,
-                LastCycleCompletedUtc = DateTimeOffset.UtcNow,
-                ConsecutiveFailures = health.ConsecutiveFailures + 1,
-                LastError = ex.Message,
-                IsProcessing = false,
-                CurrentJobId = null,
-                CurrentTarget = null
-            });
-        }
-    }
-
-    private void SignalWorker()
-    {
-        if (Interlocked.Exchange(ref _workSignalPending, 1) == 0)
-        {
-            _workSignal.Release();
-        }
-    }
-
-    private async Task WaitForWorkAsync(CancellationToken cancellationToken)
-    {
-        using var timeout = new CancellationTokenSource(IdlePollInterval);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
-        try
-        {
-            await _workSignal.WaitAsync(linked.Token);
-            Interlocked.Exchange(ref _workSignalPending, 0);
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            // Periodic idle poll keeps durable sync/finalization jobs moving after restarts.
-        }
-    }
-
-    public WatchlistPostDownloadSyncHealth GetRuntimeHealth()
-    {
-        lock (_healthGate)
-        {
-            return _health;
-        }
-    }
-
-    private void UpdateHealth(Func<WatchlistPostDownloadSyncHealth, WatchlistPostDownloadSyncHealth> update)
-    {
-        lock (_healthGate)
-        {
-            _health = update(_health);
+            _logger.LogError(ex, "Watchlist coordinator sync/finalization phase failed; the next coordinator cycle will retry.");
         }
     }
 
@@ -192,21 +97,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
                 return;
             }
 
-            UpdateHealth(health => health with
-            {
-                IsProcessing = true,
-                LastHeartbeatUtc = DateTimeOffset.UtcNow,
-                CurrentJobId = job.Id,
-                CurrentTarget = job.TargetService
-            });
             await ProcessClaimedJobAsync(repository, job, cancellationToken);
-            UpdateHealth(health => health with
-            {
-                IsProcessing = false,
-                LastHeartbeatUtc = DateTimeOffset.UtcNow,
-                CurrentJobId = null,
-                CurrentTarget = null
-            });
         }
     }
 
@@ -444,14 +335,7 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
-                    if (await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken))
-                    {
-                        UpdateHealth(health => health with
-                        {
-                            LastSuccessfulJobUtc = DateTimeOffset.UtcNow,
-                            LastError = null
-                        });
-                    }
+                    await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
                     return;
                 case SyncAttemptOutcomeKind.Obsolete:
                     await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken);
@@ -525,7 +409,6 @@ public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatch
             {
                 return;
             }
-            UpdateHealth(health => health with { LastHeartbeatUtc = DateTimeOffset.UtcNow });
         }
     }
 

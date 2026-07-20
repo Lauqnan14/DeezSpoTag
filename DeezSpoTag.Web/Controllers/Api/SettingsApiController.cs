@@ -28,21 +28,18 @@ namespace DeezSpoTag.Web.Controllers.Api
         private readonly UserPreferencesStore _userPreferencesStore;
         private readonly PlatformAuthService _platformAuthService;
         private readonly WatchlistRunCoordinator? _watchlistCoordinator;
-        private readonly WatchlistPostDownloadSyncService? _watchlistSyncService;
         public SettingsApiController(
             ILogger<SettingsApiController> logger,
             DeezSpoTagSettingsService settingsService,
             UserPreferencesStore userPreferencesStore,
             PlatformAuthService platformAuthService,
-            WatchlistRunCoordinator? watchlistCoordinator = null,
-            WatchlistPostDownloadSyncService? watchlistSyncService = null)
+            WatchlistRunCoordinator? watchlistCoordinator = null)
         {
             _logger = logger;
             _settingsService = settingsService;
             _userPreferencesStore = userPreferencesStore;
             _platformAuthService = platformAuthService;
             _watchlistCoordinator = watchlistCoordinator;
-            _watchlistSyncService = watchlistSyncService;
         }
 
         /// <summary>
@@ -186,11 +183,6 @@ namespace DeezSpoTag.Web.Controllers.Api
                 await SyncUserPreferencesAsync(settings);
                 if (!persisted.WatchEnabled && settings.WatchEnabled)
                 {
-                    if (_watchlistSyncService != null)
-                    {
-                        await _watchlistSyncService.ResumePendingJobsAsync(HttpContext.RequestAborted);
-                    }
-
                     if (_watchlistCoordinator != null)
                     {
                         await _watchlistCoordinator.TriggerRunOnceAsync(HttpContext.RequestAborted);

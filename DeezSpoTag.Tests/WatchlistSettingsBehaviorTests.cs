@@ -881,29 +881,41 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("\"Watchlist\": { \"Enabled\"", appSettingsSource, StringComparison.Ordinal);
         Assert.Contains("!persisted.WatchEnabled && settings.WatchEnabled", settingsControllerSource, StringComparison.Ordinal);
         Assert.Contains("TriggerRunOnceAsync", settingsControllerSource, StringComparison.Ordinal);
-        Assert.Contains("ResumePendingJobsAsync", settingsControllerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResumePendingJobsAsync", settingsControllerSource, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Watchlist_FinalizationPersistsWhileUiAutomationIsDisabled()
+    public void Watchlist_FinalizationAndTargetSyncRunOnlyInsideCoordinator()
     {
         var repoRoot = ResolveRepoRoot();
         var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
         var coordinatorSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
         var programSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Program.cs"));
         var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask RequestAllPlaylistSyncAsync(");
-        Assert.DoesNotContain("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
+        Assert.Contains("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
         Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("private async Task ProcessDueJobsAsync(", syncSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("ProcessDueJobsAsync(", coordinatorSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("WatchlistPostDownloadSyncService", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("protected override async Task ExecuteAsync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task ProcessCoordinatorWorkAsync(", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessCoordinatorWorkAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPostDownloadSyncService", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("protected override async Task ExecuteAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("HasWatchlistReconciliationRequestAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Watchlist_DisabledCleanupClearsFinalizationOutbox()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var coordinatorSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
+
+        Assert.Contains("FinalizationOutboxDeleted", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("DELETE FROM watchlist_finalization_outbox;", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("finalizationOutbox={FinalizationOutbox}", coordinatorSource, StringComparison.Ordinal);
     }
 
     public void Dispose()

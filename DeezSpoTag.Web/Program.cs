@@ -1580,10 +1580,6 @@ public partial class Program
             new DeezSpoTag.Web.Services.WatchlistQueueService(
                 sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Watchlist target playlist sync worker after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunSignal>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
@@ -1600,8 +1596,7 @@ public partial class Program
                 ProfileResolutionService = sp.GetRequiredService<DeezSpoTag.Web.Services.AutoTagProfileResolutionService>(),
                 BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 WatchlistFinalizationService = sp.GetService<DeezSpoTag.Web.Services.WatchlistFinalizationService>(),
-                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(),
-                WatchlistPostDownloadSyncService = sp.GetService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>()
+                WatchlistRunCoordinator = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>()
             });
         AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistRunCoordinator>(
             services,

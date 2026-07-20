@@ -1602,7 +1602,6 @@ async function loadPlaylistWatchlist() {
         const runtimeHealth = runtime?.runtime || {};
         const claimHealth = runtime?.claims || {};
         const syncJobHealth = runtime?.targetSyncJobs || {};
-        const targetSyncWorker = runtime?.targetSyncWorker || {};
         const runtimeHealthParts = [];
         if (!runtime) {
             runtimeHealthParts.push('Watchlist runtime telemetry unavailable');
@@ -1648,17 +1647,8 @@ async function loadPlaylistWatchlist() {
         if (syncJobHealth.oldestPendingUtc) {
             runtimeHealthParts.push(`oldest target job ${formatRelativeTime(syncJobHealth.oldestPendingUtc)}`);
         }
-        const targetHeartbeatUtc = targetSyncWorker.lastHeartbeatUtc
-            ? new Date(targetSyncWorker.lastHeartbeatUtc).getTime()
-            : 0;
-        const targetWorkerStale = !targetHeartbeatUtc || (Date.now() - targetHeartbeatUtc) > 90000;
-        if (!targetSyncWorker.isRunning || targetWorkerStale) {
-            runtimeHealthParts.push('target sync worker unhealthy');
-        } else if (targetSyncWorker.isProcessing) {
-            runtimeHealthParts.push(`target sync processing ${targetSyncWorker.currentTarget || 'server'}`);
-        }
-        if (targetSyncWorker.lastError || syncJobHealth.lastError) {
-            runtimeHealthParts.push(targetSyncWorker.lastError || syncJobHealth.lastError);
+        if (syncJobHealth.lastError) {
+            runtimeHealthParts.push(syncJobHealth.lastError);
         }
         const runtimeHealthHtml = `<div class="watchlist-runtime-health">${escapeHtml(runtimeHealthParts.join(' • '))}</div>`;
         if (mergeButton) {

@@ -28,7 +28,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var intentSource = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
 
-        Assert.Contains("EvaluateQueueGateAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("EvaluateQueueGateAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("CanQueueWatchItemsAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("HasActiveDownloadPipelineAsync", ReadSource("DeezSpoTag.Services/Download/Queue/DownloadQueueRepository.cs"), StringComparison.Ordinal);
         Assert.Contains("EnqueueAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("EnqueueManualAsync", watchSource, StringComparison.Ordinal);
@@ -113,18 +114,18 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_DoesNotAwaitTargetSyncJobsInline()
+    public void HostedCycle_ProcessesTargetSyncJobsThroughSingleCoordinator()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
         var programSource = ReadSource("DeezSpoTag.Web/Program.cs");
 
-        Assert.DoesNotContain("ProcessDueJobsAsync", hostedSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("WatchlistPostDownloadSyncService", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessCoordinatorWorkAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPostDownloadSyncService", hostedSource, StringComparison.Ordinal);
         Assert.Contains("PlaylistReconciliationMode.SyncAndQueue", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("protected override async Task ExecuteAsync", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("while (!stoppingToken.IsCancellationRequested)", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("protected override async Task ExecuteAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("while (!stoppingToken.IsCancellationRequested)", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
         Assert.DoesNotContain("No playlist sync targets configured", hostedSource, StringComparison.Ordinal);
     }
 

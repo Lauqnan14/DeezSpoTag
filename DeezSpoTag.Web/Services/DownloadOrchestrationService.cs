@@ -199,7 +199,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
-    private readonly WatchlistPostDownloadSyncService? _watchlistTargetWorker;
+    private readonly WatchlistRunSignal? _watchlistRunSignal;
     private readonly LibraryConfigStore _configStore;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly DownloadQueueWakeSignal _queueWakeSignal;
@@ -260,7 +260,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
-        _watchlistTargetWorker = serviceProvider.GetService<WatchlistPostDownloadSyncService>();
+        _watchlistRunSignal = serviceProvider.GetService<WatchlistRunSignal>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _workCoordinator = serviceProvider.GetRequiredService<BackgroundWorkCoordinator>();
         _queueWakeSignal = serviceProvider.GetRequiredService<DownloadQueueWakeSignal>();
@@ -1595,9 +1595,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 cancellationToken);
             queued |= itemFinalPaths.Count > 0;
         }
-        if (queued && _watchlistTargetWorker != null)
+        if (queued)
         {
-            await _watchlistTargetWorker.ResumePendingJobsAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            _watchlistRunSignal?.Request();
         }
         return (queued, nonWatchlistPresent);
     }
