@@ -1490,20 +1490,7 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
-        var inputs = eligibleTracks
-            .Select(track =>
-            {
-                var (identitySource, identityTrackId) = ResolveTrackIdentity(source, track);
-                return new LibraryRepository.LibraryExistenceInput(
-                    track.Isrc,
-                    track.Name,
-                    track.Artists,
-                    track.DurationMs,
-                    identitySource,
-                    identityTrackId,
-                    track.Album);
-            })
-            .ToList();
+        var inputs = BuildLocalTrackIdentityInputs(source, eligibleTracks);
         var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(inputs, cancellationToken);
         for (var index = 0; index < eligibleTracks.Count; index++)
         {
@@ -3031,25 +3018,31 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        var resolved = new List<long>(tracks.Count);
-        foreach (var track in tracks)
-        {
-            var (identitySource, identityTrackId) = ResolveTrackIdentity(playlistSource, track);
-            var decision = await _libraryRepository.ResolveLocalTrackIdentityAsync(
-                new LibraryRepository.LibraryExistenceInput(
+        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
+            BuildLocalTrackIdentityInputs(playlistSource, tracks),
+            cancellationToken);
+        return identities
+            .Select(static decision => decision.IsAmbiguous ? 0L : decision.LocalTrackId ?? 0L)
+            .ToList();
+    }
+
+    private static List<LibraryRepository.LibraryExistenceInput> BuildLocalTrackIdentityInputs(
+        string playlistSource,
+        IReadOnlyList<SyncTrackSummary> tracks)
+        => tracks
+            .Select(track =>
+            {
+                var (identitySource, identityTrackId) = ResolveTrackIdentity(playlistSource, track);
+                return new LibraryRepository.LibraryExistenceInput(
                     track.Isrc,
                     track.Name,
                     track.Artists,
                     track.DurationMs,
                     identitySource,
                     identityTrackId,
-                    track.Album),
-                cancellationToken: cancellationToken);
-            resolved.Add(decision.IsAmbiguous ? 0L : decision.LocalTrackId ?? 0L);
-        }
-
-        return resolved;
-    }
+                    track.Album);
+            })
+            .ToList();
 
     private async Task<long?> ResolveLocalTrackIdAsync(
         string playlistSource,

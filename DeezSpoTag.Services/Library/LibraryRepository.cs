@@ -12099,6 +12099,25 @@ SELECT f.root_path, af.relative_path, af.path
         int? DurationMs,
         int? QualityRank);
 
+    private sealed record LocalTrackBatchLookup(
+        int Index,
+        LibraryExistenceInput Input,
+        string TrackTitle,
+        string ArtistName,
+        string ArtistSearch,
+        string? NormalizedIsrc,
+        string? NormalizedSource,
+        string? NormalizedSourceId);
+
+    private static readonly LocalTrackIdentityResult LocalLibraryNotConfiguredIdentity =
+        new(null, "none", "The local library is not configured.", Array.Empty<long>());
+
+    private static readonly LocalTrackIdentityResult MissingTrackMetadataIdentity =
+        new(null, "none", "Title and artist metadata are required.", Array.Empty<long>());
+
+    private static readonly LocalTrackIdentityResult NoLocalTrackMetadataMatchIdentity =
+        new(null, "none", "No local track matched the stored or tagged metadata.", Array.Empty<long>());
+
     public async Task<LocalTrackIdentityResult> ResolveLocalTrackIdentityAsync(
         LibraryExistenceInput input,
         long? libraryId = null,
@@ -12323,26 +12342,11 @@ LIMIT 100;";
                 await ReadNullableIntAsync(reader, 4, cancellationToken),
                 await ReadNullableIntAsync(reader, 5, cancellationToken));
 
-            if (!TrackTitleMatcher.ArtistsMatch(artistName, candidate.Artist)
-                || !TrackTitleMatcher.TitlesMatch(trackTitle, candidate.Title))
+            if (!TryScoreLocalTrackMetadataCandidate(input, trackTitle, artistName, candidate, out var score))
             {
                 continue;
             }
 
-            var score = 1000;
-            if (!string.IsNullOrWhiteSpace(input.AlbumTitle)
-                && TrackTitleMatcher.TitlesMatch(input.AlbumTitle, candidate.Album))
-            {
-                score += 100;
-            }
-
-            if (input.DurationMs.HasValue && candidate.DurationMs.HasValue)
-            {
-                var difference = Math.Abs(input.DurationMs.Value - candidate.DurationMs.Value);
-                score += difference <= 2000 ? 75 : difference <= 10000 ? 25 : 0;
-            }
-
-            score += Math.Clamp(candidate.QualityRank ?? 0, 0, 100);
             scored.Add((candidate, score));
         }
 
@@ -12351,6 +12355,43 @@ LIMIT 100;";
             return new LocalTrackIdentityResult(null, "none", "No local track matched the stored or tagged metadata.", Array.Empty<long>());
         }
 
+        return BuildLocalTrackMetadataIdentityResult(scored);
+    }
+
+    private static bool TryScoreLocalTrackMetadataCandidate(
+        LibraryExistenceInput input,
+        string trackTitle,
+        string artistName,
+        LocalTrackMetadataCandidate candidate,
+        out int score)
+    {
+        score = 0;
+        if (!TrackTitleMatcher.ArtistsMatch(artistName, candidate.Artist)
+            || !TrackTitleMatcher.TitlesMatch(trackTitle, candidate.Title))
+        {
+            return false;
+        }
+
+        score = 1000;
+        if (!string.IsNullOrWhiteSpace(input.AlbumTitle)
+            && TrackTitleMatcher.TitlesMatch(input.AlbumTitle, candidate.Album))
+        {
+            score += 100;
+        }
+
+        if (input.DurationMs.HasValue && candidate.DurationMs.HasValue)
+        {
+            var difference = Math.Abs(input.DurationMs.Value - candidate.DurationMs.Value);
+            score += difference <= 2000 ? 75 : difference <= 10000 ? 25 : 0;
+        }
+
+        score += Math.Clamp(candidate.QualityRank ?? 0, 0, 100);
+        return true;
+    }
+
+    private static LocalTrackIdentityResult BuildLocalTrackMetadataIdentityResult(
+        IReadOnlyList<(LocalTrackMetadataCandidate Candidate, int Score)> scored)
+    {
         var ordered = scored
             .OrderByDescending(static item => item.Score)
             .ThenByDescending(static item => item.Candidate.QualityRank)
@@ -12402,15 +12443,321 @@ LIMIT 100;";
             return Array.Empty<LocalTrackIdentityResult>();
         }
 
-        var results = new LocalTrackIdentityResult[inputs.Count];
-        for (var index = 0; index < inputs.Count; index++)
+        if (!IsConfigured)
         {
-            results[index] = await ResolveLocalTrackIdentityAsync(
-                inputs[index],
-                cancellationToken: cancellationToken);
+            return Enumerable
+                .Repeat(LocalLibraryNotConfiguredIdentity, inputs.Count)
+                .ToArray();
+        }
+
+        var results = Enumerable
+            .Repeat(NoLocalTrackMetadataMatchIdentity, inputs.Count)
+            .ToArray();
+        var lookups = BuildLocalTrackBatchLookups(inputs, results);
+        if (lookups.Count == 0)
+        {
+            return results;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await CreateLocalTrackBatchInputAsync(connection, lookups, cancellationToken);
+        try
+        {
+            await ResolveBatchIsrcMatchesAsync(connection, results, cancellationToken);
+            await ResolveBatchSourceMatchesAsync(connection, results, cancellationToken);
+            await ResolveBatchMetadataMatchesAsync(connection, lookups, results, cancellationToken);
+        }
+        finally
+        {
+            await DropLocalTrackBatchInputAsync(connection, cancellationToken);
         }
 
         return results;
+    }
+
+    private static IReadOnlyList<LocalTrackBatchLookup> BuildLocalTrackBatchLookups(
+        IReadOnlyList<LibraryExistenceInput> inputs,
+        LocalTrackIdentityResult[] results)
+    {
+        var lookups = new List<LocalTrackBatchLookup>(inputs.Count);
+        for (var index = 0; index < inputs.Count; index++)
+        {
+            var input = inputs[index];
+            var normalizedIsrc = NormalizeBatchExactValue(input.Isrc, 64);
+            var normalizedSource = NormalizeBatchExactValue(input.Source, 64);
+            var normalizedSourceId = NormalizeBatchExactValue(input.SourceId, 256);
+            if (!TryBuildTrackLookup(input, out var trackTitle, out var artistName, out var artistSearch))
+            {
+                results[index] = MissingTrackMetadataIdentity;
+                lookups.Add(new LocalTrackBatchLookup(
+                    index,
+                    input,
+                    string.Empty,
+                    string.Empty,
+                    string.Empty,
+                    normalizedIsrc,
+                    normalizedSource,
+                    normalizedSourceId));
+                continue;
+            }
+
+            lookups.Add(new LocalTrackBatchLookup(
+                index,
+                input,
+                trackTitle,
+                artistName,
+                artistSearch,
+                normalizedIsrc,
+                normalizedSource,
+                normalizedSourceId));
+        }
+
+        return lookups;
+    }
+
+    private static string? NormalizeBatchExactValue(string? value, int maxLength)
+    {
+        var normalized = value?.Trim();
+        return string.IsNullOrWhiteSpace(normalized) || normalized.Length > maxLength
+            ? null
+            : normalized;
+    }
+
+    private static async Task CreateLocalTrackBatchInputAsync(
+        SqliteConnection connection,
+        IReadOnlyList<LocalTrackBatchLookup> lookups,
+        CancellationToken cancellationToken)
+    {
+        await using (var create = new SqliteCommand(@"
+DROP TABLE IF EXISTS temp_local_track_identity_input;
+CREATE TEMP TABLE temp_local_track_identity_input (
+    input_index INTEGER PRIMARY KEY,
+    isrc TEXT,
+    source TEXT,
+    source_id TEXT,
+    artist_search TEXT
+);", connection))
+        {
+            await create.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var insert = new SqliteCommand(@"
+INSERT INTO temp_local_track_identity_input (input_index, isrc, source, source_id, artist_search)
+VALUES (@inputIndex, @isrc, @source, @sourceId, @artistSearch);", connection, transaction);
+        var indexParameter = insert.Parameters.Add("inputIndex", SqliteType.Integer);
+        var isrcParameter = insert.Parameters.Add("isrc", SqliteType.Text);
+        var sourceParameter = insert.Parameters.Add("source", SqliteType.Text);
+        var sourceIdParameter = insert.Parameters.Add("sourceId", SqliteType.Text);
+        var artistSearchParameter = insert.Parameters.Add("artistSearch", SqliteType.Text);
+        foreach (var lookup in lookups)
+        {
+            indexParameter.Value = lookup.Index;
+            isrcParameter.Value = (object?)lookup.NormalizedIsrc ?? DBNull.Value;
+            sourceParameter.Value = (object?)lookup.NormalizedSource ?? DBNull.Value;
+            sourceIdParameter.Value = (object?)lookup.NormalizedSourceId ?? DBNull.Value;
+            artistSearchParameter.Value = string.IsNullOrWhiteSpace(lookup.ArtistSearch)
+                ? (object)DBNull.Value
+                : lookup.ArtistSearch;
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task DropLocalTrackBatchInputAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand("DROP TABLE IF EXISTS temp_local_track_identity_input;", connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task ResolveBatchIsrcMatchesAsync(
+        SqliteConnection connection,
+        LocalTrackIdentityResult[] results,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+WITH candidates AS (
+    SELECT i.input_index,
+           t.id AS track_id,
+           af.quality_rank,
+           ROW_NUMBER() OVER (
+               PARTITION BY i.input_index
+               ORDER BY CASE WHEN af.quality_rank IS NULL THEN 1 ELSE 0 END,
+                        af.quality_rank DESC,
+                        t.id DESC
+           ) AS row_number
+    FROM temp_local_track_identity_input i
+    JOIN track t
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    LEFT JOIN track_source ts ON ts.track_id = t.id AND LOWER(ts.source) = 'isrc'
+    WHERE f.enabled = TRUE
+      AND i.isrc IS NOT NULL
+      AND (LOWER(t.tag_isrc) = LOWER(i.isrc) OR LOWER(ts.source_id) = LOWER(i.isrc))
+)
+SELECT input_index, track_id
+FROM candidates
+WHERE row_number = 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var inputIndex = reader.GetInt32(0);
+            if (inputIndex < 0 || inputIndex >= results.Length || results[inputIndex].LocalTrackId.HasValue)
+            {
+                continue;
+            }
+
+            var trackId = reader.GetInt64(1);
+            results[inputIndex] = new LocalTrackIdentityResult(
+                trackId,
+                "isrc",
+                "Matched the stored ISRC.",
+                new[] { trackId });
+        }
+    }
+
+    private static async Task ResolveBatchSourceMatchesAsync(
+        SqliteConnection connection,
+        LocalTrackIdentityResult[] results,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+WITH candidates AS (
+    SELECT i.input_index,
+           ts.track_id,
+           af.quality_rank,
+           ROW_NUMBER() OVER (
+               PARTITION BY i.input_index
+               ORDER BY CASE WHEN af.quality_rank IS NULL THEN 1 ELSE 0 END,
+                        af.quality_rank DESC,
+                        ts.track_id DESC
+           ) AS row_number
+    FROM temp_local_track_identity_input i
+    JOIN track_source ts ON LOWER(ts.source) = LOWER(i.source)
+    JOIN track_local tl ON tl.track_id = ts.track_id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
+      AND i.source IS NOT NULL
+      AND i.source_id IS NOT NULL
+      AND (
+          LOWER(ts.source_id) = LOWER(i.source_id)
+          OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(i.source_id) || ';') > 0
+      )
+)
+SELECT input_index, track_id
+FROM candidates
+WHERE row_number = 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var inputIndex = reader.GetInt32(0);
+            if (inputIndex < 0 || inputIndex >= results.Length || results[inputIndex].LocalTrackId.HasValue)
+            {
+                continue;
+            }
+
+            var trackId = reader.GetInt64(1);
+            results[inputIndex] = new LocalTrackIdentityResult(
+                trackId,
+                "source_id",
+                "Matched the stored source track ID.",
+                new[] { trackId });
+        }
+    }
+
+    private static async Task ResolveBatchMetadataMatchesAsync(
+        SqliteConnection connection,
+        IReadOnlyList<LocalTrackBatchLookup> lookups,
+        LocalTrackIdentityResult[] results,
+        CancellationToken cancellationToken)
+    {
+        var lookupByIndex = lookups.ToDictionary(static lookup => lookup.Index);
+        var scoredByInput = new Dictionary<int, List<(LocalTrackMetadataCandidate Candidate, int Score)>>();
+        const string sql = @"
+WITH candidates AS (
+    SELECT i.input_index,
+           t.id,
+           COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
+           COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
+           COALESCE(NULLIF(t.tag_album, ''), al.title) AS match_album,
+           COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS match_duration_ms,
+           af.quality_rank,
+           ROW_NUMBER() OVER (
+               PARTITION BY i.input_index
+               ORDER BY CASE WHEN af.quality_rank IS NULL THEN 1 ELSE 0 END,
+                        af.quality_rank DESC,
+                        t.id DESC
+           ) AS row_number
+    FROM temp_local_track_identity_input i
+    JOIN track t
+    JOIN album al ON al.id = t.album_id
+    JOIN artist ar ON ar.id = al.artist_id
+    JOIN track_local tl ON tl.track_id = t.id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    JOIN folder f ON f.id = af.folder_id
+    WHERE f.enabled = TRUE
+      AND i.artist_search IS NOT NULL
+      AND (
+          LOWER(ar.name) LIKE LOWER(i.artist_search)
+          OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(i.artist_search)
+          OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(i.artist_search)
+      )
+)
+SELECT input_index, id, match_title, match_artist, match_album, match_duration_ms, quality_rank
+FROM candidates
+WHERE row_number <= 100;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var inputIndex = reader.GetInt32(0);
+            if (inputIndex < 0
+                || inputIndex >= results.Length
+                || results[inputIndex].LocalTrackId.HasValue
+                || !lookupByIndex.TryGetValue(inputIndex, out var lookup)
+                || string.IsNullOrWhiteSpace(lookup.TrackTitle)
+                || string.IsNullOrWhiteSpace(lookup.ArtistName))
+            {
+                continue;
+            }
+
+            var candidate = new LocalTrackMetadataCandidate(
+                reader.GetInt64(1),
+                await ReadNullableStringAsync(reader, 2, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 3, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 4, cancellationToken) ?? string.Empty,
+                await ReadNullableIntAsync(reader, 5, cancellationToken),
+                await ReadNullableIntAsync(reader, 6, cancellationToken));
+
+            if (!TryScoreLocalTrackMetadataCandidate(lookup.Input, lookup.TrackTitle, lookup.ArtistName, candidate, out var score))
+            {
+                continue;
+            }
+
+            if (!scoredByInput.TryGetValue(inputIndex, out var scored))
+            {
+                scored = new List<(LocalTrackMetadataCandidate Candidate, int Score)>();
+                scoredByInput[inputIndex] = scored;
+            }
+            scored.Add((candidate, score));
+        }
+
+        foreach (var (inputIndex, scored) in scoredByInput)
+        {
+            if (results[inputIndex].LocalTrackId.HasValue || scored.Count == 0)
+            {
+                continue;
+            }
+
+            results[inputIndex] = BuildLocalTrackMetadataIdentityResult(scored);
+        }
     }
 
     public async Task<IReadOnlyList<bool>> ExistsInLibraryAsync(

@@ -777,6 +777,42 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                 AlbumTitle: "Album One"));
         Assert.Equal("metadata_exact", metadataIdentity.MatchType);
         Assert.Equal(seeded.TrackIdsByTitle["Song One"], metadataIdentity.LocalTrackId);
+
+        var batchInputs = new[]
+        {
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Wrong display title",
+                "Wrong display artist",
+                null,
+                "spotify",
+                "sp-song-1"),
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Song One",
+                "Artist One",
+                187000,
+                AlbumTitle: "Album One"),
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Missing Song",
+                "Missing Artist",
+                null)
+        };
+        var singleIdentities = new List<LibraryRepository.LocalTrackIdentityResult>(batchInputs.Length);
+        foreach (var input in batchInputs)
+        {
+            singleIdentities.Add(await _repository.ResolveLocalTrackIdentityAsync(input));
+        }
+
+        var batchIdentities = await _repository.ResolveLocalTrackIdentitiesAsync(batchInputs);
+        Assert.Equal(singleIdentities.Count, batchIdentities.Count);
+        for (var index = 0; index < singleIdentities.Count; index++)
+        {
+            Assert.Equal(singleIdentities[index].LocalTrackId, batchIdentities[index].LocalTrackId);
+            Assert.Equal(singleIdentities[index].MatchType, batchIdentities[index].MatchType);
+            Assert.Equal(singleIdentities[index].CandidateTrackIds, batchIdentities[index].CandidateTrackIds);
+        }
     }
 
     [Fact]
