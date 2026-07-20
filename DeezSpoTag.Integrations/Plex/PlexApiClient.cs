@@ -2024,7 +2024,7 @@ public class PlexApiClient
         }
     }
 
-    public async Task UpdatePlaylistPosterAsync(
+    public async Task<bool> UpdatePlaylistPosterAsync(
         string serverUrl,
         string token,
         string playlistId,
@@ -2033,10 +2033,10 @@ public class PlexApiClient
     {
         if (string.IsNullOrWhiteSpace(playlistId) || string.IsNullOrWhiteSpace(posterUrl))
         {
-            return;
+            return false;
         }
 
-        await SendPlexRequestAsync(
+        return await SendPlexRequestAsync(
             HttpMethod.Post,
             $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}&url={Uri.EscapeDataString(posterUrl)}",
             "update playlist poster",
@@ -2044,7 +2044,7 @@ public class PlexApiClient
             cancellationToken);
     }
 
-    public async Task UpdatePlaylistPosterFromUrlAsync(
+    public async Task<bool> UpdatePlaylistPosterFromUrlAsync(
         string serverUrl,
         string token,
         string playlistId,
@@ -2056,7 +2056,7 @@ public class PlexApiClient
             || string.IsNullOrWhiteSpace(playlistId)
             || string.IsNullOrWhiteSpace(posterUrl))
         {
-            return;
+            return false;
         }
 
         try
@@ -2065,20 +2065,20 @@ public class PlexApiClient
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Failed to download playlist poster for {PlaylistId}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), response.StatusCode);
-                return;
+                return false;
             }
 
             var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
             if (bytes.Length == 0)
             {
-                return;
+                return false;
             }
 
             using var content = new ByteArrayContent(bytes);
             content.Headers.ContentType = response.Content.Headers.ContentType
                 ?? new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
 
-            await SendPlexRequestAsync(
+            return await SendPlexRequestAsync(
                 HttpMethod.Post,
                 $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}",
                 "upload playlist poster",
@@ -2089,10 +2089,11 @@ public class PlexApiClient
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
+            return false;
         }
     }
 
-    public async Task UpdatePlaylistPosterFromFileAsync(
+    public async Task<bool> UpdatePlaylistPosterFromFileAsync(
         string serverUrl,
         string token,
         string playlistId,
@@ -2106,7 +2107,7 @@ public class PlexApiClient
             || string.IsNullOrWhiteSpace(posterPath)
             || !File.Exists(posterPath))
         {
-            return;
+            return false;
         }
 
         try
@@ -2114,14 +2115,14 @@ public class PlexApiClient
             var bytes = await File.ReadAllBytesAsync(posterPath, cancellationToken);
             if (bytes.Length == 0)
             {
-                return;
+                return false;
             }
 
             using var content = new ByteArrayContent(bytes);
             content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
                 string.IsNullOrWhiteSpace(contentType) ? "image/jpeg" : contentType);
 
-            await SendPlexRequestAsync(
+            return await SendPlexRequestAsync(
                 HttpMethod.Post,
                 $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}",
                 "upload playlist poster",
@@ -2132,6 +2133,7 @@ public class PlexApiClient
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId} from local file {PosterPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(posterPath));
+            return false;
         }
     }
 

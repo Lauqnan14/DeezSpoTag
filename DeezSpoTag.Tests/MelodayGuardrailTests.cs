@@ -47,7 +47,8 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("JellyfinService => await SyncGeneratedLocalPlaylistToJellyfinAsync", generatedTargetBody, StringComparison.Ordinal);
         Assert.Contains("NavidromeService => await SyncGeneratedLocalPlaylistToNavidromeAsync", generatedTargetBody, StringComparison.Ordinal);
         Assert.Contains("successful.Count > 0", generatedSyncBody, StringComparison.Ordinal);
-        Assert.Contains("var success = !string.IsNullOrWhiteSpace(playlistId)", generatedResultBody, StringComparison.Ordinal);
+        Assert.Contains("var success = !string.IsNullOrWhiteSpace(playlistId) && artworkSynced", generatedResultBody, StringComparison.Ordinal);
+        Assert.Contains("Playlist artwork did not update.", generatedResultBody, StringComparison.Ordinal);
         Assert.DoesNotContain("ReplacePlaylistWatchTargetMembershipAsync", generatedSyncBody, StringComparison.Ordinal);
         Assert.DoesNotContain("PersistTargetPlaylistBindingAsync", generatedSyncBody, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncMelodayToPlexAsync", source, StringComparison.Ordinal);
@@ -241,6 +242,11 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("TryResolveStaticCoverPath", source, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistPosterFromFileAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromFileAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("SyncGeneratedNavidromeArtworkAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistImageFromFileAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("var artworkSynced = await SyncGeneratedPlexArtworkAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("var artworkSynced = await SyncGeneratedJellyfinArtworkAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("var artworkSynced = await SyncGeneratedNavidromeArtworkAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("images\", \"meloday", source, StringComparison.Ordinal);
         Assert.DoesNotContain("if (string.IsNullOrWhiteSpace(options.BaseUrl))\n        {\n            return null;\n        }", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RenderCoverAsync", source, StringComparison.Ordinal);

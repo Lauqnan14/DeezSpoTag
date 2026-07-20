@@ -269,8 +269,8 @@ public sealed class PlaylistSyncService
             request.PlaylistName,
             request.Description,
             cancellationToken);
-        await SyncGeneratedPlexArtworkAsync(plex, playlistId, request, cancellationToken);
-        return BuildGeneratedTargetResult(PlexService, playlistId, "Plex synced generated playlist.", matchSummary);
+        var artworkSynced = await SyncGeneratedPlexArtworkAsync(plex, playlistId, request, cancellationToken);
+        return BuildGeneratedTargetResult(PlexService, playlistId, "Plex synced generated playlist.", matchSummary, artworkSynced);
     }
 
     private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToJellyfinAsync(
@@ -337,8 +337,8 @@ public sealed class PlaylistSyncService
             request.PlaylistName,
             request.Description,
             cancellationToken);
-        await SyncGeneratedJellyfinArtworkAsync(jellyfin, playlistId, request, cancellationToken);
-        return BuildGeneratedTargetResult(JellyfinService, playlistId, "Jellyfin synced generated playlist.", matchSummary);
+        var artworkSynced = await SyncGeneratedJellyfinArtworkAsync(jellyfin, playlistId, request, cancellationToken);
+        return BuildGeneratedTargetResult(JellyfinService, playlistId, "Jellyfin synced generated playlist.", matchSummary, artworkSynced);
     }
 
     private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToNavidromeAsync(
@@ -372,13 +372,15 @@ public sealed class PlaylistSyncService
             appendMissingOnly: false,
             cancellationToken,
             request.Description);
+        var artworkSynced = await SyncGeneratedNavidromeArtworkAsync(navidrome, playlistId, request, cancellationToken);
         return BuildGeneratedTargetResult(
             NavidromeService,
             playlistId,
             string.IsNullOrWhiteSpace(playlistId)
                 ? "Navidrome failed to create or update generated playlist."
                 : "Navidrome synced generated playlist.",
-            matchSummary);
+            matchSummary,
+            artworkSynced);
     }
 
     private async Task<string?> FindGeneratedJellyfinPlaylistIdAsync(
@@ -441,7 +443,7 @@ public sealed class PlaylistSyncService
             cancellationToken);
     }
 
-    private async Task SyncGeneratedPlexArtworkAsync(
+    private async Task<bool> SyncGeneratedPlexArtworkAsync(
         PlexConnection plex,
         string playlistId,
         GeneratedLocalPlaylistSyncRequest request,
@@ -449,28 +451,29 @@ public sealed class PlaylistSyncService
     {
         if (!string.IsNullOrWhiteSpace(request.ArtworkFilePath) && File.Exists(request.ArtworkFilePath))
         {
-            await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
+            return await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
                 plex.Url,
                 plex.Token,
                 playlistId,
                 request.ArtworkFilePath,
                 request.ArtworkContentType,
                 cancellationToken);
-            return;
         }
 
         if (IsAbsoluteHttpUrl(request.ArtworkUrl))
         {
-            await _plexApiClient.UpdatePlaylistPosterFromUrlAsync(
+            return await _plexApiClient.UpdatePlaylistPosterFromUrlAsync(
                 plex.Url,
                 plex.Token,
                 playlistId,
                 request.ArtworkUrl!,
                 cancellationToken);
         }
+
+        return true;
     }
 
-    private async Task SyncGeneratedJellyfinArtworkAsync(
+    private async Task<bool> SyncGeneratedJellyfinArtworkAsync(
         JellyfinConnection jellyfin,
         string playlistId,
         GeneratedLocalPlaylistSyncRequest request,
@@ -478,25 +481,52 @@ public sealed class PlaylistSyncService
     {
         if (!string.IsNullOrWhiteSpace(request.ArtworkFilePath) && File.Exists(request.ArtworkFilePath))
         {
-            await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
+            return await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 playlistId,
                 request.ArtworkFilePath,
                 request.ArtworkContentType,
                 cancellationToken);
-            return;
         }
 
         if (IsAbsoluteHttpUrl(request.ArtworkUrl))
         {
-            await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
+            return await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 playlistId,
                 request.ArtworkUrl!,
                 cancellationToken);
         }
+
+        return true;
+    }
+
+    private async Task<bool> SyncGeneratedNavidromeArtworkAsync(
+        NavidromeConnection navidrome,
+        string? playlistId,
+        GeneratedLocalPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ArtworkFilePath) && File.Exists(request.ArtworkFilePath))
+        {
+            return await _navidromeApiClient.UpdatePlaylistImageFromFileAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                playlistId,
+                request.ArtworkFilePath,
+                request.ArtworkContentType,
+                cancellationToken);
+        }
+
+        return true;
     }
 
     private static SyncMatchSummary BuildGeneratedMatchSummary(
@@ -518,13 +548,17 @@ public sealed class PlaylistSyncService
         string service,
         string? playlistId,
         string baseMessage,
-        SyncMatchSummary matchSummary)
+        SyncMatchSummary matchSummary,
+        bool artworkSynced = true)
     {
-        var success = !string.IsNullOrWhiteSpace(playlistId);
+        var success = !string.IsNullOrWhiteSpace(playlistId) && artworkSynced;
+        var message = artworkSynced
+            ? baseMessage
+            : $"{baseMessage} Playlist artwork did not update.";
         return new GeneratedLocalPlaylistTargetResult(
             service,
             success,
-            BuildSyncMessage(baseMessage, matchSummary),
+            BuildSyncMessage(message, matchSummary),
             playlistId,
             matchSummary.SourceTracks,
             matchSummary.LocalMatches,
