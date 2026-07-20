@@ -378,6 +378,7 @@ public sealed class TidalDownloadService
             candidateUrls,
             outputPath,
             expectedDurationSeconds,
+            request.Quality,
             isAtmosRequest,
             progressCallback,
             cancellationToken);
@@ -1474,6 +1475,7 @@ public sealed class TidalDownloadService
         IReadOnlyList<string> candidateUrls,
         string outputPath,
         int expectedDurationSeconds,
+        string requestedQuality,
         bool preserveManifestAudio,
         Func<double, double, Task>? progressCallback,
         CancellationToken cancellationToken)
@@ -1487,6 +1489,7 @@ public sealed class TidalDownloadService
                 $"candidate-{index + 1}.part");
             try
             {
+                EnsureTidalManifestMatchesRequestedQuality(candidateUrl, requestedQuality, preserveManifestAudio);
                 await DownloadManifestCandidateAsync(candidateUrl, candidateOutputPath, preserveManifestAudio, progressCallback, cancellationToken);
                 if (IsDownloadedCandidateAcceptable(candidateOutputPath, expectedDurationSeconds, preserveManifestAudio, out var actualDurationSeconds))
                 {
@@ -2367,6 +2370,7 @@ public sealed class TidalDownloadService
                     continue;
                 }
 
+                EnsureTidalManifestMatchesRequestedQuality(manifest, quality, preserveManifestAudio: false);
                 await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
                 await _providerSource.RememberSuccessAsync(provider, cancellationToken);
                 return [manifest.Trim()];
@@ -2451,7 +2455,13 @@ public sealed class TidalDownloadService
                 return null;
             }
 
-            return TryParseManifest(body, out var manifest) ? manifest : null;
+            if (!TryParseManifest(body, out var manifest))
+            {
+                return null;
+            }
+
+            EnsureTidalManifestMatchesRequestedQuality(manifest, quality, preserveManifestAudio: false);
+            return manifest;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -2870,6 +2880,161 @@ public sealed class TidalDownloadService
 
     private static string NormalizeTidalDownloadQuality(string? quality)
         => TidalStereoQuality.ToTidalRequestQuality(quality);
+
+    private static void EnsureTidalManifestMatchesRequestedQuality(
+        string candidate,
+        string requestedQuality,
+        bool preserveManifestAudio)
+    {
+        if (preserveManifestAudio || !candidate.StartsWith(ManifestPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var manifest = ParseManifest(candidate);
+        var actual = ClassifyTidalManifestQuality(manifest);
+        if (TidalManifestQualityMatchesRequest(TidalStereoQuality.Normalize(requestedQuality), actual))
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"Tidal manifest quality mismatch: requested {TidalStereoQuality.FormatRequested(requestedQuality)} but provider returned {FormatTidalManifestQuality(actual)}.");
+    }
+
+    private static bool TidalManifestQualityMatchesRequest(
+        TidalStereoQualityTier requested,
+        TidalManifestQuality actual)
+    {
+        return requested switch
+        {
+            TidalStereoQualityTier.Low or TidalStereoQualityTier.High
+                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.Lossy,
+            TidalStereoQualityTier.CdLossless
+                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.CdLossless,
+            TidalStereoQualityTier.HiRes
+                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.HiRes,
+            TidalStereoQualityTier.MaxHiRes
+                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.MaxHiRes,
+            TidalStereoQualityTier.DolbyAtmos => true,
+            _ => true
+        };
+    }
+
+    private static TidalManifestQuality ClassifyTidalManifestQuality(TidalManifestInfo manifest)
+    {
+        if (IsAtmosManifest(manifest))
+        {
+            return TidalManifestQuality.Atmos;
+        }
+
+        var haystack = string.Join(
+            ' ',
+            manifest.MimeType,
+            manifest.Codecs,
+            manifest.RawText).Trim();
+        if (string.IsNullOrWhiteSpace(haystack))
+        {
+            return TidalManifestQuality.Unknown;
+        }
+
+        var hasFlac = ContainsFlacSignal(haystack);
+        if (!hasFlac && ContainsLossySignal(haystack))
+        {
+            return TidalManifestQuality.Lossy;
+        }
+
+        if (!hasFlac)
+        {
+            return TidalManifestQuality.Unknown;
+        }
+
+        var sampleRate = ExtractMaximumTidalManifestSampleRate(haystack);
+        var bitDepth = ExtractMaximumTidalManifestBitDepth(haystack);
+        if (sampleRate > 96000)
+        {
+            return TidalManifestQuality.MaxHiRes;
+        }
+
+        if (sampleRate > 48000 || bitDepth >= 24 || ContainsHiResSignal(haystack))
+        {
+            return TidalManifestQuality.HiRes;
+        }
+
+        return TidalManifestQuality.CdLossless;
+    }
+
+    private static bool ContainsFlacSignal(string value)
+        => value.Contains("FLAC", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsHiResSignal(string value)
+        => value.Contains("FLAC_HIRES", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("HIRES_LOSSLESS", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("HI_RES_LOSSLESS", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("HI-RES", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsLossySignal(string value)
+        => value.Contains("MP4A", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("AAC", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("HEAAC", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("HE-AAC", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("AUDIO/MP4", StringComparison.OrdinalIgnoreCase)
+           || value.Contains("M4A", StringComparison.OrdinalIgnoreCase);
+
+    private static int ExtractMaximumTidalManifestSampleRate(string value)
+    {
+        var maximum = 0;
+        foreach (Match match in MatchesWithTimeout(
+                     value,
+                     "(?:audioSamplingRate|sampleRate|samplingRate|sample_rate)\\s*[\"':=]+\\s*\"?(?<rate>\\d{4,6})",
+                     RegexOptions.IgnoreCase))
+        {
+            if (int.TryParse(match.Groups["rate"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var rate))
+            {
+                maximum = Math.Max(maximum, rate);
+            }
+        }
+
+        return maximum;
+    }
+
+    private static int ExtractMaximumTidalManifestBitDepth(string value)
+    {
+        var maximum = 0;
+        foreach (Match match in MatchesWithTimeout(
+                     value,
+                     "(?:bitDepth|bitsPerSample|bit_depth)\\s*[\"':=]+\\s*\"?(?<bits>\\d{1,2})",
+                     RegexOptions.IgnoreCase))
+        {
+            if (int.TryParse(match.Groups["bits"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bits))
+            {
+                maximum = Math.Max(maximum, bits);
+            }
+        }
+
+        return maximum;
+    }
+
+    private static string FormatTidalManifestQuality(TidalManifestQuality quality)
+        => quality switch
+        {
+            TidalManifestQuality.Lossy => "lossy AAC/M4A",
+            TidalManifestQuality.CdLossless => "Tidal CD Lossless",
+            TidalManifestQuality.HiRes => "Tidal Hi-Res",
+            TidalManifestQuality.MaxHiRes => "Tidal Max Hi-Res",
+            TidalManifestQuality.Atmos => "Tidal Dolby Atmos",
+            _ => "unverified Tidal quality"
+        };
+
+    private enum TidalManifestQuality
+    {
+        Unknown = 0,
+        Lossy = 1,
+        CdLossless = 2,
+        HiRes = 3,
+        MaxHiRes = 4,
+        Atmos = 5
+    }
 
     private sealed class ZarzSignedSessionRecord
     {

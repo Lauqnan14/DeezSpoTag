@@ -57,7 +57,7 @@ internal static class TidalStereoQuality
             TidalStereoQualityTier.Low => Low,
             TidalStereoQualityTier.High => High,
             TidalStereoQualityTier.CdLossless => CdLossless,
-            TidalStereoQualityTier.HiRes => MaxHiRes,
+            TidalStereoQualityTier.HiRes => HiRes,
             TidalStereoQualityTier.MaxHiRes => MaxHiRes,
             TidalStereoQualityTier.DolbyAtmos => DolbyAtmos,
             _ => CdLossless
