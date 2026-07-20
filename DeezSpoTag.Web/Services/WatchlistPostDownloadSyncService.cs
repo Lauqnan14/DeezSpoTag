@@ -16,10 +16,14 @@ public sealed record WatchlistPostDownloadSyncHealth(
     int ConsecutiveFailures,
     string? LastError);
 
-public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
+public sealed class WatchlistPostDownloadSyncService : BackgroundService, IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan SyncJobExecutionTimeout = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(30);
+    private readonly SemaphoreSlim _workSignal = new(0, 1);
+    private int _workSignalPending;
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -54,7 +58,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         var jobs = await repository.EnqueueWatchlistAllPlaylistSyncJobsAsync(cancellationToken);
         if (jobs > 0)
         {
-            _coordinatorSignal.Request();
+            SignalWorker();
         }
     }
 
@@ -66,22 +70,37 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        _coordinatorSignal.Request();
+        SignalWorker();
         return Task.CompletedTask;
     }
 
-    public async Task ProcessDueJobsAsync(
-        CancellationToken cancellationToken,
-        int finalizationLimit = 25,
-        int syncJobLimit = 5)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Watchlist target-sync worker started.");
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await ProcessDueJobsAsync(stoppingToken);
+            try
+            {
+                await WaitForWorkAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+        _logger.LogInformation("Watchlist target-sync worker stopped.");
+    }
+
+    private async Task ProcessDueJobsAsync(CancellationToken cancellationToken)
     {
         UpdateHealth(health => health with { IsRunning = true, LastHeartbeatUtc = DateTimeOffset.UtcNow });
         try
         {
             await ProcessDueJobsCoreAsync(
                 cancellationToken,
-                Math.Clamp(finalizationLimit, 0, 100),
-                Math.Clamp(syncJobLimit, 0, 100));
+                finalizationLimit: 25,
+                syncJobLimit: 5);
             UpdateHealth(health => health with
             {
                 LastHeartbeatUtc = DateTimeOffset.UtcNow,
@@ -107,6 +126,29 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 CurrentJobId = null,
                 CurrentTarget = null
             });
+        }
+    }
+
+    private void SignalWorker()
+    {
+        if (Interlocked.Exchange(ref _workSignalPending, 1) == 0)
+        {
+            _workSignal.Release();
+        }
+    }
+
+    private async Task WaitForWorkAsync(CancellationToken cancellationToken)
+    {
+        using var timeout = new CancellationTokenSource(IdlePollInterval);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        try
+        {
+            await _workSignal.WaitAsync(linked.Token);
+            Interlocked.Exchange(ref _workSignalPending, 0);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Periodic idle poll keeps durable sync/finalization jobs moving after restarts.
         }
     }
 
@@ -385,7 +427,9 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         WatchlistSyncJobDto job,
         CancellationToken cancellationToken)
     {
-        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        jobCancellation.CancelAfter(SyncJobExecutionTimeout);
+        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(jobCancellation.Token);
         var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
         try
         {
@@ -396,7 +440,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 job.TrackId,
                 job.TargetService,
                 job.AttemptCount);
-            var outcome = await TrySyncOnceAsync(request, job.AttemptCount + 1, cancellationToken);
+            var outcome = await TrySyncOnceAsync(request, job.AttemptCount + 1, jobCancellation.Token);
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
@@ -429,6 +473,19 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException) when (jobCancellation.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Watchlist target sync job {JobId} exceeded the per-job execution timeout; returning it to durable retry.",
+                job.Id);
+            await repository.RetryWatchlistSyncJobAsync(
+                job.Id,
+                _leaseOwner,
+                job.AttemptCount + 1,
+                DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
+                $"Target sync job exceeded {SyncJobExecutionTimeout.TotalMinutes:0} minutes.",
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

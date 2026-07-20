@@ -345,14 +345,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
 
-        if (scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetSyncWorker)
-        {
-            await targetSyncWorker.ProcessDueJobsAsync(
-                stoppingToken,
-                finalizationLimit: 25,
-                syncJobLimit: 0);
-        }
-
         var playlistReconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
         var recoveredClaims = await playlistReconciler.RecoverInvalidPendingWatchClaimsAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { LastRecoveredClaimCount = recoveredClaims });
@@ -376,13 +368,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     queueAdmission,
                     reconciliationRequests,
                     stoppingToken);
-                if (scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>() is { } targetWorker)
-                {
-                    await targetWorker.ProcessDueJobsAsync(
-                        stoppingToken,
-                        finalizationLimit: 5,
-                        syncJobLimit: 5);
-                }
             }
             finally
             {

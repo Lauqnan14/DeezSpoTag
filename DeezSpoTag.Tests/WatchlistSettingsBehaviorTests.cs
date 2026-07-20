@@ -895,10 +895,11 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
         Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task ProcessDueJobsAsync(", syncSource, StringComparison.Ordinal);
-        Assert.Contains("ProcessDueJobsAsync(", coordinatorSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("protected override async Task ExecuteAsync", syncSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
+        Assert.Contains("private async Task ProcessDueJobsAsync(", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProcessDueJobsAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("WatchlistPostDownloadSyncService", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("protected override async Task ExecuteAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("HasWatchlistReconciliationRequestAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", syncSource, StringComparison.Ordinal);

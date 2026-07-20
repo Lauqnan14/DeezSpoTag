@@ -1580,6 +1580,10 @@ public partial class Program
             new DeezSpoTag.Web.Services.WatchlistQueueService(
                 sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Watchlist target playlist sync worker after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunSignal>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(
             sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>());
