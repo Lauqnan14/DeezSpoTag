@@ -10396,9 +10396,10 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
         int ClaimsDeleted,
         int SchedulerRowsDeleted,
         int SourceCircuitsDeleted,
-        int PlaylistStatesUpdated);
+        int PlaylistStatesDeleted,
+        int ArtistStatesDeleted);
 
-    public async Task<WatchlistRuntimeCleanupResult> ClearDisabledWatchlistRuntimeAsync(
+    public async Task<WatchlistRuntimeCleanupResult> ClearWatchlistRuntimeAsync(
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -10412,9 +10413,7 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
         var syncJobsDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
             transaction,
-            @"
-DELETE FROM watchlist_sync_job
-WHERE lower(COALESCE(status, 'pending')) <> 'processing';",
+            "DELETE FROM watchlist_sync_job;",
             cancellationToken);
         var finalizationOutboxDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
@@ -10424,9 +10423,7 @@ WHERE lower(COALESCE(status, 'pending')) <> 'processing';",
         var claimsDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
             transaction,
-            @"
-DELETE FROM playlist_watch_download_claim
-WHERE lower(COALESCE(status, 'pending')) NOT IN ('pending', 'processing');",
+            "DELETE FROM playlist_watch_download_claim;",
             cancellationToken);
         var schedulerRowsDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
@@ -10438,18 +10435,15 @@ WHERE lower(COALESCE(status, 'pending')) NOT IN ('pending', 'processing');",
             transaction,
             "DELETE FROM watchlist_source_circuit_state;",
             cancellationToken);
-        var playlistStatesUpdated = await ExecuteRuntimeCleanupAsync(
+        var playlistStatesDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
             transaction,
-            @"
-UPDATE playlist_watch_state
-SET last_run_status='watchlist_disabled',
-    last_run_message='Watchlist disabled; runtime state cleared.',
-    next_attempt_utc=NULL,
-    consecutive_failures=0,
-    current_phase='watchlist_disabled',
-    heartbeat_utc=CURRENT_TIMESTAMP,
-    deadline_utc=NULL;",
+            "DELETE FROM playlist_watch_state;",
+            cancellationToken);
+        var artistStatesDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            "DELETE FROM artist_watch_state;",
             cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
@@ -10460,7 +10454,8 @@ SET last_run_status='watchlist_disabled',
             claimsDeleted,
             schedulerRowsDeleted,
             sourceCircuitsDeleted,
-            playlistStatesUpdated);
+            playlistStatesDeleted,
+            artistStatesDeleted);
     }
 
     private static async Task<int> ExecuteRuntimeCleanupAsync(

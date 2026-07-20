@@ -45,6 +45,10 @@ public sealed record WatchlistRuntimeHealth(
     int LastRecoveredClaimCount,
     int PendingReconciliationRequests = 0);
 
+public sealed record WatchlistRuntimeResetResult(
+    LibraryRepository.WatchlistRuntimeCleanupResult Cleanup,
+    WatchlistTriggerStatus TriggerStatus);
+
 public sealed class WatchlistRunCoordinator : BackgroundService
 {
     private const string ArtistKind = "artist";
@@ -65,6 +69,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private DateTimeOffset _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
     private int _artistRoundRobinIndex;
     private readonly object _runtimeHealthGate = new();
+    private readonly object _activeCycleGate = new();
+    private readonly SemaphoreSlim _cycleGate = new(1, 1);
+    private CancellationTokenSource? _activeCycleCancellation;
+    private int _runtimeResetRequested;
     private WatchlistRuntimeHealth _runtimeHealth = new(false, false, null, null, null, 0);
 
     public WatchlistRunCoordinator(
@@ -257,6 +265,55 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             cancellationToken);
     }
 
+    public async Task<WatchlistRuntimeResetResult> ResetRuntimeAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Exchange(ref _runtimeResetRequested, 1);
+        lock (_activeCycleGate)
+        {
+            _activeCycleCancellation?.Cancel();
+        }
+
+        var acquired = false;
+        try
+        {
+            await _cycleGate.WaitAsync(cancellationToken);
+            acquired = true;
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            var cleanup = await repository.ClearWatchlistRuntimeAsync(cancellationToken);
+
+            _consecutiveFailures.Clear();
+            _nextAllowedRun.Clear();
+            _lastRun.Clear();
+            _artistRoundRobinIndex = 0;
+            _lastDestinationRepairUtc = DateTimeOffset.MinValue;
+            _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
+            UpdateRuntimeHealth(_ => new WatchlistRuntimeHealth(false, false, null, DateTimeOffset.UtcNow, null, 0));
+
+            var triggerStatus = WatchlistTriggerStatus.Disabled;
+            if (IsWatchlistEnabled())
+            {
+                var accepted = await repository.EnqueueWatchlistReconciliationRequestAsync(
+                    "all",
+                    string.Empty,
+                    string.Empty,
+                    cancellationToken);
+                _runSignal.Request();
+                triggerStatus = accepted ? WatchlistTriggerStatus.Accepted : WatchlistTriggerStatus.Coalesced;
+            }
+
+            return new WatchlistRuntimeResetResult(cleanup, triggerStatus);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _runtimeResetRequested, 0);
+            if (acquired)
+            {
+                _cycleGate.Release();
+            }
+        }
+    }
+
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Watch cycle entrypoint intentionally centralizes lock, failure handling, and lifecycle semantics.")]
     private async Task RunOnceAsync(CancellationToken stoppingToken)
     {
@@ -265,6 +322,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
     private async Task ExecuteRunAsync(CancellationToken stoppingToken)
     {
+        await _cycleGate.WaitAsync(stoppingToken);
+        using var cycleCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        lock (_activeCycleGate)
+        {
+            _activeCycleCancellation = cycleCancellation;
+        }
+        if (Volatile.Read(ref _runtimeResetRequested) != 0)
+        {
+            cycleCancellation.Cancel();
+        }
         UpdateRuntimeHealth(health => health with
         {
             IsRunning = true,
@@ -274,7 +341,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         });
         try
         {
-            await RunOneWatchCycleAsync(stoppingToken);
+            await RunOneWatchCycleAsync(cycleCancellation.Token);
+        }
+        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Watchlist cycle canceled for runtime reset.");
         }
         catch (OperationCanceledException)
         {
@@ -286,11 +357,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
         finally
         {
+            lock (_activeCycleGate)
+            {
+                if (ReferenceEquals(_activeCycleCancellation, cycleCancellation))
+                {
+                    _activeCycleCancellation = null;
+                }
+            }
             UpdateRuntimeHealth(health => health with
             {
                 IsRunning = false,
                 LastCycleCompletedUtc = DateTimeOffset.UtcNow
             });
+            _cycleGate.Release();
         }
     }
 
@@ -304,7 +383,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             var disabledRepository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
             if (disabledRepository.IsConfigured)
             {
-                var cleanup = await disabledRepository.ClearDisabledWatchlistRuntimeAsync(stoppingToken);
+                var cleanup = await disabledRepository.ClearWatchlistRuntimeAsync(stoppingToken);
                 _consecutiveFailures.Clear();
                 _nextAllowedRun.Clear();
                 _lastRun.Clear();
@@ -315,17 +394,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                         || cleanup.ClaimsDeleted > 0
                         || cleanup.SchedulerRowsDeleted > 0
                         || cleanup.SourceCircuitsDeleted > 0
-                        || cleanup.PlaylistStatesUpdated > 0))
+                        || cleanup.PlaylistStatesDeleted > 0
+                        || cleanup.ArtistStatesDeleted > 0))
                 {
                     _logger.LogInformation(
-                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, finalizationOutbox={FinalizationOutbox}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, playlistStates={PlaylistStates}.",
+                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, finalizationOutbox={FinalizationOutbox}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, playlistStates={PlaylistStates}, artistStates={ArtistStates}.",
                         cleanup.ReconciliationRequestsDeleted,
                         cleanup.SyncJobsDeleted,
                         cleanup.FinalizationOutboxDeleted,
                         cleanup.ClaimsDeleted,
                         cleanup.SchedulerRowsDeleted,
                         cleanup.SourceCircuitsDeleted,
-                        cleanup.PlaylistStatesUpdated);
+                        cleanup.PlaylistStatesDeleted,
+                        cleanup.ArtistStatesDeleted);
                 }
             }
             _logger.LogDebug("Watchlist disabled in settings.");
@@ -344,19 +425,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         {
             _logger.LogWarning("Recovered {Count} Watchlist items whose persisted execution deadlines expired.", staleWorkRecovered);
         }
-        if (scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>() is { } coordinatorWork)
-        {
-            await coordinatorWork.ProcessCoordinatorWorkAsync(
-                finalizationLimit: 25,
-                syncJobLimit: 15,
-                stoppingToken);
-        }
-        var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
-        UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
-
         var playlistReconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
         var recoveredClaims = await playlistReconciler.RecoverInvalidPendingWatchClaimsAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { LastRecoveredClaimCount = recoveredClaims });
+        var coordinatorWork = scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>();
+        if (coordinatorWork != null)
+        {
+            await coordinatorWork.ProcessFinalizationWorkAsync(finalizationLimit: 25, stoppingToken);
+        }
+        var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
+        UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
 
         var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
         var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
@@ -397,6 +475,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             {
                 queueAdmission.EndRun(queueAdmissionToken);
             }
+        }
+
+        if (coordinatorWork != null)
+        {
+            await coordinatorWork.ProcessTargetSyncWorkAsync(
+                syncJobLimit: 15,
+                timeBudget: TimeSpan.FromSeconds(30),
+                stoppingToken);
         }
     }
 

@@ -120,13 +120,18 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
         var programSource = ReadSource("DeezSpoTag.Web/Program.cs");
 
-        Assert.Contains("ProcessCoordinatorWorkAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessFinalizationWorkAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessTargetSyncWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", hostedSource, StringComparison.Ordinal);
         Assert.Contains("PlaylistReconciliationMode.SyncAndQueue", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("protected override async Task ExecuteAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("while (!stoppingToken.IsCancellationRequested)", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
         Assert.DoesNotContain("No playlist sync targets configured", hostedSource, StringComparison.Ordinal);
+        Assert.True(
+            hostedSource.IndexOf("RunWatchCycleCoreAsync(", StringComparison.Ordinal)
+            < hostedSource.IndexOf("ProcessTargetSyncWorkAsync(", StringComparison.Ordinal),
+            "Queue reconciliation must run before target-sync backlog processing.");
     }
 
     [Fact]

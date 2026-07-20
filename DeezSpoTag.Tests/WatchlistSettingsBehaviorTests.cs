@@ -895,8 +895,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
         Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task ProcessCoordinatorWorkAsync(", syncSource, StringComparison.Ordinal);
-        Assert.Contains("ProcessCoordinatorWorkAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task ProcessFinalizationWorkAsync(", syncSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task ProcessTargetSyncWorkAsync(", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessFinalizationWorkAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessTargetSyncWorkAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("protected override async Task ExecuteAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
@@ -915,8 +917,11 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
         var coordinatorSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
 
+        Assert.Contains("ClearWatchlistRuntimeAsync", repositorySource, StringComparison.Ordinal);
         Assert.Contains("FinalizationOutboxDeleted", repositorySource, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM watchlist_finalization_outbox;", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("DELETE FROM watchlist_sync_job;", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("DELETE FROM playlist_watch_download_claim;", repositorySource, StringComparison.Ordinal);
         Assert.Contains("finalizationOutbox={FinalizationOutbox}", coordinatorSource, StringComparison.Ordinal);
     }
 

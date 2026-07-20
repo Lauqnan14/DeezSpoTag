@@ -573,56 +573,27 @@ public partial class WatchlistApiController : ControllerBase
             return DatabaseNotConfigured();
         }
 
-        var watchlist = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
-        var playlistsReset = 0;
-        var circuitsReset = 0;
-        var repairedFinalizations = 0;
-
-        foreach (var item in watchlist)
+        if (_watchlistCoordinator == null)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await ResetPlaylistPersistentStateAsync(item.Source, item.SourceId, cancellationToken);
-            playlistsReset++;
-        }
-        if (_watchlistFinalizationService != null)
-        {
-            repairedFinalizations = await _watchlistFinalizationService.RepairPlaylistsAsync(watchlist, cancellationToken);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, "Watchlist coordinator is unavailable.");
         }
 
-        var distinctSources = watchlist
-            .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
-            .Where(source => !string.IsNullOrWhiteSpace(source))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        foreach (var source in distinctSources)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (_watchlistCoordinator != null)
-            {
-                await _watchlistCoordinator.ResetSourceCircuitAsync(source, cancellationToken);
-            }
-            circuitsReset++;
-        }
-
-        _watchlistCoordinator?.ResetPlaylistRuntimeStateForAll(watchlist);
-        var recoveredClaims = await _playlistWatchReconciler.RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
-        WatchlistTriggerResult? trigger = null;
-        if (_watchlistCoordinator != null)
-        {
-            await _watchlistCoordinator.ResetSchedulerStateAsync(cancellationToken);
-            trigger = await _watchlistCoordinator.TriggerRunOnceAsync(cancellationToken);
-        }
+        var result = await _watchlistCoordinator.ResetRuntimeAsync(cancellationToken);
+        var cleanup = result.Cleanup;
 
         return Ok(new
         {
             reset = true,
-            playlistsReset,
-            circuitsReset,
-            recoveredClaims,
-            repairedFinalizations,
-            triggered = trigger?.Scheduled == true,
-            triggerStatus = trigger?.Status.ToString()
+            reconciliationRequestsCleared = cleanup.ReconciliationRequestsDeleted,
+            targetSyncJobsCleared = cleanup.SyncJobsDeleted,
+            finalizationRowsCleared = cleanup.FinalizationOutboxDeleted,
+            claimsCleared = cleanup.ClaimsDeleted,
+            schedulerRowsCleared = cleanup.SchedulerRowsDeleted,
+            sourceCircuitsCleared = cleanup.SourceCircuitsDeleted,
+            playlistStatesCleared = cleanup.PlaylistStatesDeleted,
+            artistStatesCleared = cleanup.ArtistStatesDeleted,
+            triggered = result.TriggerStatus is not WatchlistTriggerStatus.Disabled,
+            triggerStatus = result.TriggerStatus.ToString()
         });
     }
 

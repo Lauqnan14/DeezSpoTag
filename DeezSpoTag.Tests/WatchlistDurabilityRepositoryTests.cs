@@ -454,6 +454,50 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task RuntimeReset_ClearsEveryRuntimeRowAndPreservesConfigurationAndCandidateCache()
+    {
+        await AddPlaylistWithTargetsAsync("reset-list", ["plex"]);
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync(
+            "spotify", "reset-list", "snapshot", JsonSerializer.Serialize(new[] { Candidate("track-1", "Title", "Artist") }));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "reset-list", "snapshot", 1, null, null, DateTimeOffset.UtcNow,
+            "processing", "active", null, 0, "reconciling", 1, 1, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5)));
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "reset-list");
+        _ = await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(15), "active-worker");
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync("spotify", "reset-list", "track-1", ["queue-1"], 42);
+        await _repository.UpsertWatchlistFinalizationOutboxAsync("queue-1", "{}", ["/music/final.flac"]);
+        await ExecuteSqlAsync(@"
+INSERT INTO watchlist_scheduler_state(watch_type,active_source) VALUES('playlist','spotify');
+INSERT INTO watchlist_source_circuit_state(watch_type,source,is_open) VALUES('playlist','spotify',1);
+INSERT INTO artist_watchlist(artist_id,spotify_id,artist_name) VALUES(99,'artist-99','Artist 99');
+INSERT INTO artist_watch_state(artist_id,current_phase) VALUES(99,'reconciling');");
+
+        var cleanup = await _repository.ClearWatchlistRuntimeAsync();
+
+        Assert.Equal(1, cleanup.ReconciliationRequestsDeleted);
+        Assert.Equal(1, cleanup.SyncJobsDeleted);
+        Assert.Equal(1, cleanup.FinalizationOutboxDeleted);
+        Assert.Equal(1, cleanup.ClaimsDeleted);
+        Assert.Equal(1, cleanup.SchedulerRowsDeleted);
+        Assert.Equal(1, cleanup.SourceCircuitsDeleted);
+        Assert.Equal(1, cleanup.PlaylistStatesDeleted);
+        Assert.Equal(1, cleanup.ArtistStatesDeleted);
+        Assert.Equal(0, await CountRowsAsync("watchlist_reconciliation_request"));
+        Assert.Equal(0, await CountRowsAsync("watchlist_sync_job"));
+        Assert.Equal(0, await CountRowsAsync("watchlist_finalization_outbox"));
+        Assert.Equal(0, await CountRowsAsync("playlist_watch_download_claim"));
+        Assert.Equal(0, await CountRowsAsync("watchlist_scheduler_state"));
+        Assert.Equal(0, await CountRowsAsync("watchlist_source_circuit_state"));
+        Assert.Equal(0, await CountRowsAsync("playlist_watch_state"));
+        Assert.Equal(0, await CountRowsAsync("artist_watch_state"));
+        Assert.Equal(1, await CountRowsAsync("artist_watchlist"));
+        Assert.Single(await _repository.GetPlaylistWatchlistAsync(), item => item.SourceId == "reset-list");
+        Assert.NotNull(await _repository.GetPlaylistWatchPreferenceAsync("spotify", "reset-list"));
+        Assert.NotNull(await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "reset-list"));
+    }
+
+    [Fact]
     public async Task SchemaMigration_CoalescesLegacyPerTrackSyncJobsToPerTargetPlaylistScope()
     {
         await AddPlaylistWithTargetsAsync("legacy-sync-list", ["plex", "jellyfin"]);
@@ -573,5 +617,21 @@ WHERE identifier='leased-list';", ("due", DateTimeOffset.UtcNow.AddMinutes(-1).T
             command.Parameters.AddWithValue(parameter.Name, parameter.Value);
         }
         await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<long> CountRowsAsync(string table)
+    {
+        var allowed = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "watchlist_reconciliation_request", "watchlist_sync_job", "watchlist_finalization_outbox",
+            "playlist_watch_download_claim", "watchlist_scheduler_state", "watchlist_source_circuit_state",
+            "playlist_watch_state", "artist_watch_state", "artist_watchlist"
+        };
+        Assert.Contains(table, allowed);
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT COUNT(*) FROM {table};";
+        return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 }

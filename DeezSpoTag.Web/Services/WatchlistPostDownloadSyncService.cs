@@ -51,17 +51,14 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
     }
 
-    public async Task ProcessCoordinatorWorkAsync(
+    public async Task ProcessFinalizationWorkAsync(
         int finalizationLimit,
-        int syncJobLimit,
         CancellationToken cancellationToken)
     {
         try
         {
-            await ProcessDueJobsCoreAsync(
-                cancellationToken,
-                finalizationLimit,
-                syncJobLimit);
+            await RepairMissingFinalizationOutboxAsync(cancellationToken);
+            await ProcessFinalizationOutboxAsync(finalizationLimit, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -69,35 +66,50 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Watchlist coordinator sync/finalization phase failed; the next coordinator cycle will retry.");
+            _logger.LogError(ex, "Watchlist coordinator finalization phase failed; the next coordinator cycle will retry.");
         }
     }
 
-    private async Task ProcessDueJobsCoreAsync(
-        CancellationToken cancellationToken,
-        int finalizationLimit,
-        int syncJobLimit)
+    public async Task ProcessTargetSyncWorkAsync(
+        int syncJobLimit,
+        TimeSpan timeBudget,
+        CancellationToken cancellationToken)
     {
-        await RepairMissingFinalizationOutboxAsync(cancellationToken);
-        await ProcessFinalizationOutboxAsync(finalizationLimit, cancellationToken);
-        await RepairIncompleteJobsIfNeededAsync(cancellationToken);
-        for (var processed = 0; processed < syncJobLimit && IsWatchlistEnabled(); processed++)
+        using var phaseCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        phaseCancellation.CancelAfter(timeBudget);
+        try
         {
-            using var scope = _serviceProvider.CreateScope();
-            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-            if (!repository.IsConfigured)
+            await RepairIncompleteJobsIfNeededAsync(phaseCancellation.Token);
+            for (var processed = 0; processed < syncJobLimit && IsWatchlistEnabled(); processed++)
             {
-                return;
-            }
+                using var scope = _serviceProvider.CreateScope();
+                var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+                if (!repository.IsConfigured)
+                {
+                    return;
+                }
 
-            var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(1, ProcessingLease, _leaseOwner, cancellationToken);
-            var job = jobs.FirstOrDefault();
-            if (job == null)
-            {
-                return;
-            }
+                var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(1, ProcessingLease, _leaseOwner, phaseCancellation.Token);
+                var job = jobs.FirstOrDefault();
+                if (job == null)
+                {
+                    return;
+                }
 
-            await ProcessClaimedJobAsync(repository, job, cancellationToken);
+                await ProcessClaimedJobAsync(repository, job, phaseCancellation.Token, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (phaseCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Watchlist target sync phase reached its {Seconds:0}-second cycle budget; remaining jobs stay queued.", timeBudget.TotalSeconds);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Watchlist coordinator target sync phase failed; the next coordinator cycle will retry.");
         }
     }
 
@@ -316,9 +328,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private async Task ProcessClaimedJobAsync(
         LibraryRepository repository,
         WatchlistSyncJobDto job,
-        CancellationToken cancellationToken)
+        CancellationToken executionCancellationToken,
+        CancellationToken coordinatorCancellationToken)
     {
-        using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(executionCancellationToken);
         jobCancellation.CancelAfter(SyncJobExecutionTimeout);
         using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(jobCancellation.Token);
         var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
@@ -335,13 +348,13 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
-                    await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
+                    await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, coordinatorCancellationToken);
                     return;
                 case SyncAttemptOutcomeKind.Obsolete:
-                    await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken);
+                    await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, coordinatorCancellationToken);
                     return;
                 case SyncAttemptOutcomeKind.Blocked:
-                    await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
+                    await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, coordinatorCancellationToken);
                     return;
             }
             var attempt = job.AttemptCount + 1;
@@ -352,9 +365,9 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 attempt,
                 DateTimeOffset.UtcNow + retryDelay,
                 outcome.Message,
-                cancellationToken);
+                coordinatorCancellationToken);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (coordinatorCancellationToken.IsCancellationRequested)
         {
             throw;
         }
@@ -369,7 +382,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 job.AttemptCount + 1,
                 DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
                 $"Target sync job exceeded {SyncJobExecutionTimeout.TotalMinutes:0} minutes.",
-                cancellationToken);
+                coordinatorCancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -383,7 +396,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 job.AttemptCount + 1,
                 DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
                 ex.Message,
-                cancellationToken);
+                coordinatorCancellationToken);
         }
         finally
         {
