@@ -2562,15 +2562,31 @@ internal sealed class WatchlistEngine
     {
         var playlistData = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
         var candidates = await MapBoomplayWatchIntentTrackCandidatesAsync(playlistData?.Tracks, cancellationToken);
+        var sourceTrackCount = playlistData?.TrackCount;
+        var mappingComplete = playlistData != null
+            && IsBoomplayCandidateMappingComplete(candidates, sourceTrackCount);
         return BuildLivePlaylistSnapshot(
             candidates,
             new LivePlaylistSnapshotMetadata(
                 Name: playlistData?.Name,
                 Description: playlistData?.Description,
                 ImageUrl: playlistData?.ImageUrl,
-                TrackCount: playlistData?.TrackCount,
-                IsComplete: playlistData != null,
+                TrackCount: sourceTrackCount,
+                IsComplete: mappingComplete,
                 CanClearImageUrl: true));
+    }
+
+    internal static bool IsBoomplayCandidateMappingComplete(
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        int? sourceTrackCount)
+    {
+        if (sourceTrackCount is <= 0)
+        {
+            return candidates.Count == 0;
+        }
+
+        return candidates.Count > 0
+               && candidates.All(static candidate => PlaylistCandidateContract.IsResolvable(BoomplaySource, candidate));
     }
 
     private async Task<IReadOnlyList<PlaylistTrackCandidate>> MapBoomplayWatchIntentTrackCandidatesAsync(

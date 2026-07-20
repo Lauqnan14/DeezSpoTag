@@ -16,7 +16,6 @@ public sealed class DownloadDedupeService
     private const string TidalPlatform = "tidal";
     private const string AmazonPlatform = "amazon";
     private const string AmazonMusicPlatform = "amazonmusic";
-    private const string IsrcSource = "isrc";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
     private readonly ILogger<DownloadDedupeService> _logger;
@@ -375,34 +374,6 @@ public sealed class DownloadDedupeService
         DownloadDedupeRequest request,
         CancellationToken cancellationToken)
     {
-        foreach (var (source, value) in BuildSourceChecks(request))
-        {
-            if (!string.IsNullOrWhiteSpace(value)
-                && await _libraryRepository.ExistsTrackSourceAsync(
-                    source,
-                    value,
-                    audioVariant: request.RequestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        foreach (var (source, albumId, artistId) in BuildAlbumChecks(request))
-        {
-            if (!string.IsNullOrWhiteSpace(albumId)
-                && await _libraryRepository.ExistsTrackByAlbumSourceAsync(
-                    source,
-                    albumId,
-                    request.TrackTitle,
-                    artistId,
-                    audioVariant: request.RequestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
         foreach (var artist in BuildMetadataArtists(request))
         {
             if (await _libraryRepository.ExistsTrackByMetadataAsync(
@@ -442,25 +413,6 @@ public sealed class DownloadDedupeService
             ContentType = request.ContentType,
             ArtistPrimaryName = request.TrackPrimaryArtist
         };
-
-    private static IEnumerable<(string Source, string? Value)> BuildSourceChecks(DownloadDedupeRequest request)
-    {
-        yield return (IsrcSource, request.Isrc);
-        yield return (DeezerPlatform, request.DeezerTrackId);
-        yield return (SpotifyPlatform, request.SpotifyTrackId);
-        yield return (ApplePlatform, request.AppleTrackId);
-        yield return (QobuzPlatform, request.QobuzTrackId);
-        yield return (TidalPlatform, request.TidalTrackId);
-        yield return (AmazonPlatform, request.AmazonTrackId);
-        yield return (AmazonMusicPlatform, request.AmazonTrackId);
-    }
-
-    private static IEnumerable<(string Source, string? AlbumId, string? ArtistId)> BuildAlbumChecks(DownloadDedupeRequest request)
-    {
-        yield return (DeezerPlatform, request.DeezerAlbumId, request.DeezerArtistId);
-        yield return (SpotifyPlatform, request.SpotifyAlbumId, request.SpotifyArtistId);
-        yield return (ApplePlatform, request.AppleAlbumId, request.AppleArtistId);
-    }
 
     private static List<string> BuildMetadataArtists(DownloadDedupeRequest request)
         => new[]

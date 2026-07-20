@@ -377,7 +377,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
-    public async Task ExistsDuplicateAsync_IgnoresCompletedRowWhenPayloadFileIsMissing()
+    public async Task ExistsDuplicateAsync_MatchesCompletedRowWhenPayloadFileIsMissing()
     {
         await using var context = await CreateContextAsync();
         var missingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Missing.flac");
@@ -407,7 +407,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             },
             CancellationToken.None);
 
-        Assert.False(exists);
+        Assert.True(exists);
     }
 
     [Fact]

@@ -40,7 +40,7 @@ public static class AudioDurationGuard
     }
 
     private static bool IsObviousUnknownDurationPreview(double actualSeconds)
-        => actualSeconds is >= 25d and <= 35d;
+        => IsCommonPreviewLength(actualSeconds);
 
     private static bool TryReadDurationSeconds(string filePath, out double durationSeconds)
     {
@@ -78,12 +78,15 @@ public static class AudioDurationGuard
 
         var missingSeconds = expectedSeconds - actualSeconds;
         var ratio = actualSeconds / expectedSeconds;
-        var canonicalPreviewLength = new[] { 30d, 60d, 90d, 120d }
-            .Any(length => Math.Abs(actualSeconds - length) <= 2d);
+        var canonicalPreviewLength = IsCommonPreviewLength(actualSeconds);
         var severelyTruncated = ratio <= 0.5d && missingSeconds >= 25d;
         var previewLengthTruncated = canonicalPreviewLength && ratio <= 0.75d && missingSeconds >= 25d;
         return !severelyTruncated && !previewLengthTruncated;
     }
+
+    public static bool IsCommonPreviewLength(double actualSeconds)
+        => new[] { 30d, 45d, 50d, 51d, 52d, 60d, 90d, 120d }
+            .Any(length => Math.Abs(actualSeconds - length) <= 2d);
 }
 
 public sealed record AudioDurationGuardResult(bool Success, bool Conclusive, string Message)

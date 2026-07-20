@@ -2747,7 +2747,9 @@ public sealed class DownloadIntentService
         intent.Title = FirstNonEmpty(intent.Title, resolution.Title) ?? string.Empty;
         intent.Artist = FirstNonEmpty(intent.Artist, resolution.Artist) ?? string.Empty;
         intent.Album = FirstNonEmpty(intent.Album, resolution.Album) ?? string.Empty;
-        if (intent.DurationMs <= 0 && resolution.DurationMs is > 0)
+        if (intent.DurationMs <= 0
+            && resolution.DurationMs is > 0
+            && !IsPreviewLikeAppleDurationMs(resolution.DurationMs.Value, resolution.AppleDurationMs))
         {
             intent.DurationMs = resolution.DurationMs.Value;
         }
@@ -6999,13 +7001,59 @@ public sealed class DownloadIntentService
         payload.AutoIndex = Math.Max(0, context.SelectedAutoIndex);
         payload.FallbackPlan = context.FallbackPlan;
         payload.ReleaseDate = context.ReleaseDate;
-        payload.DurationSeconds = context.DurationSeconds;
+        payload.DurationSeconds = ResolveTrustedQueueDurationSeconds(intent, context.ContentType, context.DurationSeconds);
         payload.Position = intent.Position;
         payload.SpotifyId = intent.SpotifyId ?? string.Empty;
         payload.SpotifyArtistId = intent.SpotifyArtistId ?? string.Empty;
         payload.DestinationFolderId = context.DestinationFolderId;
         payload.QualityBucket = context.QualityBucket;
         payload.Size = 1;
+    }
+
+    private static int ResolveTrustedQueueDurationSeconds(
+        DownloadIntent intent,
+        string? contentType,
+        int durationSeconds)
+    {
+        if (durationSeconds <= 0)
+        {
+            return 0;
+        }
+
+        return IsMusicContentTypeForPreviewGuard(contentType)
+               && IsPreviewLikeAppleDurationSeconds(intent, durationSeconds)
+            ? 0
+            : durationSeconds;
+    }
+
+    private static bool IsPreviewLikeAppleDurationSeconds(DownloadIntent intent, int durationSeconds)
+    {
+        if (durationSeconds <= 0
+            || !AudioDurationGuard.IsCommonPreviewLength(durationSeconds))
+        {
+            return false;
+        }
+
+        return intent.AppleDurationMs is > 0
+            && Math.Abs(intent.AppleDurationMs.Value - (durationSeconds * 1000)) <= 2000;
+    }
+
+    private static bool IsPreviewLikeAppleDurationMs(int durationMs, int? appleDurationMs)
+    {
+        if (durationMs <= 0 || appleDurationMs is not > 0)
+        {
+            return false;
+        }
+
+        return Math.Abs(durationMs - appleDurationMs.Value) <= 2000
+               && AudioDurationGuard.IsCommonPreviewLength(durationMs / 1000d);
+    }
+
+    private static bool IsMusicContentTypeForPreviewGuard(string? contentType)
+    {
+        var normalized = (contentType ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.Length == 0
+            || normalized is "track" or "music" or "stereo" or "lossless" or "hires" or "atmos";
     }
 
     private async Task TryEnqueueVisibleAtmosSecondaryAsync(

@@ -36,7 +36,6 @@ internal sealed class BoomplayWatchlistMappingService
     internal const string MatcherVersion = "boomplay-deezer-watchlist-v1";
     internal const string MatchedStatus = "matched";
     internal const string MappingRetryStatus = "mapping_retry";
-    private const int MaximumConcurrentMatches = 4;
     private static readonly TimeSpan MappingRetryDelay = TimeSpan.FromMinutes(10);
 
     private readonly LibraryRepository _repository;
@@ -73,22 +72,14 @@ internal sealed class BoomplayWatchlistMappingService
             return [];
         }
 
-        using var concurrency = new SemaphoreSlim(MaximumConcurrentMatches, MaximumConcurrentMatches);
-        var indexedTracks = tracks.Select((track, index) => (Track: track, Index: index)).ToList();
-        var tasks = indexedTracks.Select(async entry =>
+        var resolved = new List<BoomplayWatchlistMappedTrack>(tracks.Count);
+        foreach (var track in tracks)
         {
-            await concurrency.WaitAsync(cancellationToken);
-            try
-            {
-                return (entry.Index, Result: await ResolveTrackAsync(entry.Track, cancellationToken));
-            }
-            finally
-            {
-                concurrency.Release();
-            }
-        });
-        var resolved = await Task.WhenAll(tasks);
-        return resolved.OrderBy(static entry => entry.Index).Select(static entry => entry.Result).ToList();
+            cancellationToken.ThrowIfCancellationRequested();
+            resolved.Add(await ResolveTrackAsync(track, cancellationToken));
+        }
+
+        return resolved;
     }
 
     private async Task<BoomplayWatchlistMappedTrack> ResolveTrackAsync(
@@ -104,7 +95,7 @@ internal sealed class BoomplayWatchlistMappingService
         var normalizedTrack = track with { BoomplayTrackId = normalizedTrackId };
         var fingerprint = BuildSourceFingerprint(normalizedTrack);
         var persisted = await _repository.GetBoomplayDeezerTrackMappingAsync(normalizedTrackId, cancellationToken);
-        if (CanReuseMatchedMapping(persisted, normalizedTrack, fingerprint))
+        if (CanReuseMatchedMapping(persisted))
         {
             return BuildMappedResult(persisted!);
         }
@@ -213,14 +204,9 @@ internal sealed class BoomplayWatchlistMappingService
             cancellationToken);
     }
 
-    private static bool CanReuseMatchedMapping(
-        BoomplayDeezerTrackMappingDto? persisted,
-        BoomplayWatchlistTrackInput track,
-        string fingerprint)
+    private static bool CanReuseMatchedMapping(BoomplayDeezerTrackMappingDto? persisted)
         => IsMatchedMapping(persisted)
-           && string.Equals(persisted!.MatcherVersion, MatcherVersion, StringComparison.Ordinal)
-           && (string.Equals(persisted.SourceFingerprint, fingerprint, StringComparison.Ordinal)
-               || !HasSourceMetadata(track));
+           && string.Equals(persisted!.MatcherVersion, MatcherVersion, StringComparison.Ordinal);
 
     private static bool CanReusePendingRetry(
         BoomplayDeezerTrackMappingDto? persisted,
@@ -236,10 +222,6 @@ internal sealed class BoomplayWatchlistMappingService
         => persisted != null
            && string.Equals(persisted.Status, MatchedStatus, StringComparison.OrdinalIgnoreCase)
            && !string.IsNullOrWhiteSpace(persisted.DeezerTrackId);
-
-    private static bool HasSourceMetadata(BoomplayWatchlistTrackInput track)
-        => !string.IsNullOrWhiteSpace(track.Isrc)
-           || (!string.IsNullOrWhiteSpace(track.Title) && !string.IsNullOrWhiteSpace(track.Artist));
 
     private static BoomplayWatchlistMappedTrack BuildMatchedResult(
         BoomplayWatchlistTrackInput source,

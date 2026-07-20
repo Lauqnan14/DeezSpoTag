@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
@@ -116,6 +117,83 @@ public sealed class BoomplayWatchlistMappingServiceTests : IAsyncLifetime
         var persisted = await NewRepository().GetBoomplayDeezerTrackMappingAsync("boom-3");
         Assert.Equal(BoomplayWatchlistMappingService.MatchedStatus, persisted?.Status);
         Assert.Equal("777", persisted?.DeezerTrackId);
+    }
+
+    [Fact]
+    public async Task VerifiedDeezerIdentity_IsReusedWhenBoomplayMetadataChanges()
+    {
+        var resolverCalls = 0;
+        var input = new BoomplayWatchlistTrackInput(
+            "boom-verified", null, "Original", "Artist", "Album", null, 200_000, null);
+        var initial = NewService((_, _) =>
+        {
+            resolverCalls++;
+            return Task.FromResult<BoomplayDeezerMatchResult?>(new(
+                "555123", "Original", "Artist", "Album", "cover", 200));
+        });
+        Assert.True(Assert.Single(await initial.ResolveTracksAsync([input], CancellationToken.None)).IsMatched);
+
+        var changedInput = input with { Title = "Changed by Boomplay", Artist = "Changed Artist" };
+        var restarted = new BoomplayWatchlistMappingService(
+            NewRepository(),
+            (_, _) => throw new InvalidOperationException("Verified Boomplay to Deezer mappings must be reused."),
+            NullLogger<BoomplayWatchlistMappingService>.Instance);
+        var result = Assert.Single(await restarted.ResolveTracksAsync([changedInput], CancellationToken.None));
+
+        Assert.True(result.IsMatched);
+        Assert.Equal("555123", result.DeezerTrackId);
+        Assert.Equal(1, resolverCalls);
+    }
+
+    [Fact]
+    public async Task TracksAreMappedSequentiallyInPlaylistOrder()
+    {
+        var activeResolvers = 0;
+        var maxActiveResolvers = 0;
+        var resolvedOrder = new List<string>();
+        var service = NewService(async (request, _) =>
+        {
+            var current = Interlocked.Increment(ref activeResolvers);
+            maxActiveResolvers = Math.Max(maxActiveResolvers, current);
+            await Task.Delay(10);
+            Interlocked.Decrement(ref activeResolvers);
+            resolvedOrder.Add(request.Url!.Split('/').Last());
+            return new BoomplayDeezerMatchResult(
+                request.Url!.Split('/').Last().Replace("boom-", "deezer-"),
+                request.Title ?? string.Empty,
+                request.Artist ?? string.Empty,
+                request.Album ?? string.Empty,
+                "cover",
+                request.DurationMs.GetValueOrDefault() / 1000);
+        });
+
+        var results = await service.ResolveTracksAsync(
+            [
+                new BoomplayWatchlistTrackInput("boom-1", "https://www.boomplay.com/songs/boom-1", "One", "Artist", "Album", null, 200_000, null),
+                new BoomplayWatchlistTrackInput("boom-2", "https://www.boomplay.com/songs/boom-2", "Two", "Artist", "Album", null, 210_000, null),
+                new BoomplayWatchlistTrackInput("boom-3", "https://www.boomplay.com/songs/boom-3", "Three", "Artist", "Album", null, 220_000, null)
+            ],
+            CancellationToken.None);
+
+        Assert.Equal(["deezer-1", "deezer-2", "deezer-3"], results.Select(static result => result.DeezerTrackId));
+        Assert.Equal(["boom-1", "boom-2", "boom-3"], resolvedOrder);
+        Assert.Equal(1, maxActiveResolvers);
+    }
+
+    [Fact]
+    public void BoomplaySnapshot_IsIncompleteUntilEveryCandidateHasStoredDeezerIdentity()
+    {
+        var unresolved = new PlaylistTrackCandidate(
+            "boom-4", null, "Title", "Artist", "Album", null, 200_000, null, Array.Empty<string>());
+        var mapped = unresolved with
+        {
+            DeezerId = "998877",
+            MappingStatus = BoomplayWatchlistMappingService.MatchedStatus
+        };
+
+        Assert.False(WatchlistEngine.IsBoomplayCandidateMappingComplete([mapped, unresolved], 2));
+        Assert.True(WatchlistEngine.IsBoomplayCandidateMappingComplete([mapped], 1));
+        Assert.True(WatchlistEngine.IsBoomplayCandidateMappingComplete([], 0));
     }
 
     [Fact]

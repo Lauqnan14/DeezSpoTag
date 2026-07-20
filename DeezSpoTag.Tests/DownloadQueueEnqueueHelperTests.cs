@@ -169,7 +169,7 @@ public sealed class DownloadQueueEnqueueHelperTests
     }
 
     [Fact]
-    public async Task EnqueueWithDedupAsync_AllowsCompletedDuplicateWhenPayloadFileWasDeleted()
+    public async Task EnqueueWithDedupAsync_BlocksCompletedDuplicateWhenPayloadFileWasDeleted()
     {
         await using var context = await CreateContextAsync();
         var payload = CreatePayload("completed-deleted-1");
@@ -192,8 +192,10 @@ public sealed class DownloadQueueEnqueueHelperTests
             context.ServiceProvider,
             CancellationToken.None);
 
-        Assert.True(outcome.Success);
-        Assert.False(outcome.AlreadyQueued);
+        Assert.False(outcome.Success);
+        Assert.True(outcome.AlreadyQueued);
+        Assert.Equal("queue_duplicate", outcome.ReasonCode);
+        Assert.Equal(payload.Id, outcome.QueueUuid);
     }
 
     [Fact]

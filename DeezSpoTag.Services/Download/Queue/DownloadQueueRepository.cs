@@ -2460,19 +2460,11 @@ ORDER BY
                 continue;
             }
 
-            if (IsStaleCompletedDuplicate(item))
-            {
-                continue;
-            }
-
             return item;
         }
 
         return null;
     }
-
-    private static bool IsStaleCompletedDuplicate(DownloadQueueItem item)
-        => IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item);
 
     private static bool MatchesDuplicateRequest(DuplicateLookupRequest request, DownloadQueueItem item)
     {

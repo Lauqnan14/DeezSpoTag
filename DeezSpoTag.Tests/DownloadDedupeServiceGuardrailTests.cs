@@ -37,13 +37,13 @@ public sealed class DownloadDedupeServiceGuardrailTests
     }
 
     [Fact]
-    public void QueueDedupe_IgnoresCompletedRowsAfterMaterializedFilesAreGone()
+    public void QueueDedupe_DoesNotIgnoreCompletedRowsAfterMaterializedFilesAreGone()
     {
         var source = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
         var orchestration = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
 
-        Assert.Contains("IsStaleCompletedDuplicate(item)", source, StringComparison.Ordinal);
-        Assert.Contains("IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsStaleCompletedDuplicate", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item)", source, StringComparison.Ordinal);
         Assert.Contains("HasRecordedFinalDestination(item)", orchestration, StringComparison.Ordinal);
         Assert.Contains("already recorded final destinations; no staging artifact remains to finalize", orchestration, StringComparison.Ordinal);
     }
@@ -68,9 +68,9 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.Contains("QobuzTrackId", service, StringComparison.Ordinal);
         Assert.Contains("TidalTrackId", service, StringComparison.Ordinal);
         Assert.Contains("AmazonTrackId", service, StringComparison.Ordinal);
-        Assert.Contains("yield return (QobuzPlatform, request.QobuzTrackId);", service, StringComparison.Ordinal);
-        Assert.Contains("yield return (TidalPlatform, request.TidalTrackId);", service, StringComparison.Ordinal);
-        Assert.Contains("yield return (AmazonPlatform, request.AmazonTrackId);", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildSourceChecks", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExistsTrackSourceAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExistsTrackByAlbumSourceAsync", service, StringComparison.Ordinal);
         Assert.Contains("ReadPayloadString(root, \"QobuzId\", \"qobuzId\")", queueRepository, StringComparison.Ordinal);
         Assert.Contains("ReadPayloadString(root, \"TidalId\", \"tidalId\")", queueRepository, StringComparison.Ordinal);
         Assert.Contains("ReadPayloadString(root, \"AmazonId\", \"amazonId\")", queueRepository, StringComparison.Ordinal);
@@ -308,6 +308,17 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.DoesNotContain("ResolveLocalCandidateIdsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AddLocalMetadataMatchesAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryHandleKnownPlaylistTrackAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BoomplayWatchlistMapping_DoesNotUseConcurrentTrackMatching()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "BoomplayWatchlistMappingService.cs");
+
+        Assert.DoesNotContain("Task.WhenAll", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SemaphoreSlim", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("MaximumConcurrentMatches", source, StringComparison.Ordinal);
+        Assert.Contains("foreach (var track in tracks)", source, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] relativeParts)

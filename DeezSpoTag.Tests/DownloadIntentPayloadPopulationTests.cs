@@ -120,6 +120,24 @@ public sealed class DownloadIntentPayloadPopulationTests
     }
 
     [Fact]
+    public void PopulateStandardQueuePayload_DoesNotPersistPreviewLikeMusicDuration()
+    {
+        var payload = new DeezerQueueItem();
+        var intent = new DownloadIntent
+        {
+            DeezerId = "2370825735",
+            Title = "Enjoy",
+            Artist = "Jux",
+            DurationMs = 51121,
+            AppleDurationMs = 51121
+        };
+
+        InvokePopulateStandardQueuePayload(payload, intent, durationSeconds: 51);
+
+        Assert.Equal(0, payload.DurationSeconds);
+    }
+
+    [Fact]
     public void CreateManualParityQueueIntent_PreservesResolvedMetadata()
     {
         var intent = new DownloadIntent
@@ -208,7 +226,10 @@ public sealed class DownloadIntentPayloadPopulationTests
         Assert.Equal("unresolved_engine_identity", ReadDecisionProperty(decision!, "ReasonCode"));
     }
 
-    private static void InvokePopulateStandardQueuePayload(DeezerQueueItem payload, DownloadIntent intent)
+    private static void InvokePopulateStandardQueuePayload(
+        DeezerQueueItem payload,
+        DownloadIntent intent,
+        int durationSeconds = 0)
     {
         var context = Activator.CreateInstance(
             StandardPayloadContextType,
@@ -219,7 +240,7 @@ public sealed class DownloadIntentPayloadPopulationTests
             0,
             new List<FallbackPlanStep>(),
             string.Empty,
-            0,
+            durationSeconds,
             null,
             string.Empty);
 
