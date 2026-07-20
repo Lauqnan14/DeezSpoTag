@@ -159,7 +159,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
         }
     }
 
-    private sealed class StubWebHostEnvironment(string contentRoot) : IWebHostEnvironment
+    private sealed class StubWebHostEnvironment(string contentRoot) : IWebHostEnvironment, IAppDataRootOverride
     {
         public string ApplicationName { get; set; } = "DeezSpoTag.Tests";
         public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
@@ -167,5 +167,6 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (1, 1);";
         public string EnvironmentName { get; set; } = "Development";
         public string ContentRootPath { get; set; } = contentRoot;
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public string? AppDataRoot { get; } = contentRoot;
     }
 }
