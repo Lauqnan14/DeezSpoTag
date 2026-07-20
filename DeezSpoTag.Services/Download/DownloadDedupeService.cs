@@ -80,13 +80,12 @@ public sealed class DownloadDedupeService
             return DownloadDedupeDecision.AllowedDecision;
         }
 
-        // Destination routing must not narrow duplicate detection. A matching
-        // variant anywhere in the configured library is already owned by the
-        // user; the destination folder only decides where a genuinely new
-        // download is written. Variant and quality upgrade eligibility are
-        // evaluated before this presence check.
-        var exists = await ExistsLibraryDuplicateGloballyAsync(request, cancellationToken);
-        return exists
+        // Destination routing must not narrow duplicate detection. The local
+        // library identity resolver is the single source of truth used by
+        // playlist sync and download dedupe, so both paths agree on whether a
+        // monitored track is already available locally.
+        var identity = await ResolveLocalLibraryIdentityAsync(request, cancellationToken);
+        return identity.Exists
             ? DownloadDedupeDecision.Rejected("library_duplicate", "Skipped: matching file already exists in library.", "library")
             : DownloadDedupeDecision.AllowedDecision;
     }
@@ -278,16 +277,15 @@ public sealed class DownloadDedupeService
             return DownloadDedupeDecision.AllowedDecision;
         }
 
-        var localUpgradeEligible = false;
         if (request.RequestedLocalQualityRank.HasValue)
         {
-            var bestLocalQualityRank = await _libraryRepository.GetBestLocalQualityRankAsync(
-                request.TrackArtist,
-                request.TrackTitle,
-                request.DurationMs,
-                artistPrimaryName: request.TrackPrimaryArtist,
-                audioVariant: request.RequestedAudioVariant,
-                cancellationToken: cancellationToken);
+            var identity = await ResolveLocalLibraryIdentityAsync(request, cancellationToken);
+            var bestLocalQualityRank = identity.LocalTrackId.HasValue
+                ? await _libraryRepository.GetBestLocalQualityRankForTrackAsync(
+                    identity.LocalTrackId.Value,
+                    audioVariant: request.RequestedAudioVariant,
+                    cancellationToken: cancellationToken)
+                : null;
             if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value <= bestLocalQualityRank.Value)
             {
                 return DownloadDedupeDecision.Rejected(
@@ -296,12 +294,10 @@ public sealed class DownloadDedupeService
                     "library");
             }
 
-            localUpgradeEligible = bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value > bestLocalQualityRank.Value;
-        }
-
-        if (localUpgradeEligible)
-        {
-            return DownloadDedupeDecision.AllowedDecision;
+            if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value > bestLocalQualityRank.Value)
+            {
+                return DownloadDedupeDecision.AllowedDecision;
+            }
         }
 
         return await CheckLibraryPresenceAsync(request, cancellationToken);
@@ -370,24 +366,21 @@ public sealed class DownloadDedupeService
         };
     }
 
-    private async Task<bool> ExistsLibraryDuplicateGloballyAsync(
+    private async Task<LibraryRepository.LocalTrackIdentityResult> ResolveLocalLibraryIdentityAsync(
         DownloadDedupeRequest request,
         CancellationToken cancellationToken)
     {
-        foreach (var artist in BuildMetadataArtists(request))
-        {
-            if (await _libraryRepository.ExistsTrackByMetadataAsync(
-                    request.TrackTitle,
-                    artist,
-                    request.DurationMs,
-                    audioVariant: request.RequestedAudioVariant,
-                    cancellationToken: cancellationToken))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                request.Isrc,
+                request.TrackTitle,
+                request.TrackArtist,
+                request.DurationMs,
+                ResolvePrimarySource(request),
+                ResolvePrimarySourceId(request),
+                request.Album),
+            audioVariant: request.RequestedAudioVariant,
+            cancellationToken: cancellationToken);
     }
 
     private static DuplicateLookupRequest BuildQueueLookup(DownloadDedupeRequest request)
@@ -414,16 +407,52 @@ public sealed class DownloadDedupeService
             ArtistPrimaryName = request.TrackPrimaryArtist
         };
 
-    private static List<string> BuildMetadataArtists(DownloadDedupeRequest request)
-        => new[]
+    private static string? ResolvePrimarySource(DownloadDedupeRequest request)
+    {
+        var (source, _) = ResolvePrimarySourcePair(request);
+        return source;
+    }
+
+    private static string? ResolvePrimarySourceId(DownloadDedupeRequest request)
+    {
+        var (_, sourceId) = ResolvePrimarySourcePair(request);
+        return sourceId;
+    }
+
+    private static (string? Source, string? SourceId) ResolvePrimarySourcePair(DownloadDedupeRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.DeezerTrackId))
         {
-            request.TrackArtist,
-            request.TrackPrimaryArtist
+            return (DeezerPlatform, request.DeezerTrackId);
         }
-        .Where(static artist => !string.IsNullOrWhiteSpace(artist))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .Select(static artist => artist!)
-        .ToList();
+
+        if (!string.IsNullOrWhiteSpace(request.SpotifyTrackId))
+        {
+            return (SpotifyPlatform, request.SpotifyTrackId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.AppleTrackId))
+        {
+            return (ApplePlatform, request.AppleTrackId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.QobuzTrackId))
+        {
+            return (QobuzPlatform, request.QobuzTrackId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.TidalTrackId))
+        {
+            return (TidalPlatform, request.TidalTrackId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.AmazonTrackId))
+        {
+            return (AmazonPlatform, request.AmazonTrackId);
+        }
+
+        return (null, null);
+    }
 
     private static string? NormalizePrimaryArtist(string? artistName)
     {

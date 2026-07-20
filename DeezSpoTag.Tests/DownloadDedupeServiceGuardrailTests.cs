@@ -63,14 +63,21 @@ public sealed class DownloadDedupeServiceGuardrailTests
     public void DedupeIdentity_CoversAllDownloadEngines()
     {
         var service = ReadSource("DeezSpoTag.Services", "Download", "DownloadDedupeService.cs");
+        var library = ReadSource("DeezSpoTag.Services", "Library", "LibraryRepository.cs");
         var queueRepository = ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs");
 
         Assert.Contains("QobuzTrackId", service, StringComparison.Ordinal);
         Assert.Contains("TidalTrackId", service, StringComparison.Ordinal);
         Assert.Contains("AmazonTrackId", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveLocalTrackIdentityAsync", service, StringComparison.Ordinal);
+        Assert.Contains("RequestedAudioVariant", service, StringComparison.Ordinal);
+        Assert.Contains("GetBestLocalQualityRankForTrackAsync", library, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildSourceChecks", service, StringComparison.Ordinal);
         Assert.DoesNotContain("ExistsTrackSourceAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("ExistsTrackByAlbumSourceAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExistsLibraryDuplicateGloballyAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildMetadataArtists", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExistsTrackByMetadataAsync", library, StringComparison.Ordinal);
         Assert.Contains("ReadPayloadString(root, \"QobuzId\", \"qobuzId\")", queueRepository, StringComparison.Ordinal);
         Assert.Contains("ReadPayloadString(root, \"TidalId\", \"tidalId\")", queueRepository, StringComparison.Ordinal);
         Assert.Contains("ReadPayloadString(root, \"AmazonId\", \"amazonId\")", queueRepository, StringComparison.Ordinal);
@@ -170,6 +177,9 @@ public sealed class DownloadDedupeServiceGuardrailTests
 
         Assert.Contains("if (!IsFinalDestinationDedupeBlock(failureMessage))", source, StringComparison.Ordinal);
         Assert.Contains("Skipped before download: final destination already contains", source, StringComparison.Ordinal);
+        Assert.Contains("TryCompleteWatchlistFinalDestinationDedupeAsync", source, StringComparison.Ordinal);
+        Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RequestAllPlaylistSyncAsync", source, StringComparison.Ordinal);
 
         var qobuz = ReadSource("DeezSpoTag.Services", "Download", "Qobuz", "QobuzEngineProcessor.cs");
         var apple = ReadSource("DeezSpoTag.Services", "Download", "Apple", "AppleEngineProcessor.cs");

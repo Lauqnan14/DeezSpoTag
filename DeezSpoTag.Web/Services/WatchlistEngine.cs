@@ -1427,6 +1427,31 @@ internal sealed class WatchlistEngine
                 continue;
             }
 
+            if (IsCompletedQueueStatus(queueItem?.Status))
+            {
+                var dedupeService = _serviceProvider.GetRequiredService<DownloadDedupeService>();
+                var libraryDecision = await dedupeService.CheckLibraryPresenceAsync(
+                    BuildDedupeRequest(queueItem!),
+                    cancellationToken);
+                if (!libraryDecision.Allowed)
+                {
+                    await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                        claim.QueueUuid,
+                        claim.Source,
+                        claim.SourceId,
+                        claim.TrackSourceId,
+                        CompletedStatus,
+                        cancellationToken);
+                    await TryMarkWatchTrackCompletedAsync(
+                        claim.Source,
+                        claim.SourceId,
+                        claim.TrackSourceId,
+                        cancellationToken);
+                    recoveredTrackIds.Add(claim.TrackSourceId);
+                    continue;
+                }
+            }
+
             await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 claim.QueueUuid,
                 claim.Source,
@@ -1452,6 +1477,30 @@ internal sealed class WatchlistEngine
 
         return recoveredTrackIds.Count;
     }
+
+    private static DownloadDedupeRequest BuildDedupeRequest(DownloadQueueItem item)
+        => new()
+        {
+            Isrc = item.Isrc,
+            DeezerTrackId = item.DeezerTrackId,
+            DeezerAlbumId = item.DeezerAlbumId,
+            DeezerArtistId = item.DeezerArtistId,
+            SpotifyTrackId = item.SpotifyTrackId,
+            SpotifyAlbumId = item.SpotifyAlbumId,
+            SpotifyArtistId = item.SpotifyArtistId,
+            AppleTrackId = item.AppleTrackId,
+            AppleAlbumId = item.AppleAlbumId,
+            AppleArtistId = item.AppleArtistId,
+            QobuzTrackId = item.QobuzTrackId,
+            TidalTrackId = item.TidalTrackId,
+            AmazonTrackId = item.AmazonTrackId,
+            TrackTitle = item.TrackTitle,
+            TrackArtist = item.ArtistName,
+            Album = null,
+            DurationMs = item.DurationMs,
+            DestinationFolderId = item.DestinationFolderId,
+            ContentType = item.ContentType
+        };
 
     private async Task<PreQueueDedupeHandledResult> TryHandleQueueDuplicateForWatchlistAsync(
         string source,

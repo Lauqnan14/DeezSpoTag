@@ -141,10 +141,28 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.False(stereoDecision.Allowed);
         Assert.Equal("library_duplicate", stereoDecision.ReasonCode);
         Assert.True(atmosDecision.Allowed);
-        Assert.Equal(3, await _repository.GetBestLocalQualityRankAsync(
-            "Existing Artist", "Existing Track", 180000, audioVariant: "stereo"));
-        Assert.Null(await _repository.GetBestLocalQualityRankAsync(
-            "Existing Artist", "Existing Track", 180000, audioVariant: "atmos"));
+        var stereoIdentity = await _repository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Existing Track",
+                "Existing Artist",
+                180000,
+                AlbumTitle: "Existing Album"),
+            audioVariant: "stereo");
+        var atmosIdentity = await _repository.ResolveLocalTrackIdentityAsync(
+            new LibraryRepository.LibraryExistenceInput(
+                null,
+                "Existing Track",
+                "Existing Artist",
+                180000,
+                AlbumTitle: "Existing Album"),
+            audioVariant: "atmos");
+
+        Assert.Equal(9001, stereoIdentity.LocalTrackId);
+        Assert.Equal(3, await _repository.GetBestLocalQualityRankForTrackAsync(
+            stereoIdentity.LocalTrackId!.Value,
+            audioVariant: "stereo"));
+        Assert.False(atmosIdentity.Exists);
     }
 
     [Fact]

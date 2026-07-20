@@ -11550,33 +11550,24 @@ LIMIT 200;";
         return results;
     }
 
-    public async Task<int?> GetBestLocalQualityRankAsync(
-        string artistName,
-        string trackTitle,
-        int? durationMs,
-        string? artistPrimaryName = null,
+    public async Task<int?> GetBestLocalQualityRankForTrackAsync(
+        long trackId,
         string? audioVariant = null,
         CancellationToken cancellationToken = default)
     {
+        if (trackId <= 0)
+        {
+            return null;
+        }
+
         var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = $@"
 SELECT MAX(af.quality_rank)
 FROM track t
-JOIN album al ON al.id = t.album_id
-JOIN artist ar ON ar.id = al.artist_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
-WHERE (
-        LOWER(ar.name) = LOWER(@artistName)
-        OR (
-            @artistPrimaryName IS NOT NULL
-            AND @artistPrimaryName <> ''
-            AND LOWER(ar.name) = LOWER(@artistPrimaryName)
-        )
-      )
-  AND LOWER(t.title) = LOWER(@trackTitle)
-  AND (@{DurationMsField} IS NULL OR t.duration_ms IS NULL OR ABS(t.duration_ms - @{DurationMsField}) <= 2000)
+WHERE t.id = @trackId
   AND (
       @{RequireAtmosField} IS NULL
       OR (
@@ -11597,10 +11588,7 @@ WHERE (
       ) = @{RequireAtmosField}
   );";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue("artistName", artistName);
-        command.Parameters.AddWithValue("artistPrimaryName", string.IsNullOrWhiteSpace(artistPrimaryName) ? (object)DBNull.Value : artistPrimaryName.Trim());
-        command.Parameters.AddWithValue("trackTitle", trackTitle);
-        command.Parameters.AddWithValue(DurationMsField, (object?)durationMs ?? DBNull.Value);
+        command.Parameters.AddWithValue(TrackIdField, trackId);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is DBNull or null ? null : Convert.ToInt32(result);
@@ -12121,6 +12109,7 @@ SELECT f.root_path, af.relative_path, af.path
         LibraryExistenceInput input,
         long? libraryId = null,
         long? folderId = null,
+        string? audioVariant = null,
         CancellationToken cancellationToken = default)
     {
         if (!IsConfigured)
@@ -12128,22 +12117,23 @@ SELECT f.root_path, af.relative_path, af.path
             return new LocalTrackIdentityResult(null, "none", "The local library is not configured.", Array.Empty<long>());
         }
 
+        var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         var exactTrackId = await FindExactLocalTrackByIsrcAsync(
-            connection, input.Isrc, libraryId, folderId, cancellationToken);
+            connection, input.Isrc, libraryId, folderId, requireAtmosVariant, cancellationToken);
         if (exactTrackId.HasValue)
         {
             return new LocalTrackIdentityResult(exactTrackId, "isrc", "Matched the stored ISRC.", new[] { exactTrackId.Value });
         }
 
         exactTrackId = await FindExactLocalTrackIdAsync(
-            connection, input.Source, input.SourceId, libraryId, folderId, cancellationToken);
+            connection, input.Source, input.SourceId, libraryId, folderId, requireAtmosVariant, cancellationToken);
         if (exactTrackId.HasValue)
         {
             return new LocalTrackIdentityResult(exactTrackId, "source_id", "Matched the stored source track ID.", new[] { exactTrackId.Value });
         }
 
-        return await ResolveLocalTrackByMetadataAsync(connection, input, libraryId, folderId, cancellationToken);
+        return await ResolveLocalTrackByMetadataAsync(connection, input, libraryId, folderId, requireAtmosVariant, cancellationToken);
     }
 
     private static async Task<long?> FindExactLocalTrackByIsrcAsync(
@@ -12151,6 +12141,7 @@ SELECT f.root_path, af.relative_path, af.path
         string? isrc,
         long? libraryId,
         long? folderId,
+        int? requireAtmosVariant,
         CancellationToken cancellationToken)
     {
         var normalizedIsrc = isrc?.Trim();
@@ -12170,12 +12161,32 @@ WHERE f.enabled = TRUE
   AND (@libraryId IS NULL OR f.library_id = @libraryId)
   AND (@folderId IS NULL OR f.id = @folderId)
   AND (LOWER(t.tag_isrc) = LOWER(@isrc) OR LOWER(ts.source_id) = LOWER(@isrc))
+  AND (
+      @requireAtmos IS NULL
+      OR (
+          CASE
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'stereo' THEN 0
+              WHEN LOWER(COALESCE(af.codec, '')) LIKE '%dolby atmos%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%joc%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%atmos%'
+                   OR ((LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+                        OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.mlp'))
+                       AND COALESCE(af.channels, 0) > 2)
+                  THEN 1
+              ELSE 0
+          END
+      ) = @requireAtmos
+  )
 ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("isrc", normalizedIsrc);
         command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
@@ -12186,6 +12197,7 @@ LIMIT 1;";
         string? sourceId,
         long? libraryId,
         long? folderId,
+        int? requireAtmosVariant,
         CancellationToken cancellationToken)
     {
         var normalizedSource = source?.Trim();
@@ -12212,6 +12224,25 @@ WHERE f.enabled = TRUE
       LOWER(ts.source_id) = LOWER(@sourceId)
       OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(@sourceId) || ';') > 0
   )
+  AND (
+      @requireAtmos IS NULL
+      OR (
+          CASE
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'stereo' THEN 0
+              WHEN LOWER(COALESCE(af.codec, '')) LIKE '%dolby atmos%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%joc%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%atmos%'
+                   OR ((LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+                        OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.mlp'))
+                       AND COALESCE(af.channels, 0) > 2)
+                  THEN 1
+              ELSE 0
+          END
+      ) = @requireAtmos
+  )
 ORDER BY af.quality_rank DESC NULLS LAST, ts.track_id DESC
 LIMIT 1;";
         await using var command = new SqliteCommand(sql, connection);
@@ -12219,6 +12250,7 @@ LIMIT 1;";
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
     }
@@ -12228,6 +12260,7 @@ LIMIT 1;";
         LibraryExistenceInput input,
         long? libraryId,
         long? folderId,
+        int? requireAtmosVariant,
         CancellationToken cancellationToken)
     {
         if (!TryBuildTrackLookup(input, out var trackTitle, out var artistName, out var artistSearch))
@@ -12257,12 +12290,32 @@ WHERE f.enabled = TRUE
       OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(@artistSearch)
       OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(@artistSearch)
   )
+  AND (
+      @requireAtmos IS NULL
+      OR (
+          CASE
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1
+              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'stereo' THEN 0
+              WHEN LOWER(COALESCE(af.codec, '')) LIKE '%dolby atmos%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%joc%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%atmos%'
+                   OR ((LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+                        OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+                        OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.mlp'))
+                       AND COALESCE(af.channels, 0) > 2)
+                  THEN 1
+              ELSE 0
+          END
+      ) = @requireAtmos
+  )
 ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
 LIMIT 100;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
         command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         var scored = new List<(LocalTrackMetadataCandidate Candidate, int Score)>();
@@ -12361,7 +12414,10 @@ LIMIT 100;";
         for (var index = 0; index < inputs.Count; index++)
         {
             results[index] = (await ResolveLocalTrackIdentityAsync(
-                inputs[index], libraryId, folderId, cancellationToken)).Exists;
+                inputs[index],
+                libraryId,
+                folderId,
+                cancellationToken: cancellationToken)).Exists;
         }
 
         return results;
@@ -12619,120 +12675,6 @@ SELECT f.root_path, af.relative_path, af.path
         command.Parameters.AddWithValue(FolderIdParameter, folderId.HasValue ? folderId.Value : (object)DBNull.Value);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
         return await AnyStoredAudioFileExistsAsync(command, cancellationToken);
-    }
-
-    public async Task<bool> ExistsTrackByMetadataAsync(
-        string trackTitle,
-        string artistName,
-        int? durationMs,
-        string? audioVariant = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(trackTitle) || string.IsNullOrWhiteSpace(artistName))
-        {
-            return false;
-        }
-
-        var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
-        var normalizedPrimaryArtist = ArtistNameNormalizer.ExtractPrimaryArtist(artistName.Trim());
-        var artistSearchTerm = string.IsNullOrWhiteSpace(normalizedPrimaryArtist)
-            ? artistName.Trim()
-            : normalizedPrimaryArtist.Trim();
-        var artistSearch = $"%{artistSearchTerm}%";
-
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-SELECT COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
-       COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
-       f.root_path,
-       af.relative_path,
-       af.path
-FROM track t
-JOIN album al ON al.id = t.album_id
-JOIN artist ar ON ar.id = al.artist_id
-JOIN track_local tl ON tl.track_id = t.id
-JOIN audio_file af ON af.id = tl.audio_file_id
-JOIN folder f ON f.id = af.folder_id
-WHERE (
-      LOWER(ar.name) LIKE LOWER(@artistSearch)
-      OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(@artistSearch)
-      OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(@artistSearch)
-  )
-  AND (@durationMs IS NULL OR COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) IS NULL OR ABS(COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) - @durationMs) <= 2000)
-  AND (
-      @requireAtmos IS NULL
-      OR (
-          CASE
-              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1
-              WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'stereo' THEN 0
-              WHEN (
-                  LOWER(COALESCE(af.codec, '')) LIKE '%dolby atmos%'
-                  OR LOWER(COALESCE(af.codec, '')) LIKE '%joc%'
-                  OR LOWER(COALESCE(af.codec, '')) LIKE '%atmos%'
-                  OR (
-                      (
-                          LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
-                          OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.ac3', '.mlp')
-                      )
-                      AND af.channels IS NOT NULL
-                      AND af.channels > 2
-                  )
-                  OR (
-                      (
-                          LOWER(REPLACE(COALESCE(af.path, ''), '\', '/')) LIKE '%/atmos/%'
-                          OR LOWER(REPLACE(COALESCE(af.path, ''), '\', '/')) LIKE '%/dolby atmos/%'
-                          OR LOWER(REPLACE(COALESCE(af.path, ''), '\', '/')) LIKE '%/spatial/%'
-                          OR LOWER(COALESCE(af.path, '')) LIKE '%atmos%'
-                      )
-                      AND (
-                          (af.channels IS NOT NULL AND af.channels > 2)
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
-                          OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
-                          OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.ac3', '.mlp')
-                      )
-                  )
-              ) THEN 1
-              ELSE 0
-          END
-      ) = @requireAtmos
-  )
-LIMIT 200;";
-
-        await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
-        command.Parameters.AddWithValue(DurationMsField, durationMs.HasValue ? durationMs.Value : (object)DBNull.Value);
-        command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var candidateArtist = await ReadNullableStringAsync(reader, 0, cancellationToken) ?? string.Empty;
-            var candidateTitle = await ReadNullableStringAsync(reader, 1, cancellationToken) ?? string.Empty;
-            if (!TrackTitleMatcher.ArtistsMatch(artistName, candidateArtist)
-                || !TrackTitleMatcher.TitlesMatch(trackTitle, candidateTitle))
-            {
-                continue;
-            }
-
-            var rootPath = await ReadNullableStringAsync(reader, 2, cancellationToken);
-            var relativePath = await ReadNullableStringAsync(reader, 3, cancellationToken);
-            var rawPath = await ReadNullableStringAsync(reader, 4, cancellationToken);
-            var fullPath = BuildAbsolutePath(rootPath, relativePath, rawPath);
-            if (!string.IsNullOrWhiteSpace(fullPath) && File.Exists(fullPath))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static async Task<bool> AnyStoredAudioFileExistsAsync(

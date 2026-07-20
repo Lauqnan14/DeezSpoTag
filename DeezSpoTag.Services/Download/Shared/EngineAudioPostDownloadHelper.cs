@@ -18,6 +18,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 
@@ -3274,6 +3275,19 @@ public static partial class EngineAudioPostDownloadHelper
         var terminalStatus = IsTrackUnavailableFailure(failureMessage)
             ? "unavailable"
             : FailedStatus;
+        if (IsFinalDestinationDedupeBlock(failureMessage)
+            && payload != null
+            && await TryCompleteWatchlistFinalDestinationDedupeAsync(
+                queueUuid,
+                payload,
+                failureMessage,
+                context,
+                CancellationToken.None))
+        {
+            context.ActivityLog.Info($"Download satisfied by existing final destination (engine={context.EngineName}): {queueUuid}");
+            return;
+        }
+
         if (!IsFinalDestinationDedupeBlock(failureMessage))
         {
             await context.QueueRepository.UpdatePrefetchFilesAndArtworkAsync(
@@ -3301,6 +3315,92 @@ public static partial class EngineAudioPostDownloadHelper
 
     public static bool IsFinalDestinationDedupeBlock(string? message)
         => message?.StartsWith("Skipped before download: final destination already contains", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static async Task<bool> TryCompleteWatchlistFinalDestinationDedupeAsync<TPayload>(
+        string queueUuid,
+        TPayload payload,
+        string failureMessage,
+        FailureHandlingContext<TPayload> context,
+        CancellationToken cancellationToken)
+        where TPayload : EngineQueueItemBase
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid)
+            || string.IsNullOrWhiteSpace(payload.WatchlistSource)
+            || string.IsNullOrWhiteSpace(payload.WatchlistPlaylistId)
+            || string.IsNullOrWhiteSpace(payload.WatchlistTrackId))
+        {
+            return false;
+        }
+
+        var finalPath = ExtractFinalDestinationDedupePath(failureMessage);
+        if (string.IsNullOrWhiteSpace(finalPath) || !File.Exists(finalPath))
+        {
+            return false;
+        }
+
+        using var scope = context.ServiceProvider.CreateScope();
+        var libraryRepository = scope.ServiceProvider.GetService<LibraryRepository>();
+        if (libraryRepository is null || !libraryRepository.IsConfigured)
+        {
+            return false;
+        }
+
+        var payloadJson = JsonSerializer.Serialize(payload);
+        await libraryRepository.UpsertWatchlistFinalizationOutboxAsync(
+            queueUuid,
+            payloadJson,
+            new[] { finalPath },
+            cancellationToken);
+
+        await context.QueueRepository.UpdateStatusAsync(
+            queueUuid,
+            CompletedStatus,
+            downloaded: 1,
+            progress: 100,
+            cancellationToken: cancellationToken);
+        await context.RetryScheduler.ClearAsync(queueUuid, cancellationToken);
+
+        await UpdateWatchlistTrackStatusAsync(
+            payload,
+            CompletedStatus,
+            context.ServiceProvider,
+            cancellationToken,
+            queueUuid);
+
+        var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
+        if (notifier is not null)
+        {
+            await notifier.RequestAllPlaylistSyncAsync(cancellationToken);
+        }
+
+        context.Listener.Send(UpdateQueueEvent, new
+        {
+            uuid = queueUuid,
+            status = "completed",
+            progress = 100,
+            downloaded = 1,
+            failed = 0,
+            engine = payload.Engine,
+            quality = payload.Quality
+        });
+
+        return true;
+    }
+
+    private static string? ExtractFinalDestinationDedupePath(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(
+            message,
+            @"final destination already contains '([^']+)'",
+            RegexOptions.IgnoreCase,
+            TimeSpan.FromMilliseconds(250));
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
 
     private static bool IsRateLimitedFailure(Exception exception)
         => exception.Message.Contains("429", StringComparison.OrdinalIgnoreCase)
