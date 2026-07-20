@@ -434,14 +434,15 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 playlist.Source,
                 playlist.SourceId,
                 cancellationToken);
-            if (preference == null || !HasConfiguredTargets(preference))
+            if (preference == null || !IsConfiguredTarget(preference, request.TargetService))
             {
                 _logger.LogInformation(
-                    "Completing obsolete Watchlist sync job {JobId}; no target server is configured for {Source}:{PlaylistId}.",
+                    "Completing obsolete Watchlist sync job {JobId}; target {Target} is not configured for {Source}:{PlaylistId}.",
                     request.JobId,
+                    request.TargetService,
                     request.Source,
                     request.PlaylistId);
-                return SyncAttemptOutcome.Obsolete("No target server selected.");
+                return SyncAttemptOutcome.Obsolete("Target server is no longer selected.");
             }
 
             if (await repository.HasWatchlistReconciliationRequestAsync(
@@ -470,12 +471,13 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
 
-            await RefreshConfiguredMediaServersAsync(scope.ServiceProvider, preference, cancellationToken);
+            await RefreshConfiguredMediaServerAsync(scope.ServiceProvider, request.TargetService, cancellationToken);
             var syncResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
                 .SyncAvailablePlaylistTracksAsync(
                 playlist,
                 preference,
                 candidates,
+                request.TargetService,
                 force: false,
                 cancellationToken);
 
@@ -485,7 +487,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     scope.ServiceProvider,
                     playlist,
                     WatchlistPlaylistState.MediaSyncCompleted,
-                    "Monitored playlist synchronization completed.",
+                    $"{FormatTargetServiceLabel(request.TargetService)} playlist synchronization completed.",
                     cancellationToken);
                 await AddPlaylistSyncHistoryAsync(
                     scope.ServiceProvider,
@@ -543,12 +545,21 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool HasConfiguredTargets(PlaylistWatchPreferenceDto preference)
+    private static bool IsConfiguredTarget(PlaylistWatchPreferenceDto preference, string targetService)
     {
+        var normalizedTarget = NormalizeTargetService(targetService);
+        if (normalizedTarget is not ("plex" or "jellyfin" or "navidrome"))
+        {
+            return false;
+        }
+
         var targets = preference.SyncTargets is { Count: > 0 }
             ? preference.SyncTargets
             : [preference.Service ?? string.Empty];
-        return targets.Any(target => NormalizeTargetService(target) is "plex" or "jellyfin" or "navidrome");
+        return targets.Any(target => string.Equals(
+            NormalizeTargetService(target),
+            normalizedTarget,
+            StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task AddPlaylistSyncHistoryAsync(
@@ -639,34 +650,32 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task RefreshConfiguredMediaServersAsync(
+    private static async Task RefreshConfiguredMediaServerAsync(
         IServiceProvider services,
-        PlaylistWatchPreferenceDto preference,
+        string targetService,
         CancellationToken cancellationToken)
     {
-        var refreshService = services.GetRequiredService<MediaServerLibraryRefreshService>();
-        var targets = preference.SyncTargets is { Count: > 0 }
-            ? preference.SyncTargets
-            : [preference.Service ?? string.Empty];
-        var normalized = new List<string>();
-        foreach (var target in targets)
+        var normalizedTarget = NormalizeTargetService(targetService);
+        if (normalizedTarget is not ("plex" or "jellyfin" or "navidrome"))
         {
-            var service = NormalizeTargetService(target);
-            if (service is "plex" or "jellyfin" or "navidrome"
-                && !normalized.Contains(service, StringComparer.OrdinalIgnoreCase))
-            {
-                normalized.Add(service);
-            }
+            return;
         }
 
-        foreach (var service in normalized)
-        {
-            await refreshService.RefreshAsync(service, cancellationToken);
-        }
+        var refreshService = services.GetRequiredService<MediaServerLibraryRefreshService>();
+        await refreshService.RefreshAsync(normalizedTarget, cancellationToken);
     }
 
     private static string NormalizeTargetService(string? target)
         => (target ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static string FormatTargetServiceLabel(string target)
+        => NormalizeTargetService(target) switch
+        {
+            "plex" => "Plex",
+            "jellyfin" => "Jellyfin",
+            "navidrome" => "Navidrome",
+            _ => target
+        };
 
     private sealed record SyncRequest(
         long JobId,

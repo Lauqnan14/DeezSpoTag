@@ -166,16 +166,15 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
     }
 
     [Fact]
-    public async Task SyncJobs_AreCreatedPerPlaylistAndEnforceLeaseOwnership()
+    public async Task SyncJobs_AreCreatedPerPlaylistTargetAndEnforceLeaseOwnership()
     {
-        await AddPlaylistWithTargetsAsync("lease-list", ["plex", "jellyfin"]);
+        await AddPlaylistWithTargetsAsync("lease-list", ["plex"]);
         var jobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
             "lease-list");
 
-        var created = Assert.Single(jobs);
-        Assert.Equal("all", created.TargetService);
-        Assert.Equal("playlist", created.TrackId);
+        Assert.Equal(new[] { "plex" }, jobs.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(jobs, static job => Assert.Equal("playlist", job.TrackId));
         var first = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(1), "worker-a"));
         Assert.Equal("worker-a", first.LeaseOwner);
         Assert.Equal("processing", first.Status);
@@ -199,7 +198,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.True(await _repository.BlockWatchlistSyncJobAsync(reclaimed.Id, "worker-c", "configuration invalid"));
         Assert.Equal(1, (await _repository.GetWatchlistSyncJobStatusCountsAsync()).Blocked);
 
-        await AddPlaylistWithTargetsAsync("lease-list", ["plex", "jellyfin"]);
+        await AddPlaylistWithTargetsAsync("lease-list", ["plex"]);
         var resumed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(1), "worker-d"));
         Assert.Equal(reclaimed.Id, resumed.Id);
         Assert.Equal(0, resumed.AttemptCount);
@@ -234,9 +233,13 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.Equal(1, await _repository.RemovePlaylistWatchTracksNotInAsync("spotify", "prune-list", ["keep"]));
         Assert.Empty(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-remove"));
         Assert.False(await _repository.IsPlaylistWatchTrackSyncedToTargetAsync("spotify", "prune-list", "remove", "jellyfin"));
-        Assert.Contains(
-            await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "prune-worker"),
-            job => job.TrackId == "playlist" && job.TargetService == "all");
+        Assert.Equal(
+            new[] { "jellyfin", "plex" },
+            (await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "prune-worker"))
+                .Where(static job => job.TrackId == "playlist")
+                .Select(static job => job.TargetService)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
 
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
@@ -250,7 +253,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
             "spotify",
             "prune-list");
         var job = Assert.Single(recreated);
-        Assert.Equal("all", job.TargetService);
+        Assert.Equal("plex", job.TargetService);
         Assert.Equal("playlist", job.TrackId);
     }
 
@@ -437,26 +440,25 @@ WHERE id=@id;",
     }
 
     [Fact]
-    public async Task PlaylistSyncWork_CoalescesToOneJobPerPlaylist()
+    public async Task PlaylistSyncWork_CoalescesToOneJobPerPlaylistTarget()
     {
         await AddPlaylistWithTargetsAsync("refresh-list", ["plex", "jellyfin", "navidrome"]);
         var first = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list");
         var second = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list");
 
-        var firstJob = Assert.Single(first);
-        var secondJob = Assert.Single(second);
-        Assert.Equal("all", firstJob.TargetService);
-        Assert.Equal("playlist", firstJob.TrackId);
-        Assert.Equal(firstJob.Id, secondJob.Id);
-        Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "target-worker"));
+        Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, first.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, second.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(first, static job => Assert.Equal("playlist", job.TrackId));
+        var claimed = await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "target-worker");
+        Assert.Equal(3, claimed.Count);
     }
 
     [Fact]
-    public async Task SchemaMigration_CoalescesLegacyPerTrackSyncJobsToPlaylistScope()
+    public async Task SchemaMigration_CoalescesLegacyPerTrackSyncJobsToPerTargetPlaylistScope()
     {
         await AddPlaylistWithTargetsAsync("legacy-sync-list", ["plex", "jellyfin"]);
         await ExecuteSqlAsync(@"
-DELETE FROM app_schema_migration WHERE migration_id='watchlist-playlist-sync-job-v1';
+DELETE FROM app_schema_migration WHERE migration_id='watchlist-per-target-playlist-sync-job-v1';
 INSERT INTO watchlist_sync_job (
     source, playlist_id, track_id, target_service, queue_uuid, destination_folder_id,
     final_file_paths_json, attempt_count, status, next_attempt_utc, last_error)
@@ -469,12 +471,18 @@ VALUES
         await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
 
         var jobs = await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "migration-worker");
-        var job = Assert.Single(jobs, item => item.Source == "spotify" && item.PlaylistId == "legacy-sync-list");
-        Assert.Equal("playlist", job.TrackId);
-        Assert.Equal("all", job.TargetService);
-        Assert.Equal(0, job.AttemptCount);
-        Assert.Null(job.QueueUuid);
-        Assert.Null(job.LastError);
+        var migrated = jobs
+            .Where(item => item.Source == "spotify" && item.PlaylistId == "legacy-sync-list")
+            .OrderBy(static item => item.TargetService, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(new[] { "jellyfin", "plex" }, migrated.Select(static job => job.TargetService).ToArray());
+        Assert.All(migrated, static job =>
+        {
+            Assert.Equal("playlist", job.TrackId);
+            Assert.Equal(0, job.AttemptCount);
+            Assert.Null(job.QueueUuid);
+            Assert.Null(job.LastError);
+        });
         Assert.DoesNotContain(jobs, item => item.TrackId is "track-a" or "track-b");
     }
 

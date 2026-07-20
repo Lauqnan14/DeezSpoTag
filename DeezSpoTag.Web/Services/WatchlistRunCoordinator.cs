@@ -348,7 +348,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         {
             await coordinatorWork.ProcessCoordinatorWorkAsync(
                 finalizationLimit: 25,
-                syncJobLimit: 5,
+                syncJobLimit: 15,
                 stoppingToken);
         }
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);

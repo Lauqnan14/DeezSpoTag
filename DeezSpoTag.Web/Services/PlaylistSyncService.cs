@@ -1121,16 +1121,33 @@ public sealed class PlaylistSyncService
         IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
         bool force,
         CancellationToken cancellationToken)
+        => await SyncAvailablePlaylistTracksAsync(
+            playlist,
+            preference,
+            trackCandidates,
+            targetService: null,
+            force,
+            cancellationToken);
+
+    public async Task<PlaylistSyncResult> SyncAvailablePlaylistTracksAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<PlaylistTrackCandidate>? trackCandidates,
+        string? targetService,
+        bool force,
+        CancellationToken cancellationToken)
     {
         if (playlist == null || string.IsNullOrWhiteSpace(playlist.SourceId))
         {
             return PlaylistSyncResult.Failed(PlaylistNotAvailableMessage);
         }
 
-        var services = await ResolveTargetServicesAsync(preference, cancellationToken);
+        var services = await ResolveTargetServicesAsync(preference, targetService, cancellationToken);
         if (services.Count == 0)
         {
-            return PlaylistSyncResult.Failed(NoTargetServerSelectedMessage);
+            return PlaylistSyncResult.Failed(string.IsNullOrWhiteSpace(targetService)
+                ? NoTargetServerSelectedMessage
+                : UnsupportedPlaylistSyncTargetMessage);
         }
 
         if (force)
@@ -1157,37 +1174,11 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
         }
 
-        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
-        foreach (var track in eligibleTracks)
-        {
-            var (identitySource, identityTrackId) = ResolveTrackIdentity(playlist.Source, track);
-            var identity = await _libraryRepository.ResolveLocalTrackIdentityAsync(
-                new LibraryRepository.LibraryExistenceInput(
-                    track.Isrc,
-                    track.Name,
-                    track.Artists,
-                    track.DurationMs,
-                    identitySource,
-                    identityTrackId,
-                    track.Album),
-                cancellationToken: cancellationToken);
-            var identityStatus = identity.IsAmbiguous
-                ? "review"
-                : identity.LocalTrackId.HasValue ? "identity_verified" : "missing";
-            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
-                playlist.Source,
-                playlist.SourceId,
-                new PlaylistWatchTrackVerification(
-                    track.SourceTrackId,
-                    identity.LocalTrackId,
-                    identityStatus,
-                    identity.Reason),
-                cancellationToken);
-            if (identity.LocalTrackId.HasValue && !identity.IsAmbiguous)
-            {
-                availableTrackRows.Add((track, identity.LocalTrackId.Value));
-            }
-        }
+        var availableTrackRows = await ResolveAvailableTrackRowsAndPersistVerificationAsync(
+            playlist.Source,
+            playlist.SourceId,
+            eligibleTracks,
+            cancellationToken);
 
         if (availableTrackRows.Count == 0)
         {
@@ -1290,6 +1281,28 @@ public sealed class PlaylistSyncService
                 SafeLog(playlist.SourceId));
             return PlaylistSyncResult.Failed($"{FormatTargetServiceLabel(service)} sync failed: {ex.Message}");
         }
+    }
+
+    private async Task<IReadOnlyList<string>> ResolveTargetServicesAsync(
+        PlaylistWatchPreferenceDto? preference,
+        string? targetService,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(targetService))
+        {
+            return await ResolveTargetServicesAsync(preference, cancellationToken);
+        }
+
+        var normalizedTarget = NormalizeService(targetService);
+        if (normalizedTarget is not (PlexService or JellyfinService or NavidromeService))
+        {
+            return Array.Empty<string>();
+        }
+
+        var configuredTargets = await ResolveTargetServicesAsync(preference, cancellationToken);
+        return configuredTargets.Contains(normalizedTarget, StringComparer.OrdinalIgnoreCase)
+            ? new[] { normalizedTarget }
+            : Array.Empty<string>();
     }
 
     internal static PlaylistSyncResult CombinePlaylistSyncTargetResults(
@@ -1464,6 +1477,53 @@ public sealed class PlaylistSyncService
             if (localTrackIds[index] > 0)
             {
                 availableTrackRows.Add((eligibleTracks[index], localTrackIds[index]));
+            }
+        }
+
+        return availableTrackRows;
+    }
+
+    private async Task<List<(SyncTrackSummary Track, long LocalTrackId)>> ResolveAvailableTrackRowsAndPersistVerificationAsync(
+        string source,
+        string sourceId,
+        IReadOnlyList<SyncTrackSummary> eligibleTracks,
+        CancellationToken cancellationToken)
+    {
+        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
+        var inputs = eligibleTracks
+            .Select(track =>
+            {
+                var (identitySource, identityTrackId) = ResolveTrackIdentity(source, track);
+                return new LibraryRepository.LibraryExistenceInput(
+                    track.Isrc,
+                    track.Name,
+                    track.Artists,
+                    track.DurationMs,
+                    identitySource,
+                    identityTrackId,
+                    track.Album);
+            })
+            .ToList();
+        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(inputs, cancellationToken);
+        for (var index = 0; index < eligibleTracks.Count; index++)
+        {
+            var track = eligibleTracks[index];
+            var identity = identities[index];
+            var identityStatus = identity.IsAmbiguous
+                ? "review"
+                : identity.LocalTrackId.HasValue ? "identity_verified" : "missing";
+            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                source,
+                sourceId,
+                new PlaylistWatchTrackVerification(
+                    track.SourceTrackId,
+                    identity.LocalTrackId,
+                    identityStatus,
+                    identity.Reason),
+                cancellationToken);
+            if (identity.LocalTrackId.HasValue && !identity.IsAmbiguous)
+            {
+                availableTrackRows.Add((track, identity.LocalTrackId.Value));
             }
         }
 

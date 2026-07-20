@@ -605,9 +605,10 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var targetJobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
             "pl-123");
-        var targetJob = Assert.Single(targetJobs);
-        Assert.Equal("all", targetJob.TargetService);
-        Assert.Equal("playlist", targetJob.TrackId);
+        Assert.Equal(
+            new[] { "jellyfin", "plex" },
+            targetJobs.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(targetJobs, static job => Assert.Equal("playlist", job.TrackId));
 
         var removedWatchlist = await _repository.RemovePlaylistWatchlistAsync(" Spotify ", " pl-123 ");
         Assert.True(removedWatchlist);

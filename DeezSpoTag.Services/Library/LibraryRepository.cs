@@ -7616,15 +7616,11 @@ WHERE source=@source AND source_id=@sourceId AND lower(target_service)=@target;"
         await using (var deleteObsoleteJobs = new SqliteCommand(@"
 DELETE FROM watchlist_sync_job
 WHERE source=@source AND playlist_id=@sourceId
-  AND (
-      (target_service <> 'all' AND target_service NOT IN (SELECT value FROM json_each(@targetsJson)))
-      OR (target_service = 'all' AND @hasTargets = 0)
-  );", connection, transaction))
+  AND target_service NOT IN (SELECT value FROM json_each(@targetsJson));", connection, transaction))
         {
             deleteObsoleteJobs.Parameters.AddWithValue(SourceField, normalizedSource);
             deleteObsoleteJobs.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             deleteObsoleteJobs.Parameters.AddWithValue("targetsJson", JsonSerializer.Serialize(currentTargets));
-            deleteObsoleteJobs.Parameters.AddWithValue("hasTargets", currentTargets.Count > 0 ? 1 : 0);
             await deleteObsoleteJobs.ExecuteNonQueryAsync(cancellationToken);
         }
         await using (var resumeConfiguredJobs = new SqliteCommand(@"
@@ -7633,7 +7629,7 @@ SET status='pending', attempt_count=0, lease_owner=NULL, lease_until_utc=NULL,
     next_attempt_utc=CURRENT_TIMESTAMP, last_error=NULL, updated_at=CURRENT_TIMESTAMP
 WHERE source=@source AND playlist_id=@sourceId
   AND lower(status)='blocked'
-  AND (target_service='all' OR target_service IN (SELECT value FROM json_each(@targetsJson)));", connection, transaction))
+  AND target_service IN (SELECT value FROM json_each(@targetsJson));", connection, transaction))
         {
             resumeConfiguredJobs.Parameters.AddWithValue(SourceField, normalizedSource);
             resumeConfiguredJobs.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -9559,7 +9555,7 @@ WHERE source = @source
 DELETE FROM watchlist_sync_job
 WHERE source = @source
   AND playlist_id = @sourceId
-  AND target_service <> 'all'
+  AND track_id <> 'playlist'
   AND NOT EXISTS (
       SELECT 1 FROM temp_current_playlist_watch_track current_track
       WHERE current_track.track_source_id = watchlist_sync_job.track_id
@@ -10346,18 +10342,15 @@ WHERE lower(status)='completed' AND datetime(updated_at) < datetime(@cutoffUtc);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc)
-SELECT @source, @playlistId, 'playlist', 'all', 'pending', CURRENT_TIMESTAMP
-WHERE EXISTS (
-    SELECT 1
-    FROM playlist_watch_preferences preference,
-         json_each(CASE
-             WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
-                 THEN preference.sync_targets_json
-             ELSE json_array(preference.service)
-         END) configured
-    WHERE preference.source=@source AND preference.source_id=@playlistId
-      AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
-)
+SELECT @source, @playlistId, 'playlist', lower(trim(configured.value)), 'pending', CURRENT_TIMESTAMP
+FROM playlist_watch_preferences preference,
+     json_each(CASE
+         WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
+             THEN preference.sync_targets_json
+         ELSE json_array(preference.service)
+     END) configured
+WHERE preference.source=@source AND preference.source_id=@playlistId
+  AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
 ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
  attempt_count=0, status='pending', lease_owner=NULL, lease_until_utc=NULL,
  next_attempt_utc=CURRENT_TIMESTAMP, last_error=NULL, updated_at=CURRENT_TIMESTAMP
@@ -10366,9 +10359,9 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
-        var jobs = new List<WatchlistSyncJobDto>(1);
+        var jobs = new List<WatchlistSyncJobDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (await reader.ReadAsync(cancellationToken))
+        while (await reader.ReadAsync(cancellationToken))
         {
             jobs.Add(await ReadWatchlistSyncJobAsync(reader, cancellationToken));
         }
@@ -10380,19 +10373,16 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
 INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc)
-SELECT pw.source, pw.source_id, 'playlist', 'all', 'pending', CURRENT_TIMESTAMP
+SELECT pw.source, pw.source_id, 'playlist', lower(trim(configured.value)), 'pending', CURRENT_TIMESTAMP
 FROM playlist_watchlist pw
-WHERE EXISTS (
-    SELECT 1
-    FROM playlist_watch_preferences preference,
-         json_each(CASE
-             WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
-                 THEN preference.sync_targets_json
-             ELSE json_array(preference.service)
-         END) configured
-    WHERE preference.source=pw.source AND preference.source_id=pw.source_id
-      AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
-)
+JOIN playlist_watch_preferences preference
+  ON preference.source=pw.source AND preference.source_id=pw.source_id
+JOIN json_each(CASE
+    WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
+        THEN preference.sync_targets_json
+    ELSE json_array(preference.service)
+END) configured
+WHERE lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
 ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
  attempt_count=0, status='pending', lease_owner=NULL, lease_until_utc=NULL,
  next_attempt_utc=CURRENT_TIMESTAMP, last_error=NULL, updated_at=CURRENT_TIMESTAMP;", connection);
@@ -10641,19 +10631,16 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         deleteJob.Parameters.AddWithValue("id", job.Id);
         deleteJob.Parameters.AddWithValue("leaseOwner", leaseOwner);
         var deleted = await deleteJob.ExecuteNonQueryAsync(cancellationToken) > 0;
-        if (deleted)
+        if (deleted && !string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase))
         {
-            if (!string.Equals(job.TargetService, "all", StringComparison.OrdinalIgnoreCase))
-            {
-                await using var deleteMembership = new SqliteCommand(@"
+            await using var deleteMembership = new SqliteCommand(@"
 DELETE FROM playlist_watch_target_membership
 WHERE source=@source AND source_id=@sourceId AND track_source_id=@trackId AND lower(target_service)=@target;", connection, transaction);
-                deleteMembership.Parameters.AddWithValue(SourceField, job.Source);
-                deleteMembership.Parameters.AddWithValue(SourceIdField, job.PlaylistId);
-                deleteMembership.Parameters.AddWithValue("trackId", job.TrackId);
-                deleteMembership.Parameters.AddWithValue("target", job.TargetService.Trim().ToLowerInvariant());
-                await deleteMembership.ExecuteNonQueryAsync(cancellationToken);
-            }
+            deleteMembership.Parameters.AddWithValue(SourceField, job.Source);
+            deleteMembership.Parameters.AddWithValue(SourceIdField, job.PlaylistId);
+            deleteMembership.Parameters.AddWithValue("trackId", job.TrackId);
+            deleteMembership.Parameters.AddWithValue("target", job.TargetService.Trim().ToLowerInvariant());
+            await deleteMembership.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
         return deleted;
@@ -12401,6 +12388,26 @@ LIMIT 100;";
         {
             results[index] = (await ResolveLocalTrackIdentityAsync(
                 inputs[index], cancellationToken: cancellationToken)).Exists;
+        }
+
+        return results;
+    }
+
+    public async Task<IReadOnlyList<LocalTrackIdentityResult>> ResolveLocalTrackIdentitiesAsync(
+        IReadOnlyList<LibraryExistenceInput> inputs,
+        CancellationToken cancellationToken = default)
+    {
+        if (inputs.Count == 0)
+        {
+            return Array.Empty<LocalTrackIdentityResult>();
+        }
+
+        var results = new LocalTrackIdentityResult[inputs.Count];
+        for (var index = 0; index < inputs.Count; index++)
+        {
+            results[index] = await ResolveLocalTrackIdentityAsync(
+                inputs[index],
+                cancellationToken: cancellationToken);
         }
 
         return results;

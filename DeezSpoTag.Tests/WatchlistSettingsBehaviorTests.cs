@@ -903,7 +903,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("HasWatchlistReconciliationRequestAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("request.TargetService", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("target_service', 'all'", File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs")), StringComparison.Ordinal);
     }
 
     [Fact]

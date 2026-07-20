@@ -50,15 +50,17 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     [Fact]
     public void WatchlistQueueing_UsesStrictExecutionGateForAdmission()
     {
-        var source = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
+        var watchSource = ReadSource("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
+        var coordinatorSource = ReadSource("DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs");
 
-        Assert.Contains("EvaluateQueueGateAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EvaluateQueueGateAsync", coordinatorSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("EvaluateQueueGateAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains(
             "HasActiveDownloadPipelineAsync",
             ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs"),
             StringComparison.Ordinal);
-        Assert.Contains("intentService.EnqueueAsync", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("intentService.EnqueueManualAsync", source, StringComparison.Ordinal);
+        Assert.Contains("intentService.EnqueueAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("intentService.EnqueueManualAsync", watchSource, StringComparison.Ordinal);
     }
 
     [Fact]
