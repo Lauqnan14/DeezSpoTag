@@ -11,16 +11,48 @@ public sealed class MelodayGuardrailTests
     public void Meloday_Service_Syncs_All_Configured_Targets_Including_Navidrome()
     {
         var source = ReadMelodayService();
+        var playlistSync = ReadPlaylistSyncService();
 
         Assert.Contains("ResolveTargetServers", source, StringComparison.Ordinal);
         Assert.Contains("ResolveTargetServers(auth, selectedServers)", source, StringComparison.Ordinal);
         Assert.Contains("MelodayTargetServers.Normalize(effective.TargetServers", source, StringComparison.Ordinal);
         Assert.Contains("auth.Navidrome", source, StringComparison.Ordinal);
-        Assert.Contains("SyncMelodayToNavidromeAsync", source, StringComparison.Ordinal);
-        Assert.Contains("foreach (var target in context.TargetServers)", source, StringComparison.Ordinal);
-        Assert.Contains("HasCompleteTargetResolution", source, StringComparison.Ordinal);
-        Assert.Contains("canonical library tracks resolved on that server", source, StringComparison.Ordinal);
+        Assert.Contains("SyncGeneratedLocalPlaylistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("context.TargetServers.Select(static target => target.Service)", source, StringComparison.Ordinal);
+        Assert.Contains("BuildStableMelodayPlaylistPrefix(optionsForTitle.PlaylistPrefix, context.Library.Name, mode)", source, StringComparison.Ordinal);
+        Assert.Contains("private static string BuildStableMelodayPlaylistPrefix", source, StringComparison.Ordinal);
+        Assert.Contains("SyncGeneratedLocalPlaylistToTargetAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("SyncGeneratedLocalPlaylistToPlexAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("SyncGeneratedLocalPlaylistToJellyfinAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("SyncGeneratedLocalPlaylistToNavidromeAsync", playlistSync, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncMelodayToNavidromeAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasCompleteTargetResolution", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("canonical library tracks resolved on that server", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Plex or Jellyfin auth missing.", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Meloday_Generated_Playlist_Sync_Uses_Single_PlaylistSyncService_Path_Without_Watchlist_Membership()
+    {
+        var source = ReadMelodayService();
+        var playlistSync = ReadPlaylistSyncService();
+        var generatedSyncBody = ExtractMethodBody(playlistSync, "public async Task<GeneratedLocalPlaylistSyncResult> SyncGeneratedLocalPlaylistAsync");
+        var generatedTargetBody = ExtractMethodBody(playlistSync, "private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToTargetAsync");
+        var generatedResultBody = ExtractMethodBody(playlistSync, "private static GeneratedLocalPlaylistTargetResult BuildGeneratedTargetResult");
+
+        Assert.Contains("GeneratedLocalPlaylistSyncRequest", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("GeneratedLocalPlaylistTargetResult", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("GeneratedLocalPlaylistSyncResult", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("PlexService => await SyncGeneratedLocalPlaylistToPlexAsync", generatedTargetBody, StringComparison.Ordinal);
+        Assert.Contains("JellyfinService => await SyncGeneratedLocalPlaylistToJellyfinAsync", generatedTargetBody, StringComparison.Ordinal);
+        Assert.Contains("NavidromeService => await SyncGeneratedLocalPlaylistToNavidromeAsync", generatedTargetBody, StringComparison.Ordinal);
+        Assert.Contains("successful.Count > 0", generatedSyncBody, StringComparison.Ordinal);
+        Assert.Contains("var success = !string.IsNullOrWhiteSpace(playlistId)", generatedResultBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReplacePlaylistWatchTargetMembershipAsync", generatedSyncBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("PersistTargetPlaylistBindingAsync", generatedSyncBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncMelodayToPlexAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncMelodayToJellyfinAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncMelodayToNavidromeAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -203,11 +235,12 @@ public sealed class MelodayGuardrailTests
     public void Meloday_Artwork_Can_Be_Uploaded_From_Local_File_When_BaseUrl_Is_Not_Configured()
     {
         var source = ReadMelodayService();
+        var playlistSync = ReadPlaylistSyncService();
 
         Assert.Contains("GeneratedMelodayCover", source, StringComparison.Ordinal);
         Assert.Contains("TryResolveStaticCoverPath", source, StringComparison.Ordinal);
-        Assert.Contains("UpdatePlaylistPosterFromFileAsync", source, StringComparison.Ordinal);
-        Assert.Contains("UpdateItemPrimaryImageFromFileAsync", source, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistPosterFromFileAsync", playlistSync, StringComparison.Ordinal);
+        Assert.Contains("UpdateItemPrimaryImageFromFileAsync", playlistSync, StringComparison.Ordinal);
         Assert.Contains("images\", \"meloday", source, StringComparison.Ordinal);
         Assert.DoesNotContain("if (string.IsNullOrWhiteSpace(options.BaseUrl))\n        {\n            return null;\n        }", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RenderCoverAsync", source, StringComparison.Ordinal);
@@ -300,6 +333,12 @@ public sealed class MelodayGuardrailTests
     {
         var repoRoot = ResolveRepoRoot();
         return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "MelodayVibeSelector.cs"));
+    }
+
+    private static string ReadPlaylistSyncService()
+    {
+        var repoRoot = ResolveRepoRoot();
+        return File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
     }
 
     private static string ReadTracklistView()

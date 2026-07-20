@@ -42,6 +42,34 @@ public sealed class PlaylistSyncService
         int MetadataMatches,
         int SearchMatches);
 
+    public sealed record GeneratedLocalPlaylistSyncRequest(
+        string PlaylistName,
+        string? Description,
+        string StableTitlePrefix,
+        IReadOnlyList<MixTrackDto> Tracks,
+        IReadOnlyList<string> TargetServices,
+        string? ArtworkFilePath = null,
+        string? ArtworkContentType = null,
+        string? ArtworkUrl = null);
+
+    public sealed record GeneratedLocalPlaylistTargetResult(
+        string Service,
+        bool Success,
+        string Message,
+        string? PlaylistId = null,
+        int SourceTracks = 0,
+        int LocalMatches = 0,
+        int TargetMatches = 0,
+        int MissingTracks = 0);
+
+    public sealed record GeneratedLocalPlaylistSyncResult(
+        bool Success,
+        string Message,
+        IReadOnlyList<GeneratedLocalPlaylistTargetResult> Targets)
+    {
+        public string? FirstPlaylistId => Targets.FirstOrDefault(static target => !string.IsNullOrWhiteSpace(target.PlaylistId))?.PlaylistId;
+    }
+
     private const string SpotifySource = "spotify";
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
@@ -101,6 +129,417 @@ public sealed class PlaylistSyncService
     {
         return SyncPlaylistAsync(playlist, preference, trackCandidates: null, force, cancellationToken);
     }
+
+    public async Task<GeneratedLocalPlaylistSyncResult> SyncGeneratedLocalPlaylistAsync(
+        GeneratedLocalPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var services = NormalizeGeneratedTargetServices(request.TargetServices);
+        if (services.Count == 0)
+        {
+            return new GeneratedLocalPlaylistSyncResult(false, NoTargetServerSelectedMessage, Array.Empty<GeneratedLocalPlaylistTargetResult>());
+        }
+
+        var tracks = request.Tracks
+            .Where(static track => track.TrackId > 0)
+            .Select(static track => new SyncTrackSummary(
+                track.TrackId.ToString(CultureInfo.InvariantCulture),
+                Isrc: null,
+                track.Title,
+                track.ArtistName,
+                track.AlbumTitle,
+                ReleaseDate: null,
+                Explicit: null,
+                Genres: Array.Empty<string>(),
+                track.DurationMs))
+            .ToList();
+        var orderedTrackIds = request.Tracks
+            .Where(static track => track.TrackId > 0)
+            .Select(static track => track.TrackId)
+            .ToList();
+        if (tracks.Count == 0)
+        {
+            var failed = new GeneratedLocalPlaylistTargetResult(
+                "local",
+                false,
+                "Generated playlist has no local tracks to sync.");
+            return new GeneratedLocalPlaylistSyncResult(false, failed.Message, new[] { failed });
+        }
+
+        var results = new List<GeneratedLocalPlaylistTargetResult>(services.Count);
+        foreach (var service in services)
+        {
+            results.Add(await SyncGeneratedLocalPlaylistToTargetAsync(service, request, tracks, orderedTrackIds, cancellationToken));
+        }
+
+        var successful = results.Where(static result => result.Success).ToList();
+        var message = successful.Count == 0
+            ? string.Join(" ", results.Select(static result => result.Message).Where(static message => !string.IsNullOrWhiteSpace(message)))
+            : string.Join(" ", results.Select(static result => result.Message).Where(static message => !string.IsNullOrWhiteSpace(message)));
+        return new GeneratedLocalPlaylistSyncResult(successful.Count > 0, message, results);
+    }
+
+    private static List<string> NormalizeGeneratedTargetServices(IReadOnlyList<string>? targetServices)
+    {
+        var normalized = new List<string>();
+        foreach (var service in targetServices ?? Array.Empty<string>())
+        {
+            var value = (service ?? string.Empty).Trim().ToLowerInvariant();
+            if (value is PlexService or JellyfinService or NavidromeService
+                && !normalized.Contains(value, StringComparer.OrdinalIgnoreCase))
+            {
+                normalized.Add(value);
+            }
+        }
+
+        return normalized;
+    }
+
+    private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToTargetAsync(
+        string service,
+        GeneratedLocalPlaylistSyncRequest request,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        List<long> orderedTrackIds,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return service switch
+            {
+                PlexService => await SyncGeneratedLocalPlaylistToPlexAsync(request, tracks, orderedTrackIds, cancellationToken),
+                JellyfinService => await SyncGeneratedLocalPlaylistToJellyfinAsync(request, tracks, orderedTrackIds, cancellationToken),
+                NavidromeService => await SyncGeneratedLocalPlaylistToNavidromeAsync(request, tracks, orderedTrackIds, cancellationToken),
+                _ => new GeneratedLocalPlaylistTargetResult(service, false, UnsupportedPlaylistSyncTargetMessage)
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Generated local playlist sync failed for target {TargetService}.",
+                service);
+            return new GeneratedLocalPlaylistTargetResult(
+                service,
+                false,
+                $"{FormatGeneratedServiceLabel(service)} failed: {ex.Message}");
+        }
+    }
+
+    private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToPlexAsync(
+        GeneratedLocalPlaylistSyncRequest request,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        List<long> orderedTrackIds,
+        CancellationToken cancellationToken)
+    {
+        var (plex, configurationError) = await TryLoadConfiguredPlexAsync();
+        if (configurationError is not null || plex is null)
+        {
+            return new GeneratedLocalPlaylistTargetResult(PlexService, false, configurationError?.Message ?? PlexNotConfiguredMessage);
+        }
+
+        var matchSummary = await ResolvePlexRatingKeysAsync(plex, tracks, orderedTrackIds, cancellationToken);
+        if (matchSummary.TargetIds.Count == 0)
+        {
+            return BuildGeneratedTargetResult(PlexService, null, "Plex skipped: no target tracks resolved.", matchSummary);
+        }
+
+        var playlistId = await _plexApiClient.CreateOrUpdatePlaylistAsync(
+            plex.Url,
+            plex.Token,
+            plex.MachineIdentifier,
+            request.PlaylistName,
+            matchSummary.TargetIds,
+            options: new PlexApiClient.PlaylistUpsertOptions(
+                ExistingTitlePrefix: request.StableTitlePrefix),
+            cancellationToken: cancellationToken);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return BuildGeneratedTargetResult(PlexService, null, "Plex failed to create or update playlist.", matchSummary);
+        }
+
+        await _plexApiClient.UpdatePlaylistMetadataAsync(
+            plex.Url,
+            plex.Token,
+            playlistId,
+            request.PlaylistName,
+            request.Description,
+            cancellationToken);
+        await SyncGeneratedPlexArtworkAsync(plex, playlistId, request, cancellationToken);
+        return BuildGeneratedTargetResult(PlexService, playlistId, "Plex synced generated playlist.", matchSummary);
+    }
+
+    private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToJellyfinAsync(
+        GeneratedLocalPlaylistSyncRequest request,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        List<long> orderedTrackIds,
+        CancellationToken cancellationToken)
+    {
+        var (jellyfin, configurationError) = await TryLoadConfiguredJellyfinAsync();
+        if (configurationError is not null || jellyfin is null)
+        {
+            return new GeneratedLocalPlaylistTargetResult(JellyfinService, false, configurationError?.Message ?? JellyfinNotConfiguredMessage);
+        }
+
+        var jellyfinMatches = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, orderedTrackIds, cancellationToken);
+        var itemIds = jellyfinMatches.Select(static item => item.TargetItemId).ToList();
+        var matchSummary = BuildGeneratedMatchSummary(tracks, orderedTrackIds, itemIds, jellyfinMatches);
+        if (itemIds.Count == 0)
+        {
+            return BuildGeneratedTargetResult(JellyfinService, null, "Jellyfin skipped: no target tracks resolved.", matchSummary);
+        }
+
+        var playlistId = await FindGeneratedJellyfinPlaylistIdAsync(jellyfin, request, cancellationToken);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            playlistId = await _jellyfinApiClient.CreatePlaylistAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                request.PlaylistName,
+                itemIds,
+                cancellationToken);
+        }
+        else
+        {
+            var syncItemsResult = await SyncExistingJellyfinPlaylistItemsAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                playlistId,
+                itemIds,
+                appendMissingOnly: false,
+                cancellationToken);
+            if (!syncItemsResult.Success)
+            {
+                return BuildGeneratedTargetResult(
+                    JellyfinService,
+                    null,
+                    syncItemsResult.ErrorMessage ?? "Jellyfin failed to sync generated playlist items.",
+                    matchSummary);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return BuildGeneratedTargetResult(JellyfinService, null, "Jellyfin failed to create generated playlist.", matchSummary);
+        }
+
+        await _jellyfinApiClient.UpdateItemMetadataAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            jellyfin.UserId,
+            playlistId,
+            request.PlaylistName,
+            request.Description,
+            cancellationToken);
+        await SyncGeneratedJellyfinArtworkAsync(jellyfin, playlistId, request, cancellationToken);
+        return BuildGeneratedTargetResult(JellyfinService, playlistId, "Jellyfin synced generated playlist.", matchSummary);
+    }
+
+    private async Task<GeneratedLocalPlaylistTargetResult> SyncGeneratedLocalPlaylistToNavidromeAsync(
+        GeneratedLocalPlaylistSyncRequest request,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        List<long> orderedTrackIds,
+        CancellationToken cancellationToken)
+    {
+        var (navidrome, configurationError) = await TryLoadConfiguredNavidromeAsync();
+        if (configurationError is not null || navidrome is null)
+        {
+            return new GeneratedLocalPlaylistTargetResult(NavidromeService, false, configurationError?.Message ?? NavidromeNotConfiguredMessage);
+        }
+
+        var navidromeMatches = await ResolveNavidromeItemIdsAsync(navidrome, tracks, orderedTrackIds, cancellationToken);
+        var itemIds = navidromeMatches.Select(static item => item.TargetItemId).ToList();
+        var matchSummary = BuildGeneratedMatchSummary(tracks, orderedTrackIds, itemIds, navidromeMatches);
+        if (itemIds.Count == 0)
+        {
+            return BuildGeneratedTargetResult(NavidromeService, null, "Navidrome skipped: no target tracks resolved.", matchSummary);
+        }
+
+        var existingPlaylistId = await FindGeneratedNavidromePlaylistIdAsync(navidrome, request, cancellationToken);
+        var playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
+            navidrome.Url,
+            navidrome.Username,
+            navidrome.Password,
+            request.PlaylistName,
+            itemIds,
+            existingPlaylistId,
+            appendMissingOnly: false,
+            cancellationToken,
+            request.Description);
+        return BuildGeneratedTargetResult(
+            NavidromeService,
+            playlistId,
+            string.IsNullOrWhiteSpace(playlistId)
+                ? "Navidrome failed to create or update generated playlist."
+                : "Navidrome synced generated playlist.",
+            matchSummary);
+    }
+
+    private async Task<string?> FindGeneratedJellyfinPlaylistIdAsync(
+        JellyfinConnection jellyfin,
+        GeneratedLocalPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        var stableTitlePrefix = request.StableTitlePrefix.Trim();
+        if (!string.IsNullOrWhiteSpace(stableTitlePrefix))
+        {
+            var existing = (await _jellyfinApiClient.GetPlaylistsAsync(
+                    jellyfin.Url,
+                    jellyfin.ApiKey,
+                    jellyfin.UserId,
+                    cancellationToken))
+                .FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+                    && !string.IsNullOrWhiteSpace(playlist.Name)
+                    && playlist.Name.StartsWith(stableTitlePrefix, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(existing?.Id))
+            {
+                return existing.Id;
+            }
+        }
+
+        return await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            jellyfin.UserId,
+            request.PlaylistName,
+            cancellationToken);
+    }
+
+    private async Task<string?> FindGeneratedNavidromePlaylistIdAsync(
+        NavidromeConnection navidrome,
+        GeneratedLocalPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        var stableTitlePrefix = request.StableTitlePrefix.Trim();
+        if (!string.IsNullOrWhiteSpace(stableTitlePrefix))
+        {
+            var existing = (await _navidromeApiClient.GetPlaylistsAsync(
+                    navidrome.Url,
+                    navidrome.Username,
+                    navidrome.Password,
+                    cancellationToken))
+                .FirstOrDefault(playlist => !string.IsNullOrWhiteSpace(playlist.Id)
+                    && !string.IsNullOrWhiteSpace(playlist.Name)
+                    && playlist.Name.StartsWith(stableTitlePrefix, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(existing?.Id))
+            {
+                return existing.Id;
+            }
+        }
+
+        return await _navidromeApiClient.FindPlaylistIdByNameAsync(
+            navidrome.Url,
+            navidrome.Username,
+            navidrome.Password,
+            request.PlaylistName,
+            cancellationToken);
+    }
+
+    private async Task SyncGeneratedPlexArtworkAsync(
+        PlexConnection plex,
+        string playlistId,
+        GeneratedLocalPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(request.ArtworkFilePath) && File.Exists(request.ArtworkFilePath))
+        {
+            await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                request.ArtworkFilePath,
+                request.ArtworkContentType,
+                cancellationToken);
+            return;
+        }
+
+        if (IsAbsoluteHttpUrl(request.ArtworkUrl))
+        {
+            await _plexApiClient.UpdatePlaylistPosterFromUrlAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                request.ArtworkUrl!,
+                cancellationToken);
+        }
+    }
+
+    private async Task SyncGeneratedJellyfinArtworkAsync(
+        JellyfinConnection jellyfin,
+        string playlistId,
+        GeneratedLocalPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(request.ArtworkFilePath) && File.Exists(request.ArtworkFilePath))
+        {
+            await _jellyfinApiClient.UpdateItemPrimaryImageFromFileAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                request.ArtworkFilePath,
+                request.ArtworkContentType,
+                cancellationToken);
+            return;
+        }
+
+        if (IsAbsoluteHttpUrl(request.ArtworkUrl))
+        {
+            await _jellyfinApiClient.UpdateItemPrimaryImageFromUrlAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                playlistId,
+                request.ArtworkUrl!,
+                cancellationToken);
+        }
+    }
+
+    private static SyncMatchSummary BuildGeneratedMatchSummary(
+        IReadOnlyList<SyncTrackSummary> tracks,
+        IReadOnlyList<long> orderedTrackIds,
+        List<string> targetIds,
+        List<PlaylistWatchTargetMembership> memberships)
+        => new(
+            targetIds,
+            memberships,
+            SourceTracks: tracks.Count,
+            LocalMatches: orderedTrackIds.Count(static id => id > 0),
+            TargetMatches: targetIds.Count,
+            MissingTracks: Math.Max(0, tracks.Count - targetIds.Count),
+            MetadataMatches: 0,
+            SearchMatches: targetIds.Count);
+
+    private static GeneratedLocalPlaylistTargetResult BuildGeneratedTargetResult(
+        string service,
+        string? playlistId,
+        string baseMessage,
+        SyncMatchSummary matchSummary)
+    {
+        var success = !string.IsNullOrWhiteSpace(playlistId);
+        return new GeneratedLocalPlaylistTargetResult(
+            service,
+            success,
+            BuildSyncMessage(baseMessage, matchSummary),
+            playlistId,
+            matchSummary.SourceTracks,
+            matchSummary.LocalMatches,
+            matchSummary.TargetMatches,
+            matchSummary.MissingTracks);
+    }
+
+    private static string FormatGeneratedServiceLabel(string service)
+        => service switch
+        {
+            PlexService => "Plex",
+            JellyfinService => "Jellyfin",
+            NavidromeService => "Navidrome",
+            _ => string.IsNullOrWhiteSpace(service) ? "Target" : service
+        };
 
     public sealed record PlaylistMergeSourceInput(
         PlaylistWatchlistDto Playlist,
