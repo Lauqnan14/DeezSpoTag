@@ -84,7 +84,9 @@ public sealed class EngineFallbackSearchService
         EngineFallbackSearchRequest request,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(request.SourceUrl) && IsServiceUrlMatch(request.SourceUrl, request.Engine))
+        if (!string.IsNullOrWhiteSpace(request.SourceUrl)
+            && IsServiceUrlMatch(request.SourceUrl, request.Engine)
+            && !string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase))
         {
             return new EngineFallbackSearchResult(request.SourceUrl, "same-engine-url");
         }
@@ -101,13 +103,6 @@ public sealed class EngineFallbackSearchService
             && !string.IsNullOrWhiteSpace(qobuzId))
         {
             return new EngineFallbackSearchResult($"https://play.qobuz.com/track/{qobuzId}", "qobuz-id");
-        }
-
-        var tidalId = EngineLinkParser.NormalizeNumericTrackId(request.TidalId);
-        if (string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(tidalId))
-        {
-            return new EngineFallbackSearchResult($"https://tidal.com/browse/track/{tidalId}", "tidal-id");
         }
 
         var amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.AmazonId);
@@ -226,12 +221,15 @@ public sealed class EngineFallbackSearchService
             return atmosTrack?.Url;
         }
 
-        return await _tidalDownloadService.ResolveTrackUrlAsync(
-                request.Title,
-                request.Artist,
-                request.Isrc ?? string.Empty,
-                durationSeconds,
-                cancellationToken);
+        return await _tidalDownloadService.ResolveTrackUrlForQualityAsync(
+            !string.IsNullOrWhiteSpace(request.TidalId) ? request.TidalId : request.SourceUrl,
+            request.Title,
+            request.Artist,
+            request.Album,
+            request.Isrc ?? string.Empty,
+            durationSeconds,
+            request.Quality,
+            cancellationToken);
     }
 
     private static bool IsAtmosRequest(EngineFallbackSearchRequest request)

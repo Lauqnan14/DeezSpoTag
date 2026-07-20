@@ -63,6 +63,31 @@ public sealed class FallbackFailureClassificationGuardrailTests
         Assert.DoesNotContain("SecondaryFallback", coordinator, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void TidalFallback_DoesNotBlindlyTrustPersistedTidalId()
+    {
+        var fallbackSearch = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackSearchService.cs");
+        var tidal = ReadSource("DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs");
+
+        Assert.DoesNotContain("tidal-id", fallbackSearch, StringComparison.Ordinal);
+        Assert.DoesNotContain("$\"https://tidal.com/browse/track/{tidalId}\"", fallbackSearch, StringComparison.Ordinal);
+        Assert.Contains("ResolveTrackUrlForQualityAsync", fallbackSearch, StringComparison.Ordinal);
+        Assert.Contains("TidalTrackCanSatisfyQuality", tidal, StringComparison.Ordinal);
+        Assert.Contains("MediaMetadata?.Tags", tidal, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FallbackExhaustionMessage_ReportsRecordedStepOutcomes()
+    {
+        var coordinator = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs");
+
+        Assert.Contains("BuildFallbackExhaustionDetail", coordinator, StringComparison.Ordinal);
+        Assert.Contains("Fallback outcomes:", coordinator, StringComparison.Ordinal);
+        Assert.Contains("payload.FallbackHistory", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tried enabled fallback steps:", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasLaterDistinctEngineStep", coordinator, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

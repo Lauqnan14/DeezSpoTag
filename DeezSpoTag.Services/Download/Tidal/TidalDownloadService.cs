@@ -202,6 +202,69 @@ public sealed class TidalDownloadService
         }
     }
 
+    public async Task<string?> ResolveTrackUrlForQualityAsync(
+        string? tidalIdOrUrl,
+        string trackTitle,
+        string artistName,
+        string albumName,
+        string isrc,
+        int expectedDuration,
+        string requestedQuality,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var normalizedId = EngineLinkParser.NormalizeNumericTrackId(tidalIdOrUrl)
+                ?? EngineLinkParser.TryExtractTidalTrackId(tidalIdOrUrl);
+            if (long.TryParse(normalizedId, out var persistedTrackId) && persistedTrackId > 0)
+            {
+                var persistedTrack = await GetTrackInfoByIdAsync(persistedTrackId, cancellationToken);
+                var validation = ValidateResolvedTrack(
+                    persistedTrack,
+                    trackTitle,
+                    artistName,
+                    NormalizeUsableAlbum(albumName) ?? string.Empty,
+                    isrc,
+                    expectedDuration);
+                if (validation.Accepted && TidalTrackCanSatisfyQuality(persistedTrack, requestedQuality))
+                {
+                    return BuildTidalTrackListenUrl(persistedTrack.Id);
+                }
+
+                _logger.LogWarning(
+                    "Persisted Tidal identity {TrackId} rejected for {Title} - {Artist}: validation={Reason}, requestedQuality={Quality}, trackQuality={TrackQuality}, tags={Tags}",
+                    persistedTrackId,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName),
+                    validation.Accepted ? "quality_mismatch" : validation.Reason,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(requestedQuality),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(persistedTrack.AudioQuality),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.MediaMetadata?.Tags ?? [])));
+            }
+
+            var trackInfo = await SearchTrackByMetadataWithIsrcForQualityAsync(
+                trackTitle,
+                artistName,
+                albumName,
+                isrc,
+                expectedDuration,
+                requestedQuality,
+                cancellationToken);
+            return trackInfo == null || trackInfo.Id <= 0
+                ? null
+                : BuildTidalTrackListenUrl(trackInfo.Id);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Tidal quality-aware metadata resolution failed for {Title} - {Artist}",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName));
+            return null;
+        }
+    }
+
     public async Task<bool> ValidateTrackUrlAsync(
         string tidalUrl,
         string trackTitle,
@@ -493,6 +556,61 @@ public sealed class TidalDownloadService
         throw new InvalidOperationException("No validated Tidal track match found");
     }
 
+    private async Task<TidalTrack> SearchTrackByMetadataWithIsrcForQualityAsync(
+        string trackName,
+        string artistName,
+        string albumName,
+        string isrc,
+        int expectedDuration,
+        string requestedQuality,
+        CancellationToken cancellationToken)
+    {
+        var sourceAlbum = NormalizeUsableAlbum(albumName);
+        var candidates = new List<TidalTrack>();
+        candidates.AddRange(await SearchTracksByIsrcAsync(isrc, 25, cancellationToken));
+
+        var queries = BuildSearchQueries(trackName, artistName);
+        var seenQueries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var query in queries)
+        {
+            if (seenQueries.Add(query))
+            {
+                candidates.AddRange(await SearchTracksAsync(query, 50, cancellationToken));
+            }
+        }
+
+        var qualityCandidates = candidates
+            .Where(track => track.Id > 0)
+            .GroupBy(static track => track.Id)
+            .Select(static group => group.First())
+            .Where(track => TidalTrackCanSatisfyQuality(track, requestedQuality))
+            .ToList();
+        if (qualityCandidates.Count == 0)
+        {
+            throw new InvalidOperationException("No Tidal track candidate can satisfy the requested quality.");
+        }
+
+        var isrcMatch = FindIsrcMatch(qualityCandidates, isrc, sourceAlbum);
+        if (isrcMatch != null)
+        {
+            return isrcMatch;
+        }
+
+        var validatedMatch = FindValidatedMetadataMatch(
+            qualityCandidates,
+            trackName,
+            artistName,
+            sourceAlbum,
+            isrc,
+            expectedDuration);
+        if (validatedMatch != null)
+        {
+            return validatedMatch;
+        }
+
+        throw new InvalidOperationException("No validated quality-compatible Tidal track match found");
+    }
+
     private async Task<TidalTrack> SearchAtmosTrackByMetadataWithIsrcAsync(
         string trackName,
         string artistName,
@@ -549,6 +667,41 @@ public sealed class TidalDownloadService
         return track.AudioModes?.Any(static mode =>
             string.Equals(mode, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)) == true;
     }
+
+    private static bool TidalTrackCanSatisfyQuality(TidalTrack track, string? requestedQuality)
+    {
+        var requested = TidalStereoQuality.Normalize(requestedQuality);
+        if (requested == TidalStereoQualityTier.DolbyAtmos)
+        {
+            return HasTidalAtmosMode(track);
+        }
+
+        var tags = track.MediaMetadata?.Tags ?? [];
+        var hasHiRes = tags.Any(IsTidalHiResTag);
+        var hasLossless = hasHiRes || tags.Any(IsTidalLosslessTag)
+            || string.Equals(track.AudioQuality, TidalStereoQuality.CdLossless, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(track.AudioQuality, TidalStereoQuality.HiRes, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(track.AudioQuality, TidalStereoQuality.MaxHiRes, StringComparison.OrdinalIgnoreCase);
+
+        return requested switch
+        {
+            TidalStereoQualityTier.HiRes or TidalStereoQualityTier.MaxHiRes => hasHiRes,
+            TidalStereoQualityTier.CdLossless => hasLossless,
+            TidalStereoQualityTier.High => string.Equals(track.AudioQuality, TidalStereoQuality.High, StringComparison.OrdinalIgnoreCase)
+                                           || hasLossless,
+            TidalStereoQualityTier.Low => !string.IsNullOrWhiteSpace(track.AudioQuality),
+            _ => true
+        };
+    }
+
+    private static bool IsTidalHiResTag(string? tag)
+        => string.Equals(tag, "HIRES_LOSSLESS", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(tag, "HI_RES_LOSSLESS", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(tag, "FLAC_HIRES", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTidalLosslessTag(string? tag)
+        => string.Equals(tag, "LOSSLESS", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(tag, "HIGH_LOSSLESS", StringComparison.OrdinalIgnoreCase);
 
     private async Task<List<TidalTrack>> HydrateTidalAtmosCandidatesAsync(
         IEnumerable<TidalTrack> tracks,
@@ -3107,6 +3260,9 @@ public sealed class TidalDownloadService
         [JsonPropertyName("duration")]
         public int Duration { get; set; }
 
+        [JsonPropertyName("audioQuality")]
+        public string AudioQuality { get; set; } = "";
+
         [JsonPropertyName("artist")]
         public TidalArtist? Artist { get; set; }
 
@@ -3118,6 +3274,15 @@ public sealed class TidalDownloadService
 
         [JsonPropertyName("audioModes")]
         public List<string>? AudioModes { get; set; }
+
+        [JsonPropertyName("mediaMetadata")]
+        public TidalMediaMetadata? MediaMetadata { get; set; }
+    }
+
+    private sealed class TidalMediaMetadata
+    {
+        [JsonPropertyName("tags")]
+        public List<string> Tags { get; set; } = new();
     }
 
     private sealed class TidalArtist

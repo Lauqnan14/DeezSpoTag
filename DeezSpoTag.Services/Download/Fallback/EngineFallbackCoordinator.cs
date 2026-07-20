@@ -378,40 +378,40 @@ public sealed class EngineFallbackCoordinator
         object payloadForSerialization,
         CancellationToken cancellationToken)
     {
-        if (!HasLaterDistinctEngineStep(planSteps, request.CurrentEngine, nextIndex))
-        {
-            return;
-        }
-
-        var triedSteps = planSteps
-            .Skip(Math.Max(0, nextIndex))
-            .Select(step => string.IsNullOrWhiteSpace(step.Quality)
-                ? step.Source
-                : $"{step.Source} {step.Quality}")
-            .ToList();
-        var detail = triedSteps.Count == 0
-            ? "No later enabled fallback source remained in the queue plan."
-            : $"Tried enabled fallback steps: {string.Join(", ", triedSteps)}.";
+        var detail = BuildFallbackExhaustionDetail(planSteps, nextIndex, payloadForSerialization);
         var message = $"Enabled fallback sources could not resolve this track after {request.CurrentEngine} failed. {detail}";
         SetResolutionError(payloadForSerialization, message);
         var json = System.Text.Json.JsonSerializer.Serialize(payloadForSerialization);
         await _queueRepository.UpdatePayloadAsync(request.QueueUuid, json, cancellationToken);
     }
 
-    private static bool HasLaterDistinctEngineStep(
+    private static string BuildFallbackExhaustionDetail(
         List<(string Source, string? Quality)> planSteps,
-        string currentEngine,
-        int nextIndex)
+        int nextIndex,
+        object payloadForSerialization)
     {
-        for (var index = Math.Max(0, nextIndex); index < planSteps.Count; index++)
+        if (payloadForSerialization is EngineQueueItemBase { FallbackHistory.Count: > 0 } payload)
         {
-            if (!string.Equals(planSteps[index].Source, currentEngine, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
+            var attempts = payload.FallbackHistory
+                .Select(attempt => string.IsNullOrWhiteSpace(attempt.Detail)
+                    ? $"{attempt.StepId}: {attempt.Status} ({attempt.ErrorClass})"
+                    : $"{attempt.Detail} [{attempt.Status}/{attempt.ErrorClass}]")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return attempts.Count == 0
+                ? "No enabled fallback step produced a downloadable source."
+                : $"Fallback outcomes: {string.Join("; ", attempts)}.";
         }
 
-        return false;
+        var remainingSteps = planSteps
+            .Skip(Math.Max(0, nextIndex))
+            .Select(step => string.IsNullOrWhiteSpace(step.Quality)
+                ? step.Source
+                : $"{step.Source} {step.Quality}")
+            .ToList();
+        return remainingSteps.Count == 0
+            ? "No enabled fallback step produced a downloadable source."
+            : $"Remaining enabled fallback steps were unresolved: {string.Join(", ", remainingSteps)}.";
     }
 
     private static void AddFallbackAttempt(
