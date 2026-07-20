@@ -6407,8 +6407,8 @@ WHERE id = @artistId;";
     {
         var safeLimit = Math.Clamp(limit, 1, 1000);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        const string sql = @"
-SELECT DISTINCT
+        var sql = $@"
+SELECT
        a.id,
        a.name,
        a.apple_biography,
@@ -12080,7 +12080,8 @@ SELECT f.root_path, af.relative_path, af.path
         long? LocalTrackId,
         string MatchType,
         string Reason,
-        IReadOnlyList<long> CandidateTrackIds)
+        IReadOnlyList<long> CandidateTrackIds,
+        int? BestQualityRank = null)
     {
         public bool Exists => LocalTrackId.HasValue || CandidateTrackIds.Count > 0;
         public bool IsAmbiguous => string.Equals(MatchType, "ambiguous", StringComparison.Ordinal);
@@ -12092,7 +12093,60 @@ SELECT f.root_path, af.relative_path, af.path
         string Artist,
         string Album,
         int? DurationMs,
-        int? QualityRank);
+        int QualityRank,
+        int MetadataRichness);
+
+    private const string LocalTrackCandidateQualitySql = @"
+MAX(COALESCE(
+    af.quality_rank,
+    CASE
+        WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 5
+        WHEN COALESCE(af.bits_per_sample, 0) >= 24 OR COALESCE(af.sample_rate_hz, 0) > 48000 THEN 4
+        WHEN COALESCE(af.bits_per_sample, 0) >= 16
+          OR LOWER(COALESCE(af.codec, '')) LIKE '%flac%'
+          OR LOWER(COALESCE(af.codec, '')) LIKE '%alac%'
+          OR LOWER(COALESCE(af.codec, '')) LIKE '%lossless%'
+          OR LOWER(COALESCE(af.codec, '')) LIKE '%pcm%' THEN 3
+        WHEN COALESCE(af.bitrate_kbps, af.bitrate, 0) >= 192 THEN 2
+        ELSE 1
+    END,
+    0))";
+
+    private const string LocalTrackMetadataRichnessSql = @"
+(
+    CASE WHEN NULLIF(TRIM(t.tag_title), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_artist), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_album), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_album_artist), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_version), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_label), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_catalog_number), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN t.tag_bpm IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_key), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN t.tag_track_total IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN COALESCE(t.tag_duration_ms, t.duration_ms) IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN t.tag_year IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN t.tag_track_no IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN t.tag_disc IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_genre), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_isrc), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_release_date), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_publish_date), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_url), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_release_id), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_track_id), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.tag_meta_tagged_date), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.lyrics_status), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.lyrics_type), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.lyrics_unsynced), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.lyrics_synced), '') IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN NULLIF(TRIM(t.metadata_json), '') IS NOT NULL AND TRIM(t.metadata_json) <> '{}' THEN 1 ELSE 0 END +
+    (SELECT COUNT(*) FROM track_genre richness_genre WHERE richness_genre.track_id=t.id) +
+    (SELECT COUNT(*) FROM track_style richness_style WHERE richness_style.track_id=t.id) +
+    (SELECT COUNT(*) FROM track_mood richness_mood WHERE richness_mood.track_id=t.id) +
+    (SELECT COUNT(*) FROM track_remixer richness_remixer WHERE richness_remixer.track_id=t.id) +
+    (SELECT COUNT(*) FROM track_other_tag richness_other WHERE richness_other.track_id=t.id)
+)";
 
     private sealed record LocalTrackBatchLookup(
         int Index,
@@ -12113,6 +12167,9 @@ SELECT f.root_path, af.relative_path, af.path
     private static readonly LocalTrackIdentityResult NoLocalTrackMetadataMatchIdentity =
         new(null, "none", "No local track matched the stored or tagged metadata.", Array.Empty<long>());
 
+    private static bool HasResolvedLocalIdentityDecision(LocalTrackIdentityResult result)
+        => result.LocalTrackId.HasValue || result.IsAmbiguous;
+
     public async Task<LocalTrackIdentityResult> ResolveLocalTrackIdentityAsync(
         LibraryExistenceInput input,
         long? libraryId = null,
@@ -12127,24 +12184,24 @@ SELECT f.root_path, af.relative_path, af.path
 
         var requireAtmosVariant = NormalizeAudioVariantFlag(audioVariant);
         await using var connection = await OpenConnectionAsync(cancellationToken);
-        var exactTrackId = await FindExactLocalTrackByIsrcAsync(
+        var exactIdentity = await FindExactLocalTrackByIsrcAsync(
             connection, input.Isrc, libraryId, folderId, requireAtmosVariant, cancellationToken);
-        if (exactTrackId.HasValue)
+        if (exactIdentity is not null)
         {
-            return new LocalTrackIdentityResult(exactTrackId, "isrc", "Matched the stored ISRC.", new[] { exactTrackId.Value });
+            return exactIdentity;
         }
 
-        exactTrackId = await FindExactLocalTrackIdAsync(
+        exactIdentity = await FindExactLocalTrackIdAsync(
             connection, input.Source, input.SourceId, libraryId, folderId, requireAtmosVariant, cancellationToken);
-        if (exactTrackId.HasValue)
+        if (exactIdentity is not null)
         {
-            return new LocalTrackIdentityResult(exactTrackId, "source_id", "Matched the stored source track ID.", new[] { exactTrackId.Value });
+            return exactIdentity;
         }
 
         return await ResolveLocalTrackByMetadataAsync(connection, input, libraryId, folderId, requireAtmosVariant, cancellationToken);
     }
 
-    private static async Task<long?> FindExactLocalTrackByIsrcAsync(
+    private static async Task<LocalTrackIdentityResult?> FindExactLocalTrackByIsrcAsync(
         SqliteConnection connection,
         string? isrc,
         long? libraryId,
@@ -12158,9 +12215,17 @@ SELECT f.root_path, af.relative_path, af.path
             return null;
         }
 
-        const string sql = @"
-SELECT t.id
+        var sql = $@"
+SELECT t.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title),
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
+       COALESCE(NULLIF(t.tag_album, ''), al.title),
+       COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)),
+       {LocalTrackCandidateQualitySql},
+       {LocalTrackMetadataRichnessSql}
 FROM track t
+JOIN album al ON al.id=t.album_id
+JOIN artist ar ON ar.id=al.artist_id
 JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
@@ -12188,18 +12253,19 @@ WHERE f.enabled = TRUE
           END
       ) = @requireAtmos
   )
-ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
-LIMIT 1;";
+GROUP BY t.id;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("isrc", normalizedIsrc);
         command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+        var candidates = await ReadLocalTrackIdentityCandidatesAsync(command, cancellationToken);
+        return candidates.Count == 0
+            ? null
+            : BuildLocalTrackIdentityResult(candidates.Select(static candidate => (candidate, 0)).ToList(), "isrc", "Matched the stored ISRC.");
     }
 
-    private static async Task<long?> FindExactLocalTrackIdAsync(
+    private static async Task<LocalTrackIdentityResult?> FindExactLocalTrackIdAsync(
         SqliteConnection connection,
         string? source,
         string? sourceId,
@@ -12218,10 +12284,19 @@ LIMIT 1;";
             return null;
         }
 
-        const string sql = @"
-SELECT ts.track_id
+        var sql = $@"
+SELECT t.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title),
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
+       COALESCE(NULLIF(t.tag_album, ''), al.title),
+       COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)),
+       {LocalTrackCandidateQualitySql},
+       {LocalTrackMetadataRichnessSql}
 FROM track_source ts
-JOIN track_local tl ON tl.track_id = ts.track_id
+JOIN track t ON t.id=ts.track_id
+JOIN album al ON al.id=t.album_id
+JOIN artist ar ON ar.id=al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
 JOIN audio_file af ON af.id = tl.audio_file_id
 JOIN folder f ON f.id = af.folder_id
 WHERE f.enabled = TRUE
@@ -12251,16 +12326,17 @@ WHERE f.enabled = TRUE
           END
       ) = @requireAtmos
   )
-ORDER BY af.quality_rank DESC NULLS LAST, ts.track_id DESC
-LIMIT 1;";
+GROUP BY t.id;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue(LibraryIdField, (object?)libraryId ?? DBNull.Value);
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         command.Parameters.AddWithValue(RequireAtmosField, requireAtmosVariant.HasValue ? requireAtmosVariant.Value : (object)DBNull.Value);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null || result == DBNull.Value ? null : Convert.ToInt64(result, CultureInfo.InvariantCulture);
+        var candidates = await ReadLocalTrackIdentityCandidatesAsync(command, cancellationToken);
+        return candidates.Count == 0
+            ? null
+            : BuildLocalTrackIdentityResult(candidates.Select(static candidate => (candidate, 0)).ToList(), "source_id", "Matched the stored source track ID.");
     }
 
     private static async Task<LocalTrackIdentityResult> ResolveLocalTrackByMetadataAsync(
@@ -12276,14 +12352,15 @@ LIMIT 1;";
             return new LocalTrackIdentityResult(null, "none", "Title and artist metadata are required.", Array.Empty<long>());
         }
 
-        const string sql = @"
-SELECT DISTINCT
+        var sql = $@"
+SELECT
        t.id,
        COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
        COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
        COALESCE(NULLIF(t.tag_album, ''), al.title) AS match_album,
-       COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS match_duration_ms,
-       af.quality_rank
+       COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)) AS match_duration_ms,
+       {LocalTrackCandidateQualitySql} AS quality_rank,
+       {LocalTrackMetadataRichnessSql} AS metadata_richness
 FROM track t
 JOIN album al ON al.id = t.album_id
 JOIN artist ar ON ar.id = al.artist_id
@@ -12317,7 +12394,7 @@ WHERE f.enabled = TRUE
           END
       ) = @requireAtmos
   )
-ORDER BY af.quality_rank DESC NULLS LAST, t.id DESC
+GROUP BY t.id
 LIMIT 100;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(ArtistSearchParameter, artistSearch);
@@ -12335,7 +12412,8 @@ LIMIT 100;";
                 await ReadNullableStringAsync(reader, 2, cancellationToken) ?? string.Empty,
                 await ReadNullableStringAsync(reader, 3, cancellationToken) ?? string.Empty,
                 await ReadNullableIntAsync(reader, 4, cancellationToken),
-                await ReadNullableIntAsync(reader, 5, cancellationToken));
+                await ReadNullableIntAsync(reader, 5, cancellationToken) ?? 0,
+                await ReadNullableIntAsync(reader, 6, cancellationToken) ?? 0);
 
             if (!TryScoreLocalTrackMetadataCandidate(input, trackTitle, artistName, candidate, out var score))
             {
@@ -12380,34 +12458,68 @@ LIMIT 100;";
             score += difference <= 2000 ? 75 : difference <= 10000 ? 25 : 0;
         }
 
-        score += Math.Clamp(candidate.QualityRank ?? 0, 0, 100);
         return true;
     }
 
     private static LocalTrackIdentityResult BuildLocalTrackMetadataIdentityResult(
         IReadOnlyList<(LocalTrackMetadataCandidate Candidate, int Score)> scored)
+        => BuildLocalTrackIdentityResult(scored, null, null);
+
+    private static LocalTrackIdentityResult BuildLocalTrackIdentityResult(
+        IReadOnlyList<(LocalTrackMetadataCandidate Candidate, int Score)> scored,
+        string? exactMatchType,
+        string? exactReason)
     {
         var ordered = scored
             .OrderByDescending(static item => item.Score)
             .ThenByDescending(static item => item.Candidate.QualityRank)
+            .ThenByDescending(static item => item.Candidate.MetadataRichness)
             .ToList();
         var best = ordered[0];
         var competing = ordered
-            .Where(item => item.Score == best.Score)
+            .Where(item => item.Score == best.Score
+                && item.Candidate.QualityRank == best.Candidate.QualityRank
+                && item.Candidate.MetadataRichness == best.Candidate.MetadataRichness)
             .Select(static item => item.Candidate.TrackId)
             .Distinct()
             .ToArray();
         if (competing.Length > 1)
         {
             return new LocalTrackIdentityResult(
-                null, "ambiguous", "Multiple local files match the playlist metadata equally.", competing);
+                null,
+                "ambiguous",
+                "Multiple local files have equal identity confidence, audio quality, and metadata completeness.",
+                competing,
+                best.Candidate.QualityRank);
         }
 
         return new LocalTrackIdentityResult(
             best.Candidate.TrackId,
-            best.Score >= 1100 ? "metadata_exact" : "metadata_equivalent",
-            "Matched the stored and tagged title, artist, album, and duration metadata.",
-            new[] { best.Candidate.TrackId });
+            exactMatchType ?? (best.Score >= 1100 ? "metadata_exact" : "metadata_equivalent"),
+            exactReason ?? "Matched the stored and tagged title, artist, album, and duration metadata.",
+            new[] { best.Candidate.TrackId },
+            best.Candidate.QualityRank);
+    }
+
+    private static async Task<List<LocalTrackMetadataCandidate>> ReadLocalTrackIdentityCandidatesAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        var candidates = new List<LocalTrackMetadataCandidate>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            candidates.Add(new LocalTrackMetadataCandidate(
+                reader.GetInt64(0),
+                await ReadNullableStringAsync(reader, 1, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 2, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 3, cancellationToken) ?? string.Empty,
+                await ReadNullableIntAsync(reader, 4, cancellationToken),
+                await ReadNullableIntAsync(reader, 5, cancellationToken) ?? 0,
+                await ReadNullableIntAsync(reader, 6, cancellationToken) ?? 0));
+        }
+
+        return candidates;
     }
 
     public async Task<IReadOnlyList<bool>> ExistsInLibraryAsync(
@@ -12573,47 +12685,28 @@ VALUES (@inputIndex, @isrc, @source, @sourceId, @artistSearch);", connection, tr
         LocalTrackIdentityResult[] results,
         CancellationToken cancellationToken)
     {
-        const string sql = @"
-WITH candidates AS (
-    SELECT i.input_index,
-           t.id AS track_id,
-           af.quality_rank,
-           ROW_NUMBER() OVER (
-               PARTITION BY i.input_index
-               ORDER BY CASE WHEN af.quality_rank IS NULL THEN 1 ELSE 0 END,
-                        af.quality_rank DESC,
-                        t.id DESC
-           ) AS row_number
-    FROM temp_local_track_identity_input i
-    JOIN track t
-    JOIN track_local tl ON tl.track_id = t.id
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    LEFT JOIN track_source ts ON ts.track_id = t.id AND LOWER(ts.source) = 'isrc'
-    WHERE f.enabled = TRUE
-      AND i.isrc IS NOT NULL
-      AND (LOWER(t.tag_isrc) = LOWER(i.isrc) OR LOWER(ts.source_id) = LOWER(i.isrc))
-)
-SELECT input_index, track_id
-FROM candidates
-WHERE row_number = 1;";
-        await using var command = new SqliteCommand(sql, connection);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            var inputIndex = reader.GetInt32(0);
-            if (inputIndex < 0 || inputIndex >= results.Length || results[inputIndex].LocalTrackId.HasValue)
-            {
-                continue;
-            }
-
-            var trackId = reader.GetInt64(1);
-            results[inputIndex] = new LocalTrackIdentityResult(
-                trackId,
-                "isrc",
-                "Matched the stored ISRC.",
-                new[] { trackId });
-        }
+        var sql = $@"
+SELECT i.input_index,
+       t.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title),
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
+       COALESCE(NULLIF(t.tag_album, ''), al.title),
+       COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)),
+       {LocalTrackCandidateQualitySql},
+       {LocalTrackMetadataRichnessSql}
+FROM temp_local_track_identity_input i
+JOIN track t
+JOIN album al ON al.id=t.album_id
+JOIN artist ar ON ar.id=al.artist_id
+JOIN track_local tl ON tl.track_id=t.id
+JOIN audio_file af ON af.id=tl.audio_file_id
+JOIN folder f ON f.id=af.folder_id
+LEFT JOIN track_source ts ON ts.track_id=t.id AND LOWER(ts.source)='isrc'
+WHERE f.enabled=TRUE
+  AND i.isrc IS NOT NULL
+  AND (LOWER(t.tag_isrc)=LOWER(i.isrc) OR LOWER(ts.source_id)=LOWER(i.isrc))
+GROUP BY i.input_index, t.id;";
+        await ResolveBatchExactMatchesAsync(connection, results, sql, "isrc", "Matched the stored ISRC.", cancellationToken);
     }
 
     private static async Task ResolveBatchSourceMatchesAsync(
@@ -12621,49 +12714,70 @@ WHERE row_number = 1;";
         LocalTrackIdentityResult[] results,
         CancellationToken cancellationToken)
     {
-        const string sql = @"
-WITH candidates AS (
-    SELECT i.input_index,
-           ts.track_id,
-           af.quality_rank,
-           ROW_NUMBER() OVER (
-               PARTITION BY i.input_index
-               ORDER BY CASE WHEN af.quality_rank IS NULL THEN 1 ELSE 0 END,
-                        af.quality_rank DESC,
-                        ts.track_id DESC
-           ) AS row_number
-    FROM temp_local_track_identity_input i
-    JOIN track_source ts ON LOWER(ts.source) = LOWER(i.source)
-    JOIN track_local tl ON tl.track_id = ts.track_id
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    WHERE f.enabled = TRUE
-      AND i.source IS NOT NULL
-      AND i.source_id IS NOT NULL
-      AND (
-          LOWER(ts.source_id) = LOWER(i.source_id)
-          OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(i.source_id) || ';') > 0
-      )
-)
-SELECT input_index, track_id
-FROM candidates
-WHERE row_number = 1;";
+        var sql = $@"
+SELECT i.input_index,
+       t.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title),
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
+       COALESCE(NULLIF(t.tag_album, ''), al.title),
+       COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)),
+       {LocalTrackCandidateQualitySql},
+       {LocalTrackMetadataRichnessSql}
+FROM temp_local_track_identity_input i
+JOIN track_source ts ON LOWER(ts.source)=LOWER(i.source)
+JOIN track t ON t.id=ts.track_id
+JOIN album al ON al.id=t.album_id
+JOIN artist ar ON ar.id=al.artist_id
+JOIN track_local tl ON tl.track_id=t.id
+JOIN audio_file af ON af.id=tl.audio_file_id
+JOIN folder f ON f.id=af.folder_id
+WHERE f.enabled=TRUE
+  AND i.source IS NOT NULL
+  AND i.source_id IS NOT NULL
+  AND (LOWER(ts.source_id)=LOWER(i.source_id)
+       OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(i.source_id) || ';') > 0)
+GROUP BY i.input_index, t.id;";
+        await ResolveBatchExactMatchesAsync(connection, results, sql, "source_id", "Matched the stored source track ID.", cancellationToken);
+    }
+
+    private static async Task ResolveBatchExactMatchesAsync(
+        SqliteConnection connection,
+        LocalTrackIdentityResult[] results,
+        string sql,
+        string matchType,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        var candidatesByInput = new Dictionary<int, List<(LocalTrackMetadataCandidate Candidate, int Score)>>();
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
             var inputIndex = reader.GetInt32(0);
-            if (inputIndex < 0 || inputIndex >= results.Length || results[inputIndex].LocalTrackId.HasValue)
+            if (inputIndex < 0 || inputIndex >= results.Length || HasResolvedLocalIdentityDecision(results[inputIndex]))
             {
                 continue;
             }
 
-            var trackId = reader.GetInt64(1);
-            results[inputIndex] = new LocalTrackIdentityResult(
-                trackId,
-                "source_id",
-                "Matched the stored source track ID.",
-                new[] { trackId });
+            var candidate = new LocalTrackMetadataCandidate(
+                reader.GetInt64(1),
+                await ReadNullableStringAsync(reader, 2, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 3, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 4, cancellationToken) ?? string.Empty,
+                await ReadNullableIntAsync(reader, 5, cancellationToken),
+                await ReadNullableIntAsync(reader, 6, cancellationToken) ?? 0,
+                await ReadNullableIntAsync(reader, 7, cancellationToken) ?? 0);
+            if (!candidatesByInput.TryGetValue(inputIndex, out var candidates))
+            {
+                candidates = [];
+                candidatesByInput[inputIndex] = candidates;
+            }
+            candidates.Add((candidate, 0));
+        }
+
+        foreach (var (inputIndex, candidates) in candidatesByInput)
+        {
+            results[inputIndex] = BuildLocalTrackIdentityResult(candidates, matchType, reason);
         }
     }
 
@@ -12675,39 +12789,30 @@ WHERE row_number = 1;";
     {
         var lookupByIndex = lookups.ToDictionary(static lookup => lookup.Index);
         var scoredByInput = new Dictionary<int, List<(LocalTrackMetadataCandidate Candidate, int Score)>>();
-        const string sql = @"
-WITH candidates AS (
-    SELECT i.input_index,
-           t.id,
-           COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
-           COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
-           COALESCE(NULLIF(t.tag_album, ''), al.title) AS match_album,
-           COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS match_duration_ms,
-           af.quality_rank,
-           ROW_NUMBER() OVER (
-               PARTITION BY i.input_index
-               ORDER BY CASE WHEN af.quality_rank IS NULL THEN 1 ELSE 0 END,
-                        af.quality_rank DESC,
-                        t.id DESC
-           ) AS row_number
-    FROM temp_local_track_identity_input i
-    JOIN track t
-    JOIN album al ON al.id = t.album_id
-    JOIN artist ar ON ar.id = al.artist_id
-    JOIN track_local tl ON tl.track_id = t.id
-    JOIN audio_file af ON af.id = tl.audio_file_id
-    JOIN folder f ON f.id = af.folder_id
-    WHERE f.enabled = TRUE
-      AND i.artist_search IS NOT NULL
-      AND (
-          LOWER(ar.name) LIKE LOWER(i.artist_search)
-          OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(i.artist_search)
-          OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(i.artist_search)
-      )
-)
-SELECT input_index, id, match_title, match_artist, match_album, match_duration_ms, quality_rank
-FROM candidates
-WHERE row_number <= 100;";
+        var sql = $@"
+SELECT i.input_index,
+       t.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title) AS match_title,
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
+       COALESCE(NULLIF(t.tag_album, ''), al.title) AS match_album,
+       COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)) AS match_duration_ms,
+       {LocalTrackCandidateQualitySql} AS quality_rank,
+       {LocalTrackMetadataRichnessSql} AS metadata_richness
+FROM temp_local_track_identity_input i
+JOIN track t
+JOIN album al ON al.id=t.album_id
+JOIN artist ar ON ar.id=al.artist_id
+JOIN track_local tl ON tl.track_id=t.id
+JOIN audio_file af ON af.id=tl.audio_file_id
+JOIN folder f ON f.id=af.folder_id
+WHERE f.enabled=TRUE
+  AND i.artist_search IS NOT NULL
+  AND (LOWER(ar.name) LIKE LOWER(i.artist_search)
+       OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(i.artist_search)
+       OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(i.artist_search))
+GROUP BY i.input_index, t.id
+ORDER BY i.input_index
+LIMIT 100000;";
         await using var command = new SqliteCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -12715,7 +12820,7 @@ WHERE row_number <= 100;";
             var inputIndex = reader.GetInt32(0);
             if (inputIndex < 0
                 || inputIndex >= results.Length
-                || results[inputIndex].LocalTrackId.HasValue
+                || HasResolvedLocalIdentityDecision(results[inputIndex])
                 || !lookupByIndex.TryGetValue(inputIndex, out var lookup)
                 || string.IsNullOrWhiteSpace(lookup.TrackTitle)
                 || string.IsNullOrWhiteSpace(lookup.ArtistName))
@@ -12729,7 +12834,8 @@ WHERE row_number <= 100;";
                 await ReadNullableStringAsync(reader, 3, cancellationToken) ?? string.Empty,
                 await ReadNullableStringAsync(reader, 4, cancellationToken) ?? string.Empty,
                 await ReadNullableIntAsync(reader, 5, cancellationToken),
-                await ReadNullableIntAsync(reader, 6, cancellationToken));
+                await ReadNullableIntAsync(reader, 6, cancellationToken) ?? 0,
+                await ReadNullableIntAsync(reader, 7, cancellationToken) ?? 0);
 
             if (!TryScoreLocalTrackMetadataCandidate(lookup.Input, lookup.TrackTitle, lookup.ArtistName, candidate, out var score))
             {
@@ -12746,7 +12852,7 @@ WHERE row_number <= 100;";
 
         foreach (var (inputIndex, scored) in scoredByInput)
         {
-            if (results[inputIndex].LocalTrackId.HasValue || scored.Count == 0)
+            if (HasResolvedLocalIdentityDecision(results[inputIndex]) || scored.Count == 0)
             {
                 continue;
             }

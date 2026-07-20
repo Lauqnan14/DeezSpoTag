@@ -285,7 +285,7 @@ public sealed class DownloadDedupeService
                     identity.LocalTrackId.Value,
                     audioVariant: request.RequestedAudioVariant,
                     cancellationToken: cancellationToken)
-                : null;
+                : identity.BestQualityRank;
             if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value <= bestLocalQualityRank.Value)
             {
                 return DownloadDedupeDecision.Rejected(

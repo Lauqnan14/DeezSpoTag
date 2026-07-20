@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -816,6 +818,88 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task LocalIdentityRanking_UsesQualityThenMetadataRichnessAndKeepsOnlyCompleteTiesInReview()
+    {
+        var seeded = await SeedLibraryAsync(("Ranked Song", "dz-ranked", "sp-ranked", "ap-ranked"));
+        var originalId = seeded.TrackIdsByTitle["Ranked Song"];
+        var lowerQualityRichId = await InsertIdentityCandidateAsync(
+            seeded, "ranked-lower.flac", 3, "sp-ranked;lower", 20);
+        var input = new LibraryRepository.LibraryExistenceInput(
+            "ISRC00000001", "Ranked Song", "Artist One", 180000, AlbumTitle: "Album One");
+
+        var qualityWinner = await _repository.ResolveLocalTrackIdentityAsync(input);
+        Assert.Equal(originalId, qualityWinner.LocalTrackId);
+        Assert.False(qualityWinner.IsAmbiguous);
+
+        await SetAudioPropertiesWithoutQualityRankAsync(lowerQualityRichId, bitsPerSample: 24, sampleRateHz: 96000);
+        var richnessWinner = await _repository.ResolveLocalTrackIdentityAsync(input);
+        Assert.Equal(lowerQualityRichId, richnessWinner.LocalTrackId);
+        Assert.False(richnessWinner.IsAmbiguous);
+        var sourceWinner = await _repository.ResolveLocalTrackIdentityAsync(
+            input with { Isrc = null, Source = "spotify", SourceId = "sp-ranked" });
+        Assert.Equal(lowerQualityRichId, sourceWinner.LocalTrackId);
+
+        var equalId = await InsertIdentityCandidateAsync(
+            seeded, "ranked-equal.flac", 4, "sp-ranked;equal", 20);
+        var tied = await _repository.ResolveLocalTrackIdentityAsync(input);
+        Assert.True(tied.IsAmbiguous);
+        Assert.Equal(new[] { lowerQualityRichId, equalId }.Order(), tied.CandidateTrackIds.Order());
+
+        var batch = await _repository.ResolveLocalTrackIdentitiesAsync([
+            input,
+            input with { Isrc = null, Source = "spotify", SourceId = "sp-ranked" },
+            input with { Isrc = null, Source = null, SourceId = null }
+        ]);
+        Assert.Equal(3, batch.Count);
+        Assert.All(batch, result =>
+        {
+            Assert.True(result.IsAmbiguous);
+            Assert.Equal(tied.CandidateTrackIds.Order(), result.CandidateTrackIds.Order());
+            Assert.Equal(tied.BestQualityRank, result.BestQualityRank);
+        });
+
+        var dedupe = new DownloadDedupeService(
+            new DownloadQueueRepository(_configuration, NullLogger<DownloadQueueRepository>.Instance),
+            _repository,
+            NullLogger<DownloadDedupeService>.Instance);
+        var equalQualityDecision = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Ranked Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 4
+        });
+        var upgradeDecision = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Ranked Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 5
+        });
+        Assert.False(equalQualityDecision.Allowed);
+        Assert.Equal("library_quality_not_higher", equalQualityDecision.ReasonCode);
+        Assert.True(upgradeDecision.Allowed);
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "review-list", new PlaylistWatchlistMetadataInput("Review", null, null, 1));
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify", "review-list", new PlaylistWatchTrackVerification("sp-ranked", null, "review", tied.Reason));
+        Assert.Equal("review", Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "review-list")).IdentityStatus);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify", "review-list", new PlaylistWatchTrackVerification("sp-ranked", lowerQualityRichId, "identity_verified", "Ranked winner selected."));
+        var resolvedStatus = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "review-list"));
+        Assert.Equal("identity_verified", resolvedStatus.IdentityStatus);
+        Assert.Equal("completed", resolvedStatus.Status);
+        Assert.Equal(lowerQualityRichId, resolvedStatus.LocalTrackId);
+    }
+
+    [Fact]
     public async Task LocalScanFileStates_RoundTrip_And_UnchangedIngestPreservesAudioTimestamp()
     {
         var root = Path.Join(_tempRoot, "music-library");
@@ -1464,6 +1548,72 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             AppleArtistId: "am-artist-1",
             Source: "spotify",
             SourceId: spotifyTrackId);
+    }
+
+    private async Task<long> InsertIdentityCandidateAsync(
+        SeededLibrary seeded,
+        string fileName,
+        int qualityRank,
+        string sourceId,
+        int extraTagCount)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+        await using var insertTrack = connection.CreateCommand();
+        insertTrack.Transaction = transaction;
+        insertTrack.CommandText = @"
+INSERT INTO track(album_id,title,duration_ms,tag_title,tag_artist,tag_album,tag_album_artist,tag_duration_ms,tag_isrc)
+VALUES(@albumId,'Ranked Song',180000,'Ranked Song','Artist One','Album One','Artist One',180000,'ISRC00000001');
+SELECT last_insert_rowid();";
+        insertTrack.Parameters.AddWithValue("albumId", seeded.AlbumId);
+        var trackId = Convert.ToInt64(await insertTrack.ExecuteScalarAsync());
+
+        await using var insertFile = connection.CreateCommand();
+        insertFile.Transaction = transaction;
+        insertFile.CommandText = @"
+INSERT INTO audio_file(path,relative_path,folder_id,duration_ms,codec,bitrate_kbps,extension,sample_rate_hz,bits_per_sample,channels,quality_rank,audio_variant)
+VALUES(@path,@relativePath,@folderId,180000,'flac',1000,'.flac',48000,16,2,@qualityRank,'stereo');
+INSERT INTO track_local(track_id,audio_file_id) VALUES(@trackId,last_insert_rowid());
+INSERT INTO track_source(track_id,source,source_id) VALUES(@trackId,'spotify',@sourceId);";
+        insertFile.Parameters.AddWithValue("path", Path.Join(seeded.Folder.RootPath, fileName));
+        insertFile.Parameters.AddWithValue("relativePath", fileName);
+        insertFile.Parameters.AddWithValue("folderId", seeded.Folder.Id);
+        insertFile.Parameters.AddWithValue("qualityRank", qualityRank);
+        insertFile.Parameters.AddWithValue("trackId", trackId);
+        insertFile.Parameters.AddWithValue("sourceId", sourceId);
+        await insertFile.ExecuteNonQueryAsync();
+
+        for (var index = 0; index < extraTagCount; index++)
+        {
+            await using var insertTag = connection.CreateCommand();
+            insertTag.Transaction = transaction;
+            insertTag.CommandText = "INSERT INTO track_other_tag(track_id,tag_key,tag_value) VALUES(@trackId,@key,@value);";
+            insertTag.Parameters.AddWithValue("trackId", trackId);
+            insertTag.Parameters.AddWithValue("key", $"RICH_{index}");
+            insertTag.Parameters.AddWithValue("value", $"value-{index}");
+            await insertTag.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+        return trackId;
+    }
+
+    private async Task SetAudioPropertiesWithoutQualityRankAsync(long trackId, int bitsPerSample, int sampleRateHz)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE audio_file
+SET quality_rank=NULL,
+    bits_per_sample=@bitsPerSample,
+    sample_rate_hz=@sampleRateHz
+WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
+        command.Parameters.AddWithValue("bitsPerSample", bitsPerSample);
+        command.Parameters.AddWithValue("sampleRateHz", sampleRateHz);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await command.ExecuteNonQueryAsync();
     }
 
     private async Task<string> ReadAudioFileUpdatedAtAsync(string filePath)
