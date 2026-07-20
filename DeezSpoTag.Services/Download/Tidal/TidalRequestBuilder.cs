@@ -8,10 +8,14 @@ public static class TidalRequestBuilder
     public static TidalDownloadRequest BuildRequest(TidalQueueItem item, DeezSpoTagSettings settings)
     {
         var request = RequestBuilderCommon.CreateCommonRequest<TidalDownloadRequest>(item, settings);
-        request.Quality = RequestBuilderCommon.ResolvePreferredQuality(
+        var preferredQuality = RequestBuilderCommon.ResolvePreferredQuality(
             item.Quality,
             settings.TidalQuality,
             "LOSSLESS");
+        var preferredTier = TidalStereoQuality.Normalize(preferredQuality);
+        request.Quality = preferredTier == TidalStereoQualityTier.Unknown
+            ? preferredQuality
+            : TidalStereoQuality.ToFallbackQuality(preferredTier);
         request.IsVideo = string.Equals(item.ContentType, DeezSpoTag.Services.Download.Shared.Models.DownloadContentTypes.Video, StringComparison.OrdinalIgnoreCase);
         request.VideoOutputRoot = settings.Video?.VideoDownloadLocation ?? string.Empty;
         request.VideoMaxResolution = settings.Video?.TidalVideoMaxResolution ?? 1080;

@@ -92,6 +92,11 @@ internal static class DeliveredAudioQualityGuard
     private static bool IsDeliveredQualityAccepted(string? engine, string? requestedQuality, ActualAudioQuality actual)
     {
         var normalized = (requestedQuality ?? string.Empty).Trim().ToUpperInvariant();
+        if (IsTidalEngine(engine))
+        {
+            return TidalStereoQuality.Accepts(TidalStereoQuality.Normalize(requestedQuality), actual);
+        }
+
         if (IsAmazonEngine(engine))
         {
             return normalized switch
@@ -128,8 +133,16 @@ internal static class DeliveredAudioQualityGuard
     private static bool IsAmazonEngine(string? engine)
         => string.Equals(engine?.Trim(), "amazon", StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsTidalEngine(string? engine)
+        => string.Equals(engine?.Trim(), "tidal", StringComparison.OrdinalIgnoreCase);
+
     private static string FormatRequestedQuality(string? engine, string? quality)
     {
+        if (IsTidalEngine(engine))
+        {
+            return TidalStereoQuality.FormatRequested(quality);
+        }
+
         var normalized = (quality ?? string.Empty).Trim().ToUpperInvariant();
         return normalized switch
         {

@@ -7,6 +7,7 @@ using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Download.Tidal;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -125,6 +126,90 @@ public sealed class DeliveredAudioQualityGuardTests : IDisposable
     }
 
     [Fact]
+    public void TidalMaxHiResPlanStep_RejectsDeliveredNinetySixKhzAudio()
+    {
+        var path = Path.Combine(_tempDirectory, "tidal-max-delivered-96.wav");
+        WriteWave(path, bitsPerSample: 24, sampleRate: 96000);
+
+        var result = Validate(CreateTidalPayload("HI_RES_LOSSLESS"), path);
+
+        Assert.False(ReadBool(result, "Success"));
+        Assert.Contains("96kHz", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Tidal Max Hi-Res", ReadString(result, "Message"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TidalHiResPlanStep_AcceptsDeliveredNinetySixKhzAudio()
+    {
+        var path = Path.Combine(_tempDirectory, "tidal-hires-delivered-96.wav");
+        WriteWave(path, bitsPerSample: 24, sampleRate: 96000);
+
+        var result = Validate(CreateTidalPayload("HI_RES"), path);
+
+        Assert.True(ReadBool(result, "Success"));
+    }
+
+    [Fact]
+    public void TidalHiResPlanStep_RejectsDeliveredMaxHiResAudio()
+    {
+        var path = Path.Combine(_tempDirectory, "tidal-hires-delivered-192.wav");
+        WriteWave(path, bitsPerSample: 24, sampleRate: 192000);
+
+        var result = Validate(CreateTidalPayload("HI_RES"), path);
+
+        Assert.False(ReadBool(result, "Success"));
+        Assert.Contains("192kHz", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TidalCdLosslessPlanStep_RejectsDeliveredTwentyFourBitAudio()
+    {
+        var path = Path.Combine(_tempDirectory, "tidal-cd-delivered-24.wav");
+        WriteWave(path, bitsPerSample: 24, sampleRate: 44100);
+
+        var result = Validate(CreateTidalPayload("LOSSLESS"), path);
+
+        Assert.False(ReadBool(result, "Success"));
+        Assert.Contains("24-bit", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TidalHighPlanStep_RejectsDeliveredLosslessAudio()
+    {
+        Assert.False(IsDeliveredQualityAccepted(
+            "tidal",
+            "HIGH",
+            label: "CD Lossless (16-bit/44.1kHz)",
+            bitsPerSample: 16,
+            sampleRate: 44100,
+            bitrateKbps: 800,
+            isLossless: true));
+    }
+
+    [Theory]
+    [InlineData("LOW", "AAC-LC 96 kbps", 96, true)]
+    [InlineData("LOW", "AAC-LC 320 kbps", 320, false)]
+    [InlineData("HIGH", "AAC-LC 320 kbps", 320, true)]
+    [InlineData("HIGH", "AAC-LC 96 kbps", 96, false)]
+    public void TidalLossyPlanSteps_AcceptOnlyTheirOwnLossyBuckets(
+        string requestedQuality,
+        string label,
+        int bitrateKbps,
+        bool expected)
+    {
+        var accepted = IsDeliveredQualityAccepted(
+            "tidal",
+            requestedQuality,
+            label,
+            bitsPerSample: 0,
+            sampleRate: 44100,
+            bitrateKbps,
+            isLossless: false);
+
+        Assert.Equal(expected, accepted);
+    }
+
+    [Fact]
     public void QualityRejectedAudio_IsNotDeletedByGuard()
     {
         var sourcePath = Path.GetFullPath(Path.Combine(
@@ -162,6 +247,17 @@ public sealed class DeliveredAudioQualityGuardTests : IDisposable
         [
             new FallbackPlanStep("step-0", "amazon", quality, [], "direct_url"),
             new FallbackPlanStep("step-1", "tidal", "LOSSLESS", [], "direct_url")
+        ]
+    };
+
+    private static TidalQueueItem CreateTidalPayload(string quality) => new()
+    {
+        Engine = "tidal",
+        Quality = quality,
+        AutoIndex = 0,
+        FallbackPlan =
+        [
+            new FallbackPlanStep("step-0", "tidal", quality, [], "direct_url")
         ]
     };
 

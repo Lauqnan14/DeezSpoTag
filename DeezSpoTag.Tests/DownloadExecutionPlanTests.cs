@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Core.Models.Settings;
@@ -39,6 +40,86 @@ public sealed class DownloadExecutionPlanTests
 
         Assert.Equal(["qobuz|27", "qobuz|7", "qobuz|6", "qobuz|5"], fallback);
         Assert.Equal(["qobuz|27"], strict);
+    }
+
+    [Fact]
+    public void TidalSingleEnginePlan_KeepsStereoQualitiesSeparated()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "tidal",
+            FallbackBitrate = true
+        };
+
+        var maxPlan = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            [],
+            "tidal",
+            "HI_RES_LOSSLESS",
+            strict: false,
+            includeDeezer: true);
+        var hiResPlan = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            [],
+            "tidal",
+            "HI_RES",
+            strict: false,
+            includeDeezer: true);
+        var cdPlan = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            [],
+            "tidal",
+            "LOSSLESS",
+            strict: false,
+            includeDeezer: true);
+
+        Assert.Equal(["tidal|HI_RES_LOSSLESS", "tidal|HI_RES", "tidal|LOSSLESS", "tidal|HIGH", "tidal|LOW"], maxPlan);
+        Assert.Equal(["tidal|HI_RES", "tidal|LOSSLESS", "tidal|HIGH", "tidal|LOW"], hiResPlan);
+        Assert.Equal(["tidal|LOSSLESS", "tidal|HIGH", "tidal|LOW"], cdPlan);
+    }
+
+    [Fact]
+    public void TidalStrictPlan_KeepsOnlyTheSelectedStereoQuality()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            Service = "tidal",
+            FallbackBitrate = false
+        };
+
+        var maxPlan = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            [],
+            "tidal",
+            "HI_RES_LOSSLESS",
+            strict: true,
+            includeDeezer: true);
+        var hiResPlan = DownloadSourceOrder.ResolveFallbackPlanSources(
+            settings,
+            [],
+            "tidal",
+            "HI_RES",
+            strict: true,
+            includeDeezer: true);
+
+        Assert.Equal(["tidal|HI_RES_LOSSLESS"], maxPlan);
+        Assert.Equal(["tidal|HI_RES"], hiResPlan);
+    }
+
+    [Fact]
+    public void TidalPersistedPlan_PreservesMaxAndHiResAsDistinctSteps()
+    {
+        var plan = DownloadExecutionPlan.FromEncodedSources([
+            "tidal|HI_RES_LOSSLESS",
+            "tidal|HI_RES",
+            "tidal|LOSSLESS",
+            "tidal|HIGH",
+            "tidal|LOW"
+        ]);
+
+        Assert.Equal(
+            new[] { "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW" },
+            plan.Select(step => step.Quality).ToArray());
     }
 
     [Fact]

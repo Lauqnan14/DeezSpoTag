@@ -11,6 +11,7 @@ using System.Security.Cryptography;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Core.Utils;
@@ -2868,17 +2869,7 @@ public sealed class TidalDownloadService
     }
 
     private static string NormalizeTidalDownloadQuality(string? quality)
-    {
-        var normalized = (quality ?? string.Empty).Trim().ToUpperInvariant();
-        return normalized switch
-        {
-            "" => "LOSSLESS",
-            "HI_RES" => "HI_RES_LOSSLESS",
-            "MAX_HI_RES" => "HI_RES_LOSSLESS",
-            "ATMOS" => "DOLBY_ATMOS",
-            _ => normalized
-        };
-    }
+        => TidalStereoQuality.ToTidalRequestQuality(quality);
 
     private sealed class ZarzSignedSessionRecord
     {
