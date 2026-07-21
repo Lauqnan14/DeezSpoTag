@@ -596,6 +596,8 @@ public sealed class DownloadIntentService
         var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, target.Engine)
             ?? target.Resolution.SourceUrl
             ?? intent.SourceUrl;
+        intent.SourceUrl = sourceUrl ?? string.Empty;
+        await PopulateIntentMetadataAsync(intent, state.Settings, resolvedDownloadTagSource: null, cancellationToken);
 
         var qobuzId = FirstNonEmpty(
             intent.QobuzId,
@@ -641,7 +643,8 @@ public sealed class DownloadIntentService
                 AmazonId: amazonId,
                 DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
                 DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
-                ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+                ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType,
+                Metadata: BuildResolvedQueueMetadata(intent));
         }
 
         return new QueuePreResolutionPayload.ResolutionResult(
@@ -669,7 +672,8 @@ public sealed class DownloadIntentService
             AmazonId: amazonId,
             DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
             DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
-            ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+            ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType,
+            Metadata: BuildResolvedQueueMetadata(intent));
     }
 
     private async Task<QueuePreResolutionPayload.ResolutionResult> ResolveQueuedPayloadFromSavedPlanAsync(
@@ -715,6 +719,8 @@ public sealed class DownloadIntentService
             var sourceUrl = ResolveSourceUrlFromIntentIdentity(intent, step.Engine)
                 ?? candidate.SourceUrl
                 ?? intent.SourceUrl;
+            intent.SourceUrl = sourceUrl ?? string.Empty;
+            await PopulateIntentMetadataAsync(intent, settings, resolvedDownloadTagSource: null, cancellationToken);
             var qobuzId = FirstNonEmpty(
                 intent.QobuzId,
                 TryExtractQobuzTrackId(sourceUrl)?.ToString(CultureInfo.InvariantCulture));
@@ -762,7 +768,8 @@ public sealed class DownloadIntentService
                 AmazonId: amazonId,
                 DurationMs: intent.DurationMs > 0 ? intent.DurationMs : item.DurationMs,
                 DestinationFolderId: intent.DestinationFolderId ?? item.DestinationFolderId,
-                ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType);
+                ContentType: string.IsNullOrWhiteSpace(intent.ContentType) ? item.ContentType : intent.ContentType,
+                Metadata: BuildResolvedQueueMetadata(intent));
         }
 
         return new QueuePreResolutionPayload.ResolutionResult(
@@ -994,6 +1001,13 @@ public sealed class DownloadIntentService
             AppleArtistId = FirstNonEmpty(
                 ReadPayloadString(payload, "AppleArtistId", "appleArtistId"),
                 item.AppleArtistId) ?? string.Empty,
+            AppleAlbumId = FirstNonEmpty(
+                ReadPayloadString(payload, "AppleAlbumId", "appleAlbumId"),
+                item.AppleAlbumId) ?? string.Empty,
+            AppleAlbumName = ReadPayloadString(payload, "AppleAlbumName", "appleAlbumName") ?? string.Empty,
+            AppleArtistName = ReadPayloadString(payload, "AppleArtistName", "appleArtistName") ?? string.Empty,
+            AppleIsrc = ReadPayloadString(payload, "AppleIsrc", "appleIsrc") ?? string.Empty,
+            AppleDurationMs = ReadPayloadNullableInt32(payload, "AppleDurationMs", "appleDurationMs"),
             QobuzId = EngineLinkParser.NormalizeNumericTrackId(
                 FirstNonEmpty(item.QobuzTrackId, ReadPayloadStringAny(payload, "QobuzId", "qobuzId", "QobuzTrackId", "qobuzTrackId"))) ?? string.Empty,
             TidalId = EngineLinkParser.NormalizeNumericTrackId(
@@ -1007,8 +1021,29 @@ public sealed class DownloadIntentService
             Artist = ReadPayloadString(payload, "Artist", "artist") ?? item.ArtistName,
             Album = ReadPayloadString(payload, "Album", "album") ?? string.Empty,
             AlbumArtist = ReadPayloadString(payload, "AlbumArtist", "albumArtist") ?? string.Empty,
-            Cover = ReadPayloadString(payload, "Cover", "cover") ?? string.Empty,
+            Cover = NormalizeQueueCover(ReadPayloadString(payload, "Cover", "cover")),
+            Genres = ReadPayloadStringList(payload, "Genres", "genres"),
+            Label = ReadPayloadString(payload, "Label", "label") ?? string.Empty,
+            Copyright = ReadPayloadString(payload, "Copyright", "copyright") ?? string.Empty,
+            Explicit = ReadPayloadBool(payload, "Explicit", "explicit"),
+            Composer = ReadPayloadString(payload, "Composer", "composer") ?? string.Empty,
             ReleaseDate = ReadPayloadString(payload, "ReleaseDate", "releaseDate") ?? string.Empty,
+            TrackNumber = ReadPayloadInt32(payload, "TrackNumber", "trackNumber"),
+            DiscNumber = ReadPayloadInt32(payload, "DiscNumber", "discNumber"),
+            TrackTotal = ReadPayloadInt32(payload, "TrackTotal", "trackTotal"),
+            DiscTotal = ReadPayloadInt32(payload, "DiscTotal", "discTotal"),
+            Barcode = ReadPayloadString(payload, "Barcode", "barcode") ?? string.Empty,
+            Danceability = ReadPayloadDouble(payload, "Danceability", "danceability"),
+            Energy = ReadPayloadDouble(payload, "Energy", "energy"),
+            Valence = ReadPayloadDouble(payload, "Valence", "valence"),
+            Acousticness = ReadPayloadDouble(payload, "Acousticness", "acousticness"),
+            Instrumentalness = ReadPayloadDouble(payload, "Instrumentalness", "instrumentalness"),
+            Speechiness = ReadPayloadDouble(payload, "Speechiness", "speechiness"),
+            Loudness = ReadPayloadDouble(payload, "Loudness", "loudness"),
+            Tempo = ReadPayloadDouble(payload, "Tempo", "tempo"),
+            TimeSignature = ReadPayloadNullableInt32(payload, "TimeSignature", "timeSignature"),
+            Liveness = ReadPayloadDouble(payload, "Liveness", "liveness"),
+            MusicKey = ReadPayloadString(payload, "MusicKey", "musicKey") ?? string.Empty,
             DurationMs = item.DurationMs ?? ResolvePayloadDurationMs(payload),
             DestinationFolderId = item.DestinationFolderId ?? ReadPayloadInt64(payload, "DestinationFolderId", "destinationFolderId"),
             WatchlistSource = ReadPayloadString(payload, "WatchlistSource", "watchlistSource") ?? string.Empty,
@@ -1021,6 +1056,43 @@ public sealed class DownloadIntentService
                 "watchlistUnavailableSettingsFingerprint") ?? string.Empty
         };
     }
+
+    private static QueuePreResolutionPayload.ResolvedMetadata BuildResolvedQueueMetadata(DownloadIntent intent)
+        => new(
+            Title: intent.Title,
+            Artist: intent.Artist,
+            Album: intent.Album,
+            AlbumArtist: intent.AlbumArtist,
+            Cover: NormalizeQueueCover(intent.Cover),
+            Genres: intent.Genres,
+            Label: intent.Label,
+            Copyright: intent.Copyright,
+            Explicit: intent.Explicit,
+            Composer: intent.Composer,
+            ReleaseDate: intent.ReleaseDate,
+            TrackNumber: intent.TrackNumber,
+            DiscNumber: intent.DiscNumber,
+            TrackTotal: intent.TrackTotal,
+            DiscTotal: intent.DiscTotal,
+            Url: intent.Url,
+            Barcode: intent.Barcode,
+            Danceability: intent.Danceability,
+            Energy: intent.Energy,
+            Valence: intent.Valence,
+            Acousticness: intent.Acousticness,
+            Instrumentalness: intent.Instrumentalness,
+            Speechiness: intent.Speechiness,
+            Loudness: intent.Loudness,
+            Tempo: intent.Tempo,
+            TimeSignature: intent.TimeSignature,
+            Liveness: intent.Liveness,
+            MusicKey: intent.MusicKey);
+
+    private static string NormalizeQueueCover(string? cover)
+        => string.Equals(cover?.Trim(), "/images/default-cover.png", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(cover?.Trim(), "/images/unavailable/unavailable.jpg", StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : cover?.Trim() ?? string.Empty;
 
     [ExcludeFromCodeCoverage]
     private static string? ReadPayloadString(JsonObject payload, string pascalKey, string camelKey)
@@ -1043,6 +1115,47 @@ public sealed class DownloadIntentService
         }
 
         return null;
+    }
+
+    private static List<string> ReadPayloadStringList(JsonObject payload, string pascalKey, string camelKey)
+    {
+        var node = payload[pascalKey] ?? payload[camelKey];
+        if (node is not JsonArray values)
+        {
+            return new List<string>();
+        }
+
+        return values
+            .Select(value => value?.ToString()?.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool? ReadPayloadBool(JsonObject payload, string pascalKey, string camelKey)
+    {
+        var value = ReadPayloadString(payload, pascalKey, camelKey);
+        return bool.TryParse(value, out var parsed) ? parsed : null;
+    }
+
+    private static int ReadPayloadInt32(JsonObject payload, string pascalKey, string camelKey)
+        => ReadPayloadNullableInt32(payload, pascalKey, camelKey) ?? 0;
+
+    private static int? ReadPayloadNullableInt32(JsonObject payload, string pascalKey, string camelKey)
+    {
+        var value = ReadPayloadString(payload, pascalKey, camelKey);
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : null;
+    }
+
+    private static double? ReadPayloadDouble(JsonObject payload, string pascalKey, string camelKey)
+    {
+        var value = ReadPayloadString(payload, pascalKey, camelKey);
+        return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : null;
     }
 
     [ExcludeFromCodeCoverage]
@@ -4973,7 +5086,82 @@ public sealed class DownloadIntentService
         if (IsTidalSourceUrl(sourceUrl))
         {
             await PopulateTidalMetadataAsync(intent, sourceUrl, cancellationToken);
+            return;
         }
+
+        if (sourceUrl.Contains(QobuzDomain, StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(intent.QobuzId))
+        {
+            await PopulateQobuzMetadataAsync(intent, cancellationToken);
+            return;
+        }
+
+        if (sourceUrl.Contains("amazon.", StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrWhiteSpace(intent.AmazonId))
+        {
+            await PopulateAmazonMetadataAsync(intent, cancellationToken);
+        }
+    }
+
+    private async Task PopulateQobuzMetadataAsync(DownloadIntent intent, CancellationToken cancellationToken)
+    {
+        var resolution = await _qobuzTrackResolver.ResolveTrackAsync(
+            intent.Isrc,
+            intent.Title,
+            intent.Artist,
+            intent.Album,
+            intent.DurationMs > 0 ? intent.DurationMs : null,
+            cancellationToken);
+        var track = resolution?.Track;
+        if (track == null)
+        {
+            return;
+        }
+
+        ApplyIntentStringValue(false, intent.QobuzId, track.Id.ToString(CultureInfo.InvariantCulture), value => intent.QobuzId = value);
+        ApplyIntentStringValue(false, intent.Title, track.Title, value => intent.Title = value);
+        ApplyIntentStringValue(false, intent.Artist, track.Performer?.Name, value => intent.Artist = value);
+        ApplyIntentStringValue(false, intent.Album, track.Album?.Title, value => intent.Album = value);
+        ApplyIntentStringValue(false, intent.AlbumArtist, track.Album?.Artists.FirstOrDefault()?.Name ?? track.Performer?.Name, value => intent.AlbumArtist = value);
+        ApplyIntentStringValue(false, intent.Isrc, track.ISRC, value => intent.Isrc = value);
+        ApplyIntentStringValue(false, intent.Cover, ResolveQobuzCover(track.Album?.Image), value => intent.Cover = value);
+        ApplyIntentStringValue(false, intent.Label, track.Album?.Label?.Name, value => intent.Label = value);
+        ApplyIntentStringValue(false, intent.Composer, track.Composer?.Name, value => intent.Composer = value);
+        ApplyIntentStringValue(false, intent.ReleaseDate, track.Album?.ReleaseDateOriginal, value => intent.ReleaseDate = value);
+        ApplyIntentStringValue(false, intent.Barcode, FirstNonEmpty(track.Album?.Barcode, track.Album?.UPC), value => intent.Barcode = value);
+        ApplyIntentIntValue(false, intent.DurationMs, track.Duration * 1000, value => intent.DurationMs = value);
+        ApplyIntentIntValue(false, intent.TrackNumber, track.TrackNumber, value => intent.TrackNumber = value);
+        ApplyIntentIntValue(false, intent.DiscNumber, track.MediaNumber, value => intent.DiscNumber = value);
+        ApplyIntentIntValue(false, intent.TrackTotal, track.Album?.TracksCount ?? 0, value => intent.TrackTotal = value);
+        intent.Explicit ??= track.ParentalWarning;
+    }
+
+    private static string ResolveQobuzCover(DeezSpoTag.Core.Models.Qobuz.QobuzImage? image)
+        => FirstNonEmpty(image?.Mega, image?.ExtraLarge, image?.Large, image?.Medium, image?.Small) ?? string.Empty;
+
+    private async Task PopulateAmazonMetadataAsync(DownloadIntent intent, CancellationToken cancellationToken)
+    {
+        var track = await _amazonMusicMetadataService.ResolveTrackAsync(
+            intent.Title,
+            intent.Artist,
+            intent.Album,
+            intent.DurationMs > 0 ? intent.DurationMs : null,
+            intent.Isrc,
+            cancellationToken);
+        if (track == null)
+        {
+            return;
+        }
+
+        ApplyIntentStringValue(false, intent.AmazonId, track.Id, value => intent.AmazonId = value);
+        ApplyIntentStringValue(false, intent.Title, track.Title, value => intent.Title = value);
+        ApplyIntentStringValue(false, intent.Artist, track.Artist, value => intent.Artist = value);
+        ApplyIntentStringValue(false, intent.Album, track.Album, value => intent.Album = value);
+        ApplyIntentStringValue(false, intent.AlbumArtist, track.Artist, value => intent.AlbumArtist = value);
+        ApplyIntentStringValue(false, intent.Isrc, track.Isrc, value => intent.Isrc = value);
+        ApplyIntentStringValue(false, intent.Cover, track.CoverUrl, value => intent.Cover = value);
+        ApplyIntentStringValue(false, intent.Url, track.Url, value => intent.Url = value);
+        ApplyIntentIntValue(false, intent.DurationMs, track.DurationMs ?? 0, value => intent.DurationMs = value);
     }
 
     private static bool IsSpotifySourceUrl(string sourceUrl)
@@ -5021,6 +5209,7 @@ public sealed class DownloadIntentService
         ApplyIntentStringValue(overwriteExisting, intent.Album, track.Album, value => intent.Album = value);
         ApplyIntentStringValue(overwriteExisting, intent.AlbumArtist, track.Artist, value => intent.AlbumArtist = value);
         ApplyIntentStringValue(overwriteExisting, intent.Isrc, track.Isrc, value => intent.Isrc = value);
+        ApplyIntentStringValue(overwriteExisting, intent.Cover, track.CoverUrl, value => intent.Cover = value);
         ApplyIntentIntValue(overwriteExisting, intent.DurationMs, track.DurationSeconds * 1000, value => intent.DurationMs = value);
     }
 
@@ -5543,7 +5732,7 @@ public sealed class DownloadIntentService
             _ => false
         };
 
-        if (!hasDirectIdentity)
+        if (!hasDirectIdentity || !HasCompleteVisibleQueueMetadata(payload))
         {
             payload.ResolutionStatus = QueuePreResolutionPayload.Pending;
             return;
@@ -5556,6 +5745,14 @@ public sealed class DownloadIntentService
         payload.ResolvedQuality = payload.Quality;
         payload.ResolvedAutoIndex = payload.AutoIndex;
     }
+
+    private static bool HasCompleteVisibleQueueMetadata(EngineQueueItemBase payload)
+        => !string.IsNullOrWhiteSpace(payload.Title)
+           && !string.IsNullOrWhiteSpace(payload.Artist)
+           && !string.IsNullOrWhiteSpace(payload.Album)
+           && !string.IsNullOrWhiteSpace(payload.Isrc)
+           && !string.IsNullOrWhiteSpace(NormalizeQueueCover(payload.Cover))
+           && payload.DurationSeconds > 0;
 
     private static void PopulateEngineIdentityFromSourceUrl(EngineQueueItemBase payload, string sourceUrl)
     {

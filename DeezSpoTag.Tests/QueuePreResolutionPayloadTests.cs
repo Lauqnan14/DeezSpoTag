@@ -93,6 +93,96 @@ public sealed class QueuePreResolutionPayloadTests
         Assert.Equal(now, QueuePreResolutionPayload.ReadResolvedAt(payload));
     }
 
+    [Theory]
+    [InlineData("deezer")]
+    [InlineData("apple")]
+    [InlineData("tidal")]
+    [InlineData("qobuz")]
+    [InlineData("amazon")]
+    public void ApplyResolved_PreservesCompleteResolvedMetadataForEveryEngine(string engine)
+    {
+        var payload = new JsonObject
+        {
+            ["Title"] = "Existing title",
+            ["title"] = "Existing title",
+            ["SourceService"] = "boomplay",
+            ["sourceService"] = "boomplay"
+        };
+        var metadata = new QueuePreResolutionPayload.ResolvedMetadata(
+            Title: "Resolved title",
+            Artist: "Resolved artist",
+            Album: "Resolved album",
+            AlbumArtist: "Resolved album artist",
+            Cover: "https://images.example.test/cover.jpg",
+            Genres: new[] { "Afrobeats", "Pop" },
+            Label: "Resolved label",
+            Copyright: "Resolved copyright",
+            Explicit: true,
+            Composer: "Resolved composer",
+            ReleaseDate: "2026-07-21",
+            TrackNumber: 3,
+            DiscNumber: 1,
+            TrackTotal: 12,
+            DiscTotal: 1,
+            Url: "https://example.test/track",
+            Barcode: "123456789012",
+            Tempo: 110.5,
+            MusicKey: "8A");
+
+        QueuePreResolutionPayload.ApplyResolved(
+            payload,
+            new QueuePreResolutionPayload.ResolutionResult(
+                engine,
+                $"https://example.test/{engine}/track",
+                "lossless",
+                0,
+                Array.Empty<FallbackPlanStep>(),
+                null,
+                Metadata: metadata),
+            DateTimeOffset.Parse("2026-07-21T12:00:00Z"));
+
+        Assert.Equal("Resolved title", payload["Title"]?.ToString());
+        Assert.Equal("Resolved artist", payload["Artist"]?.ToString());
+        Assert.Equal("Resolved album", payload["Album"]?.ToString());
+        Assert.Equal("Resolved album artist", payload["AlbumArtist"]?.ToString());
+        Assert.Equal("https://images.example.test/cover.jpg", payload["Cover"]?.ToString());
+        Assert.Equal("https://images.example.test/cover.jpg", payload["cover"]?.ToString());
+        Assert.Equal("Resolved label", payload["Label"]?.ToString());
+        Assert.True(payload["Explicit"]?.GetValue<bool>());
+        Assert.Equal("3", payload["TrackNumber"]?.ToString());
+        Assert.Equal(110.5, payload["Tempo"]?.GetValue<double>());
+        Assert.Equal("8A", payload["MusicKey"]?.ToString());
+        Assert.Equal(2, payload["Genres"]?.AsArray().Count);
+        Assert.Equal("boomplay", payload["SourceService"]?.ToString());
+        Assert.Equal("boomplay", payload["sourceService"]?.ToString());
+    }
+
+    [Fact]
+    public void ApplyResolved_DoesNotEraseExistingMetadataWhenResolvedValuesAreEmpty()
+    {
+        var payload = new JsonObject
+        {
+            ["Cover"] = "https://images.example.test/existing.jpg",
+            ["cover"] = "https://images.example.test/existing.jpg",
+            ["Label"] = "Existing label"
+        };
+
+        QueuePreResolutionPayload.ApplyResolved(
+            payload,
+            new QueuePreResolutionPayload.ResolutionResult(
+                "deezer",
+                "https://www.deezer.com/track/1",
+                "lossless",
+                0,
+                Array.Empty<FallbackPlanStep>(),
+                null,
+                Metadata: new QueuePreResolutionPayload.ResolvedMetadata(Cover: "", Label: null)),
+            DateTimeOffset.Parse("2026-07-21T12:00:00Z"));
+
+        Assert.Equal("https://images.example.test/existing.jpg", payload["Cover"]?.ToString());
+        Assert.Equal("Existing label", payload["Label"]?.ToString());
+    }
+
     [Fact]
     public void ApplyFailed_EnforcesRetryCooldown()
     {
@@ -105,4 +195,5 @@ public sealed class QueuePreResolutionPayloadTests
         Assert.True(QueuePreResolutionPayload.IsFailedOnCooldown(payload, TimeSpan.FromMinutes(2), now));
         Assert.False(QueuePreResolutionPayload.IsFailedOnCooldown(payload, TimeSpan.FromSeconds(10), now));
     }
+
 }

@@ -2,7 +2,7 @@ namespace DeezSpoTag.Services.Download.Queue;
 
 internal static class QueuePayloadBuilder
 {
-    private const string DefaultCoverPath = "/images/default-cover.png";
+    private const string DefaultCoverPath = "/images/unavailable/unavailable.jpg";
     private const string InQueueStatus = "inQueue";
     private const string DownloadingStatus = "downloading";
     private const string CompletedStatus = "completed";

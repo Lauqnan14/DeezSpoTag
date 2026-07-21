@@ -45,7 +45,38 @@ public static class QueuePreResolutionPayload
         long? DestinationFolderId = null,
         string? ContentType = null,
         string? Album = null,
-        string? AlbumArtist = null);
+        string? AlbumArtist = null,
+        ResolvedMetadata? Metadata = null);
+
+    public sealed record ResolvedMetadata(
+        string? Title = null,
+        string? Artist = null,
+        string? Album = null,
+        string? AlbumArtist = null,
+        string? Cover = null,
+        IReadOnlyList<string>? Genres = null,
+        string? Label = null,
+        string? Copyright = null,
+        bool? Explicit = null,
+        string? Composer = null,
+        string? ReleaseDate = null,
+        int? TrackNumber = null,
+        int? DiscNumber = null,
+        int? TrackTotal = null,
+        int? DiscTotal = null,
+        string? Url = null,
+        string? Barcode = null,
+        double? Danceability = null,
+        double? Energy = null,
+        double? Valence = null,
+        double? Acousticness = null,
+        double? Instrumentalness = null,
+        double? Speechiness = null,
+        double? Loudness = null,
+        double? Tempo = null,
+        int? TimeSignature = null,
+        double? Liveness = null,
+        string? MusicKey = null);
 
     public static JsonObject ParseOrEmpty(string? payloadJson)
     {
@@ -119,7 +150,6 @@ public static class QueuePreResolutionPayload
         SetResolutionPair(payload, "ResolvedAtUtc", "resolvedAtUtc", now);
         SetResolutionPair(payload, "ResolvedEngine", "resolvedEngine", result.Engine);
         SetResolutionPair(payload, "Engine", "engine", result.Engine);
-        SetResolutionPair(payload, "SourceService", "sourceService", result.Engine);
         SetResolutionPair(payload, ResolutionErrorPascalKey, ResolutionErrorCamelKey, string.Empty);
 
         if (!string.IsNullOrWhiteSpace(result.SourceUrl))
@@ -158,6 +188,7 @@ public static class QueuePreResolutionPayload
         SetResolutionPairIfPresent(payload, "Album", "album", result.Album);
         SetResolutionPairIfPresent(payload, "CollectionName", "collectionName", result.Album);
         SetResolutionPairIfPresent(payload, "AlbumArtist", "albumArtist", result.AlbumArtist);
+        ApplyResolvedMetadata(payload, result.Metadata);
 
         if (result.DurationMs.HasValue && result.DurationMs.Value > 0)
         {
@@ -183,6 +214,50 @@ public static class QueuePreResolutionPayload
             payload["FallbackPlan"] = plan.DeepClone();
             payload["fallbackPlan"] = plan.DeepClone();
         }
+    }
+
+    private static void ApplyResolvedMetadata(JsonObject payload, ResolvedMetadata? metadata)
+    {
+        if (metadata == null)
+        {
+            return;
+        }
+
+        SetResolutionPairIfPresent(payload, "Title", "title", metadata.Title);
+        SetResolutionPairIfPresent(payload, "Artist", "artist", metadata.Artist);
+        SetResolutionPairIfPresent(payload, "Album", "album", metadata.Album);
+        SetResolutionPairIfPresent(payload, "AlbumArtist", "albumArtist", metadata.AlbumArtist);
+        SetResolutionPairIfPresent(payload, "Cover", "cover", metadata.Cover);
+        SetResolutionPairIfPresent(payload, "Label", "label", metadata.Label);
+        SetResolutionPairIfPresent(payload, "Copyright", "copyright", metadata.Copyright);
+        SetResolutionPairIfPresent(payload, "Composer", "composer", metadata.Composer);
+        SetResolutionPairIfPresent(payload, "ReleaseDate", "releaseDate", metadata.ReleaseDate);
+        SetResolutionPairIfPresent(payload, "Url", "url", metadata.Url);
+        SetResolutionPairIfPresent(payload, "Barcode", "barcode", metadata.Barcode);
+        SetResolutionPairIfPresent(payload, "MusicKey", "musicKey", metadata.MusicKey);
+
+        if (metadata.Genres is { Count: > 0 })
+        {
+            var genres = JsonSerializer.SerializeToNode(metadata.Genres) ?? new JsonArray();
+            payload["Genres"] = genres.DeepClone();
+            payload["genres"] = genres.DeepClone();
+        }
+
+        SetResolutionPairIfPresent(payload, "Explicit", "explicit", metadata.Explicit);
+        SetResolutionPairIfPositive(payload, "TrackNumber", "trackNumber", metadata.TrackNumber);
+        SetResolutionPairIfPositive(payload, "DiscNumber", "discNumber", metadata.DiscNumber);
+        SetResolutionPairIfPositive(payload, "TrackTotal", "trackTotal", metadata.TrackTotal);
+        SetResolutionPairIfPositive(payload, "DiscTotal", "discTotal", metadata.DiscTotal);
+        SetResolutionPairIfPresent(payload, "Danceability", "danceability", metadata.Danceability);
+        SetResolutionPairIfPresent(payload, "Energy", "energy", metadata.Energy);
+        SetResolutionPairIfPresent(payload, "Valence", "valence", metadata.Valence);
+        SetResolutionPairIfPresent(payload, "Acousticness", "acousticness", metadata.Acousticness);
+        SetResolutionPairIfPresent(payload, "Instrumentalness", "instrumentalness", metadata.Instrumentalness);
+        SetResolutionPairIfPresent(payload, "Speechiness", "speechiness", metadata.Speechiness);
+        SetResolutionPairIfPresent(payload, "Loudness", "loudness", metadata.Loudness);
+        SetResolutionPairIfPresent(payload, "Tempo", "tempo", metadata.Tempo);
+        SetResolutionPairIfPresent(payload, "TimeSignature", "timeSignature", metadata.TimeSignature);
+        SetResolutionPairIfPresent(payload, "Liveness", "liveness", metadata.Liveness);
     }
 
     public static void ApplyFailed(JsonObject payload, string error, DateTimeOffset now)
@@ -251,6 +326,42 @@ public static class QueuePreResolutionPayload
         if (!string.IsNullOrWhiteSpace(value))
         {
             SetResolutionPair(payload, pascalKey, camelKey, value.Trim());
+        }
+    }
+
+    private static void SetResolutionPairIfPresent(JsonObject payload, string pascalKey, string camelKey, bool? value)
+    {
+        if (value.HasValue)
+        {
+            payload[pascalKey] = value.Value;
+            payload[camelKey] = value.Value;
+        }
+    }
+
+    private static void SetResolutionPairIfPresent(JsonObject payload, string pascalKey, string camelKey, double? value)
+    {
+        if (value.HasValue)
+        {
+            payload[pascalKey] = value.Value;
+            payload[camelKey] = value.Value;
+        }
+    }
+
+    private static void SetResolutionPairIfPresent(JsonObject payload, string pascalKey, string camelKey, int? value)
+    {
+        if (value.HasValue)
+        {
+            payload[pascalKey] = value.Value;
+            payload[camelKey] = value.Value;
+        }
+    }
+
+    private static void SetResolutionPairIfPositive(JsonObject payload, string pascalKey, string camelKey, int? value)
+    {
+        if (value is > 0)
+        {
+            payload[pascalKey] = value.Value;
+            payload[camelKey] = value.Value;
         }
     }
 }

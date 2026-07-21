@@ -5,6 +5,11 @@ using System.Reflection;
 using DeezSpoTag.Services.Download.Deezer;
 using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Apple;
+using DeezSpoTag.Services.Download.Amazon;
+using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Web.Services;
@@ -43,6 +48,12 @@ public sealed class DownloadIntentPayloadPopulationTests
             "CreateManualParityQueueIntent",
             BindingFlags.NonPublic | BindingFlags.Static)
         ?? throw new InvalidOperationException("WatchlistEngine.CreateManualParityQueueIntent not found.");
+
+    private static readonly MethodInfo ApplyVisiblePayloadResolutionStateMethod =
+        typeof(DownloadIntentService).GetMethod(
+            "ApplyVisiblePayloadResolutionState",
+            BindingFlags.NonPublic | BindingFlags.Static)
+        ?? throw new InvalidOperationException("DownloadIntentService.ApplyVisiblePayloadResolutionState not found.");
 
     [Fact]
     public void ManualVisiblePreResolutionQueueItems_AreInsertedAsQueuedNotResolving()
@@ -117,6 +128,73 @@ public sealed class DownloadIntentPayloadPopulationTests
         Assert.Equal(intent.TidalId, payload.TidalId);
         Assert.Equal(intent.QobuzId, payload.QobuzId);
         Assert.Equal(intent.AmazonId, payload.AmazonId);
+    }
+
+    [Theory]
+    [InlineData("deezer")]
+    [InlineData("apple")]
+    [InlineData("tidal")]
+    [InlineData("qobuz")]
+    [InlineData("amazon")]
+    public void VisibleQueuePayload_WithMissingArtwork_RemainsPendingForEveryEngine(string engine)
+    {
+        var payload = CreatePayload(engine);
+        payload.Title = "Track";
+        payload.Artist = "Artist";
+        payload.Album = "Album";
+        payload.Isrc = "USRC17607839";
+        payload.DurationSeconds = 240;
+        payload.SourceUrl = $"https://example.test/{engine}/track";
+        SetDirectIdentity(payload, engine);
+
+        ApplyVisiblePayloadResolutionStateMethod.Invoke(null, new object[] { payload });
+
+        Assert.Equal(QueuePreResolutionPayload.Pending, payload.ResolutionStatus);
+    }
+
+    [Theory]
+    [InlineData("deezer")]
+    [InlineData("apple")]
+    [InlineData("tidal")]
+    [InlineData("qobuz")]
+    [InlineData("amazon")]
+    public void VisibleQueuePayload_WithCompleteMetadata_IsResolvedForEveryEngine(string engine)
+    {
+        var payload = CreatePayload(engine);
+        payload.Title = "Track";
+        payload.Artist = "Artist";
+        payload.Album = "Album";
+        payload.Isrc = "USRC17607839";
+        payload.Cover = "https://images.example.test/cover.jpg";
+        payload.DurationSeconds = 240;
+        payload.SourceUrl = $"https://example.test/{engine}/track";
+        SetDirectIdentity(payload, engine);
+
+        ApplyVisiblePayloadResolutionStateMethod.Invoke(null, new object[] { payload });
+
+        Assert.Equal(QueuePreResolutionPayload.Resolved, payload.ResolutionStatus);
+    }
+
+    private static EngineQueueItemBase CreatePayload(string engine) => engine switch
+    {
+        "deezer" => new DeezerQueueItem(),
+        "apple" => new AppleQueueItem(),
+        "tidal" => new TidalQueueItem(),
+        "qobuz" => new QobuzQueueItem(),
+        "amazon" => new AmazonQueueItem(),
+        _ => throw new ArgumentOutOfRangeException(nameof(engine))
+    };
+
+    private static void SetDirectIdentity(EngineQueueItemBase payload, string engine)
+    {
+        switch (engine)
+        {
+            case "deezer": payload.DeezerId = "1"; break;
+            case "apple": payload.AppleId = "1"; break;
+            case "tidal": payload.TidalId = "1"; break;
+            case "qobuz": payload.QobuzId = "1"; break;
+            case "amazon": payload.AmazonId = "B000000001"; break;
+        }
     }
 
     [Fact]

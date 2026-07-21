@@ -5852,7 +5852,8 @@ function taskNeedsMetadataHydration(task) {
         || title === 'unknown'
         || artist === 'unknown'
         || !cover
-        || cover === '/images/default-cover.png';
+        || cover === '/images/default-cover.png'
+        || cover === '/images/unavailable/unavailable.jpg';
 }
 
 function scheduleQueueHydrationRefresh() {

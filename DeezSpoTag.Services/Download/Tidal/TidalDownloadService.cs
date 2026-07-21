@@ -76,7 +76,8 @@ public sealed class TidalDownloadService
         string Artist,
         string Album,
         string Isrc,
-        int DurationSeconds);
+        int DurationSeconds,
+        string CoverUrl);
 
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
@@ -405,7 +406,19 @@ public sealed class TidalDownloadService
             ResolveTidalArtistName(track),
             track.Album?.Title ?? string.Empty,
             track.Isrc,
-            track.Duration);
+            track.Duration,
+            BuildTidalCoverUrl(track.Album?.Cover));
+
+    private static string BuildTidalCoverUrl(string? imageId)
+    {
+        if (string.IsNullOrWhiteSpace(imageId))
+        {
+            return string.Empty;
+        }
+
+        var normalized = imageId.Replace("-", "/", StringComparison.Ordinal).Trim('/');
+        return $"https://resources.tidal.com/images/{normalized}/1280x1280.jpg";
+    }
 
     private async Task<string> DownloadByUrlAsync(
         TidalDownloadRequest request,
@@ -3295,6 +3308,9 @@ public sealed class TidalDownloadService
     {
         [JsonPropertyName("title")]
         public string Title { get; set; } = "";
+
+        [JsonPropertyName("cover")]
+        public string Cover { get; set; } = "";
     }
 
     private sealed class TidalApiResponse
