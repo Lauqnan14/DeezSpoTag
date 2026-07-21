@@ -2,9 +2,11 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerSoundtrackMonitorService : BackgroundService
 {
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan WeeklyRefreshInterval = TimeSpan.FromDays(7);
+    private static readonly TimeSpan NewItemProbeInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan SchedulerPollInterval = TimeSpan.FromMinutes(15);
-    private const string JobKey = "media-server-soundtrack-sync";
+    private const string WeeklyJobKey = "media-server-soundtrack-sync";
+    private const string NewItemJobKey = "media-server-soundtrack-new-items";
     private readonly MediaServerSoundtrackService _service;
     private readonly DeezSpoTag.Services.Library.LibraryRepository _repository;
     private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
@@ -26,20 +28,25 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (await _repository.TryClaimBackgroundJobAsync(JobKey, RefreshInterval, DateTimeOffset.UtcNow, stoppingToken))
+            if (await _repository.TryClaimBackgroundJobAsync(WeeklyJobKey, WeeklyRefreshInterval, DateTimeOffset.UtcNow, stoppingToken))
             {
-                await _workCoordinator.RunHeavyWorkAsync(RunSyncIterationAsync, stoppingToken);
-                await _repository.CompleteBackgroundJobAsync(JobKey, RefreshInterval, DateTimeOffset.UtcNow, stoppingToken);
+                await _workCoordinator.RunHeavyWorkAsync(RunWeeklySyncIterationAsync, stoppingToken);
+                await _repository.CompleteBackgroundJobAsync(WeeklyJobKey, WeeklyRefreshInterval, DateTimeOffset.UtcNow, stoppingToken);
+            }
+            if (await _repository.TryClaimBackgroundJobAsync(NewItemJobKey, NewItemProbeInterval, DateTimeOffset.UtcNow, stoppingToken))
+            {
+                await _workCoordinator.RunHeavyWorkAsync(RunNewItemDetectionIterationAsync, stoppingToken);
+                await _repository.CompleteBackgroundJobAsync(NewItemJobKey, NewItemProbeInterval, DateTimeOffset.UtcNow, stoppingToken);
             }
             await Task.Delay(SchedulerPollInterval, stoppingToken);
         }
     }
 
-    private async Task RunSyncIterationAsync(CancellationToken cancellationToken)
+    private async Task RunWeeklySyncIterationAsync(CancellationToken cancellationToken)
     {
         try
         {
-            await _service.RunScheduledBackgroundSyncAsync(cancellationToken);
+            await _service.RunWeeklyBackgroundSyncAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -52,6 +59,26 @@ public sealed class MediaServerSoundtrackMonitorService : BackgroundService
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogWarning(ex, "Soundtrack monitor run failed.");
+        }
+    }
+
+    private async Task RunNewItemDetectionIterationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _service.DetectAndResolveNewItemsAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "New soundtrack item detection timed out.");
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "New soundtrack item detection failed.");
         }
     }
 }

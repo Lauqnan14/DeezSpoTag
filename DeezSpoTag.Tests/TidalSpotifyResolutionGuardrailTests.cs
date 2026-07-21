@@ -166,16 +166,17 @@ public sealed class TidalSpotifyResolutionGuardrailTests
     }
 
     [Fact]
-    public void PlayableTracklistsHydrateIsrcWithPathfinderThenUnresolvedLibrespotFallback()
+    public void SpotifyIdentityHydration_SeparatesGenericContentFromPathfinderRenderedPlaylists()
     {
         var tracklist = ReadSource("DeezSpoTag.Web", "Services", "SpotifyTracklistService.cs");
         var metadata = ReadSource("DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs");
 
         Assert.Contains("contentType is SpotifyContentType.Track or SpotifyContentType.Album", tracklist, StringComparison.Ordinal);
-        Assert.Contains("tracks.All(HasIsrcIdentity)", tracklist, StringComparison.Ordinal);
         Assert.Contains("FetchTrackIsrcsAsync", metadata, StringComparison.Ordinal);
         Assert.Contains("var unresolved = missing", metadata, StringComparison.Ordinal);
         Assert.Contains("FetchLibrespotTracksAsync(unresolved", metadata, StringComparison.Ordinal);
+        Assert.Contains("HydratePlaylistTrackIsrcsWithLibrespotAsync", tracklist, StringComparison.Ordinal);
+        Assert.Contains("FetchLibrespotTrackIdentitiesAsync(trackIds", metadata, StringComparison.Ordinal);
     }
 
     [Fact]

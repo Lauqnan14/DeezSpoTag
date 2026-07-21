@@ -64,4 +64,76 @@ public sealed class SpotifyTracklistMatchStoreTests
         Assert.Equal(1, snapshot.Pending);
         Assert.Empty(snapshot.Matches);
     }
+
+    [Fact]
+    public void IncrementalSnapshot_ReturnsOnlyEntriesChangedAfterRevision()
+    {
+        var store = new SpotifyTracklistMatchStore();
+        const string token = "spotify:playlist:incremental";
+
+        Assert.True(store.TryReservePending(token, 0));
+        Assert.True(store.TryReservePending(token, 1));
+        store.RecordMatch(token, 0, "111", "spotify-0", "matched", "isrc", 1);
+
+        var first = store.GetSnapshot(token);
+        Assert.NotNull(first);
+        Assert.Single(first.Matches);
+        Assert.Equal(1, first.Pending);
+        Assert.Equal(1, first.Matched);
+
+        store.RecordMatch(token, 1, "222", "spotify-1", "matched", "isrc", 1);
+        var delta = store.GetSnapshot(token, first.Revision);
+
+        Assert.NotNull(delta);
+        Assert.Single(delta.Matches);
+        Assert.Equal(1, delta.Matches[0].Index);
+        Assert.Equal("222", delta.Matches[0].DeezerId);
+        Assert.Equal(0, delta.Pending);
+        Assert.Equal(2, delta.Matched);
+        Assert.True(delta.Revision > first.Revision);
+    }
+
+    [Fact]
+    public void FirstMatchedTrack_IsPublishedWhileRemainingPlaylistIsStillPending()
+    {
+        var store = new SpotifyTracklistMatchStore();
+        const string token = "spotify:playlist:large";
+
+        for (var index = 0; index < 1000; index++)
+        {
+            Assert.True(store.TryReservePending(token, index));
+        }
+
+        store.RecordMatch(token, 0, "3135556", "spotify-0", "matched", "isrc", 1);
+        var snapshot = store.GetSnapshot(token);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal(999, snapshot.Pending);
+        Assert.Equal(1, snapshot.Matched);
+        Assert.Single(snapshot.Matches);
+        Assert.Equal("3135556", snapshot.Matches[0].DeezerId);
+    }
+
+    [Fact]
+    public void ProgressUpdates_AreIncrementalWithoutMarkingTrackComplete()
+    {
+        var store = new SpotifyTracklistMatchStore();
+        const string token = "spotify:playlist:progress";
+
+        Assert.True(store.TryReservePending(token, 0));
+        store.RecordProgress(token, 0, "spotify-0", "matching", "match_started", 1);
+        var matching = store.GetSnapshot(token);
+
+        Assert.NotNull(matching);
+        Assert.Equal(1, matching.Pending);
+        Assert.Equal(0, matching.Matched);
+
+        store.RecordProgress(token, 0, "spotify-0", "rechecking", "retry", 2);
+        var retryDelta = store.GetSnapshot(token, matching.Revision);
+
+        Assert.NotNull(retryDelta);
+        Assert.Single(retryDelta.Matches);
+        Assert.Equal("rechecking", retryDelta.Matches[0].Status);
+        Assert.Equal(1, retryDelta.Pending);
+    }
 }

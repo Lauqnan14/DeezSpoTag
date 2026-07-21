@@ -6,6 +6,17 @@ public sealed record SpotiFlacPlaylistPayload(
     [property: JsonPropertyName("playlist_info")] SpotiFlacPlaylistInfo PlaylistInfo,
     [property: JsonPropertyName("track_list")] List<SpotiFlacAlbumTrackMetadata> TrackList);
 
+public sealed record SpotifyPathfinderPlaylistPageResult(
+    SpotiFlacPlaylistPayload? Payload,
+    string? SnapshotId,
+    int Offset,
+    int SourceItemCount,
+    int TotalItems,
+    int NextOffset,
+    bool HasMore,
+    bool IsComplete,
+    string? FailureCode);
+
 public sealed record SpotiFlacPlaylistInfo(
     [property: JsonPropertyName("tracks")] SpotiFlacPlaylistTracks Tracks,
     [property: JsonPropertyName("followers")] SpotiFlacPlaylistFollowers Followers,

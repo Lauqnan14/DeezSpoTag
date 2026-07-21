@@ -16,14 +16,14 @@ public class SpotifyTracklistMatchesApiController : ControllerBase
     }
 
     [HttpGet("matches")]
-    public IActionResult Matches([FromQuery] string token)
+    public IActionResult Matches([FromQuery] string token, [FromQuery] long afterRevision = 0)
     {
         if (string.IsNullOrWhiteSpace(token))
         {
             return BadRequest(new { error = "Token is required." });
         }
 
-        var snapshot = _matchStore.GetSnapshot(token);
+        var snapshot = _matchStore.GetSnapshot(token, Math.Max(0, afterRevision));
         if (snapshot == null)
         {
             return Ok(new { available = false });
@@ -36,6 +36,7 @@ public class SpotifyTracklistMatchesApiController : ControllerBase
             matched = snapshot.Matched,
             failed = snapshot.Failed,
             rechecking = snapshot.Rechecking,
+            revision = snapshot.Revision,
             matches = snapshot.Matches
         });
     }

@@ -77,6 +77,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private sealed record PlaylistUnionResult(JsonElement PlaylistUnion, List<JsonElement> TrackItems);
 
+    private sealed record PlaylistPageQueryResult(JsonElement? PlaylistUnion, string? FailureCode);
+
     private sealed record DiscographyPageResult(JsonElement DiscographyAll, List<JsonElement> Items);
 
     private sealed record RelatedArtistArrays(JsonElement? RelatedContent, JsonElement? Direct);
@@ -801,25 +803,6 @@ public sealed class SpotifyPathfinderMetadataClient
         return ParseAlbumTracks(album.AlbumUnion, album.TrackItems);
     }
 
-    public async Task<List<SpotifyTrackSummary>?> FetchPlaylistTracksAsync(string playlistId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return null;
-        }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
-        if (context is null)
-        {
-            return null;
-        }
-        PlaylistUnionResult? playlist = await QueryPlaylistUnionAsync(context, playlistId, cancellationToken);
-        if (playlist is null)
-        {
-            return null;
-        }
-        return ParsePlaylistTracks(playlist.PlaylistUnion, playlist.TrackItems);
-    }
-
     public async Task<SpotifyArtistCandidateInfo?> GetArtistCandidateInfoAsync(string artistId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(artistId))
@@ -1041,25 +1024,6 @@ public sealed class SpotifyPathfinderMetadataClient
         return ParseArtistAppearsOn(artist.Value);
     }
 
-    public async Task<List<SpotifyTrackSummary>?> FetchPlaylistTracksWithBlobAuthAsync(string playlistId, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return null;
-        }
-        PathfinderAuthContext? context = await BuildBlobAuthContextAsync(cancellationToken);
-        if (context is null)
-        {
-            return null;
-        }
-        PlaylistUnionResult? playlist = await QueryPlaylistUnionAsync(context, playlistId, cancellationToken);
-        if (playlist is null)
-        {
-            return null;
-        }
-        return ParsePlaylistTracks(playlist.PlaylistUnion, playlist.TrackItems);
-    }
-
     public async Task<Dictionary<string, string>> FetchTrackIsrcsAsync(IReadOnlyList<string> trackIds, CancellationToken cancellationToken, int? maxConcurrency = null)
     {
         Dictionary<string, string> results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1252,24 +1216,68 @@ public sealed class SpotifyPathfinderMetadataClient
         }
     }
 
-    public async Task<SpotiFlacPlaylistPayload?> FetchSpotiFlacPlaylistAsync(string playlistId, CancellationToken cancellationToken)
+    public async Task<SpotifyPathfinderPlaylistPageResult> FetchPlaylistPageAsync(
+        string playlistId,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken)
     {
+        var boundedOffset = Math.Max(0, offset);
+        var boundedLimit = Math.Clamp(limit, 1, 100);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            return null;
+            return FailedPlaylistPage(boundedOffset, "spotify_playlist_id_missing");
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+
+        var context = await BuildAuthContextAsync(cancellationToken);
         if (context is null)
         {
-            return null;
+            return FailedPlaylistPage(boundedOffset, "spotify_auth_unavailable");
         }
-        PlaylistUnionResult? playlist = await QueryPlaylistUnionAsync(context, playlistId, cancellationToken);
-        if (playlist is null)
+
+        var query = await QueryPlaylistUnionPageWithFailureAsync(
+            context,
+            playlistId,
+            boundedOffset,
+            boundedLimit,
+            cancellationToken);
+        if (!query.PlaylistUnion.HasValue)
         {
-            return null;
+            return FailedPlaylistPage(boundedOffset, query.FailureCode ?? "spotify_page_failed");
         }
-        return BuildSpotiFlacPlaylistPayload(playlist.PlaylistUnion, playlist.TrackItems);
+
+        var playlistUnion = query.PlaylistUnion;
+        var rawItems = ExtractClonedItems(playlistUnion.Value, ContentKey, ItemsKey);
+        var payload = BuildSpotiFlacPlaylistPayload(playlistUnion.Value, rawItems);
+        if (payload is null)
+        {
+            return FailedPlaylistPage(boundedOffset, "spotify_schema_invalid");
+        }
+
+        var totalItems = TryGetInt(playlistUnion.Value, ContentKey, TotalCountKey)
+            ?? boundedOffset + rawItems.Count;
+        var nextOffset = boundedOffset + rawItems.Count;
+        var hasMore = rawItems.Count > 0 && nextOffset < totalItems;
+        var isComplete = rawItems.Count > 0 || totalItems == 0 || boundedOffset >= totalItems;
+        return new SpotifyPathfinderPlaylistPageResult(
+            payload,
+            ExtractPlaylistSnapshotId(playlistUnion.Value),
+            boundedOffset,
+            rawItems.Count,
+            totalItems,
+            nextOffset,
+            hasMore,
+            isComplete,
+            isComplete ? null : "spotify_page_incomplete");
     }
+
+    private static SpotifyPathfinderPlaylistPageResult FailedPlaylistPage(int offset, string failureCode)
+        => new(null, null, offset, 0, 0, offset, false, false, failureCode);
+
+    private static string? ExtractPlaylistSnapshotId(JsonElement playlistUnion)
+        => TryGetString(playlistUnion, "revisionId")
+            ?? TryGetString(playlistUnion, "snapshotId")
+            ?? TryGetString(playlistUnion, "revision");
 
     private async Task<PathfinderAuthContext?> BuildAuthContextAsync(CancellationToken cancellationToken)
     {
@@ -4950,11 +4958,17 @@ public sealed class SpotifyPathfinderMetadataClient
         while (true)
         {
             int pageLimit = ResolvePathfinderPageLimit(maxItems, allItems.Count);
-            JsonElement? currentUnion = await QueryPlaylistUnionPageAsync(context, playlistId, offset, pageLimit, cancellationToken);
-            if (!currentUnion.HasValue)
+            var query = await QueryPlaylistUnionPageWithFailureAsync(
+                context,
+                playlistId,
+                offset,
+                pageLimit,
+                cancellationToken);
+            if (!query.PlaylistUnion.HasValue)
             {
-                break;
+                return null;
             }
+            var currentUnion = query.PlaylistUnion;
             CaptureUnion(ref playlistUnion, currentUnion.Value);
             List<JsonElement> itemList = ExtractClonedItems(currentUnion.Value, ContentKey, ItemsKey);
             if (itemList.Count == 0)
@@ -4978,14 +4992,73 @@ public sealed class SpotifyPathfinderMetadataClient
             : 1000;
     }
 
-    private async Task<JsonElement?> QueryPlaylistUnionPageAsync(PathfinderAuthContext context, string playlistId, int offset, int pageLimit, CancellationToken cancellationToken)
+    private async Task<PlaylistPageQueryResult> QueryPlaylistUnionPageWithFailureAsync(
+        PathfinderAuthContext context,
+        string playlistId,
+        int offset,
+        int pageLimit,
+        CancellationToken cancellationToken)
     {
-        var payload = new
+        try
+        {
+            var payloadJson = JsonSerializer.Serialize(
+                BuildPlaylistPagePayload(playlistId, offset, pageLimit),
+                _jsonOptions);
+            var client = _httpClientFactory.CreateClient();
+            var (status, json) = await SendPathfinderRequestAsync(client, context, payloadJson, cancellationToken);
+            if (status == HttpStatusCode.Unauthorized)
+            {
+                InvalidateAuthContext();
+                var refreshed = await BuildAuthContextAsync(cancellationToken);
+                if (refreshed is null)
+                {
+                    return new(null, "spotify_auth_unavailable");
+                }
+                (status, json) = await SendPathfinderRequestAsync(client, refreshed, payloadJson, cancellationToken);
+            }
+            if (status == HttpStatusCode.TooManyRequests)
+            {
+                return new(null, "spotify_rate_limited");
+            }
+            if (status is HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout)
+            {
+                return new(null, "spotify_page_timeout");
+            }
+            if (status != HttpStatusCode.OK || string.IsNullOrWhiteSpace(json))
+            {
+                return new(null, status == HttpStatusCode.Unauthorized
+                    ? "spotify_auth_rejected"
+                    : "spotify_page_failed");
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!TryGetNested(doc.RootElement, out var playlistUnion, DataKey, "playlistV2"))
+            {
+                return new(null, "spotify_schema_invalid");
+            }
+            return new(playlistUnion.Clone(), null);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new(null, "spotify_page_timeout");
+        }
+        catch (JsonException)
+        {
+            return new(null, "spotify_schema_invalid");
+        }
+        catch (HttpRequestException)
+        {
+            return new(null, "spotify_page_failed");
+        }
+    }
+
+    private static object BuildPlaylistPagePayload(string playlistId, int offset, int pageLimit)
+        => new
         {
             variables = new
             {
                 uri = "spotify:playlist:" + playlistId,
-                offset = offset,
+                offset,
                 limit = pageLimit,
                 enableWatchFeedEntrypoint = false
             },
@@ -4999,15 +5072,6 @@ public sealed class SpotifyPathfinderMetadataClient
                 }
             }
         };
-
-        using JsonDocument? doc = await QueryAsync(context, payload, cancellationToken);
-        if (doc is null || !TryGetNested(doc.RootElement, out var playlistUnion, DataKey, "playlistV2"))
-        {
-            return null;
-        }
-
-        return playlistUnion.Clone();
-    }
 
     private static void CaptureUnion(ref JsonElement? existingUnion, JsonElement currentUnion)
     {

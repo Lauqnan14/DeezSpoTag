@@ -129,6 +129,23 @@ public sealed class MediaServerLibrarySettingsBehaviorTests
         Assert.DoesNotContain("loadSoundtrackItems();\n        }, attempt", soundtrackSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void SoundtrackMonitor_UsesWeeklyReconciliationAndResolvesOnlyNewRecentItems()
+    {
+        var monitorSource = ReadSource("DeezSpoTag.Web", "Services", "MediaServerSoundtrackMonitorService.cs");
+        var serviceSource = ReadSource("DeezSpoTag.Web", "Services", "MediaServerSoundtrackService.cs");
+
+        Assert.Contains("WeeklyRefreshInterval = TimeSpan.FromDays(7)", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("NewItemProbeInterval = TimeSpan.FromMinutes(15)", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("RunWeeklyBackgroundSyncAsync", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("DetectAndResolveNewItemsAsync", monitorSource, StringComparison.Ordinal);
+        Assert.Contains("SyncPersistentMediaCacheAsync(fullRefresh: true", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("Where(item => !existingByItemId.ContainsKey", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("BuildSoundtrackItemDto(item, persistedRow: null)", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("MonthlySyncInterval", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SyncRecentlyAddedItemsForLibraryAsync", serviceSource, StringComparison.Ordinal);
+    }
+
     private static ClaimsPrincipal CreateUser(string id)
     {
         return new ClaimsPrincipal(new ClaimsIdentity(new List<Claim>

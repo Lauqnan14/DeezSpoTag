@@ -53,7 +53,6 @@ public sealed partial class MediaServerSoundtrackService
     private const string DeezerWebLinkPattern = @"deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?(?<type>album|playlist|track)\/(?<id>\d+)";
     private static readonly TimeSpan SoundtrackCacheTtl = TimeSpan.FromHours(12);
     private const int SoundtrackCacheLimit = 2048;
-    private static readonly TimeSpan MonthlySyncInterval = TimeSpan.FromDays(30);
     private static readonly TimeSpan LibraryDiscoveryRefreshInterval = TimeSpan.FromHours(24);
     private static readonly TimeSpan LibraryConnectedFreshWindow = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan RegexDynamicTimeout = TimeSpan.FromMilliseconds(RegexTimeoutMilliseconds);
@@ -799,7 +798,7 @@ public sealed partial class MediaServerSoundtrackService
         };
     }
 
-    public async Task RunScheduledBackgroundSyncAsync(CancellationToken cancellationToken)
+    public async Task RunWeeklyBackgroundSyncAsync(CancellationToken cancellationToken)
     {
         var auth = await _platformAuthService.LoadAsync();
         var settings = await _store.LoadAsync(cancellationToken);
@@ -823,18 +822,21 @@ public sealed partial class MediaServerSoundtrackService
             }
         }
 
-        if (await IsMonthlySyncDueAsync(targets, cancellationToken))
-        {
-            await SyncPersistentMediaCacheAsync(fullRefresh: true, cancellationToken);
-            return;
-        }
+        await SyncPersistentMediaCacheAsync(fullRefresh: true, cancellationToken);
+    }
+
+    public async Task DetectAndResolveNewItemsAsync(CancellationToken cancellationToken)
+    {
+        var auth = await _platformAuthService.LoadAsync();
+        var settings = await _store.LoadAsync(cancellationToken);
+        var targets = ResolveDistinctTargetLibraries(settings, auth);
 
         foreach (var target in targets)
         {
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await SyncRecentlyAddedItemsForLibraryAsync(auth, target, cancellationToken);
+                await DetectAndResolveNewItemsForLibraryAsync(auth, target, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -844,7 +846,7 @@ public sealed partial class MediaServerSoundtrackService
             {
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
-                    _logger.LogDebug(ex, "Recent soundtrack probe failed for {ServerType}/{LibraryId}.", target.ServerType, target.LibraryId);
+                    _logger.LogDebug(ex, "New soundtrack item probe failed for {ServerType}/{LibraryId}.", target.ServerType, target.LibraryId);
                 }
             }
         }
@@ -1005,28 +1007,7 @@ public sealed partial class MediaServerSoundtrackService
         return DateTimeOffset.UtcNow - lastRefreshUtc >= LibraryDiscoveryRefreshInterval;
     }
 
-    private async Task<bool> IsMonthlySyncDueAsync(
-        List<(string ServerType, string LibraryId, string LibraryName, string Category)> targets,
-        CancellationToken cancellationToken)
-    {
-        foreach (var target in targets)
-        {
-            var state = await _cacheRepository.GetLibrarySyncStateAsync(target.ServerType, target.LibraryId, cancellationToken);
-            if (state?.LastSuccessUtc is not DateTimeOffset lastSuccessUtc)
-            {
-                return true;
-            }
-
-            if (DateTimeOffset.UtcNow - lastSuccessUtc >= MonthlySyncInterval)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private async Task SyncRecentlyAddedItemsForLibraryAsync(
+    private async Task DetectAndResolveNewItemsForLibraryAsync(
         PlatformAuthState auth,
         (string ServerType, string LibraryId, string LibraryName, string Category) target,
         CancellationToken cancellationToken)
@@ -1044,23 +1025,8 @@ public sealed partial class MediaServerSoundtrackService
             cancellationToken);
 
         var rowsToPersist = recentItems
-            .Select(item =>
-            {
-                existingByItemId.TryGetValue(NormalizeText(item.ItemId), out var persistedRow);
-                return BuildSoundtrackItemDto(item, persistedRow);
-            })
-            .Where(row =>
-            {
-                if (!existingByItemId.TryGetValue(NormalizeText(row.ItemId), out var persistedRow))
-                {
-                    return true;
-                }
-
-                return !string.Equals(
-                    NormalizeText(persistedRow.ContentHash),
-                    NormalizeText(row.ContentHash),
-                    StringComparison.Ordinal);
-            })
+            .Where(item => !existingByItemId.ContainsKey(NormalizeText(item.ItemId)))
+            .Select(item => BuildSoundtrackItemDto(item, persistedRow: null))
             .ToList();
 
         if (rowsToPersist.Count == 0)

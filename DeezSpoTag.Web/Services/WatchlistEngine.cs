@@ -255,7 +255,8 @@ internal sealed class WatchlistEngine
         bool IsComplete,
         bool IsAuthoritativeEmpty,
         bool CanClearImageUrl,
-        string? OwnerName);
+        string? OwnerName,
+        string? FailureCode);
 
     private sealed record LivePlaylistSnapshotMetadata(
         string? SnapshotId = null,
@@ -266,7 +267,8 @@ internal sealed class WatchlistEngine
         bool IsComplete = true,
         bool IsAuthoritativeEmpty = false,
         bool CanClearImageUrl = false,
-        string? OwnerName = null);
+        string? OwnerName = null,
+        string? FailureCode = null);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
@@ -408,9 +410,11 @@ internal sealed class WatchlistEngine
 
         if (!liveSnapshot.IsComplete || (candidates.Count == 0 && !liveSnapshot.IsAuthoritativeEmpty))
         {
-            var sourceFailureMessage = candidates.Count == 0
-                ? "Playlist source returned an unverified empty snapshot; the previous valid snapshot was preserved and reconciliation will retry."
-                : "Playlist source returned a partial snapshot; the previous valid snapshot was preserved and reconciliation will retry.";
+            var sourceFailureMessage = !string.IsNullOrWhiteSpace(liveSnapshot.FailureCode)
+                ? $"Playlist source failed ({liveSnapshot.FailureCode}); the previous valid snapshot was preserved and reconciliation will retry."
+                : candidates.Count == 0
+                    ? "Playlist source returned an unverified empty snapshot; the previous valid snapshot was preserved and reconciliation will retry."
+                    : "Playlist source returned a partial snapshot; the previous valid snapshot was preserved and reconciliation will retry.";
             await UpdatePlaylistStateAsync(
                 source,
                 sourceId,
@@ -433,7 +437,11 @@ internal sealed class WatchlistEngine
                 1,
                 null,
                 SystemicFailures: 1,
-                FailureFingerprint: candidates.Count == 0 ? "source_unverified_empty" : "source_partial_snapshot",
+                FailureFingerprint: !string.IsNullOrWhiteSpace(liveSnapshot.FailureCode)
+                    ? liveSnapshot.FailureCode
+                    : candidates.Count == 0
+                        ? "source_unverified_empty"
+                        : "source_partial_snapshot",
                 FailureMessage: sourceFailureMessage,
                 QueueStopReason: WatchQueueStopReason.SystemicFailure.ToString(),
                 RemainingQueueableTracks: playlist.TrackCount ?? liveTrackCount);
@@ -2121,7 +2129,8 @@ internal sealed class WatchlistEngine
             metadata.IsComplete,
             metadata.IsAuthoritativeEmpty,
             metadata.CanClearImageUrl,
-            EmptyToNull(metadata.OwnerName));
+            EmptyToNull(metadata.OwnerName),
+            EmptyToNull(metadata.FailureCode));
     }
 
     private static IReadOnlyList<PlaylistTrackCandidate>? TryDeserializePlaylistTrackCandidates(string candidatesJson)
@@ -2177,17 +2186,18 @@ internal sealed class WatchlistEngine
             return virtualSnapshot;
         }
 
-        var sourceMetadata = await _spotifyMetadataService.FetchPlaylistMetadataAsync(sourceId, cancellationToken);
         var metadata = new SpotifyPlaylistPageMetadata(
-            sourceMetadata?.SnapshotId,
-            sourceMetadata?.Name,
-            sourceMetadata?.Subtitle,
-            sourceMetadata?.ImageUrl,
-            sourceMetadata?.TotalTracks,
-            sourceMetadata?.OwnerName);
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
         var pageSize = Math.Min(100, maxCandidates);
         var offset = 0;
+        var sourceItemsConsumed = 0;
         var isComplete = true;
+        string? failureCode = null;
         var isAuthoritativeEmpty = false;
         var pageCount = 0;
         var seenPageFingerprints = new HashSet<string>(StringComparer.Ordinal);
@@ -2199,6 +2209,7 @@ internal sealed class WatchlistEngine
             if (++pageCount > MaximumProviderPlaylistPages)
             {
                 isComplete = false;
+                failureCode = "spotify_page_limit_exceeded";
                 break;
             }
             SpotifyPlaylistPage? page;
@@ -2223,6 +2234,7 @@ internal sealed class WatchlistEngine
                         offset);
                 }
                 isComplete = false;
+                failureCode = "spotify_page_timeout";
                 break;
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
@@ -2236,38 +2248,51 @@ internal sealed class WatchlistEngine
                         offset);
                 }
                 isComplete = false;
+                failureCode = "spotify_page_failed";
                 break;
             }
 
-            if (page == null)
+            if (page == null || !page.IsComplete)
             {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                {
+                    _logger.LogWarning(
+                        "Spotify playlist page unavailable for playlist {PlaylistId} at offset {Offset}; failure={FailureCode}.",
+                        safeSourceId,
+                        offset,
+                        page?.FailureCode ?? "spotify_page_failed");
+                }
                 isComplete = false;
+                failureCode = page?.FailureCode ?? "spotify_page_failed";
                 break;
             }
 
             metadata = ApplySpotifyPlaylistPageMetadata(page, metadata);
+            sourceItemsConsumed += page.SourceItemCount;
 
-            if (page.Tracks.Count == 0)
+            if (page.SourceItemCount == 0)
             {
                 isAuthoritativeEmpty = IsAuthoritativeEmptySpotifyPage(
                     offset,
-                    page.Tracks.Count,
+                    page.SourceItemCount,
                     page.TotalTracks,
-                    metadata.TotalTracks,
-                    metadata.SnapshotId);
+                    metadata.TotalTracks);
                 if (!isAuthoritativeEmpty)
                 {
                     isComplete = false;
+                    failureCode = "spotify_page_incomplete";
                 }
                 break;
             }
             var pageFingerprint = string.Join('|',
-                page.Tracks.Count,
+                offset,
+                page.SourceItemCount,
                 page.Tracks.FirstOrDefault()?.Id,
                 page.Tracks.LastOrDefault()?.Id);
             if (!seenPageFingerprints.Add(pageFingerprint))
             {
                 isComplete = false;
+                failureCode = "spotify_repeated_page";
                 break;
             }
 
@@ -2278,16 +2303,23 @@ internal sealed class WatchlistEngine
                 break;
             }
 
-            offset += page.Tracks.Count;
+            if (page.NextOffset <= offset)
+            {
+                isComplete = false;
+                failureCode = "spotify_invalid_next_offset";
+                break;
+            }
+            offset = page.NextOffset;
             if (page.TotalTracks.HasValue && offset >= page.TotalTracks.Value)
             {
                 break;
             }
         }
 
-        if (metadata.TotalTracks.HasValue && candidates.Count < metadata.TotalTracks.Value)
+        if (metadata.TotalTracks.HasValue && sourceItemsConsumed < metadata.TotalTracks.Value)
         {
             isComplete = false;
+            failureCode = "spotify_source_count_incomplete";
         }
 
         return BuildLivePlaylistSnapshot(
@@ -2297,24 +2329,23 @@ internal sealed class WatchlistEngine
                 Name: metadata.Name,
                 Description: metadata.Description,
                 ImageUrl: metadata.ImageUrl,
-                TrackCount: metadata.TotalTracks,
+                TrackCount: candidates.Count,
                 IsComplete: isComplete,
                 IsAuthoritativeEmpty: isAuthoritativeEmpty,
                 CanClearImageUrl: true,
-                OwnerName: metadata.OwnerName));
+                OwnerName: metadata.OwnerName,
+                FailureCode: failureCode));
     }
 
     internal static bool IsAuthoritativeEmptySpotifyPage(
         int offset,
         int pageTrackCount,
         int? pageTotalTracks,
-        int? metadataTotalTracks,
-        string? snapshotId)
+        int? metadataTotalTracks)
         => offset == 0
            && pageTrackCount == 0
            && pageTotalTracks == 0
-           && metadataTotalTracks == 0
-           && !string.IsNullOrWhiteSpace(snapshotId);
+           && metadataTotalTracks == 0;
 
     private async Task<LivePlaylistSnapshot?> TryGetSpotifyVirtualPlaylistSnapshotAsync(
         string sourceId,
@@ -2352,7 +2383,7 @@ internal sealed class WatchlistEngine
             PreferSpotifyPlaylistMetadataValue(metadata.Description, page.Description, static value => !string.IsNullOrWhiteSpace(value)),
             PreferSpotifyPlaylistMetadataValue(metadata.ImageUrl, page.ImageUrl, static value => !string.IsNullOrWhiteSpace(value)),
             metadata.TotalTracks is > 0 ? metadata.TotalTracks : page.TotalTracks,
-            metadata.OwnerName);
+            PreferSpotifyPlaylistMetadataValue(metadata.OwnerName, page.OwnerName, static value => !string.IsNullOrWhiteSpace(value)));
     }
 
     private static string? PreferSpotifyPlaylistMetadataValue(

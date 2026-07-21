@@ -78,6 +78,11 @@ public class SpotifyTracklistApiController : ControllerBase
             });
         }
 
+        if (string.Equals(parsedType, "playlist", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { error = "Spotify playlists must use the paged playlist endpoint." });
+        }
+
         var payload = await _tracklistService.GetTracklistAsync(url, cancellationToken);
         if (payload == null)
         {

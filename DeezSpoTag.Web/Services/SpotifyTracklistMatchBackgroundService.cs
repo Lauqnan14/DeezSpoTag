@@ -133,7 +133,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
                     item,
                     resolvedTrack,
                     result,
-                    strictMode,
+                    item.AllowFallbackSearch ? strictMode : true,
                     attempt,
                     stoppingToken))
             {
@@ -201,7 +201,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
         SpotifyTracklistMatchWorkItem item,
         SpotifyTrackSummary resolvedTrack,
         SpotifyTracklistResolveResult result,
-        bool strictMode,
+        bool terminalStrictMode,
         int attempt,
         CancellationToken stoppingToken)
     {
@@ -226,7 +226,7 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
         var terminalMetadataResult = await SpotifyTracklistResolver.ResolveFinalUnmatchedFromMetadataAsync(
             _deezerClient,
             resolvedTrack,
-            strictMode,
+            strictMode: terminalStrictMode,
             _logger,
             stoppingToken);
         if (terminalMetadataResult.Outcome == SpotifyTracklistResolveOutcome.Matched)

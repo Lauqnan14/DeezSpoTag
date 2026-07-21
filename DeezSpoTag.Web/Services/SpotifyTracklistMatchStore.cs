@@ -8,7 +8,7 @@ public interface ISpotifyTracklistMatchStore
     bool TryReservePending(string token, int index);
     void RecordProgress(string token, int index, string? spotifyId, string status, string reason, int attempt);
     void RecordMatch(string token, int index, string deezerId, string? spotifyId, string status, string reason, int attempt);
-    SpotifyTracklistMatchSnapshot? GetSnapshot(string token);
+    SpotifyTracklistMatchSnapshot? GetSnapshot(string token, long afterRevision = 0);
     SpotifyTracklistMatchSnapshot? GetSnapshotBySignature(string signature);
     void CacheSignatureSnapshot(string signature, IReadOnlyList<SpotifyTracklistMatchEntry> matches);
     void Activate(string token);
@@ -39,6 +39,7 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
                     state.ReservedIndexes.Clear();
                     state.Pending = Math.Max(0, pendingCount);
                     state.Signature = signature;
+                    state.Revision++;
                 }
                 else
                 {
@@ -82,14 +83,19 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
             _matches[token] = state;
         }
 
-        state.Matches[index] = new SpotifyTracklistMatchEntry(
-            index,
-            string.Empty,
-            spotifyId ?? string.Empty,
-            status,
-            reason,
-            attempt);
-        state.LastUpdated = DateTimeOffset.UtcNow;
+        lock (state.SyncRoot)
+        {
+            var revision = ++state.Revision;
+            state.Matches[index] = new SpotifyTracklistMatchEntry(
+                index,
+                string.Empty,
+                spotifyId ?? string.Empty,
+                status,
+                reason,
+                attempt,
+                revision);
+            state.LastUpdated = DateTimeOffset.UtcNow;
+        }
     }
 
     public void RecordMatch(string token, int index, string deezerId, string? spotifyId, string status, string reason, int attempt)
@@ -102,13 +108,15 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
 
         lock (state.SyncRoot)
         {
+            var revision = ++state.Revision;
             state.Matches[index] = new SpotifyTracklistMatchEntry(
                 index,
                 deezerId,
                 spotifyId ?? string.Empty,
                 status,
                 reason,
-                attempt);
+                attempt,
+                revision);
             state.Pending = Math.Max(0, state.Pending - 1);
             state.LastUpdated = DateTimeOffset.UtcNow;
 
@@ -119,7 +127,7 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
         }
     }
 
-    public SpotifyTracklistMatchSnapshot? GetSnapshot(string token)
+    public SpotifyTracklistMatchSnapshot? GetSnapshot(string token, long afterRevision = 0)
     {
         if (!_matches.TryGetValue(token, out var state))
         {
@@ -132,7 +140,10 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
             return null;
         }
 
-        return BuildSnapshot(state.Pending, BuildEntries(state.Matches));
+        lock (state.SyncRoot)
+        {
+            return BuildSnapshot(state.Pending, state.Revision, BuildEntries(state.Matches), afterRevision);
+        }
     }
 
     public SpotifyTracklistMatchSnapshot? GetSnapshotBySignature(string signature)
@@ -153,7 +164,8 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
             return null;
         }
 
-        return BuildSnapshot(0, snapshot.Matches);
+        var revision = snapshot.Matches.Count == 0 ? 0 : snapshot.Matches.Max(entry => entry.Revision);
+        return BuildSnapshot(0, revision, snapshot.Matches, afterRevision: 0);
     }
 
     public void CacheSignatureSnapshot(string signature, IReadOnlyList<SpotifyTracklistMatchEntry> matches)
@@ -217,6 +229,7 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
         }
 
         public int Pending { get; set; }
+        public long Revision { get; set; }
         public DateTimeOffset LastUpdated { get; set; }
         public string? Signature { get; set; }
         public object SyncRoot { get; } = new();
@@ -247,7 +260,9 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
 
     private static SpotifyTracklistMatchSnapshot BuildSnapshot(
         int pending,
-        IReadOnlyList<SpotifyTracklistMatchEntry> entries)
+        long revision,
+        IReadOnlyList<SpotifyTracklistMatchEntry> entries,
+        long afterRevision)
     {
         var matched = entries.Count(entry => !string.IsNullOrWhiteSpace(entry.DeezerId));
         var failed = entries.Count(entry =>
@@ -256,7 +271,16 @@ public sealed class SpotifyTracklistMatchStore : ISpotifyTracklistMatchStore
         var rechecking = entries.Count(entry =>
             string.Equals(entry.Status, "rechecking", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(entry.Status, "transient_failure", StringComparison.OrdinalIgnoreCase));
-        return new SpotifyTracklistMatchSnapshot(pending, matched, failed, rechecking, entries.ToList());
+        var changedEntries = afterRevision <= 0
+            ? entries.ToList()
+            : entries.Where(entry => entry.Revision > afterRevision).ToList();
+        return new SpotifyTracklistMatchSnapshot(
+            pending,
+            matched,
+            failed,
+            rechecking,
+            revision,
+            changedEntries);
     }
 }
 
@@ -265,6 +289,7 @@ public sealed record SpotifyTracklistMatchSnapshot(
     int Matched,
     int Failed,
     int Rechecking,
+    long Revision,
     List<SpotifyTracklistMatchEntry> Matches);
 
 public sealed record SpotifyTracklistMatchEntry(
@@ -273,4 +298,5 @@ public sealed record SpotifyTracklistMatchEntry(
     string SpotifyId,
     string Status,
     string Reason,
-    int Attempt);
+    int Attempt,
+    long Revision = 0);

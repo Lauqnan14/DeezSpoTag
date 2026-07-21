@@ -30,64 +30,6 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
         _settingsService = settingsService;
     }
 
-    [HttpGet("playlist/metadata")]
-    public async Task<IActionResult> PlaylistMetadata([FromQuery] string url, CancellationToken cancellationToken = default)
-    {
-        var playlistId = ParsePlaylistId(url, out var validationError);
-        if (validationError != null)
-        {
-            return validationError;
-        }
-
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return Ok(new { available = false });
-        }
-
-        var settings = _settingsService.LoadSettings();
-        var normalizedTrackSource = NormalizeTrackSource(settings.SpotifyPlaylistTrackSource);
-        var metadata = await _metadataService.FetchPlaylistMetadataAsync(playlistId, cancellationToken);
-        SpotifyPlaylistPage? firstPage = null;
-        if (metadata == null)
-        {
-            firstPage = await _metadataService.FetchPlaylistTrackPageAsync(
-                playlistId,
-                offset: 0,
-                limit: 50,
-                normalizedTrackSource,
-                hydrate: false,
-                cancellationToken);
-            if (firstPage == null)
-            {
-                return Ok(new { available = false });
-            }
-        }
-
-        var tracklist = new SpotifyTracklistResult
-        {
-            Id = metadata?.Id ?? playlistId,
-            Title = metadata?.Name ?? firstPage?.Name ?? "Spotify Playlist",
-            Description = metadata?.Subtitle ?? firstPage?.Description ?? string.Empty,
-            Creator = new SpotifyTracklistCreator
-            {
-                Name = metadata?.OwnerName ?? "Spotify",
-                Avatar = metadata?.OwnerImageUrl ?? string.Empty
-            },
-            Followers = metadata?.Followers,
-            PictureXl = metadata?.ImageUrl ?? firstPage?.ImageUrl ?? string.Empty,
-            PictureBig = metadata?.ImageUrl ?? firstPage?.ImageUrl ?? string.Empty,
-            NbTracks = metadata?.TotalTracks ?? firstPage?.TotalTracks ?? 0,
-            Tracks = new List<SpotifyTracklistTrack>()
-        };
-
-        return Ok(new
-        {
-            available = true,
-            tracklist,
-            trackSource = normalizedTrackSource
-        });
-    }
-
     [HttpGet("playlist/tracks")]
     public async Task<IActionResult> PlaylistTracks(
         [FromQuery] string url,
@@ -121,25 +63,41 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
             normalizedTrackSource,
             hydrate,
             cancellationToken);
-        if (page == null)
+        if (page == null || !page.IsComplete)
         {
-            return Ok(new { available = false });
+            return Ok(new
+            {
+                available = false,
+                failureCode = page?.FailureCode ?? "spotify_page_failed"
+            });
         }
-
-        var allowFallbackSearch = !settings.StrictSpotifyDeezerMode && (
-            settings.FallbackSearch
-            || string.Equals(settings.SpotifyPlaylistTrackSource, LibrespotTrackSource, StringComparison.OrdinalIgnoreCase)
-            || IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource));
 
         // Render Spotify rows immediately and resolve only this visible page in the shared match queue.
         var tracks = SpotifyTracklistMapper.MapTracks(page.Tracks.ToList(), offset);
+
+        var tracklist = new SpotifyTracklistResult
+        {
+            Id = playlistId,
+            Title = string.IsNullOrWhiteSpace(page.Name) ? "Spotify Playlist" : page.Name,
+            Description = page.Description ?? string.Empty,
+            Creator = new SpotifyTracklistCreator
+            {
+                Name = string.IsNullOrWhiteSpace(page.OwnerName) ? "Spotify" : page.OwnerName,
+                Avatar = page.OwnerImageUrl ?? string.Empty
+            },
+            Followers = page.Followers,
+            PictureXl = page.ImageUrl ?? string.Empty,
+            PictureBig = page.ImageUrl ?? string.Empty,
+            NbTracks = page.TotalTracks ?? page.Tracks.Count,
+            Tracks = new List<SpotifyTracklistTrack>()
+        };
 
         var token = $"spotify:playlist:{playlistId}";
         var visibleMatch = _tracklistService.StartVisibleTrackMatching(
             token,
             offset,
             page.Tracks,
-            allowFallbackSearch);
+            allowFallbackSearch: false);
         if (IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource))
         {
             tracks = _tracklistService.ApplyStoredMatchesToTracks(token, tracks);
@@ -154,7 +112,10 @@ public class SpotifyPlaylistTracklistApiController : ControllerBase
         return Ok(new
         {
             available = true,
+            tracklist,
+            trackSource = normalizedTrackSource,
             offset,
+            nextOffset = page.NextOffset,
             limit,
             total = page.TotalTracks,
             hasMore = page.HasMore,

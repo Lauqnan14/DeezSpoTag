@@ -42,7 +42,10 @@ public class SpotifyAuthWarmupService : BackgroundService
                 }
 
                 _logger.LogInformation("Spotify auth and Pathfinder context warmup completed.");
-                return;
+                attempt = 0;
+                delaySeconds = 5;
+                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+                continue;
             }
             catch (OperationCanceledException ex) when (!stoppingToken.IsCancellationRequested)
             {

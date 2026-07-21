@@ -13,10 +13,8 @@ namespace DeezSpoTag.Web.Services;
 public sealed class SpotifyTracklistService
 {
     private const int ImmediateResolveLimit = 40;
-    private const string PlaylistType = "playlist";
     private enum SpotifyContentType
     {
-        Playlist,
         Track,
         Album,
         Show,
@@ -52,11 +50,6 @@ public sealed class SpotifyTracklistService
         _logger = logger;
     }
 
-    public Task<SpotifyTracklistPayload?> GetPlaylistTracklistAsync(string url, CancellationToken cancellationToken)
-    {
-        return GetTracklistAsync(url, cancellationToken);
-    }
-
     public async Task<SpotifyTracklistPayload?> GetTracklistAsync(string url, CancellationToken cancellationToken)
     {
         var metadata = await _metadataService.FetchByUrlAsync(
@@ -77,9 +70,7 @@ public sealed class SpotifyTracklistService
         var (resolvedMetadata, tracks) = await ResolveTracksForContentAsync(metadata, contentType, settings, cancellationToken);
         var type = resolvedMetadata.Type ?? string.Empty;
         var token = BuildMatchToken(type, resolvedMetadata.Id);
-        var signature = contentType == SpotifyContentType.Playlist
-            ? BuildPlaylistSignature(tracks)
-            : string.Empty;
+        var signature = string.Empty;
         var allowFallbackSearch = ShouldAllowFallbackSearch(contentType, settings);
         var conversion = await BuildConversionForContentAsync(
             contentType,
@@ -236,27 +227,7 @@ public sealed class SpotifyTracklistService
         CancellationToken cancellationToken)
     {
         var tracks = metadata.TrackList;
-        if (contentType == SpotifyContentType.Playlist)
-        {
-            var playlistMetadata = await _metadataService.FetchPlaylistMetadataAsync(metadata.Id, cancellationToken);
-            if (playlistMetadata != null)
-            {
-                metadata = playlistMetadata with { TrackList = metadata.TrackList };
-            }
-
-            tracks = await _metadataService.FetchPlaylistTracksForSourceAsync(
-                metadata.Id,
-                settings.SpotifyPlaylistTrackSource,
-                cancellationToken);
-            tracks = await _metadataService.HydrateTrackIsrcsAsync(
-                tracks,
-                cancellationToken);
-            if (tracks.Any(t => string.IsNullOrWhiteSpace(t.Name)))
-            {
-                tracks = await _metadataService.HydrateTrackDetailsWithBlobAsync(tracks, cancellationToken);
-            }
-        }
-        else if (contentType == SpotifyContentType.Album && tracks.Count == 0)
+        if (contentType == SpotifyContentType.Album && tracks.Count == 0)
         {
             tracks = await _metadataService.FetchAlbumTracksAsync(metadata.Id, cancellationToken);
         }
@@ -274,13 +245,6 @@ public sealed class SpotifyTracklistService
         if (settings.StrictSpotifyDeezerMode)
         {
             return false;
-        }
-
-        if (contentType == SpotifyContentType.Playlist)
-        {
-            return settings.FallbackSearch
-                || string.Equals(settings.SpotifyPlaylistTrackSource, "librespot", StringComparison.OrdinalIgnoreCase)
-                || IsPathfinderTrackSource(settings.SpotifyPlaylistTrackSource);
         }
 
         if (contentType is SpotifyContentType.Album or SpotifyContentType.Track)
@@ -311,22 +275,11 @@ public sealed class SpotifyTracklistService
             allowFallbackSearch,
             immediateResolveLimit,
             cancellationToken);
-        if (contentType == SpotifyContentType.Playlist && !string.IsNullOrWhiteSpace(signature))
-        {
-            conversion = ApplyStoredSnapshot(signature, conversion);
-        }
-
         return ApplyStoredMatches(token, conversion);
     }
 
     private static bool TryParseContentType(string? value, out SpotifyContentType contentType)
     {
-        if (string.Equals(value, PlaylistType, StringComparison.OrdinalIgnoreCase))
-        {
-            contentType = SpotifyContentType.Playlist;
-            return true;
-        }
-
         if (string.Equals(value, "track", StringComparison.OrdinalIgnoreCase))
         {
             contentType = SpotifyContentType.Track;
@@ -359,14 +312,14 @@ public sealed class SpotifyTracklistService
         List<SpotifyTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
-        if (tracks.Count == 0 || tracks.All(HasIsrcIdentity))
+        if (tracks.Count == 0)
         {
             return tracks;
         }
 
         try
         {
-            return await _metadataService.HydrateTrackIsrcsAsync(
+            return await _metadataService.HydratePlaylistTrackIsrcsWithLibrespotAsync(
                 tracks,
                 cancellationToken);
         }
@@ -380,9 +333,6 @@ public sealed class SpotifyTracklistService
             return tracks;
         }
     }
-
-    private static bool HasIsrcIdentity(SpotifyTrackSummary track)
-        => !string.IsNullOrWhiteSpace(track.Isrc);
 
     public async Task<List<SpotifyTracklistTrack>> ResolveVisibleTracksAsync(
         IReadOnlyList<SpotifyTrackSummary> tracks,
@@ -730,7 +680,7 @@ public sealed class SpotifyTracklistService
 
     private static string BuildMatchToken(string? type, string? id)
     {
-        return $"spotify:{type ?? PlaylistType}:{id ?? string.Empty}";
+        return $"spotify:{type ?? "unknown"}:{id ?? string.Empty}";
     }
 
     private static string BuildPlaylistSignature(List<SpotifyTrackSummary> tracks)
@@ -751,12 +701,6 @@ public sealed class SpotifyTracklistService
         var bytes = Encoding.UTF8.GetBytes(builder.ToString());
         var hash = SHA256.HashData(bytes);
         return Convert.ToHexString(hash);
-    }
-
-    private static bool IsPathfinderTrackSource(string? value)
-    {
-        return string.Equals(value, "pathfinder", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "spotiflac", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string ExtractSpotifyTrackId(SpotifyTrackSummary track)
@@ -881,7 +825,6 @@ public sealed class SpotifyTracklistService
 
         return contentType switch
         {
-            SpotifyContentType.Playlist => Math.Min(ImmediateResolveLimit, trackCount),
             SpotifyContentType.Track => 0,
             SpotifyContentType.Album => 0,
             _ => Math.Min(ImmediateResolveLimit, trackCount)

@@ -297,13 +297,12 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
     }
 
     [Fact]
-    public void SpotifyEmptyPage_IsAcceptedOnlyWithExplicitZeroCountAndSnapshotEvidence()
+    public void SpotifyEmptyPage_IsAcceptedOnlyWithExplicitAuthoritativeZeroCount()
     {
-        Assert.True(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, 0, 0, "snapshot-zero"));
-        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, null, null, "snapshot"));
-        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, 0, 0, null));
-        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(50, 0, 0, 0, "snapshot"));
-        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 1, 1, 1, "snapshot"));
+        Assert.True(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, 0, 0));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 0, null, null));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(50, 0, 0, 0));
+        Assert.False(WatchlistEngine.IsAuthoritativeEmptySpotifyPage(0, 1, 1, 1));
     }
 
     [Fact]

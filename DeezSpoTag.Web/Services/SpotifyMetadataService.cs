@@ -131,6 +131,9 @@ public sealed class SpotifyMetadataService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> PlaylistMetadataCache = new();
     private static readonly TimeSpan PlaylistTrackCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, PlaylistTrackCache> PlaylistTrackCache = new();
+    private static readonly TimeSpan PlaylistPageCacheTtl = TimeSpan.FromSeconds(60);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyPlaylistPage Page)> PlaylistPageCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<SpotifyPlaylistPage>>> PlaylistPageRequests = new();
     private static readonly TimeSpan LibrespotTrackCacheTtl = TimeSpan.FromMinutes(10);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTrackSummary Track)> LibrespotTrackCache = new();
     private readonly object _userAgentLock = new();
@@ -312,13 +315,11 @@ public sealed class SpotifyMetadataService
 
     private async Task<SpotifyUrlMetadata?> FetchPlaylistUrlMetadataAsync(string playlistId, CancellationToken cancellationToken)
     {
-        var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistAsync(playlistId, cancellationToken);
-        if (spotiFlacPayload == null)
+        var playlistMetadata = await FetchCompletePathfinderPlaylistAsync(playlistId, cancellationToken);
+        if (playlistMetadata is null)
         {
             return null;
         }
-
-        var playlistMetadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks: true);
         if (playlistMetadata.TrackList.Count > 0)
         {
             playlistMetadata = await HydrateTrackMetadataAsync(playlistMetadata, cancellationToken);
@@ -906,12 +907,15 @@ public sealed class SpotifyMetadataService
             }
         }
 
-        var pathfinderMetadata = await FetchPathfinderPlaylistAsync(
+        var pathfinderPage = await _pathfinderMetadataClient.FetchPlaylistPageAsync(
             playlistId,
-            includeTracks: false,
+            offset: 0,
+            limit: 1,
             cancellationToken);
-        if (pathfinderMetadata != null)
+        if (pathfinderPage.IsComplete && pathfinderPage.Payload is not null)
         {
+            var pathfinderMetadata = MapSpotiFlacPlaylistMetadata(playlistId, pathfinderPage.Payload, includeTracks: false)
+                with { SnapshotId = pathfinderPage.SnapshotId };
             CachePlaylistMetadata(playlistId, pathfinderMetadata);
             return pathfinderMetadata with { TrackList = new List<SpotifyTrackSummary>() };
         }
@@ -933,14 +937,12 @@ public sealed class SpotifyMetadataService
         }
 
         var normalizedSource = NormalizeTrackSource(trackSource);
-        var metadata = string.Equals(normalizedSource, LibrespotSource, StringComparison.OrdinalIgnoreCase)
-            ? await FetchPlaylistMetadataAsync(playlistId, cancellationToken)
-            : await FetchPathfinderPlaylistAsync(playlistId, includeTracks: true, cancellationToken);
         var boundedOffset = Math.Max(0, offset);
         var boundedLimit = Math.Clamp(limit, 1, 100);
 
         if (string.Equals(normalizedSource, LibrespotSource, StringComparison.OrdinalIgnoreCase))
         {
+            var metadata = await FetchPlaylistMetadataAsync(playlistId, cancellationToken);
             return await BuildLibrespotPlaylistPageAsync(
                 metadata,
                 playlistId,
@@ -950,24 +952,84 @@ public sealed class SpotifyMetadataService
                 cancellationToken);
         }
 
-        var tracks = metadata?.TrackList.Count > 0
-            ? metadata.TrackList
-            : await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
-        var totalTracks = metadata?.TotalTracks ?? tracks.Count;
-        var pageTracks = tracks
-            .Skip(boundedOffset)
-            .Take(boundedLimit)
-            .ToList();
-        var hasMoreTracks = boundedOffset + pageTracks.Count < totalTracks;
+        return await FetchPathfinderPlaylistPageAsync(
+            playlistId,
+            boundedOffset,
+            boundedLimit,
+            cancellationToken);
+    }
 
+    private async Task<SpotifyPlaylistPage> FetchPathfinderPlaylistPageAsync(
+        string playlistId,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = $"{playlistId}:{offset}:{limit}";
+        if (PlaylistPageCache.TryGetValue(cacheKey, out var cached)
+            && DateTimeOffset.UtcNow - cached.Stamp <= PlaylistPageCacheTtl)
+        {
+            return cached.Page;
+        }
+
+        PlaylistPageCache.TryRemove(cacheKey, out _);
+        var request = PlaylistPageRequests.GetOrAdd(
+            cacheKey,
+            _ => new Lazy<Task<SpotifyPlaylistPage>>(
+                () => FetchPathfinderPlaylistPageCoreAsync(playlistId, offset, limit, CancellationToken.None),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            var page = await request.Value.WaitAsync(cancellationToken);
+            if (page.IsComplete)
+            {
+                PlaylistPageCache[cacheKey] = (DateTimeOffset.UtcNow, page);
+                TrimTimestampCache(PlaylistPageCache, PlaylistTrackCacheLimit, PlaylistPageCacheTtl);
+            }
+            return page;
+        }
+        finally
+        {
+            if (request.IsValueCreated && request.Value.IsCompleted)
+            {
+                PlaylistPageRequests.TryRemove(cacheKey, out _);
+            }
+        }
+    }
+
+    private async Task<SpotifyPlaylistPage> FetchPathfinderPlaylistPageCoreAsync(
+        string playlistId,
+        int offset,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var providerPage = await _pathfinderMetadataClient.FetchPlaylistPageAsync(
+            playlistId,
+            offset,
+            limit,
+            cancellationToken);
+        if (!providerPage.IsComplete || providerPage.Payload is null)
+        {
+            return SpotifyPlaylistPage.Failed(offset, providerPage.FailureCode ?? "spotify_page_failed");
+        }
+
+        var metadata = MapSpotiFlacPlaylistMetadata(playlistId, providerPage.Payload, includeTracks: true)
+            with { SnapshotId = providerPage.SnapshotId };
         return new SpotifyPlaylistPage(
-            metadata?.SnapshotId,
-            totalTracks,
-            metadata?.Name,
-            metadata?.Subtitle,
-            metadata?.ImageUrl,
-            pageTracks,
-            hasMoreTracks);
+            providerPage.SnapshotId,
+            providerPage.TotalItems,
+            metadata.Name,
+            metadata.Subtitle,
+            metadata.ImageUrl,
+            metadata.TrackList,
+            providerPage.HasMore,
+            providerPage.NextOffset,
+            providerPage.SourceItemCount,
+            true,
+            null,
+            metadata.OwnerName,
+            metadata.Followers,
+            metadata.OwnerImageUrl);
     }
 
     private async Task<SpotifyPlaylistPage> BuildLibrespotPlaylistPageAsync(
@@ -981,17 +1043,19 @@ public sealed class SpotifyMetadataService
         var trackIds = await GetLibrespotPlaylistTrackIdsAsync(playlistId, cancellationToken);
         if (trackIds.Count == 0)
         {
-            return await BuildFallbackLibrespotPlaylistPageAsync(metadata, playlistId, boundedOffset, boundedLimit, cancellationToken);
+            return SpotifyPlaylistPage.Failed(boundedOffset, "spotify_librespot_playlist_unavailable");
         }
 
         var pageIds = trackIds.Skip(boundedOffset).Take(boundedLimit).ToList();
-        var hydrated = await BuildLibrespotPageTracksAsync(playlistId, pageIds, cancellationToken);
+        var hydrated = await BuildLibrespotPageTracksAsync(pageIds, cancellationToken);
         if (hydrate)
         {
             hydrated = await HydratePlaylistPageTracksAsync(hydrated, cancellationToken);
         }
 
-        var hasMore = boundedOffset + hydrated.Count < trackIds.Count;
+        var sourceItemCount = pageIds.Count;
+        var nextOffset = boundedOffset + sourceItemCount;
+        var hasMore = nextOffset < trackIds.Count;
         return new SpotifyPlaylistPage(
             metadata?.SnapshotId,
             metadata?.TotalTracks ?? trackIds.Count,
@@ -999,50 +1063,27 @@ public sealed class SpotifyMetadataService
             metadata?.Subtitle,
             metadata?.ImageUrl,
             hydrated,
-            hasMore);
-    }
-
-    private async Task<SpotifyPlaylistPage> BuildFallbackLibrespotPlaylistPageAsync(
-        SpotifyUrlMetadata? metadata,
-        string playlistId,
-        int boundedOffset,
-        int boundedLimit,
-        CancellationToken cancellationToken)
-    {
-        var fallbackTracks = await _pathfinderMetadataClient.FetchPlaylistTracksWithBlobAuthAsync(playlistId, cancellationToken);
-        if (fallbackTracks is not { Count: > 0 })
-        {
-            return BuildPlaylistPage(metadata, metadata?.TotalTracks, new List<SpotifyTrackSummary>(), false);
-        }
-
-        var fallbackPageTracks = fallbackTracks
-            .Skip(boundedOffset)
-            .Take(boundedLimit)
-            .ToList();
-        return BuildPlaylistPage(
-            metadata,
-            metadata?.TotalTracks ?? fallbackTracks.Count,
-            fallbackPageTracks,
-            boundedOffset + fallbackPageTracks.Count < fallbackTracks.Count);
+            hasMore,
+            nextOffset,
+            sourceItemCount,
+            true,
+            null,
+            metadata?.OwnerName,
+            metadata?.Followers,
+            metadata?.OwnerImageUrl);
     }
 
     private async Task<List<SpotifyTrackSummary>> BuildLibrespotPageTracksAsync(
-        string playlistId,
         List<string> pageIds,
         CancellationToken cancellationToken)
     {
-        var pathfinderTracks = await _pathfinderMetadataClient.FetchPlaylistTracksWithBlobAuthAsync(playlistId, cancellationToken);
-        if (pathfinderTracks is not { Count: > 0 })
-        {
-            pathfinderTracks = await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
-        }
-
-        if (pathfinderTracks is not { Count: > 0 })
+        var hydrated = await FetchLibrespotTracksAsync(pageIds, cancellationToken);
+        if (hydrated.Count == 0)
         {
             return pageIds.Select(CreatePlaceholderTrack).ToList();
         }
 
-        var byId = pathfinderTracks.ToDictionary(track => track.Id, StringComparer.OrdinalIgnoreCase);
+        var byId = hydrated.ToDictionary(track => track.Id, StringComparer.OrdinalIgnoreCase);
         return pageIds
             .Select(id => byId.TryGetValue(id, out var track) ? track : CreatePlaceholderTrack(id))
             .ToList();
@@ -1109,22 +1150,6 @@ public sealed class SpotifyMetadataService
             .ToList();
     }
 
-    private static SpotifyPlaylistPage BuildPlaylistPage(
-        SpotifyUrlMetadata? metadata,
-        int? totalTracks,
-        List<SpotifyTrackSummary> tracks,
-        bool hasMore)
-    {
-        return new SpotifyPlaylistPage(
-            metadata?.SnapshotId,
-            totalTracks,
-            metadata?.Name,
-            metadata?.Subtitle,
-            metadata?.ImageUrl,
-            tracks,
-            hasMore);
-    }
-
     private static SpotifyTrackSummary CreatePlaceholderTrack(string id)
     {
         return new SpotifyTrackSummary(
@@ -1146,28 +1171,6 @@ public sealed class SpotifyMetadataService
         }
     }
 
-
-    public async Task<List<SpotifyTrackSummary>> FetchPlaylistTracksForSourceAsync(
-        string playlistId,
-        string trackSource,
-        CancellationToken cancellationToken)
-    {
-        var normalizedSource = NormalizeTrackSource(trackSource);
-        if (string.Equals(normalizedSource, LibrespotSource, StringComparison.OrdinalIgnoreCase))
-        {
-            var pathfinderTracks = await _pathfinderMetadataClient.FetchPlaylistTracksWithBlobAuthAsync(
-                playlistId,
-                cancellationToken);
-            if (pathfinderTracks is { Count: > 0 })
-            {
-                return pathfinderTracks;
-            }
-
-            return await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
-        }
-
-        return await GetPathfinderPlaylistTracksAsync(playlistId, cancellationToken);
-    }
 
     public async Task<List<SpotifyTrackSummary>> FetchLibrespotTracksAsync(
         IReadOnlyList<string> trackIds,
@@ -1294,42 +1297,54 @@ public sealed class SpotifyMetadataService
         return normalized == "spotiflac" ? "pathfinder" : normalized;
     }
 
-    private async Task<List<SpotifyTrackSummary>> GetPathfinderPlaylistTracksAsync(
+    private async Task<SpotifyUrlMetadata?> FetchCompletePathfinderPlaylistAsync(
         string playlistId,
         CancellationToken cancellationToken)
     {
-        var cacheKey = $"pathfinder:{playlistId}";
-        if (TryGetTrackCache(cacheKey, out var cachedTracks))
+        SpotifyUrlMetadata? metadata = null;
+        var tracks = new List<SpotifyTrackSummary>();
+        var offset = 0;
+        while (true)
         {
-            return cachedTracks;
+            var page = await FetchPathfinderPlaylistPageAsync(playlistId, offset, 100, cancellationToken);
+            if (!page.IsComplete)
+            {
+                return null;
+            }
+
+            metadata ??= new SpotifyUrlMetadata(
+                PlaylistType,
+                playlistId,
+                page.Name ?? string.Empty,
+                $"https://open.spotify.com/playlist/{playlistId}",
+                page.ImageUrl,
+                page.Description,
+                page.TotalTracks,
+                null,
+                [],
+                [],
+                page.OwnerName,
+                page.Followers,
+                page.SnapshotId)
+            {
+                OwnerImageUrl = page.OwnerImageUrl
+            };
+            tracks.AddRange(page.Tracks);
+            if (!page.HasMore)
+            {
+                break;
+            }
+            if (page.NextOffset <= offset)
+            {
+                return null;
+            }
+            offset = page.NextOffset;
         }
 
-        var metadata = await FetchPathfinderPlaylistAsync(
-            playlistId,
-            includeTracks: true,
-            cancellationToken);
-        var tracks = metadata?.TrackList
-            ?? new List<SpotifyTrackSummary>();
-        CacheTrackList(cacheKey, "pathfinder", tracks);
-        return tracks;
-    }
-
-    private async Task<SpotifyUrlMetadata?> FetchPathfinderPlaylistAsync(
-        string playlistId,
-        bool includeTracks,
-        CancellationToken cancellationToken)
-    {
-        var spotiFlacPayload = await _pathfinderMetadataClient.FetchSpotiFlacPlaylistAsync(
-            playlistId,
-            cancellationToken);
-        if (spotiFlacPayload == null)
-        {
-            return null;
-        }
-
-        var metadata = MapSpotiFlacPlaylistMetadata(playlistId, spotiFlacPayload, includeTracks);
-        CachePlaylist(playlistId, metadata);
-        return metadata;
+        var complete = metadata! with { TrackList = tracks };
+        CachePlaylist(playlistId, complete);
+        CacheTrackList($"pathfinder:{playlistId}", "pathfinder", tracks);
+        return complete;
     }
 
     private async Task<List<string>> GetLibrespotPlaylistTrackIdsAsync(
@@ -1404,6 +1419,10 @@ public sealed class SpotifyMetadataService
 
     private static void CacheTrackList(string key, string source, List<SpotifyTrackSummary> tracks)
     {
+        if (tracks.Count == 0)
+        {
+            return;
+        }
         PlaylistTrackCache[key] = new PlaylistTrackCache(
             DateTimeOffset.UtcNow,
             source,
@@ -1595,39 +1614,6 @@ public sealed class SpotifyMetadataService
         return new SpotifyTrackArtwork(cover, null);
     }
 
-    public async Task<SpotifyPlaylistPage?> FetchPlaylistPageAsync(string playlistId, int offset, int limit, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return null;
-        }
-
-        var url = $"https://open.spotify.com/playlist/{playlistId}";
-        var metadata = await FetchByUrlAsync(url, cancellationToken);
-        if (metadata == null)
-        {
-            return null;
-        }
-
-        var boundedOffset = Math.Max(0, offset);
-        var boundedLimit = Math.Clamp(limit, 1, 1000);
-        var totalTracks = metadata.TotalTracks ?? metadata.TrackList.Count;
-        var pageTracks = metadata.TrackList
-            .Skip(boundedOffset)
-            .Take(boundedLimit)
-            .ToList();
-        var hasMore = boundedOffset + pageTracks.Count < totalTracks;
-
-        return new SpotifyPlaylistPage(
-            metadata.SnapshotId,
-            totalTracks,
-            metadata.Name,
-            metadata.Subtitle,
-            metadata.ImageUrl,
-            pageTracks,
-            hasMore);
-    }
-
     public async Task<SpotifyPlaylistSnapshot?> FetchPlaylistSnapshotAsync(string playlistId, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(playlistId))
@@ -1635,8 +1621,7 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        var url = $"https://open.spotify.com/playlist/{playlistId}";
-        var metadata = await FetchByUrlAsync(url, cancellationToken);
+        var metadata = await FetchCompletePathfinderPlaylistAsync(playlistId, cancellationToken);
         if (metadata == null)
         {
             return null;
@@ -1786,6 +1771,53 @@ public sealed class SpotifyMetadataService
         }
 
         return updated;
+    }
+
+    public async Task<List<SpotifyTrackSummary>> HydratePlaylistTrackIsrcsWithLibrespotAsync(
+        List<SpotifyTrackSummary> tracks,
+        CancellationToken cancellationToken)
+    {
+        if (tracks.Count == 0)
+        {
+            return tracks;
+        }
+
+        var trackIds = tracks
+            .Select(track => track.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (trackIds.Count == 0)
+        {
+            return tracks.Select(track => track with { Isrc = null }).ToList();
+        }
+
+        var librespotTracks = await FetchLibrespotTrackIdentitiesAsync(trackIds, cancellationToken);
+        var isrcByTrackId = librespotTracks
+            .Where(track => !string.IsNullOrWhiteSpace(track.Id) && IsValidIsrc(track.Isrc))
+            .ToDictionary(track => track.Id, track => track.Isrc!, StringComparer.OrdinalIgnoreCase);
+        return tracks
+            .Select(track => !string.IsNullOrWhiteSpace(track.Id)
+                && isrcByTrackId.TryGetValue(track.Id, out var isrc)
+                    ? track with { Isrc = isrc }
+                    : track with { Isrc = null })
+            .ToList();
+    }
+
+    private async Task<List<SpotifyTrackSummary>> FetchLibrespotTrackIdentitiesAsync(
+        IReadOnlyList<string> trackIds,
+        CancellationToken cancellationToken)
+    {
+        var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
+        if (string.IsNullOrWhiteSpace(blobPath))
+        {
+            return new List<SpotifyTrackSummary>();
+        }
+
+        return await HydrateTrackDetailsWithLibrespotAsync(
+            blobPath,
+            trackIds.Select(CreatePlaceholderTrackSummary).ToList(),
+            cancellationToken);
     }
 
     public async Task<SpotifyAlbumSummary?> FetchAlbumFallbackWithLibrespotAsync(
@@ -3500,7 +3532,18 @@ public sealed record SpotifyPlaylistPage(
     string? Description,
     string? ImageUrl,
     List<SpotifyTrackSummary> Tracks,
-    bool HasMore);
+    bool HasMore,
+    int NextOffset = 0,
+    int SourceItemCount = 0,
+    bool IsComplete = true,
+    string? FailureCode = null,
+    string? OwnerName = null,
+    int? Followers = null,
+    string? OwnerImageUrl = null)
+{
+    public static SpotifyPlaylistPage Failed(int offset, string failureCode)
+        => new(null, null, null, null, null, [], false, offset, 0, false, failureCode);
+}
 
 public sealed record SpotifyTrackSummary(
     string Id,
