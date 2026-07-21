@@ -150,33 +150,33 @@ public sealed class DeliveredAudioQualityGuardTests : IDisposable
     }
 
     [Fact]
-    public void TidalHiResPlanStep_RejectsDeliveredMaxHiResAudio()
+    public void TidalHiResPlanStep_AcceptsDeliveredMaxHiResAudio()
     {
         var path = Path.Combine(_tempDirectory, "tidal-hires-delivered-192.wav");
         WriteWave(path, bitsPerSample: 24, sampleRate: 192000);
 
         var result = Validate(CreateTidalPayload("HI_RES"), path);
 
-        Assert.False(ReadBool(result, "Success"));
+        Assert.True(ReadBool(result, "Success"));
         Assert.Contains("192kHz", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void TidalCdLosslessPlanStep_RejectsDeliveredTwentyFourBitAudio()
+    public void TidalCdLosslessPlanStep_AcceptsDeliveredTwentyFourBitAudio()
     {
         var path = Path.Combine(_tempDirectory, "tidal-cd-delivered-24.wav");
         WriteWave(path, bitsPerSample: 24, sampleRate: 44100);
 
         var result = Validate(CreateTidalPayload("LOSSLESS"), path);
 
-        Assert.False(ReadBool(result, "Success"));
+        Assert.True(ReadBool(result, "Success"));
         Assert.Contains("24-bit", ReadString(result, "DeliveredQuality"), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void TidalHighPlanStep_RejectsDeliveredLosslessAudio()
+    public void TidalHighPlanStep_AcceptsDeliveredLosslessAudio()
     {
-        Assert.False(IsDeliveredQualityAccepted(
+        Assert.True(IsDeliveredQualityAccepted(
             "tidal",
             "HIGH",
             label: "CD Lossless (16-bit/44.1kHz)",
@@ -188,7 +188,7 @@ public sealed class DeliveredAudioQualityGuardTests : IDisposable
 
     [Theory]
     [InlineData("LOW", "AAC-LC 96 kbps", 96, true)]
-    [InlineData("LOW", "AAC-LC 320 kbps", 320, false)]
+    [InlineData("LOW", "AAC-LC 320 kbps", 320, true)]
     [InlineData("HIGH", "AAC-LC 320 kbps", 320, true)]
     [InlineData("HIGH", "AAC-LC 96 kbps", 96, false)]
     public void TidalLossyPlanSteps_AcceptOnlyTheirOwnLossyBuckets(

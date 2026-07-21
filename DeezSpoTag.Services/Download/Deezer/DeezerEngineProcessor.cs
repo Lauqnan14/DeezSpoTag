@@ -151,6 +151,11 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
                 return;
             }
 
+            if (DownloadLifecycleCheckpoint.TryAdoptExistingAudio(payload))
+            {
+                await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, currentUUID, payload, itemToken);
+            }
+
             var completedSuccessfully = await ExecuteQueueItemCoreAsync(
                 nextItem,
                 context,
@@ -297,6 +302,20 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
     {
         EngineAudioPostDownloadHelper.ClearPrefetchState(queueUuid);
         _logger.LogError(ex, "Error during Deezer download of {UUID}", queueUuid);
+        if (payload != null && ex is DownloadFinalizationException finalizationFailure)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                _queueRepository,
+                _retryScheduler,
+                _listener,
+                queueUuid,
+                EngineName,
+                payload,
+                finalizationFailure,
+                CancellationToken.None);
+            return;
+        }
+
         var isEpisodePayload = payload != null && IsEpisodePayload(payload);
         var fallbackAdvanced = payload != null
             && !isEpisodePayload
@@ -367,6 +386,28 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         TrackPayloadProcessingRequest request,
         CancellationToken cancellationToken)
     {
+        if (DownloadLifecycleCheckpoint.TryResume(request.Payload, out var acquiredPath))
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, request.QueueUuid, request.Payload, cancellationToken);
+            using var scope = _serviceProvider.CreateScope();
+            var pathProcessor = scope.ServiceProvider.GetRequiredService<EnhancedPathTemplateProcessor>();
+            var resumedContext = EngineAudioPostDownloadHelper.BuildTrackContext(
+                request.Payload,
+                request.Settings,
+                pathProcessor,
+                EngineName,
+                request.Payload.DeezerId);
+            await QueueDeezerPrefetchAsync(request, resumedContext, cancellationToken);
+            if (!await TryFinalizeAcquiredTrackAsync(request, resumedContext, acquiredPath, cancellationToken))
+            {
+                return false;
+            }
+
+            EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(request.Payload, resumedContext.PathResult, acquiredPath);
+            await UpdateCompletedTrackQueueStateAsync(request, acquiredPath, cancellationToken);
+            return true;
+        }
+
         if (!await EnsureAuthenticatedForTrackDownloadAsync(request, cancellationToken))
         {
             return false;
@@ -380,7 +421,8 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
 
         var preparation = BuildTrackDownloadPreparation(request, track);
         _activityLog.Info($"Download start: {request.QueueUuid} engine=deezer bitrate={preparation.Track.Bitrate}");
-        await PersistExpectedTrackStagingPathAsync(request, preparation.Track, cancellationToken);
+        var trackContext = await BuildAndPersistTrackContextAsync(request, preparation.Track, cancellationToken);
+        await QueueDeezerPrefetchAsync(request, trackContext, cancellationToken);
 
         var result = await ExecuteTrackDownloadAsync(request, preparation, cancellationToken);
 
@@ -390,7 +432,27 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             return false;
         }
 
-        await FinalizeSuccessfulTrackDownloadAsync(request, preparation.Track, result, cancellationToken);
+        await SyncEffectiveQualityAsync(request.QueueUuid, request.Payload, preparation.Track.Bitrate, cancellationToken);
+        await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
+            request.Payload,
+            result.Path!,
+            request.QueueUuid,
+            _queueRepository,
+            _listener,
+            cancellationToken);
+        await DownloadLifecycleCheckpoint.PersistAcquiredAsync(
+            _queueRepository,
+            request.QueueUuid,
+            request.Payload,
+            result.Path!,
+            cancellationToken);
+        if (!await TryFinalizeAcquiredTrackAsync(request, trackContext, result.Path!, cancellationToken))
+        {
+            return false;
+        }
+
+        EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(request.Payload, trackContext.PathResult, result.Path!);
+        await UpdateCompletedTrackQueueStateAsync(request, result.Path!, cancellationToken);
         return true;
     }
 
@@ -489,7 +551,7 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             CancellationToken: cancellationToken));
     }
 
-    private async Task PersistExpectedTrackStagingPathAsync(
+    private async Task<EngineAudioPostDownloadHelper.EngineTrackContext> BuildAndPersistTrackContextAsync(
         TrackPayloadProcessingRequest request,
         CoreTrack track,
         CancellationToken cancellationToken)
@@ -506,6 +568,73 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
             request.Payload,
             Path.Join(pathResult.FilePath, $"{pathResult.Filename}{extension}"),
             cancellationToken);
+        return new EngineAudioPostDownloadHelper.EngineTrackContext(
+            track,
+            pathResult,
+            DownloadPathResolver.ResolveIoPath(pathResult.FilePath),
+            $"literal:{pathResult.Filename}");
+    }
+
+    private async Task QueueDeezerPrefetchAsync(
+        TrackPayloadProcessingRequest request,
+        EngineAudioPostDownloadHelper.EngineTrackContext trackContext,
+        CancellationToken cancellationToken)
+    {
+        var expectedOutputPath = !string.IsNullOrWhiteSpace(trackContext.PathResult.WritePath)
+            ? DownloadPathResolver.ResolveIoPath(trackContext.PathResult.WritePath)
+            : Path.Join(DownloadPathResolver.ResolveIoPath(trackContext.PathResult.FilePath), trackContext.PathResult.Filename);
+        await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(
+            new EngineAudioPostDownloadHelper.PrefetchRequest(
+                request.QueueUuid,
+                trackContext,
+                request.Payload,
+                request.Settings,
+                expectedOutputPath,
+                _postDownloadTaskScheduler,
+                _lyricsService,
+                _queueRepository,
+                _listener,
+                _activityLog,
+                _logger,
+                EngineName),
+            cancellationToken);
+    }
+
+    private async Task<bool> TryFinalizeAcquiredTrackAsync(
+        TrackPayloadProcessingRequest request,
+        EngineAudioPostDownloadHelper.EngineTrackContext trackContext,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(
+                new EngineAudioPostDownloadHelper.PostDownloadSettingsRequest(
+                    request.QueueUuid,
+                    trackContext,
+                    request.Payload,
+                    outputPath,
+                    request.Settings,
+                    scope.ServiceProvider,
+                    EngineName,
+                    _logger),
+                cancellationToken);
+            return true;
+        }
+        catch (DownloadFinalizationException ex)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                _queueRepository,
+                _retryScheduler,
+                _listener,
+                request.QueueUuid,
+                EngineName,
+                request.Payload,
+                ex,
+                CancellationToken.None);
+            return false;
+        }
     }
 
     private async Task HandleTrackDownloadFailureAsync(
@@ -522,62 +651,21 @@ public sealed partial class DeezerEngineProcessor : IQueueEngineProcessor
         await FailQueueWithRetryAsync(request.QueueUuid, message, message, notify: false, cancellationToken);
     }
 
-    private async Task FinalizeSuccessfulTrackDownloadAsync(
-        TrackPayloadProcessingRequest request,
-        CoreTrack track,
-        TrackDownloadResult result,
-        CancellationToken cancellationToken)
-    {
-        await SyncEffectiveQualityAsync(request.QueueUuid, request.Payload, track.Bitrate, cancellationToken);
-        await UpdateTrackPayloadFilesAsync(request, track, result, cancellationToken);
-        await UpdateCompletedTrackQueueStateAsync(request, result.Path!, cancellationToken);
-    }
-
-    private async Task UpdateTrackPayloadFilesAsync(
-        TrackPayloadProcessingRequest request,
-        CoreTrack track,
-        TrackDownloadResult result,
-        CancellationToken cancellationToken)
-    {
-        if (result.GeneratedPathResult == null)
-        {
-            UpdatePayloadFiles(request.Payload, result.Path!);
-            return;
-        }
-
-        var trackContext = new EngineAudioPostDownloadHelper.EngineTrackContext(
-            track,
-            result.GeneratedPathResult,
-            DownloadPathResolver.ResolveIoPath(result.GeneratedPathResult.FilePath),
-            $"literal:{result.GeneratedPathResult.Filename}");
-        var expectedOutputPath = DownloadPathResolver.ResolveIoPath(result.Path!);
-        await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(
-            new EngineAudioPostDownloadHelper.PrefetchRequest(
-                request.QueueUuid,
-                trackContext,
-                request.Payload,
-                request.Settings,
-                expectedOutputPath,
-                _postDownloadTaskScheduler,
-                _lyricsService,
-                _queueRepository,
-                _listener,
-                _activityLog,
-                _logger,
-                EngineName),
-            cancellationToken);
-
-        await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(request.QueueUuid, cancellationToken);
-        EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(request.Payload, result.GeneratedPathResult, result.Path!);
-    }
-
     private async Task UpdateCompletedTrackQueueStateAsync(
         TrackPayloadProcessingRequest request,
         string outputPath,
         CancellationToken cancellationToken)
     {
         var sizeMb = QueueHelperUtils.TryGetFileSizeMb(outputPath);
+        if (sizeMb <= 0 || !QueueHelperUtils.OutputExists(outputPath))
+        {
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.FinalVerification,
+                "Audio downloaded; final verification will be retried.",
+                new InvalidOperationException($"Downloaded file missing or empty: {outputPath}"));
+        }
         ActualDownloadQualityLabel.ApplyTo(request.Payload, outputPath);
+        DownloadLifecycleCheckpoint.MarkCompleted(request.Payload);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<DeezerQueueItem>(
                 _queueRepository,

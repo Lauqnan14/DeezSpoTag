@@ -95,6 +95,19 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string ResolvedQuality { get; set; } = "";
     public int? ResolvedAutoIndex { get; set; }
     public string ResolutionError { get; set; } = "";
+    public bool AudioAcquired { get; set; }
+    public string AcquiredAudioPath { get; set; } = "";
+    public string AcquiredRequestedQuality { get; set; } = "";
+    public string AcquiredDeliveredQuality { get; set; } = "";
+    public string AcquiredEngine { get; set; } = "";
+    public long AcquiredFileSizeBytes { get; set; }
+    public string FinalizationStage { get; set; } = "";
+    public string FinalizationError { get; set; } = "";
+    public string FinalizationInnerError { get; set; } = "";
+    public DateTimeOffset? FinalizationRetryAtUtc { get; set; }
+    public string PrefetchedArtworkPath { get; set; } = "";
+    public string PrefetchedArtworkProvider { get; set; } = "";
+    public string PrefetchedArtworkError { get; set; } = "";
 
     protected Dictionary<string, object> BuildQueuePayload(string mappedStatus, Dictionary<string, object?>? extra = null)
     {
@@ -133,7 +146,20 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["artistArtworkResolutionMethod"] = ArtistArtworkResolutionMethod,
             ["artistArtworkWidth"] = ArtistArtworkWidth,
             ["artistArtworkHeight"] = ArtistArtworkHeight,
-            ["artistArtworkExistingRetained"] = ArtistArtworkExistingRetained
+            ["artistArtworkExistingRetained"] = ArtistArtworkExistingRetained,
+            ["audioAcquired"] = AudioAcquired,
+            ["acquiredAudioPath"] = AcquiredAudioPath,
+            ["acquiredRequestedQuality"] = AcquiredRequestedQuality,
+            ["acquiredDeliveredQuality"] = AcquiredDeliveredQuality,
+            ["acquiredEngine"] = AcquiredEngine,
+            ["acquiredFileSizeBytes"] = AcquiredFileSizeBytes,
+            ["finalizationStage"] = FinalizationStage,
+            ["finalizationError"] = FinalizationError,
+            ["finalizationInnerError"] = FinalizationInnerError,
+            ["finalizationRetryAtUtc"] = FinalizationRetryAtUtc,
+            ["prefetchedArtworkPath"] = PrefetchedArtworkPath,
+            ["prefetchedArtworkProvider"] = PrefetchedArtworkProvider,
+            ["prefetchedArtworkError"] = PrefetchedArtworkError
         };
 
         if (extra != null)

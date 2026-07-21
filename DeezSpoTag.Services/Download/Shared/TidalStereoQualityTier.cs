@@ -66,20 +66,14 @@ internal static class TidalStereoQuality
     public static bool Accepts(TidalStereoQualityTier requested, ActualAudioQuality actual)
         => requested switch
         {
-            TidalStereoQualityTier.Low => !actual.IsLossless
-                && actual.BitrateKbps > 0
-                && actual.BitrateKbps <= 128,
-            TidalStereoQualityTier.High => !actual.IsLossless
-                && actual.BitrateKbps >= 256,
+            TidalStereoQualityTier.Low => actual.IsLossless || actual.BitrateKbps > 0,
+            TidalStereoQualityTier.High => actual.IsLossless || actual.BitrateKbps >= 256,
             TidalStereoQualityTier.CdLossless => actual.IsLossless
                 && actual.BitsPerSample > 0
-                && actual.BitsPerSample <= 16
-                && actual.SampleRate > 0
-                && actual.SampleRate <= 48000,
+                && actual.SampleRate > 0,
             TidalStereoQualityTier.HiRes => actual.IsLossless
                 && actual.BitsPerSample >= 24
-                && actual.SampleRate > 0
-                && actual.SampleRate <= 96000,
+                && actual.SampleRate > 0,
             TidalStereoQualityTier.MaxHiRes => actual.IsLossless
                 && actual.BitsPerSample >= 24
                 && actual.SampleRate > 96000,

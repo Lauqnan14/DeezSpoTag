@@ -132,6 +132,20 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         DeezSpoTagSettings settings,
         CancellationToken itemToken)
     {
+        if (DownloadLifecycleCheckpoint.TryResume(payload, out var acquiredPath))
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, itemToken);
+            var resumedContext = await BuildTrackContextAsync(payload, settings, itemToken);
+            await QueuePrefetchAsync(next.QueueUuid, resumedContext, payload, settings);
+            if (!await TryFinalizeAcquiredAudioAsync(next.QueueUuid, resumedContext, payload, acquiredPath, settings, itemToken))
+            {
+                return;
+            }
+
+            await CompleteDownloadAsync(next.QueueUuid, payload, acquiredPath, itemToken);
+            return;
+        }
+
         var explicitQobuzTrackId = ExtractQobuzTrackId(payload.SourceUrl) ?? ExtractQobuzTrackId(payload.Url);
         if (explicitQobuzTrackId.HasValue && string.IsNullOrWhiteSpace(payload.QobuzId))
         {
@@ -193,7 +207,16 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             _queueRepository,
             _deezspotagListener,
             itemToken);
-        outputPath = await TryApplyPostDownloadSettingsAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken);
+        await DownloadLifecycleCheckpoint.PersistAcquiredAsync(
+            _queueRepository,
+            next.QueueUuid,
+            payload,
+            outputPath,
+            itemToken);
+        if (!await TryFinalizeAcquiredAudioAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken))
+        {
+            return;
+        }
         ActualDownloadQualityLabel.ApplyTo(payload, outputPath);
         FallbackAttemptRecorder.RecordCurrent(
             payload,
@@ -214,6 +237,34 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
 
         await CompleteDownloadAsync(next.QueueUuid, payload, outputPath, itemToken);
+    }
+
+    private async Task<bool> TryFinalizeAcquiredAudioAsync(
+        string queueUuid,
+        EngineAudioPostDownloadHelper.EngineTrackContext context,
+        QobuzQueueItem payload,
+        string outputPath,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ApplyPostDownloadSettingsForPayloadAsync(queueUuid, context, payload, outputPath, settings, cancellationToken);
+            return true;
+        }
+        catch (DownloadFinalizationException ex)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                _queueRepository,
+                _retryScheduler,
+                _deezspotagListener,
+                queueUuid,
+                EngineName,
+                payload,
+                ex,
+                CancellationToken.None);
+            return false;
+        }
     }
 
     private async Task SyncResolvedQualityAsync(
@@ -261,6 +312,8 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             return null;
         }
 
+        DownloadLifecycleCheckpoint.TryAdoptExistingAudio(payload);
+
         await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
             _tagSettingsResolver,
             settings,
@@ -295,8 +348,11 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         payload.StartTime = 0;
         payload.EndTime = 0;
         payload.ErrorMessage = string.Empty;
-        payload.FilePath = string.Empty;
-        payload.Files.Clear();
+        if (!payload.AudioAcquired)
+        {
+            payload.FilePath = string.Empty;
+            payload.Files.Clear();
+        }
         payload.FinalDestinations.Clear();
     }
 
@@ -698,7 +754,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         };
     }
 
-    private async Task<string> TryApplyPostDownloadSettingsAsync(
+    private async Task<string> ApplyPostDownloadSettingsForPayloadAsync(
         string queueUuid,
         EngineAudioPostDownloadHelper.EngineTrackContext context,
         QobuzQueueItem payload,
@@ -707,19 +763,14 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
-        return await EngineQueueProcessorHelper.ApplyPostDownloadSettingsWithFallbackAsync(
-            EngineName,
+        return await ApplyPostDownloadSettingsAsync(
             queueUuid,
+            context,
+            payload,
             outputPath,
-            _logger,
-            () => ApplyPostDownloadSettingsAsync(
-                queueUuid,
-                context,
-                payload,
-                outputPath,
-                settings,
-                scope.ServiceProvider,
-                cancellationToken));
+            settings,
+            scope.ServiceProvider,
+            cancellationToken);
     }
 
     private async Task CompleteDownloadAsync(
@@ -731,10 +782,14 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var finalSize = QueueHelperUtils.TryGetFileSizeMb(outputPath);
         if (finalSize <= 0 || !QueueHelperUtils.OutputExists(outputPath))
         {
-            throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.FinalVerification,
+                "Audio downloaded; final verification will be retried.",
+                new InvalidOperationException($"Downloaded file missing or empty: {outputPath}"));
         }
 
         await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(queueUuid, cancellationToken);
+        DownloadLifecycleCheckpoint.MarkCompleted(payload);
         await QueueHelperUtils.UpdateFinalDestinationPayloadAsync(
             new QueueHelperUtils.UpdateFinalDestinationPayloadRequest<QobuzQueueItem>(
                 _queueRepository,
@@ -811,6 +866,20 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         CancellationToken stoppingToken)
     {
         LogFailure(next.QueueUuid, ex);
+
+        if (payload != null && ex is DownloadFinalizationException finalizationFailure)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                _queueRepository,
+                _retryScheduler,
+                _deezspotagListener,
+                next.QueueUuid,
+                EngineName,
+                payload,
+                finalizationFailure,
+                CancellationToken.None);
+            return;
+        }
 
         if (payload != null
             && !stoppingToken.IsCancellationRequested

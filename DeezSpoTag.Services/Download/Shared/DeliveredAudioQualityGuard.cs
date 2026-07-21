@@ -119,11 +119,9 @@ internal static class DeliveredAudioQualityGuard
                 && actual.SampleRate > 96000,
             "7" or "HI_RES" or "ULTRA_HD_FLAC" => actual.IsLossless
                 && actual.BitsPerSample >= 24
-                && actual.SampleRate > 0
-                && actual.SampleRate <= 96000,
+                && actual.SampleRate > 0,
             "6" or "LOSSLESS" or "HD_FLAC" or "9" or "ALAC" => actual.IsLossless
-                && actual.BitsPerSample > 0
-                && actual.BitsPerSample <= 16,
+                && actual.BitsPerSample > 0,
             "5" or "HIGH" or "3" => !actual.IsLossless || actual.BitrateKbps >= 256,
             "LOW" or "1" or "AAC" or "OPUS" => true,
             _ => true

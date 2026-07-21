@@ -214,25 +214,57 @@ internal static class EngineQueueProcessorHelper
         CancellationToken itemToken)
         where TPayload : EngineQueueItemBase
     {
-        var outputPath = await workContext.Callbacks.DownloadAsync(
-            workContext.Payload,
-            executionState.Request,
-            workContext.Settings,
-            executionState.ProgressReporter,
-            itemToken);
-        await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
-            workContext.Payload,
-            outputPath,
-            workContext.Item.QueueUuid,
-            workContext.Deps.QueueRepository,
-            workContext.Deps.Listener,
-            itemToken);
-        outputPath = await ApplyPostDownloadSettingsSafelyAsync(
-            workContext,
-            outputPath,
-            executionState.Context,
-            itemToken);
-        await CompleteProcessingAsync(workContext, outputPath);
+        string outputPath;
+        if (!DownloadLifecycleCheckpoint.TryResume(workContext.Payload, out outputPath))
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(
+                workContext.Deps.QueueRepository,
+                workContext.Item.QueueUuid,
+                workContext.Payload,
+                itemToken);
+            outputPath = await workContext.Callbacks.DownloadAsync(
+                workContext.Payload,
+                executionState.Request,
+                workContext.Settings,
+                executionState.ProgressReporter,
+                itemToken);
+            await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
+                workContext.Payload,
+                outputPath,
+                workContext.Item.QueueUuid,
+                workContext.Deps.QueueRepository,
+                workContext.Deps.Listener,
+                itemToken);
+            await DownloadLifecycleCheckpoint.PersistAcquiredAsync(
+                workContext.Deps.QueueRepository,
+                workContext.Item.QueueUuid,
+                workContext.Payload,
+                outputPath,
+                itemToken);
+        }
+
+        try
+        {
+            outputPath = await ApplyPostDownloadSettingsAsync(
+                workContext,
+                outputPath,
+                executionState.Context,
+                itemToken);
+            await CompleteProcessingAsync(workContext, outputPath);
+        }
+        catch (DownloadFinalizationException ex)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                workContext.Deps.QueueRepository,
+                workContext.Deps.RetryScheduler,
+                workContext.Deps.Listener,
+                workContext.Item.QueueUuid,
+                workContext.EngineName,
+                workContext.Payload,
+                ex,
+                CancellationToken.None);
+            return;
+        }
     }
 
     private static async Task<EngineAudioPostDownloadHelper.EngineTrackContext?> BuildTrackContextOrNullAsync<TPayload>(
@@ -310,7 +342,7 @@ internal static class EngineQueueProcessorHelper
         await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(prefetchRequest, workContext.ItemToken);
     }
 
-    private static async Task<string> ApplyPostDownloadSettingsSafelyAsync<TPayload>(
+    private static async Task<string> ApplyPostDownloadSettingsAsync<TPayload>(
         QueueWorkContext<TPayload> workContext,
         string outputPath,
         EngineAudioPostDownloadHelper.EngineTrackContext? context,
@@ -334,31 +366,7 @@ internal static class EngineQueueProcessorHelper
             workContext.Deps.Logger,
             AppleCoverLookupIdOverride: ResolveAppleArtworkOverride(workContext.Payload),
             AnimatedArtworkAppleIdOverride: ResolveAppleArtworkOverride(workContext.Payload));
-        return await ApplyPostDownloadSettingsWithFallbackAsync(
-            workContext.EngineName,
-            workContext.Item.QueueUuid,
-            outputPath,
-            workContext.Deps.Logger,
-            () => EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(postDownloadRequest, itemToken));
-    }
-
-    internal static async Task<string> ApplyPostDownloadSettingsWithFallbackAsync(
-        string engineName,
-        string queueUuid,
-        string outputPath,
-        ILogger logger,
-        Func<Task<string>> applySettingsAsync)
-    {
-        try
-        {
-            return await applySettingsAsync();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            throw new InvalidOperationException(
-                $"{engineName} post-download settings failed for {queueUuid}; failing queue item.",
-                ex);
-        }
+        return await EngineAudioPostDownloadHelper.ApplyPostDownloadSettingsAsync(postDownloadRequest, itemToken);
     }
 
     private static async Task CompleteProcessingAsync<TPayload>(
@@ -369,7 +377,10 @@ internal static class EngineQueueProcessorHelper
         var finalSize = QueueHelperUtils.TryGetFileSizeMb(outputPath);
         if (finalSize <= 0 || !QueueHelperUtils.OutputExists(outputPath))
         {
-            throw new InvalidOperationException($"Downloaded file missing or empty: {outputPath}");
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.FinalVerification,
+                "Audio downloaded; final verification will be retried.",
+                new InvalidOperationException($"Downloaded file missing or empty: {outputPath}"));
         }
 
         await EngineAudioPostDownloadHelper.AwaitRemainingPrefetchAsync(
@@ -377,6 +388,7 @@ internal static class EngineQueueProcessorHelper
             workContext.ItemToken);
 
         ActualDownloadQualityLabel.ApplyTo(workContext.Payload, outputPath);
+        DownloadLifecycleCheckpoint.MarkCompleted(workContext.Payload);
         FallbackAttemptRecorder.RecordCurrent(
             workContext.Payload,
             "completed",

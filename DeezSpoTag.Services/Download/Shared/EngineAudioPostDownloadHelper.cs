@@ -1364,13 +1364,39 @@ public static partial class EngineAudioPostDownloadHelper
         PostDownloadSettingsRequest request,
         CancellationToken cancellationToken = default)
     {
-        var requiredArtwork = await AwaitRequiredArtworkBeforeTaggingAsync(
-            request.QueueUuid,
-            cancellationToken);
+        RequiredArtworkResult requiredArtwork;
+        try
+        {
+            requiredArtwork = await AwaitRequiredArtworkBeforeTaggingAsync(
+                request.QueueUuid,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.ArtworkPrefetch,
+                "Audio downloaded; waiting to retry required album artwork.",
+                ex);
+        }
         if (!string.IsNullOrWhiteSpace(requiredArtwork.FailureReason))
         {
-            throw new InvalidOperationException(
-                $"Required album artwork was unavailable before tagging: {requiredArtwork.FailureReason}");
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.ArtworkPrefetch,
+                "Audio downloaded; waiting to retry required album artwork.",
+                new InvalidOperationException(requiredArtwork.FailureReason));
+        }
+
+        request.Payload.PrefetchedArtworkPath = requiredArtwork.PrimaryArtworkPath ?? string.Empty;
+        request.Payload.PrefetchedArtworkProvider = ResolveArtworkProvider(request.Payload.Cover);
+        request.Payload.PrefetchedArtworkError = string.Empty;
+        var queueRepository = request.Scope.GetService<DownloadQueueRepository>();
+        if (queueRepository != null)
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(
+                queueRepository,
+                request.QueueUuid,
+                request.Payload,
+                cancellationToken);
         }
 
         SynchronizeTrackWithPayloadForTagging(request.Context.Track, request.Payload);
@@ -1395,15 +1421,49 @@ public static partial class EngineAudioPostDownloadHelper
                     request.Logger),
                 cancellationToken);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.TagWriting,
+                "Audio downloaded; tag writing will be retried.",
+                ex);
+        }
         finally
         {
             CleanupTemporaryEmbeddedArtwork(request.Context.Track.Album?.EmbeddedCoverPath);
         }
 
-        EnsureEmbeddedArtworkPreferenceSatisfied(request);
+        try
+        {
+            EnsureEmbeddedArtworkPreferenceSatisfied(request);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new DownloadFinalizationException(
+                DownloadFinalizationStage.FinalVerification,
+                "Audio downloaded; embedded artwork verification will be retried.",
+                ex);
+        }
 
         UpdateAudioPayloadFiles(request.Payload, request.Context.PathResult, request.OutputPath);
         return request.OutputPath;
+    }
+
+    private static string ResolveArtworkProvider(string? artworkUrl)
+    {
+        if (!Uri.TryCreate(artworkUrl, UriKind.Absolute, out var uri))
+        {
+            return string.Empty;
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        if (host.Contains("mzstatic", StringComparison.Ordinal)) return AppleSource;
+        if (host.Contains("deezer", StringComparison.Ordinal) || host.Contains("dzcdn", StringComparison.Ordinal)) return DeezerSource;
+        if (host.Contains("spotify", StringComparison.Ordinal) || host.Contains("scdn", StringComparison.Ordinal)) return SpotifySource;
+        if (host.Contains("qobuz", StringComparison.Ordinal)) return QobuzSource;
+        if (host.Contains("tidal", StringComparison.Ordinal)) return TidalSource;
+        if (host.Contains("amazon", StringComparison.Ordinal) || host.Contains("media-amazon", StringComparison.Ordinal)) return AmazonSource;
+        return uri.Host;
     }
 
     private static void EnsureEmbeddedArtworkPreferenceSatisfied(PostDownloadSettingsRequest request)
@@ -3155,6 +3215,15 @@ public static partial class EngineAudioPostDownloadHelper
             return null;
         }
 
+        if (DownloadLifecycleCheckpoint.TryAdoptExistingAudio(payload))
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(
+                context.QueueRepository,
+                queueItem.QueueUuid,
+                payload,
+                cancellationToken);
+        }
+
         if (DownloadEngineSettingsHelper.IsAtmosOnlyPayload(payload.ContentType, payload.Quality)
             && !CanProcessAtmosPayload(context.EngineName))
         {
@@ -3243,6 +3312,20 @@ public static partial class EngineAudioPostDownloadHelper
         where TPayload : EngineQueueItemBase
     {
         context.Logger.LogError(exception, "{Engine} download failed for {QueueUuid}", context.EngineName, queueUuid);
+        if (payload != null && exception is DownloadFinalizationException finalizationFailure)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                context.QueueRepository,
+                context.RetryScheduler,
+                context.Listener,
+                queueUuid,
+                context.EngineName,
+                payload,
+                finalizationFailure,
+                CancellationToken.None);
+            return;
+        }
+
         if (payload != null && !stoppingToken.IsCancellationRequested)
         {
             var quality = string.IsNullOrWhiteSpace(payload.Quality) ? "unknown" : payload.Quality;
@@ -3447,8 +3530,7 @@ public static partial class EngineAudioPostDownloadHelper
     {
         var allowPlaylistCover = ShouldAllowPlaylistCover(request.Payload, request.Settings);
         var shouldRequirePrefetchedEmbeddedArtwork = allowPlaylistCover
-            && request.Settings.Tags?.Cover == true
-            && !string.Equals(request.Engine, "deezer", StringComparison.OrdinalIgnoreCase);
+            && request.Settings.Tags?.Cover == true;
         return new PrefetchRequirements(
             allowPlaylistCover && (request.Settings.SaveArtwork || shouldRequirePrefetchedEmbeddedArtwork),
             allowPlaylistCover && request.Settings.SaveAnimatedArtwork,

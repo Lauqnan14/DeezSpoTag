@@ -145,6 +145,31 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         var requestContext = await BuildDownloadRequestContextAsync(next, queueContext, itemToken);
+        if (!queueContext.VideoPayload
+            && DownloadLifecycleCheckpoint.TryResume(queueContext.Payload, out var acquiredPath))
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, queueContext.Payload, itemToken);
+            await QueuePrefetchIfNeededAsync(next.QueueUuid, queueContext, requestContext.TrackContext);
+            if (!await TryFinalizeAcquiredAudioAsync(
+                    next.QueueUuid,
+                    queueContext,
+                    requestContext.TrackContext,
+                    acquiredPath,
+                    itemToken))
+            {
+                return queueContext;
+            }
+
+            if (!await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, acquiredPath, itemToken)
+                || !await ValidateFinalAudioOutputAsync(next, queueContext.Payload, acquiredPath, stoppingToken, itemToken))
+            {
+                return queueContext;
+            }
+
+            await MarkQueueItemCompletedAsync(next.QueueUuid, queueContext.Payload, itemToken);
+            return queueContext;
+        }
+
         if (!await EnsureWrapperAvailabilityAsync(next, queueContext, requestContext.Request, stoppingToken, itemToken))
         {
             return queueContext;
@@ -159,17 +184,57 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         }
 
         ApplyDownloadQualityMetadata(queueContext.Payload, result, next.QueueUuid);
-        var outputPath = await ApplyPostDownloadSettingsSafelyAsync(
-            next.QueueUuid,
-            queueContext,
-            requestContext.TrackContext,
-            result.OutputPath,
-            itemToken);
+        var outputPath = result.OutputPath;
+        if (!queueContext.VideoPayload)
+        {
+            await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
+                queueContext.Payload,
+                outputPath,
+                next.QueueUuid,
+                _queueRepository,
+                _deezspotagListener,
+                itemToken);
+            await DownloadLifecycleCheckpoint.PersistAcquiredAsync(
+                _queueRepository,
+                next.QueueUuid,
+                queueContext.Payload,
+                outputPath,
+                itemToken);
+            if (!await TryFinalizeAcquiredAudioAsync(
+                    next.QueueUuid,
+                    queueContext,
+                    requestContext.TrackContext,
+                    outputPath,
+                    itemToken))
+            {
+                return queueContext;
+            }
+        }
+        else
+        {
+            outputPath = await ApplyPostDownloadSettingsForPayloadAsync(
+                next.QueueUuid,
+                queueContext,
+                requestContext.TrackContext,
+                outputPath,
+                itemToken);
+        }
         if (!await PersistOutputMetadataIfPresentAsync(next.QueueUuid, queueContext.Payload, outputPath, itemToken))
         {
             const string verificationError = "Downloaded file missing or empty after transfer.";
             _logger.LogWarning("Apple download verification failed for {QueueUuid}: {OutputPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(next.QueueUuid), DeezSpoTag.Core.Security.LogSanitizer.OneLine(outputPath));
-            await HandleDownloadFailureAsync(next, queueContext.Payload, verificationError, stoppingToken, itemToken);
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                _queueRepository,
+                _retryScheduler,
+                _deezspotagListener,
+                next.QueueUuid,
+                EngineName,
+                queueContext.Payload,
+                new DownloadFinalizationException(
+                    DownloadFinalizationStage.FinalVerification,
+                    "Audio downloaded; final verification will be retried.",
+                    new InvalidOperationException(verificationError)),
+                CancellationToken.None);
             return queueContext;
         }
 
@@ -180,6 +245,38 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
 
         await MarkQueueItemCompletedAsync(next.QueueUuid, queueContext.Payload, itemToken);
         return queueContext;
+    }
+
+    private async Task<bool> TryFinalizeAcquiredAudioAsync(
+        string queueUuid,
+        QueueInitializationContext queueContext,
+        EngineAudioPostDownloadHelper.EngineTrackContext? trackContext,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ApplyPostDownloadSettingsForPayloadAsync(
+                queueUuid,
+                queueContext,
+                trackContext,
+                outputPath,
+                cancellationToken);
+            return true;
+        }
+        catch (DownloadFinalizationException ex)
+        {
+            await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+                _queueRepository,
+                _retryScheduler,
+                _deezspotagListener,
+                queueUuid,
+                EngineName,
+                queueContext.Payload,
+                ex,
+                CancellationToken.None);
+            return false;
+        }
     }
 
     private async Task HandleItemCanceledAsync(
@@ -238,6 +335,11 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             await _queueRepository.UpdateStatusAsync(next.QueueUuid, FailedStatus, InvalidPayloadMessage, cancellationToken: itemToken);
             await ScheduleRetryIfEligibleAsync(next.QueueUuid, "invalid payload", itemToken);
             return null;
+        }
+
+        if (DownloadLifecycleCheckpoint.TryAdoptExistingAudio(payload))
+        {
+            await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, itemToken);
         }
 
         var isVideoPayload = IsVideoPayload(payload);
@@ -606,7 +708,7 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             _logger.LogInformation("Apple download quality: {Quality} for {QueueUuid}", result.QualityLabel, queueUuid);        }
     }
 
-    private async Task<string> ApplyPostDownloadSettingsSafelyAsync(
+    private async Task<string> ApplyPostDownloadSettingsForPayloadAsync(
         string queueUuid,
         QueueInitializationContext queueContext,
         EngineAudioPostDownloadHelper.EngineTrackContext? trackContext,
@@ -616,19 +718,14 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         if (trackContext != null && !queueContext.VideoPayload)
         {
             using var scope = _serviceProvider.CreateScope();
-            return await EngineQueueProcessorHelper.ApplyPostDownloadSettingsWithFallbackAsync(
-                EngineName,
+            return await ApplyPostDownloadSettingsAsync(
                 queueUuid,
+                trackContext,
+                queueContext.Payload,
                 outputPath,
-                _logger,
-                () => ApplyPostDownloadSettingsAsync(
-                    queueUuid,
-                    trackContext,
-                    queueContext.Payload,
-                    outputPath,
-                    queueContext.Settings,
-                    scope.ServiceProvider,
-                    itemToken));
+                queueContext.Settings,
+                scope.ServiceProvider,
+                itemToken);
         }
 
         if (!queueContext.VideoPayload)
@@ -704,7 +801,18 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
             DeezSpoTag.Core.Security.LogSanitizer.OneLine(next.QueueUuid),
             DeezSpoTag.Core.Security.LogSanitizer.OneLine(outputPath),
             DeezSpoTag.Core.Security.LogSanitizer.OneLine(validation.Message));
-        await HandleDownloadFailureAsync(next, payload, validation.Message, stoppingToken, itemToken);
+        await DownloadLifecycleCheckpoint.PersistFinalizationFailureAsync(
+            _queueRepository,
+            _retryScheduler,
+            _deezspotagListener,
+            next.QueueUuid,
+            EngineName,
+            payload,
+            new DownloadFinalizationException(
+                DownloadFinalizationStage.FinalVerification,
+                "Audio downloaded; final verification will be retried.",
+                new InvalidOperationException(validation.Message)),
+            CancellationToken.None);
         return false;
     }
 
@@ -717,6 +825,8 @@ public sealed class AppleEngineProcessor : IQueueEngineProcessor
         payload.Progress = 100;
         payload.Downloaded = Math.Max(payload.Size, 1);
         payload.Status = AppleDownloadStatus.Completed;
+        DownloadLifecycleCheckpoint.MarkCompleted(payload);
+        await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, itemToken);
         await _queueRepository.UpdateStatusAsync(queueUuid, CompletedStatus, downloaded: 1, progress: 100, cancellationToken: itemToken);
         _deezspotagListener.Send(UpdateQueueEvent, payload.ToQueuePayload());
         await EngineAudioPostDownloadHelper.UpdateWatchlistTrackStatusAsync(

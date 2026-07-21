@@ -854,6 +854,10 @@ WHERE queue_uuid = @queueUuid;";
         }
 
         var payloadJson = await GetPayloadJsonAsync(connection, queueUuid, cancellationToken);
+        if (HasRetainedAcquiredAudio(payloadJson))
+        {
+            return;
+        }
         var protectedPaths = await GetActivePayloadPathsExceptAsync(connection, queueUuid, cancellationToken);
         DownloadStagingCleanupResult result;
         try
@@ -870,6 +874,59 @@ WHERE queue_uuid = @queueUuid;";
         }
 
         await UpdateStagingCleanupStatusAsync(connection, queueUuid, result, cancellationToken);
+    }
+
+    private static bool HasRetainedAcquiredAudio(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            if (!TryGetBooleanProperty(root, "AudioAcquired", "audioAcquired"))
+            {
+                return false;
+            }
+
+            var acquiredPath = TryGetStringProperty(root, "AcquiredAudioPath", "acquiredAudioPath");
+            return !string.IsNullOrWhiteSpace(acquiredPath)
+                   && File.Exists(DownloadPathResolver.ResolveIoPath(acquiredPath));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetBooleanProperty(JsonElement root, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (root.TryGetProperty(name, out var value)
+                && value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                return value.GetBoolean();
+            }
+        }
+
+        return false;
+    }
+
+    private static string? TryGetStringProperty(JsonElement root, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                return value.GetString();
+            }
+        }
+
+        return null;
     }
 
     private static async Task<List<string>> GetActivePayloadPathsExceptAsync(

@@ -40,7 +40,7 @@ public sealed class DownloadRetryScheduler
         return _lastKnownPending;
     }
 
-    public async Task ScheduleRetryAsync(
+    public async Task<bool> ScheduleRetryAsync(
         string queueUuid,
         string engine,
         string reason,
@@ -49,7 +49,7 @@ public sealed class DownloadRetryScheduler
         if (string.IsNullOrWhiteSpace(queueUuid)
             || _cancellationRegistry.WasUserCanceled(queueUuid))
         {
-            return;
+            return false;
         }
 
         var maxRetries = Math.Max(0, _settingsService.LoadSettings().MaxRetries);
@@ -69,6 +69,8 @@ public sealed class DownloadRetryScheduler
         {
             _activityLog.Warn($"Retry attempts exhausted (engine={engine} maxRetries={maxRetries}): {queueUuid} {reason}");
         }
+
+        return scheduled;
     }
 
     public async Task<bool> RunRetrySweepAsync(CancellationToken cancellationToken = default)

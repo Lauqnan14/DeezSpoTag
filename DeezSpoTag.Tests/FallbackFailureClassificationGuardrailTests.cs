@@ -77,13 +77,15 @@ public sealed class FallbackFailureClassificationGuardrailTests
     }
 
     [Fact]
-    public void FallbackExhaustionMessage_ReportsRecordedStepOutcomes()
+    public void FallbackExhaustionMessage_IsConciseWhileHistoryRemainsStructured()
     {
         var coordinator = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs");
 
-        Assert.Contains("BuildFallbackExhaustionDetail", coordinator, StringComparison.Ordinal);
-        Assert.Contains("Fallback outcomes:", coordinator, StringComparison.Ordinal);
+        Assert.Contains("Download failed after all enabled sources were tried.", coordinator, StringComparison.Ordinal);
         Assert.Contains("payload.FallbackHistory", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildFallbackExhaustionDetail", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("Fallback outcomes:", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("[failed/", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("Tried enabled fallback steps:", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("HasLaterDistinctEngineStep", coordinator, StringComparison.Ordinal);
     }
