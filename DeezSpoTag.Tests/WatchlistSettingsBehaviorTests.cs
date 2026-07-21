@@ -284,6 +284,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("GetBoomplayPlaylistWatchDataAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetPlaylistAsync(playlistId, cancellationToken)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("GetPlaylistAsync(playlistId, includeTracks:", source, StringComparison.Ordinal);
+        Assert.Contains("IsComplete: playlistData != null", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsBoomplayCandidateMappingComplete", source, StringComparison.Ordinal);
         Assert.Contains("BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount)", source, StringComparison.Ordinal);
         Assert.Contains("HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson)", source, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", source, StringComparison.Ordinal);

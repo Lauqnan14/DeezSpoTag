@@ -181,7 +181,7 @@ public sealed class BoomplayWatchlistMappingServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public void BoomplaySnapshot_IsIncompleteUntilEveryCandidateHasStoredDeezerIdentity()
+    public void BoomplayCandidateResolution_IsPerTrack()
     {
         var unresolved = new PlaylistTrackCandidate(
             "boom-4", null, "Title", "Artist", "Album", null, 200_000, null, Array.Empty<string>());
@@ -191,9 +191,9 @@ public sealed class BoomplayWatchlistMappingServiceTests : IAsyncLifetime
             MappingStatus = BoomplayWatchlistMappingService.MatchedStatus
         };
 
-        Assert.False(WatchlistEngine.IsBoomplayCandidateMappingComplete([mapped, unresolved], 2));
-        Assert.True(WatchlistEngine.IsBoomplayCandidateMappingComplete([mapped], 1));
-        Assert.True(WatchlistEngine.IsBoomplayCandidateMappingComplete([], 0));
+        Assert.False(PlaylistCandidateContract.IsResolvable("boomplay", unresolved));
+        Assert.True(PlaylistCandidateContract.IsResolvable("boomplay", mapped));
+        Assert.Equal([mapped], PlaylistCandidateContract.ResolvableCandidates("boomplay", [mapped, unresolved]));
     }
 
     [Fact]
