@@ -1446,7 +1446,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AppleArtistBiographyService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualSelectionService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistMetadataServices>();
-        services.AddSingleton<DeezSpoTag.Web.Services.ArtistImageProviderServices>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryArtistImageQueueDependencies>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyTracklistService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyRecommendationService>();
@@ -1715,18 +1714,14 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Spotify artist metadata queue after HTTP readiness.");
-        services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistImageCacheService>();
-        services.AddSingleton<DeezSpoTag.Web.Services.ArtistExternalMetadataBackfillService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistExternalMetadataBackfillService>(
-            services,
-            StartupWorkerCategory.Deferred,
-            "Artist external metadata backfill after HTTP readiness.");
-        services.AddSingleton<DeezSpoTag.Web.Services.ArtistVisualCacheService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistArtworkCatalogService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataCacheRefreshService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>();
-        AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistMetadataUpdaterService>(
+        services.AddSingleton<DeezSpoTag.Web.Services.ArtistMetadataAutomationCoordinator>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.ArtistMetadataAutomationCoordinator>(
             services,
             StartupWorkerCategory.Deferred,
-            "Artist metadata updater after HTTP readiness.");
+            "Coordinated artist metadata cache and target schedules after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Services.Library.MixService>();
         services.AddSingleton<DeezSpoTag.Services.Library.RadioService>();
         services.AddSingleton<DeezSpoTag.Web.Services.LibraryRecommendationService.LibraryRecommendationCollaborators>(sp =>

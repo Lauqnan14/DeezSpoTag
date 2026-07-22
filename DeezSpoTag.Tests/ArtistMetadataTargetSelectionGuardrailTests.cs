@@ -118,7 +118,8 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("public List<string> MetadataUpdaterTargets", preferences);
         Assert.Contains("public string MetadataUpdaterSource", preferences);
         Assert.Contains("public string? MetadataUpdaterFolderId", preferences);
-        Assert.Contains("public int MetadataUpdaterIntervalDays", preferences);
+        Assert.Contains("public int MetadataCacheRefreshIntervalDays", preferences);
+        Assert.Contains("public int MetadataTargetUpdateIntervalDays", preferences);
         Assert.Contains("public bool MetadataUpdaterIncludeAvatar", preferences);
         Assert.Contains("public bool MetadataUpdaterIncludeBackground", preferences);
         Assert.Contains("public bool MetadataUpdaterIncludeBio", preferences);
@@ -128,8 +129,10 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
 
         Assert.Contains("'deezspotag-metadata-updater-targets': 'metadataUpdaterTargets'", layout);
         Assert.Contains("'deezspotag-metadata-updater-targets':   'metadataUpdaterTargets'", userPreferencesJs);
-        Assert.Contains("'deezspotag-metadata-updater-interval-days': 'metadataUpdaterIntervalDays'", layout);
-        Assert.Contains("'deezspotag-metadata-updater-interval-days': 'metadataUpdaterIntervalDays'", userPreferencesJs);
+        Assert.Contains("'deezspotag-metadata-cache-refresh-interval-days': 'metadataCacheRefreshIntervalDays'", layout);
+        Assert.Contains("'deezspotag-metadata-target-update-interval-days': 'metadataTargetUpdateIntervalDays'", layout);
+        Assert.Contains("'deezspotag-metadata-cache-refresh-interval-days': 'metadataCacheRefreshIntervalDays'", userPreferencesJs);
+        Assert.Contains("'deezspotag-metadata-target-update-interval-days': 'metadataTargetUpdateIntervalDays'", userPreferencesJs);
         Assert.Contains("window.UserPrefs.set('metadataUpdaterTargets', targets);", File.ReadAllText(Path.Combine(
             RepositoryRoot(),
             "DeezSpoTag.Web",
@@ -228,12 +231,12 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
             "DeezSpoTag.Web",
             "Controllers",
             "Api",
-            "LibraryArtistVisualSelectionApiController.cs"));
+            "LibraryArtistArtworkApiController.cs"));
         var cacheService = File.ReadAllText(Path.Combine(
             RepositoryRoot(),
             "DeezSpoTag.Web",
             "Services",
-            "ArtistVisualCacheService.cs"));
+            "ArtistArtworkCatalogService.cs"));
         var libraryScript = File.ReadAllText(Path.Combine(
             RepositoryRoot(),
             "DeezSpoTag.Web",
@@ -241,11 +244,87 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
             "js",
             "library.js"));
 
-        Assert.Contains("[HttpPost(\"{id:long}/visuals/cache\")]", controller);
+        Assert.Contains("[HttpGet(\"{id:long}/artwork\")]", controller);
+        Assert.Contains("[HttpPost(\"{id:long}/artwork/refresh\")]", controller);
         Assert.Contains("library-artist-images", cacheService);
-        Assert.Contains("CacheArtistVisualPickerItems", libraryScript, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("artist_artwork_cache", File.ReadAllText(Path.Combine(RepositoryRoot(), "DeezSpoTag.Services", "Library", "LibraryRepository.cs")));
+        Assert.Contains("/artwork?refresh=true", libraryScript);
         Assert.Contains("cachedPickerImages", libraryScript);
-        Assert.Contains("mergeCachedArtistVisuals", libraryScript);
+        Assert.DoesNotContain("/visuals/cache", libraryScript);
+        Assert.DoesNotContain("loadDeezerArtistVisuals", libraryScript);
+        Assert.DoesNotContain("loadAppleArtistVisuals", libraryScript);
+    }
+
+    [Fact]
+    public void ArtistArtworkCatalog_IsTheSingleProviderAndCachePath()
+    {
+        var root = RepositoryRoot();
+        var catalog = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.cs"));
+        var updater = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataUpdaterService.cs"));
+        var imageQueue = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryArtistImageQueueService.cs"));
+        var search = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "DeezSpoTagSearchService.cs"));
+
+        foreach (var provider in new[] { "local", "spotify", "deezer", "apple", "itunes", "tidal", "qobuz", "lastfm" })
+        {
+            Assert.Contains($"\"{provider}\"", catalog);
+        }
+
+        Assert.Contains("ArtistArtworkCatalogService _artistArtworkCatalog", updater);
+        Assert.Contains("ArtistArtworkCatalogService _artworkCatalog", imageQueue);
+        Assert.Contains("GetArtistArtworkCacheAsync", catalog);
+        Assert.Contains("UpsertArtistArtworkCacheAsync", catalog);
+        Assert.Contains("Image.LoadAsync", catalog);
+        Assert.Contains("File.Move(temp, final, true)", catalog);
+        Assert.Contains("item is Newtonsoft.Json.Linq.JToken", search);
+        Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistVisualCacheService.cs")));
+        Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Web", "Services", "SpotifyArtistImageCacheService.cs")));
+    }
+
+    [Fact]
+    public void ArtistMetadataAutomation_HasTwoIsolatedOperationsAndOneCoordinator()
+    {
+        var root = RepositoryRoot();
+        var cacheRefresh = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataCacheRefreshService.cs"));
+        var targetUpdate = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataUpdaterService.cs"));
+        var popularSongs = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistPopularSongsSyncService.cs"));
+        var spotifyArtist = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "SpotifyArtistService.cs"));
+        var coordinator = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistMetadataAutomationCoordinator.cs"));
+        var controller = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Controllers", "Api", "ArtistMetadataAutomationApiController.cs"));
+        var spotifyController = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Controllers", "Api", "SpotifyCacheApiController.cs"));
+        var program = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Program.cs"));
+
+        Assert.Contains("ArtistArtworkCatalogService _artworkCatalog", cacheRefresh);
+        Assert.Contains("forceProviderRefresh: true", cacheRefresh);
+        Assert.Contains("UpsertArtistBiographyCacheAsync", cacheRefresh);
+        Assert.DoesNotContain("PlexApiClient", cacheRefresh);
+        Assert.DoesNotContain("JellyfinApiClient", cacheRefresh);
+        Assert.DoesNotContain("NavidromeApiClient", cacheRefresh);
+
+        Assert.Contains("GetArtistBiographyCacheAsync", targetUpdate);
+        Assert.Contains("_artistArtworkCatalog.GetAsync(artistId, cancellationToken)", targetUpdate);
+        Assert.DoesNotContain("forceRefresh: true", targetUpdate);
+        Assert.DoesNotContain("ITidalAccessTokenProvider", targetUpdate);
+        Assert.DoesNotContain("QobuzArtistService", targetUpdate);
+        Assert.DoesNotContain("LastFmArtistImageService", targetUpdate);
+        Assert.Contains("TryGetCachedArtistPageAsync", popularSongs);
+        Assert.DoesNotContain("GetArtistPageAsync(", popularSongs);
+        var cachedMethodStart = spotifyArtist.IndexOf("public async Task<SpotifyArtistPageResult?> TryGetCachedArtistPageAsync", StringComparison.Ordinal);
+        var cachedMethodEnd = spotifyArtist.IndexOf("private async Task<", cachedMethodStart, StringComparison.Ordinal);
+        var cachedMethod = spotifyArtist[cachedMethodStart..cachedMethodEnd];
+        Assert.DoesNotContain("_pathfinderMetadataClient", cachedMethod);
+        Assert.DoesNotContain("TryHydrateCachedBiographyAsync", cachedMethod);
+
+        var cacheRun = coordinator.IndexOf("if (cacheDue)", StringComparison.Ordinal);
+        var targetRun = coordinator.IndexOf("if (updateDue)", StringComparison.Ordinal);
+        Assert.True(cacheRun >= 0 && targetRun > cacheRun);
+        Assert.Contains("public sealed class ArtistMetadataAutomationCoordinator : BackgroundService", coordinator);
+        Assert.Contains("api/library/artist-metadata", controller);
+        Assert.Contains("cache/refresh", controller);
+        Assert.Contains("targets/update", controller);
+        Assert.DoesNotContain("metadata-updater/run", spotifyController);
+        Assert.DoesNotContain("[HttpPost(\"refresh\")]", spotifyController);
+        Assert.DoesNotContain("ArtistExternalMetadataBackfillService", program);
+        Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistExternalMetadataBackfillService.cs")));
     }
 
     private static string RepositoryRoot()

@@ -70,13 +70,17 @@ public sealed class ArtistPopularSongsSyncService
             return ArtistPopularSongsSyncResult.Failed("Artist not found.");
         }
 
-        var artistPage = await _spotifyArtistService.GetArtistPageAsync(
+        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(
             artistId,
-            artistName,
-            forceRefresh: false,
-            forceRematch: false,
-            cancellationToken,
-            includeDeezerLinking: true);
+            SpotifySource,
+            cancellationToken);
+        var artistPage = string.IsNullOrWhiteSpace(spotifyId)
+            ? null
+            : await _spotifyArtistService.TryGetCachedArtistPageAsync(
+                spotifyId,
+                artistName,
+                allowStale: true,
+                cancellationToken);
         if (artistPage?.Artist is null || string.IsNullOrWhiteSpace(artistPage.Artist.Id))
         {
             return ArtistPopularSongsSyncResult.Failed("Spotify artist top songs are unavailable.");

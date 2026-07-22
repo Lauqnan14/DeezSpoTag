@@ -1,4 +1,4 @@
-<p class="metadata-updater-description tool-card-info">Refresh artist metadata and rotate avatar/background artwork before pushing updates to your selected media server.</p>
+<p class="metadata-updater-description tool-card-info">Refresh provider metadata into DeezSpoTag's cache or independently push cached fields to selected media servers.</p>
 <div class="metadata-updater-select-row">
     <select id="metadata-source-platform">
         <option value="auto" selected>Auto source</option>
@@ -9,17 +9,33 @@
         <option value="qobuz">Qobuz</option>
         <option value="lastfm">Last.fm</option>
     </select>
-    <select id="metadata-refresh-interval">
+    <select id="metadata-library-folder" aria-label="Artist metadata library folder">
+        <option value="">All music libraries</option>
+    </select>
+</div>
+<div class="metadata-updater-select-row">
+    <label>
+        <span>Cache refresh schedule</span>
+        <select id="metadata-cache-refresh-interval">
         <option value="180">6 months</option>
         <option value="90">3 months</option>
         <option value="30" selected>1 month</option>
         <option value="14">2 weeks</option>
         <option value="7">1 week</option>
-        <option value="0">Full refresh</option>
-    </select>
-    <select id="metadata-library-folder" aria-label="Artist metadata library folder">
-        <option value="">All music libraries</option>
-    </select>
+        <option value="0">Manual only</option>
+        </select>
+    </label>
+    <label>
+        <span>Target update schedule</span>
+        <select id="metadata-target-update-interval">
+        <option value="180">6 months</option>
+        <option value="90">3 months</option>
+        <option value="30" selected>1 month</option>
+        <option value="14">2 weeks</option>
+        <option value="7">1 week</option>
+        <option value="0">Manual only</option>
+        </select>
+    </label>
 </div>
 <div class="metadata-updater-option-group">
     <div class="metadata-updater-group-label">Targets</div>

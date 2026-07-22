@@ -51,13 +51,7 @@ const libraryState = {
         artistId: null,
         headerImageUrl: null,
         gallery: [],
-        cacheImages: [],
         cachedPickerImages: [],
-        cacheRequestKey: '',
-        spotifyImages: [],
-        appleImages: [],
-        deezerImages: [],
-        lastfmImages: [],
         preferredAvatarPath: null,
         preferredBackgroundPath: null,
         backgroundApplyId: 0,
@@ -4233,7 +4227,7 @@ async function loadAlbums(artistId) {
 
     applyLocalArtistHeader(resolvedArtist);
     libraryState.currentLocalArtistName = (resolvedArtist?.name || '').trim();
-    loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistIdValue, appleIdData?.appleId || null);
+    loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistIdValue);
     hideLocalArtistSpotifyLink(resolvedArtist);
 
     const available = albums.filter(album => (album.localFolders || []).length > 0);
@@ -4634,17 +4628,6 @@ function initSpotifyAvatarFetch(artistId) {
     });
 }
 
-async function loadSpotifyCacheImages(artistId) {
-    try {
-        const images = await fetchJsonOptional(`/api/library/spotify-cache/images?artistId=${encodeURIComponent(artistId)}`);
-        libraryState.artistVisuals.artistId = artistId;
-        libraryState.artistVisuals.cacheImages = Array.isArray(images) ? images : [];
-        renderArtistVisualPicker(artistId);
-    } catch (error) {
-        console.warn('Failed to load cached Spotify images.', error);
-    }
-}
-
 function initSpotifyCacheControls(artistId) {
     const refreshButton = document.getElementById('spotify-cache-refresh-button');
     const resetMatchButton = document.getElementById('spotify-match-reset-button');
@@ -4681,7 +4664,6 @@ function initSpotifyCacheControls(artistId) {
         cachePanel.classList.add('is-open');
         const statusEl = document.getElementById('spotify-cache-status');
         try {
-            await fetchJson(`/api/library/spotify-cache/refresh?artistId=${encodeURIComponent(artistId)}`, { method: 'POST' });
             await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh`, { method: 'POST' });
             showToast('Artist source cache refreshed.', false);
             if (statusEl) {
@@ -4694,9 +4676,9 @@ function initSpotifyCacheControls(artistId) {
             libraryState.appleExtras.appleArtistId = appleId || null;
             libraryState.artistVisuals.externalTerm = null;
             libraryState.artistVisuals.externalLoading = false;
-            loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId, appleId);
+            loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId);
             await loadAppleArtistBiography(appleId);
-            setTimeout(() => loadSpotifyCacheImages(artistId), 1000);
+            setTimeout(() => loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId), 1000);
         } catch (error) {
             showToast(`Artist source cache refresh failed: ${error?.message || error}`, true);
             if (statusEl) {
@@ -4716,7 +4698,7 @@ function initSpotifyCacheControls(artistId) {
                 statusEl.textContent = 'Spotify refresh: rematching';
             }
             await loadSpotifyArtist(artistId, true, true);
-            setTimeout(() => loadSpotifyCacheImages(artistId), 2000);
+            setTimeout(() => loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId), 2000);
             showToast('Spotify artist match reset.');
         } catch (error) {
             showToast(`Spotify match reset failed: ${error?.message || error}`, true);
@@ -4783,7 +4765,7 @@ function initSpotifyCacheControls(artistId) {
         }
     });
 
-    loadSpotifyCacheImages(artistId);
+    loadExternalArtistVisuals(libraryState.currentLocalArtistName, artistId);
 }
 
 function getArtistSyncTargets() {
@@ -5921,9 +5903,8 @@ function initAppleIdEditor(artistIdValue) {
             initAppleArtistExtras(libraryState.appleExtras.term, trimmed);
             loadAppleArtistBiography(trimmed);
             // Refresh the visual picker with the correct artist image
-            libraryState.artistVisuals.appleImages = [];
             libraryState.artistVisuals.externalTerm = '';
-            loadAppleArtistVisuals(libraryState.appleExtras.term, artistIdValue, trimmed);
+            loadExternalArtistVisuals(libraryState.appleExtras.term, artistIdValue);
             showToast('Apple Music artist ID updated.');
         } catch (error) {
             showToast(`Apple ID update failed: ${error.message}`, true);
@@ -6764,248 +6745,32 @@ function applyStoredArtistVisuals(artistId) {
     applyStoredArtistBackgroundVisual(artistId, prefs);
 }
 
-function pickArtistVisualCandidates(items, term) {
-    if (!Array.isArray(items) || items.length === 0) {
-        return [];
-    }
-    const normalizedTerm = normalizeArtistName(term);
-    if (!normalizedTerm) {
-        return items.slice(0, 6);
-    }
-
-    const exact = items.filter(item => normalizeArtistName(item?.name) === normalizedTerm);
-    if (exact.length > 0) {
-        return exact.slice(0, 6);
-    }
-    const contains = items.filter(item => normalizeArtistName(item?.name).includes(normalizedTerm));
-    if (contains.length > 0) {
-        return contains.slice(0, 6);
-    }
-    return items.slice(0, 6);
-}
-
-async function loadAppleArtistVisuals(artistName, artistId, storedAppleId) {
-    // If we have a stored Apple ID, fetch that specific artist directly — no guessing
-    if (storedAppleId) {
-        try {
-            const data = await fetchJsonOptional(`/api/apple/artist?id=${encodeURIComponent(storedAppleId)}`);
-            libraryState.appleExtras.biographyAppleId = storedAppleId;
-            libraryState.appleExtras.biography = normalizeArtistBiographyForSync(data?.biography || '') || null;
-            updateArtistBiographySourceControls();
-            if (getSelectedArtistBiographySource() === 'apple') {
-                applySelectedArtistBiographySource();
-            }
-            if (data?.image) {
-                libraryState.artistVisuals.appleImages = [{
-                    url: data.image,
-                    label: `Apple Music • ${data.name || artistName}`,
-                    source: 'apple'
-                }];
-                renderArtistVisualPicker(artistId);
-                return;
-            }
-        } catch (error) {
-            console.warn('Apple artist visuals by ID failed.', error);
-        }
-    }
-
-    // Fallback: name search with library album cross-reference
+async function loadExternalArtistVisuals(artistName, artistId) {
     const term = (artistName || '').trim();
     if (!term) {
         return;
     }
-    try {
-        const payload = await fetchJsonOptional(`/api/apple/search?term=${encodeURIComponent(term)}&limit=10&types=artists`);
-        const artists = Array.isArray(payload?.artists) ? payload.artists : [];
-        let candidates = pickArtistVisualCandidates(artists, term);
-
-        // When multiple candidates share the same name, rank by library album overlap
-        const localTitles = buildLocalAlbumTitleSet();
-        if (candidates.length > 1 && localTitles.size > 0) {
-            const scored = await Promise.all(candidates.map(async c => {
-                if (!c?.appleId) return { c, score: 0 };
-                try {
-                    const albumData = await fetchJsonOptional(`/api/apple/artist/albums?id=${encodeURIComponent(c.appleId)}&limit=50`);
-                    let score = 0;
-                    for (const album of (albumData?.albums || [])) {
-                        const key = normalizeAlbumTitle(album?.name || '');
-                        if (key && localTitles.has(key)) score++;
-                    }
-                    return { c, score };
-                } catch {
-                    return { c, score: 0 };
-                }
-            }));
-            scored.sort((a, b) => b.score - a.score);
-            candidates = scored.map(s => s.c);
-        }
-
-        const images = candidates
-            .map(item => ({
-                url: item?.image || '',
-                label: item?.name ? `Apple Music • ${item.name}` : 'Apple Music',
-                source: 'apple'
-            }))
-            .filter(item => item.url);
-        libraryState.artistVisuals.appleImages = images;
-        renderArtistVisualPicker(artistId);
-    } catch (error) {
-        console.warn('Apple artist visuals failed.', error);
-    }
-}
-
-async function loadDeezerArtistVisuals(artistName, artistId) {
-    const term = (artistName || '').trim();
-    if (!term) {
-        return;
-    }
-    try {
-        const payload = await fetchJsonOptional(`/api/deezer/search/type?query=${encodeURIComponent(term)}&type=artist&limit=10`);
-        const artists = Array.isArray(payload?.items) ? payload.items : [];
-        const candidates = pickArtistVisualCandidates(artists, term);
-        const images = candidates
-            .map(item => {
-                const url = item?.picture_xl || item?.picture_big || item?.picture_medium || item?.picture || item?.picture_small || '';
-                return {
-                    url,
-                    label: item?.name ? `Deezer • ${item.name}` : 'Deezer',
-                    source: 'deezer'
-                };
-            })
-            .filter(item => item.url);
-        libraryState.artistVisuals.deezerImages = images;
-        renderArtistVisualPicker(artistId);
-    } catch (error) {
-        console.warn('Deezer artist visuals failed.', error);
-    }
-}
-
-async function loadLastFmArtistVisuals(artistName, artistId) {
-    const term = (artistName || '').trim();
-    if (!term) {
-        return;
-    }
-    try {
-        const params = new URLSearchParams();
-        params.set('artistName', term);
-        if (artistId) {
-            params.set('artistId', artistId);
-        }
-        const payload = await fetchJsonOptional(`/api/library/artists/lastfm-visuals?${params.toString()}`);
-        const candidates = Array.isArray(payload) ? payload : [];
-        const images = candidates
-            .map(item => ({
-                url: item?.url || item?.imageUrl || '',
-                label: item?.label || 'Last.fm',
-                source: item?.source || 'lastfm',
-                path: item?.path || ''
-            }))
-            .filter(item => item.url);
-        libraryState.artistVisuals.lastfmImages = images;
-        renderArtistVisualPicker(artistId);
-    } catch (error) {
-        console.warn('Last.fm artist visuals failed.', error);
-    }
-}
-
-function loadExternalArtistVisuals(artistName, artistId, storedAppleId) {
-    const term = (artistName || '').trim();
-    if (!term) {
-        return;
-    }
-    const normalized = normalizeArtistName(term);
     const visuals = libraryState.artistVisuals;
-    if (visuals.externalTerm === normalized) {
-        if (visuals.externalLoading) {
-            return;
-        }
-        if (visuals.appleImages.length > 0 || visuals.deezerImages.length > 0 || visuals.lastfmImages.length > 0) {
-            renderArtistVisualPicker(artistId);
-            return;
-        }
-    }
-
-    visuals.externalTerm = normalized;
+    visuals.externalTerm = normalizeArtistName(term);
     visuals.externalLoading = true;
-    visuals.appleImages = [];
-    visuals.deezerImages = [];
-    visuals.lastfmImages = [];
+    visuals.cachedPickerImages = [];
     renderArtistVisualPicker(artistId);
-
-    Promise.allSettled([
-        loadAppleArtistVisuals(term, artistId, storedAppleId || null),
-        loadDeezerArtistVisuals(term, artistId),
-        loadLastFmArtistVisuals(term, artistId)
-    ]).finally(() => {
-        visuals.externalLoading = false;
-    });
-}
-
-async function cacheArtistVisualPickerItems(artistId, items) {
-    if (!artistId || !Array.isArray(items) || items.length === 0) {
-        return [];
-    }
-
-    const candidates = items
-        .map(item => ({
-            source: item.source || '',
-            label: item.label || '',
+    try {
+        const result = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/artwork?refresh=true`);
+        const candidates = Array.isArray(result?.visuals) ? result.visuals : [];
+        visuals.cachedPickerImages = candidates.map(item => ({
             url: item.url || '',
             path: item.path || '',
-            identity: item.identity || ''
-        }))
-        .filter(item => item.url || item.path);
-    if (candidates.length === 0) {
-        return [];
-    }
-
-    try {
-        const cached = await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/visuals/cache`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ candidates })
-        });
-        return Array.isArray(cached) ? cached : [];
+            source: item.source || 'cached',
+            identity: item.identity || '',
+            label: `${item.source || 'cached'} artwork`
+        })).filter(item => item.url && item.path);
     } catch (error) {
-        console.warn('Failed to cache artist visuals.', error);
-        return [];
+        console.warn('Failed to load cached artist artwork.', error);
+    } finally {
+        visuals.externalLoading = false;
+        renderArtistVisualPicker(artistId);
     }
-}
-
-function mergeCachedArtistVisuals(items, cachedItems) {
-    if (!Array.isArray(items) || !Array.isArray(cachedItems) || cachedItems.length === 0) {
-        return items;
-    }
-
-    const byIdentity = new Map();
-    const byUrl = new Map();
-    cachedItems.forEach(item => {
-        const identity = (item?.identity || '').toString();
-        const url = normalizeArtistVisualUrl(item?.url || '');
-        if (identity) {
-            byIdentity.set(identity, item);
-        }
-        if (url) {
-            byUrl.set(url, item);
-        }
-    });
-
-    return items.map(item => {
-        const cached = byIdentity.get(item.identity || '') || byUrl.get(normalizeArtistVisualUrl(item.url || ''));
-        if (!cached?.url || !cached?.path) {
-            return item;
-        }
-
-        return {
-            ...item,
-            remoteUrl: item.remoteUrl || item.url,
-            url: cached.url,
-            path: cached.path,
-            source: cached.source || item.source,
-            label: item.label || cached.label,
-            identity: item.identity || cached.identity
-        };
-    });
 }
 
 function renderArtistVisualPicker(artistId) {
@@ -7014,39 +6779,11 @@ function renderArtistVisualPicker(artistId) {
         return;
     }
 
-    const cacheImages = Array.isArray(libraryState.artistVisuals.cacheImages)
-        ? libraryState.artistVisuals.cacheImages
-        : [];
     const cachedPickerImages = Array.isArray(libraryState.artistVisuals.cachedPickerImages)
         ? libraryState.artistVisuals.cachedPickerImages
         : [];
-    const spotifyImages = Array.isArray(libraryState.artistVisuals.spotifyImages)
-        ? libraryState.artistVisuals.spotifyImages
-        : [];
-    const appleImages = Array.isArray(libraryState.artistVisuals.appleImages)
-        ? libraryState.artistVisuals.appleImages
-        : [];
-    const deezerImages = Array.isArray(libraryState.artistVisuals.deezerImages)
-        ? libraryState.artistVisuals.deezerImages
-        : [];
-    const lastfmImages = Array.isArray(libraryState.artistVisuals.lastfmImages)
-        ? libraryState.artistVisuals.lastfmImages
-        : [];
 
     const items = [];
-    cacheImages.forEach(image => {
-        if (!image?.path) {
-            return;
-        }
-        const rawUrl = `/api/library/image?path=${encodeURIComponent(image.path)}&size=640`;
-        items.push({
-            url: rawUrl,
-            label: image.name ? `Spotify cache • ${image.name}` : 'Spotify cache',
-            source: 'spotify-cache',
-            path: image.path,
-            identity: `file:${image.path}`
-        });
-    });
     cachedPickerImages.forEach(image => {
         if (!image?.path || !image?.url) {
             return;
@@ -7057,51 +6794,6 @@ function renderArtistVisualPicker(artistId) {
             source: image.source || 'cached',
             path: image.path,
             identity: image.identity || `file:${image.path}`
-        });
-    });
-    spotifyImages.forEach(item => {
-        if (!item?.url) {
-            return;
-        }
-        items.push({
-            url: item.url,
-            label: item.label || 'Spotify',
-            source: item.source || 'spotify',
-            identity: `${item.source || 'spotify'}:${item.url}`
-        });
-    });
-    appleImages.forEach(item => {
-        if (!item?.url) {
-            return;
-        }
-        items.push({
-            url: item.url,
-            label: item.label || 'Apple Music',
-            source: item.source || 'apple',
-            identity: `${item.source || 'apple'}:${item.url}`
-        });
-    });
-    deezerImages.forEach(item => {
-        if (!item?.url) {
-            return;
-        }
-        items.push({
-            url: item.url,
-            label: item.label || 'Deezer',
-            source: item.source || 'deezer',
-            identity: `${item.source || 'deezer'}:${item.url}`
-        });
-    });
-    lastfmImages.forEach(item => {
-        if (!item?.url) {
-            return;
-        }
-        items.push({
-            url: item.url,
-            label: item.label || 'Last.fm',
-            source: item.source || 'lastfm',
-            path: item.path || '',
-            identity: `${item.source || 'lastfm'}:${item.url}`
         });
     });
 
@@ -7118,23 +6810,6 @@ function renderArtistVisualPicker(artistId) {
     if (deduped.length === 0) {
         grid.innerHTML = '<div class="empty-card">No visuals available yet.</div>';
         return;
-    }
-
-    const cacheKey = JSON.stringify(deduped.map(item => [item.source, item.identity, item.url, item.path]));
-    if (libraryState.artistVisuals.cacheRequestKey !== cacheKey) {
-        libraryState.artistVisuals.cacheRequestKey = cacheKey;
-        cacheArtistVisualPickerItems(artistId, deduped).then(cached => {
-            if (cached.length === 0) {
-                return;
-            }
-            const merged = mergeCachedArtistVisuals(deduped, cached);
-            const changed = JSON.stringify(merged.map(item => [item.source, item.identity, item.url, item.path]))
-                !== JSON.stringify(deduped.map(item => [item.source, item.identity, item.url, item.path]));
-            if (changed) {
-                libraryState.artistVisuals.cachedPickerImages = merged.filter(item => item.path);
-                renderArtistVisualPicker(artistId);
-            }
-        });
     }
 
     grid.innerHTML = deduped.map(item => {

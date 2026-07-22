@@ -120,9 +120,7 @@ public sealed class LibraryArtistsApiControllerTests : IAsyncLifetime
             artistPageCache: null!,
             spotifyMetadataCache: null!,
             lastFmArtistImageService: null!,
-            artistExternalMetadataBackfillService: null!,
             artistVisualSelectionService: null!,
-            artistVisualCacheService: null!,
             environment: _environment);
 
         return new LibraryArtistSourceMetadataApiController(

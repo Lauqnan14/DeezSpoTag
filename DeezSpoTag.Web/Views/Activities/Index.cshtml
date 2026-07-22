@@ -2296,10 +2296,27 @@
 }
 
 .media-operations-tab .metadata-updater-select-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
     width: 100%;
+}
+
+.media-operations-tab .metadata-updater-select-row > select,
+.media-operations-tab .metadata-updater-select-row > label {
+    width: 100%;
+    min-width: 0;
+}
+
+.media-operations-tab .metadata-updater-select-row > label {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 6px;
+}
+
+.media-operations-tab .metadata-updater-select-row > label > select {
+    width: 100%;
+    min-width: 0;
 }
 
 .media-operations-tab .metadata-updater-option-group {
@@ -2659,6 +2676,11 @@
     }
 
     .media-operations-tab .metadata-updater-checkbox-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .media-operations-tab .metadata-updater-select-row {
         grid-template-columns: 1fr;
         gap: 8px;
     }
@@ -3832,7 +3854,7 @@ function initMediaOperationsHelp() {
             title: 'Artist Metadata Updater',
             content: `
                 <h4>What does this tool do?</h4>
-                <p>The Artist Metadata Updater refreshes artist metadata from your selected source, rotates available visuals, and pushes avatar/background/bio to selected target servers.</p>
+                <p>Refresh Cache fetches and stores provider metadata. Begin Update uses only that local cache when pushing selected fields to target servers.</p>
 
                 <h4>Refresh Interval Options</h4>
                 <ul>
@@ -3853,9 +3875,11 @@ function initMediaOperationsHelp() {
                     <li><strong>Last.fm:</strong> Uses Last.fm biography and visuals only</li>
                 </ul>
 
-                <h4>Cache-only actions</h4>
+                <h4>Independent actions</h4>
                 <ul>
-                    <li><strong>Refresh Cache:</strong> Updates only the local Spotify cache (no server updates)</li>
+                    <li><strong>Refresh Cache:</strong> Fetches and validates multi-provider artwork and biographies without updating servers.</li>
+                    <li><strong>Begin Update:</strong> Pushes only already-cached artwork and biographies without contacting providers.</li>
+                    <li>When both automatic schedules are due together, cache refresh completes before target updating begins.</li>
                 </ul>
 
                 <h4>What gets updated?</h4>
@@ -4151,7 +4175,8 @@ function initMetadataUpdater() {
     const refreshCacheButton = document.getElementById('metadata-refresh-cache-button');
     const cancelButton = document.getElementById('metadata-cancel-button');
     const sourceSelect = document.getElementById('metadata-source-platform');
-    const intervalSelect = document.getElementById('metadata-refresh-interval');
+    const cacheIntervalSelect = document.getElementById('metadata-cache-refresh-interval');
+    const targetIntervalSelect = document.getElementById('metadata-target-update-interval');
     const folderSelect = document.getElementById('metadata-library-folder');
     const targetContainer = document.getElementById('metadata-target-server');
     const includeAvatarCheckbox = document.getElementById('metadata-include-avatar');
@@ -4176,7 +4201,9 @@ function initMetadataUpdater() {
     const popularSongsKey = 'deezspotag-metadata-updater-popular-songs';
     const missingArtistArtOnlyKey = 'deezspotag-metadata-updater-missing-artist-art-only';
     const folderKey = 'deezspotag-metadata-updater-folder';
-    const intervalKey = 'deezspotag-metadata-updater-interval-days';
+    const legacyIntervalKey = 'deezspotag-metadata-updater-interval-days';
+    const cacheIntervalKey = 'deezspotag-metadata-cache-refresh-interval-days';
+    const targetIntervalKey = 'deezspotag-metadata-target-update-interval-days';
     const ocrTextArtBlockingKey = 'deezspotag-metadata-updater-ocr-text-art-blocking';
 
     const persistMetadataUpdaterSettings = async () => {
@@ -4184,7 +4211,8 @@ function initMetadataUpdater() {
         localStorage.setItem(targetKey, JSON.stringify(targets));
         localStorage.setItem(sourceKey, sourceSelect?.value || 'auto');
         localStorage.setItem(folderKey, folderSelect?.value || '');
-        localStorage.setItem(intervalKey, String(Number(intervalSelect?.value || 30)));
+        localStorage.setItem(cacheIntervalKey, String(Number(cacheIntervalSelect?.value || 30)));
+        localStorage.setItem(targetIntervalKey, String(Number(targetIntervalSelect?.value || 30)));
         localStorage.setItem(includeAvatarKey, includeAvatarCheckbox?.checked !== false ? 'true' : 'false');
         localStorage.setItem(includeBackgroundKey, includeBackgroundCheckbox?.checked !== false ? 'true' : 'false');
         localStorage.setItem(includeBioKey, includeBioCheckbox?.checked === true ? 'true' : 'false');
@@ -4195,7 +4223,8 @@ function initMetadataUpdater() {
             window.UserPrefs.set('metadataUpdaterTargets', targets);
             window.UserPrefs.set('metadataUpdaterSource', sourceSelect?.value || 'auto');
             window.UserPrefs.set('metadataUpdaterFolderId', folderSelect?.value || null);
-            window.UserPrefs.set('metadataUpdaterIntervalDays', Number(intervalSelect?.value || 30));
+            window.UserPrefs.set('metadataCacheRefreshIntervalDays', Number(cacheIntervalSelect?.value || 30));
+            window.UserPrefs.set('metadataTargetUpdateIntervalDays', Number(targetIntervalSelect?.value || 30));
             window.UserPrefs.set('metadataUpdaterIncludeAvatar', includeAvatarCheckbox?.checked !== false);
             window.UserPrefs.set('metadataUpdaterIncludeBackground', includeBackgroundCheckbox?.checked !== false);
             window.UserPrefs.set('metadataUpdaterIncludeBio', includeBioCheckbox?.checked === true);
@@ -4209,7 +4238,7 @@ function initMetadataUpdater() {
     const runMetadataUpdater = async (forceManualRun) => {
         const missingArtistArtworkOnly = missingArtistArtOnlyCheckbox?.checked === true;
         const source = sourceSelect?.value || 'auto';
-        const intervalDays = Number(intervalSelect?.value || 30);
+        const intervalDays = Number(targetIntervalSelect?.value || 30);
         const folderId = Number(folderSelect?.value || 0);
         const targets = getMetadataUpdaterTargets();
         if (targets.length === 0) {
@@ -4232,7 +4261,7 @@ function initMetadataUpdater() {
         };
 
         try {
-            const response = await activityFetch('/api/library/spotify-cache/metadata-updater/run', {
+            const response = await activityFetch('/api/library/artist-metadata/targets/update', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
@@ -4248,7 +4277,7 @@ function initMetadataUpdater() {
                 notifyActivity('Metadata updater is already running.', 'warning');
             }
             if (result?.status) {
-                applyMetadataUpdaterStatus(result.status, phaseLabel, progressLabel, progressBar);
+                applyMetadataUpdaterStatus(result.status.targetUpdate || {}, phaseLabel, progressLabel, progressBar);
             }
         } catch (error) {
             notifyActivity(`Metadata updater failed: ${error?.message || error}`, 'error');
@@ -4259,7 +4288,18 @@ function initMetadataUpdater() {
         refreshCacheButton.addEventListener('click', async () => {
             await runActivityButtonAction(refreshCacheButton, async () => {
                 try {
-                    const response = await activityFetch('/api/library/spotify-cache/refresh', { method: 'POST', keepalive: true });
+                    const folderId = Number(folderSelect?.value || 0);
+                    const response = await activityFetch('/api/library/artist-metadata/cache/refresh', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            artistId: null,
+                            folderId: folderId > 0 ? folderId : null,
+                            source: sourceSelect?.value || 'auto',
+                            includePopularSongs: popularSongsCheckbox?.checked === true
+                        }),
+                        keepalive: true
+                    });
                     if (!response.ok) {
                         throw new Error(await response.text());
                     }
@@ -4314,15 +4354,24 @@ function initMetadataUpdater() {
         });
     }
 
-    if (intervalSelect) {
-        const savedInterval = localStorage.getItem(intervalKey);
-        if (savedInterval !== null) {
-            intervalSelect.value = savedInterval;
-        }
-        intervalSelect.addEventListener('change', () => {
-            localStorage.setItem(intervalKey, intervalSelect.value || '30');
-            if (window.UserPrefs) window.UserPrefs.set('metadataUpdaterIntervalDays', Number(intervalSelect.value || 30));
+    const legacyInterval = localStorage.getItem(legacyIntervalKey);
+    const serverPreferences = window.__userPrefsData || {};
+    [
+        [cacheIntervalSelect, cacheIntervalKey, 'metadataCacheRefreshIntervalDays'],
+        [targetIntervalSelect, targetIntervalKey, 'metadataTargetUpdateIntervalDays']
+    ].forEach(([input, key, preferenceKey]) => {
+        if (!input) return;
+        const savedInterval = localStorage.getItem(key)
+            ?? (serverPreferences[preferenceKey] != null ? String(serverPreferences[preferenceKey]) : null)
+            ?? legacyInterval;
+        if (savedInterval !== null) input.value = savedInterval;
+        input.addEventListener('change', () => {
+            localStorage.setItem(key, input.value || '30');
+            if (window.UserPrefs) window.UserPrefs.set(preferenceKey, Number(input.value || 30));
         });
+    });
+    if (legacyInterval !== null) {
+        localStorage.removeItem(legacyIntervalKey);
     }
 
     [
@@ -4601,6 +4650,7 @@ async function refreshLibraryScanAndMetadataStatus() {
     const metadataProgressLabel = document.getElementById('metadata-progress-label');
     const metadataProgressBar = document.getElementById('metadata-progress-bar');
     const metadataUpdate = document.getElementById('metadata-update-button');
+    const metadataRefresh = document.getElementById('metadata-refresh-cache-button');
     let metadataRunning = null;
 
     try {
@@ -4621,13 +4671,19 @@ async function refreshLibraryScanAndMetadataStatus() {
     }
 
     try {
-        const metadataResponse = await activityFetch('/api/library/spotify-cache/metadata-updater/status');
+        const metadataResponse = await activityFetch('/api/library/artist-metadata/status');
         if (metadataResponse.ok) {
-            const metadataStatus = await metadataResponse.json();
-            metadataRunning = Boolean(metadataStatus?.running);
-            applyMetadataUpdaterStatus(metadataStatus, metadataPhase, metadataProgressLabel, metadataProgressBar);
+            const automationStatus = await metadataResponse.json();
+            const metadataStatus = automationStatus?.activeOperation === 'cache-refresh'
+                ? automationStatus?.cacheRefresh
+                : automationStatus?.targetUpdate;
+            metadataRunning = Boolean(automationStatus?.activeOperation || metadataStatus?.running);
+            applyMetadataUpdaterStatus(metadataStatus || {}, metadataPhase, metadataProgressLabel, metadataProgressBar);
             if (metadataUpdate) {
                 metadataUpdate.disabled = metadataRunning;
+            }
+            if (metadataRefresh) {
+                metadataRefresh.disabled = metadataRunning;
             }
         }
     } catch {

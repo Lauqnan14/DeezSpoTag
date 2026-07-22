@@ -371,20 +371,7 @@ public sealed class SpotifyArtistService
             return null;
         }
 
-        var normalizedCachedPayload = EnsureArtistIdentity(cachedPayload, artistName);
-        normalizedCachedPayload = await TryHydrateCachedBiographyAsync(
-            spotifyId,
-            artistName,
-            normalizedCachedPayload,
-            cached.FetchedUtc,
-            cancellationToken);
-        if (CachePayloadChanged(cachedPayload, normalizedCachedPayload))
-        {
-            var payloadJson = JsonSerializer.Serialize(new SpotifyArtistCacheEnvelope(ArtistCacheSchemaVersion, normalizedCachedPayload), _jsonOptions);
-            await _cacheRepository.UpsertAsync(SpotifySource, spotifyId, payloadJson, cached.FetchedUtc, cancellationToken);
-        }
-
-        return normalizedCachedPayload;
+        return EnsureArtistIdentity(cachedPayload, artistName);
     }
 
     private async Task<SpotifyArtistPageResult?> GetArtistPageBySpotifyIdInternalAsync(

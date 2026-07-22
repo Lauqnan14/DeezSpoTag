@@ -11,14 +11,17 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public sealed class LibraryArtistExternalCacheApiController : ControllerBase
 {
     private readonly LibraryConfigStore _configStore;
-    private readonly ArtistExternalMetadataBackfillService _artistExternalMetadataBackfillService;
+    private readonly DeezSpoTag.Services.Library.LibraryRepository _repository;
+    private readonly ArtistMetadataCacheRefreshService _cacheRefreshService;
 
     public LibraryArtistExternalCacheApiController(
         LibraryConfigStore configStore,
-        LibraryArtistMetadataServices metadataServices)
+        DeezSpoTag.Services.Library.LibraryRepository repository,
+        ArtistMetadataCacheRefreshService cacheRefreshService)
     {
         _configStore = configStore;
-        _artistExternalMetadataBackfillService = metadataServices.ArtistExternalMetadataBackfillService;
+        _repository = repository;
+        _cacheRefreshService = cacheRefreshService;
     }
 
     [HttpPost("{id:long}/external-cache/refresh")]
@@ -29,11 +32,12 @@ public sealed class LibraryArtistExternalCacheApiController : ControllerBase
             return BadRequest("ArtistId is required.");
         }
 
-        var refreshed = await _artistExternalMetadataBackfillService.RefreshArtistAsync(id, cancellationToken);
-        if (!refreshed)
+        var artist = await _repository.GetArtistAsync(id, cancellationToken);
+        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
         {
             return NotFound("Artist not found.");
         }
+        var refreshed = await _cacheRefreshService.RefreshArtistAsync(id, artist.Name, "auto", false, cancellationToken);
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
             DateTimeOffset.UtcNow,

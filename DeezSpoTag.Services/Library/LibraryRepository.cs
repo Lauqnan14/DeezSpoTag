@@ -15389,6 +15389,43 @@ LIMIT 1;";
             await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt32(4));
     }
 
+    public async Task<IReadOnlyList<ArtistArtworkCacheDto>> GetArtistArtworkCacheAsync(
+        long artistId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT role, identity, source, original_url, local_path, content_hash,
+       width, height, ocr_status, detected_text, text_art_blocked, user_blocked, last_seen_at
+FROM artist_artwork_cache
+WHERE artist_id = @artistId
+ORDER BY source COLLATE NOCASE, last_seen_at DESC;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<ArtistArtworkCacheDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(new ArtistArtworkCacheDto(
+                artistId,
+                reader.GetString(0),
+                reader.GetString(1),
+                await ReadNullableStringAsync(reader, 2, cancellationToken),
+                await ReadNullableStringAsync(reader, 3, cancellationToken),
+                await ReadNullableStringAsync(reader, 4, cancellationToken),
+                await ReadNullableStringAsync(reader, 5, cancellationToken),
+                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
+                await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetInt32(7),
+                await ReadNullableStringAsync(reader, 8, cancellationToken),
+                await ReadNullableStringAsync(reader, 9, cancellationToken),
+                reader.GetInt64(10) != 0,
+                reader.GetInt64(11) != 0,
+                reader.GetString(12)));
+        }
+
+        return results;
+    }
+
     public async Task SetArtistArtworkBlockedAsync(
         long artistId,
         string role,
@@ -15451,6 +15488,43 @@ ON CONFLICT(artist_id, source) DO UPDATE SET
         command.Parameters.AddWithValue("biography", (object?)biography ?? DBNull.Value);
         command.Parameters.AddWithValue("selected", selected ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<ArtistBiographyCacheDto?> GetArtistBiographyCacheAsync(
+        long artistId,
+        string? preferredSource,
+        bool allowFallback,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT source, biography, selected, fetched_at
+FROM artist_biography_cache
+WHERE artist_id = @artistId
+  AND biography IS NOT NULL
+  AND TRIM(biography) <> ''
+  AND (@allowFallback = 1 OR source = @preferredSource)
+ORDER BY
+    CASE WHEN source = @preferredSource THEN 0 ELSE 1 END,
+    selected DESC,
+    fetched_at DESC
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("preferredSource", (object?)preferredSource ?? DBNull.Value);
+        command.Parameters.AddWithValue("allowFallback", allowFallback ? 1 : 0);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new ArtistBiographyCacheDto(
+            artistId,
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetInt64(2) != 0,
+            reader.GetString(3));
     }
 
     public async Task UpsertArtistServerSyncStateAsync(
@@ -15845,6 +15919,29 @@ public sealed record ArtistArtworkProvenanceDto(
     string? LocalPath,
     int? Width,
     int? Height);
+
+public sealed record ArtistArtworkCacheDto(
+    long ArtistId,
+    string Role,
+    string Identity,
+    string? Source,
+    string? OriginalUrl,
+    string? LocalPath,
+    string? ContentHash,
+    int? Width,
+    int? Height,
+    string? OcrStatus,
+    string? DetectedText,
+    bool TextArtBlocked,
+    bool UserBlocked,
+    string LastSeenAt);
+
+public sealed record ArtistBiographyCacheDto(
+    long ArtistId,
+    string Source,
+    string Biography,
+    bool Selected,
+    string FetchedAt);
 
 public sealed record ArtistServerSyncStateUpsertInput(
     long ArtistId,

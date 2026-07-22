@@ -244,7 +244,6 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         };
 
         Assert.True(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest(), 30, now));
-        Assert.False(InvokeIsTrackedArtistDueForAutomaticRun(tracked, now));
     }
 
     [Fact]
@@ -261,7 +260,6 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         };
 
         Assert.True(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest(), 0, now));
-        Assert.False(InvokeIsTrackedArtistDueForAutomaticRun(tracked, now));
         Assert.False(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest { Force = true }, 0, now));
     }
 
@@ -279,7 +277,6 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         };
 
         Assert.False(InvokeShouldSkipTrackedArtist(tracked, new MetadataUpdaterRunRequest(), 30, now));
-        Assert.True(InvokeIsTrackedArtistDueForAutomaticRun(tracked, now));
     }
 
     public void Dispose()
@@ -524,15 +521,6 @@ public sealed class ArtistMetadataUpdaterServicePlexPushTests : IDisposable
         var method = typeof(ArtistMetadataUpdaterService).GetMethod("ShouldSkipTrackedArtist", BindingFlags.Static | BindingFlags.NonPublic);
         Assert.NotNull(method);
         return Assert.IsType<bool>(method!.Invoke(null, [tracked, request, effectiveIntervalDays, nowUtc]));
-    }
-
-    private static bool InvokeIsTrackedArtistDueForAutomaticRun(
-        MetadataUpdaterTrackedArtist tracked,
-        DateTimeOffset nowUtc)
-    {
-        var method = typeof(ArtistMetadataUpdaterService).GetMethod("IsTrackedArtistDueForAutomaticRun", BindingFlags.Static | BindingFlags.NonPublic);
-        Assert.NotNull(method);
-        return Assert.IsType<bool>(method!.Invoke(null, [tracked, nowUtc]));
     }
 
     private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler

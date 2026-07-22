@@ -1,7 +1,4 @@
 using DeezSpoTag.Services.Library;
-using DeezSpoTag.Services.Apple;
-using DeezSpoTag.Services.Download;
-using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using System.Linq;
@@ -12,14 +9,10 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class LibraryArtistImageQueueService : BackgroundService
 {
-    private static readonly HttpClient ImageHttpClient = new();
     private readonly LibraryRepository _repository;
     private readonly LibraryConfigStore _configStore;
-    private readonly AppleMusicCatalogService _appleCatalogService;
-    private readonly ISpotifyArtworkResolver _spotifyArtworkResolver;
-    private readonly ILastFmArtistImageResolver _lastFmArtistImageResolver;
-    private readonly DeezSpoTag.Integrations.Deezer.DeezerClient _deezerClient;
-    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ArtistArtworkCatalogService _artworkCatalog;
+    private readonly ArtistMetadataCacheRefreshService _cacheRefreshService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<LibraryArtistImageQueueService> _logger;
     private readonly Channel<QueueItem> _channel = Channel.CreateUnbounded<QueueItem>();
@@ -27,7 +20,6 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private readonly object _queueLock = new();
     private readonly string _dataRoot;
     private string QueuePath => Path.Join(_dataRoot, "artist-image-queue.json");
-    private string ImageCacheDir => Path.Join(_dataRoot, "library-artist-images");
 
     public LibraryArtistImageQueueService(
         LibraryArtistImageQueueDependencies dependencies,
@@ -35,11 +27,8 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     {
         _repository = dependencies.Repository;
         _configStore = dependencies.ConfigStore;
-        _appleCatalogService = dependencies.Providers.AppleCatalogService;
-        _spotifyArtworkResolver = dependencies.Providers.SpotifyArtworkResolver;
-        _lastFmArtistImageResolver = dependencies.Providers.LastFmArtistImageResolver;
-        _deezerClient = dependencies.Providers.DeezerClient;
-        _httpClientFactory = dependencies.Providers.HttpClientFactory;
+        _artworkCatalog = dependencies.ArtworkCatalog;
+        _cacheRefreshService = dependencies.CacheRefreshService;
         _settingsService = dependencies.SettingsService;
         _logger = logger;
         _dataRoot = AppDataPaths.GetDataRoot(dependencies.Environment);
@@ -144,45 +133,18 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
     private async Task<string?> ResolveImagePathAsync(QueueItem item, CancellationToken cancellationToken)
     {
         var settings = _settingsService.LoadSettings();
-        var appleArtistId = await _repository.GetArtistSourceIdAsync(item.ArtistId, "apple", cancellationToken)
-            ?? await _repository.GetArtistSourceIdAsync(item.ArtistId, "applemusic", cancellationToken)
-            ?? await _repository.GetArtistSourceIdAsync(item.ArtistId, "itunes", cancellationToken);
-        var deezerArtistId = await _repository.GetArtistSourceIdAsync(item.ArtistId, "deezer", cancellationToken);
-        var spotifyArtistId = await _repository.GetArtistSourceIdAsync(item.ArtistId, "spotify", cancellationToken);
-        var resolution = await DownloadEngineArtworkHelper.ResolveArtistArtworkAsync(
-            new DownloadEngineArtworkHelper.ArtistImageResolveRequest(
-                _appleCatalogService,
-                _httpClientFactory,
-                settings,
-                _deezerClient,
-                _spotifyArtworkResolver,
-                _lastFmArtistImageResolver,
-                null,
-                null,
-                null,
-                item.ArtistName,
-                _logger)
-            {
-                AppleArtistId = appleArtistId,
-                DeezerArtistId = deezerArtistId,
-                SpotifyArtistId = spotifyArtistId
-            },
-            cancellationToken);
-        if (resolution == null)
+        await _cacheRefreshService.RefreshArtistAsync(item.ArtistId, item.ArtistName, "auto", false, cancellationToken);
+        var catalog = await _artworkCatalog.GetAsync(item.ArtistId, cancellationToken);
+        var order = ArtworkFallbackHelper.ResolveArtistOrder(settings);
+        var selected = order
+            .Select(provider => catalog.Visuals.FirstOrDefault(visual =>
+                string.Equals(visual.Source, provider, StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(provider, "apple", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(visual.Source, "itunes", StringComparison.OrdinalIgnoreCase))))
+            .FirstOrDefault(visual => visual is not null)
+            ?? catalog.Visuals.FirstOrDefault();
+        if (selected is null || !File.Exists(selected.Path))
         {
-            return null;
-        }
-
-        var imagePath = await DownloadImageAsync(item.ArtistId, resolution.Url, cancellationToken, resolution.Provider);
-        if (string.IsNullOrWhiteSpace(imagePath))
-        {
-            return null;
-        }
-
-        var dimensions = await DownloadEngineArtworkHelper.ReadSquareArtistArtworkDimensionsAsync(imagePath, cancellationToken);
-        if (dimensions == null)
-        {
-            File.Delete(imagePath);
             return null;
         }
 
@@ -190,19 +152,19 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             new ArtistArtworkCacheUpsertInput(
                 item.ArtistId,
                 "avatar",
-                $"{resolution.Provider}:{resolution.ProviderArtistId ?? item.ArtistName}",
-                resolution.Provider,
-                resolution.Url,
-                imagePath,
+                selected.Identity,
+                selected.Source,
+                selected.OriginalUrl,
+                selected.Path,
                 null,
-                dimensions.Value.Width,
-                dimensions.Value.Height,
+                selected.Width,
+                selected.Height,
                 "not_scanned",
                 null,
                 false,
                 false),
             cancellationToken);
-        return imagePath;
+        return selected.Path;
     }
 
     private bool TryEnqueue(QueueItem item)
@@ -284,44 +246,6 @@ public sealed class LibraryArtistImageQueueService : BackgroundService
             QueuePath,
             static queuedItem => queuedItem.ArtistId);
     }
-
-    private async Task<string?> DownloadImageAsync(
-        long artistId,
-        string imageUrl,
-        CancellationToken cancellationToken,
-        string? source = null)
-    {
-        if (string.IsNullOrWhiteSpace(imageUrl))
-        {
-            return null;
-        }
-
-        using var response = await ImageHttpClient.GetAsync(imageUrl, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        var cacheDir = string.IsNullOrWhiteSpace(source)
-            ? ImageCacheDir
-            : Path.Join(ImageCacheDir, source.Trim().ToLowerInvariant());
-        Directory.CreateDirectory(cacheDir);
-        var extension = ResolveExtension(response.Content.Headers.ContentType?.MediaType);
-        var fileName = $"{artistId}{extension}";
-        var targetPath = Path.Join(cacheDir, fileName);
-        await using var targetStream = File.Create(targetPath);
-        await response.Content.CopyToAsync(targetStream, cancellationToken);
-        return targetPath;
-    }
-
-    private static string ResolveExtension(string? mediaType)
-        => mediaType switch
-        {
-            "image/png" => ".png",
-            "image/webp" => ".webp",
-            "image/bmp" => ".bmp",
-            _ => ".jpg"
-        };
 
     private sealed record QueueItem(long ArtistId, string ArtistName);
 }

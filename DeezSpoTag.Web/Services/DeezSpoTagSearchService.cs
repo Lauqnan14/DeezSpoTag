@@ -1058,7 +1058,25 @@ public sealed class DeezSpoTagSearchService
 
     private static List<object> ToObjectList(object[]? data)
     {
-        return data == null ? new List<object>() : data.ToList<object>();
+        if (data == null)
+        {
+            return new List<object>();
+        }
+
+        var items = new List<object>(data.Length);
+        foreach (var item in data)
+        {
+            if (item is Newtonsoft.Json.Linq.JToken token)
+            {
+                using var document = JsonDocument.Parse(token.ToString(Newtonsoft.Json.Formatting.None));
+                items.Add(document.RootElement.Clone());
+                continue;
+            }
+
+            items.Add(item);
+        }
+
+        return items;
     }
 
     private static string NormalizeType(string type)

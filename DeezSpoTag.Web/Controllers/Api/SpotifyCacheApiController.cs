@@ -16,7 +16,6 @@ namespace DeezSpoTag.Web.Controllers.Api;
 public class SpotifyCacheApiController : ControllerBase
 {
     private const string SpotifySource = "spotify";
-    private const string ArtistType = "artist";
     private const string LibraryArtistImagesPath = "library-artist-images";
 
     private readonly IServiceProvider _serviceProvider;
@@ -42,178 +41,12 @@ public class SpotifyCacheApiController : ControllerBase
         _logger = logger;
     }
 
-    private SpotifyArtistService SpotifyArtistService => _serviceProvider.GetRequiredService<SpotifyArtistService>();
-    private ArtistPageCacheRepository ArtistPageCache => _serviceProvider.GetRequiredService<ArtistPageCacheRepository>();
-    private SpotifyMetadataCacheRepository SpotifyMetadataCache => _serviceProvider.GetRequiredService<SpotifyMetadataCacheRepository>();
     private PlatformAuthService PlatformAuthService => _serviceProvider.GetRequiredService<PlatformAuthService>();
     private PlexApiClient PlexClient => _serviceProvider.GetRequiredService<PlexApiClient>();
     private JellyfinApiClient JellyfinClient => _serviceProvider.GetRequiredService<JellyfinApiClient>();
     private NavidromeApiClient NavidromeClient => _serviceProvider.GetRequiredService<NavidromeApiClient>();
     private ArtistMetadataUpdaterService MetadataUpdaterService => _serviceProvider.GetRequiredService<ArtistMetadataUpdaterService>();
     private ArtistPopularSongsSyncService ArtistPopularSongsSyncService => _serviceProvider.GetRequiredService<ArtistPopularSongsSyncService>();
-
-    [HttpPost("refresh")]
-    public async Task<IActionResult> Refresh([FromQuery] long? artistId)
-    {
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation("Spotify cache refresh requested: artistId={ArtistId}", artistId);
-        }
-        LogRefreshQueued(artistId);
-        await RunRefreshAsync(artistId);
-
-        return Ok(new { queued = false, completed = true });
-    }
-
-    private void LogRefreshQueued(long? artistId)
-    {
-        var message = artistId.HasValue
-            ? $"Spotify cache refresh queued for artist {artistId.Value}."
-            : "Spotify cache refresh queued for all artists.";
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(DateTimeOffset.UtcNow, "info", message));
-    }
-
-    private async Task RunRefreshAsync(long? artistId)
-    {
-        try
-        {
-            if (artistId.HasValue)
-            {
-                await RefreshSingleArtistAsync(artistId.Value);
-                return;
-            }
-
-            await RefreshAllArtistsAsync();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "error",
-                $"Spotify cache refresh failed: {ex.Message}"));
-        }
-    }
-
-    private async Task RefreshSingleArtistAsync(long artistId)
-    {
-        var artist = await ResolveRefreshArtistAsync(artistId);
-        if (artist is null)
-        {
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "warn",
-                $"Spotify cache refresh skipped: artist {artistId} not found."));
-            return;
-        }
-
-        await ClearArtistSpotifyCacheAsync(artist.Id);
-        await SpotifyArtistService.GetArtistPageAsync(artist.Id, artist.Name, true, false, CancellationToken.None);
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Spotify cache refresh completed for {artist.Name}."));
-    }
-
-    private async Task RefreshAllArtistsAsync()
-    {
-        var artists = await GetRefreshArtistsAsync();
-        foreach (var artist in artists)
-        {
-            await SpotifyArtistService.GetArtistPageAsync(artist.Id, artist.Name, true, false, CancellationToken.None);
-        }
-
-        _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-            DateTimeOffset.UtcNow,
-            "info",
-            $"Spotify cache refresh completed ({artists.Count} artists)."));
-    }
-
-    private async Task<List<RefreshArtist>> GetRefreshArtistsAsync()
-    {
-        if (!_libraryRepository.IsConfigured || await _configStore.HasLocalLibraryDataAsync())
-        {
-            return (await _configStore.GetLocalArtistsAsync())
-                .Where(artist => !string.IsNullOrWhiteSpace(artist.Name))
-                .Select(artist => new RefreshArtist(artist.Id, artist.Name))
-                .ToList();
-        }
-
-        var artists = await _libraryRepository.GetArtistsAsync("all", CancellationToken.None);
-        return artists
-            .Where(artist => !string.IsNullOrWhiteSpace(artist.Name))
-            .Select(artist => new RefreshArtist(artist.Id, artist.Name))
-            .ToList();
-    }
-
-    private async Task<RefreshArtist?> ResolveRefreshArtistAsync(long artistId)
-    {
-        if (!_libraryRepository.IsConfigured || await _configStore.HasLocalLibraryDataAsync())
-        {
-            var localArtist = (await _configStore.GetLocalArtistsAsync()).FirstOrDefault(item => item.Id == artistId);
-            if (localArtist is null || string.IsNullOrWhiteSpace(localArtist.Name))
-            {
-                return null;
-            }
-
-            return new RefreshArtist(localArtist.Id, localArtist.Name);
-        }
-
-        var artist = await _libraryRepository.GetArtistAsync(artistId, CancellationToken.None);
-        if (artist is null || string.IsNullOrWhiteSpace(artist.Name))
-        {
-            return null;
-        }
-
-        return new RefreshArtist(artist.Id, artist.Name);
-    }
-
-    private async Task ClearArtistSpotifyCacheAsync(long artistId)
-    {
-        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, CancellationToken.None);
-        if (string.IsNullOrWhiteSpace(spotifyId))
-        {
-            return;
-        }
-
-        await ArtistPageCache.ClearEntryAsync(SpotifySource, spotifyId, CancellationToken.None);
-        await SpotifyMetadataCache.ClearEntryAsync(ArtistType, spotifyId, CancellationToken.None);
-    }
-
-    [HttpGet("images")]
-    public async Task<IActionResult> ListImages([FromQuery] long artistId, CancellationToken cancellationToken)
-    {
-        var artist = await _libraryRepository.GetArtistAsync(artistId, cancellationToken);
-        if (artist is null)
-        {
-            return NotFound();
-        }
-
-        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifySource, cancellationToken);
-        if (string.IsNullOrWhiteSpace(spotifyId))
-        {
-            return Ok(Array.Empty<object>());
-        }
-
-        var cacheRoot = Path.Join(AppDataPaths.GetDataRoot(_environment), LibraryArtistImagesPath, SpotifySource);
-        if (!Directory.Exists(cacheRoot))
-        {
-            return Ok(Array.Empty<object>());
-        }
-
-        var matches = Directory.GetFiles(cacheRoot, $"*{spotifyId}.*", SearchOption.TopDirectoryOnly)
-            .Select(path => new FileInfo(path))
-            .OrderByDescending(info => info.LastWriteTimeUtc)
-            .Select(info => new
-            {
-                path = info.FullName,
-                name = info.Name,
-                updatedUtc = info.LastWriteTimeUtc
-            })
-            .ToList();
-
-        return Ok(matches);
-    }
 
     [HttpPost("push")]
     public async Task<IActionResult> Push([FromBody] SpotifyCachePushRequest request, CancellationToken cancellationToken)
@@ -936,23 +769,6 @@ public class SpotifyCacheApiController : ControllerBase
         }
     }
 
-    [HttpGet("metadata-updater/status")]
-    public IActionResult MetadataUpdaterStatus()
-    {
-        return Ok(MetadataUpdaterService.GetStatus());
-    }
-
-    [HttpPost("metadata-updater/run")]
-    public async Task<IActionResult> RunMetadataUpdater([FromBody] MetadataUpdaterRunRequest? request, CancellationToken cancellationToken)
-    {
-        var queued = await MetadataUpdaterService.EnqueueRunAsync(request ?? new MetadataUpdaterRunRequest(), cancellationToken);
-        return Ok(new
-        {
-            queued,
-            status = MetadataUpdaterService.GetStatus()
-        });
-    }
-
     [HttpGet("artist-metadata/capabilities")]
     public IActionResult ArtistMetadataCapabilities()
     {
@@ -1373,7 +1189,6 @@ public class SpotifyCacheApiController : ControllerBase
         return null;
     }
 
-    private sealed record RefreshArtist(long Id, string Name);
     private sealed record PreparedPushRequest(
         long ArtistId,
         bool IncludeAvatar,

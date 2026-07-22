@@ -52,8 +52,17 @@ public sealed class UserPreferencesStore
                 return new UserPreferencesDto();
             }
 
-            return JsonSerializer.Deserialize<UserPreferencesDto>(json, _jsonOptions)
+            var preferences = JsonSerializer.Deserialize<UserPreferencesDto>(json, _jsonOptions)
                 ?? new UserPreferencesDto();
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("metadataCacheRefreshIntervalDays", out _)
+                && document.RootElement.TryGetProperty("metadataUpdaterIntervalDays", out var legacyInterval)
+                && legacyInterval.TryGetInt32(out var intervalDays))
+            {
+                preferences.MetadataCacheRefreshIntervalDays = intervalDays;
+                preferences.MetadataTargetUpdateIntervalDays = intervalDays;
+            }
+            return preferences;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -192,15 +201,12 @@ public sealed class UserPreferencesDto
     // Audio
     public int PreviewVolume { get; set; } = 100;
 
-    // Activities / Schedule
-    public string? SpotifyCacheSchedule { get; set; }
-    public long? SpotifyCacheLastRun { get; set; }
-
     // Activities / Artist Metadata Updater
     public List<string> MetadataUpdaterTargets { get; set; } = new() { "plex" };
     public string MetadataUpdaterSource { get; set; } = "auto";
     public string? MetadataUpdaterFolderId { get; set; }
-    public int MetadataUpdaterIntervalDays { get; set; } = 30;
+    public int MetadataCacheRefreshIntervalDays { get; set; } = 30;
+    public int MetadataTargetUpdateIntervalDays { get; set; } = 30;
     public bool MetadataUpdaterIncludeAvatar { get; set; } = true;
     public bool MetadataUpdaterIncludeBackground { get; set; } = true;
     public bool MetadataUpdaterIncludeBio { get; set; } = false;

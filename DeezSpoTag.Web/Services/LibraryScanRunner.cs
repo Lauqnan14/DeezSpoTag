@@ -1412,7 +1412,6 @@ public sealed class LibraryScanRunner
 
         if (cacheSpotifyImages)
         {
-            await CacheSpotifyImagesAsync(cancellationToken);
         }
 
         await EnqueueBackgroundShazamRefreshAsync(enabledFolders, cancellationToken);
@@ -1514,18 +1513,6 @@ public sealed class LibraryScanRunner
         }
 
         await imageQueueService.EnqueueMissingAsync(cancellationToken);
-    }
-
-    private async Task CacheSpotifyImagesAsync(CancellationToken cancellationToken)
-    {
-        var spotifyImageCacheService = _serviceProvider.GetService<SpotifyArtistImageCacheService>();
-        if (spotifyImageCacheService is null)
-        {
-            AddWarnLog("Spotify image cache service not registered; skipping Spotify image cache step.");
-            return;
-        }
-
-        await spotifyImageCacheService.CacheFromSpotifyCacheAsync(cancellationToken);
     }
 
     private async Task EnqueueBackgroundShazamRefreshAsync(List<FolderDto> enabledFolders, CancellationToken cancellationToken)

@@ -1,26 +1,18 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using DeezSpoTag.Core.Models.Qobuz;
-using DeezSpoTag.Services.Apple;
-using DeezSpoTag.Integrations.Deezer;
-using DeezSpoTag.Integrations.Tidal;
-using DeezSpoTag.Services.Download.Apple;
-using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
 using DeezSpoTag.Services.Library;
-using DeezSpoTag.Services.Metadata.Qobuz;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed partial class ArtistMetadataUpdaterService : BackgroundService
+public sealed partial class ArtistMetadataUpdaterService
 {
-    private static readonly TimeSpan SchedulerInterval = TimeSpan.FromMinutes(30);
     private const string SpotifyPlatform = "spotify";
     private const string DeezerPlatform = "deezer";
     private const string ApplePlatform = "apple";
@@ -42,21 +34,14 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private const string BackgroundSlot = "background";
 
     private readonly LibraryRepository _libraryRepository;
-    private readonly SpotifyArtistService _spotifyArtistService;
     private readonly PlatformAuthService _platformAuthService;
     private readonly PlexApiClient _plexClient;
     private readonly JellyfinApiClient _jellyfinClient;
     private readonly NavidromeApiClient _navidromeClient;
-    private readonly DeezerClient _deezerClient;
-    private readonly AppleMusicCatalogService _appleMusicCatalogService;
-    private readonly AppleArtistBiographyService _appleArtistBiographyService;
-    private readonly ITidalAccessTokenProvider _tidalAccessTokenProvider;
-    private readonly QobuzArtistService _qobuzArtistService;
     private readonly ArtistPopularSongsSyncService _artistPopularSongsSyncService;
-    private readonly LastFmArtistImageService _lastFmArtistImageService;
+    private readonly ArtistArtworkCatalogService _artistArtworkCatalog;
     private readonly LibraryConfigStore _configStore;
     private readonly IWebHostEnvironment _environment;
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ArtistMetadataUpdaterService> _logger;
     private readonly DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator _workCoordinator;
     private readonly SemaphoreSlim _runGate = new(1, 1);
@@ -76,21 +61,14 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         ILogger<ArtistMetadataUpdaterService> logger)
     {
         _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
-        _spotifyArtistService = serviceProvider.GetRequiredService<SpotifyArtistService>();
         _platformAuthService = serviceProvider.GetRequiredService<PlatformAuthService>();
         _plexClient = serviceProvider.GetRequiredService<PlexApiClient>();
         _jellyfinClient = serviceProvider.GetRequiredService<JellyfinApiClient>();
         _navidromeClient = serviceProvider.GetRequiredService<NavidromeApiClient>();
-        _deezerClient = serviceProvider.GetRequiredService<DeezerClient>();
-        _appleMusicCatalogService = serviceProvider.GetRequiredService<AppleMusicCatalogService>();
-        _appleArtistBiographyService = serviceProvider.GetRequiredService<AppleArtistBiographyService>();
-        _tidalAccessTokenProvider = serviceProvider.GetRequiredService<ITidalAccessTokenProvider>();
-        _qobuzArtistService = serviceProvider.GetRequiredService<QobuzArtistService>();
         _artistPopularSongsSyncService = serviceProvider.GetRequiredService<ArtistPopularSongsSyncService>();
-        _lastFmArtistImageService = serviceProvider.GetRequiredService<LastFmArtistImageService>();
+        _artistArtworkCatalog = serviceProvider.GetRequiredService<ArtistArtworkCatalogService>();
         _configStore = serviceProvider.GetRequiredService<LibraryConfigStore>();
         _environment = environment;
-        _httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
         _logger = logger;
         _workCoordinator = serviceProvider.GetRequiredService<DeezSpoTag.Services.Runtime.BackgroundWorkCoordinator>();
         _statePath = Path.Join(
@@ -157,8 +135,12 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         await SaveStateAsync(state, cancellationToken);
     }
 
-    public async Task<bool> EnqueueRunAsync(MetadataUpdaterRunRequest request, CancellationToken cancellationToken)
+    public async Task<bool> RunAndWaitAsync(
+        MetadataUpdaterRunRequest request,
+        bool isAutomatic,
+        CancellationToken cancellationToken)
     {
+        Task run;
         await _runGate.WaitAsync(cancellationToken);
         try
         {
@@ -166,82 +148,18 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             {
                 return false;
             }
-
-            var normalized = request ?? new MetadataUpdaterRunRequest();
-            _activeRun = _workCoordinator.RunHeavyWorkAsync(
-                token => RunInternalAsync(normalized, isAutomatic: false, token),
-                CancellationToken.None);
-            return true;
-        }
-        finally
-        {
-            _runGate.Release();
-        }
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await TryRunAutomaticCycleAsync(stoppingToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Metadata updater automatic cycle failed.");
-            }
-
-            try
-            {
-                await Task.Delay(SchedulerInterval, stoppingToken);
-            }
-            catch (TaskCanceledException)
-            {
-                break;
-            }
-        }
-    }
-
-    private async Task TryRunAutomaticCycleAsync(CancellationToken cancellationToken)
-    {
-        await _runGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_activeRun is { IsCompleted: false })
-            {
-                return;
-            }
-
-            var state = await LoadStateAsync(cancellationToken);
-            if (state.Artists.Count == 0)
-            {
-                return;
-            }
-
-            var nowUtc = DateTimeOffset.UtcNow;
-            var dueArtists = state.Artists
-                .Where(artist => IsTrackedArtistDueForAutomaticRun(artist, nowUtc))
-                .ToList();
-            if (dueArtists.Count == 0)
-            {
-                return;
-            }
-
-            var request = new MetadataUpdaterRunRequest
-            {
-                IntervalDays = null,
-                IncludeAllArtists = false,
-                Force = false
-            };
-            _activeRun = _workCoordinator.RunHeavyWorkAsync(
-                token => RunInternalAsync(request, isAutomatic: true, token),
+            run = _workCoordinator.RunHeavyWorkAsync(
+                token => RunInternalAsync(request ?? new MetadataUpdaterRunRequest(), isAutomatic, token),
                 cancellationToken);
+            _activeRun = run;
         }
         finally
         {
             _runGate.Release();
         }
+
+        await run;
+        return true;
     }
 
     private async Task RunInternalAsync(
@@ -474,11 +392,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         return !IsTrackedArtistDue(tracked, effectiveIntervalDays, nowUtc);
     }
 
-    private static bool IsTrackedArtistDueForAutomaticRun(
-        MetadataUpdaterTrackedArtist tracked,
-        DateTimeOffset nowUtc)
-        => IsTrackedArtistDue(tracked, NormalizeIntervalDays(tracked.IntervalDays), nowUtc);
-
     private static bool IsTrackedArtistDue(
         MetadataUpdaterTrackedArtist tracked,
         int intervalDays,
@@ -583,6 +496,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             artist.Id,
             artist.Name,
             source,
+            tracked.IncludeBio,
             cancellationToken);
         if (resolved is null)
         {
@@ -595,14 +509,13 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
 
         var prepared = await PrepareVisualsAsync(tracked, resolved.Candidates, cancellationToken);
         await UpdateManagedArtistVisualsAsync(artist.Id, prepared, cancellationToken);
-        await PersistCacheRefreshStateAsync(tracked, prepared, resolved.Biography, cancellationToken);
 
         if (policy.SyncBlocked)
         {
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 "info",
-                $"Metadata updater refreshed cache for {artist.Name}; server sync skipped because artist sync is blocked."));
+                $"Metadata updater skipped server sync for {artist.Name} because artist sync is blocked."));
             tracked.UpdatedAtUtc = DateTimeOffset.UtcNow;
             return true;
         }
@@ -714,72 +627,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             }
         }
     }
-
-    private async Task PersistCacheRefreshStateAsync(
-        MetadataUpdaterTrackedArtist tracked,
-        PreparedVisuals prepared,
-        string? biography,
-        CancellationToken cancellationToken)
-    {
-        var now = DateTimeOffset.UtcNow;
-        if (!string.IsNullOrWhiteSpace(prepared.AvatarPath))
-        {
-            await _libraryRepository.UpsertArtistArtworkCacheAsync(
-                BuildArtworkCacheInput(tracked.ArtistId, AvatarSlot, prepared.AvatarPath),
-                cancellationToken);
-        }
-
-        if (!string.IsNullOrWhiteSpace(prepared.BackgroundPath))
-        {
-            await _libraryRepository.UpsertArtistArtworkCacheAsync(
-                BuildArtworkCacheInput(tracked.ArtistId, BackgroundSlot, prepared.BackgroundPath),
-                cancellationToken);
-        }
-
-        if (!string.IsNullOrWhiteSpace(biography))
-        {
-            await _libraryRepository.UpsertArtistBiographyCacheAsync(
-                tracked.ArtistId,
-                NormalizeMetadataSource(tracked.Source),
-                SanitizeBiography(biography),
-                selected: tracked.IncludeBio,
-                cancellationToken);
-        }
-
-        foreach (var target in ResolveTrackedTargets(tracked))
-        {
-            await _libraryRepository.UpsertArtistServerSyncStateAsync(
-                new ArtistServerSyncStateUpsertInput(
-                    tracked.ArtistId,
-                    target,
-                    now,
-                    null,
-                    null,
-                    null,
-                    null,
-                    tracked.AvatarRotationIndex,
-                    tracked.BackgroundRotationIndex,
-                    "cache-refreshed",
-                    null),
-                cancellationToken);
-        }
-    }
-
-    private static ArtistArtworkCacheUpsertInput BuildArtworkCacheInput(long artistId, string role, string path)
-        => new(
-            artistId,
-            role,
-            $"file:{Path.GetFullPath(path)}",
-            "managed",
-            null,
-            Path.GetFullPath(path),
-            ComputeFileHashOrNull(path),
-            null,
-            null,
-            "heuristic",
-            null,
-            false,
-            false);
 
     private async Task<IReadOnlyCollection<long>> ResolveLinkedArtistIdsAsync(long artistId, CancellationToken cancellationToken)
     {
@@ -1153,595 +1000,32 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         long artistId,
         string artistName,
         string source,
+        bool includeBiography,
         CancellationToken cancellationToken)
     {
         var normalizedSource = NormalizeMetadataSource(source);
-        var candidates = new List<ArtworkCandidate>();
-        var spotify = await TryCollectSpotifyMetadataAsync(
-            normalizedSource,
-            artistId,
-            artistName,
-            candidates,
-            cancellationToken);
-        if (!spotify.Succeeded)
-        {
-            return null;
-        }
-
-        if (!await TryCollectDeezerMetadataAsync(normalizedSource, artistName, candidates, cancellationToken))
-        {
-            return null;
-        }
-
-        var apple = await TryCollectAppleMetadataAsync(normalizedSource, artistId, artistName, candidates, cancellationToken);
-        if (!apple.Succeeded)
-        {
-            return null;
-        }
-
-        var tidal = await TryCollectTidalMetadataAsync(normalizedSource, artistId, candidates, cancellationToken);
-        if (!tidal.Succeeded)
-        {
-            return null;
-        }
-
-        var qobuz = await TryCollectQobuzMetadataAsync(normalizedSource, artistId, candidates, cancellationToken);
-        if (!qobuz.Succeeded)
-        {
-            return null;
-        }
-
-        var lastFm = await TryCollectLastFmMetadataAsync(normalizedSource, artistName, candidates, cancellationToken);
-        if (!lastFm.Succeeded)
-        {
-            return null;
-        }
-
-        var biography = ResolveBiographyForSource(
-            normalizedSource,
-            spotify.Biography,
-            apple.Biography,
-            tidal.Biography,
-            qobuz.Biography,
-            lastFm.Biography);
-        return new ResolvedArtistMetadata(biography, candidates);
-    }
-
-    private async Task<(bool Succeeded, string? Biography)> TryCollectSpotifyMetadataAsync(
-        string normalizedSource,
-        long artistId,
-        string artistName,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceSpotify))
-        {
-            return (true, null);
-        }
-
-        var page = await _spotifyArtistService.GetArtistPageAsync(
-            artistId,
-            artistName,
-            forceRefresh: true,
-            forceRematch: false,
-            cancellationToken);
-        if (page?.Artist is null)
-        {
-            return (normalizedSource != MetadataSourceSpotify, null);
-        }
-
-        await AddSpotifyArtworkCandidatesAsync(artistId, page, candidates, cancellationToken);
-        return (true, page.Artist.Biography);
-    }
-
-    private async Task<bool> TryCollectDeezerMetadataAsync(
-        string normalizedSource,
-        string artistName,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceDeezer))
-        {
-            return true;
-        }
-
-        var deezerCandidate = await TryResolveDeezerArtworkCandidateAsync(artistName, cancellationToken);
-        if (deezerCandidate is null)
-        {
-            return normalizedSource != MetadataSourceDeezer || candidates.Count > 0;
-        }
-
-        candidates.Add(deezerCandidate);
-        return true;
-    }
-
-    private async Task<(bool Succeeded, string? Biography)> TryCollectAppleMetadataAsync(
-        string normalizedSource,
-        long artistId,
-        string artistName,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceApple))
-        {
-            return (true, null);
-        }
-
-        var appleCandidate = await TryResolveAppleArtworkCandidateAsync(artistName, cancellationToken);
-        if (appleCandidate is not null)
-        {
-            candidates.Add(appleCandidate);
-        }
-
-        var biography = await TryResolveAppleBiographyAsync(artistId, artistName, cancellationToken);
-        if (appleCandidate is null && string.IsNullOrWhiteSpace(biography))
-        {
-            return (normalizedSource != MetadataSourceApple || candidates.Count > 0, null);
-        }
-
-        return (true, biography);
-    }
-
-    private async Task AddSpotifyArtworkCandidatesAsync(
-        long artistId,
-        SpotifyArtistPageResult page,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        var cacheRoot = Path.Join(
-            AppDataPaths.GetDataRoot(_environment),
-            "library-artist-images",
-            SpotifyPlatform);
-        var spotifyId = await _libraryRepository.GetArtistSourceIdAsync(artistId, SpotifyPlatform, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(spotifyId) && Directory.Exists(cacheRoot))
-        {
-            try
-            {
-                candidates.AddRange(
-                    Directory.GetFiles(cacheRoot, $"*{spotifyId}.*", SearchOption.TopDirectoryOnly)
-                        .Where(File.Exists)
-                        .OrderByDescending(path => new FileInfo(path).LastWriteTimeUtc)
-                        .Select(path => ArtworkCandidate.FromLocal(
-                            path,
-                            $"spotify-cache:{Path.GetFullPath(path)}",
-                            SpotifyPlatform)));
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug(ex, "Failed to enumerate Spotify cache files for artist {ArtistId}", artistId);
-                }
-            }
-        }
-
-        candidates.AddRange(page.Artist.Images
-            .Where(image => !string.IsNullOrWhiteSpace(image.Url))
-            .Select((image, index) => ArtworkCandidate.FromRemote(
-                image.Url!,
-                $"spotify:{index}:{image.Url}",
-                SpotifyPlatform)));
-    }
-
-    private async Task<ArtworkCandidate?> TryResolveDeezerArtworkCandidateAsync(
-        string artistName,
-        CancellationToken cancellationToken)
-    {
-        var deezerImage = await ArtworkFallbackHelper.TryResolveDeezerArtistImageAsync(
-            _deezerClient,
-            deezerTrackId: null,
-            size: 1200,
-            _logger,
-            cancellationToken,
-            artistName);
-        if (string.IsNullOrWhiteSpace(deezerImage))
-        {
-            return null;
-        }
-
-        return ArtworkCandidate.FromRemote(deezerImage!, $"deezer:{deezerImage}", MetadataSourceDeezer);
-    }
-
-    private async Task<ArtworkCandidate?> TryResolveAppleArtworkCandidateAsync(
-        string artistName,
-        CancellationToken cancellationToken)
-    {
-        string? appleImage = null;
-        try
-        {
-            appleImage = await AppleQueueHelpers.ResolveAppleArtistImageAsync(
-                _appleMusicCatalogService,
-                artistName,
-                "us",
-                1200,
-                cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Apple Music artist artwork lookup failed for {ArtistName}", artistName);
-            }
-        }
-
-        if (string.IsNullOrWhiteSpace(appleImage))
-        {
-            appleImage = await AppleQueueHelpers.ResolveItunesArtistImageAsync(
-                _httpClientFactory,
-                artistName,
-                1200,
-                _logger,
-                cancellationToken);
-        }
-
-        if (string.IsNullOrWhiteSpace(appleImage))
-        {
-            return null;
-        }
-
-        return ArtworkCandidate.FromRemote(appleImage!, $"apple:{appleImage}", MetadataSourceApple);
-    }
-
-    private async Task<(bool Succeeded, string? Biography)> TryCollectTidalMetadataAsync(
-        string normalizedSource,
-        long artistId,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceTidal))
-        {
-            return (true, null);
-        }
-
-        var tidalArtistId = await _libraryRepository.GetArtistSourceIdAsync(artistId, TidalPlatform, cancellationToken);
-        if (string.IsNullOrWhiteSpace(tidalArtistId))
-        {
-            return (normalizedSource != MetadataSourceTidal || candidates.Count > 0, null);
-        }
-
-        var metadata = await TryFetchTidalArtistMetadataAsync(tidalArtistId, cancellationToken);
-        if (metadata is null)
-        {
-            return (normalizedSource != MetadataSourceTidal || candidates.Count > 0, null);
-        }
-
-        if (!string.IsNullOrWhiteSpace(metadata.ImageUrl))
-        {
-            candidates.Add(ArtworkCandidate.FromRemote(
-                metadata.ImageUrl!,
-                $"tidal:{metadata.ImageUrl}",
-                MetadataSourceTidal));
-        }
-
-        return !string.IsNullOrWhiteSpace(metadata.ImageUrl) || !string.IsNullOrWhiteSpace(metadata.Biography)
-            ? (true, metadata.Biography)
-            : (normalizedSource != MetadataSourceTidal || candidates.Count > 0, null);
-    }
-
-    private async Task<(bool Succeeded, string? Biography)> TryCollectQobuzMetadataAsync(
-        string normalizedSource,
-        long artistId,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceQobuz))
-        {
-            return (true, null);
-        }
-
-        var qobuzArtistId = await _libraryRepository.GetArtistSourceIdAsync(artistId, QobuzPlatform, cancellationToken);
-        if (!int.TryParse(qobuzArtistId, out var qobuzId) || qobuzId <= 0)
-        {
-            return (normalizedSource != MetadataSourceQobuz || candidates.Count > 0, null);
-        }
-
-        var artist = await _qobuzArtistService.GetArtistWithDiscographyAsync(qobuzId, "us-en", cancellationToken);
-        if (artist is null)
-        {
-            return (normalizedSource != MetadataSourceQobuz || candidates.Count > 0, null);
-        }
-
-        var imageUrl = ResolveQobuzImageUrl(artist.Image);
-        if (!string.IsNullOrWhiteSpace(imageUrl))
-        {
-            candidates.Add(ArtworkCandidate.FromRemote(
-                imageUrl,
-                $"qobuz:{imageUrl}",
-                MetadataSourceQobuz));
-        }
-
-        var biography = FirstNonEmpty(artist.Biography?.Content, artist.Biography?.Summary);
-        return !string.IsNullOrWhiteSpace(imageUrl) || !string.IsNullOrWhiteSpace(biography)
-            ? (true, biography)
-            : (normalizedSource != MetadataSourceQobuz || candidates.Count > 0, null);
-    }
-
-    private async Task<(bool Succeeded, string? Biography)> TryCollectLastFmMetadataAsync(
-        string normalizedSource,
-        string artistName,
-        List<ArtworkCandidate> candidates,
-        CancellationToken cancellationToken)
-    {
-        if (normalizedSource is not (MetadataSourceAuto or MetadataSourceLastFm))
-        {
-            return (true, null);
-        }
-
-        var images = await _lastFmArtistImageService.SearchArtistImagesAsync(artistName, 8, cancellationToken);
-        var added = 0;
-        foreach (var imageUrl in images.Select(image => image.Url))
-        {
-            if (string.IsNullOrWhiteSpace(imageUrl))
-            {
-                continue;
-            }
-
-            candidates.Add(ArtworkCandidate.FromRemote(
-                imageUrl,
-                $"lastfm:{imageUrl}",
-                MetadataSourceLastFm));
-            added++;
-        }
-
-        var biography = await _lastFmArtistImageService.GetArtistBiographyAsync(artistName, cancellationToken);
-        return added > 0 || !string.IsNullOrWhiteSpace(biography?.Biography)
-            ? (true, biography?.Biography)
-            : (normalizedSource != MetadataSourceLastFm || candidates.Count > 0, null);
-    }
-
-    private async Task<string?> TryResolveAppleBiographyAsync(
-        long artistId,
-        string artistName,
-        CancellationToken cancellationToken)
-    {
-        var appleArtistId = await _libraryRepository.GetArtistSourceIdAsync(artistId, ApplePlatform, cancellationToken);
-        if (string.IsNullOrWhiteSpace(appleArtistId))
-        {
-            return null;
-        }
-
-        var result = await _appleArtistBiographyService.ResolveByArtistIdAsync(
-            appleArtistId,
-            artistName,
-            cancellationToken);
-        return result?.Biography;
-    }
-
-    private async Task<TidalArtistMetadata?> TryFetchTidalArtistMetadataAsync(
-        string tidalArtistId,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
-            var countryCode = await _tidalAccessTokenProvider.GetCountryCodeAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(countryCode))
-            {
-                countryCode = "US";
-            }
-
-            var url = $"https://openapi.tidal.com/v2/artists/{Uri.EscapeDataString(tidalArtistId)}?countryCode={Uri.EscapeDataString(countryCode)}&include=biography,profileArt&collapseBy=FINGERPRINT";
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            var client = _httpClientFactory.CreateClient();
-            using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!doc.RootElement.TryGetProperty("data", out var artistData)
-                || artistData.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            var included = BuildTidalIncludedMap(doc.RootElement);
-            var biography = ResolveTidalBiography(artistData, included);
-            var imageId = ResolveTidalProfileArtId(artistData, included);
-            return new TidalArtistMetadata(
-                string.IsNullOrWhiteSpace(biography) ? null : biography,
-                BuildTidalImageUrl(imageId));
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Tidal artist metadata lookup failed for artist {ArtistId}", tidalArtistId);
-            }
-
-            return null;
-        }
-    }
-
-    private static string? ResolveBiographyForSource(
-        string normalizedSource,
-        string? spotify,
-        string? apple,
-        string? tidal,
-        string? qobuz,
-        string? lastFm)
-    {
-        return normalizedSource switch
-        {
-            MetadataSourceSpotify => spotify,
-            MetadataSourceApple => apple,
-            MetadataSourceTidal => tidal,
-            MetadataSourceQobuz => qobuz,
-            MetadataSourceLastFm => lastFm,
-            MetadataSourceAuto => FirstNonEmpty(spotify, apple, tidal, qobuz, lastFm),
-            _ => null
-        };
-    }
-
-    private static Dictionary<string, JsonElement> BuildTidalIncludedMap(JsonElement root)
-    {
-        var included = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
-        if (!root.TryGetProperty("included", out var includedArray) || includedArray.ValueKind != JsonValueKind.Array)
-        {
-            return included;
-        }
-
-        foreach (var item in includedArray.EnumerateArray())
-        {
-            var type = GetScalarString(item, "type");
-            var id = GetScalarString(item, "id");
-            if (string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(id))
-            {
-                continue;
-            }
-
-            included[$"{type}:{id}"] = item.Clone();
-        }
-
-        return included;
-    }
-
-    private static string? ResolveTidalBiography(JsonElement artistData, Dictionary<string, JsonElement> included)
-    {
-        if (!TryGetRelationshipDataId(artistData, "biography", out var bioId))
-        {
-            return null;
-        }
-
-        foreach (var key in new[] { $"biographies:{bioId}", $"biography:{bioId}" })
-        {
-            if (included.TryGetValue(key, out var biography)
-                && biography.TryGetProperty("attributes", out var attributes)
-                && attributes.ValueKind == JsonValueKind.Object)
-            {
-                var text = GetString(attributes, "text");
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ResolveTidalProfileArtId(JsonElement artistData, Dictionary<string, JsonElement> included)
-    {
-        if (!TryGetRelationshipDataId(artistData, "profileArt", out var profileArtId))
-        {
-            return null;
-        }
-
-        if (!included.TryGetValue($"artworks:{profileArtId}", out var artwork)
-            || !artwork.TryGetProperty("attributes", out var attributes)
-            || attributes.ValueKind != JsonValueKind.Object
-            || !attributes.TryGetProperty("files", out var files)
-            || files.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        foreach (var file in files.EnumerateArray())
-        {
-            var href = GetString(file, "href");
-            var uuid = ExtractTidalImageUuid(href);
-            if (!string.IsNullOrWhiteSpace(uuid))
-            {
-                return uuid;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool TryGetRelationshipDataId(JsonElement root, string relationshipName, out string id)
-    {
-        id = string.Empty;
-        if (!root.TryGetProperty("relationships", out var relationships)
-            || relationships.ValueKind != JsonValueKind.Object
-            || !relationships.TryGetProperty(relationshipName, out var relationship)
-            || relationship.ValueKind != JsonValueKind.Object
-            || !relationship.TryGetProperty("data", out var data))
-        {
-            return false;
-        }
-
-        if (data.ValueKind == JsonValueKind.Object)
-        {
-            id = GetScalarString(data, "id");
-            return !string.IsNullOrWhiteSpace(id);
-        }
-
-        if (data.ValueKind != JsonValueKind.Array)
-        {
-            return false;
-        }
-
-        foreach (var item in data.EnumerateArray())
-        {
-            id = GetScalarString(item, "id");
-            if (!string.IsNullOrWhiteSpace(id))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static string? BuildTidalImageUrl(string? imageId, int size = 750)
-    {
-        if (string.IsNullOrWhiteSpace(imageId))
-        {
-            return null;
-        }
-
-        var normalized = imageId.Replace("-", "/", StringComparison.Ordinal).Trim('/');
-        return $"https://resources.tidal.com/images/{normalized}/{size}x{size}.jpg";
-    }
-
-    private static string? ExtractTidalImageUuid(string? href)
-    {
-        if (string.IsNullOrWhiteSpace(href))
-        {
-            return null;
-        }
-
-        var match = TidalImageUuidRegex().Match(href);
-        return match.Success
-            ? string.Join('-', match.Groups.Values.Skip(1).Select(group => group.Value))
+        var artwork = await _artistArtworkCatalog.GetAsync(artistId, cancellationToken);
+        var candidates = artwork.Visuals
+            .Where(item => normalizedSource == MetadataSourceAuto
+                || string.Equals(item.Source, normalizedSource, StringComparison.OrdinalIgnoreCase)
+                || normalizedSource == MetadataSourceApple
+                   && string.Equals(item.Source, "itunes", StringComparison.OrdinalIgnoreCase))
+            .Select(item => ArtworkCandidate.FromLocal(item.Path, item.Identity, item.Source))
+            .ToList();
+        var biography = includeBiography
+            ? await _libraryRepository.GetArtistBiographyCacheAsync(
+                artistId,
+                normalizedSource == MetadataSourceAuto ? null : normalizedSource,
+                allowFallback: normalizedSource == MetadataSourceAuto,
+                cancellationToken: cancellationToken)
             : null;
-    }
-
-    [System.Text.RegularExpressions.GeneratedRegex(@"images/([0-9a-fA-F]{8})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{4})/([0-9a-fA-F]{12})/")]
-    private static partial System.Text.RegularExpressions.Regex TidalImageUuidRegex();
-
-    private static string? ResolveQobuzImageUrl(QobuzImage? image)
-        => FirstNonEmpty(image?.Mega, image?.ExtraLarge, image?.Large, image?.Medium, image?.Small);
-
-    private static string GetScalarString(JsonElement obj, string propertyName)
-    {
-        if (obj.ValueKind != JsonValueKind.Object
-            || !obj.TryGetProperty(propertyName, out var property))
+        if (candidates.Count == 0 && biography is null)
         {
-            return string.Empty;
+            return null;
         }
 
-        return property.ValueKind switch
-        {
-            JsonValueKind.String => property.GetString()?.Trim() ?? string.Empty,
-            JsonValueKind.Number => property.GetRawText().Trim(),
-            _ => string.Empty
-        };
+        return new ResolvedArtistMetadata(biography?.Biography, candidates);
     }
-
-    private static string? GetString(JsonElement obj, string propertyName)
-        => obj.ValueKind == JsonValueKind.Object
-           && obj.TryGetProperty(propertyName, out var property)
-           && property.ValueKind == JsonValueKind.String
-            ? property.GetString()?.Trim()
-            : null;
-
-    private static string? FirstNonEmpty(params string?[] values)
-        => values.Select(value => (value ?? string.Empty).Trim()).FirstOrDefault(value => value.Length > 0);
 
     private async Task<PreparedVisuals> PrepareVisualsAsync(
         MetadataUpdaterTrackedArtist tracked,
@@ -1891,25 +1175,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             return (await CopyIntoSlotAsync(managedRoot, slot, selected.LocalPath, cancellationToken), selected);
         }
 
-        if (string.IsNullOrWhiteSpace(selected.RemoteUrl))
-        {
-            return (null, null);
-        }
-
-        var downloaded = await DownloadIntoSlotAsync(managedRoot, slot, selected.RemoteUrl, cancellationToken);
-        if (string.IsNullOrWhiteSpace(downloaded))
-        {
-            return (null, null);
-        }
-
-        if (!textArtBlockingEnabled || await IsArtworkCandidateUsableAsync(downloaded, cancellationToken))
-        {
-            return (downloaded, selected);
-        }
-
-        LogRejectedArtworkCandidate(slot, managedRoot, selected.Source);
-        await PersistRejectedArtworkCandidateAsync(managedRoot, slot, selected, downloaded, cancellationToken);
-        TryDeleteBestEffort(downloaded);
         return (null, null);
     }
 
@@ -1931,7 +1196,7 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
                 slot,
                 selected.Identity,
                 selected.Source,
-                selected.RemoteUrl,
+                null,
                 localPath,
                 ComputeFileHashOrNull(localPath),
                 null,
@@ -1969,14 +1234,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
             {
                 LocalPath = fullPath,
                 Identity = string.IsNullOrWhiteSpace(candidate.Identity) ? fullPath : candidate.Identity
-            };
-        }
-
-        if (!string.IsNullOrWhiteSpace(candidate.RemoteUrl))
-        {
-            return candidate with
-            {
-                Identity = string.IsNullOrWhiteSpace(candidate.Identity) ? candidate.RemoteUrl : candidate.Identity
             };
         }
 
@@ -2466,30 +1723,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     private static double GetLuminance(Rgba32 pixel)
         => (pixel.R * 0.299) + (pixel.G * 0.587) + (pixel.B * 0.114);
 
-    private async Task<string?> DownloadIntoSlotAsync(string managedRoot, string slot, string url, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-        {
-            return null;
-        }
-
-        var client = _httpClientFactory.CreateClient();
-        using var response = await client.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
-        var extension = ImageFileExtensionResolver.ResolveStandardImageExtension(response.Content.Headers.ContentType?.MediaType, url);
-        var destination = Path.Join(managedRoot, $"{slot}{extension}");
-        await using (var destinationStream = File.Create(destination))
-        {
-            await response.Content.CopyToAsync(destinationStream, cancellationToken);
-        }
-
-        return destination;
-    }
-
     private static string? ResolveSlotCandidate(string managedRoot, string slot)
     {
         if (!Directory.Exists(managedRoot))
@@ -2724,7 +1957,6 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
         List<MetadataUpdaterTrackedArtist> Candidates,
         DateTimeOffset NowUtc);
     private sealed record ResolvedArtistMetadata(string? Biography, IReadOnlyList<ArtworkCandidate> Candidates);
-    private sealed record TidalArtistMetadata(string? Biography, string? ImageUrl);
     private enum ArtistProcessingOutcome
     {
         Succeeded,
@@ -2793,13 +2025,10 @@ public sealed partial class ArtistMetadataUpdaterService : BackgroundService
     {
         public bool HasAnyUpdate => AvatarUpdated || BackgroundUpdated;
     }
-    private sealed record ArtworkCandidate(string Identity, string Source, string? LocalPath, string? RemoteUrl)
+    private sealed record ArtworkCandidate(string Identity, string Source, string LocalPath)
     {
         public static ArtworkCandidate FromLocal(string path, string identity, string source)
-            => new(identity, source, path, null);
-
-        public static ArtworkCandidate FromRemote(string url, string identity, string source)
-            => new(identity, source, null, url);
+            => new(identity, source, path);
     }
     private sealed record PushOutcome(bool Updated, IReadOnlyList<string> Warnings);
     private sealed record PushMetadataRequest(
