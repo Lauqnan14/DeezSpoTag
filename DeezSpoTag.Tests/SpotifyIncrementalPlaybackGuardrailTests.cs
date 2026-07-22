@@ -1,5 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using DeezSpoTag.Web.Services;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -7,17 +12,63 @@ namespace DeezSpoTag.Tests;
 public sealed class SpotifyIncrementalPlaybackGuardrailTests
 {
     [Fact]
-    public void PathfinderPlaylistMatching_UsesLibrespotOnlyForMissingIsrcIdentity()
+    public void SpotifyIsrcHydration_IsOwnedOnlyByLibrespot()
     {
         var metadata = ReadSource("DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs");
         var tracklist = ReadSource("DeezSpoTag.Web", "Services", "SpotifyTracklistService.cs");
-        var method = SliceMethod(metadata, "HydratePlaylistTrackIsrcsWithLibrespotAsync", "FetchAlbumFallbackWithLibrespotAsync");
+        var pathfinder = ReadSource("DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs");
+        var method = SliceMethod(metadata, "HydrateTrackIsrcsAsync", "FetchAlbumFallbackWithLibrespotAsync");
 
-        Assert.Contains("FetchLibrespotTrackIdentitiesAsync(trackIds", method, StringComparison.Ordinal);
-        Assert.Contains("HydrateTrackDetailsWithLibrespotAsync", method, StringComparison.Ordinal);
+        Assert.Contains("FetchLibrespotTracksAsync(missing", method, StringComparison.Ordinal);
         Assert.DoesNotContain("_pathfinderMetadataClient", method, StringComparison.Ordinal);
-        Assert.DoesNotContain("HydrateFallbackLibrespotTracksAsync", method, StringComparison.Ordinal);
-        Assert.Contains("HydratePlaylistTrackIsrcsWithLibrespotAsync", tracklist, StringComparison.Ordinal);
+        Assert.DoesNotContain("FetchTrackIsrcsAsync", pathfinder, StringComparison.Ordinal);
+        Assert.DoesNotContain("track-isrc-v1", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("HydrateTrackIsrcsAsync", tracklist, StringComparison.Ordinal);
+        Assert.DoesNotContain("HydratePlaylistTrackIsrcsWithLibrespotAsync", tracklist, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task HydrationScheduler_ProcessesFastGroupBeforeSlowGroupCompletes()
+    {
+        var processed = new ConcurrentQueue<int>();
+        var activeGroups = 0;
+        var maximumActiveGroups = 0;
+        var items = Enumerable.Range(0, 10).ToArray();
+
+        await SpotifyTracklistHydrationScheduler.RunAsync(
+            items,
+            groupSize: 5,
+            async (group, cancellationToken) =>
+            {
+                var active = Interlocked.Increment(ref activeGroups);
+                UpdateMaximum(ref maximumActiveGroups, active);
+                await Task.Delay(group[0] == 0 ? 150 : 10, cancellationToken);
+                Interlocked.Decrement(ref activeGroups);
+                return group.ToList();
+            },
+            (item, _) =>
+            {
+                processed.Enqueue(item);
+                return Task.CompletedTask;
+            },
+            CancellationToken.None);
+
+        Assert.Equal(10, processed.Count);
+        Assert.Equal(5, processed.First());
+        Assert.True(maximumActiveGroups >= 2);
+    }
+
+    [Fact]
+    public void LibrespotBatchFailure_DoesNotSpawnSerialPerTrackProcesses()
+    {
+        var metadata = ReadSource("DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs");
+        var helper = ReadSource("DeezSpoTag.Web", "Tools", "spotify_librespot_tracks.py");
+        var method = SliceMethod(metadata, "HydrateLibrespotBatchAsync", "MergeHydratedTracks");
+
+        Assert.DoesNotContain("foreach (var trackId in batchTrackIds)", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("new List<string> { trackId }", method, StringComparison.Ordinal);
+        Assert.Contains("ThreadPoolExecutor", helper, StringComparison.Ordinal);
+        Assert.Contains("executor.map(fetch_track, ids)", helper, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -90,6 +141,18 @@ public sealed class SpotifyIncrementalPlaybackGuardrailTests
 
     private static string ReadSource(params string[] relativeParts)
         => File.ReadAllText(Path.Join(ResolveRepoRoot(), Path.Join(relativeParts)));
+
+    private static void UpdateMaximum(ref int maximum, int candidate)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref maximum);
+            if (candidate <= current || Interlocked.CompareExchange(ref maximum, candidate, current) == current)
+            {
+                return;
+            }
+        }
+    }
 
     private static string ResolveRepoRoot()
     {

@@ -19,6 +19,7 @@ public sealed class SpotifySearchService
     };
     private readonly PlatformAuthService _platformAuthService;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
+    private readonly SpotifyMetadataService _metadataService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly SpotifyBlobService _blobService;
     private readonly SpotifyUserStateProvider _userStateProvider;
@@ -28,12 +29,12 @@ public sealed class SpotifySearchService
     private readonly Random _userAgentRandom = new();
     private readonly string _userAgent;
     private static readonly TimeSpan PathfinderTrackSearchTimeout = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan PathfinderIsrcHydrationTimeout = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan LibrespotSearchTimeout = TimeSpan.FromSeconds(3);
 
     public SpotifySearchService(
         PlatformAuthService platformAuthService,
         SpotifyPathfinderMetadataClient pathfinderMetadataClient,
+        SpotifyMetadataService metadataService,
         IHttpClientFactory httpClientFactory,
         SpotifyBlobService blobService,
         SpotifyUserStateProvider userStateProvider,
@@ -42,6 +43,7 @@ public sealed class SpotifySearchService
     {
         _platformAuthService = platformAuthService;
         _pathfinderMetadataClient = pathfinderMetadataClient;
+        _metadataService = metadataService;
         _httpClientFactory = httpClientFactory;
         _blobService = blobService;
         _userStateProvider = userStateProvider;
@@ -139,31 +141,7 @@ public sealed class SpotifySearchService
             return response;
         }
 
-        var isrcs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            using var pathfinderTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            pathfinderTimeout.CancelAfter(PathfinderIsrcHydrationTimeout);
-            isrcs = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(missing, pathfinderTimeout.Token);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException ex)
-        {
-            _logger.LogDebug(ex, "Spotify Pathfinder ISRC hydration timed out.");
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Spotify Pathfinder ISRC hydration failed.");
-        }
-
-        var librespotIsrcs = await FetchLibrespotTrackIsrcsAsync(missing, cancellationToken);
-        foreach (var pair in librespotIsrcs)
-        {
-            isrcs.TryAdd(pair.Key, pair.Value);
-        }
+        var isrcs = await FetchLibrespotTrackIsrcsAsync(missing, cancellationToken);
 
         if (isrcs.Count == 0)
         {
@@ -182,48 +160,13 @@ public sealed class SpotifySearchService
         IReadOnlyList<string> trackIds,
         CancellationToken cancellationToken)
     {
-        var results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var blobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(blobPath))
-        {
-            return results;
-        }
-
         try
         {
             using var librespotTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             librespotTimeout.CancelAfter(LibrespotSearchTimeout);
-            var response = await _blobService.GetLibrespotTracksAsync(blobPath, trackIds, librespotTimeout.Token);
-            if (string.IsNullOrWhiteSpace(response.PayloadJson))
-            {
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Spotify Librespot track ISRC hydration failed: error={Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(response.Error));
-                }
-                return results;
-            }
-
-            using var doc = JsonDocument.Parse(response.PayloadJson);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                return results;
-            }
-
-            foreach (var entry in doc.RootElement.EnumerateArray())
-            {
-                if (!entry.TryGetProperty("track", out var track) || track.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var item = MapWebApiTrack(track);
-                if (item == null || string.IsNullOrWhiteSpace(item.Isrc))
-                {
-                    continue;
-                }
-
-                results[item.Id] = item.Isrc;
-            }
+            return (await _metadataService.FetchLibrespotTracksAsync(trackIds, librespotTimeout.Token))
+                .Where(track => !string.IsNullOrWhiteSpace(track.Id) && !string.IsNullOrWhiteSpace(track.Isrc))
+                .ToDictionary(track => track.Id, track => track.Isrc!, StringComparer.OrdinalIgnoreCase);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -238,7 +181,7 @@ public sealed class SpotifySearchService
             _logger.LogDebug(ex, "Spotify Librespot track ISRC hydration failed.");
         }
 
-        return results;
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<SpotifySearchResponse?> SearchViaPathfinderAsync(string query, int limit, CancellationToken cancellationToken)

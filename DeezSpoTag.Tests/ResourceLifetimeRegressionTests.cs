@@ -213,7 +213,7 @@ public sealed class ResourceLifetimeRegressionTests
         Assert.Contains("MaxTagCacheEntries", lastFmTags, StringComparison.Ordinal);
         Assert.Contains("MaxSimilarArtistCacheEntries", lastFmTags, StringComparison.Ordinal);
         Assert.Contains("MaxSimilarTrackCacheEntries", lastFmTags, StringComparison.Ordinal);
-        Assert.Contains("MaxIsrcCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsrcCache", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxArtistSearchEnrichmentCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxShowCacheEntries", spotifyPathfinder, StringComparison.Ordinal);
         Assert.Contains("MaxShowEpisodeCacheEntries", spotifyPathfinder, StringComparison.Ordinal);

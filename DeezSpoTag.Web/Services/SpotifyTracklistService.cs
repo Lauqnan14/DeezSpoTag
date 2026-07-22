@@ -319,7 +319,7 @@ public sealed class SpotifyTracklistService
 
         try
         {
-            return await _metadataService.HydratePlaylistTrackIsrcsWithLibrespotAsync(
+            return await _metadataService.HydrateTrackIsrcsAsync(
                 tracks,
                 cancellationToken);
         }

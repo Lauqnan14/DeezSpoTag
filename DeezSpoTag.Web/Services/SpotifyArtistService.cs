@@ -877,11 +877,13 @@ public sealed class SpotifyArtistService
         Dictionary<string, string> isrcsByTrackId;
         try
         {
-            isrcsByTrackId = await _pathfinderMetadataClient.FetchTrackIsrcsAsync(missingTrackIds, cancellationToken);
+            isrcsByTrackId = (await _metadataService.FetchLibrespotTracksAsync(missingTrackIds, cancellationToken))
+                .Where(track => !string.IsNullOrWhiteSpace(track.Id) && !string.IsNullOrWhiteSpace(track.Isrc))
+                .ToDictionary(track => track.Id, track => track.Isrc!, StringComparer.OrdinalIgnoreCase);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Failed to hydrate Spotify artist top-track ISRCs.");
+            _logger.LogDebug(ex, "Failed to hydrate Spotify artist top-track ISRCs with Librespot.");
             return tracks.ToList();
         }
 

@@ -6,7 +6,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
 {
     private const int MaxTransientAttempts = 3;
-    private const int IdentityHydrationBatchSize = 64;
+    private const int IdentityHydrationGroupSize = 5;
     private readonly ISpotifyTracklistMatchQueue _queue;
     private readonly ISpotifyTracklistMatchStore _store;
     private readonly DeezerClient _deezerClient;
@@ -36,31 +36,48 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
         using var gate = new SemaphoreSlim(concurrency, concurrency);
         while (await _queue.Reader.WaitToReadAsync(stoppingToken))
         {
-            var batch = ReadActiveBatch();
+            var batch = ReadActiveBatch(concurrency);
             if (batch.Count == 0)
             {
                 continue;
             }
 
-            var hydratedTracks = await _tracklistService.HydrateSpotifyIdentityBatchAsync(
-                batch.Select(item => item.Track).ToList(),
+            await SpotifyTracklistHydrationScheduler.RunAsync(
+                batch,
+                IdentityHydrationGroupSize,
+                HydrateGroupAsync,
+                async (hydratedItem, cancellationToken) =>
+                {
+                    await gate.WaitAsync(cancellationToken);
+                    _ = ProcessItemAsync(
+                        hydratedItem.Item,
+                        hydratedItem.Track,
+                        gate,
+                        cancellationToken);
+                },
                 stoppingToken);
-            for (var index = 0; index < batch.Count; index++)
-            {
-                var item = batch[index];
-                var hydratedTrack = index < hydratedTracks.Count
-                    ? hydratedTracks[index]
-                    : item.Track;
-                await gate.WaitAsync(stoppingToken);
-                _ = ProcessItemAsync(item, hydratedTrack, gate, stoppingToken);
-            }
         }
     }
 
-    private List<SpotifyTracklistMatchWorkItem> ReadActiveBatch()
+    private async Task<List<HydratedMatchWorkItem>> HydrateGroupAsync(
+        IReadOnlyList<SpotifyTracklistMatchWorkItem> group,
+        CancellationToken cancellationToken)
     {
-        var batch = new List<SpotifyTracklistMatchWorkItem>(IdentityHydrationBatchSize);
-        while (batch.Count < IdentityHydrationBatchSize && _queue.Reader.TryRead(out var item))
+        var hydratedTracks = await _tracklistService.HydrateSpotifyIdentityBatchAsync(
+            group.Select(item => item.Track).ToList(),
+            cancellationToken);
+        return group
+            .Select((item, index) => new HydratedMatchWorkItem(
+                item,
+                index < hydratedTracks.Count ? hydratedTracks[index] : item.Track))
+            .ToList();
+    }
+
+    private List<SpotifyTracklistMatchWorkItem> ReadActiveBatch(int maxItems)
+    {
+        var boundedMaxItems = Math.Max(1, maxItems);
+        var batch = new List<SpotifyTracklistMatchWorkItem>(boundedMaxItems);
+        while (batch.Count < boundedMaxItems && _queue.Reader.TryRead(out var item))
         {
             if (_store.IsActive(item.Token))
             {
@@ -255,4 +272,34 @@ public sealed class SpotifyTracklistMatchBackgroundService : BackgroundService
 
     internal static bool ShouldRunTerminalMetadataPass(SpotifyTracklistResolveResult result) =>
         result.Outcome == SpotifyTracklistResolveOutcome.HardMismatch;
+
+    internal sealed record HydratedMatchWorkItem(
+        SpotifyTracklistMatchWorkItem Item,
+        SpotifyTrackSummary Track);
+}
+
+internal static class SpotifyTracklistHydrationScheduler
+{
+    internal static async Task RunAsync<TInput, TOutput>(
+        IReadOnlyList<TInput> items,
+        int groupSize,
+        Func<IReadOnlyList<TInput>, CancellationToken, Task<List<TOutput>>> hydrateGroup,
+        Func<TOutput, CancellationToken, Task> processHydratedItem,
+        CancellationToken cancellationToken)
+    {
+        var boundedGroupSize = Math.Max(1, groupSize);
+        var pendingGroups = items
+            .Chunk(boundedGroupSize)
+            .Select(group => hydrateGroup(group, cancellationToken))
+            .ToList();
+        while (pendingGroups.Count > 0)
+        {
+            var completedGroup = await Task.WhenAny(pendingGroups);
+            pendingGroups.Remove(completedGroup);
+            foreach (var hydratedItem in await completedGroup)
+            {
+                await processHydratedItem(hydratedItem, cancellationToken);
+            }
+        }
+    }
 }

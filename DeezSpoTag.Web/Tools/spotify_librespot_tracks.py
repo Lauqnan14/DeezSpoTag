@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from spotify_librespot_common import close_if_possible
 from spotify_librespot_common import load_deezspot_librespot_client
 from spotify_librespot_common import parse_csv_values
@@ -29,22 +30,24 @@ def main():
         write_result(False, error="missing_track_ids")
         return 1
 
+    worker_count = min(5, len(ids))
     try:
-        client = librespot_client(stored_credentials_path=credentials_path.as_posix(), max_workers=2)
+        client = librespot_client(stored_credentials_path=credentials_path.as_posix(), max_workers=worker_count)
     except Exception as exc:
         write_result(False, error=f"librespot_client_error: {exc}")
         return 1
 
-    results = []
-    for track_id in ids:
+    def fetch_track(track_id):
         try:
             track = client.get_track(track_id)
             if not track:
-                results.append({"id": track_id, "error": "librespot_track_empty"})
-                continue
-            results.append({"id": track_id, "track": track})
+                return {"id": track_id, "error": "librespot_track_empty"}
+            return {"id": track_id, "track": track}
         except Exception as exc:
-            results.append({"id": track_id, "error": f"librespot_track_error: {exc}"})
+            return {"id": track_id, "error": f"librespot_track_error: {exc}"}
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(fetch_track, ids))
 
     try:
         close_if_possible(client)
