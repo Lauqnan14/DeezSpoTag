@@ -50,7 +50,9 @@ public sealed class PlaylistSyncService
         IReadOnlyList<string> TargetServices,
         string? ArtworkFilePath = null,
         string? ArtworkContentType = null,
-        string? ArtworkUrl = null);
+        string? ArtworkUrl = null,
+        string? AnimatedArtworkFilePath = null,
+        string? AnimatedArtworkContentType = null);
 
     public sealed record GeneratedLocalPlaylistTargetResult(
         string Service,
@@ -514,15 +516,22 @@ public sealed class PlaylistSyncService
             return false;
         }
 
-        if (!string.IsNullOrWhiteSpace(request.ArtworkFilePath) && File.Exists(request.ArtworkFilePath))
+        var artworkPath = !string.IsNullOrWhiteSpace(request.AnimatedArtworkFilePath)
+            && File.Exists(request.AnimatedArtworkFilePath)
+                ? request.AnimatedArtworkFilePath
+                : request.ArtworkFilePath;
+        var contentType = string.Equals(artworkPath, request.AnimatedArtworkFilePath, StringComparison.Ordinal)
+            ? request.AnimatedArtworkContentType
+            : request.ArtworkContentType;
+        if (!string.IsNullOrWhiteSpace(artworkPath) && File.Exists(artworkPath))
         {
             return await _navidromeApiClient.UpdatePlaylistImageFromFileAsync(
                 navidrome.Url,
                 navidrome.Username,
                 navidrome.Password,
                 playlistId,
-                request.ArtworkFilePath,
-                request.ArtworkContentType,
+                artworkPath,
+                contentType,
                 cancellationToken);
         }
 
@@ -2353,12 +2362,14 @@ public sealed class PlaylistSyncService
     private PlaylistVisualService.StoredPlaylistVisual? ResolveJellyfinVisualFromPlaylistImage(PlaylistWatchlistDto playlist)
     {
         var urlVisual = _playlistVisualService.GetStoredVisualFromManagedUrl(playlist.Source, playlist.SourceId, playlist.ImageUrl);
-        if (urlVisual != null && File.Exists(urlVisual.FilePath))
+        if (urlVisual != null
+            && File.Exists(urlVisual.FilePath)
+            && IsStillVisual(urlVisual))
         {
             return urlVisual;
         }
 
-        return ResolveCachedVisualForArtworkSync(playlist);
+        return _playlistVisualService.GetStoredStillVisual(playlist.Source, playlist.SourceId);
     }
 
     private PlaylistVisualService.StoredPlaylistVisual? ResolveJellyfinVisualFromManagedImage(
@@ -2367,13 +2378,22 @@ public sealed class PlaylistSyncService
         bool reuseSavedArtwork)
     {
         var urlVisual = _playlistVisualService.GetStoredVisualFromManagedUrl(playlist.Source, playlist.SourceId, managedImageUrl);
-        if (urlVisual != null && File.Exists(urlVisual.FilePath))
+        if (urlVisual != null
+            && File.Exists(urlVisual.FilePath)
+            && IsStillVisual(urlVisual))
         {
             return urlVisual;
         }
 
-        return ResolveStoredVisualForArtworkSync(playlist, managedImageUrl, reuseSavedArtwork);
+        var still = _playlistVisualService.GetStoredStillVisual(playlist.Source, playlist.SourceId);
+        return still != null && (reuseSavedArtwork || PlaylistVisualService.IsManagedVisualUrl(managedImageUrl))
+            ? still
+            : null;
     }
+
+    private static bool IsStillVisual(PlaylistVisualService.StoredPlaylistVisual visual)
+        => visual.ContentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
+            || visual.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase);
 
     private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
     {
@@ -2392,7 +2412,7 @@ public sealed class PlaylistSyncService
             return;
         }
 
-        var cachedVisual = ResolveCachedVisualForArtworkSync(playlist);
+        var cachedVisual = _playlistVisualService.GetStoredStillVisual(playlist.Source, playlist.SourceId);
         if (cachedVisual != null)
         {
             await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
@@ -2412,10 +2432,7 @@ public sealed class PlaylistSyncService
             playlist.ImageUrl,
             preference?.ReuseSavedArtwork == true,
             cancellationToken);
-        var visual = ResolveStoredVisualForArtworkSync(
-            playlist,
-            managedImageUrl,
-            preference?.ReuseSavedArtwork == true);
+        var visual = _playlistVisualService.GetStoredStillVisual(playlist.Source, playlist.SourceId);
         if (visual != null && File.Exists(visual.FilePath))
         {
             await _plexApiClient.UpdatePlaylistPosterFromFileAsync(
@@ -2611,6 +2628,22 @@ public sealed class PlaylistSyncService
         if (!ShouldSyncPlaylistArtwork(preference))
         {
             return true;
+        }
+
+        var animatedVisual = await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
+            playlist.Source,
+            playlist.SourceId,
+            cancellationToken);
+        if (animatedVisual != null)
+        {
+            return await _navidromeApiClient.UpdatePlaylistImageFromFileAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                playlistId,
+                animatedVisual.FilePath,
+                animatedVisual.ContentType,
+                cancellationToken);
         }
 
         var cachedVisual = ResolveCachedVisualForArtworkSync(playlist);

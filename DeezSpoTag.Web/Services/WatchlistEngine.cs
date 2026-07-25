@@ -325,6 +325,13 @@ internal sealed class WatchlistEngine
         {
             currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
         }
+        if (_playlistVisualService != null)
+        {
+            await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
+                source,
+                sourceId,
+                cancellationToken);
+        }
 
         var existingSnapshotId = NormalizeSnapshotId(existingCandidateCache?.SnapshotId);
         var currentSnapshotId = NormalizeSnapshotId(liveSnapshot.SnapshotId);
@@ -943,6 +950,13 @@ internal sealed class WatchlistEngine
         if (!string.Equals(managedImageUrl, currentPlaylist.ImageUrl, StringComparison.Ordinal))
         {
             currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
+        }
+        if (_playlistVisualService != null)
+        {
+            await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
+                source,
+                sourceId,
+                cancellationToken);
         }
 
         await UpdatePlaylistStateAsync(

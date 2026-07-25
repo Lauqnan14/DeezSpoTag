@@ -2676,22 +2676,22 @@ public static partial class EngineAudioPostDownloadHelper
             return Array.Empty<string>();
         }
 
-        var animatedPaths = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+        var animatedResult = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             runtime.AppleCatalog!,
             runtime.HttpClientFactory!,
             request,
             token);
-        if (animatedPaths.Count > 0)
+        if (animatedResult.Paths.Count > 0)
         {
             execution.Request.ActivityLog.Info($"Animated artwork saved: {execution.Paths.CoverPath}");
         }
         else
         {
             execution.Request.ActivityLog.Warn(
-                $"Animated artwork unavailable for resolved Apple track {resolvedAppleId}: {execution.Request.Payload.Artist} - {execution.Request.Payload.Title}.");
+                $"Animated artwork {animatedResult.Status} for resolved Apple track {resolvedAppleId}: {animatedResult.Message}");
         }
 
-        return animatedPaths;
+        return animatedResult.Paths;
     }
 
     private static async Task<IReadOnlyList<string>> SaveArtistArtworkAsync(

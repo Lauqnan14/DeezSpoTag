@@ -551,7 +551,7 @@ public class AutoTagLibraryOrganizer
         var fullPath = Path.GetFullPath(filePath);
         if (!IsPathUnderRoot(fullPath, rootPath)
             || !IOFile.Exists(fullPath)
-            || IsAnimatedArtworkFile(fullPath))
+            || AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(fullPath))
         {
             return null;
         }
@@ -2820,21 +2820,7 @@ public class AutoTagLibraryOrganizer
         var search = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
         return Directory.EnumerateFiles(rootPath, "*.*", search)
             .Where(path => extensions.Contains(Path.GetExtension(path)))
-            .Where(path => !IsAnimatedArtworkFile(path));
-    }
-
-    private static bool IsAnimatedArtworkFile(string path)
-    {
-        if (!Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var filename = Path.GetFileNameWithoutExtension(path);
-        return filename.Equals("square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.Equals("tall_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.EndsWith(" - square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase);
+            .Where(path => !AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(path));
     }
 
     private void MoveSidecarFiles(SidecarMoveContext context)

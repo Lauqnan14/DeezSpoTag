@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Web.Services;
 using DeezSpoTag.Web.Services.AutoTag;
 using Xunit;
 
@@ -416,11 +417,14 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     [Theory]
     [InlineData("square_animated_artwork.mp4", true)]
     [InlineData("Artist - tall_animated_artwork.mp4", true)]
+    [InlineData("cover.webp", true)]
+    [InlineData("cover_tall.gif", true)]
+    [InlineData("Artist - Album.webp", true)]
     [InlineData("track.mp4", false)]
     [InlineData("square_animated_artwork.flac", false)]
     public void IsAnimatedArtworkFile_DetectsKnownAnimatedArtworkPatterns(string fileName, bool expected)
     {
-        var result = InvokeStatic<bool>("IsAnimatedArtworkFile", fileName);
+        var result = AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(fileName);
         Assert.Equal(expected, result);
     }
 

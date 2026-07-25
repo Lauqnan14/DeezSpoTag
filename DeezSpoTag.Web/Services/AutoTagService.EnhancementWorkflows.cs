@@ -668,8 +668,13 @@ public partial class AutoTagService
         var replaceMissingEmbedded = ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true;
         var syncExternalCovers = ReadBool(coverMaintenance, "syncExternalCovers") == true;
         var queueAnimatedArtwork = ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
+        var renameExistingAnimatedArtwork = ReadBool(coverMaintenance, "renameExistingAnimatedArtwork") != false;
         var upgradeLowResolution = ReadBool(coverMaintenance, "upgradeLowResolutionCovers") == true;
-        if (!replaceMissingEmbedded && !syncExternalCovers && !queueAnimatedArtwork && !upgradeLowResolution)
+        if (!replaceMissingEmbedded
+            && !syncExternalCovers
+            && !queueAnimatedArtwork
+            && !renameExistingAnimatedArtwork
+            && !upgradeLowResolution)
         {
             return EnhancementWorkflowOutcome.Skipped("no cover maintenance actions are enabled.");
         }
@@ -692,27 +697,31 @@ public partial class AutoTagService
             throw new InvalidOperationException("The assigned profile has no compatible still-artwork source enabled for cover maintenance.");
         }
         var targetResolution = ResolveProfileCoverResolution(configRoot, settings, Math.Max(minResolution, 1200));
-        var allFiles = rootPaths
+        var albumRepresentatives = rootPaths
             .Where(Directory.Exists)
             .SelectMany(path => Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
             .Where(path => EligibleAudioExtensions.Contains(Path.GetExtension(path)))
+            .GroupBy(path => Path.GetDirectoryName(path) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .First())
             .OrderBy(path => File.GetLastWriteTimeUtc(path))
             .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (allFiles.Count == 0)
+        if (albumRepresentatives.Count == 0)
         {
             return EnhancementWorkflowOutcome.Skipped("no eligible audio files were found.");
         }
 
-        var batchCount = (int)Math.Ceiling(allFiles.Count / (double)EnhancementBatchSize);
+        var batchCount = (int)Math.Ceiling(albumRepresentatives.Count / (double)EnhancementBatchSize);
         var totalUpdated = 0;
         var totalSkipped = 0;
         var totalErrors = 0;
-        AppendLog(job, $"enhancement workflow: cover maintenance starting ({allFiles.Count} file(s), {batchCount} batch(es)).");
+        AppendLog(job, $"enhancement workflow: cover maintenance starting ({albumRepresentatives.Count} unique album(s), {batchCount} batch(es)).");
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var batch = allFiles
+            var batch = albumRepresentatives
                 .Skip(batchIndex * EnhancementBatchSize)
                 .Take(EnhancementBatchSize)
                 .ToList();
@@ -720,7 +729,7 @@ public partial class AutoTagService
                 job,
                 AutoTagLiterals.EnhancementFeatureCoverMaintenance,
                 batchIndex * EnhancementBatchSize,
-                allFiles.Count,
+                albumRepresentatives.Count,
                 batchIndex + 1,
                 batchCount,
                 0,
@@ -742,6 +751,7 @@ public partial class AutoTagService
                 AnimatedArtworkFormats: AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
                 EnabledSources: enabledSources,
                 CoverImageTemplate: settings.CoverImageTemplate,
+                RenameExistingAnimatedArtwork: renameExistingAnimatedArtwork,
                 TargetFiles: batch);
             var result = await _coverMaintenanceService.RunAsync(request, cancellationToken);
             totalUpdated += result.AlbumsUpdated;
@@ -752,15 +762,9 @@ public partial class AutoTagService
                 throw new InvalidOperationException(result.Message);
             }
 
-            await ApplyProfileTemplatesToFilesAsync(
-                job,
-                configPath,
-                batch,
-                requireSuccessfulEnhancement: false,
-                cancellationToken);
             for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
             {
-                var processed = Math.Min(allFiles.Count, batchIndex * EnhancementBatchSize + itemIndex + 1);
+                var processed = Math.Min(albumRepresentatives.Count, batchIndex * EnhancementBatchSize + itemIndex + 1);
                 var fileDirectory = Path.GetDirectoryName(batch[itemIndex]) ?? string.Empty;
                 var errorPrefix = $"[error] {fileDirectory}:";
                 var fileError = result.Logs.FirstOrDefault(log =>
@@ -772,7 +776,7 @@ public partial class AutoTagService
                     fileError == null ? AutoTagLiterals.OkStatus : AutoTagLiterals.ErrorStatus,
                     fileError ?? result.Message,
                     processed,
-                    allFiles.Count,
+                    albumRepresentatives.Count,
                     batchIndex + 1,
                     batchCount,
                     itemIndex + 1,
@@ -896,7 +900,8 @@ public partial class AutoTagService
         return ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true
             || ReadBool(coverMaintenance, "syncExternalCovers") == true
             || ReadBool(coverMaintenance, "upgradeLowResolutionCovers") == true
-            || ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
+            || ReadBool(coverMaintenance, "queueAnimatedArtwork") == true
+            || ReadBool(coverMaintenance, "renameExistingAnimatedArtwork") != false;
     }
 
     private static bool IsQualityChecksWorkflowEnabled(JsonObject enhancementRoot)
@@ -1075,10 +1080,12 @@ public partial class AutoTagService
             .OrderBy(path => File.GetLastWriteTimeUtc(path))
             .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var batchCount = files.Count == 0 ? 0 : (int)Math.Ceiling(files.Count / (double)EnhancementBatchSize);
+        var batches = BuildAlbumBoundaryBatches(files, static path => path);
+        var batchCount = batches.Count;
+        var processedTotal = 0;
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
         {
-            var batch = files.Skip(batchIndex * EnhancementBatchSize).Take(EnhancementBatchSize).ToList();
+            var batch = batches[batchIndex];
             await ApplyProfileTemplatesToFilesAsync(
                 job,
                 configPath,
@@ -1087,7 +1094,7 @@ public partial class AutoTagService
                 cancellationToken);
             for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
             {
-                var processed = batchIndex * EnhancementBatchSize + itemIndex + 1;
+                var processed = ++processedTotal;
                 RecordEnhancementItemStatus(
                     job,
                     "folder-tag-alignment",
@@ -1151,15 +1158,14 @@ public partial class AutoTagService
             .GroupBy(track => track.TrackId)
             .Select(group => group.First())
             .ToList();
-        var batchCount = uniqueTracks.Count == 0
-            ? 0
-            : (int)Math.Ceiling(uniqueTracks.Count / (double)EnhancementBatchSize);
+        var batches = BuildAlbumBoundaryBatches(
+            uniqueTracks,
+            static track => track.AudioFilePath);
+        var batchCount = batches.Count;
+        var processedTotal = 0;
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
         {
-            var batch = uniqueTracks
-                .Skip(batchIndex * EnhancementBatchSize)
-                .Take(EnhancementBatchSize)
-                .ToList();
+            var batch = batches[batchIndex];
             var completedPaths = new List<string>();
             for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
             {
@@ -1181,7 +1187,7 @@ public partial class AutoTagService
                 {
                     completedPaths.Add(result.FilePath);
                 }
-                var processed = batchIndex * EnhancementBatchSize + itemIndex + 1;
+                var processed = ++processedTotal;
                 RecordEnhancementItemStatus(
                     job,
                     "lyrics-refresh",
@@ -1237,6 +1243,60 @@ public partial class AutoTagService
         {
             settings.LocalArtworkFormat = localArtworkFormat.Trim();
         }
+    }
+
+    internal static List<List<T>> BuildAlbumBoundaryBatches<T>(
+        IReadOnlyList<T> items,
+        Func<T, string?> pathSelector)
+    {
+        var orderedAlbumGroups = items
+            .Select((item, index) => new
+            {
+                Item = item,
+                Index = index,
+                AlbumDirectory = ResolveAlbumBatchDirectory(pathSelector(item), index)
+            })
+            .GroupBy(value => value.AlbumDirectory, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Min(value => value.Index))
+            .Select(group => group.OrderBy(value => value.Index).Select(value => value.Item).ToList())
+            .ToList();
+        var batches = new List<List<T>>();
+        var current = new List<T>();
+        foreach (var album in orderedAlbumGroups)
+        {
+            if (current.Count >= EnhancementBatchSize)
+            {
+                batches.Add(current);
+                current = new List<T>();
+            }
+
+            current.AddRange(album);
+            if (current.Count >= EnhancementBatchSize)
+            {
+                batches.Add(current);
+                current = new List<T>();
+            }
+        }
+
+        if (current.Count > 0)
+        {
+            batches.Add(current);
+        }
+
+        return batches;
+    }
+
+    private static string ResolveAlbumBatchDirectory(string? path, int index)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return $"__missing_path_{index}";
+        }
+
+        var directory = Path.GetDirectoryName(path);
+        return string.IsNullOrWhiteSpace(directory)
+            ? $"__missing_directory_{index}"
+            : Path.GetFullPath(directory);
     }
 
     private static IReadOnlyCollection<CoverSourceName> ResolveProfileCoverSources(DeezSpoTagSettings settings)

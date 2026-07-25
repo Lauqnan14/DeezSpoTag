@@ -83,6 +83,7 @@
                 replaceMissingEmbeddedCovers: false,
                 syncExternalCovers: false,
                 queueAnimatedArtwork: false,
+                renameExistingAnimatedArtwork: true,
                 workerCount: 8
             },
             qualityChecks: {
@@ -2145,6 +2146,7 @@
         coverMaintenance.replaceMissingEmbeddedCovers = coverMaintenance.replaceMissingEmbeddedCovers === true;
         coverMaintenance.syncExternalCovers = coverMaintenance.syncExternalCovers === true;
         coverMaintenance.queueAnimatedArtwork = coverMaintenance.queueAnimatedArtwork === true;
+        coverMaintenance.renameExistingAnimatedArtwork = coverMaintenance.renameExistingAnimatedArtwork !== false;
         coverMaintenance.enabled = coverMaintenanceHasEnabledFlag
             ? coverMaintenance.enabled === true
             : coverMaintenance.replaceMissingEmbeddedCovers
@@ -2977,6 +2979,7 @@
         setChecked("replaceMissingCovers", state.config.enhancement.coverMaintenance.replaceMissingEmbeddedCovers);
         setChecked("syncExternalCovers", state.config.enhancement.coverMaintenance.syncExternalCovers);
         setChecked("queueAnimatedArtwork", state.config.enhancement.coverMaintenance.queueAnimatedArtwork);
+        setChecked("renameExistingAnimatedArtwork", state.config.enhancement.coverMaintenance.renameExistingAnimatedArtwork !== false);
         updateCoverMaintenanceFolderSummary(state.config.enhancement.coverMaintenance.folderIds ?? []);
         setValue("coverWorkerCount", state.config.enhancement.coverMaintenance.workerCount ?? 8);
         setChecked("enableQualityChecksWorkflow", state.config.enhancement.qualityChecks.enabled);
@@ -4055,6 +4058,9 @@
         coverMaintenance.replaceMissingEmbeddedCovers = getChecked("replaceMissingCovers", coverMaintenance.replaceMissingEmbeddedCovers);
         coverMaintenance.syncExternalCovers = getChecked("syncExternalCovers", coverMaintenance.syncExternalCovers);
         coverMaintenance.queueAnimatedArtwork = getChecked("queueAnimatedArtwork", coverMaintenance.queueAnimatedArtwork);
+        coverMaintenance.renameExistingAnimatedArtwork = getChecked(
+            "renameExistingAnimatedArtwork",
+            coverMaintenance.renameExistingAnimatedArtwork !== false);
         coverMaintenance.workerCount = Number.parseInt(getValue("coverWorkerCount", coverMaintenance.workerCount ?? 8), 10);
         if (!Number.isFinite(coverMaintenance.workerCount)) {
             coverMaintenance.workerCount = 8;
@@ -4464,7 +4470,8 @@
             const hasCoverAction = covers.upgradeLowResolutionCovers
                 || covers.replaceMissingEmbeddedCovers
                 || covers.syncExternalCovers
-                || covers.queueAnimatedArtwork;
+                || covers.queueAnimatedArtwork
+                || covers.renameExistingAnimatedArtwork;
             if (covers.enabled && hasCoverAction) {
                 features.push({ id: "cover-maintenance", label: "Cover Maintenance", folderIds: covers.folderIds });
             }
@@ -4729,7 +4736,8 @@
             const hasAction = options.upgradeLowResolutionCovers
                 || options.replaceMissingEmbeddedCovers
                 || options.syncExternalCovers
-                || options.queueAnimatedArtwork;
+                || options.queueAnimatedArtwork
+                || options.renameExistingAnimatedArtwork;
             if (!hasAction) {
                 throw new Error("Enable at least one Cover Maintenance action before starting the run.");
             }

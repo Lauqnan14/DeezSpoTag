@@ -92,11 +92,6 @@ public sealed class QuickTagService
         "lyrics", "lyric", "karaoke", "synced", "unsynced"
     };
 
-    private static readonly string[] AnimatedArtworkTokens =
-    {
-        "animated_artwork", "square_animated_artwork", "tall_animated_artwork"
-    };
-
     private static readonly string[] Mp4DashProbeKeys =
     {
         "ISRC", TitleTag, ArtistTag, AlbumTag, AlbumArtistTag, GenreTag, "DATE", "YEAR", ComposerTag,
@@ -1333,10 +1328,10 @@ public sealed class QuickTagService
         }
 
         if (extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".m4v", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".webm", StringComparison.OrdinalIgnoreCase))
+            || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".gif", StringComparison.OrdinalIgnoreCase))
         {
-            return AnimatedArtworkTokens.Any(token => fileNameWithoutExtension.Contains(token, StringComparison.OrdinalIgnoreCase));
+            return AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(path);
         }
 
         return false;

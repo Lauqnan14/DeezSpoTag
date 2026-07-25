@@ -326,6 +326,34 @@ CREATE TABLE IF NOT EXISTS library_scan_state (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS apple_animated_artwork_cache (
+    cache_key TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    storefront TEXT NOT NULL,
+    max_resolution INTEGER NOT NULL,
+    static_artwork_url TEXT,
+    square_url TEXT,
+    tall_url TEXT,
+    status TEXT NOT NULL,
+    checked_utc TEXT NOT NULL,
+    expires_utc TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_apple_animated_artwork_resource
+    ON apple_animated_artwork_cache(resource_type, resource_id, storefront);
+
+CREATE TABLE IF NOT EXISTS apple_animated_artwork_artifact (
+    file_path TEXT PRIMARY KEY,
+    cache_key TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    format TEXT NOT NULL,
+    verified_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_apple_animated_artwork_artifact_cache
+    ON apple_animated_artwork_artifact(cache_key);
+
 CREATE TABLE IF NOT EXISTS library_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp_utc TEXT NOT NULL,

@@ -523,7 +523,7 @@ public sealed class LocalLibraryScanner
         var albumKey = $"{artist.Id}|{albumTitle}";
         var albumCoverCandidate = FindFirstImage(albumDir);
         var albumHasAnimatedArtwork = Directory.EnumerateFiles(albumDir, "*.*", SearchOption.AllDirectories)
-            .Any(static path => IsAnimatedArtworkFileName(Path.GetFileNameWithoutExtension(path)));
+            .Any(static path => AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(path));
 
         if (!context.AlbumIndex.TryGetValue(albumKey, out var album))
         {
@@ -2262,19 +2262,6 @@ public sealed class LocalLibraryScanner
             })
             .ToList();
         return ordered.Count == 0 ? null : string.Join('+', ordered);
-    }
-
-    private static bool IsAnimatedArtworkFileName(string? filename)
-    {
-        if (string.IsNullOrWhiteSpace(filename))
-        {
-            return false;
-        }
-
-        return filename.Equals("square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.Equals("tall_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.EndsWith(" - square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizePrimaryArtistName(string? rawArtist, bool usePrimaryArtist)

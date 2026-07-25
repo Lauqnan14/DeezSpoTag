@@ -1,5 +1,7 @@
 using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Download.Apple;
 using System.Buffers;
 using System.Security.Cryptography;
 
@@ -12,14 +14,25 @@ public sealed class PlaylistVisualService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<PlaylistVisualService> _logger;
+    private readonly AppleMusicCatalogService? _appleMusicCatalogService;
 
     public PlaylistVisualService(
         IHttpClientFactory httpClientFactory,
         IWebHostEnvironment environment,
         ILogger<PlaylistVisualService> logger)
+        : this(httpClientFactory, environment, null, logger)
+    {
+    }
+
+    public PlaylistVisualService(
+        IHttpClientFactory httpClientFactory,
+        IWebHostEnvironment environment,
+        AppleMusicCatalogService? appleMusicCatalogService,
+        ILogger<PlaylistVisualService> logger)
     {
         _httpClientFactory = httpClientFactory;
         _environment = environment;
+        _appleMusicCatalogService = appleMusicCatalogService;
         _logger = logger;
     }
 
@@ -137,7 +150,15 @@ public sealed class PlaylistVisualService
         }
 
         var activeFileName = ReadActiveFileName(visualDir);
-        var file = !string.IsNullOrWhiteSpace(activeFileName)
+        var animatedFile = new[]
+            {
+                Path.Join(visualDir, "cover.webp"),
+                Path.Join(visualDir, "cover.gif")
+            }
+            .FirstOrDefault(File.Exists);
+        var file = !string.IsNullOrWhiteSpace(animatedFile)
+            ? animatedFile
+            : !string.IsNullOrWhiteSpace(activeFileName)
             ? Path.Join(visualDir, activeFileName)
             : EnumerateVisualFiles(visualDir)
                 .OrderByDescending(path => File.GetLastWriteTimeUtc(path))
@@ -157,6 +178,140 @@ public sealed class PlaylistVisualService
             ResolveContentType(file),
             true,
             BuildVisualVariantUrl(source, sourceId, Path.GetFileName(file), File.GetLastWriteTimeUtc(file)));
+    }
+
+    public StoredPlaylistVisual? GetStoredStillVisual(string source, string sourceId)
+        => GetStoredVisuals(source, sourceId)
+            .FirstOrDefault(static visual =>
+                visual.ContentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
+                || visual.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase));
+
+    public StoredPlaylistVisual? GetStoredAnimatedVisual(string source, string sourceId)
+        => GetStoredVisuals(source, sourceId)
+            .FirstOrDefault(static visual =>
+                visual.ContentType.Equals("image/webp", StringComparison.OrdinalIgnoreCase)
+                || visual.ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase)
+                || visual.ContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase));
+
+    public async Task<StoredPlaylistVisual?> ResolveApplePlaylistAnimatedVisualAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var existing = GetStoredAnimatedVisual(source, sourceId);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            if (_appleMusicCatalogService == null
+                || !IsAppleSource(source)
+                || string.IsNullOrWhiteSpace(sourceId))
+            {
+                return null;
+            }
+
+            var visualDir = GetVisualDirectory(source, sourceId);
+            var result = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+                _appleMusicCatalogService,
+                _httpClientFactory,
+                new AppleQueueHelpers.AnimatedArtworkSaveRequest
+                {
+                    AppleId = sourceId,
+                    CollectionType = "playlist",
+                    CollectionId = sourceId,
+                    BaseFileName = "cover",
+                    Storefront = "us",
+                    MaxResolution = 2160,
+                    OutputDir = visualDir,
+                    OutputFormats = new[] { "webp" },
+                    RenameExistingArtwork = true,
+                    Logger = _logger
+                },
+                cancellationToken);
+            var squarePath = result.Paths.FirstOrDefault(path =>
+                Path.GetFileName(path).Equals("cover.webp", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(squarePath))
+            {
+                await MaterializeMatchingApplePlaylistStillAsync(
+                    visualDir,
+                    sourceId,
+                    cancellationToken);
+            }
+
+            return string.IsNullOrWhiteSpace(squarePath)
+                ? null
+                : new StoredPlaylistVisual(
+                    squarePath,
+                    "image/webp",
+                    false,
+                    BuildVisualVariantUrl(source, sourceId, Path.GetFileName(squarePath), File.GetLastWriteTimeUtc(squarePath)));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Apple playlist animated artwork could not be cached for {Source}:{SourceId}.",
+                LogSanitizer.OneLine(source),
+                LogSanitizer.OneLine(sourceId));
+            return GetStoredAnimatedVisual(source, sourceId);
+        }
+    }
+
+    private async Task MaterializeMatchingApplePlaylistStillAsync(
+        string visualDir,
+        string playlistId,
+        CancellationToken cancellationToken)
+    {
+        var destinationPath = Path.Join(visualDir, "cover.jpg");
+        if (File.Exists(destinationPath))
+        {
+            return;
+        }
+
+        var url = await AppleQueueHelpers.ResolveAppleCollectionCoverFromCatalogAsync(
+            _appleMusicCatalogService!,
+            "playlist",
+            playlistId,
+            "us",
+            2000,
+            _logger,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        var bytes = await client.GetByteArrayAsync(url, cancellationToken);
+        if (bytes.Length == 0)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(visualDir);
+        var temporaryPath = Path.Join(visualDir, $".cover.{Guid.NewGuid():N}.tmp.jpg");
+        try
+        {
+            await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken);
+            if (!File.Exists(destinationPath))
+            {
+                File.Move(temporaryPath, destinationPath);
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     public StoredPlaylistVisual? GetStoredVisualFromManagedUrl(string source, string sourceId, string? managedUrl)
@@ -284,9 +439,18 @@ public sealed class PlaylistVisualService
                     || name.Equals("cover.jpeg", StringComparison.OrdinalIgnoreCase)
                     || name.Equals("cover.png", StringComparison.OrdinalIgnoreCase)
                     || name.Equals("cover.webp", StringComparison.OrdinalIgnoreCase)
-                    || name.Equals("cover.gif", StringComparison.OrdinalIgnoreCase);
+                    || name.Equals("cover.gif", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("cover.mp4", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("cover_tall.webp", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("cover_tall.gif", StringComparison.OrdinalIgnoreCase)
+                    || name.Equals("cover_tall.mp4", StringComparison.OrdinalIgnoreCase);
             });
     }
+
+    private static bool IsAppleSource(string source)
+        => source.Equals("apple", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("applemusic", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("itunes", StringComparison.OrdinalIgnoreCase);
 
     public bool SetActiveVisual(string source, string sourceId, string fileName)
     {
@@ -463,6 +627,7 @@ public sealed class PlaylistVisualService
             ".png" => "image/png",
             ".webp" => "image/webp",
             ".gif" => "image/gif",
+            ".mp4" => "video/mp4",
             _ => "image/jpeg"
         };
     }

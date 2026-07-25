@@ -2592,7 +2592,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
-            var animatedPaths = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+            var animatedResult = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
                 _appleMusicCatalogService,
                 _httpClientFactory,
                 new AppleQueueHelpers.AnimatedArtworkSaveRequest
@@ -2611,7 +2611,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 },
                 token);
 
-            if (animatedPaths.Count > 0)
+            if (animatedResult.Paths.Count > 0)
             {
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
@@ -2622,7 +2622,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             {
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation("AutoTag Apple animated artwork unavailable for {Title}", SanitizeLogValue(track.Title));
+                    _logger.LogInformation(
+                        "AutoTag Apple animated artwork {Status} for {Title}: {Message}",
+                        animatedResult.Status,
+                        SanitizeLogValue(track.Title),
+                        animatedResult.Message);
                 }
             }
         }
@@ -3247,7 +3251,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var option = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
         return Directory.EnumerateFiles(rootPath, "*.*", option)
-            .Where(path => SupportedExtensions.Contains(Path.GetExtension(path)) && !IsAnimatedArtworkFile(path));
+            .Where(path => SupportedExtensions.Contains(Path.GetExtension(path))
+                && !AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(path));
     }
 
     private static IEnumerable<string> ResolveTargetFiles(string rootPath, AutoTagRunnerConfig config)
@@ -3277,7 +3282,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 || !IsPathWithinScope(normalizedPath, normalizedRoot)
                 || !IOFile.Exists(normalizedPath)
                 || !SupportedExtensions.Contains(Path.GetExtension(normalizedPath))
-                || IsAnimatedArtworkFile(normalizedPath))
+                || AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar(normalizedPath))
             {
                 continue;
             }
@@ -3323,20 +3328,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             ? scopePath
             : scopePath + Path.DirectorySeparatorChar;
         return candidatePath.StartsWith(scopeWithSeparator, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsAnimatedArtworkFile(string path)
-    {
-        if (!Path.GetExtension(path).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var filename = Path.GetFileNameWithoutExtension(path);
-        return filename.Equals("square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.Equals("tall_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.EndsWith(" - square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-            || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<string> BuildEffectivePlatforms(AutoTagRunnerConfig config)

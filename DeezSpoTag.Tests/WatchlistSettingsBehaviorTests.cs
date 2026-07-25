@@ -652,6 +652,40 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public async Task PlaylistVisualService_PrefersAnimatedVisualForApplicationRendering_ButExposesStillSeparately()
+    {
+        var service = new PlaylistVisualService(
+            new StubHttpClientFactory(),
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlaylistVisualService>.Instance);
+        const string source = "apple";
+        const string sourceId = "playlist-animated";
+
+        await service.StoreUploadedVisualAsync(
+            source,
+            sourceId,
+            new byte[] { 0xFF, 0xD8, 0x01, 0xFF, 0xD9 },
+            "image/jpeg",
+            CancellationToken.None);
+        var still = service.GetStoredStillVisual(source, sourceId);
+        Assert.NotNull(still);
+        var animatedPath = Path.Join(Path.GetDirectoryName(still!.FilePath)!, "cover.webp");
+        await File.WriteAllBytesAsync(animatedPath, new byte[] { 0x52, 0x49, 0x46, 0x46 });
+
+        var rendered = service.GetStoredVisual(source, sourceId);
+        var isolatedStill = service.GetStoredStillVisual(source, sourceId);
+        var isolatedAnimated = service.GetStoredAnimatedVisual(source, sourceId);
+
+        Assert.NotNull(rendered);
+        Assert.Equal("cover.webp", Path.GetFileName(rendered!.FilePath));
+        Assert.Equal("image/webp", rendered.ContentType);
+        Assert.NotNull(isolatedStill);
+        Assert.Equal("image/jpeg", isolatedStill!.ContentType);
+        Assert.NotNull(isolatedAnimated);
+        Assert.Equal("cover.webp", Path.GetFileName(isolatedAnimated!.FilePath));
+    }
+
+    [Fact]
     public async Task PlaylistVisualService_NeutralizesLineBreaksInLoggedIdentifiers()
     {
         var logger = new CaptureLogger<PlaylistVisualService>();

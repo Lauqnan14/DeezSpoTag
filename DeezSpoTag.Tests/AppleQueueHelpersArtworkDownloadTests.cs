@@ -173,17 +173,73 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
                 OutputDir = root,
                 BaseFileName = "cover",
                 OutputFormats = new[] { "mp4", "webp", "gif" },
+                RenameExistingArtwork = true,
                 Logger = NullLogger.Instance
             },
             NullLogger.Instance,
             CancellationToken.None);
 
-        Assert.Contains(existingMp4, savedPaths);
-        Assert.Contains(Path.Join(root, "cover - square_animated_artwork.webp"), savedPaths);
-        Assert.Contains(Path.Join(root, "cover - square_animated_artwork.gif"), savedPaths);
-        Assert.Equal(originalHash, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(existingMp4))));
-        await AssertValidVideoAsync(Path.Join(root, "cover - square_animated_artwork.webp"));
-        await AssertValidVideoAsync(Path.Join(root, "cover - square_animated_artwork.gif"));
+        var canonicalMp4 = Path.Join(root, "cover.mp4");
+        Assert.False(File.Exists(existingMp4));
+        Assert.Contains(canonicalMp4, savedPaths);
+        Assert.Contains(Path.Join(root, "cover.webp"), savedPaths);
+        Assert.Contains(Path.Join(root, "cover.gif"), savedPaths);
+        Assert.Equal(originalHash, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(canonicalMp4))));
+        await AssertValidVideoAsync(Path.Join(root, "cover.webp"));
+        await AssertValidVideoAsync(Path.Join(root, "cover.gif"));
+    }
+
+    [Fact]
+    public async Task SaveExistingAnimatedArtworkVariantsAsync_RenameDisabledPreservesLegacyName()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var legacyMp4 = Path.Join(root, "cover - tall_animated_artwork.mp4");
+        await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x96:rate=12", "-t", "1", "-pix_fmt", "yuv420p", legacyMp4);
+
+        var savedPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
+            new AppleQueueHelpers.AnimatedArtworkSaveRequest
+            {
+                OutputDir = root,
+                BaseFileName = "cover",
+                OutputFormats = new[] { "mp4" },
+                RenameExistingArtwork = false,
+                Logger = NullLogger.Instance
+            },
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.Empty(savedPaths);
+        Assert.True(File.Exists(legacyMp4));
+        Assert.False(File.Exists(Path.Join(root, "cover_tall.mp4")));
+    }
+
+    [Fact]
+    public async Task SaveExistingAnimatedArtworkVariantsAsync_DoesNotOverwriteDifferentCanonicalFile()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var legacyMp4 = Path.Join(root, "square_animated_artwork.mp4");
+        var canonicalMp4 = Path.Join(root, "cover.mp4");
+        await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=12", "-t", "1", "-pix_fmt", "yuv420p", legacyMp4);
+        await RunProcessAsync("ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:size=64x64:rate=12", "-t", "1", "-pix_fmt", "yuv420p", canonicalMp4);
+        var canonicalHash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(canonicalMp4)));
+
+        var savedPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
+            new AppleQueueHelpers.AnimatedArtworkSaveRequest
+            {
+                OutputDir = root,
+                BaseFileName = "cover",
+                OutputFormats = new[] { "mp4" },
+                RenameExistingArtwork = true,
+                Logger = NullLogger.Instance
+            },
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.True(File.Exists(legacyMp4));
+        Assert.Contains(canonicalMp4, savedPaths);
+        Assert.Equal(canonicalHash, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(canonicalMp4))));
     }
 
     private static async Task AssertValidVideoAsync(string path)

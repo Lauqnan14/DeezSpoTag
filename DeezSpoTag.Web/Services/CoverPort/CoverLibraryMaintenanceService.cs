@@ -6,6 +6,7 @@ using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Identity;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Web.Services;
 using SixLabors.ImageSharp;
 
 namespace DeezSpoTag.Web.Services.CoverPort;
@@ -28,7 +29,8 @@ public sealed class CoverLibraryMaintenanceService
         (int width, int height)? EmbeddedSize,
         bool HasExternal,
         bool HasEmbedded,
-        bool HasAnimatedArtwork);
+        bool HasAnimatedArtwork,
+        bool HasLegacyAnimatedArtwork);
     private readonly record struct AlbumWorkPlan(
         bool NeedsEmbedded,
         bool NeedsExternal,
@@ -175,7 +177,7 @@ public sealed class CoverLibraryMaintenanceService
             logs.Enqueue($"[skip] {albumDir}: missing artist/album tags.");
             return false;
         }
-        var artworkState = InspectAlbumArtwork(albumDir, audioFiles[0], audioFiles.Count, metadata);
+        var artworkState = InspectAlbumArtwork(albumDir, audioFiles[0], audioFiles.Count, metadata, request);
         var workPlan = BuildWorkPlan(request, artworkState);
         if (!workPlan.RequiresAnyWork)
         {
@@ -183,19 +185,20 @@ public sealed class CoverLibraryMaintenanceService
         }
 
         var updatedAnything = false;
-        if (workPlan.RequiresStillCoverUpdate)
+        var animatedSaved = false;
+        if (workPlan.NeedsAnimatedArtwork)
+        {
+            animatedSaved = await TrySaveAnimatedArtworkAsync(albumDir, metadata, request, logs, cancellationToken);
+            updatedAnything = animatedSaved || updatedAnything;
+        }
+
+        if (workPlan.RequiresStillCoverUpdate && (!request.QueueAnimatedArtwork || !animatedSaved))
         {
             var context = new StillCoverUpdateContext(albumDir, audioFiles, metadata, artworkState, workPlan, request);
             updatedAnything = await TryUpdateStillCoverAsync(
                 context,
                 logs,
-                cancellationToken);
-        }
-
-        if (workPlan.NeedsAnimatedArtwork)
-        {
-            var animatedSaved = await TrySaveAnimatedArtworkAsync(albumDir, metadata, request, logs, cancellationToken);
-            updatedAnything = animatedSaved || updatedAnything;
+                cancellationToken) || updatedAnything;
         }
 
         return updatedAnything;
@@ -272,39 +275,137 @@ public sealed class CoverLibraryMaintenanceService
         CancellationToken cancellationToken)
     {
         var baseFileName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
+        var saveRequest = new AppleQueueHelpers.AnimatedArtworkSaveRequest
+        {
+            Artist = metadata.Artist,
+            Album = metadata.Album,
+            BaseFileName = baseFileName,
+            Storefront = request.AppleStorefront,
+            MaxResolution = request.AnimatedArtworkMaxResolution,
+            OutputDir = albumDir,
+            Logger = _logger,
+            OutputFormats = request.AnimatedArtworkFormats,
+            RenameExistingArtwork = request.RenameExistingAnimatedArtwork
+        };
+        var existingPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
+            saveRequest,
+            _logger,
+            cancellationToken);
+        if (!request.QueueAnimatedArtwork)
+        {
+            return existingPaths.Count > 0;
+        }
+
         var identity = await ResolveAppleIdentityAsync(metadata, request, cancellationToken);
-        if (string.IsNullOrWhiteSpace(identity?.AppleId))
+        if (identity is null || string.IsNullOrWhiteSpace(identity.AppleId))
         {
             logs.Enqueue($"[skip] {albumDir}: animated artwork unavailable.");
             return false;
         }
+        var resolvedIdentity = identity;
 
-        var animatedPaths = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
+        var animatedResult = await AppleQueueHelpers.SaveAnimatedArtworkAsync(
             _appleMusicCatalogService,
             _httpClientFactory,
             new AppleQueueHelpers.AnimatedArtworkSaveRequest
             {
-                AppleId = identity?.AppleId,
-                Artist = identity?.AppleArtistName ?? metadata.Artist,
-                Album = identity?.AppleAlbumName ?? metadata.Album,
+                AppleId = resolvedIdentity.AppleId,
+                Artist = resolvedIdentity.AppleArtistName ?? metadata.Artist,
+                Album = resolvedIdentity.AppleAlbumName ?? metadata.Album,
                 BaseFileName = baseFileName,
                 Storefront = request.AppleStorefront,
                 MaxResolution = request.AnimatedArtworkMaxResolution,
                 OutputDir = albumDir,
                 Logger = _logger,
-                CollectionType = string.IsNullOrWhiteSpace(identity?.AppleAlbumId) ? null : "album",
-                CollectionId = identity?.AppleAlbumId,
-                OutputFormats = request.AnimatedArtworkFormats
+                CollectionType = string.IsNullOrWhiteSpace(resolvedIdentity.AppleAlbumId) ? null : "album",
+                CollectionId = resolvedIdentity.AppleAlbumId,
+                OutputFormats = request.AnimatedArtworkFormats,
+                RenameExistingArtwork = request.RenameExistingAnimatedArtwork
             },
             cancellationToken);
-        if (animatedPaths.Count > 0)
+        if (animatedResult.Paths.Count > 0)
         {
+            await TryApplyMatchingAppleStillArtworkAsync(
+                albumDir,
+                metadata,
+                resolvedIdentity,
+                request,
+                logs,
+                cancellationToken);
             logs.Enqueue($"[ok] {albumDir}: saved animated artwork.");
             return true;
         }
 
-        logs.Enqueue($"[skip] {albumDir}: animated artwork unavailable.");
+        logs.Enqueue($"[skip] {albumDir}: {animatedResult.Message}");
         return false;
+    }
+
+    private async Task TryApplyMatchingAppleStillArtworkAsync(
+        string albumDir,
+        AlbumMetadata metadata,
+        TrackIdentityResolution identity,
+        CoverLibraryMaintenanceRequest request,
+        ConcurrentQueue<string> logs,
+        CancellationToken cancellationToken)
+    {
+        var targetSize = Math.Max(request.TargetResolution, request.MinResolution);
+        var artworkUrl = !string.IsNullOrWhiteSpace(identity.AppleAlbumId)
+            ? await AppleQueueHelpers.ResolveAppleCollectionCoverFromCatalogAsync(
+                _appleMusicCatalogService,
+                "album",
+                identity.AppleAlbumId,
+                request.AppleStorefront,
+                targetSize,
+                _logger,
+                cancellationToken)
+            : await AppleQueueHelpers.ResolveAppleCoverFromCatalogAsync(
+                _appleMusicCatalogService,
+                new AppleQueueHelpers.AppleCatalogCoverLookup
+                {
+                    AppleId = identity.AppleId,
+                    Title = metadata.Title,
+                    Artist = identity.AppleArtistName ?? metadata.Artist,
+                    Album = identity.AppleAlbumName ?? metadata.Album,
+                    Storefront = request.AppleStorefront,
+                    Size = targetSize,
+                    Logger = _logger
+                },
+                cancellationToken);
+        if (string.IsNullOrWhiteSpace(artworkUrl))
+        {
+            logs.Enqueue($"[warn] {albumDir}: matching Apple still artwork was unavailable.");
+            return;
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        var bytes = await client.GetByteArrayAsync(artworkUrl, cancellationToken);
+        if (bytes.Length == 0)
+        {
+            logs.Enqueue($"[warn] {albumDir}: matching Apple still artwork was empty.");
+            return;
+        }
+
+        var baseName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
+        var destinationPath = Path.Join(albumDir, $"{baseName}.jpg");
+        var temporaryPath = Path.Join(albumDir, $".{baseName}.{Guid.NewGuid():N}.tmp.jpg");
+        try
+        {
+            await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken);
+            File.Move(temporaryPath, destinationPath, overwrite: true);
+
+            if (request.ReplaceMissingEmbeddedCovers || request.UpgradeLowResolutionCovers)
+            {
+                foreach (var audioPath in Directory.EnumerateFiles(albumDir)
+                             .Where(path => AudioExtensions.Contains(Path.GetExtension(path))))
+                {
+                    EmbedArtwork(audioPath, bytes);
+                }
+            }
+        }
+        finally
+        {
+            TryDeleteTemporaryFile(temporaryPath);
+        }
     }
 
     private async Task<TrackIdentityResolution?> ResolveAppleIdentityAsync(
@@ -374,7 +475,8 @@ public sealed class CoverLibraryMaintenanceService
         string albumDir,
         string firstAudioFile,
         int trackCount,
-        AlbumMetadata metadata)
+        AlbumMetadata metadata,
+        CoverLibraryMaintenanceRequest request)
     {
         var externalCoverPath = ResolveExternalCoverPath(albumDir);
         var externalSize = externalCoverPath != null ? TryReadImageSize(externalCoverPath) : null;
@@ -386,7 +488,10 @@ public sealed class CoverLibraryMaintenanceService
             EmbeddedSize: embeddedSize,
             HasExternal: externalSize.HasValue,
             HasEmbedded: embeddedSize.HasValue,
-            HasAnimatedArtwork: HasAnimatedArtworkFiles(albumDir));
+            HasAnimatedArtwork: HasAnimatedArtworkFiles(
+                albumDir,
+                BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate)),
+            HasLegacyAnimatedArtwork: HasLegacyAnimatedArtworkFiles(albumDir));
     }
 
     private static bool TryReadRequiredMetadata(IReadOnlyList<string> audioFiles, out AlbumMetadata metadata)
@@ -416,7 +521,8 @@ public sealed class CoverLibraryMaintenanceService
         var noArtworkAtAll = stillCoverActionEnabled
             && !artworkState.HasExternal
             && !artworkState.HasEmbedded;
-        var needsAnimatedArtwork = request.QueueAnimatedArtwork && !artworkState.HasAnimatedArtwork;
+        var needsAnimatedArtwork = request.QueueAnimatedArtwork
+            || (request.RenameExistingAnimatedArtwork && artworkState.HasLegacyAnimatedArtwork);
         return new AlbumWorkPlan(needsEmbedded, needsExternal, needsUpgrade, noArtworkAtAll, needsAnimatedArtwork);
     }
 
@@ -517,16 +623,33 @@ public sealed class CoverLibraryMaintenanceService
         return (null, null, null);
     }
 
-    private static bool HasAnimatedArtworkFiles(string albumDir)
+    private static bool HasAnimatedArtworkFiles(string albumDir, string baseFileName)
+    {
+        return Directory.EnumerateFiles(albumDir)
+            .Any(path =>
+            {
+                var extension = Path.GetExtension(path);
+                if (!extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
+                    && !extension.Equals(".webp", StringComparison.OrdinalIgnoreCase)
+                    && !extension.Equals(".gif", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                var filename = Path.GetFileNameWithoutExtension(path);
+                return !string.IsNullOrWhiteSpace(filename)
+                    && (AnimatedArtworkFileNaming.IsLegacyStem(filename)
+                        || filename.Equals(baseFileName, StringComparison.OrdinalIgnoreCase)
+                        || filename.Equals($"{baseFileName}_tall", StringComparison.OrdinalIgnoreCase));
+            });
+    }
+
+    private static bool HasLegacyAnimatedArtworkFiles(string albumDir)
     {
         return Directory.EnumerateFiles(albumDir)
             .Select(Path.GetFileNameWithoutExtension)
             .Where(filename => !string.IsNullOrWhiteSpace(filename))
-            .Select(filename => filename!)
-            .Any(filename => filename.Equals("square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-                || filename.Equals("tall_animated_artwork", StringComparison.OrdinalIgnoreCase)
-                || filename.EndsWith(" - square_animated_artwork", StringComparison.OrdinalIgnoreCase)
-                || filename.EndsWith(" - tall_animated_artwork", StringComparison.OrdinalIgnoreCase));
+            .Any(AnimatedArtworkFileNaming.IsLegacyStem);
     }
 
     private static string? ResolveExternalCoverPath(string albumDir)
@@ -723,6 +846,7 @@ public sealed record CoverLibraryMaintenanceRequest(
     IReadOnlyCollection<string>? AnimatedArtworkFormats = null,
     IReadOnlyCollection<CoverSourceName>? EnabledSources = null,
     string CoverImageTemplate = "cover",
+    bool RenameExistingAnimatedArtwork = true,
     IReadOnlyList<string>? TargetFiles = null);
 
 public sealed record CoverLibraryMaintenanceResult(
