@@ -681,6 +681,81 @@ FROM download_task
         return result is not null && result is not DBNull;
     }
 
+    public async Task<int> ReleaseEnhancementBatchAsync(
+        string enhancementBatchId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(enhancementBatchId))
+        {
+            return 0;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = 'queued',
+    error = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE lower(status) = 'enhancement_held'
+  AND json_valid(payload)
+  AND lower(COALESCE(
+      json_extract(payload, '$.EnhancementBatchId'),
+      json_extract(payload, '$.enhancementBatchId'),
+      '')) = lower(@batchId);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("batchId", enhancementBatchId.Trim());
+        var released = await command.ExecuteNonQueryAsync(cancellationToken);
+        return released;
+    }
+
+    public async Task<int> CancelEnhancementBatchAsync(
+        string enhancementBatchId,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(enhancementBatchId))
+        {
+            return 0;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = 'canceled',
+    failed = 1,
+    error = @reason,
+    updated_at = CURRENT_TIMESTAMP
+WHERE lower(status) = 'enhancement_held'
+  AND json_valid(payload)
+  AND lower(COALESCE(
+      json_extract(payload, '$.EnhancementBatchId'),
+      json_extract(payload, '$.enhancementBatchId'),
+      '')) = lower(@batchId);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("batchId", enhancementBatchId.Trim());
+        command.Parameters.AddWithValue("reason", string.IsNullOrWhiteSpace(reason)
+            ? "Enhancement batch was not released."
+            : reason.Trim());
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<int> CancelOrphanedEnhancementBatchesAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = 'canceled',
+    failed = 1,
+    error = 'Enhancement batch was interrupted before admission completed.',
+    updated_at = CURRENT_TIMESTAMP
+WHERE lower(status) = 'enhancement_held';";
+        await using var command = new SqliteCommand(sql, connection);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<bool> HasActiveDownloadPipelineAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);

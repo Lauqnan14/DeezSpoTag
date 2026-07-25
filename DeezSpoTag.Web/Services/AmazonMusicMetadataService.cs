@@ -308,6 +308,28 @@ public sealed class AmazonMusicMetadataService : IAmazonFallbackTrackResolver
             : new AmazonFallbackTrackResolution(resolved.Id, resolved.Url);
     }
 
+    public async Task<AmazonFallbackTrackResolution?> ResolveAmazonAtmosFallbackTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        string? isrc,
+        string? amazonId,
+        CancellationToken cancellationToken)
+    {
+        var resolved = await ResolveAtmosTrackAsync(
+            title,
+            artist,
+            album,
+            durationMs,
+            isrc,
+            amazonId,
+            cancellationToken);
+        return resolved is null || !resolved.HasAtmos || string.IsNullOrWhiteSpace(resolved.Id)
+            ? null
+            : new AmazonFallbackTrackResolution(resolved.Id, resolved.Url);
+    }
+
     private static string BuildTrackSearchQuery(string title, string artist)
         => string.Join(' ', new[] { title, artist }.Where(static value => !string.IsNullOrWhiteSpace(value)));
 

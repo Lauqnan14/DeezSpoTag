@@ -179,6 +179,17 @@ public sealed class AutoTagDownloadMoveService
         ".png",
         ".webp"
     };
+    private static readonly HashSet<string> EnhancementReplacementSidecarExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".lrc",
+        ".elrc",
+        ".ttml",
+        ".txt",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp"
+    };
 
     private readonly DownloadQueueRepository _queueRepository;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -281,6 +292,78 @@ public sealed class AutoTagDownloadMoveService
         CancellationToken cancellationToken)
     {
         return MoveForRootWithSummaryAsync(rootPath, options, Array.Empty<string>(), Array.Empty<string>(), cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<string>> QuarantineReplacedEnhancementSourcesAsync(
+        long destinationFolderId,
+        IReadOnlyCollection<string> sourceAudioPaths,
+        IReadOnlyCollection<string> replacementPaths,
+        string duplicatesFolderName,
+        CancellationToken cancellationToken)
+    {
+        var destinationRoot = await ResolveDestinationRootAsync(destinationFolderId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(destinationRoot)
+            || !replacementPaths.Any(path => !string.IsNullOrWhiteSpace(path)
+                && IsAudioExtension(path)
+                && IOFile.Exists(path)))
+        {
+            return Array.Empty<string>();
+        }
+
+        var replacementSet = replacementPaths
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(Path.GetFullPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var duplicatesRoot = Path.Join(
+            destinationRoot,
+            string.IsNullOrWhiteSpace(duplicatesFolderName)
+                ? DuplicateCleanerService.DuplicatesFolderName
+                : duplicatesFolderName.Trim());
+        Directory.CreateDirectory(duplicatesRoot);
+        var quarantined = new List<string>();
+
+        foreach (var sourcePath in sourceAudioPaths
+                     .Where(path => !string.IsNullOrWhiteSpace(path))
+                     .Select(Path.GetFullPath)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IOFile.Exists(sourcePath) || replacementSet.Contains(sourcePath))
+            {
+                continue;
+            }
+
+            var relativePath = Path.GetRelativePath(destinationRoot, sourcePath);
+            if (relativePath.StartsWith("..", StringComparison.Ordinal))
+            {
+                relativePath = Path.GetFileName(sourcePath);
+            }
+            var targetPath = GetUniqueDestinationPath(
+                duplicatesRoot,
+                Path.Join(duplicatesRoot, relativePath));
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            IOFile.Move(sourcePath, targetPath);
+            quarantined.Add(sourcePath);
+
+            var sourceDirectory = Path.GetDirectoryName(sourcePath);
+            if (string.IsNullOrWhiteSpace(sourceDirectory) || !Directory.Exists(sourceDirectory))
+            {
+                continue;
+            }
+            var sourceStem = Path.GetFileNameWithoutExtension(sourcePath);
+            foreach (var sidecarPath in Directory.EnumerateFiles(sourceDirectory, sourceStem + ".*"))
+            {
+                if (!EnhancementReplacementSidecarExtensions.Contains(Path.GetExtension(sidecarPath)))
+                {
+                    continue;
+                }
+                var sidecarTarget = Path.ChangeExtension(targetPath, Path.GetExtension(sidecarPath));
+                sidecarTarget = GetUniqueDestinationPath(Path.GetDirectoryName(sidecarTarget)!, sidecarTarget);
+                IOFile.Move(sidecarPath, sidecarTarget);
+            }
+        }
+
+        return quarantined;
     }
 
     public async Task<AutoTagMoveSummary> MoveForRootWithSummaryAsync(

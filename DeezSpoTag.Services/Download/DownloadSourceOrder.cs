@@ -104,11 +104,16 @@ public static class DownloadSourceOrder
             ? settings.Service?.Trim().ToLowerInvariant()
             : forcedServiceOverride.Trim().ToLowerInvariant();
         var includeAtmos = IsAtmosQuality(targetQuality);
+        var qualityProfiles = includeAtmos
+            ? settings.DownloadEngineOrder?.Enabled == true
+                ? ResolveConfiguredProfiles(settings).Where(profile => IsAtmosQuality(profile.Quality)).ToArray()
+                : AtmosPriority
+            : null;
         var sources = BuildConfiguredAutoSources(
             settings,
             includeDeezer,
             profile => ShouldIncludeQualityProfile(profile, forcedService),
-            includeAtmos ? AtmosPriority : null);
+            qualityProfiles);
 
         if (string.IsNullOrWhiteSpace(targetQuality))
         {
@@ -116,6 +121,35 @@ public static class DownloadSourceOrder
         }
 
         return ApplyTargetQualityStart(sources, targetQuality);
+    }
+
+    public static List<string> ResolveAtmosSources(
+        DeezSpoTagSettings settings,
+        string? preferredEngine,
+        bool includeFallbackEngines)
+    {
+        var enabledProfiles = settings.DownloadEngineOrder?.Enabled == true
+            ? ResolveConfiguredProfiles(settings)
+            : AtmosPriority;
+        var enabledAtmosProfiles = enabledProfiles
+            .Where(profile => IsAtmosQuality(profile.Quality))
+            .ToList();
+        var normalizedPreferred = NormalizeEngine(preferredEngine);
+        var preferred = enabledAtmosProfiles.FirstOrDefault(profile =>
+            string.Equals(profile.Source, normalizedPreferred, StringComparison.OrdinalIgnoreCase));
+
+        if (!includeFallbackEngines)
+        {
+            return preferred == null
+                ? new List<string>()
+                : new List<string> { EncodeAutoSource(preferred.Source, preferred.Quality) };
+        }
+
+        return enabledAtmosProfiles
+            .OrderByDescending(profile => preferred != null
+                && string.Equals(profile.Source, preferred.Source, StringComparison.OrdinalIgnoreCase))
+            .Select(profile => EncodeAutoSource(profile.Source, profile.Quality))
+            .ToList();
     }
 
     private static List<string> ApplyTargetQualityStart(List<string> sources, string targetQuality)

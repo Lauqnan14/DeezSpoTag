@@ -83,14 +83,14 @@ public sealed class QobuzResolutionGuardrailTests
     }
 
     [Fact]
-    public void TidalAtmosSecondaryQueue_UsesResolvedAtmosTrackOnly()
+    public void TidalAtmosQueue_UsesResolvedAtmosTrackOnly()
     {
         var downloadIntentService = ReadSource("DeezSpoTag.Web/Services/DownloadIntentService.cs");
         var tidalAtmosMethodStart = downloadIntentService.IndexOf(
-            "private async Task<bool> TryEnqueueTidalAtmosSecondaryAsync",
+            "private async Task<bool> TryEnqueueTidalAtmosAsync",
             StringComparison.Ordinal);
         var nextMethodStart = downloadIntentService.IndexOf(
-            "private static string[] ResolveAtmosEngineOrder",
+            "private async Task<bool> TryEnqueueAmazonAtmosAsync",
             StringComparison.Ordinal);
         Assert.True(tidalAtmosMethodStart >= 0);
         Assert.True(nextMethodStart > tidalAtmosMethodStart);
@@ -109,7 +109,7 @@ public sealed class QobuzResolutionGuardrailTests
         Assert.True(
             tidalAtmosMethod.LastIndexOf("payload.TidalId = resolvedTidalAtmosId", StringComparison.Ordinal)
             > tidalAtmosMethod.IndexOf("ApplyIntentMetadata(payload, request.Intent)", StringComparison.Ordinal));
-        Assert.Contains("ResolveAmazonAtmosAvailabilityAsync", tidalAtmosMethod, StringComparison.Ordinal);
+        Assert.Contains("ResolveAmazonAtmosAvailabilityAsync", downloadIntentService, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveIntentAsync", tidalAtmosMethod, StringComparison.Ordinal);
     }
 

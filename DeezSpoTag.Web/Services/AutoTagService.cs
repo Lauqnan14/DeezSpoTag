@@ -120,6 +120,9 @@ public abstract class AutoTagRunState
     public int BatchSize { get; set; }
     public int ProcessedItems { get; set; }
     public int TotalItems { get; set; }
+    public string? EnhancementDownloadBatchId { get; set; }
+    public string? EnhancementDownloadOperation { get; set; }
+    public int EnhancementDownloadItemCount { get; set; }
     public AutoTagMoveSummary? AutoMoveSummary { get; set; }
 }
 

@@ -64,9 +64,9 @@ public sealed class DuplicationConsolidationTests
         Assert.Collection(
             settings.Engines,
             engine => AssertEngine(engine, "qobuz", "27", "7", "6", "5"),
-            engine => AssertEngine(engine, "tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW"),
-            engine => AssertEngine(engine, "apple", "ALAC", "AAC"),
-            engine => AssertEngine(engine, "amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS"),
+            engine => AssertEngine(engine, "tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW", "DOLBY_ATMOS"),
+            engine => AssertEngine(engine, "apple", "ALAC", "AAC", "ATMOS"),
+            engine => AssertEngine(engine, "amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS", "DOLBY_ATMOS"),
             engine => AssertEngine(engine, "deezer", "9", "3", "1"));
     }
 

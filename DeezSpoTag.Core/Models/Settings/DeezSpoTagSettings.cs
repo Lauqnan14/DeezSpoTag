@@ -271,9 +271,9 @@ public class DownloadEngineOrderSettings
             Engines = new List<DownloadEngineOrderItem>
             {
                 CreateEngine("qobuz", "27", "7", "6", "5"),
-                CreateEngine("tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW"),
-                CreateEngine("apple", "ALAC", "AAC"),
-                CreateEngine("amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS"),
+                CreateEngine("tidal", "HI_RES_LOSSLESS", "HI_RES", "LOSSLESS", "HIGH", "LOW", "DOLBY_ATMOS"),
+                CreateEngine("apple", "ALAC", "AAC", "ATMOS"),
+                CreateEngine("amazon", "ULTRA_HD_FLAC", "HD_FLAC", "OPUS", "DOLBY_ATMOS"),
                 CreateEngine("deezer", "9", "3", "1")
             }
         };

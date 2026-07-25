@@ -1428,6 +1428,8 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyArtistService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifySearchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AppleVideoAtmosCapabilityService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Fallback.IAppleAtmosCapabilityResolver>(sp =>
+            sp.GetRequiredService<DeezSpoTag.Web.Services.AppleVideoAtmosCapabilityService>());
         services.AddSingleton<DeezSpoTag.Web.Services.AppleCatalogVideoAtmosEnricher>();
         services.AddSingleton<DeezSpoTag.Web.Services.DeezSpoTagSearchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyDesktopSearchService>();

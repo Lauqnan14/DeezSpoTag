@@ -1542,6 +1542,11 @@ public class AutoTagLibraryOrganizer
         }
 
         var preferIncoming = AudioCollisionDedupe.ShouldPreferIncoming(action.DestinationPath, action.SourcePath);
+        if (options.RequireIncomingQualityReplacement && !preferIncoming)
+        {
+            throw new InvalidOperationException(
+                $"Technical quality upgrade did not outrank the existing library file: {action.SourcePath}");
+        }
         if (!options.ResolveSameTrackQualityConflicts)
         {
             PreserveDuplicateWithUniqueDestination(
@@ -1609,7 +1614,27 @@ public class AutoTagLibraryOrganizer
         bool preferIncoming)
     {
         var losingPath = preferIncoming ? action.DestinationPath : action.SourcePath;
-        var target = QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, losingPath);
+        var target = preferIncoming
+            ? ReserveDuplicateQuarantinePath(rootPath, options.DuplicatesFolderName, losingPath)
+            : QuarantineDuplicateFile(rootPath, options.DuplicatesFolderName, losingPath);
+
+        if (preferIncoming)
+        {
+            MoveFileOverwrite(action.DestinationPath, target);
+            try
+            {
+                MoveFileOverwrite(action.SourcePath, action.DestinationPath);
+            }
+            catch
+            {
+                if (System.IO.File.Exists(target) && !System.IO.File.Exists(action.DestinationPath))
+                {
+                    MoveFileOverwrite(target, action.DestinationPath);
+                }
+                throw;
+            }
+        }
+
         MoveAssociatedDuplicateSidecarsToQuarantine(rootPath, losingPath, target, options, report, log);
         if (report != null)
         {
@@ -1620,7 +1645,6 @@ public class AutoTagLibraryOrganizer
 
         if (preferIncoming)
         {
-            MoveFileOverwrite(action.SourcePath, action.DestinationPath);
             if (report != null)
             {
                 report.ReplacedDuplicates++;
@@ -1759,14 +1783,19 @@ public class AutoTagLibraryOrganizer
 
     private static string QuarantineDuplicateFile(string rootPath, string? duplicatesFolderName, string sourcePath)
     {
+        var target = ReserveDuplicateQuarantinePath(rootPath, duplicatesFolderName, sourcePath);
+        MoveFileOverwrite(sourcePath, target);
+        return target;
+    }
+
+    private static string ReserveDuplicateQuarantinePath(string rootPath, string? duplicatesFolderName, string sourcePath)
+    {
         var folderName = string.IsNullOrWhiteSpace(duplicatesFolderName)
             ? DuplicateCleanerService.DuplicatesFolderName
             : duplicatesFolderName.Trim();
         var duplicatesRoot = Path.Join(rootPath, folderName);
         Directory.CreateDirectory(duplicatesRoot);
-        var target = GetUniquePath(Path.Join(duplicatesRoot, Path.GetFileName(sourcePath)), sourcePath);
-        MoveFileOverwrite(sourcePath, target);
-        return target;
+        return GetUniquePath(Path.Join(duplicatesRoot, Path.GetFileName(sourcePath)), sourcePath);
     }
 
     private sealed record DuplicateMoveContext(

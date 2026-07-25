@@ -108,6 +108,13 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string PrefetchedArtworkPath { get; set; } = "";
     public string PrefetchedArtworkProvider { get; set; } = "";
     public string PrefetchedArtworkError { get; set; } = "";
+    public string EnhancementBatchId { get; set; } = "";
+    public string EnhancementOperation { get; set; } = "";
+    public long? EnhancementSourceTrackId { get; set; }
+    public long? EnhancementSourceAlbumId { get; set; }
+    public long? EnhancementSourceAudioFileId { get; set; }
+    public string EnhancementSourceAudioPath { get; set; } = "";
+    public string EnhancementDuplicatesFolderName { get; set; } = "";
 
     protected Dictionary<string, object> BuildQueuePayload(string mappedStatus, Dictionary<string, object?>? extra = null)
     {
@@ -159,7 +166,14 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
             ["finalizationRetryAtUtc"] = FinalizationRetryAtUtc,
             ["prefetchedArtworkPath"] = PrefetchedArtworkPath,
             ["prefetchedArtworkProvider"] = PrefetchedArtworkProvider,
-            ["prefetchedArtworkError"] = PrefetchedArtworkError
+            ["prefetchedArtworkError"] = PrefetchedArtworkError,
+            ["enhancementBatchId"] = EnhancementBatchId,
+            ["enhancementOperation"] = EnhancementOperation,
+            ["enhancementSourceTrackId"] = EnhancementSourceTrackId,
+            ["enhancementSourceAlbumId"] = EnhancementSourceAlbumId,
+            ["enhancementSourceAudioFileId"] = EnhancementSourceAudioFileId,
+            ["enhancementSourceAudioPath"] = EnhancementSourceAudioPath,
+            ["enhancementDuplicatesFolderName"] = EnhancementDuplicatesFolderName
         };
 
         if (extra != null)

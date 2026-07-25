@@ -1,13 +1,15 @@
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Services.Download.Fallback;
+using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Caching.Memory;
 using System.Text;
 using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class AppleVideoAtmosCapabilityService
+public sealed class AppleVideoAtmosCapabilityService : IAppleAtmosCapabilityResolver
 {
     private readonly record struct AtmosProbeContext(
         SemaphoreSlim Semaphore,
@@ -90,6 +92,20 @@ public sealed class AppleVideoAtmosCapabilityService
             // Budget timeout: return partial probe results.
         }
         return results;
+    }
+
+    public async Task<bool> IsAtmosAvailableAsync(
+        string appleUrl,
+        CancellationToken cancellationToken)
+    {
+        var appleId = ArtworkFallbackHelper.TryExtractAppleTrackId(appleUrl, allowRawNumeric: false);
+        if (string.IsNullOrWhiteSpace(appleId))
+        {
+            return false;
+        }
+
+        var capabilities = await GetAtmosCapabilitiesAsync([appleId], cancellationToken);
+        return capabilities.TryGetValue(appleId, out var available) && available == true;
     }
 
     private async Task ProbeCapabilityForIdAsync(string appleId, AtmosProbeContext context)

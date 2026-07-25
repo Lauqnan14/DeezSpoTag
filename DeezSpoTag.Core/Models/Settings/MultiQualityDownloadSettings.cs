@@ -31,12 +31,12 @@ public sealed class MultiQualityDownloadSettings
     public string AtmosEngine { get; set; } = "apple";
 
     /// <summary>
-    /// Allows Atmos lookup to try the other Atmos-capable engine when the selected one has no mapping.
+    /// Allows Atmos lookup to try the other enabled Atmos-capable providers when the selected one has no mapping.
     /// </summary>
     public bool AtmosSearchFallback { get; set; } = false;
 
     /// <summary>
-    /// Allows the queued Atmos download to fall back to the other Atmos-capable engine if the selected engine fails.
+    /// Allows the queued Atmos download to fall back to the other enabled Atmos-capable providers if the selected provider fails.
     /// </summary>
     public bool AtmosDownloadFallback { get; set; } = false;
 

@@ -159,7 +159,13 @@ public sealed class QualityScannerService
                 MarkAutomationWindow: request.MarkAutomationWindow,
                 TechnicalProfiles: NormalizeTechnicalProfiles(request.TechnicalProfiles),
                 FolderIds: NormalizeFolderIds(request.FolderIds, request.FolderId),
-                TargetTrackIds: NormalizeTrackIds(request.TargetTrackIds));
+                TargetTrackIds: NormalizeTrackIds(request.TargetTrackIds),
+                EnhancementBatchId: request.EnhancementBatchId?.Trim() ?? string.Empty,
+                EnhancementOperation: request.EnhancementOperation?.Trim() ?? string.Empty,
+                EnhancementAdmissionLimit: string.IsNullOrWhiteSpace(request.EnhancementBatchId)
+                    ? int.MaxValue
+                    : Math.Max(1, request.EnhancementAdmissionLimit ?? 40),
+                EnhancementDuplicatesFolderName: request.EnhancementDuplicatesFolderName?.Trim() ?? string.Empty);
             _currentRunTask = RunAsync(options, _cts.Token);
         }
 
@@ -425,38 +431,59 @@ public sealed class QualityScannerService
         DownloadIntentService downloadIntentService,
         CancellationToken cancellationToken)
     {
-        for (var index = 0; index < tracks.Count; index++)
+        var admitted = 0;
+        var orderedGroups = BuildAlbumGroups(tracks);
+        var processed = 0;
+        foreach (var group in orderedGroups)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var track = tracks[index];
-            UpdateState(state => state with
+            var completeAlbum = IsVerifiedCompleteAlbum(group);
+            if (admitted >= options.EnhancementAdmissionLimit)
             {
-                Processed = index + 1,
-                Progress = tracks.Count == 0 ? 0 : (index + 1) * 100d / tracks.Count,
-                Phase = $"Scanning: {track.ArtistName} - {track.Title}"
-            });
+                break;
+            }
 
-            await TryRunTrackAnalysisAsync(track.TrackId, cancellationToken);
-            var outcome = await ProcessQualityUpgradeTrackAsync(
-                runId,
-                track,
-                options,
-                settings,
-                downloadIntentService,
-                DateTimeOffset.UtcNow,
-                cancellationToken);
-            await TryUpdateTrackStateAsync(
-                new QualityScannerTrackStateUpdateDto(
-                    TrackId: track.TrackId,
-                    RunId: runId > 0 ? runId : null,
-                    BestQualityRank: track.BestQualityRank,
-                    DesiredQualityRank: track.DesiredQualityRank,
-                    LastAction: outcome.LastAction,
-                    LastUpgradeQueuedUtc: outcome.LastQueuedAtUtc,
-                    LastAtmosQueuedUtc: null,
-                    LastError: outcome.LastError),
-                cancellationToken);
-            await PersistRunProgressAsync(runId, cancellationToken);
+            foreach (var track in group)
+            {
+                if (!completeAlbum && admitted >= options.EnhancementAdmissionLimit)
+                {
+                    break;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                processed++;
+                UpdateState(state => state with
+                {
+                    Processed = processed,
+                    Progress = tracks.Count == 0 ? 0 : processed * 100d / tracks.Count,
+                    Phase = $"Scanning: {track.ArtistName} - {track.Title}"
+                });
+
+                await TryRunTrackAnalysisAsync(track.TrackId, cancellationToken);
+                var outcome = await ProcessQualityUpgradeTrackAsync(
+                    runId,
+                    track,
+                    options,
+                    settings,
+                    downloadIntentService,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
+                if (outcome.LastQueuedAtUtc.HasValue)
+                {
+                    admitted++;
+                }
+                await TryUpdateTrackStateAsync(
+                    new QualityScannerTrackStateUpdateDto(
+                        TrackId: track.TrackId,
+                        RunId: runId > 0 ? runId : null,
+                        BestQualityRank: track.BestQualityRank,
+                        DesiredQualityRank: track.DesiredQualityRank,
+                        LastAction: outcome.LastAction,
+                        LastUpgradeQueuedUtc: outcome.LastQueuedAtUtc,
+                        LastAtmosQueuedUtc: null,
+                        LastError: outcome.LastError),
+                    cancellationToken);
+                await PersistRunProgressAsync(runId, cancellationToken);
+            }
         }
     }
 
@@ -622,8 +649,10 @@ public sealed class QualityScannerService
         UpgradeQueueContext context,
         DateTimeOffset nowUtc)
     {
-        var intent = BuildUpgradeIntent(track, match, request);
-        var result = await context.DownloadIntentService.EnqueueAsync(intent, context.CancellationToken);
+        var intent = BuildUpgradeIntent(track, match, request, context.Options);
+        var result = IsEnhancementBatch(context.Options)
+            ? await context.DownloadIntentService.EnqueueEnhancementBatchAsync(intent, context.CancellationToken)
+            : await context.DownloadIntentService.EnqueueAsync(intent, context.CancellationToken);
         if (result.Success && result.Queued.Count > 0)
         {
             UpdateState(state => state with
@@ -654,7 +683,8 @@ public sealed class QualityScannerService
     private static DownloadIntent BuildUpgradeIntent(
         QualityScanTrackDto track,
         QualityScanMatch match,
-        UpgradeQueueRequest request)
+        UpgradeQueueRequest request,
+        QualityScannerRunOptions options)
     {
         return new DownloadIntent
         {
@@ -671,9 +701,62 @@ public sealed class QualityScannerService
             Quality = request.RequestedQuality,
             ContentType = request.UpgradeContentType,
             DestinationFolderId = track.DestinationFolderId,
-            AllowQualityUpgrade = true
+            AllowQualityUpgrade = true,
+            EnhancementBatchId = options.EnhancementBatchId,
+            EnhancementOperation = options.EnhancementOperation,
+            EnhancementSourceTrackId = track.TrackId,
+            EnhancementSourceAlbumId = track.AlbumId,
+            EnhancementSourceAudioFileId = track.AudioFileId,
+            EnhancementSourceAudioPath = track.AudioFilePath,
+            EnhancementDuplicatesFolderName = options.EnhancementDuplicatesFolderName
         };
     }
+
+    internal static IReadOnlyList<IReadOnlyList<QualityScanTrackDto>> BuildAlbumGroups(
+        IEnumerable<QualityScanTrackDto> tracks)
+    {
+        return tracks
+            .GroupBy(track => new
+            {
+                track.DestinationFolderId,
+                AlbumKey = track.AlbumId > 0
+                    ? $"id:{track.AlbumId}"
+                    : $"name:{track.AlbumArtistId}:{track.AlbumTitle.Trim().ToLowerInvariant()}"
+            })
+            .OrderBy(group => group.Min(track => track.TrackId))
+            .Select(group => (IReadOnlyList<QualityScanTrackDto>)group
+                .OrderBy(track => track.DiscNumber ?? 1)
+                .ThenBy(track => track.TrackNumber ?? int.MaxValue)
+                .ThenBy(track => track.TrackId)
+                .ToList())
+            .ToList();
+    }
+
+    internal static bool IsVerifiedCompleteAlbum(IReadOnlyCollection<QualityScanTrackDto> tracks)
+    {
+        if (tracks.Count == 0
+            || tracks.Any(track => track.AlbumId <= 0
+                || track.AudioFileId <= 0
+                || string.IsNullOrWhiteSpace(track.AudioFilePath)
+                || !track.TrackNumber.HasValue
+                || track.TrackNumber.Value <= 0
+                || !track.TrackTotal.HasValue
+                || track.TrackTotal.Value <= 0))
+        {
+            return false;
+        }
+
+        var expectedTrackCount = tracks.Max(track => track.TrackTotal!.Value);
+        return tracks.Count == expectedTrackCount
+            && tracks
+                .Select(track => (Disc: track.DiscNumber ?? 1, Track: track.TrackNumber!.Value))
+                .Distinct()
+                .Count() == tracks.Count;
+    }
+
+    private static bool IsEnhancementBatch(QualityScannerRunOptions options)
+        => !string.IsNullOrWhiteSpace(options.EnhancementBatchId)
+           && string.Equals(options.Trigger, "enhancement", StringComparison.OrdinalIgnoreCase);
 
     private async Task RecordQueuedUpgradeActionsAsync(
         QualityScanTrackDto track,
@@ -726,38 +809,58 @@ public sealed class QualityScannerService
         });
         await PersistRunProgressAsync(runId, cancellationToken);
 
-        for (var index = 0; index < tracks.Count; index++)
+        var admitted = 0;
+        var processed = 0;
+        foreach (var group in BuildAlbumGroups(tracks))
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var track = tracks[index];
-            UpdateState(state => state with
+            var completeAlbum = IsVerifiedCompleteAlbum(group);
+            if (admitted >= options.EnhancementAdmissionLimit)
             {
-                Processed = index + 1,
-                Progress = tracks.Count == 0 ? 100 : (index + 1) * 100d / tracks.Count,
-                Phase = $"Enhancement stage: {track.ArtistName} - {track.Title}"
-            });
-
-            var outcome = MapAtmosTrackOutcome(
-                await QueueAtmosAlternativeAsync(track, options, downloadIntentService, folderSnapshot, cancellationToken),
-                DateTimeOffset.UtcNow);
-            if (outcome.IncrementDuplicateCount)
-            {
-                UpdateState(state => state with { DuplicateSkipped = state.DuplicateSkipped + 1 });
+                break;
             }
 
-            await TryUpdateTrackStateAsync(
-                new QualityScannerTrackStateUpdateDto(
-                    TrackId: track.TrackId,
-                    RunId: runId > 0 ? runId : null,
-                    BestQualityRank: track.BestQualityRank,
-                    DesiredQualityRank: track.DesiredQualityRank,
-                    LastAction: outcome.LastAction,
-                    LastUpgradeQueuedUtc: null,
-                    LastAtmosQueuedUtc: outcome.LastQueuedAtUtc,
-                    LastError: outcome.LastError),
-                cancellationToken);
+            foreach (var track in group)
+            {
+                if (!completeAlbum && admitted >= options.EnhancementAdmissionLimit)
+                {
+                    break;
+                }
 
-            await PersistRunProgressAsync(runId, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                processed++;
+                UpdateState(state => state with
+                {
+                    Processed = processed,
+                    Progress = tracks.Count == 0 ? 100 : processed * 100d / tracks.Count,
+                    Phase = $"Enhancement stage: {track.ArtistName} - {track.Title}"
+                });
+
+                var outcome = MapAtmosTrackOutcome(
+                    await QueueAtmosAlternativeAsync(track, options, downloadIntentService, folderSnapshot, cancellationToken),
+                    DateTimeOffset.UtcNow);
+                if (outcome.LastQueuedAtUtc.HasValue)
+                {
+                    admitted++;
+                }
+                if (outcome.IncrementDuplicateCount)
+                {
+                    UpdateState(state => state with { DuplicateSkipped = state.DuplicateSkipped + 1 });
+                }
+
+                await TryUpdateTrackStateAsync(
+                    new QualityScannerTrackStateUpdateDto(
+                        TrackId: track.TrackId,
+                        RunId: runId > 0 ? runId : null,
+                        BestQualityRank: track.BestQualityRank,
+                        DesiredQualityRank: track.DesiredQualityRank,
+                        LastAction: outcome.LastAction,
+                        LastUpgradeQueuedUtc: null,
+                        LastAtmosQueuedUtc: outcome.LastQueuedAtUtc,
+                        LastError: outcome.LastError),
+                    cancellationToken);
+
+                await PersistRunProgressAsync(runId, cancellationToken);
+            }
         }
     }
 
@@ -837,30 +940,34 @@ public sealed class QualityScannerService
 
         var atmosphereDestination = precheck.AtmosphereDestination;
 
-        var appleMatch = await FindAppleAtmosMatchAsync(track, cancellationToken);
-        if (appleMatch == null)
-        {
-            return AtmosQueueResult.NoMatch();
-        }
-
         var intent = new DownloadIntent
         {
-            SourceService = AppleSource,
-            PreferredEngine = AppleSource,
-            AppleId = appleMatch.Id,
-            Isrc = string.IsNullOrWhiteSpace(appleMatch.Isrc) ? track.Isrc : appleMatch.Isrc,
-            Title = string.IsNullOrWhiteSpace(appleMatch.Title) ? track.Title : appleMatch.Title,
-            Artist = string.IsNullOrWhiteSpace(appleMatch.Artist) ? track.ArtistName : appleMatch.Artist,
-            Album = string.IsNullOrWhiteSpace(appleMatch.Album) ? track.AlbumTitle : appleMatch.Album,
-            DurationMs = appleMatch.DurationMs > 0 ? appleMatch.DurationMs : (track.DurationMs ?? 0),
+            SourceService = "auto",
+            PreferredEngine = "auto",
+            Isrc = track.Isrc,
+            Title = track.Title,
+            Artist = track.ArtistName,
+            Album = track.AlbumTitle,
+            DurationMs = track.DurationMs ?? 0,
             Quality = AtmosQuality,
-            HasAtmos = true,
             ContentType = DownloadContentTypes.Atmos,
             DestinationFolderId = atmosphereDestination,
-            AllowQualityUpgrade = true
+            AllowQualityUpgrade = true,
+            EnhancementBatchId = options.EnhancementBatchId,
+            EnhancementOperation = options.EnhancementOperation,
+            EnhancementSourceTrackId = track.TrackId,
+            EnhancementSourceAlbumId = track.AlbumId,
+            EnhancementSourceAudioFileId = track.AudioFileId,
+            EnhancementSourceAudioPath = track.AudioFilePath,
+            EnhancementDuplicatesFolderName = options.EnhancementDuplicatesFolderName
         };
 
-        var result = await downloadIntentService.EnqueueAsync(intent, cancellationToken);
+        var result = IsEnhancementBatch(options)
+            ? await downloadIntentService.EnqueueEnhancementBatchAsync(intent, cancellationToken)
+            : await downloadIntentService.EnqueueAsync(
+                intent,
+                cancellationToken,
+                allowAutomaticSecondaryQuality: false);
         if (result.Success && result.Queued.Count > 0)
         {
             UpdateState(state => state with
@@ -875,7 +982,7 @@ public sealed class QualityScannerService
                     RunId: GetState().RunId,
                     TrackId: track.TrackId,
                     ActionType: "atmos_queued",
-                    Source: AppleSource,
+                    Source: result.Engine,
                     Quality: AtmosQuality,
                     ContentType: DownloadContentTypes.Atmos,
                     DestinationFolderId: atmosphereDestination,
@@ -893,7 +1000,7 @@ public sealed class QualityScannerService
             RunId: GetState().RunId,
             TrackId: track.TrackId,
             ActionType: "atmos_enqueue_failed",
-            Source: AppleSource,
+            Source: string.IsNullOrWhiteSpace(result.Engine) ? "atmos" : result.Engine,
             Quality: AtmosQuality,
             ContentType: DownloadContentTypes.Atmos,
             DestinationFolderId: atmosphereDestination,
@@ -916,7 +1023,7 @@ public sealed class QualityScannerService
                 RunId: GetState().RunId,
                 TrackId: track.TrackId,
                 ActionType: "atmos_destination_missing",
-                Source: AppleSource,
+                Source: AtmosQuality,
                 Quality: AtmosQuality,
                 ContentType: DownloadContentTypes.Atmos,
                 DestinationFolderId: null,
@@ -939,7 +1046,7 @@ public sealed class QualityScannerService
                     RunId: GetState().RunId,
                     TrackId: track.TrackId,
                     ActionType: "atmos_destination_conflict",
-                    Source: AppleSource,
+                    Source: AtmosQuality,
                     Quality: AtmosQuality,
                     ContentType: DownloadContentTypes.Atmos,
                     DestinationFolderId: atmosphereDestination,
@@ -967,7 +1074,7 @@ public sealed class QualityScannerService
                 RunId: GetState().RunId,
                 TrackId: track.TrackId,
                 ActionType: "atmos_duplicate",
-                Source: AppleSource,
+                Source: AtmosQuality,
                 Quality: AtmosQuality,
                 ContentType: DownloadContentTypes.Atmos,
                 DestinationFolderId: atmosphereDestination,
@@ -1052,59 +1159,6 @@ public sealed class QualityScannerService
         }
 
         return null;
-    }
-
-    private async Task<QualityScanMatch?> FindAppleAtmosMatchAsync(QualityScanTrackDto track, CancellationToken cancellationToken)
-    {
-        var query = $"{track.ArtistName} {track.Title}";
-        var search = await _searchService.SearchByTypeAsync(AppleSource, query, TrackType, 8, 0, cancellationToken);
-        if (search == null || search.Items.Count == 0)
-        {
-            return null;
-        }
-
-        QualityScanMatch? best = null;
-        foreach (var raw in search.Items)
-        {
-            if (!TryParseSearchCandidate(raw, AppleSource, out var candidate))
-            {
-                continue;
-            }
-
-            if (!candidate.HasAtmos)
-            {
-                continue;
-            }
-
-            var score = ComputeMatchScore(track, candidate);
-            if (!string.IsNullOrWhiteSpace(track.Isrc)
-                && !string.IsNullOrWhiteSpace(candidate.Isrc)
-                && string.Equals(track.Isrc.Trim(), candidate.Isrc.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                score = Math.Max(score, 0.99);
-            }
-
-            if (score < 0.7)
-            {
-                continue;
-            }
-
-            if (best == null || score > best.Score)
-            {
-                best = new QualityScanMatch(
-                    Source: AppleSource,
-                    Id: candidate.Id,
-                    Title: candidate.Title,
-                    Artist: candidate.Artist,
-                    Album: candidate.Album,
-                    Isrc: candidate.Isrc,
-                    DurationMs: candidate.DurationMs,
-                    Score: score,
-                    HasAtmos: true);
-            }
-        }
-
-        return best;
     }
 
     private async Task<QualityScanMatch?> FindBestMatchForEngineAsync(
@@ -1655,6 +1709,10 @@ public sealed class QualityScannerStartRequest
     public IReadOnlyCollection<string>? TechnicalProfiles { get; init; }
     public IReadOnlyCollection<long>? FolderIds { get; init; }
     public IReadOnlyCollection<long>? TargetTrackIds { get; init; }
+    public string? EnhancementBatchId { get; init; }
+    public string? EnhancementOperation { get; init; }
+    public int? EnhancementAdmissionLimit { get; init; }
+    public string? EnhancementDuplicatesFolderName { get; init; }
 }
 
 public sealed record QualityScannerState(
@@ -1727,7 +1785,11 @@ internal sealed record QualityScannerRunOptions(
     bool MarkAutomationWindow,
     IReadOnlySet<string> TechnicalProfiles,
     IReadOnlySet<long> FolderIds,
-    IReadOnlySet<long> TargetTrackIds);
+    IReadOnlySet<long> TargetTrackIds,
+    string EnhancementBatchId,
+    string EnhancementOperation,
+    int EnhancementAdmissionLimit,
+    string EnhancementDuplicatesFolderName);
 
 internal sealed record QualityScanMatch(
     string Source,

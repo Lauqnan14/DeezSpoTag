@@ -59,6 +59,13 @@ public sealed class DownloadIntent : MusicKeyAudioFeaturesBase
     public bool HasAppleDigitalMaster { get; set; }
     public bool AllowQualityUpgrade { get; set; }
     public DownloadEngineOrderSettings? DownloadEngineOrder { get; set; }
+    public string EnhancementBatchId { get; set; } = "";
+    public string EnhancementOperation { get; set; } = "";
+    public long? EnhancementSourceTrackId { get; set; }
+    public long? EnhancementSourceAlbumId { get; set; }
+    public long? EnhancementSourceAudioFileId { get; set; }
+    public string EnhancementSourceAudioPath { get; set; } = "";
+    public string EnhancementDuplicatesFolderName { get; set; } = "";
 }
 
 internal sealed class FlexibleStringJsonConverter : JsonConverter<string>

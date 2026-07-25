@@ -821,7 +821,11 @@ public partial class AutoTagService
 
         await ReportMissingCoreMetadataAuditIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
         await RunFolderTagAlignmentIfRequestedAsync(job, configPath, options, scopedFolders, cancellationToken);
-        await RunQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken);
+        if (await RunQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken))
+        {
+            return EnhancementWorkflowOutcome.Completed(
+                $"staged {job.EnhancementDownloadItemCount} {job.EnhancementDownloadOperation} item(s); Enhancement stopped at the download batch boundary.");
+        }
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
         await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, configPath, cancellationToken);
         return EnhancementWorkflowOutcome.Completed($"processed {scopedFolderIds.Count} folder scope(s).");
@@ -906,7 +910,7 @@ public partial class AutoTagService
         return BuildQualityCheckOptions(qualityChecks).ShouldRunAnyWorkflow;
     }
 
-    private async Task RunQualityScannerIfRequestedAsync(
+    private async Task<bool> RunQualityScannerIfRequestedAsync(
         AutoTagJob job,
         JsonObject qualityChecks,
         QualityCheckOptions options,
@@ -915,12 +919,12 @@ public partial class AutoTagService
     {
         if (!options.RunQualityScanner)
         {
-            return;
+            return false;
         }
 
         if (options.QueueTechnicalProfileUpgrades)
         {
-            await RunQualityScannerPassAsync(
+            if (await RunQualityScannerPassAsync(
                 job,
                 qualityChecks,
                 scopedFolderIds,
@@ -928,12 +932,15 @@ public partial class AutoTagService
                 queueAtmosAlternatives: false,
                 options.TechnicalProfiles,
                 "technical-quality-upgrade",
-                cancellationToken);
+                cancellationToken))
+            {
+                return true;
+            }
         }
 
         if (options.QueueAtmosAlternatives)
         {
-            await RunQualityScannerPassAsync(
+            if (await RunQualityScannerPassAsync(
                 job,
                 qualityChecks,
                 scopedFolderIds,
@@ -941,11 +948,16 @@ public partial class AutoTagService
                 queueAtmosAlternatives: true,
                 technicalProfiles: Array.Empty<string>(),
                 "atmos-alternatives",
-                cancellationToken);
+                cancellationToken))
+            {
+                return true;
+            }
         }
+
+        return false;
     }
 
-    private async Task RunQualityScannerPassAsync(
+    private async Task<bool> RunQualityScannerPassAsync(
         AutoTagJob job,
         JsonObject qualityChecks,
         List<long> scopedFolderIds,
@@ -974,91 +986,74 @@ public partial class AutoTagService
         var orderedTracks = tracks
             .GroupBy(track => track.TrackId)
             .Select(group => group.First())
-            .OrderBy(track => track.TrackId)
+            .OrderBy(track => track.AlbumId)
+            .ThenBy(track => track.DiscNumber ?? 1)
+            .ThenBy(track => track.TrackNumber ?? int.MaxValue)
+            .ThenBy(track => track.TrackId)
             .ToList();
-        var batchCount = orderedTracks.Count == 0
-            ? 0
-            : (int)Math.Ceiling(orderedTracks.Count / (double)EnhancementBatchSize);
-        for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
+        if (orderedTracks.Count == 0)
+        {
+            return false;
+        }
+
+        var batchId = Guid.NewGuid().ToString("N");
+        job.EnhancementDownloadBatchId = batchId;
+        job.EnhancementDownloadOperation = phase;
+        job.EnhancementDownloadItemCount = 0;
+        SetEnhancementPhase(job, phase, 0, orderedTracks.Count, 1, 1, 0, EnhancementBatchSize);
+        var runTask = _qualityScannerService.StartAndWaitAsync(
+            new QualityScannerStartRequest
+            {
+                Scope = "all",
+                FolderId = scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
+                RunQualityUpgradeStage = runQualityUpgradeStage,
+                QueueAtmosAlternatives = queueAtmosAlternatives,
+                CooldownMinutes = ReadOptionalInt(qualityChecks, "cooldownMinutes"),
+                Trigger = "enhancement",
+                MarkAutomationWindow = false,
+                TechnicalProfiles = technicalProfiles,
+                FolderIds = scopedFolderIds,
+                TargetTrackIds = orderedTracks.Select(track => track.TrackId).ToList(),
+                EnhancementBatchId = batchId,
+                EnhancementOperation = phase,
+                EnhancementAdmissionLimit = EnhancementBatchSize,
+                EnhancementDuplicatesFolderName = qualityChecks["duplicatesFolderName"]?.GetValue<string>()
+            },
+            cancellationToken);
+        while (!runTask.IsCompleted)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var batch = orderedTracks
-                .Skip(batchIndex * EnhancementBatchSize)
-                .Take(EnhancementBatchSize)
-                .ToList();
+            var state = _qualityScannerService.GetState();
             SetEnhancementPhase(
                 job,
                 phase,
-                batchIndex * EnhancementBatchSize,
+                Math.Clamp(state.Processed, 0, orderedTracks.Count),
                 orderedTracks.Count,
-                batchIndex + 1,
-                batchCount,
-                0,
-                batch.Count);
-
-            var runTask = _qualityScannerService.StartAndWaitAsync(
-                new QualityScannerStartRequest
-                {
-                    Scope = "all",
-                    FolderId = scopedFolderIds.Count == 1 ? scopedFolderIds[0] : null,
-                    RunQualityUpgradeStage = runQualityUpgradeStage,
-                    QueueAtmosAlternatives = queueAtmosAlternatives,
-                    CooldownMinutes = ReadOptionalInt(qualityChecks, "cooldownMinutes"),
-                    Trigger = "enhancement",
-                    MarkAutomationWindow = false,
-                    TechnicalProfiles = technicalProfiles,
-                    FolderIds = scopedFolderIds,
-                    TargetTrackIds = batch.Select(track => track.TrackId).ToList()
-                },
-                cancellationToken);
-            var lastProcessed = -1;
-            while (!runTask.IsCompleted)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var state = _qualityScannerService.GetState();
-                if (state.Processed != lastProcessed)
-                {
-                    lastProcessed = state.Processed;
-                    var batchProcessed = Math.Clamp(state.Processed, 0, batch.Count);
-                    SetEnhancementPhase(
-                        job,
-                        phase,
-                        batchIndex * EnhancementBatchSize + batchProcessed,
-                        orderedTracks.Count,
-                        batchIndex + 1,
-                        batchCount,
-                        batchProcessed,
-                        batch.Count);
-                }
-                await Task.Delay(250, cancellationToken);
-            }
-
-            if (!await runTask)
-            {
-                throw new InvalidOperationException("Quality scanner is already running and could not execute this enhancement section.");
-            }
-
-            var finalState = _qualityScannerService.GetState();
-            var batchMessage = $"{finalState.Phase}; upgrades queued {finalState.UpgradesQueued}; Atmos queued {finalState.AtmosQueued}";
-            for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
-            {
-                var processed = batchIndex * EnhancementBatchSize + itemIndex + 1;
-                RecordEnhancementItemStatus(
-                    job,
-                    phase,
-                    $"{batch[itemIndex].ArtistName} - {batch[itemIndex].Title}",
-                    AutoTagLiterals.OkStatus,
-                    batchMessage,
-                    processed,
-                    orderedTracks.Count,
-                    batchIndex + 1,
-                    batchCount,
-                    itemIndex + 1,
-                    batch.Count);
-            }
+                1,
+                1,
+                Math.Clamp(state.Processed, 0, orderedTracks.Count),
+                EnhancementBatchSize);
+            await Task.Delay(250, cancellationToken);
         }
 
-        AppendLog(job, $"enhancement workflow: {phase} finished ({orderedTracks.Count} track(s), {batchCount} batch(es)).");
+        if (!await runTask)
+        {
+            throw new InvalidOperationException("Quality scanner is already running and could not execute this enhancement section.");
+        }
+
+        var finalState = _qualityScannerService.GetState();
+        var queuedCount = runQualityUpgradeStage ? finalState.UpgradesQueued : finalState.AtmosQueued;
+        if (queuedCount <= 0)
+        {
+            job.EnhancementDownloadBatchId = null;
+            job.EnhancementDownloadOperation = null;
+            AppendLog(job, $"enhancement workflow: {phase} finished without an admitted download.");
+            return false;
+        }
+
+        job.EnhancementDownloadItemCount = queuedCount;
+        AppendLog(job, $"enhancement workflow: staged {queuedCount} held item(s) for {phase} batch {batchId}.");
+        return true;
     }
 
     private async Task RunFolderTagAlignmentIfRequestedAsync(

@@ -101,7 +101,7 @@ public sealed class DownloadIntentService
         long? DestinationFolderId,
         string QualityBucket);
 
-    private sealed record AtmosSecondaryEnqueueRequest(
+    private sealed record AtmosEnqueueRequest(
         DownloadIntent Intent,
         DeezSpoTagSettings Settings,
         long? PrimaryDestinationFolderId,
@@ -111,6 +111,7 @@ public sealed class DownloadIntentService
         PlatformLinkResult? Availability,
         bool PreferIsrcOnly,
         IReadOnlyList<PlaylistTrackBlockRule>? BlockRules,
+        string InitialStatus,
         CancellationToken CancellationToken);
 
     private sealed record EnqueueItemContext(
@@ -261,6 +262,7 @@ public sealed class DownloadIntentService
             allowManualQueueDuringEnrichment: false,
             blockRules,
             allowAutomaticSecondaryQuality,
+            "queued",
             cancellationToken);
 
     public Task<DownloadIntentResult> EnqueueManualAsync(
@@ -274,6 +276,20 @@ public sealed class DownloadIntentService
             allowManualQueueDuringEnrichment: true,
             blockRules,
             allowAutomaticSecondaryQuality: true,
+            "queued",
+            cancellationToken);
+
+    public Task<DownloadIntentResult> EnqueueEnhancementBatchAsync(
+        DownloadIntent intent,
+        CancellationToken cancellationToken,
+        IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null)
+        => EnqueueCoreAsync(
+            intent,
+            preferIsrcOnly: false,
+            allowManualQueueDuringEnrichment: false,
+            blockRules,
+            allowAutomaticSecondaryQuality: false,
+            "enhancement_held",
             cancellationToken);
 
     public async Task<DownloadIntentResult> EnqueueManualVisibleAsync(
@@ -394,6 +410,7 @@ public sealed class DownloadIntentService
         bool allowManualQueueDuringEnrichment,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         bool allowAutomaticSecondaryQuality,
+        string initialStatus,
         CancellationToken cancellationToken)
     {
         var resolution = await TryPrepareEnqueueResolutionAsync(
@@ -425,6 +442,44 @@ public sealed class DownloadIntentService
         var relatedQueueUuids = new List<string>();
         var skipReasonCodes = new List<string>();
         var skipReasons = new List<string>();
+        if (IsAtmosSourceRequest(intent.ContentType, intent.Quality)
+            && !IsVideoIntent(intent))
+        {
+            var queuedAtmosEngine = await TryEnqueueAtmosAsync(
+                new AtmosEnqueueRequest(
+                    intent,
+                    settings,
+                    PrimaryDestinationFolderId: null,
+                    SecondaryDestinationFolderId: intent.DestinationFolderId,
+                    intent.AllowQualityUpgrade,
+                    queued,
+                    routing.Availability,
+                    preferIsrcOnly,
+                    blockRules,
+                    initialStatus,
+                    cancellationToken));
+            if (!string.IsNullOrWhiteSpace(queuedAtmosEngine))
+            {
+                _orchestrationService.MarkDownloadQueued();
+                return new DownloadIntentResult
+                {
+                    Success = true,
+                    Engine = queuedAtmosEngine,
+                    Queued = queued,
+                    Message = "Queued 1 item."
+                };
+            }
+
+            return new DownloadIntentResult
+            {
+                Success = false,
+                Engine = string.Empty,
+                Message = "No enabled Atmos provider could resolve this track.",
+                SkipReasonCodes = new List<string> { "atmos_unresolved" },
+                SkipReasons = new List<string> { "No enabled Atmos provider could resolve this track." }
+            };
+        }
+
         var primaryFallback = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             intent,
             settings,
@@ -476,6 +531,7 @@ public sealed class DownloadIntentService
             blockRules,
             intent.AllowQualityUpgrade,
             requestedQualityRank,
+            initialStatus,
             cancellationToken);
         var skipped = 0;
         if (enqueueDecision.Success)
@@ -1053,7 +1109,17 @@ public sealed class DownloadIntentService
             WatchlistUnavailableSettingsFingerprint = ReadPayloadString(
                 payload,
                 "WatchlistUnavailableSettingsFingerprint",
-                "watchlistUnavailableSettingsFingerprint") ?? string.Empty
+                "watchlistUnavailableSettingsFingerprint") ?? string.Empty,
+            EnhancementBatchId = ReadPayloadString(payload, "EnhancementBatchId", "enhancementBatchId") ?? string.Empty,
+            EnhancementOperation = ReadPayloadString(payload, "EnhancementOperation", "enhancementOperation") ?? string.Empty,
+            EnhancementSourceTrackId = ReadPayloadInt64(payload, "EnhancementSourceTrackId", "enhancementSourceTrackId") ?? 0,
+            EnhancementSourceAlbumId = ReadPayloadInt64(payload, "EnhancementSourceAlbumId", "enhancementSourceAlbumId") ?? 0,
+            EnhancementSourceAudioFileId = ReadPayloadInt64(payload, "EnhancementSourceAudioFileId", "enhancementSourceAudioFileId") ?? 0,
+            EnhancementSourceAudioPath = ReadPayloadString(payload, "EnhancementSourceAudioPath", "enhancementSourceAudioPath") ?? string.Empty,
+            EnhancementDuplicatesFolderName = ReadPayloadString(
+                payload,
+                "EnhancementDuplicatesFolderName",
+                "enhancementDuplicatesFolderName") ?? string.Empty
         };
     }
 
@@ -1872,7 +1938,7 @@ public sealed class DownloadIntentService
             return new DownloadIntentResult
             {
                 Success = false,
-                Message = "Apple video and Apple Atmos downloads must use the Apple engine.",
+                Message = "Apple video downloads must use the Apple engine.",
                 Engine = string.Empty
             };
         }
@@ -5550,9 +5616,6 @@ public sealed class DownloadIntentService
         !string.IsNullOrWhiteSpace(quality)
         && quality.Contains(AtmosQuality, StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsAppleAtmosQuality(string? quality) =>
-        string.Equals(quality?.Trim(), AtmosQuality, StringComparison.OrdinalIgnoreCase);
-
     private static bool SettingsRequestsAtmosSource(DeezSpoTagSettings settings)
         => string.Equals(settings.DownloadSourceContentType?.Trim(), DownloadContentTypes.Atmos, StringComparison.OrdinalIgnoreCase);
 
@@ -5579,7 +5642,7 @@ public sealed class DownloadIntentService
         string? engine,
         string? quality)
     {
-        // Atmos is Apple-only in this pipeline. Keep it strict: no stereo fallback chain.
+        // Atmos remains strict within its selected provider: never fall back to stereo qualities.
         if (IsAppleAtmosOnlyRequest(engine, quality))
         {
             return true;
@@ -5787,7 +5850,10 @@ public sealed class DownloadIntentService
     {
         if (IsAtmosSourceRequest(contentType, selectedQuality))
         {
-            return BuildAtmosAutoSources(settings.MultiQuality, settings.MultiQuality?.AtmosDownloadFallback == true);
+            return ResolveAtmosSources(
+                settings,
+                engine,
+                settings.MultiQuality?.AtmosDownloadFallback == true);
         }
 
         var useCrossEngineOrder = IsMusicIntent(intent)
@@ -6010,11 +6076,6 @@ public sealed class DownloadIntentService
             return true;
         }
 
-        if (IsAppleAtmosQuality(targetQuality))
-        {
-            return true;
-        }
-
         return false;
     }
 
@@ -6114,7 +6175,7 @@ public sealed class DownloadIntentService
         };
     }
 
-    private async Task<bool> TryEnqueueAtmosSecondaryAsync(AtmosSecondaryEnqueueRequest request)
+    private async Task<string?> TryEnqueueAtmosAsync(AtmosEnqueueRequest request)
     {
         var secondaryDestinationFolderId =
             request.SecondaryDestinationFolderId
@@ -6124,7 +6185,7 @@ public sealed class DownloadIntentService
         {
             _logger.LogWarning(
                 "Multi-quality secondary skipped: secondary destination folder is required for Atmos.");
-            return false;
+            return null;
         }
         if (request.PrimaryDestinationFolderId.HasValue
             && request.PrimaryDestinationFolderId.Value == secondaryDestinationFolderId.Value)
@@ -6132,7 +6193,7 @@ public sealed class DownloadIntentService
             _logger.LogWarning(
                 "Multi-quality secondary skipped: Atmos destination {DestinationFolderId} matches primary destination.",
                 secondaryDestinationFolderId.Value);
-            return false;
+            return null;
         }
         var distinctRootCheck = await DownloadDestinationGuard.ValidateDistinctRootsAsync(
             request.PrimaryDestinationFolderId,
@@ -6144,33 +6205,39 @@ public sealed class DownloadIntentService
             _logger.LogWarning(
                 "Multi-quality secondary skipped: {Reason}",
                 distinctRootCheck.Error ?? "Stereo and Atmos destinations must resolve to different folder roots.");
-            return false;
+            return null;
         }
 
-        var atmosEngines = ResolveAtmosEngineOrder(
-            request.Settings.MultiQuality,
+        var requestedEngine = NormalizeEngineName(request.Intent.PreferredEngine);
+        var preferredAtmosEngine = requestedEngine is ApplePlatform or TidalPlatform or AmazonPlatform
+            ? requestedEngine
+            : null;
+        var atmosSources = ResolveAtmosSources(
+            request.Settings,
+            preferredAtmosEngine,
             request.Settings.MultiQuality?.AtmosSearchFallback == true);
-        foreach (var atmosEngine in atmosEngines)
+        foreach (var atmosSource in atmosSources)
         {
+            var atmosEngine = DownloadSourceOrder.DecodeAutoSource(atmosSource).Source;
             var queued = atmosEngine switch
             {
                 var engine when string.Equals(engine, TidalPlatform, StringComparison.OrdinalIgnoreCase)
-                    => await TryEnqueueTidalAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value),
+                    => await TryEnqueueTidalAtmosAsync(request, secondaryDestinationFolderId.Value),
                 var engine when string.Equals(engine, AmazonPlatform, StringComparison.OrdinalIgnoreCase)
-                    => await TryEnqueueAmazonAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value),
-                _ => await TryEnqueueAppleAtmosSecondaryAsync(request, secondaryDestinationFolderId.Value)
+                    => await TryEnqueueAmazonAtmosAsync(request, secondaryDestinationFolderId.Value),
+                _ => await TryEnqueueAppleAtmosAsync(request, secondaryDestinationFolderId.Value)
             };
             if (queued)
             {
-                return true;
+                return atmosEngine;
             }
         }
 
-        return false;
+        return null;
     }
 
-    private async Task<bool> TryEnqueueAppleAtmosSecondaryAsync(
-        AtmosSecondaryEnqueueRequest request,
+    private async Task<bool> TryEnqueueAppleAtmosAsync(
+        AtmosEnqueueRequest request,
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = AtmosQualityUpper;
@@ -6183,13 +6250,13 @@ public sealed class DownloadIntentService
             request.CancellationToken);
         if (!string.IsNullOrWhiteSpace(candidate.Message) && candidate.Engine == string.Empty)
         {
-            _activityLog.Warn($"Secondary Atmos mapping skipped: {candidate.Message}");
+            _activityLog.Warn($"Atmos mapping skipped: {candidate.Message}");
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(candidate.SourceUrl))
         {
-            _activityLog.Warn("Secondary Atmos mapping skipped: Apple URL unavailable.");
+            _activityLog.Warn("Atmos mapping skipped: Apple URL unavailable.");
             return false;
         }
 
@@ -6212,7 +6279,7 @@ public sealed class DownloadIntentService
             request.CancellationToken);
         if (isVideo)
         {
-            _activityLog.Warn("Secondary Atmos mapping skipped: Apple video detected.");
+            _activityLog.Warn("Atmos mapping skipped: Apple video detected.");
             return false;
         }
 
@@ -6221,7 +6288,10 @@ public sealed class DownloadIntentService
         payload.Id = Guid.NewGuid().ToString("N");
         payload.DestinationFolderId = secondaryDestinationFolderId;
         payload.QualityBucket = AtmosQuality;
-        var autoSources = BuildAtmosAutoSources(request.Settings.MultiQuality, request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+        var autoSources = ResolveAtmosSources(
+            request.Settings,
+            ApplePlatform,
+            request.Settings.MultiQuality?.AtmosDownloadFallback == true);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
@@ -6240,6 +6310,7 @@ public sealed class DownloadIntentService
             request.BlockRules,
             request.AllowQualityUpgrade,
             ParseRequestedQualityRank(secondaryQuality),
+            request.InitialStatus,
             request.CancellationToken);
         if (enqueueDecision.Success)
         {
@@ -6251,8 +6322,8 @@ public sealed class DownloadIntentService
         return false;
     }
 
-    private async Task<bool> TryEnqueueTidalAtmosSecondaryAsync(
-        AtmosSecondaryEnqueueRequest request,
+    private async Task<bool> TryEnqueueTidalAtmosAsync(
+        AtmosEnqueueRequest request,
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = TidalAtmosQuality;
@@ -6273,11 +6344,14 @@ public sealed class DownloadIntentService
         var tidalAtmosUrl = resolvedAtmosTrack?.Url;
         if (string.IsNullOrWhiteSpace(tidalAtmosUrl))
         {
-            _activityLog.Warn("Secondary Atmos mapping skipped: Tidal URL unavailable.");
+            _activityLog.Warn("Atmos mapping skipped: Tidal URL unavailable.");
             return false;
         }
 
-        var autoSources = BuildAtmosAutoSources(request.Settings.MultiQuality, request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+        var autoSources = ResolveAtmosSources(
+            request.Settings,
+            TidalPlatform,
+            request.Settings.MultiQuality?.AtmosDownloadFallback == true);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
@@ -6319,6 +6393,7 @@ public sealed class DownloadIntentService
             request.BlockRules,
             request.AllowQualityUpgrade,
             ParseRequestedQualityRank(secondaryQuality),
+            request.InitialStatus,
             request.CancellationToken);
         if (enqueueDecision.Success)
         {
@@ -6330,20 +6405,23 @@ public sealed class DownloadIntentService
         return false;
     }
 
-    private async Task<bool> TryEnqueueAmazonAtmosSecondaryAsync(
-        AtmosSecondaryEnqueueRequest request,
+    private async Task<bool> TryEnqueueAmazonAtmosAsync(
+        AtmosEnqueueRequest request,
         long secondaryDestinationFolderId)
     {
         const string secondaryQuality = TidalAtmosQuality;
         var amazonTrack = await ResolveAmazonAtmosAvailabilityAsync(request.Intent, request.CancellationToken);
         if (amazonTrack is null)
         {
-            _activityLog.Warn("Secondary Atmos mapping skipped: Amazon Music Atmos unavailable.");
+            _activityLog.Warn("Atmos mapping skipped: Amazon Music Atmos unavailable.");
             return false;
         }
 
         var durationSeconds = request.Intent.DurationMs > 0 ? (int)Math.Round(request.Intent.DurationMs / 1000d) : 0;
-        var autoSources = BuildAtmosAutoSources(request.Settings.MultiQuality, request.Settings.MultiQuality?.AtmosDownloadFallback == true);
+        var autoSources = ResolveAtmosSources(
+            request.Settings,
+            AmazonPlatform,
+            request.Settings.MultiQuality?.AtmosDownloadFallback == true);
         var fallbackInfo = BuildEnqueueFallbackInfo(new EnqueueFallbackRequest(
             request.Intent,
             request.Settings,
@@ -6377,6 +6455,7 @@ public sealed class DownloadIntentService
             request.BlockRules,
             request.AllowQualityUpgrade,
             ParseRequestedQualityRank(secondaryQuality),
+            request.InitialStatus,
             request.CancellationToken);
         if (enqueueDecision.Success)
         {
@@ -6388,29 +6467,15 @@ public sealed class DownloadIntentService
         return false;
     }
 
-    private static string[] ResolveAtmosEngineOrder(
-        MultiQualityDownloadSettings? multiQuality,
-        bool includeFallbackEngine)
+    private static List<string> ResolveAtmosSources(
+        DeezSpoTagSettings settings,
+        string? preferredEngine,
+        bool includeFallbackEngines)
     {
-        var primary = NormalizeAtmosEngine(multiQuality?.AtmosEngine);
-        if (!includeFallbackEngine)
-        {
-            return new[] { primary };
-        }
-
-        var fallbackOrder = new[] { ApplePlatform, TidalPlatform, AmazonPlatform };
-        return new[] { primary }
-            .Concat(fallbackOrder.Where(engine => !string.Equals(engine, primary, StringComparison.OrdinalIgnoreCase)))
-            .ToArray();
-    }
-
-    private static List<string> BuildAtmosAutoSources(
-        MultiQualityDownloadSettings? multiQuality,
-        bool includeFallbackEngine)
-    {
-        return ResolveAtmosEngineOrder(multiQuality, includeFallbackEngine)
-            .Select(engine => DownloadSourceOrder.EncodeAutoSource(engine, ResolveAtmosQualityForEngine(engine)))
-            .ToList();
+        var primary = string.IsNullOrWhiteSpace(preferredEngine)
+            ? NormalizeAtmosEngine(settings.MultiQuality?.AtmosEngine)
+            : NormalizeAtmosEngine(preferredEngine);
+        return DownloadSourceOrder.ResolveAtmosSources(settings, primary, includeFallbackEngines);
     }
 
     private static string NormalizeAtmosEngine(string? engine)
@@ -6725,6 +6790,13 @@ public sealed class DownloadIntentService
         p.SpotifyArtistId = ResolveIntentString(intent.SpotifyArtistId, p.SpotifyArtistId);
         p.DeezerArtistId = ResolveIntentString(intent.DeezerArtistId, p.DeezerArtistId);
         p.QobuzId = ResolveIntentString(intent.QobuzId, p.QobuzId);
+        p.EnhancementBatchId = intent.EnhancementBatchId;
+        p.EnhancementOperation = intent.EnhancementOperation;
+        p.EnhancementSourceTrackId = intent.EnhancementSourceTrackId;
+        p.EnhancementSourceAlbumId = intent.EnhancementSourceAlbumId;
+        p.EnhancementSourceAudioFileId = intent.EnhancementSourceAudioFileId;
+        p.EnhancementSourceAudioPath = intent.EnhancementSourceAudioPath;
+        p.EnhancementDuplicatesFolderName = intent.EnhancementDuplicatesFolderName;
         p.TidalId = ResolveIntentString(intent.TidalId, p.TidalId);
         p.AmazonId = ResolveIntentString(intent.AmazonId, p.AmazonId);
         ApplyWatchlistMetadata(payload, intent);
@@ -7269,8 +7341,8 @@ public sealed class DownloadIntentService
             return;
         }
 
-        await TryEnqueueAtmosSecondaryAsync(
-            new AtmosSecondaryEnqueueRequest(
+        await TryEnqueueAtmosAsync(
+            new AtmosEnqueueRequest(
                 intent,
                 settings,
                 destinationRouting.PrimaryDestinationFolderId,
@@ -7280,6 +7352,7 @@ public sealed class DownloadIntentService
                 Availability: null,
                 PreferIsrcOnly: false,
                 blockRules,
+                InitialStatus: "queued",
                 cancellationToken));
     }
 

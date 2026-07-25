@@ -3760,7 +3760,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : "standard";
     }
 
-    private DownloadIntent CreateAtmosOnlyIntent(DownloadIntent sourceIntent, long? atmosDestinationFolderId = null)
+    private DownloadIntent CreateAtmosIntent(DownloadIntent sourceIntent, long? atmosDestinationFolderId = null)
     {
         atmosDestinationFolderId ??= _settingsService.LoadSettings().MultiQuality?.SecondaryDestinationFolderId;
 
@@ -3769,9 +3769,20 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             SourceService = sourceIntent.SourceService,
             SourceUrl = sourceIntent.SourceUrl,
             SpotifyId = sourceIntent.SpotifyId,
+            SpotifyArtistId = sourceIntent.SpotifyArtistId,
             DeezerId = sourceIntent.DeezerId,
             DeezerAlbumId = sourceIntent.DeezerAlbumId,
             DeezerArtistId = sourceIntent.DeezerArtistId,
+            AppleId = sourceIntent.AppleId,
+            AppleArtistId = sourceIntent.AppleArtistId,
+            AppleAlbumId = sourceIntent.AppleAlbumId,
+            AppleAlbumName = sourceIntent.AppleAlbumName,
+            AppleArtistName = sourceIntent.AppleArtistName,
+            AppleIsrc = sourceIntent.AppleIsrc,
+            AppleDurationMs = sourceIntent.AppleDurationMs,
+            QobuzId = sourceIntent.QobuzId,
+            TidalId = sourceIntent.TidalId,
+            AmazonId = sourceIntent.AmazonId,
             Isrc = sourceIntent.Isrc,
             Title = sourceIntent.Title,
             Artist = sourceIntent.Artist,
@@ -3792,12 +3803,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             DiscTotal = sourceIntent.DiscTotal,
             Url = sourceIntent.Url,
             Barcode = sourceIntent.Barcode,
-            PreferredEngine = AppleSource,
+            PreferredEngine = DownloadSourceCatalog.Auto,
             Quality = "atmos",
             ContentType = DownloadContentTypes.Atmos,
             DestinationFolderId = atmosDestinationFolderId,
             SecondaryDestinationFolderId = null,
-            AppleId = sourceIntent.AppleId,
             WatchlistSource = sourceIntent.WatchlistSource,
             WatchlistPlaylistId = sourceIntent.WatchlistPlaylistId,
             WatchlistTrackId = sourceIntent.WatchlistTrackId,
@@ -4156,7 +4166,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         intent.DestinationFolderId = ResolveRoutingFolderId(intent, options.RoutingRules, destinationFolderId);
         if (normalizedDownloadVariantMode == "atmos_only")
         {
-            intent = CreateAtmosOnlyIntent(intent, options.AtmosDestinationFolderId);
+            intent = CreateAtmosIntent(intent, options.AtmosDestinationFolderId);
         }
         else if (string.Equals(normalizedPreferredEngine, DownloadSourceCatalog.Custom, StringComparison.Ordinal))
         {
@@ -4318,7 +4328,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return 0;
         }
 
-        var atmosIntent = CreateAtmosOnlyIntent(baseIntent, options.AtmosDestinationFolderId);
+        var atmosIntent = CreateAtmosIntent(baseIntent, options.AtmosDestinationFolderId);
         try
         {
             var atmosResult = await intentService.EnqueueAsync(

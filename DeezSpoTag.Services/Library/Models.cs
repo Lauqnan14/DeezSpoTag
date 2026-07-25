@@ -347,7 +347,14 @@ public sealed record QualityScanTrackDto(
     string? BestExtension,
     int? BestBitrateKbps,
     int? BestBitsPerSample,
-    int? BestSampleRateHz);
+    int? BestSampleRateHz,
+    long AlbumId,
+    long AlbumArtistId,
+    long AudioFileId,
+    string AudioFilePath,
+    int? DiscNumber,
+    int? TrackNumber,
+    int? TrackTotal);
 
 public sealed record MissingCoreMetadataFileDto(
     long TrackId,

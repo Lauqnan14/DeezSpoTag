@@ -232,7 +232,9 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("startCentralEnhancementFeature(\"quality-checks\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("ApplyEnhancementFolderScope(enhancement, \"qualityChecks\"", controllerSource, StringComparison.Ordinal);
         Assert.Contains("var runQualityUpgradeStage = queueTechnicalProfileUpgrades", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("TargetTrackIds = batch.Select(track => track.TrackId).ToList()", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementAdmissionLimit = EnhancementBatchSize", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueEnhancementBatchAsync", File.ReadAllText(
+            Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "QualityScannerService.cs")), StringComparison.Ordinal);
         Assert.DoesNotContain("StartEnhancementQualityScannerAsync", controllerSource, StringComparison.Ordinal);
     }
 

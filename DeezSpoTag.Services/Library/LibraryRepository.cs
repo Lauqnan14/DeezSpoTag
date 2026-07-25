@@ -11610,8 +11610,11 @@ WHERE t.id = @trackId
            t.tag_isrc AS isrc,
            t.duration_ms AS duration_ms,
            ar.name AS artist_name,
+           ar.id AS album_artist_id,
+           al.id AS album_id,
            al.title AS album_title,
            af.id AS audio_file_id,
+           af.path AS audio_file_path,
            af.quality_rank AS quality_rank,
            af.codec AS codec,
            af.extension AS extension,
@@ -11619,6 +11622,9 @@ WHERE t.id = @trackId
            af.bits_per_sample AS bits_per_sample,
            af.sample_rate_hz AS sample_rate_hz,
            af.size AS file_size,
+           COALESCE(t.tag_disc, 1) AS disc_number,
+           COALESCE(t.track_no, t.tag_track_no) AS track_number,
+           t.tag_track_total AS track_total,
            CASE
                WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 4
                WHEN (
@@ -11746,13 +11752,24 @@ SELECT br.track_id,
        br.extension,
        br.bitrate_kbps,
        br.bits_per_sample,
-       br.sample_rate_hz
+       br.sample_rate_hz,
+       br.album_id,
+       br.album_artist_id,
+       br.audio_file_id,
+       br.audio_file_path,
+       br.disc_number,
+       br.track_number,
+       br.track_total
 FROM best_track_rows br
 WHERE br.row_num = 1
   AND (@minFormatRank IS NULL OR COALESCE(br.format_rank, 0) = 0 OR COALESCE(br.format_rank, 0) < @minFormatRank)
   AND (@minBitDepth IS NULL OR COALESCE(br.bits_per_sample, 0) = 0 OR COALESCE(br.bits_per_sample, 0) < @minBitDepth)
   AND (@minSampleRateHz IS NULL OR COALESCE(br.sample_rate_hz, 0) = 0 OR COALESCE(br.sample_rate_hz, 0) < @minSampleRateHz)
-ORDER BY br.artist_name, br.track_title;";
+ORDER BY br.artist_name,
+         br.album_id,
+         COALESCE(br.disc_number, 1),
+         COALESCE(br.track_number, 2147483647),
+         br.track_id;";
 
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("scope", scope ?? string.Empty);
@@ -11945,7 +11962,14 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
             await ReadNullableStringAsync(reader, 13, cancellationToken),
             bestBitrateKbps,
             bestBitsPerSample,
-            bestSampleRateHz);
+            bestSampleRateHz,
+            reader.GetInt64(17),
+            reader.GetInt64(18),
+            reader.GetInt64(19),
+            await ReadNullableStringAsync(reader, 20, cancellationToken) ?? string.Empty,
+            await ReadNullableIntAsync(reader, 21, cancellationToken),
+            await ReadNullableIntAsync(reader, 22, cancellationToken),
+            await ReadNullableIntAsync(reader, 23, cancellationToken));
     }
 
     private static int? NormalizeQualityScanFormatRank(string? minFormat)

@@ -441,7 +441,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private void QueueEnhancementResumeRootPath(string rootPath)
+    private void QueueEnhancementResumeRootPath(string rootPath, bool immediateAfterPipeline = false)
     {
         var normalizedRoot = NormalizePathScope(rootPath);
         if (string.IsNullOrWhiteSpace(normalizedRoot))
@@ -457,14 +457,16 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         if (queued)
         {
-            MarkEnhancementResumeQueued();
+            MarkEnhancementResumeQueued(immediateAfterPipeline);
         }
     }
 
-    private void MarkEnhancementResumeQueued()
+    private void MarkEnhancementResumeQueued(bool immediateAfterPipeline = false)
     {
         _enhancementResumeAwaitingPipelineCompletion = true;
-        _enhancementResumeNotBeforeUtc = DateTimeOffset.UtcNow.Add(EnhancementResumeDelay);
+        _enhancementResumeNotBeforeUtc = immediateAfterPipeline
+            ? DateTimeOffset.UtcNow
+            : DateTimeOffset.UtcNow.Add(EnhancementResumeDelay);
         SaveOrchestrationRuntimeState();
     }
 
@@ -645,8 +647,40 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private void OnAutoTagJobCompleted(AutoTagJob job)
+    private async void OnAutoTagJobCompleted(AutoTagJob job)
     {
+        if (!string.IsNullOrWhiteSpace(job.EnhancementDownloadBatchId))
+        {
+            try
+            {
+                if (string.Equals(job.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase))
+                {
+                    var released = await _queueRepository.ReleaseEnhancementBatchAsync(
+                        job.EnhancementDownloadBatchId,
+                        CancellationToken.None);
+                    if (released > 0 && !string.IsNullOrWhiteSpace(job.RootPath))
+                    {
+                        QueueEnhancementResumeRootPath(job.RootPath, immediateAfterPipeline: true);
+                    }
+                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                        DateTimeOffset.UtcNow,
+                        "info",
+                        $"Automation: released Enhancement download batch {job.EnhancementDownloadBatchId} ({released} item(s)); the next batch will wait for pipeline settlement."));
+                }
+                else
+                {
+                    await _queueRepository.CancelEnhancementBatchAsync(
+                        job.EnhancementDownloadBatchId,
+                        $"Enhancement job ended with status {job.Status}.",
+                        CancellationToken.None);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Failed to finalize Enhancement download batch {BatchId}.", job.EnhancementDownloadBatchId);
+            }
+        }
+
         QueueInterruptedEnhancementResume(job);
         SignalWake();
         _queueWakeSignal.Pulse();
@@ -764,6 +798,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+        var orphanedHeldItems = await _queueRepository.CancelOrphanedEnhancementBatchesAsync(stoppingToken);
+        if (orphanedHeldItems > 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: canceled {orphanedHeldItems} incomplete held Enhancement item(s) recovered after restart."));
+        }
         SetPhase(OrchestrationPhase.Idle);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -1434,11 +1476,33 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         try
         {
+            var technicalUpgrade = ResolveTechnicalUpgradeFinalization(group.PendingItems);
+            if (technicalUpgrade.IsTechnicalUpgrade)
+            {
+                if (technicalUpgrade.SourceAudioPaths.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        "Technical quality upgrade is missing its indexed source-file identity.");
+                }
+                var missingOriginal = technicalUpgrade.SourceAudioPaths
+                    .FirstOrDefault(path => !File.Exists(path));
+                if (!string.IsNullOrWhiteSpace(missingOriginal))
+                {
+                    throw new InvalidOperationException(
+                        $"Technical quality upgrade source file is no longer indexed on disk: {missingOriginal}");
+                }
+            }
             var summary = await _downloadMoveService.MoveForRootWithSummaryAsync(
                 context.DownloadRootPath,
                 new AutoTagOrganizerOptions
                 {
-                    BatchScopedFilesOnly = true
+                    BatchScopedFilesOnly = true,
+                    ResolveSameTrackQualityConflicts = true,
+                    RequireIncomingQualityReplacement = technicalUpgrade.IsTechnicalUpgrade,
+                    DuplicateConflictPolicy = technicalUpgrade.IsTechnicalUpgrade
+                        ? AutoTagOrganizerOptions.DuplicateConflictMoveToDuplicates
+                        : AutoTagOrganizerOptions.DuplicateConflictKeepBest,
+                    DuplicatesFolderName = technicalUpgrade.DuplicatesFolderName
                 },
                 group.SourceFilePaths,
                 Array.Empty<string>(),
@@ -1479,6 +1543,16 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     await MarkPostDownloadFinalizationFailedAsync(group, cancellationToken);
                     return false;
                 }
+                if (technicalUpgrade.IsTechnicalUpgrade)
+                {
+                    await _downloadMoveService.QuarantineReplacedEnhancementSourcesAsync(
+                        group.DestinationFolderId,
+                        technicalUpgrade.SourceAudioPaths,
+                        summary.ChangedFilePaths,
+                        technicalUpgrade.DuplicatesFolderName,
+                        cancellationToken);
+                    await RemoveQuarantinedEnhancementSourcesFromIndexAsync(group, cancellationToken);
+                }
 
                 var postMoveDispatch = await PersistWatchlistFinalizationOutboxAsync(
                     group,
@@ -1511,6 +1585,67 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 $"Automation: post-download finalization failed for destination folder {group.DestinationFolderId} ({ex.Message})."));
             return false;
         }
+    }
+
+    private static (bool IsTechnicalUpgrade, string DuplicatesFolderName, IReadOnlyList<string> SourceAudioPaths)
+        ResolveTechnicalUpgradeFinalization(
+        IReadOnlyList<DownloadQueueItem> items)
+    {
+        var sourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? duplicatesFolderName = null;
+        var foundTechnicalUpgrade = false;
+        foreach (var item in items)
+        {
+            var payload = QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson);
+            var operation = payload["EnhancementOperation"]?.ToString()
+                ?? payload["enhancementOperation"]?.ToString();
+            if (!string.Equals(operation, "technical-quality-upgrade", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foundTechnicalUpgrade = true;
+            var sourcePath = payload["EnhancementSourceAudioPath"]?.ToString()
+                ?? payload["enhancementSourceAudioPath"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(sourcePath))
+            {
+                sourcePaths.Add(sourcePath.Trim());
+            }
+            duplicatesFolderName ??= payload["EnhancementDuplicatesFolderName"]?.ToString()
+                ?? payload["enhancementDuplicatesFolderName"]?.ToString();
+        }
+
+        return !foundTechnicalUpgrade
+            ? (false, DuplicateCleanerService.DuplicatesFolderName, Array.Empty<string>())
+            : (
+                true,
+                string.IsNullOrWhiteSpace(duplicatesFolderName)
+                    ? DuplicateCleanerService.DuplicatesFolderName
+                    : duplicatesFolderName.Trim(),
+                sourcePaths.ToList());
+    }
+
+    private async Task RemoveQuarantinedEnhancementSourcesFromIndexAsync(
+        PipelineWorkGroup group,
+        CancellationToken cancellationToken)
+    {
+        var removedSourcePaths = group.PendingItems
+            .Select(item => QueuePreResolutionPayload.ParseOrEmpty(item.PayloadJson))
+            .Select(payload => payload["EnhancementSourceAudioPath"]?.ToString()
+                ?? payload["enhancementSourceAudioPath"]?.ToString())
+            .Where(path => !string.IsNullOrWhiteSpace(path) && !File.Exists(path))
+            .Select(path => path!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (removedSourcePaths.Count == 0)
+        {
+            return;
+        }
+
+        await _libraryRepository.RemoveLocalAudioFilesByPathAsync(
+            group.DestinationFolderId,
+            removedSourcePaths,
+            cancellationToken);
     }
 
     private async Task<bool> IngestMovedFilesBeforeWatchlistFinalizationAsync(

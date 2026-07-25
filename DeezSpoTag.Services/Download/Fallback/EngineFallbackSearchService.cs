@@ -47,6 +47,20 @@ public interface IAmazonFallbackTrackResolver
         int? durationMs,
         string? isrc,
         CancellationToken cancellationToken);
+
+    Task<AmazonFallbackTrackResolution?> ResolveAmazonAtmosFallbackTrackAsync(
+        string title,
+        string artist,
+        string? album,
+        int? durationMs,
+        string? isrc,
+        string? amazonId,
+        CancellationToken cancellationToken);
+}
+
+public interface IAppleAtmosCapabilityResolver
+{
+    Task<bool> IsAtmosAvailableAsync(string appleUrl, CancellationToken cancellationToken);
 }
 
 public sealed class EngineFallbackSearchService
@@ -64,6 +78,7 @@ public sealed class EngineFallbackSearchService
     private readonly QobuzTrackResolver? _qobuzTrackResolver;
     private readonly TidalDownloadService? _tidalDownloadService;
     private readonly IAmazonFallbackTrackResolver? _amazonFallbackTrackResolver;
+    private readonly IAppleAtmosCapabilityResolver? _appleAtmosCapabilityResolver;
     private readonly ILogger<EngineFallbackSearchService> _logger;
 
     public EngineFallbackSearchService(
@@ -71,20 +86,23 @@ public sealed class EngineFallbackSearchService
         ILogger<EngineFallbackSearchService> logger,
         QobuzTrackResolver? qobuzTrackResolver = null,
         TidalDownloadService? tidalDownloadService = null,
-        IAmazonFallbackTrackResolver? amazonFallbackTrackResolver = null)
+        IAmazonFallbackTrackResolver? amazonFallbackTrackResolver = null,
+        IAppleAtmosCapabilityResolver? appleAtmosCapabilityResolver = null)
     {
         _appleCatalogService = appleCatalogService;
         _logger = logger;
         _qobuzTrackResolver = qobuzTrackResolver;
         _tidalDownloadService = tidalDownloadService;
         _amazonFallbackTrackResolver = amazonFallbackTrackResolver;
+        _appleAtmosCapabilityResolver = appleAtmosCapabilityResolver;
     }
 
     public async Task<EngineFallbackSearchResult> ResolveAsync(
         EngineFallbackSearchRequest request,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(request.SourceUrl)
+        if (!IsAtmosRequest(request)
+            && !string.IsNullOrWhiteSpace(request.SourceUrl)
             && IsServiceUrlMatch(request.SourceUrl, request.Engine)
             && !string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase))
         {
@@ -106,7 +124,8 @@ public sealed class EngineFallbackSearchService
         }
 
         var amazonId = EngineLinkParser.NormalizeAmazonTrackId(request.AmazonId);
-        if (string.Equals(request.Engine, AmazonEngine, StringComparison.OrdinalIgnoreCase)
+        if (!IsAtmosRequest(request)
+            && string.Equals(request.Engine, AmazonEngine, StringComparison.OrdinalIgnoreCase)
             && !string.IsNullOrWhiteSpace(amazonId))
         {
             return new EngineFallbackSearchResult($"https://music.amazon.com/tracks/{amazonId}", "amazon-id");
@@ -122,6 +141,13 @@ public sealed class EngineFallbackSearchService
         }
 
         var appleUrl = await TryBuildAppleFallbackUrlAsync(request, cancellationToken);
+        if (IsAtmosRequest(request)
+            && !string.IsNullOrWhiteSpace(appleUrl)
+            && (_appleAtmosCapabilityResolver == null
+                || !await _appleAtmosCapabilityResolver.IsAtmosAvailableAsync(appleUrl, cancellationToken)))
+        {
+            appleUrl = null;
+        }
         if (!string.IsNullOrWhiteSpace(appleUrl))
         {
             return new EngineFallbackSearchResult(appleUrl, "apple-catalog");
@@ -159,13 +185,22 @@ public sealed class EngineFallbackSearchService
             return null;
         }
 
-        var resolution = await _amazonFallbackTrackResolver.ResolveAmazonFallbackTrackAsync(
-            request.Title,
-            request.Artist,
-            request.Album,
-            request.DurationMs,
-            request.Isrc,
-            cancellationToken);
+        var resolution = IsAtmosRequest(request)
+            ? await _amazonFallbackTrackResolver.ResolveAmazonAtmosFallbackTrackAsync(
+                request.Title,
+                request.Artist,
+                request.Album,
+                request.DurationMs,
+                request.Isrc,
+                request.AmazonId,
+                cancellationToken)
+            : await _amazonFallbackTrackResolver.ResolveAmazonFallbackTrackAsync(
+                request.Title,
+                request.Artist,
+                request.Album,
+                request.DurationMs,
+                request.Isrc,
+                cancellationToken);
         return string.IsNullOrWhiteSpace(resolution?.Id)
             ? null
             : $"https://music.amazon.com/tracks/{resolution.Id}";
