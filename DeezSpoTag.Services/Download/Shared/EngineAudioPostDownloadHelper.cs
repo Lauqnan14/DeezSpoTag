@@ -2227,6 +2227,10 @@ public static partial class EngineAudioPostDownloadHelper
             }
 
             var files = QueuePayloadFileHelper.BuildAudioFiles(execution.Request.Context.PathResult, outputPath);
+            QueuePayloadFileHelper.AddLyricsArtifactFiles(
+                files,
+                runState.LyricsArtifacts,
+                execution.Request.Context.PathResult);
             AddGeneratedSidecars(
                 files,
                 runState.ArtworkResult.GeneratedSidecarPaths,
@@ -2767,6 +2771,7 @@ public static partial class EngineAudioPostDownloadHelper
             execution.Request.Settings,
             token);
         runState.LyricsArtifacts.ApplyResolution(resolution);
+        execution.Request.Payload.LyricsArtifacts = runState.LyricsArtifacts;
         await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
             execution.Paths.QueueUuid,
             runState.LyricsArtifacts,
@@ -2778,11 +2783,16 @@ public static partial class EngineAudioPostDownloadHelper
         var lyrics = resolution.Lyrics;
         if (lyrics != null && lyrics.IsLoaded())
         {
-            await execution.Request.LyricsService.SaveLyricsAsync(lyrics, execution.Request.Context.Track, paths, execution.Request.Settings, token);
+            var savedLyrics = await execution.Request.LyricsService.SaveLyricsAsync(
+                lyrics,
+                execution.Request.Context.Track,
+                paths,
+                execution.Request.Settings,
+                token);
             runState.LyricsArtifacts.ApplyDownloadedFiles(
-                execution.Paths.FileDir,
-                execution.Paths.ExpectedBaseName,
+                savedLyrics.FilesByFormat,
                 lyrics.TtmlLyricsSourceFormat == LyricsSourceFormat.SynthesizedTtml);
+            execution.Request.Payload.LyricsArtifacts = runState.LyricsArtifacts;
             await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
                 execution.Paths.QueueUuid,
                 runState.LyricsArtifacts,
@@ -2827,6 +2837,7 @@ public static partial class EngineAudioPostDownloadHelper
             .Select(file => new Dictionary<string, object>(file, StringComparer.OrdinalIgnoreCase))
             .ToList();
         var files = QueuePayloadFileHelper.BuildAudioFiles(pathResult, outputPath);
+        QueuePayloadFileHelper.AddLyricsArtifactFiles(files, payload.LyricsArtifacts, pathResult);
         AddGeneratedArtworkFiles(files, generatedArtworkFiles);
         payload.Files = files;
     }

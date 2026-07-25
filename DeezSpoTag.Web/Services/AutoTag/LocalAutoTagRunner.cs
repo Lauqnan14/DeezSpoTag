@@ -1221,7 +1221,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Config = context.Plan.Config,
                     Settings = context.Plan.Settings,
                     MatchingConfig = context.Plan.MatchingConfig,
-                    ShazamCache = context.Plan.ShazamCache
+                    ShazamCache = context.Plan.ShazamCache,
+                    IsManualEnrichment = IsManualEnrichment(context.Plan.Config)
                 });
             if (match == null)
             {
@@ -1426,17 +1427,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 frozenRelease.Art ??= match.Track.Art;
                 frozenRelease.ApplyTo(match.Track);
             }
-            await RunBoundedOptionalStepAsync(
-                context,
-                "lyrics",
-                LyricsResolutionTimeout,
-                stepToken => PopulatePlatformLyricsAsync(
-                    context.Platform,
-                    context.File,
-                    match.Track,
-                    context.Plan.Config,
-                    context.Plan.Settings,
-                    stepToken));
+            if (ShouldLookupLyricsInManualEnrichment(context.Plan.Config, context.Plan.Settings))
+            {
+                await RunBoundedOptionalStepAsync(
+                    context,
+                    "lyrics",
+                    LyricsResolutionTimeout,
+                    stepToken => PopulatePlatformLyricsAsync(
+                        context.Platform,
+                        context.File,
+                        match.Track,
+                        context.Plan.Config,
+                        context.Plan.Settings,
+                        stepToken));
+            }
             if (context.Plan.AttemptedAppleExtras.Add(context.FileIndex))
             {
                 await RunBoundedOptionalStepAsync(
@@ -1898,7 +1902,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                         Config = context.Plan.Config,
                         Settings = context.Plan.Settings,
                         MatchingConfig = context.Plan.MatchingConfig,
-                        ShazamCache = context.Plan.ShazamCache
+                        ShazamCache = context.Plan.ShazamCache,
+                        IsManualEnrichment = IsManualEnrichment(context.Plan.Config)
                     },
                     token);
             }
@@ -2377,7 +2382,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var saveAnimatedArtwork = itunesConfig.AnimatedArtwork ?? settings.SaveAnimatedArtwork;
         var wantsAnimatedArtwork = saveAnimatedArtwork
             && (IsManualEnrichment(config) || HasAnyTags(config, AlbumArtTag));
-        var wantsAppleLyrics = ShouldRequestAnyLyrics(config, settings);
+        var wantsAppleLyrics = ShouldLookupLyricsInManualEnrichment(config, settings);
         var wantsCatalogMetadata = string.Equals(platform, ItunesPlatform, StringComparison.OrdinalIgnoreCase)
             && HasAnyTags(
                 config,
@@ -3125,6 +3130,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return requestFlags.WantsSynced || requestFlags.WantsUnsynced || requestFlags.WantsTtml;
     }
 
+    private static bool ShouldLookupLyricsInManualEnrichment(
+        AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings)
+        => IsManualEnrichment(config) && ShouldRequestAnyLyrics(config, settings);
+
     private static HashSet<string> ParseLyricsTypeSelection(string? raw)
     {
         var selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3334,10 +3344,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return config.Platforms
             .Select(platform => platform?.Trim())
             .Where(platform => !string.IsNullOrWhiteSpace(platform))
+            .Where(platform => IsManualEnrichment(config) || !IsLyricsOnlyPlatform(platform!))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(platform => platform!)
             .ToList();
     }
+
+    private static bool IsLyricsOnlyPlatform(string platform)
+        => string.Equals(platform, LrclibProvider, StringComparison.OrdinalIgnoreCase)
+           || string.Equals(platform, "musixmatch", StringComparison.OrdinalIgnoreCase);
 
     private Dictionary<string, HashSet<SupportedTag>> BuildPlatformSupportedTags()
     {
@@ -3357,6 +3372,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required DeezSpoTagSettings Settings { get; init; }
         public required AutoTagMatchingConfig MatchingConfig { get; init; }
         public required IDictionary<string, ShazamRecognitionInfo?> ShazamCache { get; init; }
+        public required bool IsManualEnrichment { get; init; }
     }
 
     private async Task<AutoTagMatchResult?> MatchPlatformAsync(
@@ -3365,7 +3381,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         PlatformMatchContext context,
         CancellationToken token)
     {
-        var enableLyrics = ShouldRequestAnyLyrics(context.Config, context.Settings);
+        var enableLyrics = context.IsManualEnrichment
+            && ShouldRequestAnyLyrics(context.Config, context.Settings);
         var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(context.FilePath).HasAny;
         var beatportReleaseMeta = HasAnyTags(context.Config, AlbumArtistTag, TrackTotalTag);
         var traxsourceExtend = HasAnyTags(context.Config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);

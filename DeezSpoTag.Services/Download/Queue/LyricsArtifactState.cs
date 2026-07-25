@@ -92,32 +92,38 @@ public sealed class LyricsArtifactState
         Status = ResolvedFormats.Count > 0 ? "resolved" : "unavailable";
     }
 
-    public void ApplyDownloadedFiles(string directoryPath, string baseFileName, bool ttmlSynthesized = false)
+    public void ApplyDownloadedFiles(
+        IReadOnlyDictionary<string, string> filesByFormat,
+        bool ttmlSynthesized = false)
     {
         Revision++;
-        var normalizedBaseName = Path.GetFileNameWithoutExtension(baseFileName);
-        var downloaded = new List<string>(4);
-        var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        AddExisting("ttml", Path.Join(directoryPath, normalizedBaseName + ".ttml"), downloaded, files);
-        AddExisting("elrc", Path.Join(directoryPath, normalizedBaseName + ".elrc"), downloaded, files);
-        AddExisting("lrc", Path.Join(directoryPath, normalizedBaseName + ".lrc"), downloaded, files);
-        AddExisting("txt", Path.Join(directoryPath, normalizedBaseName + ".txt"), downloaded, files);
-        DownloadedFormats = downloaded;
-        FilesByFormat = files;
-        foreach (var format in downloaded)
+        FilesByFormat = filesByFormat
+            .Where(pair => IsSupportedFormat(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            .ToDictionary(
+                pair => pair.Key.Trim().ToLowerInvariant(),
+                pair => DownloadPathResolver.NormalizeDisplayPath(pair.Value),
+                StringComparer.OrdinalIgnoreCase);
+        DownloadedFormats = NormalizeFormats(FilesByFormat.Keys);
+        foreach (var format in DownloadedFormats)
         {
             if (!ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
             {
                 ResolvedFormats.Add(format);
             }
         }
-        if (ttmlSynthesized && downloaded.Contains("ttml", StringComparer.OrdinalIgnoreCase))
+        if (ttmlSynthesized && DownloadedFormats.Contains("ttml", StringComparer.OrdinalIgnoreCase))
         {
             SourcesByFormat["ttml"] = "synthesized";
         }
         SuppressPlainWhenRichExists();
         Status = ResolvedFormats.Count > 0 ? "completed" : Status;
     }
+
+    public bool HasLyricsArtifacts()
+        => RequestedFormats.Count > 0
+           || ResolvedFormats.Count > 0
+           || DownloadedFormats.Count > 0
+           || FilesByFormat.Count > 0;
 
     private void SuppressPlainWhenRichExists()
     {
@@ -138,19 +144,8 @@ public sealed class LyricsArtifactState
         FilesByFormat.Remove("txt");
     }
 
-    private static void AddExisting(
-        string format,
-        string path,
-        ICollection<string> formats,
-        IDictionary<string, string> files)
-    {
-        if (!File.Exists(path))
-        {
-            return;
-        }
-        formats.Add(format);
-        files[format] = DownloadPathResolver.NormalizeDisplayPath(path);
-    }
+    private static bool IsSupportedFormat(string format)
+        => format.Trim().ToLowerInvariant() is "ttml" or "elrc" or "lrc" or "txt";
 
     private static List<string> NormalizeFormats(IEnumerable<string> formats)
         => formats.Select(static value => value.Trim().ToLowerInvariant())

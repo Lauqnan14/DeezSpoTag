@@ -40,30 +40,35 @@ public static class QueuePayloadFileHelper
             }
         };
 
-        var outputIo = DownloadPathResolver.ResolveIoPath(displayOutput);
-        var dir = Path.GetDirectoryName(outputIo);
-        if (!string.IsNullOrWhiteSpace(dir))
-        {
-            var baseName = Path.GetFileNameWithoutExtension(outputIo);
-            foreach (var ext in new[] { ".ttml", ".elrc", ".lrc", ".txt" })
-            {
-                var lyricIo = Path.Join(dir, baseName + ext);
-                if (!File.Exists(lyricIo))
-                {
-                    continue;
-                }
-
-                var displayLyric = DownloadPathResolver.NormalizeDisplayPath(lyricIo);
-                files.Add(new Dictionary<string, object>
-                {
-                    ["path"] = displayLyric,
-                    ["albumPath"] = albumPath,
-                    ["artistPath"] = artistPath
-                });
-
-            }
-        }
         return files;
+    }
+
+    public static void AddLyricsArtifactFiles(
+        List<Dictionary<string, object>> files,
+        LyricsArtifactState lyricsArtifacts,
+        PathGenerationResult pathResult)
+    {
+        foreach (var path in lyricsArtifacts.FilesByFormat.Values
+                     .Where(static path => !string.IsNullOrWhiteSpace(path))
+                     .Select(DownloadPathResolver.NormalizeDisplayPath)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (files.Any(file => file.TryGetValue("path", out var existing)
+                                  && string.Equals(
+                                      DownloadPathResolver.NormalizeDisplayPath(existing?.ToString() ?? string.Empty),
+                                      path,
+                                      StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            files.Add(new Dictionary<string, object>
+            {
+                ["path"] = path,
+                ["albumPath"] = DownloadPathResolver.NormalizeDisplayPath(pathResult.FilePath),
+                ["artistPath"] = DownloadPathResolver.NormalizeDisplayPath(pathResult.ArtistPath ?? pathResult.FilePath)
+            });
+        }
     }
 
 }

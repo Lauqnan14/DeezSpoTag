@@ -37,7 +37,9 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         List<string>? tags = null,
         List<string>? targetFiles = null,
         bool includeSubfolders = true,
-        List<string>? platforms = null)
+        List<string>? platforms = null,
+        string? manualReleasePreference = null,
+        long? manualDestinationFolderId = null)
     {
         var config = Activator.CreateInstance(AutoTagRunnerConfigType)
             ?? throw new InvalidOperationException("Failed to instantiate AutoTagRunnerConfig.");
@@ -46,6 +48,8 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         AutoTagRunnerConfigType.GetProperty("TargetFiles")!.SetValue(config, targetFiles);
         AutoTagRunnerConfigType.GetProperty("IncludeSubfolders")!.SetValue(config, includeSubfolders);
         AutoTagRunnerConfigType.GetProperty("Platforms")!.SetValue(config, platforms ?? new List<string>());
+        AutoTagRunnerConfigType.GetProperty("ManualReleasePreference")!.SetValue(config, manualReleasePreference);
+        AutoTagRunnerConfigType.GetProperty("ManualDestinationFolderId")!.SetValue(config, manualDestinationFolderId);
         return config;
     }
 
@@ -202,6 +206,54 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
+    public void ShouldLookupLyricsInManualEnrichment_RejectsAutomaticAndDownloadEnrichment()
+    {
+        var config = CreateRunnerConfig(tags: new List<string> { "syncedLyrics" });
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LrcType = "synced-lyrics",
+            LrcFormat = "lrc"
+        };
+
+        var shouldLookup = InvokeStatic<bool>("ShouldLookupLyricsInManualEnrichment", config, settings);
+
+        Assert.False(shouldLookup);
+    }
+
+    [Fact]
+    public void ShouldLookupLyricsInManualEnrichment_AllowsExplicitManualEnrichment()
+    {
+        var config = CreateRunnerConfig(
+            tags: new List<string> { "syncedLyrics" },
+            manualReleasePreference: "album",
+            manualDestinationFolderId: 1);
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LrcType = "synced-lyrics",
+            LrcFormat = "lrc"
+        };
+
+        var shouldLookup = InvokeStatic<bool>("ShouldLookupLyricsInManualEnrichment", config, settings);
+
+        Assert.True(shouldLookup);
+    }
+
+    [Fact]
+    public void LyricsLookupEntryPoints_AreRestrictedToManualEnrichment()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("if (ShouldLookupLyricsInManualEnrichment(context.Plan.Config, context.Plan.Settings))", source, StringComparison.Ordinal);
+        Assert.Contains("var wantsAppleLyrics = ShouldLookupLyricsInManualEnrichment(config, settings);", source, StringComparison.Ordinal);
+        Assert.Contains("var enableLyrics = context.IsManualEnrichment", source, StringComparison.Ordinal);
+        Assert.Contains("=> IsManualEnrichment(config) && ShouldRequestAnyLyrics(config, settings);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ResolveTargetFiles_OnlyKeepsInScopeSupportedNonAnimatedFiles()
     {
         var root = Path.Combine(Path.GetTempPath(), $"autotag-runner-{Guid.NewGuid():N}");
@@ -295,6 +347,29 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
 
         Assert.Equal(DeezerSpotifyPlatforms, platforms);
+    }
+
+    [Fact]
+    public void BuildEffectivePlatforms_ExcludesLyricsOnlyPlatformsOutsideManualEnrichment()
+    {
+        var config = CreateRunnerConfig(platforms: new List<string> { "deezer", "musixmatch", "lrclib" });
+
+        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
+
+        Assert.Equal(new[] { "deezer" }, platforms);
+    }
+
+    [Fact]
+    public void BuildEffectivePlatforms_RetainsLyricsOnlyPlatformsForManualEnrichment()
+    {
+        var config = CreateRunnerConfig(
+            platforms: new List<string> { "deezer", "musixmatch", "lrclib" },
+            manualReleasePreference: "album",
+            manualDestinationFolderId: 1);
+
+        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
+
+        Assert.Equal(new[] { "deezer", "musixmatch", "lrclib" }, platforms);
     }
 
     [Fact]

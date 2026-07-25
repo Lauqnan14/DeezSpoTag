@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using DeezSpoTag.Services.Download.Qobuz;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using Xunit;
@@ -76,6 +77,33 @@ public sealed class EngineAudioPostDownloadArtworkPayloadTests : IDisposable
 
         Assert.DoesNotContain(payload.Files, file =>
             string.Equals(file["path"].ToString(), unrelatedImagePath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void UpdateAudioPayloadFiles_UsesRecordedLyricsArtifactPathInsteadOfGuessingFromAudioName()
+    {
+        var albumPath = Path.Join(_tempRoot, "Artist", "Album");
+        var outputPath = Path.Join(albumPath, "01 - Final Track.flac");
+        var prefetchedLyricsPath = Path.Join(_tempRoot, "staging", "provider-name.elrc");
+        var payload = new QobuzQueueItem
+        {
+            LyricsArtifacts = new LyricsArtifactState
+            {
+                FilesByFormat = new Dictionary<string, string> { ["elrc"] = prefetchedLyricsPath }
+            }
+        };
+
+        EngineAudioPostDownloadHelper.UpdateAudioPayloadFiles(
+            payload,
+            new PathGenerationResult
+            {
+                FilePath = albumPath,
+                ArtistPath = Path.GetDirectoryName(albumPath)
+            },
+            outputPath);
+
+        Assert.Contains(payload.Files, file =>
+            string.Equals(file["path"].ToString(), prefetchedLyricsPath, StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

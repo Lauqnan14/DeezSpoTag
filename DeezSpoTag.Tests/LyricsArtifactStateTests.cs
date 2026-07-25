@@ -92,26 +92,36 @@ public sealed class LyricsArtifactStateTests
     }
 
     [Fact]
-    public void ApplyDownloadedFiles_RecordsExistingSidecarsAndSuppressesTxt()
+    public void ApplyDownloadedFiles_RecordsWrittenSidecarsAndSuppressesTxt()
     {
-        var directory = Path.Join(Path.GetTempPath(), "deezspotag-lyrics-artifacts", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(directory);
-        try
-        {
-            File.WriteAllText(Path.Join(directory, "track.lrc"), "[00:00.00]line");
-            File.WriteAllText(Path.Join(directory, "track.txt"), "line");
-            var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["lrc"], ["lrclib"], true));
+        var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["lrc"], ["lrclib"], true));
 
-            state.ApplyDownloadedFiles(directory, "track.flac");
-
-            Assert.Equal(["lrc"], state.DownloadedFormats);
-            Assert.Equal("completed", state.Status);
-            Assert.False(state.FilesByFormat.ContainsKey("txt"));
-        }
-        finally
+        state.ApplyDownloadedFiles(new Dictionary<string, string>
         {
-            Directory.Delete(directory, recursive: true);
-        }
+            ["lrc"] = "/music/track.lrc",
+            ["txt"] = "/music/track.txt"
+        });
+
+        Assert.Equal(["lrc"], state.DownloadedFormats);
+        Assert.Equal("completed", state.Status);
+        Assert.False(state.FilesByFormat.ContainsKey("txt"));
+    }
+
+    [Fact]
+    public void ApplyDownloadedFiles_RecordsEveryRichLyricsFormat()
+    {
+        var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["ttml", "elrc", "lrc"], ["musixmatch"], false));
+
+        state.ApplyDownloadedFiles(new Dictionary<string, string>
+        {
+            ["ttml"] = "/music/track.ttml",
+            ["elrc"] = "/music/track.elrc",
+            ["lrc"] = "/music/track.lrc"
+        });
+
+        Assert.Equal(["ttml", "elrc", "lrc"], state.DownloadedFormats);
+        Assert.Equal("/music/track.elrc", state.FilesByFormat["elrc"]);
+        Assert.Equal("completed", state.Status);
     }
 
     [Fact]

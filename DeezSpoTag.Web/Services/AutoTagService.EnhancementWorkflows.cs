@@ -223,7 +223,6 @@ public partial class AutoTagService
             return;
         }
 
-        var enhancementLyricsSettings = BuildEnhancementLyricsSettings(root);
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
         await RunEnhancementWorkflowAsync(
             job,
@@ -238,7 +237,7 @@ public partial class AutoTagService
         await RunEnhancementWorkflowAsync(
             job,
             "quality-checks",
-            token => RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enhancementLyricsSettings, enabledFolders, configPath, token),
+            token => RunConfiguredQualityChecksAsync(job, rootPath, enhancementRoot, enabledFolders, configPath, token),
             cancellationToken);
     }
 
@@ -792,7 +791,6 @@ public partial class AutoTagService
         AutoTagJob job,
         string rootPath,
         JsonObject enhancementRoot,
-        DeezSpoTagSettings enhancementLyricsSettings,
         IReadOnlyList<FolderDto> enabledFolders,
         string configPath,
         CancellationToken cancellationToken)
@@ -825,7 +823,7 @@ public partial class AutoTagService
         await RunFolderTagAlignmentIfRequestedAsync(job, configPath, options, scopedFolders, cancellationToken);
         await RunQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken);
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
-        await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, enhancementLyricsSettings, configPath, cancellationToken);
+        await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, configPath, cancellationToken);
         return EnhancementWorkflowOutcome.Completed($"processed {scopedFolderIds.Count} folder scope(s).");
     }
 
@@ -1137,18 +1135,11 @@ public partial class AutoTagService
         AutoTagJob job,
         QualityCheckOptions options,
         List<long> scopedFolderIds,
-        DeezSpoTagSettings lyricsSettings,
         string configPath,
         CancellationToken cancellationToken)
     {
         if (!options.QueueLyricsRefresh)
         {
-            return;
-        }
-
-        if (!LyricsSettingsPolicy.CanFetchLyrics(lyricsSettings))
-        {
-            AppendLog(job, "enhancement workflow: lyrics refresh skipped (lyrics fetching disabled by settings).");
             return;
         }
 
@@ -1184,7 +1175,6 @@ public partial class AutoTagService
                 {
                     result = await _lyricsRefreshQueueService.RefreshTrackNowAsync(
                         track.TrackId,
-                        lyricsSettings,
                         cancellationToken);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)

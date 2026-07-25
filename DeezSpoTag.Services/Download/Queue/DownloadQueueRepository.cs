@@ -1677,33 +1677,33 @@ WHERE queue_uuid = @queueUuid;";
             var artifactsNode = payload?["lyricsArtifacts"] ?? payload?["LyricsArtifacts"];
             var state = artifactsNode?.Deserialize<LyricsArtifactState>();
             var destinations = JsonSerializer.Deserialize<Dictionary<string, string>>(finalDestinationsJson);
-            if (payload == null || state == null || destinations == null || destinations.Count == 0)
+            if (payload == null
+                || state == null
+                || !state.HasLyricsArtifacts()
+                || destinations == null
+                || destinations.Count == 0)
             {
                 return payloadJson;
             }
 
-            var changed = false;
-            foreach (var format in state.FilesByFormat.Keys.ToArray())
+            var rebasedFiles = new Dictionary<string, string>(state.FilesByFormat, StringComparer.OrdinalIgnoreCase);
+            foreach (var format in new[] { "ttml", "elrc", "lrc", "txt" })
             {
-                var source = state.FilesByFormat[format];
-                var destination = destinations
-                    .FirstOrDefault(pair => string.Equals(pair.Key, source, StringComparison.OrdinalIgnoreCase)).Value;
-                destination ??= destinations.Values.FirstOrDefault(path =>
-                    string.Equals(Path.GetExtension(path), "." + format, StringComparison.OrdinalIgnoreCase));
-                if (string.IsNullOrWhiteSpace(destination)
-                    || string.Equals(destination, source, StringComparison.OrdinalIgnoreCase))
+                rebasedFiles.TryGetValue(format, out var source);
+                var destination = ResolveFinalLyricsDestination(destinations, format, source);
+                if (!string.IsNullOrWhiteSpace(destination))
                 {
-                    continue;
+                    rebasedFiles[format] = destination;
                 }
-                state.FilesByFormat[format] = destination;
-                changed = true;
             }
-            if (!changed)
+
+            var stateBeforeRebase = JsonSerializer.Serialize(state);
+            state.ApplyDownloadedFiles(rebasedFiles);
+            if (string.Equals(stateBeforeRebase, JsonSerializer.Serialize(state), StringComparison.Ordinal))
             {
                 return payloadJson;
             }
 
-            state.Revision++;
             payload.Remove("LyricsArtifacts");
             payload["lyricsArtifacts"] = JsonSerializer.SerializeToNode(state);
             return payload.ToJsonString();
@@ -1713,6 +1713,28 @@ WHERE queue_uuid = @queueUuid;";
             return payloadJson;
         }
     }
+
+    private static string? ResolveFinalLyricsDestination(
+        IReadOnlyDictionary<string, string> destinations,
+        string format,
+        string? source)
+    {
+        if (!string.IsNullOrWhiteSpace(source)
+            && destinations.TryGetValue(source, out var mapped)
+            && IsLyricsFormatPath(mapped, format))
+        {
+            return mapped;
+        }
+
+        return destinations
+            .Where(pair => IsLyricsFormatPath(pair.Value, format))
+            .Select(pair => pair.Value)
+            .FirstOrDefault();
+    }
+
+    private static bool IsLyricsFormatPath(string? path, string format)
+        => !string.IsNullOrWhiteSpace(path)
+           && string.Equals(Path.GetExtension(path), "." + format, StringComparison.OrdinalIgnoreCase);
 
     public async Task MarkMovePendingAsync(string queueUuid, CancellationToken cancellationToken = default)
     {

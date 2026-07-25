@@ -43,6 +43,11 @@ public sealed record LyricsResolutionResult(
     IReadOnlyDictionary<string, string> SourcesByFormat,
     string? Error);
 
+public sealed record LyricsSaveResult(IReadOnlyDictionary<string, string> FilesByFormat)
+{
+    public static LyricsSaveResult Empty { get; } = new(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+}
+
 /// <summary>
 /// Enhanced lyrics service implementing refreezer's dual API approach
 /// Provides robust lyrics fetching with Pipe API primary and GW API fallback
@@ -2908,7 +2913,7 @@ public class LyricsService
     /// Save lyrics to file using priority implementation
     /// Priority: .lrc for synchronized lyrics, .txt for unsynchronized lyrics as fallback
     /// </summary>
-    public async Task SaveLyricsAsync(
+    public async Task<LyricsSaveResult> SaveLyricsAsync(
         Track track,
         (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths,
         DeezSpoTagSettings settings,
@@ -2925,7 +2930,7 @@ public class LyricsService
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("Lyrics saving disabled for track {TrackId}", track.Id);            }
-            return;
+            return LyricsSaveResult.Empty;
         }
 
         try
@@ -2934,21 +2939,23 @@ public class LyricsService
             if (lyrics == null)
             {
             _logger.LogWarning("Lyrics resolution returned null for track {TrackId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id));
-                return;
+                return LyricsSaveResult.Empty;
             }
 
-            await SaveLyricsAsync(lyrics, track, paths, settings, cancellationToken);
+            return await SaveLyricsAsync(lyrics, track, paths, settings, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error saving lyrics for track {TrackId}", track.Id);
         }
+
+        return LyricsSaveResult.Empty;
     }
 
     /// <summary>
     /// Save lyrics to file using already-fetched lyrics data.
     /// </summary>
-    public async Task SaveLyricsAsync(
+    public async Task<LyricsSaveResult> SaveLyricsAsync(
         LyricsBase lyrics,
         Track track,
         (string FilePath, string Filename, string ExtrasPath, string CoverPath, string ArtistPath) paths,
@@ -2965,13 +2972,13 @@ public class LyricsService
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.LogDebug("Lyrics saving disabled for track {TrackId}", track.Id);            }
-            return;
+            return LyricsSaveResult.Empty;
         }
 
         if (lyrics == null || !string.IsNullOrEmpty(lyrics.ErrorMessage))
         {
             _logger.LogWarning("Failed to fetch lyrics for track {TrackId}: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id), DeezSpoTag.Core.Security.LogSanitizer.OneLine(lyrics?.ErrorMessage ?? "Unknown error"));
-            return;
+            return LyricsSaveResult.Empty;
         }
 
         var saveState = new LyricsSaveState(paths, settings);
@@ -2992,6 +2999,26 @@ public class LyricsService
         {
             _logger.LogWarning("No lyrics saved for track {TrackId} - SaveLyrics: {SaveLyrics}, SyncedLyrics: {SyncedLyrics}, HasSynced: {HasSynced}, HasUnsynced: {HasUnsynced}",
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(track.Id), settings.SaveLyrics, settings.SyncedLyrics, lyrics.IsSynced(), !string.IsNullOrEmpty(lyrics.UnsyncedLyrics));
+        }
+
+        return CreateLyricsSaveResult(saveState);
+    }
+
+    private static LyricsSaveResult CreateLyricsSaveResult(LyricsSaveState state)
+    {
+        var files = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddWrittenLyricsFile(files, "lrc", state.LrcPath);
+        AddWrittenLyricsFile(files, "elrc", state.ElrcPath);
+        AddWrittenLyricsFile(files, "ttml", state.TtmlPath);
+        AddWrittenLyricsFile(files, "txt", state.TxtPath);
+        return files.Count == 0 ? LyricsSaveResult.Empty : new LyricsSaveResult(files);
+    }
+
+    private static void AddWrittenLyricsFile(IDictionary<string, string> files, string format, string path)
+    {
+        if (System.IO.File.Exists(path))
+        {
+            files[format] = DownloadPathResolver.NormalizeDisplayPath(path);
         }
     }
 

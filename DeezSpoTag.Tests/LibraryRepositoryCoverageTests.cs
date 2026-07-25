@@ -317,6 +317,7 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var trackAudioInfo = await _repository.GetTrackAudioInfoAsync(trackId);
         Assert.NotNull(trackAudioInfo);
         Assert.Equal("Song One", trackAudioInfo!.Title);
+        Assert.Equal(seeded.Folder.Id, trackAudioInfo.DestinationFolderId);
 
         var existsTrackSource = await _repository.ExistsTrackSourceAsync("deezer", "dz-song-1");
         Assert.True(existsTrackSource);

@@ -582,7 +582,8 @@ public sealed record TrackAudioInfoDto(
     string AlbumTitle,
     int? DurationMs,
     string FilePath,
-    string? CoverPath);
+    string? CoverPath,
+    long DestinationFolderId = 0);
 
 public sealed record OfflineTrackSearchDto(
     string Title,

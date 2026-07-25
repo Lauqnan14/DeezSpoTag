@@ -5171,7 +5171,7 @@ LIMIT @limit;";
         SqliteDataReader reader,
         CancellationToken cancellationToken)
     {
-        var filePath = await ReadAudioFilePathAsync(reader, 6, 7, 8, cancellationToken);
+        var filePath = await ReadAudioFilePathAsync(reader, 7, 8, 9, cancellationToken);
         if (string.IsNullOrWhiteSpace(filePath))
         {
             return null;
@@ -5184,7 +5184,8 @@ LIMIT @limit;";
             reader.GetString(3),
             await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt32(4),
             filePath,
-            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5));
+            await reader.IsDBNullAsync(5, cancellationToken) ? null : reader.GetString(5),
+            reader.GetInt64(6));
     }
 
     private static async Task<PlaylistWatchPreferenceDto> ReadPlaylistWatchPreferenceAsync(SqliteDataReader reader, CancellationToken cancellationToken)
@@ -11470,6 +11471,7 @@ SELECT t.id,
        al.title,
        t.duration_ms,
        al.preferred_cover_path,
+       af.folder_id,
        f.root_path,
        af.relative_path,
        af.path
