@@ -113,7 +113,10 @@ public sealed class MelodayGuardrailTests
         Assert.Contains("/api/library/image?path=${encodeURIComponent(normalized)}&size=240", localCoverNormalizer, StringComparison.Ordinal);
         Assert.Contains("normalized.startsWith('/api/library/image')", localCoverNormalizer, StringComparison.Ordinal);
         Assert.DoesNotContain("preview: '',", localMapper, StringComparison.Ordinal);
-        Assert.Contains("isLocalTracklistSource(normalizedSource)", externalMatcher, StringComparison.Ordinal);
+        Assert.Contains("if (!isDeezerMatchedExternalSource(normalizedSource))", externalMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("'mix'", externalMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("'meloday'", externalMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("'plex'", externalMatcher, StringComparison.Ordinal);
         Assert.DoesNotContain("externalSource !== 'deezer'", renderer, StringComparison.Ordinal);
     }
 

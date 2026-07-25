@@ -1890,7 +1890,7 @@ function getDirectSourceDownloadIdFromCheckbox(checkbox, source) {
         case 'spotify':
             return String(checkbox?.dataset.spotifyId || '').trim();
         case 'apple':
-            return '';
+            return String(checkbox?.dataset.appleId || '').trim();
         case 'tidal':
             return String(checkbox?.dataset.tidalId || '').trim();
         case 'qobuz':
@@ -1927,7 +1927,16 @@ function resolveDownloadSourceForQueue(source, trackElements = []) {
 
 function normalizeTrackRowPlaybackSource(source) {
     const normalized = String(source || '').trim().toLowerCase();
-    return normalized === 'recommendations' ? 'deezer' : (normalized || 'deezer');
+    if (normalized === 'recommendations') {
+        return 'deezer';
+    }
+    if (normalized === 'applemusic'
+        || normalized === 'apple-music'
+        || normalized === 'apple_music'
+        || normalized === 'itunes') {
+        return 'apple';
+    }
+    return normalized || 'deezer';
 }
 
 function isLocalTracklistSource(source) {
@@ -3270,11 +3279,8 @@ function scheduleExternalTracklistMatches(tracks, source) {
         return;
     }
 
-    const normalizedSource = String(source || '').trim().toLowerCase();
-    if (!normalizedSource
-        || normalizedSource === 'deezer'
-        || normalizedSource === 'apple'
-        || isLocalTracklistSource(normalizedSource)) {
+    const normalizedSource = normalizeTrackRowPlaybackSource(source);
+    if (!isDeezerMatchedExternalSource(normalizedSource)) {
         return;
     }
 
@@ -4527,8 +4533,10 @@ function updateMatchedRowPreviewControl(row, deezerId) {
 
     const normalizedId = String(deezerId || '').trim();
     const source = getRowTrackSource(row);
+    if (!isDeezerMatchedExternalSource(source)) {
+        return;
+    }
     const canRetryMatch = !normalizedId
-        && isDeezerMatchedExternalSource(source)
         && !!buildSpotifyTrackResolveRequestFromRow(row);
     const playbackContext = normalizedId
         ? getDeezerPlaybackContextForRow(row, normalizedId)
@@ -4554,6 +4562,9 @@ function updateMatchedRowPreviewControl(row, deezerId) {
 }
 
 function applyMatchedRowState(row, deezerId) {
+    if (!row || !isDeezerMatchedExternalSource(getRowTrackSource(row))) {
+        return;
+    }
     updateMatchedRowCheckbox(row, deezerId);
     const source = getRowTrackSource(row);
     const canRetryMatch = !deezerId
@@ -4580,7 +4591,7 @@ function applyMatchedRowState(row, deezerId) {
 }
 
 function applyUnmatchedRowState(row) {
-    if (!row) {
+    if (!row || !isDeezerMatchedExternalSource(getRowTrackSource(row))) {
         return;
     }
 
@@ -4738,10 +4749,8 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
     if (!Array.isArray(tracks) || tracks.length === 0) {
         return;
     }
-    const normalizedSource = String(source || '').trim().toLowerCase();
-    const isAppleAudioTracklist = normalizedSource === 'apple'
-        && tracks.some(track => track?.isVideo !== true);
-    if (isAppleAudioTracklist) {
+    const normalizedSource = normalizeTrackRowPlaybackSource(source);
+    if (!isDeezerMatchedExternalSource(normalizedSource)) {
         return;
     }
     const incremental = options?.incremental === true;
@@ -6339,7 +6348,9 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             || playbackSource === 'qobuz'
             || playbackSource === 'amazon';
         const isDirectSourceDownloadRow = hasDirectSourceDownloadIdentity(track, platformIds, playbackSource, spotifyId);
-        const isSourceUnmatchedDownloadableRow = isDirectSourceDownloadRow && !deezerId;
+        const isSourceUnmatchedDownloadableRow = playbackSource !== 'apple'
+            && isDirectSourceDownloadRow
+            && !deezerId;
         const isDeadGenericExternalRow = isGenericExternalSource && !isDirectDownloadExternalSource && !deezerId;
         const supportsOnDemandMatch = isDeezerMatchedExternalSource(playbackSource);
         const hasResolvableExternalLink = !!String(track.link || track.sourceUrl || track.appleUrl || '').trim()
@@ -6371,13 +6382,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             && !!deezerId
             && !playbackContext;
         const previewUrl = playbackSource === 'apple'
-            ? (String(track.preview || '').trim()
-                || (deezerId
-                    ? buildDeezerStreamUrl(deezerId, {
-                        type: isPodcastShow ? 'episode' : '',
-                        context: playbackContext
-                    })
-                    : ''))
+            ? String(track.preview || track.previewUrl || track.preview_url || '').trim()
             : (deezerId && !requiresPreparedExternalPreview
                 ? buildDeezerStreamUrl(deezerId, {
                     type: isPodcastShow ? 'episode' : '',
@@ -6390,7 +6395,9 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
         const previewClass = hasPreview || hasMatchedPlaybackIdentity ? '' : (isPendingPreview ? ' is-pending' : ' is-disabled');
         const previewLabel = hasPreview || hasMatchedPlaybackIdentity
             ? (isPodcastShow ? 'Play Episode' : 'Play Track')
-            : (isPendingExternalRow ? 'Resolving Deezer match' : 'No Deezer match');
+            : (playbackSource === 'apple'
+                ? 'Preview unavailable'
+                : (isPendingExternalRow ? 'Resolving Deezer match' : 'No Deezer match'));
         const albumTitle = escapeHtml(track.album?.title || fallbackAlbumTitle || 'Unknown');
         const collectionCell = isPlaylistLike
             ? (isPodcastShow
@@ -6425,6 +6432,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                                data-track-content-type="${isPodcastShow ? 'podcast' : 'track'}"
 	                           data-track-source="${rowSourceAttr}"
 	                           data-spotify-id="${spotifyId || ''}"
+                               data-apple-id="${escapeHtml(platformIds.appleId || '')}"
 	                           data-tidal-id="${escapeHtml(platformIds.tidalId || '')}"
 	                           data-qobuz-id="${escapeHtml(platformIds.qobuzId || '')}"
 	                           data-amazon-id="${escapeHtml(platformIds.amazonId || '')}"

@@ -56,7 +56,9 @@ public sealed class TidalAtmosTracklistGuardrailTests
         Assert.Contains("|| playbackSource === 'qobuz'", view, StringComparison.Ordinal);
         Assert.Contains("|| playbackSource === 'amazon';", view, StringComparison.Ordinal);
         Assert.Contains("const isDirectSourceDownloadRow = hasDirectSourceDownloadIdentity(track, platformIds, playbackSource, spotifyId);", view, StringComparison.Ordinal);
-        Assert.Contains("const isSourceUnmatchedDownloadableRow = isDirectSourceDownloadRow && !deezerId;", view, StringComparison.Ordinal);
+        Assert.Contains("const isSourceUnmatchedDownloadableRow = playbackSource !== 'apple'", view, StringComparison.Ordinal);
+        Assert.Contains("&& isDirectSourceDownloadRow", view, StringComparison.Ordinal);
+        Assert.Contains("&& !deezerId;", view, StringComparison.Ordinal);
         Assert.Contains("const isDeadExternalRow = isDeadSpotifyRow || isDeadBoomplayRow || isDeadGenericExternalRow || isSourceUnmatchedDownloadableRow;", view, StringComparison.Ordinal);
         Assert.Contains("const shouldDisableCheckbox = isDeadExternalRow && !isSourceUnmatchedDownloadableRow;", view, StringComparison.Ordinal);
         Assert.Contains("track-row-source-downloadable", view, StringComparison.Ordinal);

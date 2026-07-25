@@ -179,7 +179,7 @@ namespace DeezSpoTag.Web.Controllers
             string effectiveType,
             string? effectiveLibraryId)
         {
-            var normalizedSource = (effectiveSource ?? DeezerSource).Trim().ToLowerInvariant();
+            var normalizedSource = NormalizeTracklistSource(effectiveSource);
             var normalizedType = (effectiveType ?? string.Empty).Trim().ToLowerInvariant();
             var normalizedAudioVariant = NormalizeAudioVariant(request.AudioVariant);
             var resolvedId = ResolveRequestedId(
@@ -192,11 +192,21 @@ namespace DeezSpoTag.Web.Controllers
             return new TracklistIndexContext(
                 resolvedId,
                 effectiveType ?? string.Empty,
-                effectiveSource ?? DeezerSource,
+                normalizedSource,
                 effectiveLibraryId ?? string.Empty,
                 normalizedSource,
                 normalizedType,
                 normalizedAudioVariant);
+        }
+
+        private static string NormalizeTracklistSource(string? source)
+        {
+            var normalized = (source ?? DeezerSource).Trim().ToLowerInvariant();
+            return normalized switch
+            {
+                "applemusic" or "apple-music" or "apple_music" or "itunes" => AppleSource,
+                _ => normalized
+            };
         }
 
         private async Task<IActionResult?> TryHandleAppleTrackLocalRedirectAsync(
