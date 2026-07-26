@@ -35,7 +35,7 @@ DeezSpoTag automates music workflows end-to-end:
 - Some features are experimental and may modify music metadata.
 - Do not run this on your main library without a backup.
 - Most tagging platforms have been thoroughly tested with the exception of Beatport, BPM Supreme, Truxsource and Last.fm
-- Enhacement run, otherwise known as Library maintenance, is approximately 70% ready. Folder Uniformity is the biggest section that is still under development, and requires though testing.
+- Enhacement run, otherwise known as Library maintenance, is approximately 70% ready. Folder Uniformity is the biggest section that is still under development, and requires thorough testing.
 - Manual tagging is still under heavy development.
 - Soundtrack fetching requires a lot of work to reliably fetch soundtracks.
 
