@@ -8,6 +8,7 @@ namespace DeezSpoTag.Integrations.Jellyfin;
 
 public class JellyfinApiClient
 {
+    private const int PlaylistWriteBatchSize = 100;
     private const string EmbyTokenHeader = "X-Emby-Token";
     private const string OverviewProperty = "Overview";
     private const string RecursiveQuerySegment = "?Recursive=true";
@@ -604,11 +605,13 @@ public class JellyfinApiClient
             return null;
         }
 
-        var ids = string.Join(",",
-            itemIds
-                .Where(static value => !string.IsNullOrWhiteSpace(value))
-                .Select(static value => value.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase));
+        var normalizedItemIds = itemIds
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var firstBatch = normalizedItemIds.Take(PlaylistWriteBatchSize).ToList();
+        var ids = string.Join(",", firstBatch);
 
         var query = new StringBuilder();
         query.Append("/Playlists");
@@ -638,7 +641,17 @@ public class JellyfinApiClient
                     && idElement.ValueKind == JsonValueKind.String
                     && !string.IsNullOrWhiteSpace(idElement.GetString()))
                 {
-                    return idElement.GetString();
+                    var createdId = idElement.GetString();
+                    return await AddRemainingPlaylistItemsAsync(
+                        serverUrl,
+                        apiKey,
+                        userId,
+                        createdId!,
+                        normalizedItemIds,
+                        firstBatch.Count,
+                        cancellationToken)
+                        ? createdId
+                        : null;
                 }
             }
             catch (JsonException)
@@ -647,7 +660,22 @@ public class JellyfinApiClient
             }
         }
 
-        return await FindPlaylistIdByNameAsync(serverUrl, apiKey, userId, playlistName, cancellationToken);
+        var playlistId = await FindPlaylistIdByNameAsync(serverUrl, apiKey, userId, playlistName, cancellationToken);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return null;
+        }
+
+        return await AddRemainingPlaylistItemsAsync(
+            serverUrl,
+            apiKey,
+            userId,
+            playlistId,
+            normalizedItemIds,
+            firstBatch.Count,
+            cancellationToken)
+            ? playlistId
+            : null;
     }
 
     public async Task<List<JellyfinPlaylistEntry>> GetPlaylistEntriesAsync(
@@ -700,26 +728,52 @@ public class JellyfinApiClient
             return false;
         }
 
-        var ids = string.Join(",",
-            itemIds
-                .Where(static value => !string.IsNullOrWhiteSpace(value))
-                .Select(static value => value.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(ids))
+        var normalizedItemIds = itemIds
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalizedItemIds.Count == 0)
         {
             return true;
         }
 
-        var query = new StringBuilder();
-        query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
-        query.Append($"?UserId={Uri.EscapeDataString(userId)}");
-        query.Append($"&Ids={Uri.EscapeDataString(ids)}");
+        for (var offset = 0; offset < normalizedItemIds.Count; offset += PlaylistWriteBatchSize)
+        {
+            var ids = string.Join(",", normalizedItemIds.Skip(offset).Take(PlaylistWriteBatchSize));
+            var query = new StringBuilder();
+            query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
+            query.Append($"?UserId={Uri.EscapeDataString(userId)}");
+            query.Append($"&Ids={Uri.EscapeDataString(ids)}");
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        return response.IsSuccessStatusCode;
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
+
+    private async Task<bool> AddRemainingPlaylistItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyList<string> itemIds,
+        int offset,
+        CancellationToken cancellationToken)
+        => offset >= itemIds.Count
+            || await AddPlaylistItemsAsync(
+                serverUrl,
+                apiKey,
+                userId,
+                playlistId,
+                itemIds.Skip(offset).ToList(),
+                cancellationToken);
 
     public async Task<bool> RemovePlaylistEntriesAsync(
         string serverUrl,

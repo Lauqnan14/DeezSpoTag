@@ -23,6 +23,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchTargetMembershipTable = "playlist_watch_target_membership";
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
     private const string MediaServerTrackMetadataTable = "media_server_track_metadata";
+    private const string MediaServerTrackVariantMetadataTable = "media_server_track_variant_metadata";
     private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
     private const string WatchlistReconciliationRequestTable = "watchlist_reconciliation_request";
     private const string WatchlistFinalizationOutboxTable = "watchlist_finalization_outbox";
@@ -126,6 +127,8 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_target_membership_track"] = (PlaylistWatchTargetMembershipTable, "source, source_id, track_source_id", false)
             ,
             ["idx_media_server_track_metadata_service_item"] = (MediaServerTrackMetadataTable, "service, target_item_id", false)
+            ,
+            ["idx_media_server_track_variant_metadata_service_item"] = (MediaServerTrackVariantMetadataTable, "service, audio_variant, target_item_id", false)
             ,
             ["idx_playlist_watch_download_claim_queue"] = (PlaylistWatchDownloadClaimTable, "queue_uuid, status", false)
             ,
@@ -457,6 +460,16 @@ CREATE TABLE IF NOT EXISTS media_server_track_metadata (
     file_path TEXT,
     updated_at_utc TEXT NOT NULL,
     PRIMARY KEY (track_id, service)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS media_server_track_variant_metadata (
+    track_id BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    audio_variant TEXT NOT NULL,
+    target_item_id TEXT NOT NULL,
+    file_path TEXT,
+    updated_at_utc TEXT NOT NULL,
+    PRIMARY KEY (track_id, service, audio_variant)
 );", cancellationToken);
         await MigrateLegacyPlaylistWatchTargetMembershipAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"

@@ -860,6 +860,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 skippedByLockBusy++;
                 continue;
             }
+
+            var targetSync = serviceProvider.GetService<WatchlistPostDownloadSyncService>();
+            if (targetSync is not null)
+            {
+                await targetSync.ProcessTargetSyncWorkAsync(
+                    syncJobLimit: 1,
+                    timeBudget: TimeSpan.FromSeconds(5),
+                    stoppingToken);
+            }
+
             processed++;
             if (execution.Outcome == WatchItemRunOutcome.Success)
             {

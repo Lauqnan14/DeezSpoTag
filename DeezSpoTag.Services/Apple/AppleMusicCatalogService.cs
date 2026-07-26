@@ -10,6 +10,11 @@ namespace DeezSpoTag.Services.Apple;
 
 public sealed class AppleMusicCatalogService
 {
+    public sealed record ApplePlaylistTracksResult(
+        IReadOnlyList<JsonElement> Tracks,
+        bool IsComplete,
+        string? IncompleteReason = null);
+
     public sealed record AppleSearchOptions(
         string? TypesOverride = null,
         int Offset = 0,
@@ -275,6 +280,75 @@ public sealed class AppleMusicCatalogService
             TimeSpan.FromMinutes(5),
             () => SendWithTokenRetryRawAsync(HttpMethod.Get, normalizedUrl, cancellationToken));
     }
+
+    public async Task<ApplePlaylistTracksResult> GetCompletePlaylistTracksAsync(
+        string id,
+        string storefront,
+        string language,
+        CancellationToken cancellationToken)
+    {
+        const int pageSize = 100;
+        var tracks = new List<JsonElement>();
+        var seenPageUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        JsonDocument? pageDocument = await GetPlaylistTracksAsync(
+            id,
+            storefront,
+            language,
+            pageSize,
+            offset: 0,
+            cancellationToken);
+
+        try
+        {
+            while (pageDocument is not null)
+            {
+                var root = pageDocument.RootElement;
+                if (!root.TryGetProperty("data", out var data)
+                    || data.ValueKind != JsonValueKind.Array)
+                {
+                    return new ApplePlaylistTracksResult(
+                        tracks,
+                        IsComplete: false,
+                        "Apple playlist track page did not contain a data array.");
+                }
+
+                tracks.AddRange(data.EnumerateArray().Select(static track => track.Clone()));
+
+                var nextUrl = ReadNextPageUrl(root);
+                if (string.IsNullOrWhiteSpace(nextUrl))
+                {
+                    return new ApplePlaylistTracksResult(tracks, IsComplete: true);
+                }
+
+                var normalizedNextUrl = ToAbsoluteAppleUrl(nextUrl);
+                if (!seenPageUrls.Add(normalizedNextUrl))
+                {
+                    return new ApplePlaylistTracksResult(
+                        tracks,
+                        IsComplete: false,
+                        "Apple playlist pagination repeated a page URL.");
+                }
+
+                pageDocument.Dispose();
+                pageDocument = await GetPlaylistTracksPageAsync(normalizedNextUrl, cancellationToken);
+            }
+        }
+        finally
+        {
+            pageDocument?.Dispose();
+        }
+
+        return new ApplePlaylistTracksResult(
+            tracks,
+            IsComplete: false,
+            "Apple playlist pagination ended before the final page.");
+    }
+
+    private static string? ReadNextPageUrl(JsonElement root)
+        => root.TryGetProperty("next", out var nextElement)
+           && nextElement.ValueKind == JsonValueKind.String
+            ? nextElement.GetString()
+            : null;
 
     public async Task<JsonDocument> GetArtistAlbumsAsync(
         string id,

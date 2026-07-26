@@ -2695,7 +2695,7 @@ internal sealed class WatchlistEngine
                 Description: playlistData?.Description,
                 ImageUrl: playlistData?.ImageUrl,
                 TrackCount: playlistData?.TrackCount,
-                IsComplete: playlistData != null,
+                IsComplete: playlistData?.IsComplete == true,
                 CanClearImageUrl: true));
     }
 
@@ -3267,7 +3267,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             playlistId,
             storefront,
             language: "en-US",
-            cancellationToken);
+            cancellationToken,
+            includeTracks: false);
 
         var root = doc.RootElement;
         if (!root.TryGetProperty("data", out var dataArr)
@@ -3289,16 +3290,17 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var imageUrl = ResolveAppleArtworkUrl(attributes);
         int? trackCount = GetJsonInt(attributes, "trackCount");
         var tracks = new List<WatchIntentTrack>();
-
-        if (TryGetApplePlaylistTracksData(playlist, out var tracksData))
+        var playlistTracks = await _appleCatalogService.GetCompletePlaylistTracksAsync(
+            playlistId,
+            storefront,
+            "en-US",
+            cancellationToken);
+        foreach (var track in playlistTracks.Tracks)
         {
-            foreach (var track in tracksData.EnumerateArray())
+            var watchTrack = BuildApplePlaylistWatchTrack(track, storefront, imageUrl);
+            if (watchTrack is not null)
             {
-                var watchTrack = BuildApplePlaylistWatchTrack(track, storefront, imageUrl);
-                if (watchTrack is not null)
-                {
-                    tracks.Add(watchTrack);
-                }
+                tracks.Add(watchTrack);
             }
         }
 
@@ -3307,18 +3309,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             trackCount = tracks.Count;
         }
 
-        return new ApplePlaylistWatchData(name, description, imageUrl, trackCount, tracks);
-    }
-
-    private static bool TryGetApplePlaylistTracksData(JsonElement playlist, out JsonElement tracksData)
-    {
-        tracksData = default;
-        return playlist.TryGetProperty("relationships", out var relationships)
-               && relationships.ValueKind == JsonValueKind.Object
-               && relationships.TryGetProperty("tracks", out var tracksRel)
-               && tracksRel.ValueKind == JsonValueKind.Object
-               && tracksRel.TryGetProperty("data", out tracksData)
-               && tracksData.ValueKind == JsonValueKind.Array;
+        var countMatches = !trackCount.HasValue
+                           || trackCount.Value <= 0
+                           || trackCount.Value == tracks.Count;
+        return new ApplePlaylistWatchData(
+            name,
+            description,
+            imageUrl,
+            trackCount,
+            tracks,
+            playlistTracks.IsComplete && countMatches);
     }
 
     private static WatchIntentTrack? BuildApplePlaylistWatchTrack(
@@ -5291,7 +5291,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? Description,
         string? ImageUrl,
         int? TrackCount,
-        IReadOnlyCollection<WatchIntentTrack> Tracks);
+        IReadOnlyCollection<WatchIntentTrack> Tracks,
+        bool IsComplete);
 
     private sealed record BoomplayPlaylistWatchData(
         string Name,

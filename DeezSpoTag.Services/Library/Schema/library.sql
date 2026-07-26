@@ -1023,6 +1023,28 @@ CREATE TABLE IF NOT EXISTS track_plex_metadata (
     PRIMARY KEY (track_id)
 );
 
+CREATE TABLE IF NOT EXISTS media_server_track_metadata (
+    track_id BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    target_item_id TEXT NOT NULL,
+    file_path TEXT,
+    updated_at_utc TEXT NOT NULL,
+    PRIMARY KEY (track_id, service)
+);
+
+CREATE TABLE IF NOT EXISTS media_server_track_variant_metadata (
+    track_id BIGINT NOT NULL,
+    service TEXT NOT NULL,
+    audio_variant TEXT NOT NULL,
+    target_item_id TEXT NOT NULL,
+    file_path TEXT,
+    updated_at_utc TEXT NOT NULL,
+    PRIMARY KEY (track_id, service, audio_variant)
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_server_track_variant_metadata_service_item
+    ON media_server_track_variant_metadata (service, audio_variant, target_item_id);
+
 CREATE TABLE IF NOT EXISTS download_task (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     queue_uuid TEXT UNIQUE,

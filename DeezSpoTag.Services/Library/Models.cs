@@ -895,7 +895,8 @@ public sealed record MediaServerTrackMetadataUpsertDto(
     string Service,
     string TargetItemId,
     string? FilePath,
-    DateTimeOffset UpdatedAtUtc);
+    DateTimeOffset UpdatedAtUtc,
+    string? AudioVariant = null);
 
 public sealed record ArtistWatchStateDto(
     long ArtistId,

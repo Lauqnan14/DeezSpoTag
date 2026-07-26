@@ -3680,14 +3680,30 @@ WITH requested AS (
     SELECT CAST(value AS INTEGER) AS track_id
     FROM json_each(@trackIdsJson)
 )
-SELECT mst.track_id,
-       mst.target_item_id
-FROM media_server_track_metadata mst
-JOIN requested r ON r.track_id = mst.track_id
-WHERE mst.service = @service
-  AND mst.target_item_id IS NOT NULL
-  AND TRIM(mst.target_item_id) <> ''
-ORDER BY mst.track_id, mst.updated_at_utc DESC;";
+SELECT track_id,
+       target_item_id
+FROM (
+    SELECT mst.track_id,
+           mst.target_item_id,
+           CASE WHEN mst.audio_variant = 'stereo' THEN 0 ELSE 1 END AS variant_order,
+           mst.updated_at_utc
+    FROM media_server_track_variant_metadata mst
+    JOIN requested r ON r.track_id = mst.track_id
+    WHERE mst.service = @service
+      AND mst.target_item_id IS NOT NULL
+      AND TRIM(mst.target_item_id) <> ''
+    UNION ALL
+    SELECT legacy.track_id,
+           legacy.target_item_id,
+           2 AS variant_order,
+           legacy.updated_at_utc
+    FROM media_server_track_metadata legacy
+    JOIN requested r ON r.track_id = legacy.track_id
+    WHERE legacy.service = @service
+      AND legacy.target_item_id IS NOT NULL
+      AND TRIM(legacy.target_item_id) <> ''
+)
+ORDER BY track_id, variant_order, updated_at_utc DESC;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("service", normalizedService);
         command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(trackIds));
@@ -3726,6 +3742,15 @@ ON CONFLICT(track_id, service) DO UPDATE SET
     target_item_id = excluded.target_item_id,
     file_path = excluded.file_path,
     updated_at_utc = excluded.updated_at_utc;";
+        const string variantSql = @"
+INSERT INTO media_server_track_variant_metadata
+    (track_id, service, audio_variant, target_item_id, file_path, updated_at_utc)
+VALUES
+    (@trackId, @service, @audioVariant, @targetItemId, @filePath, @updatedAt)
+ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
+    target_item_id = excluded.target_item_id,
+    file_path = excluded.file_path,
+    updated_at_utc = excluded.updated_at_utc;";
 
         await using var command = new SqliteCommand(sql, connection, (SqliteTransaction)transaction);
         var trackIdParameter = command.Parameters.Add("@trackId", SqliteType.Integer);
@@ -3733,6 +3758,13 @@ ON CONFLICT(track_id, service) DO UPDATE SET
         var targetItemIdParameter = command.Parameters.Add("@targetItemId", SqliteType.Text);
         var filePathParameter = command.Parameters.Add("@filePath", SqliteType.Text);
         var updatedAtParameter = command.Parameters.Add("@updatedAt", SqliteType.Text);
+        await using var variantCommand = new SqliteCommand(variantSql, connection, (SqliteTransaction)transaction);
+        var variantTrackIdParameter = variantCommand.Parameters.Add("@trackId", SqliteType.Integer);
+        var variantServiceParameter = variantCommand.Parameters.Add("@service", SqliteType.Text);
+        var audioVariantParameter = variantCommand.Parameters.Add("@audioVariant", SqliteType.Text);
+        var variantTargetItemIdParameter = variantCommand.Parameters.Add("@targetItemId", SqliteType.Text);
+        var variantFilePathParameter = variantCommand.Parameters.Add("@filePath", SqliteType.Text);
+        var variantUpdatedAtParameter = variantCommand.Parameters.Add("@updatedAt", SqliteType.Text);
 
         foreach (var item in metadata)
         {
@@ -3750,9 +3782,58 @@ ON CONFLICT(track_id, service) DO UPDATE SET
             filePathParameter.Value = string.IsNullOrWhiteSpace(item.FilePath) ? DBNull.Value : item.FilePath.Trim();
             updatedAtParameter.Value = item.UpdatedAtUtc.ToString("O");
             await command.ExecuteNonQueryAsync(cancellationToken);
+
+            var audioVariant = await ResolveMediaServerAudioVariantAsync(
+                connection,
+                (SqliteTransaction)transaction,
+                item,
+                cancellationToken);
+            variantTrackIdParameter.Value = item.TrackId;
+            variantServiceParameter.Value = normalizedService;
+            audioVariantParameter.Value = audioVariant;
+            variantTargetItemIdParameter.Value = item.TargetItemId.Trim();
+            variantFilePathParameter.Value = string.IsNullOrWhiteSpace(item.FilePath) ? DBNull.Value : item.FilePath.Trim();
+            variantUpdatedAtParameter.Value = item.UpdatedAtUtc.ToString("O");
+            await variantCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    private static async Task<string> ResolveMediaServerAudioVariantAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        MediaServerTrackMetadataUpsertDto item,
+        CancellationToken cancellationToken)
+    {
+        var explicitVariant = item.AudioVariant?.Trim().ToLowerInvariant();
+        if (explicitVariant is "atmos" or "stereo")
+        {
+            return explicitVariant;
+        }
+
+        await using var command = new SqliteCommand(@"
+SELECT CASE
+         WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos'
+           OR COALESCE(af.channels, 0) > 2
+           OR LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+           OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+           OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
+           OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
+           OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+           OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
+         THEN 'atmos'
+         ELSE 'stereo'
+       END
+FROM audio_file af
+JOIN track_local tl ON tl.audio_file_id = af.id
+WHERE tl.track_id = @trackId
+ORDER BY CASE WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 1 ELSE 0 END,
+         COALESCE(af.quality_rank, 0) DESC
+LIMIT 1;", connection, transaction);
+        command.Parameters.AddWithValue("trackId", item.TrackId);
+        var resolved = await command.ExecuteScalarAsync(cancellationToken);
+        return resolved as string ?? "stereo";
     }
 
     public async Task UpsertPlexTrackMetadataAsync(
@@ -12388,6 +12469,61 @@ MAX(COALESCE(
     END,
     0))";
 
+    private const string LocalTrackBatchVariantPredicateSql = @"
+(
+    i.require_atmos IS NULL
+    OR i.require_atmos = 2
+    OR (
+        CASE
+            WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos'
+              OR COALESCE(af.channels, 0) > 2
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
+              OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.ac3', '.mlp')
+            THEN 1
+            ELSE 0
+        END
+    ) = i.require_atmos
+)";
+
+    private const string LocalTrackBatchCandidateQualitySql = @"
+MAX(
+    COALESCE(
+        af.quality_rank,
+        CASE
+            WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 5
+            WHEN COALESCE(af.bits_per_sample, 0) >= 24 OR COALESCE(af.sample_rate_hz, 0) > 48000 THEN 4
+            WHEN COALESCE(af.bits_per_sample, 0) >= 16
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%flac%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%alac%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%lossless%'
+              OR LOWER(COALESCE(af.codec, '')) LIKE '%pcm%' THEN 3
+            WHEN COALESCE(af.bitrate_kbps, af.bitrate, 0) >= 192 THEN 2
+            ELSE 1
+        END,
+        0)
+    - CASE
+        WHEN i.require_atmos = 2
+         AND (
+            LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos'
+            OR COALESCE(af.channels, 0) > 2
+            OR LOWER(COALESCE(af.codec, '')) LIKE '%ec-3%'
+            OR LOWER(COALESCE(af.codec, '')) LIKE '%eac3%'
+            OR LOWER(COALESCE(af.codec, '')) LIKE '%ac-3%'
+            OR LOWER(COALESCE(af.codec, '')) LIKE '%ac3%'
+            OR LOWER(COALESCE(af.codec, '')) LIKE '%truehd%'
+            OR LOWER(COALESCE(af.codec, '')) LIKE '%mlp%'
+            OR LOWER(COALESCE(af.extension, '')) IN ('.ec3', '.ac3', '.mlp')
+         )
+        THEN 100
+        ELSE 0
+      END
+)";
+
     private const string LocalTrackMetadataRichnessSql = @"
 (
     CASE WHEN NULLIF(TRIM(t.tag_title), '') IS NOT NULL THEN 1 ELSE 0 END +
@@ -12432,7 +12568,8 @@ MAX(COALESCE(
         string ArtistSearch,
         string? NormalizedIsrc,
         string? NormalizedSource,
-        string? NormalizedSourceId);
+        string? NormalizedSourceId,
+        int? RequireAtmosVariant);
 
     private static readonly LocalTrackIdentityResult LocalLibraryNotConfiguredIdentity =
         new(null, "none", "The local library is not configured.", Array.Empty<long>());
@@ -12819,7 +12956,8 @@ LIMIT 100;";
 
     public async Task<IReadOnlyList<LocalTrackIdentityResult>> ResolveLocalTrackIdentitiesAsync(
         IReadOnlyList<LibraryExistenceInput> inputs,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? audioVariant = null)
     {
         if (inputs.Count == 0)
         {
@@ -12836,7 +12974,12 @@ LIMIT 100;";
         var results = Enumerable
             .Repeat(NoLocalTrackMetadataMatchIdentity, inputs.Count)
             .ToArray();
-        var lookups = BuildLocalTrackBatchLookups(inputs, results);
+        var lookups = BuildLocalTrackBatchLookups(
+            inputs,
+            results,
+            string.Equals(audioVariant?.Trim(), "stereo_preferred", StringComparison.OrdinalIgnoreCase)
+                ? 2
+                : NormalizeAudioVariantFlag(audioVariant));
         if (lookups.Count == 0)
         {
             return results;
@@ -12860,7 +13003,8 @@ LIMIT 100;";
 
     private static IReadOnlyList<LocalTrackBatchLookup> BuildLocalTrackBatchLookups(
         IReadOnlyList<LibraryExistenceInput> inputs,
-        LocalTrackIdentityResult[] results)
+        LocalTrackIdentityResult[] results,
+        int? requireAtmosVariant)
     {
         var lookups = new List<LocalTrackBatchLookup>(inputs.Count);
         for (var index = 0; index < inputs.Count; index++)
@@ -12880,7 +13024,8 @@ LIMIT 100;";
                     string.Empty,
                     normalizedIsrc,
                     normalizedSource,
-                    normalizedSourceId));
+                    normalizedSourceId,
+                    requireAtmosVariant));
                 continue;
             }
 
@@ -12892,7 +13037,8 @@ LIMIT 100;";
                 artistSearch,
                 normalizedIsrc,
                 normalizedSource,
-                normalizedSourceId));
+                normalizedSourceId,
+                requireAtmosVariant));
         }
 
         return lookups;
@@ -12918,7 +13064,8 @@ CREATE TEMP TABLE temp_local_track_identity_input (
     isrc TEXT,
     source TEXT,
     source_id TEXT,
-    artist_search TEXT
+    artist_search TEXT,
+    require_atmos INTEGER
 );", connection))
         {
             await create.ExecuteNonQueryAsync(cancellationToken);
@@ -12926,13 +13073,14 @@ CREATE TEMP TABLE temp_local_track_identity_input (
 
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var insert = new SqliteCommand(@"
-INSERT INTO temp_local_track_identity_input (input_index, isrc, source, source_id, artist_search)
-VALUES (@inputIndex, @isrc, @source, @sourceId, @artistSearch);", connection, transaction);
+INSERT INTO temp_local_track_identity_input (input_index, isrc, source, source_id, artist_search, require_atmos)
+VALUES (@inputIndex, @isrc, @source, @sourceId, @artistSearch, @requireAtmos);", connection, transaction);
         var indexParameter = insert.Parameters.Add("inputIndex", SqliteType.Integer);
         var isrcParameter = insert.Parameters.Add("isrc", SqliteType.Text);
         var sourceParameter = insert.Parameters.Add("source", SqliteType.Text);
         var sourceIdParameter = insert.Parameters.Add("sourceId", SqliteType.Text);
         var artistSearchParameter = insert.Parameters.Add("artistSearch", SqliteType.Text);
+        var requireAtmosParameter = insert.Parameters.Add("requireAtmos", SqliteType.Integer);
         foreach (var lookup in lookups)
         {
             indexParameter.Value = lookup.Index;
@@ -12942,6 +13090,7 @@ VALUES (@inputIndex, @isrc, @source, @sourceId, @artistSearch);", connection, tr
             artistSearchParameter.Value = string.IsNullOrWhiteSpace(lookup.ArtistSearch)
                 ? (object)DBNull.Value
                 : lookup.ArtistSearch;
+            requireAtmosParameter.Value = (object?)lookup.RequireAtmosVariant ?? DBNull.Value;
             await insert.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -12968,7 +13117,7 @@ SELECT i.input_index,
        COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
        COALESCE(NULLIF(t.tag_album, ''), al.title),
        COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)),
-       {LocalTrackCandidateQualitySql},
+       {LocalTrackBatchCandidateQualitySql},
        {LocalTrackMetadataRichnessSql}
 FROM temp_local_track_identity_input i
 JOIN track t
@@ -12980,6 +13129,7 @@ JOIN folder f ON f.id=af.folder_id
 LEFT JOIN track_source ts ON ts.track_id=t.id AND LOWER(ts.source)='isrc'
 WHERE f.enabled=TRUE
   AND i.isrc IS NOT NULL
+  AND {LocalTrackBatchVariantPredicateSql}
   AND (LOWER(t.tag_isrc)=LOWER(i.isrc) OR LOWER(ts.source_id)=LOWER(i.isrc))
 GROUP BY i.input_index, t.id;";
         await ResolveBatchExactMatchesAsync(connection, results, sql, "isrc", "Matched the stored ISRC.", cancellationToken);
@@ -12997,7 +13147,7 @@ SELECT i.input_index,
        COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
        COALESCE(NULLIF(t.tag_album, ''), al.title),
        COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)),
-       {LocalTrackCandidateQualitySql},
+       {LocalTrackBatchCandidateQualitySql},
        {LocalTrackMetadataRichnessSql}
 FROM temp_local_track_identity_input i
 JOIN track_source ts ON LOWER(ts.source)=LOWER(i.source)
@@ -13010,6 +13160,7 @@ JOIN folder f ON f.id=af.folder_id
 WHERE f.enabled=TRUE
   AND i.source IS NOT NULL
   AND i.source_id IS NOT NULL
+  AND {LocalTrackBatchVariantPredicateSql}
   AND (LOWER(ts.source_id)=LOWER(i.source_id)
        OR INSTR(';' || LOWER(ts.source_id) || ';', ';' || LOWER(i.source_id) || ';') > 0)
 GROUP BY i.input_index, t.id;";
@@ -13072,7 +13223,7 @@ SELECT i.input_index,
        COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name) AS match_artist,
        COALESCE(NULLIF(t.tag_album, ''), al.title) AS match_album,
        COALESCE(t.tag_duration_ms, t.duration_ms, MAX(af.duration_ms)) AS match_duration_ms,
-       {LocalTrackCandidateQualitySql} AS quality_rank,
+       {LocalTrackBatchCandidateQualitySql} AS quality_rank,
        {LocalTrackMetadataRichnessSql} AS metadata_richness
 FROM temp_local_track_identity_input i
 JOIN track t
@@ -13083,6 +13234,7 @@ JOIN audio_file af ON af.id=tl.audio_file_id
 JOIN folder f ON f.id=af.folder_id
 WHERE f.enabled=TRUE
   AND i.artist_search IS NOT NULL
+  AND {LocalTrackBatchVariantPredicateSql}
   AND (LOWER(ar.name) LIKE LOWER(i.artist_search)
        OR LOWER(COALESCE(t.tag_artist, '')) LIKE LOWER(i.artist_search)
        OR LOWER(COALESCE(t.tag_album_artist, '')) LIKE LOWER(i.artist_search))

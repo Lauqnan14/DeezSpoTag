@@ -1500,7 +1500,10 @@ public sealed class PlaylistSyncService
     {
         var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
         var inputs = BuildLocalTrackIdentityInputs(source, eligibleTracks);
-        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(inputs, cancellationToken);
+        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
+            inputs,
+            cancellationToken,
+            audioVariant: "stereo_preferred");
         for (var index = 0; index < eligibleTracks.Count; index++)
         {
             var track = eligibleTracks[index];
@@ -2877,7 +2880,8 @@ public sealed class PlaylistSyncService
     {
         var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
             BuildLocalTrackIdentityInputs(playlistSource, tracks),
-            cancellationToken);
+            cancellationToken,
+            audioVariant: "stereo_preferred");
         return identities
             .Select(static decision => decision.IsAmbiguous ? 0L : decision.LocalTrackId ?? 0L)
             .ToList();
@@ -3034,9 +3038,19 @@ public sealed class PlaylistSyncService
         List<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
-        var ratingKeyByTrackId = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
-            orderedTrackIds.Where(id => id > 0).Distinct().ToList(),
+        var distinctTrackIds = orderedTrackIds.Where(id => id > 0).Distinct().ToList();
+        var ratingKeyByTrackId = (await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
+                PlexService,
+                distinctTrackIds,
+                cancellationToken))
+            .ToDictionary(static pair => pair.Key, static pair => pair.Value);
+        var legacyRatingKeys = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
+            distinctTrackIds,
             cancellationToken);
+        foreach (var (trackId, ratingKey) in legacyRatingKeys)
+        {
+            ratingKeyByTrackId.TryAdd(trackId, ratingKey);
+        }
 
         var ratingKeysByIndex = new string?[tracks.Count];
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -3080,6 +3094,14 @@ public sealed class PlaylistSyncService
         {
             await _libraryRepository.UpsertPlexTrackMetadataAsync(
                 metadataUpdates,
+                cancellationToken);
+            await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
+                metadataUpdates.Select(static item => new MediaServerTrackMetadataUpsertDto(
+                    item.TrackId,
+                    PlexService,
+                    item.PlexRatingKey,
+                    FilePath: null,
+                    UpdatedAtUtc: item.UpdatedAtUtc)).ToList(),
                 cancellationToken);
         }
 

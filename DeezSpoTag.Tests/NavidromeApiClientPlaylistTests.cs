@@ -66,6 +66,39 @@ public sealed class NavidromeApiClientPlaylistTests
     }
 
     [Fact]
+    public async Task CreateOrUpdatePlaylistAsync_BatchesLargeOrderedPlaylistWrites()
+    {
+        using var handler = new NavidromePlaylistHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+        var songIds = Enumerable.Range(1, 250).Select(index => $"track-{index}").ToList();
+
+        var playlistId = await client.CreateOrUpdatePlaylistAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "Gold School",
+            songIds,
+            existingPlaylistId: "playlist-1",
+            appendMissingOnly: false,
+            CancellationToken.None);
+
+        Assert.Equal("playlist-1", playlistId);
+        var replace = Assert.Single(
+            handler.RequestedUrls,
+            url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
+        Assert.Equal(100, GetQueryValues(replace, "songId").Count);
+        var appendRequests = handler.RequestedUrls
+            .Where(url => url.Contains("/rest/updatePlaylist.view?", StringComparison.Ordinal))
+            .ToList();
+        Assert.Equal(2, appendRequests.Count);
+        Assert.Equal(100, GetQueryValues(appendRequests[0], "songIdToAdd").Count);
+        Assert.Equal(50, GetQueryValues(appendRequests[1], "songIdToAdd").Count);
+        Assert.Equal("track-101", GetQueryValues(appendRequests[0], "songIdToAdd")[0]);
+        Assert.Equal("track-250", GetQueryValues(appendRequests[1], "songIdToAdd")[^1]);
+    }
+
+    [Fact]
     public async Task UpdatePlaylistImageFromFileAsync_LogsInAndUploadsMultipartImage()
     {
         var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-playlist-{Guid.NewGuid():N}.png");
@@ -343,7 +376,7 @@ public sealed class NavidromeApiClientPlaylistTests
             if (path.EndsWith("/updatePlaylist.view", StringComparison.Ordinal))
             {
                 var query = request.RequestUri.Query;
-                if (GetQueryValues(url, "songIdToAdd").Count > 0)
+                if (GetQueryValues(url, "songIdToAdd").Contains("song-2", StringComparer.Ordinal))
                 {
                     Assert.Contains("songIdToAdd=song-2", query, StringComparison.Ordinal);
                     Assert.DoesNotContain("songId=song-2", query, StringComparison.Ordinal);

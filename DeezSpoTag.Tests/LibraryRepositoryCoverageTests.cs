@@ -901,6 +901,75 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BatchLocalIdentityResolver_PrefersStereoAndUsesAtmosOnlyWhenStereoIsAbsent()
+    {
+        var seeded = await SeedLibraryAsync(("Ranked Song", "dz-ranked", "sp-ranked", "ap-ranked"));
+        var stereoTrackId = seeded.TrackIdsByTitle["Ranked Song"];
+        var atmosTrackId = await InsertIdentityCandidateAsync(
+            seeded,
+            "ranked-atmos.ec3",
+            qualityRank: 5,
+            sourceId: "sp-ranked;atmos",
+            extraTagCount: 30);
+        await SetAudioVariantAsync(atmosTrackId, "atmos", channels: 6, codec: "ec-3");
+        var input = new LibraryRepository.LibraryExistenceInput(
+            "ISRC00000001",
+            "Ranked Song",
+            "Artist One",
+            180000,
+            AlbumTitle: "Album One");
+
+        var withStereo = Assert.Single(await _repository.ResolveLocalTrackIdentitiesAsync(
+            [input],
+            audioVariant: "stereo_preferred"));
+        Assert.Equal(stereoTrackId, withStereo.LocalTrackId);
+
+        await SetAudioVariantAsync(stereoTrackId, "atmos", channels: 6, codec: "ec-3");
+        var atmosOnly = Assert.Single(await _repository.ResolveLocalTrackIdentitiesAsync(
+            [input],
+            audioVariant: "stereo_preferred"));
+        Assert.Equal(atmosTrackId, atmosOnly.LocalTrackId);
+    }
+
+    [Fact]
+    public async Task MediaServerMappings_PreserveVariantsAndPreferStereo()
+    {
+        var seeded = await SeedLibraryAsync(("Variant Mapping", "dz-map", "sp-map", "ap-map"));
+        var trackId = seeded.TrackIdsByTitle["Variant Mapping"];
+        var now = DateTimeOffset.UtcNow;
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                trackId,
+                "jellyfin",
+                "atmos-item",
+                FilePath: null,
+                UpdatedAtUtc: now,
+                AudioVariant: "atmos"),
+            new MediaServerTrackMetadataUpsertDto(
+                trackId,
+                "jellyfin",
+                "stereo-item",
+                FilePath: null,
+                UpdatedAtUtc: now.AddSeconds(1),
+                AudioVariant: "stereo")
+        ]);
+
+        var mapping = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
+            "jellyfin",
+            [trackId]);
+        Assert.Equal("stereo-item", mapping[trackId]);
+
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(
+            "SELECT COUNT(*) FROM media_server_track_variant_metadata WHERE track_id=@trackId AND service='jellyfin';",
+            connection);
+        command.Parameters.AddWithValue("trackId", trackId);
+        Assert.Equal(2L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+    }
+
+    [Fact]
     public async Task LocalScanFileStates_RoundTrip_And_UnchangedIngestPreservesAudioTimestamp()
     {
         var root = Path.Join(_tempRoot, "music-library");
@@ -1613,6 +1682,24 @@ SET quality_rank=NULL,
 WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
         command.Parameters.AddWithValue("bitsPerSample", bitsPerSample);
         command.Parameters.AddWithValue("sampleRateHz", sampleRateHz);
+        command.Parameters.AddWithValue("trackId", trackId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task SetAudioVariantAsync(long trackId, string audioVariant, int channels, string codec)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+UPDATE audio_file
+SET audio_variant=@audioVariant,
+    channels=@channels,
+    codec=@codec
+WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
+        command.Parameters.AddWithValue("audioVariant", audioVariant);
+        command.Parameters.AddWithValue("channels", channels);
+        command.Parameters.AddWithValue("codec", codec);
         command.Parameters.AddWithValue("trackId", trackId);
         await command.ExecuteNonQueryAsync();
     }

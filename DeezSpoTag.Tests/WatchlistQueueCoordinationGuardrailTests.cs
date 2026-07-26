@@ -135,6 +135,25 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
+    public void HostedCycle_InterleavesBoundedTargetSyncBetweenPlaylistReconciliations()
+    {
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var loopStart = hostedSource.IndexOf(
+            "foreach (var activeItem in scheduledItems)",
+            StringComparison.Ordinal);
+        var nextMethod = hostedSource.IndexOf(
+            "private async Task",
+            loopStart + 1,
+            StringComparison.Ordinal);
+        var loopBody = hostedSource[loopStart..nextMethod];
+
+        Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
+        Assert.Contains("ProcessTargetSyncWorkAsync(", loopBody, StringComparison.Ordinal);
+        Assert.Contains("syncJobLimit: 1", loopBody, StringComparison.Ordinal);
+        Assert.Contains("timeBudget: TimeSpan.FromSeconds(5)", loopBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void HostedCycle_BlocksSingleReconciliationQueuePassWhenDownloadsAreActive()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");

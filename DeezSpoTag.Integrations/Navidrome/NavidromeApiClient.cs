@@ -9,6 +9,7 @@ namespace DeezSpoTag.Integrations.Navidrome;
 
 public sealed class NavidromeApiClient
 {
+    private const int PlaylistWriteBatchSize = 100;
     private const string ClientName = "DeezSpoTag";
     private const string ApiVersion = "1.16.1";
     private const string NativeAuthorizationHeader = "X-ND-Authorization";
@@ -383,18 +384,24 @@ public sealed class NavidromeApiClient
         CancellationToken cancellationToken = default,
         string? playlistComment = null)
     {
+        var targetIds = songIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Select(static id => id.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var playlistId = string.IsNullOrWhiteSpace(existingPlaylistId)
             ? await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken)
             : existingPlaylistId.Trim();
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
+            var firstBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
             var create = await SendAsync<NavidromePlaylistUpdateResponse>(
                 serverUrl,
                 username,
                 password,
                 "createPlaylist",
-                BuildPlaylistParameters(null, playlistName, songIds),
+                BuildPlaylistParameters(null, playlistName, firstBatch),
                 cancellationToken);
             if (create?.SubsonicResponse?.Status is not "ok")
             {
@@ -404,6 +411,19 @@ public sealed class NavidromeApiClient
             var createdPlaylistId = !string.IsNullOrWhiteSpace(create.SubsonicResponse.Playlist?.Id)
                 ? create.SubsonicResponse.Playlist.Id
                 : await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(createdPlaylistId)
+                && !await AppendPlaylistItemsInBatchesAsync(
+                    serverUrl,
+                    username,
+                    password,
+                    createdPlaylistId,
+                    playlistName,
+                    targetIds.Skip(firstBatch.Count).ToList(),
+                    playlistComment,
+                    cancellationToken))
+            {
+                return null;
+            }
             if (!string.IsNullOrWhiteSpace(createdPlaylistId)
                 && !string.IsNullOrWhiteSpace(playlistComment))
             {
@@ -420,11 +440,6 @@ public sealed class NavidromeApiClient
             return createdPlaylistId;
         }
 
-        var targetIds = songIds
-            .Where(static id => !string.IsNullOrWhiteSpace(id))
-            .Select(static id => id.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
         if (appendMissingOnly)
         {
             var currentIds = (await GetPlaylistEntriesAsync(serverUrl, username, password, playlistId, cancellationToken))
@@ -433,16 +448,61 @@ public sealed class NavidromeApiClient
             targetIds = targetIds.Where(id => !currentIds.Contains(id)).ToList();
         }
 
+        var firstUpdateBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
         var update = await SendAsync<NavidromePlaylistUpdateResponse>(
             serverUrl,
             username,
             password,
             appendMissingOnly ? "updatePlaylist" : "createPlaylist",
             appendMissingOnly
-                ? BuildPlaylistUpdateParameters(playlistId, playlistName, targetIds, playlistComment)
-                : BuildPlaylistParameters(playlistId, playlistName, targetIds, playlistComment),
+                ? BuildPlaylistUpdateParameters(playlistId, playlistName, firstUpdateBatch, playlistComment)
+                : BuildPlaylistParameters(playlistId, playlistName, firstUpdateBatch, playlistComment),
             cancellationToken);
-        return update?.SubsonicResponse?.Status is "ok" ? playlistId : null;
+        if (update?.SubsonicResponse?.Status is not "ok")
+        {
+            return null;
+        }
+
+        return await AppendPlaylistItemsInBatchesAsync(
+            serverUrl,
+            username,
+            password,
+            playlistId,
+            playlistName,
+            targetIds.Skip(firstUpdateBatch.Count).ToList(),
+            playlistComment,
+            cancellationToken)
+            ? playlistId
+            : null;
+    }
+
+    private async Task<bool> AppendPlaylistItemsInBatchesAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistId,
+        string playlistName,
+        IReadOnlyList<string> songIds,
+        string? playlistComment,
+        CancellationToken cancellationToken)
+    {
+        for (var offset = 0; offset < songIds.Count; offset += PlaylistWriteBatchSize)
+        {
+            var batch = songIds.Skip(offset).Take(PlaylistWriteBatchSize).ToList();
+            var update = await SendAsync<NavidromePlaylistUpdateResponse>(
+                serverUrl,
+                username,
+                password,
+                "updatePlaylist",
+                BuildPlaylistUpdateParameters(playlistId, playlistName, batch, playlistComment),
+                cancellationToken);
+            if (update?.SubsonicResponse?.Status is not "ok")
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public async Task<bool> UpdatePlaylistMetadataAsync(
