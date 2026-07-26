@@ -39,14 +39,17 @@ public sealed class AppleTracklistApiController : ControllerBase
         AppleStorefrontRegexTimeout);
     private readonly AppleMusicCatalogService _catalog;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly PlaylistVisualService _playlistVisualService;
     private readonly ILogger<AppleTracklistApiController> _logger;
     public AppleTracklistApiController(
         AppleMusicCatalogService catalog,
         DeezSpoTagSettingsService settingsService,
+        PlaylistVisualService playlistVisualService,
         ILogger<AppleTracklistApiController> logger)
     {
         _catalog = catalog;
         _settingsService = settingsService;
+        _playlistVisualService = playlistVisualService;
         _logger = logger;
     }
 
@@ -96,6 +99,28 @@ public sealed class AppleTracklistApiController : ControllerBase
             _logger.LogWarning(ex, "Apple tracklist fetch failed for Id (Type)");
             return StatusCode(500, new { error = ex.Message });
         }
+    }
+
+    [HttpGet("animated-artwork")]
+    public async Task<IActionResult> GetAnimatedArtwork(
+        [FromQuery] string id,
+        CancellationToken cancellationToken = default)
+    {
+        var resolvedId = ResolveAppleId(id, null);
+        if (string.IsNullOrWhiteSpace(resolvedId))
+        {
+            return BadRequest("id is required");
+        }
+
+        var visual = await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
+            AppleSource,
+            resolvedId,
+            cancellationToken);
+        return Ok(new
+        {
+            url = visual?.Url ?? string.Empty,
+            available = visual != null
+        });
     }
 
     private static string? ResolveStorefrontFromAppleUrl(string? appleUrl)

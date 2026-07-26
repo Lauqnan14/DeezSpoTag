@@ -3214,6 +3214,33 @@ async function loadAppleTracklist() {
     }
     await loadIgnoredTracks();
     renderTracklist(payload.tracklist);
+    if (tracklistType === 'playlist') {
+        void loadApplePlaylistAnimatedArtwork();
+    }
+}
+
+async function loadApplePlaylistAnimatedArtwork() {
+    try {
+        const response = await fetch(
+            `/api/apple/tracklist/animated-artwork?id=${encodeURIComponent(tracklistId)}`
+        );
+        if (!response.ok) {
+            return;
+        }
+
+        const payload = await response.json();
+        const animatedUrl = String(payload?.url || '').trim();
+        if (!animatedUrl) {
+            return;
+        }
+
+        const coverImage = document.querySelector('.tracklist-header .tracklist-cover img');
+        if (coverImage) {
+            coverImage.src = animatedUrl;
+        }
+    } catch (error) {
+        console.warn('Apple playlist animated artwork could not be loaded.', error);
+    }
 }
 
 async function loadAppleStationTracklist() {

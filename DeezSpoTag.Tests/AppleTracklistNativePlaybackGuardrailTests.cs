@@ -99,6 +99,33 @@ public sealed class AppleTracklistNativePlaybackGuardrailTests
         Assert.Contains("return String(checkbox?.dataset.appleId || '').trim();", view, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Apple_playlist_animation_uses_the_shared_cached_visual_pipeline_progressively()
+    {
+        var controller = ReadSource(
+            "DeezSpoTag.Web",
+            "Controllers",
+            "Api",
+            "AppleTracklistApiController.cs");
+        var view = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
+
+        Assert.Contains("[HttpGet(\"animated-artwork\")]", controller, StringComparison.Ordinal);
+        Assert.Contains(
+            "_playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(",
+            controller,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("SaveAnimatedArtworkAsync(", controller, StringComparison.Ordinal);
+
+        var renderIndex = view.IndexOf("renderTracklist(payload.tracklist);", StringComparison.Ordinal);
+        var animationIndex = view.IndexOf("void loadApplePlaylistAnimatedArtwork();", StringComparison.Ordinal);
+        Assert.True(renderIndex >= 0 && animationIndex > renderIndex);
+        Assert.Contains(
+            "/api/apple/tracklist/animated-artwork?id=${encodeURIComponent(tracklistId)}",
+            view,
+            StringComparison.Ordinal);
+        Assert.Contains("coverImage.src = animatedUrl;", view, StringComparison.Ordinal);
+    }
+
     private static string ReadSource(params string[] relativeParts)
     {
         var root = AppContext.BaseDirectory;
