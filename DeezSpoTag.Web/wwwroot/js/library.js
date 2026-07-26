@@ -56,7 +56,8 @@ const libraryState = {
         preferredBackgroundPath: null,
         backgroundApplyId: 0,
         externalTerm: '',
-        externalLoading: false
+        externalLoading: false,
+        externalRequestId: 0
     },
     localAlbums: [],
     spotifyAlbums: [],
@@ -6747,30 +6748,85 @@ function applyStoredArtistVisuals(artistId) {
 
 async function loadExternalArtistVisuals(artistName, artistId) {
     const term = (artistName || '').trim();
-    if (!term) {
+    if (!term || !artistId) {
         return;
     }
     const visuals = libraryState.artistVisuals;
+    if (visuals.externalLoading && String(visuals.artistId || '') === String(artistId)) {
+        return;
+    }
+    visuals.artistId = artistId;
     visuals.externalTerm = normalizeArtistName(term);
     visuals.externalLoading = true;
-    visuals.cachedPickerImages = [];
+    const requestId = (visuals.externalRequestId || 0) + 1;
+    visuals.externalRequestId = requestId;
     renderArtistVisualPicker(artistId);
     try {
-        const result = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/artwork?refresh=true`);
-        const candidates = Array.isArray(result?.visuals) ? result.visuals : [];
-        visuals.cachedPickerImages = candidates.map(item => ({
-            url: item.url || '',
-            path: item.path || '',
-            source: item.source || 'cached',
-            identity: item.identity || '',
-            label: `${item.source || 'cached'} artwork`
-        })).filter(item => item.url && item.path);
+        const cached = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/artwork`);
+        if (visuals.externalRequestId !== requestId) {
+            return;
+        }
+        mergeArtistVisualPickerResult(visuals, cached);
+        renderArtistVisualPicker(artistId);
+
+        const refreshed = await fetchJsonOptional(
+            `/api/library/artists/${encodeURIComponent(artistId)}/artwork/refresh`,
+            { method: 'POST' });
+        if (visuals.externalRequestId !== requestId) {
+            return;
+        }
+        mergeArtistVisualPickerResult(visuals, refreshed);
     } catch (error) {
         console.warn('Failed to load cached artist artwork.', error);
     } finally {
-        visuals.externalLoading = false;
-        renderArtistVisualPicker(artistId);
+        if (visuals.externalRequestId === requestId) {
+            visuals.externalLoading = false;
+            renderArtistVisualPicker(artistId);
+        }
     }
+}
+
+function mergeArtistVisualPickerResult(visuals, result) {
+    const candidates = Array.isArray(result?.visuals) ? result.visuals : [];
+    if (candidates.length === 0) {
+        return;
+    }
+
+    const existing = Array.isArray(visuals.cachedPickerImages)
+        ? visuals.cachedPickerImages
+        : [];
+    const merged = new Map();
+    existing.forEach(item => {
+        const key = resolveArtistVisualCandidateKey(item);
+        if (key) {
+            merged.set(key, item);
+        }
+    });
+    candidates.forEach(item => {
+        const candidate = {
+            url: item?.url || '',
+            path: item?.path || '',
+            source: item?.source || 'cached',
+            identity: item?.identity || '',
+            label: `${item?.source || 'cached'} artwork`
+        };
+        if (!candidate.url || !candidate.path) {
+            return;
+        }
+        const key = resolveArtistVisualCandidateKey(candidate);
+        if (key) {
+            merged.set(key, candidate);
+        }
+    });
+    visuals.cachedPickerImages = Array.from(merged.values());
+}
+
+function resolveArtistVisualCandidateKey(item) {
+    return String(
+        item?.identity
+        || item?.path
+        || normalizeArtistVisualUrl(item?.url || '')
+        || '').trim();
 }
 
 function renderArtistVisualPicker(artistId) {

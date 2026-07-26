@@ -248,8 +248,13 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("[HttpPost(\"{id:long}/artwork/refresh\")]", controller);
         Assert.Contains("library-artist-images", cacheService);
         Assert.Contains("artist_artwork_cache", File.ReadAllText(Path.Combine(RepositoryRoot(), "DeezSpoTag.Services", "Library", "LibraryRepository.cs")));
-        Assert.Contains("/artwork?refresh=true", libraryScript);
+        Assert.Contains("/artwork`", libraryScript);
+        Assert.Contains("/artwork/refresh", libraryScript);
         Assert.Contains("cachedPickerImages", libraryScript);
+        Assert.Contains("mergeArtistVisualPickerResult", libraryScript);
+        Assert.DoesNotContain("visuals.cachedPickerImages = []", libraryScript);
+        Assert.DoesNotContain("_cacheRefresh", controller);
+        Assert.Contains("_artwork.RefreshAsync(", controller);
         Assert.DoesNotContain("/visuals/cache", libraryScript);
         Assert.DoesNotContain("loadDeezerArtistVisuals", libraryScript);
         Assert.DoesNotContain("loadAppleArtistVisuals", libraryScript);
