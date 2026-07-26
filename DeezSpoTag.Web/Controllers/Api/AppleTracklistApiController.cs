@@ -32,6 +32,8 @@ public sealed class AppleTracklistApiController : ControllerBase
     private const string AttributesField = "attributes";
     private const string ArtistNameField = "artistName";
     private const string AudioTraitsField = "audioTraits";
+    private const string DescriptionField = "description";
+    private const string StandardField = "standard";
     private static readonly TimeSpan AppleStorefrontRegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex AppleStorefrontRegex = new(
         @"music\.apple\.com/(?<storefront>[a-z]{2}(?:-[a-z]{2})?)/",
@@ -181,7 +183,7 @@ public sealed class AppleTracklistApiController : ControllerBase
         var trackCount = attrs.TryGetProperty("trackCount", out var tcEl) ? tcEl.GetInt32() : tracks.Count;
         var releaseDate = attrs.TryGetProperty(ReleaseDateField, out var rdEl) ? rdEl.GetString() ?? "" : "";
 
-        return BuildTracklistResponse(title, artistName, cover, trackCount, releaseDate, tracks);
+        return BuildTracklistResponse(title, artistName, cover, trackCount, releaseDate, string.Empty, tracks);
     }
 
     private async Task<object> GetSingleTrack(string id, string storefront, CancellationToken cancellationToken)
@@ -203,7 +205,7 @@ public sealed class AppleTracklistApiController : ControllerBase
         var albumName = ta.TryGetProperty(AlbumNameField, out var an) ? an.GetString() ?? "" : "";
 
         var tracks = new List<object> { BuildTrackEntry(track, ta, title, artistName, albumName) };
-        return BuildTracklistResponse(title, artistName, cover, 1, releaseDate, tracks);
+        return BuildTracklistResponse(title, artistName, cover, 1, releaseDate, string.Empty, tracks);
     }
 
     private async Task<object> GetPlaylistTracklist(string id, string storefront, CancellationToken cancellationToken)
@@ -223,8 +225,9 @@ public sealed class AppleTracklistApiController : ControllerBase
         var title = attrs.TryGetProperty(NameField, out var nameEl) ? nameEl.GetString() ?? "" : "";
         var curator = attrs.TryGetProperty("curatorName", out var curatorEl) ? curatorEl.GetString() ?? "" : "";
         var trackCount = attrs.TryGetProperty("trackCount", out var tcEl) ? tcEl.GetInt32() : tracks.Count;
+        var description = ResolvePlaylistDescription(attrs);
 
-        return BuildTracklistResponse(title, curator, cover, trackCount, string.Empty, tracks);
+        return BuildTracklistResponse(title, curator, cover, trackCount, string.Empty, description, tracks);
     }
 
     private async Task<List<object>> BuildPlaylistTracksByFeedAsync(string playlistId, string storefront, CancellationToken cancellationToken)
@@ -357,6 +360,7 @@ public sealed class AppleTracklistApiController : ControllerBase
         string cover,
         int trackCount,
         string releaseDate,
+        string description,
         List<object> tracks)
     {
         return new
@@ -368,9 +372,33 @@ public sealed class AppleTracklistApiController : ControllerBase
                 cover_big = cover,
                 nb_tracks = trackCount,
                 release_date = releaseDate,
+                description,
                 tracks
             }
         };
+    }
+
+    private static string ResolvePlaylistDescription(JsonElement attributes)
+    {
+        if (attributes.ValueKind != JsonValueKind.Object
+            || !attributes.TryGetProperty(DescriptionField, out var description))
+        {
+            return string.Empty;
+        }
+
+        if (description.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        if (description.TryGetProperty(StandardField, out var standard)
+            && standard.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(standard.GetString()))
+        {
+            return standard.GetString()!.Trim();
+        }
+
+        return string.Empty;
     }
 
     private static IReadOnlyList<string> ReadAudioTraits(JsonElement attributes)

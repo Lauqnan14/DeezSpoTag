@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -66,6 +67,59 @@ public sealed class AppleTracklistNativePlaybackGuardrailTests
         Assert.Equal("USABC2400001", root.GetProperty("isrc").GetString());
         Assert.Equal("https://music.apple.com/us/song/example/123456789", root.GetProperty("sourceUrl").GetString());
         Assert.Equal("https://audio-ssl.itunes.apple.com/example.m4a", root.GetProperty("preview").GetString());
+    }
+
+    [Fact]
+    public void Apple_playlist_standard_description_is_preserved()
+    {
+        using var attributes = JsonDocument.Parse(
+            """{"description":{"standard":"Full Apple editorial description.","short":"Unused short description."}}""");
+        var resolveMethod = typeof(AppleTracklistApiController).GetMethod(
+            "ResolvePlaylistDescription",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var responseMethod = typeof(AppleTracklistApiController).GetMethod(
+            "BuildTracklistResponse",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(resolveMethod);
+        Assert.NotNull(responseMethod);
+        var description = Assert.IsType<string>(
+            resolveMethod!.Invoke(null, new object?[] { attributes.RootElement }));
+        var response = responseMethod!.Invoke(
+            null,
+            new object?[]
+            {
+                "Playlist",
+                "Apple Music",
+                "https://example.test/cover.jpg",
+                0,
+                string.Empty,
+                description,
+                new List<object>()
+            });
+        using var responseDocument = JsonDocument.Parse(JsonSerializer.Serialize(response));
+
+        Assert.Equal("Full Apple editorial description.", responseDocument.RootElement
+            .GetProperty("tracklist")
+            .GetProperty("description")
+            .GetString());
+    }
+
+    [Theory]
+    [InlineData("""{"description":{"short":"Short description."}}""")]
+    [InlineData("""{"description":"Plain description."}""")]
+    [InlineData("""{}""")]
+    public void Apple_playlist_description_does_not_use_alternate_fields(string attributesJson)
+    {
+        using var attributes = JsonDocument.Parse(attributesJson);
+        var method = typeof(AppleTracklistApiController).GetMethod(
+            "ResolvePlaylistDescription",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.Equal(
+            string.Empty,
+            Assert.IsType<string>(method!.Invoke(null, new object?[] { attributes.RootElement })));
     }
 
     [Fact]
