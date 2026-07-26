@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Utils;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -17,6 +18,31 @@ namespace DeezSpoTag.Tests;
 
 public sealed class AppleQueueHelpersArtworkDownloadTests
 {
+    [Fact]
+    public void Animated_artwork_conflict_log_neutralizes_filename_line_breaks()
+    {
+        var outputDirectory = Path.Join(Path.GetTempPath(), "deezspotag-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outputDirectory);
+        const string baseName = "album\r\nforged";
+        const string variant = "tall";
+        var sourcePath = Path.Join(outputDirectory, $"{baseName} - {variant}_animated_artwork.mp4");
+        var canonicalOutputBase = Path.Join(outputDirectory, "cover_tall\r\nforged");
+        File.WriteAllBytes(sourcePath, [0x01]);
+        File.WriteAllBytes($"{canonicalOutputBase}.mp4", [0x02]);
+        var logger = new CapturingLogger();
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "RenameLegacyAnimatedArtworkFiles",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        method!.Invoke(null, new object?[] { outputDirectory, baseName, variant, canonicalOutputBase, logger });
+
+        var message = Assert.Single(logger.Messages);
+        Assert.DoesNotContain('\r', message);
+        Assert.DoesNotContain('\n', message);
+        Assert.Contains("Animated artwork rename skipped", message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task DownloadAppleArtworkAsync_RawAcArtwork_ClampsToSourceDimensions()
     {
@@ -301,5 +327,22 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
                 Content = new ByteArrayContent("ok"u8.ToArray())
             });
         }
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Messages.Add(formatter(state, exception));
     }
 }

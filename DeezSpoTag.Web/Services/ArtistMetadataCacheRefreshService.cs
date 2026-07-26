@@ -8,7 +8,23 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class ArtistMetadataCacheRefreshService
 {
-    private static readonly string[] BiographySources = ["spotify", "apple", "tidal", "qobuz", "lastfm"];
+    private enum BiographyProvider
+    {
+        Spotify,
+        Apple,
+        Tidal,
+        Qobuz,
+        LastFm
+    }
+
+    private static readonly BiographyProvider[] BiographyProviders =
+    [
+        BiographyProvider.Spotify,
+        BiographyProvider.Apple,
+        BiographyProvider.Tidal,
+        BiographyProvider.Qobuz,
+        BiographyProvider.LastFm
+    ];
     private readonly LibraryRepository _repository;
     private readonly ArtistArtworkCatalogService _artworkCatalog;
     private readonly SpotifyArtistService _spotify;
@@ -94,7 +110,10 @@ public sealed class ArtistMetadataCacheRefreshService
             return false;
         }
 
-        var normalizedSource = NormalizeSource(source);
+        var selectedProvider = ParseProvider(source);
+        var normalizedSource = selectedProvider.HasValue
+            ? ProviderName(selectedProvider.Value)
+            : "auto";
         var artist = await _repository.GetArtistAsync(artistId, cancellationToken);
         if (artist is null)
         {
@@ -107,9 +126,11 @@ public sealed class ArtistMetadataCacheRefreshService
             cancellationToken,
             normalizedSource == "auto" ? null : normalizedSource,
             forceProviderRefresh: true);
-        var requestedSources = normalizedSource == "auto" ? BiographySources : [normalizedSource];
-        var biographies = new List<(string Source, string Biography)>();
-        foreach (var provider in requestedSources)
+        IReadOnlyList<BiographyProvider> requestedProviders = selectedProvider.HasValue
+            ? [selectedProvider.Value]
+            : BiographyProviders;
+        var biographies = new List<(BiographyProvider Provider, string Biography)>();
+        foreach (var provider in requestedProviders)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var biography = await ResolveBiographyAsync(provider, artistId, artistName, cancellationToken);
@@ -120,7 +141,8 @@ public sealed class ArtistMetadataCacheRefreshService
         }
 
         if (includePopularSongs
-            && normalizedSource is not "auto" and not "spotify")
+            && selectedProvider.HasValue
+            && selectedProvider.Value != BiographyProvider.Spotify)
         {
             await _spotify.GetArtistPageAsync(
                 artistId,
@@ -131,14 +153,15 @@ public sealed class ArtistMetadataCacheRefreshService
                 includeDeezerLinking: true);
         }
 
-        var selectedSource = biographies.FirstOrDefault().Source;
+        var selectedBiographyProvider = biographies.FirstOrDefault().Provider;
         foreach (var biography in biographies)
         {
+            var biographySource = ProviderName(biography.Provider);
             await _repository.UpsertArtistBiographyCacheAsync(
                 artistId,
-                biography.Source,
+                biographySource,
                 biography.Biography,
-                string.Equals(biography.Source, selectedSource, StringComparison.OrdinalIgnoreCase),
+                biography.Provider == selectedBiographyProvider,
                 cancellationToken);
         }
 
@@ -146,7 +169,7 @@ public sealed class ArtistMetadataCacheRefreshService
     }
 
     private async Task<string?> ResolveBiographyAsync(
-        string provider,
+        BiographyProvider provider,
         long artistId,
         string artistName,
         CancellationToken cancellationToken)
@@ -155,13 +178,13 @@ public sealed class ArtistMetadataCacheRefreshService
         {
             return provider switch
             {
-                "spotify" => (await _spotify.GetArtistPageAsync(
+                BiographyProvider.Spotify => (await _spotify.GetArtistPageAsync(
                     artistId, artistName, forceRefresh: true, forceRematch: false, cancellationToken))?.Artist?.Biography,
-                "apple" => await ResolveAppleBiographyAsync(artistId, artistName, cancellationToken),
-                "tidal" => await ResolveTidalBiographyAsync(artistId, cancellationToken),
-                "qobuz" => await ResolveQobuzBiographyAsync(artistId, cancellationToken),
-                "lastfm" => (await _lastFm.GetArtistBiographyAsync(artistName, cancellationToken))?.Biography,
-                _ => null
+                BiographyProvider.Apple => await ResolveAppleBiographyAsync(artistId, artistName, cancellationToken),
+                BiographyProvider.Tidal => await ResolveTidalBiographyAsync(artistId, cancellationToken),
+                BiographyProvider.Qobuz => await ResolveQobuzBiographyAsync(artistId, cancellationToken),
+                BiographyProvider.LastFm => (await _lastFm.GetArtistBiographyAsync(artistName, cancellationToken))?.Biography,
+                _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
             };
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -261,11 +284,30 @@ public sealed class ArtistMetadataCacheRefreshService
         return id.Length > 0;
     }
 
-    private static string NormalizeSource(string? source)
+    private static BiographyProvider? ParseProvider(string? source)
     {
         var normalized = (source ?? "auto").Trim().ToLowerInvariant();
-        return BiographySources.Contains(normalized, StringComparer.OrdinalIgnoreCase) ? normalized : "auto";
+        return normalized switch
+        {
+            "spotify" => BiographyProvider.Spotify,
+            "apple" => BiographyProvider.Apple,
+            "tidal" => BiographyProvider.Tidal,
+            "qobuz" => BiographyProvider.Qobuz,
+            "lastfm" => BiographyProvider.LastFm,
+            _ => null
+        };
     }
+
+    private static string ProviderName(BiographyProvider provider)
+        => provider switch
+        {
+            BiographyProvider.Spotify => "spotify",
+            BiographyProvider.Apple => "apple",
+            BiographyProvider.Tidal => "tidal",
+            BiographyProvider.Qobuz => "qobuz",
+            BiographyProvider.LastFm => "lastfm",
+            _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, "Unsupported biography provider.")
+        };
 
     private static string? SanitizeBiography(string? value)
         => string.IsNullOrWhiteSpace(value)

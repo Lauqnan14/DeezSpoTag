@@ -1,12 +1,51 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Web.Services;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
 
 public sealed class ArtistMetadataTargetSelectionGuardrailTests
 {
+    [Theory]
+    [InlineData("spotify", "Spotify")]
+    [InlineData("apple", "Apple")]
+    [InlineData("tidal", "Tidal")]
+    [InlineData("qobuz", "Qobuz")]
+    [InlineData("lastfm", "LastFm")]
+    public void Artist_metadata_cache_refresh_accepts_only_closed_biography_providers(
+        string source,
+        string expectedProvider)
+    {
+        var parseProvider = typeof(ArtistMetadataCacheRefreshService).GetMethod(
+            "ParseProvider",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var resolveBiography = typeof(ArtistMetadataCacheRefreshService).GetMethod(
+            "ResolveBiographyAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+
+        Assert.NotNull(parseProvider);
+        Assert.NotNull(resolveBiography);
+        Assert.Equal(expectedProvider, parseProvider!.Invoke(null, new object?[] { source })?.ToString());
+        Assert.True(resolveBiography!.GetParameters()[0].ParameterType.IsEnum);
+    }
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("spotify\r\nforged")]
+    [InlineData("unsupported")]
+    public void Artist_metadata_cache_refresh_rejects_arbitrary_biography_provider_text(string source)
+    {
+        var parseProvider = typeof(ArtistMetadataCacheRefreshService).GetMethod(
+            "ParseProvider",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(parseProvider);
+        Assert.Null(parseProvider!.Invoke(null, new object?[] { source }));
+    }
+
     [Fact]
     public void Metadata_updater_controls_use_checkboxes_for_all_target_servers()
     {

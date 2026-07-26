@@ -1639,8 +1639,8 @@ public static class AppleQueueHelpers
 
                 logger.LogWarning(
                     "Animated artwork rename skipped because destination already exists: {SourcePath} -> {DestinationPath}",
-                    sourcePath,
-                    destinationPath);
+                    LogSanitizer.OneLine(sourcePath),
+                    LogSanitizer.OneLine(destinationPath));
                 continue;
             }
 

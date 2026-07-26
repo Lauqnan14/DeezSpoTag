@@ -20,7 +20,7 @@ DeezSpoTag automates music workflows end-to-end:
 4. Supports conversion/transcoding flows where configured.
 5. Organizes output into your library structure.
 6. Allows manual tagging and lyrics editing
-7. Sync artist's avatar, background art and background information from Spotify to your preferred media server
+7. Sync artist's avatar, background art and background information from various platforms to your preferred media server, with an optional and configurable scheduled rotation.
 8. Recognize music using the intergrated Shazam by tapping on the logo 
 
 ---
@@ -34,7 +34,8 @@ DeezSpoTag automates music workflows end-to-end:
 - This project is under heavy development.
 - Some features are experimental and may modify music metadata.
 - Do not run this on your main library without a backup.
-- Only Shazam, Spotify, iTunes, and Deezer have been thoroughly tested for tagging with reliable results.
+- Most tagging platforms have been thoroughly tested with the exception of Beatport, BPM Supreme, Truxsource and Last.fm
+- Enhacement run, otherwise known as Library maintenance, is approximately 70% ready. Folder Uniformity is the biggest section that is still under development, and requires though testing.
 - Manual tagging is still under heavy development.
 - Soundtrack fetching requires a lot of work to reliably fetch soundtracks.
 
@@ -47,7 +48,7 @@ DeezSpoTag automates music workflows end-to-end:
 - Download path + library path separation.
 - Multiple library support
 - Multi-folder support for different content types.
-- Browse discography from your library into Spotify discography and Apple Music Atmos tracks.
+- Browse discography from your library alongside Spotify discography and Apple Music Atmos or Tidal tracks and videos.
 
 ### Metadata, Tagging, and File Handling
 
@@ -57,7 +58,7 @@ DeezSpoTag automates music workflows end-to-end:
 - Animated album artwork support.
 - Naming templates and folder structure customization.
 - Optional post-download conversion controls.
-- Multi-lyrics (.ttml and .lrc) support.
+- Multi-lyrics (.ttml, .elrc, .lrc) support.
   
 ### Recommendations and Automation
 
