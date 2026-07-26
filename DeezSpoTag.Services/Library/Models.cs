@@ -700,6 +700,19 @@ public sealed record PlaylistWatchPreferenceDto(
     string? JellyfinPlaylistId = null,
     string? NavidromePlaylistId = null);
 
+public sealed record PlaylistWatchArtworkStateDto(
+    string Source,
+    string SourceId,
+    string? RemoteIdentity,
+    string? StillContentHash,
+    string? StillLocalPath,
+    string? AnimatedContentHash,
+    string? AnimatedLocalPath,
+    string Status,
+    string? LastError,
+    DateTimeOffset? LastCheckedUtc,
+    string? Revision);
+
 public sealed record PlaylistWatchStateDto(
     string Source,
     string SourceId,

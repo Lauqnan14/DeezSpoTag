@@ -62,16 +62,124 @@ public sealed class PlaylistVisualService
             return existingUrl;
         }
 
-        return await MaterializeVisualAsync(
+        var result = await MaterializeVisualAsync(
             source,
             sourceId,
             remoteUrl,
             reuseSavedArtwork,
             existingUrl,
             cancellationToken);
+        return result.Url;
     }
 
-    private async Task<string?> MaterializeVisualAsync(
+    public async Task<PlaylistArtworkInspectionResult> InspectSourceArtworkAsync(
+        string source,
+        string sourceId,
+        string? playlistName,
+        string? remoteUrl,
+        bool activateChangedArtwork,
+        bool authoritativeRemoval,
+        CancellationToken cancellationToken)
+    {
+        var previousStill = GetStoredStillVisual(source, sourceId);
+        var previousHash = ComputeContentHash(previousStill?.FilePath);
+        var previousAnimated = GetStoredAnimatedVisual(source, sourceId);
+        var previousAnimatedHash = ComputeContentHash(previousAnimated?.FilePath);
+
+        if (!ShouldManageVisual(source, playlistName))
+        {
+            return new PlaylistArtworkInspectionResult(
+                PlaylistArtworkInspectionStatus.Unsupported,
+                remoteUrl,
+                previousStill,
+                previousAnimated,
+                previousHash,
+                previousAnimatedHash,
+                Changed: false,
+                "Playlist artwork inspection is not supported for this source.");
+        }
+
+        if (string.IsNullOrWhiteSpace(remoteUrl))
+        {
+            return authoritativeRemoval
+                ? new PlaylistArtworkInspectionResult(
+                    PlaylistArtworkInspectionStatus.AuthoritativelyRemoved,
+                    null,
+                    previousStill,
+                    previousAnimated,
+                    previousHash,
+                    previousAnimatedHash,
+                    Changed: false,
+                    null)
+                : new PlaylistArtworkInspectionResult(
+                    PlaylistArtworkInspectionStatus.TemporarilyUnavailable,
+                    null,
+                    previousStill,
+                    previousAnimated,
+                    previousHash,
+                    previousAnimatedHash,
+                    Changed: false,
+                    "The source did not return an artwork identity.");
+        }
+
+        var existingUrl = TryBuildExistingVisualUrl(source, sourceId, GetStoredVisual(source, sourceId));
+        var materialized = await MaterializeVisualAsync(
+            source,
+            sourceId,
+            remoteUrl,
+            reuseSavedArtwork: !activateChangedArtwork,
+            existingUrl,
+            cancellationToken);
+        if (!materialized.RemoteValidated)
+        {
+            return new PlaylistArtworkInspectionResult(
+                PlaylistArtworkInspectionStatus.TemporarilyUnavailable,
+                remoteUrl.Trim(),
+                previousStill,
+                previousAnimated,
+                previousHash,
+                previousAnimatedHash,
+                Changed: false,
+                materialized.Error ?? "The source artwork could not be downloaded and validated.");
+        }
+
+        var managedUrl = materialized.Url;
+        var currentStill = GetStoredVisualFromManagedUrl(source, sourceId, managedUrl)
+            ?? GetStoredStillVisual(source, sourceId);
+        var currentHash = ComputeContentHash(currentStill?.FilePath);
+        if (currentStill is null || string.IsNullOrWhiteSpace(currentHash))
+        {
+            return new PlaylistArtworkInspectionResult(
+                PlaylistArtworkInspectionStatus.TemporarilyUnavailable,
+                remoteUrl.Trim(),
+                previousStill,
+                previousAnimated,
+                previousHash,
+                previousAnimatedHash,
+                Changed: false,
+                "The source artwork could not be downloaded and validated.");
+        }
+
+        var animated = await ResolveApplePlaylistAnimatedVisualAsync(
+            source,
+            sourceId,
+            cancellationToken,
+            forceRefresh: activateChangedArtwork);
+        var animatedHash = ComputeContentHash(animated?.FilePath);
+        var changed = !string.Equals(previousHash, currentHash, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(previousAnimatedHash, animatedHash, StringComparison.OrdinalIgnoreCase);
+        return new PlaylistArtworkInspectionResult(
+            changed ? PlaylistArtworkInspectionStatus.Available : PlaylistArtworkInspectionStatus.Unchanged,
+            remoteUrl.Trim(),
+            currentStill,
+            animated,
+            currentHash,
+            animatedHash,
+            changed,
+            null);
+    }
+
+    private async Task<VisualMaterializationResult> MaterializeVisualAsync(
         string source,
         string sourceId,
         string remoteUrl,
@@ -83,7 +191,10 @@ public sealed class PlaylistVisualService
         {
             if (!TryNormalizeRemoteImageUri(remoteUrl, out var normalizedRemoteUri))
             {
-                return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
+                return new VisualMaterializationResult(
+                    ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl),
+                    false,
+                    "The source artwork URL is invalid.");
             }
 
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -93,7 +204,10 @@ public sealed class PlaylistVisualService
             using var response = await client.GetAsync(normalizedRemoteUri, materializationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
+                return new VisualMaterializationResult(
+                    ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl),
+                    false,
+                    $"The source artwork request returned HTTP {(int)response.StatusCode}.");
             }
 
             var visualDir = GetVisualDirectory(source, sourceId);
@@ -102,7 +216,10 @@ public sealed class PlaylistVisualService
             var bytes = await response.Content.ReadAsByteArrayAsync(materializationToken);
             if (bytes.Length == 0)
             {
-                return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
+                return new VisualMaterializationResult(
+                    ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl),
+                    false,
+                    "The source artwork response was empty.");
             }
 
             var extension = ResolveImageExtension(response.Content.Headers.ContentType?.MediaType, normalizedRemoteUri);
@@ -119,7 +236,10 @@ public sealed class PlaylistVisualService
                 SetActiveVisual(source, sourceId, fileName);
             }
 
-            return BuildVisualUrl(source, sourceId, File.GetLastWriteTimeUtc(targetPath));
+            return new VisualMaterializationResult(
+                BuildVisualUrl(source, sourceId, File.GetLastWriteTimeUtc(targetPath)),
+                true,
+                null);
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -128,7 +248,10 @@ public sealed class PlaylistVisualService
                 "Timed out while materializing playlist visual for {Source}:{SourceId}",
                 LogSanitizer.OneLine(source),
                 LogSanitizer.OneLine(sourceId));
-            return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
+            return new VisualMaterializationResult(
+                ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl),
+                false,
+                "The source artwork request timed out.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -137,7 +260,10 @@ public sealed class PlaylistVisualService
                 "Failed to materialize playlist visual for {Source}:{SourceId}",
                 LogSanitizer.OneLine(source),
                 LogSanitizer.OneLine(sourceId));
-            return ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl);
+            return new VisualMaterializationResult(
+                ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl),
+                false,
+                ex.Message);
         }
     }
 
@@ -186,6 +312,31 @@ public sealed class PlaylistVisualService
                 visual.ContentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
                 || visual.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase));
 
+    public StoredPlaylistVisual? GetActiveStoredStillVisual(string source, string sourceId)
+    {
+        var visualDir = GetVisualDirectory(source, sourceId);
+        var activeFileName = ReadActiveFileName(visualDir);
+        if (!string.IsNullOrWhiteSpace(activeFileName))
+        {
+            var activePath = Path.Join(visualDir, activeFileName);
+            if (File.Exists(activePath))
+            {
+                var active = new StoredPlaylistVisual(
+                    activePath,
+                    ResolveContentType(activePath),
+                    true,
+                    BuildVisualVariantUrl(source, sourceId, activeFileName, File.GetLastWriteTimeUtc(activePath)));
+                if (active.ContentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
+                    || active.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase))
+                {
+                    return active;
+                }
+            }
+        }
+
+        return GetStoredStillVisual(source, sourceId);
+    }
+
     public StoredPlaylistVisual? GetStoredAnimatedVisual(string source, string sourceId)
         => GetStoredVisuals(source, sourceId)
             .FirstOrDefault(static visual =>
@@ -193,15 +344,23 @@ public sealed class PlaylistVisualService
                 || visual.ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase)
                 || visual.ContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase));
 
+    public string? GetActiveArtworkRevision(string source, string sourceId)
+    {
+        var stillHash = ComputeContentHash(GetActiveStoredStillVisual(source, sourceId)?.FilePath);
+        var animatedHash = ComputeContentHash(GetStoredAnimatedVisual(source, sourceId)?.FilePath);
+        return BuildArtworkRevision(stillHash, animatedHash);
+    }
+
     public async Task<StoredPlaylistVisual?> ResolveApplePlaylistAnimatedVisualAsync(
         string source,
         string sourceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool forceRefresh = false)
     {
         try
         {
             var existing = GetStoredAnimatedVisual(source, sourceId);
-            if (existing != null)
+            if (existing != null && !forceRefresh)
             {
                 return existing;
             }
@@ -262,6 +421,17 @@ public sealed class PlaylistVisualService
                 LogSanitizer.OneLine(sourceId));
             return GetStoredAnimatedVisual(source, sourceId);
         }
+    }
+
+    private static string? ComputeContentHash(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return null;
+        }
+
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
     private async Task MaterializeMatchingApplePlaylistStillAsync(
@@ -644,6 +814,36 @@ public sealed class PlaylistVisualService
     }
 
     public sealed record StoredPlaylistVisual(string FilePath, string ContentType, bool IsActive = false, string? Url = null);
+
+    private sealed record VisualMaterializationResult(string? Url, bool RemoteValidated, string? Error);
+
+    public enum PlaylistArtworkInspectionStatus
+    {
+        Available,
+        Unchanged,
+        AuthoritativelyRemoved,
+        TemporarilyUnavailable,
+        Unsupported
+    }
+
+    public sealed record PlaylistArtworkInspectionResult(
+        PlaylistArtworkInspectionStatus Status,
+        string? RemoteIdentity,
+        StoredPlaylistVisual? Still,
+        StoredPlaylistVisual? Animated,
+        string? StillContentHash,
+        string? AnimatedContentHash,
+        bool Changed,
+        string? Error)
+    {
+        public string? Revision => BuildArtworkRevision(StillContentHash, AnimatedContentHash);
+    }
+
+    private static string? BuildArtworkRevision(string? stillContentHash, string? animatedContentHash)
+        => string.IsNullOrWhiteSpace(stillContentHash) && string.IsNullOrWhiteSpace(animatedContentHash)
+            ? null
+            : Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+                $"{stillContentHash ?? "-"}|{animatedContentHash ?? "-"}"))).ToLowerInvariant();
 
     private static bool TryNormalizeRemoteImageUri(string value, out string normalizedUri)
     {

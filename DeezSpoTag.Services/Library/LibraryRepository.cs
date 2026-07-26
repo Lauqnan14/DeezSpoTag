@@ -7410,6 +7410,176 @@ WHERE source = @source AND source_id = @sourceId;";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<PlaylistWatchArtworkStateDto?> GetPlaylistWatchArtworkStateAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT source,source_id,remote_identity,still_content_hash,still_local_path,
+       animated_content_hash,animated_local_path,status,last_error,last_checked_utc,revision
+FROM playlist_watch_artwork_state
+WHERE source=@source AND source_id=@sourceId;", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new PlaylistWatchArtworkStateDto(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6),
+            reader.GetString(7),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.IsDBNull(9) ? null : ParseDateTimeOffsetInvariant(reader.GetString(9)),
+            reader.IsDBNull(10) ? null : reader.GetString(10));
+    }
+
+    public async Task UpsertPlaylistWatchArtworkStateAsync(
+        PlaylistWatchArtworkStateDto state,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(state.Source, state.SourceId, out var source, out var sourceId))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+INSERT INTO playlist_watch_artwork_state (
+ source,source_id,remote_identity,still_content_hash,still_local_path,
+ animated_content_hash,animated_local_path,status,last_error,last_checked_utc,revision)
+VALUES (
+ @source,@sourceId,@remoteIdentity,@stillHash,@stillPath,
+ @animatedHash,@animatedPath,@status,@lastError,@lastChecked,@revision)
+ON CONFLICT(source,source_id) DO UPDATE SET
+ remote_identity=excluded.remote_identity,
+ still_content_hash=COALESCE(excluded.still_content_hash,playlist_watch_artwork_state.still_content_hash),
+ still_local_path=COALESCE(excluded.still_local_path,playlist_watch_artwork_state.still_local_path),
+ animated_content_hash=COALESCE(excluded.animated_content_hash,playlist_watch_artwork_state.animated_content_hash),
+ animated_local_path=COALESCE(excluded.animated_local_path,playlist_watch_artwork_state.animated_local_path),
+ status=excluded.status,last_error=excluded.last_error,last_checked_utc=excluded.last_checked_utc,
+ revision=COALESCE(excluded.revision,playlist_watch_artwork_state.revision),updated_at=CURRENT_TIMESTAMP;", connection);
+        command.Parameters.AddWithValue(SourceField, source);
+        command.Parameters.AddWithValue(SourceIdField, sourceId);
+        command.Parameters.AddWithValue("remoteIdentity", (object?)state.RemoteIdentity ?? DBNull.Value);
+        command.Parameters.AddWithValue("stillHash", (object?)state.StillContentHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("stillPath", (object?)state.StillLocalPath ?? DBNull.Value);
+        command.Parameters.AddWithValue("animatedHash", (object?)state.AnimatedContentHash ?? DBNull.Value);
+        command.Parameters.AddWithValue("animatedPath", (object?)state.AnimatedLocalPath ?? DBNull.Value);
+        command.Parameters.AddWithValue("status", state.Status);
+        command.Parameters.AddWithValue("lastError", (object?)state.LastError ?? DBNull.Value);
+        command.Parameters.AddWithValue("lastChecked", (object?)state.LastCheckedUtc?.ToString("O") ?? DBNull.Value);
+        command.Parameters.AddWithValue("revision", (object?)state.Revision ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+        string source,
+        string playlistId,
+        string revision,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, playlistId, out var normalizedSource, out var normalizedPlaylistId)
+            || string.IsNullOrWhiteSpace(revision))
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using (var removeObsolete = new SqliteCommand(@"
+DELETE FROM watchlist_sync_job
+WHERE source=@source AND playlist_id=@playlistId
+  AND track_id LIKE 'artwork:%' AND track_id <> 'artwork:' || @revision
+  AND lower(status) IN ('pending','retry','completed');", connection))
+        {
+            removeObsolete.Parameters.AddWithValue(SourceField, normalizedSource);
+            removeObsolete.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+            removeObsolete.Parameters.AddWithValue("revision", revision.Trim());
+            await removeObsolete.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using var command = new SqliteCommand(@"
+INSERT INTO watchlist_sync_job (source,playlist_id,track_id,target_service,status,next_attempt_utc)
+SELECT @source,@playlistId,'artwork:' || @revision,lower(trim(configured.value)),'pending',CURRENT_TIMESTAMP
+FROM playlist_watch_preferences preference,
+     json_each(CASE
+       WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json)>0
+       THEN preference.sync_targets_json ELSE json_array(preference.service) END) configured
+WHERE preference.source=@source AND preference.source_id=@playlistId
+  AND preference.update_artwork=1
+  AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
+  AND NOT EXISTS (
+      SELECT 1 FROM playlist_watch_artwork_target_state target
+      WHERE target.source=@source AND target.source_id=@playlistId
+        AND target.target_service=lower(trim(configured.value))
+        AND target.status='applied' AND target.applied_revision=@revision)
+ON CONFLICT(source,playlist_id,track_id,target_service) DO UPDATE SET
+ status=CASE
+   WHEN lower(watchlist_sync_job.status) IN ('completed','processing','retry')
+   THEN watchlist_sync_job.status ELSE 'pending' END,
+ next_attempt_utc=CASE
+   WHEN lower(watchlist_sync_job.status) IN ('completed','processing','retry')
+   THEN watchlist_sync_job.next_attempt_utc ELSE CURRENT_TIMESTAMP END,
+ lease_owner=CASE WHEN lower(watchlist_sync_job.status)='processing' THEN watchlist_sync_job.lease_owner ELSE NULL END,
+ lease_until_utc=CASE WHEN lower(watchlist_sync_job.status)='processing' THEN watchlist_sync_job.lease_until_utc ELSE NULL END,
+ last_error=CASE
+   WHEN lower(watchlist_sync_job.status) IN ('processing','retry')
+   THEN watchlist_sync_job.last_error ELSE NULL END,
+ updated_at=CURRENT_TIMESTAMP
+RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
+ attempt_count,next_attempt_utc,queue_uuid,lease_owner,status,last_error;", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+        command.Parameters.AddWithValue("revision", revision.Trim());
+        var jobs = new List<WatchlistSyncJobDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            jobs.Add(await ReadWatchlistSyncJobAsync(reader, cancellationToken));
+        }
+        return jobs;
+    }
+
+    public async Task SetPlaylistWatchArtworkTargetStateAsync(
+        string source,
+        string sourceId,
+        string targetService,
+        string? revision,
+        bool success,
+        string? error,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+INSERT INTO playlist_watch_artwork_target_state (
+ source,source_id,target_service,applied_revision,status,last_error,last_attempt_utc)
+VALUES (@source,@sourceId,@target,@revision,@status,@error,@attempt)
+ON CONFLICT(source,source_id,target_service) DO UPDATE SET
+ applied_revision=CASE WHEN excluded.status='applied' THEN excluded.applied_revision ELSE playlist_watch_artwork_target_state.applied_revision END,
+ status=excluded.status,last_error=excluded.last_error,last_attempt_utc=excluded.last_attempt_utc,updated_at=CURRENT_TIMESTAMP;", connection);
+        command.Parameters.AddWithValue(SourceField, NormalizePlaylistWatchSource(source));
+        command.Parameters.AddWithValue(SourceIdField, sourceId.Trim());
+        command.Parameters.AddWithValue("target", targetService.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("revision", (object?)revision ?? DBNull.Value);
+        command.Parameters.AddWithValue("status", success ? "applied" : "failed");
+        command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
+        command.Parameters.AddWithValue("attempt", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<bool> RemovePlaylistWatchlistAsync(string source, string sourceId, CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))

@@ -312,24 +312,39 @@ internal sealed class WatchlistEngine
         var liveTrackCount = liveSnapshot.TrackCount ?? playlist.TrackCount ?? 0;
 
         var currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
-        var managedImageUrl = _playlistVisualService == null
-            ? currentPlaylist.ImageUrl
-            : await _playlistVisualService.ResolveManagedVisualUrlAsync(
+        PlaylistVisualService.PlaylistArtworkInspectionResult? artworkInspection = null;
+        if (_playlistVisualService != null)
+        {
+            artworkInspection = await _playlistVisualService.InspectSourceArtworkAsync(
                 source,
                 sourceId,
                 currentPlaylist.Name,
                 currentPlaylist.ImageUrl,
-                preference?.ReuseSavedArtwork == true,
+                activateChangedArtwork: preference?.ReuseSavedArtwork != true,
+                authoritativeRemoval: liveSnapshot.CanClearImageUrl
+                    && HasTrustedLivePlaylistMetadata(source, liveSnapshot)
+                    && string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl),
                 cancellationToken);
-        if (!string.Equals(managedImageUrl, currentPlaylist.ImageUrl, StringComparison.Ordinal))
-        {
-            currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
-        }
-        if (_playlistVisualService != null)
-        {
-            await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
-                source,
-                sourceId,
+
+            var activeVisual = _playlistVisualService.GetStoredVisual(source, sourceId);
+            if (activeVisual?.Url is { Length: > 0 })
+            {
+                currentPlaylist = currentPlaylist with { ImageUrl = activeVisual.Url };
+            }
+
+            await _libraryRepository.UpsertPlaylistWatchArtworkStateAsync(
+                new PlaylistWatchArtworkStateDto(
+                    source,
+                    sourceId,
+                    artworkInspection.RemoteIdentity,
+                    artworkInspection.StillContentHash,
+                    artworkInspection.Still?.FilePath,
+                    artworkInspection.AnimatedContentHash,
+                    artworkInspection.Animated?.FilePath,
+                    artworkInspection.Status.ToString().ToLowerInvariant(),
+                    artworkInspection.Error,
+                    DateTimeOffset.UtcNow,
+                    artworkInspection.Revision),
                 cancellationToken);
         }
 
@@ -470,7 +485,11 @@ internal sealed class WatchlistEngine
         var candidateIdentityRevision = PlaylistCandidateContract.BuildIdentityRevision(source, candidates);
         var candidateCacheComplete = liveSnapshot.IsComplete
             && candidates.All(candidate => PlaylistCandidateContract.IsResolvable(source, candidate));
-        var sourceChanged = HasPlaylistSourceChanged(existingCandidateCache, liveSnapshot, candidatesJson);
+        var sourceChanged = HasPlaylistSourceChanged(
+            existingCandidateCache,
+            liveSnapshot,
+            candidatesJson,
+            artworkInspection?.Changed == true);
         await UpdatePlaylistStateAsync(
             source,
             sourceId,
@@ -650,6 +669,23 @@ internal sealed class WatchlistEngine
                         WatchlistHistoryStatus.MediaSyncWaiting,
                         cancellationToken);
                 }
+            }
+        }
+        var artworkRevision = preference?.ReuseSavedArtwork == true
+            ? _playlistVisualService?.GetActiveArtworkRevision(source, sourceId)
+            : artworkInspection?.Revision;
+        if ((preference?.UpdateArtwork == true || preference?.ReuseSavedArtwork == true)
+            && !string.IsNullOrWhiteSpace(artworkRevision)
+            && hasConfiguredPlaylistSyncTargets)
+        {
+            var artworkJobs = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+                source,
+                sourceId,
+                artworkRevision,
+                cancellationToken);
+            if (artworkJobs.Count > 0)
+            {
+                _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
             }
         }
 
@@ -937,25 +973,36 @@ internal sealed class WatchlistEngine
         var liveTrackCount = liveSnapshot.TrackCount ?? liveSnapshot.Candidates.Count;
         var currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
-        var managedImageUrl = _playlistVisualService == null
-            ? currentPlaylist.ImageUrl
-            : await _playlistVisualService.ResolveManagedVisualUrlAsync(
+        if (_playlistVisualService != null)
+        {
+            var inspection = await _playlistVisualService.InspectSourceArtworkAsync(
                 source,
                 sourceId,
                 currentPlaylist.Name,
                 currentPlaylist.ImageUrl,
-                preference?.ReuseSavedArtwork == true,
-                cancellationToken,
-                forceArtworkRefresh);
-        if (!string.Equals(managedImageUrl, currentPlaylist.ImageUrl, StringComparison.Ordinal))
-        {
-            currentPlaylist = currentPlaylist with { ImageUrl = managedImageUrl };
-        }
-        if (_playlistVisualService != null)
-        {
-            await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
-                source,
-                sourceId,
+                activateChangedArtwork: preference?.UpdateArtwork != false,
+                authoritativeRemoval: liveSnapshot.CanClearImageUrl
+                    && HasTrustedLivePlaylistMetadata(source, liveSnapshot)
+                    && string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl),
+                cancellationToken);
+            var activeVisual = _playlistVisualService.GetStoredVisual(source, sourceId);
+            if (activeVisual?.Url is { Length: > 0 })
+            {
+                currentPlaylist = currentPlaylist with { ImageUrl = activeVisual.Url };
+            }
+            await _libraryRepository.UpsertPlaylistWatchArtworkStateAsync(
+                new PlaylistWatchArtworkStateDto(
+                    source,
+                    sourceId,
+                    inspection.RemoteIdentity,
+                    inspection.StillContentHash,
+                    inspection.Still?.FilePath,
+                    inspection.AnimatedContentHash,
+                    inspection.Animated?.FilePath,
+                    inspection.Status.ToString().ToLowerInvariant(),
+                    inspection.Error,
+                    DateTimeOffset.UtcNow,
+                    inspection.Revision),
                 cancellationToken);
         }
 
@@ -1075,8 +1122,13 @@ internal sealed class WatchlistEngine
     private static bool HasPlaylistSourceChanged(
         PlaylistTrackCandidateCacheDto? existingCandidateCache,
         LivePlaylistSnapshot liveSnapshot,
-        string candidatesJson)
+        string candidatesJson,
+        bool artworkChanged)
     {
+        if (artworkChanged)
+        {
+            return true;
+        }
         if (existingCandidateCache is null)
         {
             return true;
@@ -1984,11 +2036,11 @@ internal sealed class WatchlistEngine
             [QobuzSource] = new PlaylistSourceAdapter(
                 QobuzSource,
                 async (id, _, token) => BuildLivePlaylistSnapshot(await GetQobuzTrackCandidatesAsync(id, token)),
-                static (_, _) => Task.FromResult(new LivePlaylistSnapshotMetadata())),
+                GetQobuzSnapshotHeadAsync),
             [TidalSource] = new PlaylistSourceAdapter(
                 TidalSource,
                 async (id, _, token) => await GetTidalSnapshotAsync(id, token),
-                static (_, _) => Task.FromResult(new LivePlaylistSnapshotMetadata()))
+                GetTidalSnapshotHeadAsync)
         };
 
     private async Task<LivePlaylistSnapshotMetadata> GetSpotifySnapshotHeadAsync(
@@ -2821,6 +2873,45 @@ internal sealed class WatchlistEngine
                 IsComplete: isComplete && (total == int.MaxValue || offset >= total)));
     }
 
+    private async Task<LivePlaylistSnapshotMetadata> GetTidalSnapshotHeadAsync(
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var playlistId = ResolveTidalPlaylistId(sourceId);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: "tidal_playlist_id_invalid");
+        }
+
+        var token = await _tidalAccessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        var client = _httpClientFactory.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"https://api.tidal.com/v1/playlists/{Uri.EscapeDataString(playlistId)}?countryCode=US");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        using var response = await client.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: $"tidal_head_http_{(int)response.StatusCode}");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var root = document.RootElement;
+        var imageId = GetJsonString(root, "squareImage") ?? GetJsonString(root, "image");
+        var creator = root.TryGetProperty("creator", out var creatorNode) && creatorNode.ValueKind == JsonValueKind.Object
+            ? GetJsonString(creatorNode, "name")
+            : null;
+        return new LivePlaylistSnapshotMetadata(
+            SnapshotId: EmptyToNull(GetJsonString(root, "lastUpdated")),
+            Name: EmptyToNull(GetJsonString(root, JsonTitleProperty)),
+            Description: EmptyToNull(GetJsonString(root, "description")),
+            ImageUrl: BuildTidalPlaylistImageUrl(imageId),
+            TrackCount: GetJsonInt(root, "numberOfTracks") is var count && count > 0 ? count : null,
+            IsComplete: true,
+            OwnerName: EmptyToNull(creator));
+    }
+
     private static async Task<TidalPlaylistItemsPage> FetchTidalPlaylistItemsPageAsync(
         HttpClient client,
         string playlistId,
@@ -2940,6 +3031,40 @@ internal sealed class WatchlistEngine
         }
 
         return candidates;
+    }
+
+    private async Task<LivePlaylistSnapshotMetadata> GetQobuzSnapshotHeadAsync(
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        var playlistUrl = ResolveQobuzPlaylistUrl(sourceId);
+        if (string.IsNullOrWhiteSpace(playlistUrl))
+        {
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: "qobuz_playlist_url_invalid");
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        using var response = await client.GetAsync(playlistUrl, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: $"qobuz_head_http_{(int)response.StatusCode}");
+        }
+
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        var document = new HtmlDocument();
+        document.LoadHtml(html);
+        string? Meta(string property)
+            => EmptyToNull(HtmlEntity.DeEntitize(
+                document.DocumentNode
+                    .SelectSingleNode($"//meta[@property='{property}']")
+                    ?.GetAttributeValue("content", string.Empty)
+                ?? string.Empty));
+
+        return new LivePlaylistSnapshotMetadata(
+            Name: Meta("og:title"),
+            Description: Meta("og:description"),
+            ImageUrl: Meta("og:image"),
+            IsComplete: true);
     }
 
     private static IReadOnlyList<PlaylistTrackCandidate> MapWatchIntentTrackCandidates(
@@ -4823,6 +4948,19 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return Uri.TryCreate(value, UriKind.Absolute, out _)
             ? value
             : $"https://open.qobuz.com/playlist/{Uri.EscapeDataString(value)}";
+    }
+
+    private static string? BuildTidalPlaylistImageUrl(string? imageId)
+    {
+        if (string.IsNullOrWhiteSpace(imageId))
+        {
+            return null;
+        }
+
+        var normalized = imageId.Trim().Replace("-", "/", StringComparison.Ordinal).Trim('/');
+        return string.IsNullOrWhiteSpace(normalized)
+            ? null
+            : $"https://resources.tidal.com/images/{normalized}/1280x1280.jpg";
     }
 
     private static string ResolveTidalArtistName(JsonElement track)

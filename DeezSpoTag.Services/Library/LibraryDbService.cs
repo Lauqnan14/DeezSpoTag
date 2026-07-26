@@ -493,6 +493,34 @@ CREATE TABLE IF NOT EXISTS watchlist_sync_job (
     UNIQUE (source, playlist_id, track_id, target_service)
 );", cancellationToken);
         await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_watch_artwork_state (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    remote_identity TEXT,
+    still_content_hash TEXT,
+    still_local_path TEXT,
+    animated_content_hash TEXT,
+    animated_local_path TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_error TEXT,
+    last_checked_utc TEXT,
+    revision TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_watch_artwork_target_state (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    applied_revision TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    last_attempt_utc TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id, target_service)
+);", cancellationToken);
+        await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     queue_uuid TEXT NOT NULL UNIQUE,

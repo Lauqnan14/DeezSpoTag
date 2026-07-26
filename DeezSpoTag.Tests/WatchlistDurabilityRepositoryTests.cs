@@ -207,6 +207,60 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
     }
 
     [Fact]
+    public async Task ArtworkSyncJobs_AreRevisionedPerTargetAndDoNotRequeueAppliedTargets()
+    {
+        await AddPlaylistWithTargetsAsync("artwork-list", ["plex", "jellyfin", "navidrome"]);
+        await _repository.UpsertPlaylistWatchArtworkStateAsync(new PlaylistWatchArtworkStateDto(
+            "spotify",
+            "artwork-list",
+            "https://images.example/cover-a.jpg",
+            "still-a",
+            "/cache/cover-a.jpg",
+            null,
+            null,
+            "available",
+            null,
+            DateTimeOffset.UtcNow,
+            "revision-a"));
+
+        var firstRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+            "spotify",
+            "artwork-list",
+            "revision-a");
+
+        Assert.Equal(
+            new[] { "jellyfin", "navidrome", "plex" },
+            firstRevision.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(firstRevision, static job => Assert.Equal("artwork:revision-a", job.TrackId));
+
+        await _repository.SetPlaylistWatchArtworkTargetStateAsync(
+            "spotify",
+            "artwork-list",
+            "plex",
+            "revision-a",
+            success: true,
+            error: null);
+        await ExecuteSqlAsync(@"
+UPDATE watchlist_sync_job
+SET status='completed'
+WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';");
+
+        var sameRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+            "spotify",
+            "artwork-list",
+            "revision-a");
+        Assert.DoesNotContain(sameRevision, static job => job.TargetService == "plex");
+
+        var nextRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+            "spotify",
+            "artwork-list",
+            "revision-b");
+        Assert.Equal(3, nextRevision.Count);
+        Assert.All(nextRevision, static job => Assert.Equal("artwork:revision-b", job.TrackId));
+        Assert.Equal(0, await CountArtworkJobsAsync("artwork-list", "revision-a"));
+    }
+
+    [Fact]
     public async Task TargetAndSourceChanges_DeleteObsoleteMembershipClaimsAndJobs()
     {
         await AddPlaylistWithTargetsAsync("prune-list", ["plex", "jellyfin"]);
@@ -597,6 +651,20 @@ WHERE id=@id;";
         command.Parameters.AddWithValue("id", jobId);
         command.Parameters.AddWithValue("expired", DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O"));
         await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<long> CountArtworkJobsAsync(string sourceId, string revision)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT COUNT(*)
+FROM watchlist_sync_job
+WHERE source='spotify' AND playlist_id=@sourceId AND track_id='artwork:' || @revision;";
+        command.Parameters.AddWithValue("sourceId", sourceId);
+        command.Parameters.AddWithValue("revision", revision);
+        return Convert.ToInt64(await command.ExecuteScalarAsync());
     }
 
     private Task SetReconciliationDueAsync()

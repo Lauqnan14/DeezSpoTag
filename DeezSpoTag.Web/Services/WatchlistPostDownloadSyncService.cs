@@ -458,6 +458,36 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return SyncAttemptOutcome.Obsolete("Target server is no longer selected.");
             }
 
+            if (request.TrackId.StartsWith("artwork:", StringComparison.OrdinalIgnoreCase))
+            {
+                var revision = request.TrackId["artwork:".Length..].Trim();
+                var activeRevision = scope.ServiceProvider.GetRequiredService<PlaylistVisualService>()
+                    .GetActiveArtworkRevision(playlist.Source, playlist.SourceId);
+                if (string.IsNullOrWhiteSpace(activeRevision)
+                    || !string.Equals(activeRevision, revision, StringComparison.OrdinalIgnoreCase))
+                {
+                    return SyncAttemptOutcome.Obsolete("A newer playlist artwork revision is active.");
+                }
+
+                var artworkResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
+                    .SyncPlaylistArtworkToTargetAsync(
+                        playlist,
+                        preference,
+                        request.TargetService,
+                        cancellationToken);
+                await repository.SetPlaylistWatchArtworkTargetStateAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    request.TargetService,
+                    revision,
+                    artworkResult.Success,
+                    artworkResult.Success ? null : artworkResult.Message,
+                    cancellationToken);
+                return artworkResult.Success
+                    ? SyncAttemptOutcome.Completed(artworkResult.Message)
+                    : SyncAttemptOutcome.Retry(artworkResult.Message);
+            }
+
             if (await repository.HasWatchlistReconciliationRequestAsync(
                     "playlist",
                     playlist.Source,

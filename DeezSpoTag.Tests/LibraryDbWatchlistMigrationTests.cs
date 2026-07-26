@@ -96,6 +96,8 @@ VALUES (1, 'Artist One', ' sp-1 ', ' dz-1 ');
             Assert.True(await IndexExistsAsync(connection, "idx_watchlist_history_source_created"));
             Assert.True(await IndexExistsAsync(connection, "idx_watchlist_sync_job_due"));
             Assert.True(await IndexExistsAsync(connection, "idx_watchlist_reconciliation_request_updated"));
+            Assert.True(await TableExistsAsync(connection, "playlist_watch_artwork_state"));
+            Assert.True(await TableExistsAsync(connection, "playlist_watch_artwork_target_state"));
 
             await using var command = connection.CreateCommand();
             command.CommandText = @"
@@ -125,6 +127,14 @@ SELECT spotify_id, deezer_id FROM artist_watchlist WHERE artist_id=1;";
             Assert.Equal("sp-1", reader.GetString(0));
             Assert.Equal("dz-1", reader.GetString(1));
         }
+    }
+
+    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=@name LIMIT 1;";
+        command.Parameters.AddWithValue("name", tableName);
+        return await command.ExecuteScalarAsync() is not null;
     }
 
     [Fact]
