@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using Microsoft.AspNetCore.Authorization;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -20,15 +21,21 @@ public sealed class BoomplayApiController : ControllerBase
     private const string PlaylistIdRequiredMessage = "Playlist id is required.";
     private static readonly Uri BoomplayReferrerUri = new("https://www.boomplay.com");
     private readonly BoomplayMetadataService _boomplayMetadataService;
+    private readonly LibraryRepository? _libraryRepository;
+    private readonly BoomplayWatchlistMappingService? _boomplayWatchlistMappingService;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<BoomplayApiController> _logger;
 
     public BoomplayApiController(
         BoomplayMetadataService boomplayMetadataService,
+        LibraryRepository? libraryRepository,
+        BoomplayWatchlistMappingService? boomplayWatchlistMappingService,
         IHttpClientFactory httpClientFactory,
         ILogger<BoomplayApiController> logger)
     {
         _boomplayMetadataService = boomplayMetadataService;
+        _libraryRepository = libraryRepository;
+        _boomplayWatchlistMappingService = boomplayWatchlistMappingService;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
@@ -200,7 +207,8 @@ public sealed class BoomplayApiController : ControllerBase
                     return NotFound(new { error = "Track not found." });
                 }
 
-                return Ok(MapSingleTrack(track));
+                var mapping = await GetMappingsAsync([track], cancellationToken);
+                return Ok(MapSingleTrack(track, mapping));
             }
 
             if (normalizedType == PlaylistType)
@@ -211,7 +219,8 @@ public sealed class BoomplayApiController : ControllerBase
                     return NotFound(new { error = "Playlist not found." });
                 }
 
-                return Ok(MapPlaylist(playlist));
+                var mappings = await GetMappingsAsync(playlist.Tracks, cancellationToken);
+                return Ok(MapPlaylist(playlist, mappings));
             }
 
             if (normalizedType == TrendingType)
@@ -222,7 +231,8 @@ public sealed class BoomplayApiController : ControllerBase
                     return NotFound(new { error = "Trending songs not found." });
                 }
 
-                return Ok(MapPlaylist(playlist));
+                var mappings = await GetMappingsAsync(playlist.Tracks, cancellationToken);
+                return Ok(MapPlaylist(playlist, mappings));
             }
 
             return BadRequest(new { error = "Unsupported Boomplay type." });
@@ -237,6 +247,67 @@ public sealed class BoomplayApiController : ControllerBase
             return StatusCode(500, new { error = "Failed to load Boomplay tracklist." });
         }
     }
+
+    [HttpGet("resolve-deezer")]
+    public async Task<IActionResult> ResolveDeezer(
+        [FromQuery] string boomplayId,
+        [FromQuery] string? url,
+        [FromQuery] string? title,
+        [FromQuery] string? artist,
+        [FromQuery] string? album,
+        [FromQuery] string? isrc,
+        [FromQuery] int? durationMs,
+        [FromQuery] string? coverUrl,
+        CancellationToken cancellationToken)
+    {
+        var normalizedId = boomplayId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedId)
+            && BoomplayMetadataService.TryParseBoomplayUrl(url ?? string.Empty, out var type, out var parsedId)
+            && string.Equals(type, "track", StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedId = parsedId;
+        }
+
+        if (string.IsNullOrWhiteSpace(normalizedId))
+        {
+            return BadRequest(new { available = false, reasonCode = "missing_boomplay_id" });
+        }
+
+        if (_boomplayWatchlistMappingService == null)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { available = false, reasonCode = "mapping_service_unavailable" });
+        }
+
+        var mapped = AssertSingle(await _boomplayWatchlistMappingService.ResolveTracksAsync(
+            [
+                new BoomplayWatchlistTrackInput(
+                    normalizedId,
+                    url,
+                    title,
+                    artist,
+                    album,
+                    isrc,
+                    durationMs,
+                    coverUrl)
+            ],
+            cancellationToken));
+
+        return Ok(new
+        {
+            available = mapped.IsMatched,
+            deezerId = mapped.DeezerTrackId ?? string.Empty,
+            mappingStatus = mapped.MappingStatus,
+            reasonCode = mapped.IsMatched ? string.Empty : "no_match"
+        });
+    }
+
+    private static BoomplayWatchlistMappedTrack AssertSingle(
+        IReadOnlyList<BoomplayWatchlistMappedTrack> mappings)
+        => mappings.Count == 1
+            ? mappings[0]
+            : throw new InvalidOperationException("Boomplay mapping returned an invalid result count.");
 
     [HttpGet("playlist/recommendations")]
     public async Task<IActionResult> GetPlaylistRecommendations(
@@ -328,7 +399,18 @@ public sealed class BoomplayApiController : ControllerBase
         }
     }
 
-    private static object MapSingleTrack(BoomplayTrackMetadata track)
+    private async Task<IReadOnlyDictionary<string, BoomplayDeezerTrackMappingDto>> GetMappingsAsync(
+        IEnumerable<BoomplayTrackMetadata> tracks,
+        CancellationToken cancellationToken)
+        => _libraryRepository?.IsConfigured == true
+            ? await _libraryRepository.GetBoomplayDeezerTrackMappingsAsync(
+                tracks.Select(static track => track.Id),
+                cancellationToken)
+            : new Dictionary<string, BoomplayDeezerTrackMappingDto>(StringComparer.Ordinal);
+
+    private static object MapSingleTrack(
+        BoomplayTrackMetadata track,
+        IReadOnlyDictionary<string, BoomplayDeezerTrackMappingDto> mappings)
     {
         var title = WebUtility.HtmlDecode(track.Title ?? string.Empty).Trim();
         var artist = WebUtility.HtmlDecode(track.Artist ?? string.Empty).Trim();
@@ -338,6 +420,8 @@ public sealed class BoomplayApiController : ControllerBase
             ? track.Url
             : $"https://www.boomplay.com/songs/{track.Id}";
 
+        mappings.TryGetValue(track.Id, out var mapping);
+        var deezerId = GetVerifiedDeezerId(mapping);
         return new
         {
             id = track.Id,
@@ -354,7 +438,8 @@ public sealed class BoomplayApiController : ControllerBase
             {
                 new
                 {
-                    id = string.Empty,
+                    id = track.Id,
+                    deezerId,
                     boomplayId = track.Id,
                     title = title,
                     duration = track.DurationMs > 0 ? track.DurationMs / 1000 : 0,
@@ -379,15 +464,20 @@ public sealed class BoomplayApiController : ControllerBase
         };
     }
 
-    private static object MapPlaylist(BoomplayPlaylistMetadata playlist)
+    private static object MapPlaylist(
+        BoomplayPlaylistMetadata playlist,
+        IReadOnlyDictionary<string, BoomplayDeezerTrackMappingDto> mappings)
     {
         var tracks = playlist.Tracks
             .Select((track, index) =>
             {
                 var trackUrl = ResolveTrackUrl(track);
+                mappings.TryGetValue(track.Id, out var mapping);
+                var deezerId = GetVerifiedDeezerId(mapping);
                 return new
                 {
                     id = track.Id,
+                    deezerId,
                     boomplayId = track.Id,
                     title = DecodeBoomplayText(track.Title),
                     duration = track.DurationMs > 0 ? track.DurationMs / 1000 : 0,
@@ -424,6 +514,16 @@ public sealed class BoomplayApiController : ControllerBase
             tracks
         };
     }
+
+    private static string GetVerifiedDeezerId(BoomplayDeezerTrackMappingDto? mapping)
+        => mapping != null
+           && string.Equals(
+               mapping.Status,
+               BoomplayWatchlistMappingService.MatchedStatus,
+               StringComparison.OrdinalIgnoreCase)
+           && !string.IsNullOrWhiteSpace(mapping.DeezerTrackId)
+            ? mapping.DeezerTrackId.Trim()
+            : string.Empty;
 
     private static List<object> MapPlaylistRecommendationSections(IReadOnlyList<BoomplayRecommendationSection> sections)
     {

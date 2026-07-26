@@ -8,17 +8,22 @@ namespace DeezSpoTag.Tests;
 public sealed class BoomplayDeezerMatchConsolidationTests
 {
     [Fact]
-    public void Boomplay_matching_is_owned_by_shared_service()
+    public void Boomplay_matching_is_owned_by_durable_watchlist_pipeline()
     {
         var boomplayController = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "BoomplayApiController.cs");
         var resolveController = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "ResolveDeezerApiController.cs");
         var matchService = ReadSource("DeezSpoTag.Web", "Services", "BoomplayDeezerMatchService.cs");
+        var mappingService = ReadSource("DeezSpoTag.Web", "Services", "BoomplayWatchlistMappingService.cs");
         var tracklistView = ReadSource("DeezSpoTag.Web", "Views", "Tracklist", "Index.cshtml");
 
         Assert.DoesNotContain("BoomplayDeezerMatchService _boomplayDeezerMatchService", boomplayController, StringComparison.Ordinal);
         Assert.DoesNotContain("_boomplayDeezerMatchService.ResolveTrackAsync", boomplayController, StringComparison.Ordinal);
-        Assert.Contains("BoomplayDeezerMatchService _boomplayDeezerMatchService", resolveController, StringComparison.Ordinal);
-        Assert.Contains("_boomplayDeezerMatchService.ResolveAsync", resolveController, StringComparison.Ordinal);
+        Assert.DoesNotContain("BoomplayDeezerMatchService _boomplayDeezerMatchService", resolveController, StringComparison.Ordinal);
+        Assert.DoesNotContain("_boomplayDeezerMatchService.ResolveAsync", resolveController, StringComparison.Ordinal);
+        Assert.Contains("durable_mapping_required", resolveController, StringComparison.Ordinal);
+        Assert.Contains("BoomplayDeezerMatchService matchService", mappingService, StringComparison.Ordinal);
+        Assert.Contains("GetBoomplayDeezerTrackMappingAsync", mappingService, StringComparison.Ordinal);
+        Assert.Contains("GetBoomplayDeezerTrackMappingsAsync", boomplayController, StringComparison.Ordinal);
 
         Assert.Contains("TryResolveIsrcFirstAsync", matchService, StringComparison.Ordinal);
         Assert.Contains("TryResolveDirectMetadataAsync", matchService, StringComparison.Ordinal);
@@ -48,6 +53,11 @@ public sealed class BoomplayDeezerMatchConsolidationTests
         Assert.DoesNotContain("playlist/tracks/stream", tracklistView, StringComparison.Ordinal);
         Assert.DoesNotContain("loadBoomplayPlaylistTracksStream", tracklistView, StringComparison.Ordinal);
         Assert.DoesNotContain("EventSource", tracklistView, StringComparison.Ordinal);
+        var sourceSetStart = tracklistView.IndexOf("const deezerMatchedExternalSources", StringComparison.Ordinal);
+        var sourceSetEnd = tracklistView.IndexOf("]);", sourceSetStart, StringComparison.Ordinal);
+        Assert.Contains("'boomplay'", tracklistView[sourceSetStart..sourceSetEnd], StringComparison.Ordinal);
+        Assert.Contains("/api/boomplay/resolve-deezer", tracklistView, StringComparison.Ordinal);
+        Assert.Contains("BoomplayWatchlistMappingService? _boomplayWatchlistMappingService", boomplayController, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] relativeParts)

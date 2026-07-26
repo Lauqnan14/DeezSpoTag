@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Web.Controllers.Api;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Services.Library;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
@@ -100,6 +101,8 @@ public sealed class BoomplayClassificationMetadataTests
         const string url = "https://www.boomplay.com/playlists/EQHxv9OfBPj-dhStUdbqizcI";
         var controller = new BoomplayApiController(
             boomplayMetadataService: null!,
+            libraryRepository: null,
+            boomplayWatchlistMappingService: null,
             httpClientFactory: null!,
             NullLogger<BoomplayApiController>.Instance);
 
@@ -291,7 +294,13 @@ public sealed class BoomplayClassificationMetadataTests
             FieldSources = new Dictionary<string, string> { ["genres"] = "html" }
         };
 
-        var payload = MapSingleTrack.Invoke(null, new object?[] { track });
+        var payload = MapSingleTrack.Invoke(
+            null,
+            new object?[]
+            {
+                track,
+                new Dictionary<string, BoomplayDeezerTrackMappingDto>(StringComparer.Ordinal)
+            });
         var json = JsonConvert.SerializeObject(payload);
 
         Assert.Contains("\"genres\":[\"Afro Soul\"]", json, StringComparison.Ordinal);
@@ -417,6 +426,8 @@ public sealed class BoomplayClassificationMetadataTests
 
             var controller = new BoomplayApiController(
                 service,
+                null,
+                null,
                 httpClientFactory,
                 NullLogger<BoomplayApiController>.Instance);
             var tracklistResult = Assert.IsType<OkObjectResult>(await controller.GetTracklist(

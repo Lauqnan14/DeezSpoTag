@@ -6,8 +6,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
+using DeezSpoTag.Web.Controllers.Api;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Newtonsoft.Json;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -178,6 +181,131 @@ public sealed class BoomplayWatchlistMappingServiceTests : IAsyncLifetime
         Assert.Equal(["deezer-1", "deezer-2", "deezer-3"], results.Select(static result => result.DeezerTrackId));
         Assert.Equal(["boom-1", "boom-2", "boom-3"], resolvedOrder);
         Assert.Equal(1, maxActiveResolvers);
+    }
+
+    [Fact]
+    public async Task ConcurrentConsumersResolveOnePreviouslyUnseenTrackOnlyOnce()
+    {
+        var resolverCalls = 0;
+        var first = NewService(async (_, cancellationToken) =>
+        {
+            Interlocked.Increment(ref resolverCalls);
+            await Task.Delay(50, cancellationToken);
+            return new BoomplayDeezerMatchResult(
+                "445566", "Title", "Artist", "Album", "cover", 200);
+        });
+        var second = NewService((_, _) =>
+        {
+            Interlocked.Increment(ref resolverCalls);
+            return Task.FromResult<BoomplayDeezerMatchResult?>(new(
+                "445566", "Title", "Artist", "Album", "cover", 200));
+        });
+        var input = new BoomplayWatchlistTrackInput(
+            "boom-single-flight", null, "Title", "Artist", "Album", null, 200_000, null);
+
+        var results = await Task.WhenAll(
+            first.ResolveTracksAsync([input], CancellationToken.None),
+            second.ResolveTracksAsync([input], CancellationToken.None));
+
+        Assert.Equal(1, resolverCalls);
+        Assert.All(results, result => Assert.Equal("445566", Assert.Single(result).DeezerTrackId));
+    }
+
+    [Fact]
+    public async Task BulkMappingReadReturnsOnlyRequestedDurableMappings()
+    {
+        var service = NewService((request, _) =>
+            Task.FromResult<BoomplayDeezerMatchResult?>(new(
+                request.Url!.EndsWith("one", StringComparison.Ordinal) ? "101" : "202",
+                request.Title ?? string.Empty,
+                request.Artist ?? string.Empty,
+                request.Album ?? string.Empty,
+                "cover",
+                200)));
+        await service.ResolveTracksAsync(
+            [
+                new BoomplayWatchlistTrackInput("one", "https://www.boomplay.com/songs/one", "One", "Artist", "Album", null, 200_000, null),
+                new BoomplayWatchlistTrackInput("two", "https://www.boomplay.com/songs/two", "Two", "Artist", "Album", null, 200_000, null)
+            ],
+            CancellationToken.None);
+
+        var mappings = await NewRepository().GetBoomplayDeezerTrackMappingsAsync(
+            ["two", "missing"],
+            CancellationToken.None);
+
+        var mapping = Assert.Single(mappings);
+        Assert.Equal("two", mapping.Key);
+        Assert.Equal("202", mapping.Value.DeezerTrackId);
+    }
+
+    [Fact]
+    public async Task RuntimeResetDoesNotDeleteCanonicalBoomplayMapping()
+    {
+        var service = NewService((_, _) =>
+            Task.FromResult<BoomplayDeezerMatchResult?>(new(
+                "303", "Title", "Artist", "Album", "cover", 200)));
+        await service.ResolveTracksAsync(
+            [new BoomplayWatchlistTrackInput(
+                "survives-reset",
+                "https://www.boomplay.com/songs/survives-reset",
+                "Title",
+                "Artist",
+                "Album",
+                null,
+                200_000,
+                null)],
+            CancellationToken.None);
+
+        await NewRepository().ClearWatchlistRuntimeAsync(CancellationToken.None);
+
+        var mapping = await NewRepository().GetBoomplayDeezerTrackMappingAsync(
+            "survives-reset",
+            CancellationToken.None);
+        Assert.Equal("303", mapping?.DeezerTrackId);
+        Assert.Equal(BoomplayWatchlistMappingService.MatchedStatus, mapping?.Status);
+    }
+
+    [Fact]
+    public async Task FirstViewEndpointPersistsMatchAndLaterRequestReusesIt()
+    {
+        var resolverCalls = 0;
+        var mappingService = NewService((_, _) =>
+        {
+            resolverCalls++;
+            return Task.FromResult<BoomplayDeezerMatchResult?>(new(
+                "909", "Title", "Artist", "Album", "cover", 200));
+        });
+        var controller = new BoomplayApiController(
+            boomplayMetadataService: null!,
+            libraryRepository: _repository,
+            boomplayWatchlistMappingService: mappingService,
+            httpClientFactory: null!,
+            NullLogger<BoomplayApiController>.Instance);
+
+        var first = Assert.IsType<OkObjectResult>(await controller.ResolveDeezer(
+            "first-view",
+            "https://www.boomplay.com/songs/first-view",
+            "Title",
+            "Artist",
+            "Album",
+            null,
+            200_000,
+            "cover",
+            CancellationToken.None));
+        var second = Assert.IsType<OkObjectResult>(await controller.ResolveDeezer(
+            "first-view",
+            "https://www.boomplay.com/songs/first-view",
+            "Title",
+            "Artist",
+            "Album",
+            null,
+            200_000,
+            "cover",
+            CancellationToken.None));
+
+        Assert.Equal(1, resolverCalls);
+        Assert.Contains("\"deezerId\":\"909\"", JsonConvert.SerializeObject(first.Value), StringComparison.Ordinal);
+        Assert.Contains("\"deezerId\":\"909\"", JsonConvert.SerializeObject(second.Value), StringComparison.Ordinal);
     }
 
     [Fact]

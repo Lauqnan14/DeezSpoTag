@@ -8291,6 +8291,86 @@ LIMIT 1;", connection);
             ParseDateTimeOffsetInvariant(reader.GetString(13)));
     }
 
+    public async Task<IReadOnlyDictionary<string, BoomplayDeezerTrackMappingDto>> GetBoomplayDeezerTrackMappingsAsync(
+        IEnumerable<string> boomplayTrackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTrackIds = boomplayTrackIds
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (normalizedTrackIds.Length == 0)
+        {
+            return new Dictionary<string, BoomplayDeezerTrackMappingDto>(StringComparer.Ordinal);
+        }
+        if (normalizedTrackIds.Length > 500)
+        {
+            var combined = new Dictionary<string, BoomplayDeezerTrackMappingDto>(StringComparer.Ordinal);
+            foreach (var batch in normalizedTrackIds.Chunk(500))
+            {
+                var batchMappings = await GetBoomplayDeezerTrackMappingsAsync(batch, cancellationToken);
+                foreach (var mapping in batchMappings)
+                {
+                    combined[mapping.Key] = mapping.Value;
+                }
+            }
+
+            return combined;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var parameterNames = new string[normalizedTrackIds.Length];
+        for (var index = 0; index < normalizedTrackIds.Length; index++)
+        {
+            parameterNames[index] = $"@trackId{index}";
+            command.Parameters.AddWithValue(parameterNames[index], normalizedTrackIds[index]);
+        }
+
+        command.CommandText = $@"
+SELECT boomplay_track_id,
+       deezer_track_id,
+       isrc,
+       title,
+       artist,
+       album,
+       cover_url,
+       duration_ms,
+       source_fingerprint,
+       matcher_version,
+       status,
+       last_error,
+       next_retry_utc,
+       updated_at
+FROM boomplay_deezer_track_mapping
+WHERE boomplay_track_id IN ({string.Join(", ", parameterNames)});";
+
+        var mappings = new Dictionary<string, BoomplayDeezerTrackMappingDto>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var mapping = new BoomplayDeezerTrackMappingDto(
+                reader.GetString(0),
+                await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5),
+                await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetString(6),
+                await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetInt32(7),
+                reader.GetString(8),
+                reader.GetString(9),
+                reader.GetString(10),
+                await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11),
+                await reader.IsDBNullAsync(12, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(12)),
+                ParseDateTimeOffsetInvariant(reader.GetString(13)));
+            mappings[mapping.BoomplayTrackId] = mapping;
+        }
+
+        return mappings;
+    }
+
     public async Task UpsertBoomplayDeezerTrackMappingAsync(
         BoomplayDeezerTrackMappingUpsertInput input,
         CancellationToken cancellationToken = default)

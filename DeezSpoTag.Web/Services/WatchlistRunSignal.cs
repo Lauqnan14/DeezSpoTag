@@ -1,24 +1,49 @@
 namespace DeezSpoTag.Web.Services;
 
+[Flags]
+public enum WatchlistWakeReason
+{
+    None = 0,
+    ScheduledRefresh = 1,
+    Reconciliation = 2,
+    Finalization = 4,
+    TargetSync = 8
+}
+
 public sealed class WatchlistRunSignal
 {
     private readonly SemaphoreSlim _signal = new(0, 1);
-    private int _pending;
+    private int _pendingReasons;
 
-    public bool IsPending => Volatile.Read(ref _pending) != 0;
+    public bool IsPending => Volatile.Read(ref _pendingReasons) != 0;
 
-    public bool Request()
+    public bool Request(WatchlistWakeReason reason = WatchlistWakeReason.Reconciliation)
     {
-        var accepted = Interlocked.Exchange(ref _pending, 1) == 0;
-        if (accepted)
+        if (reason == WatchlistWakeReason.None)
         {
-            _signal.Release();
+            return false;
         }
 
-        return accepted;
+        while (true)
+        {
+            var observed = Volatile.Read(ref _pendingReasons);
+            var updated = observed | (int)reason;
+            if (Interlocked.CompareExchange(ref _pendingReasons, updated, observed) != observed)
+            {
+                continue;
+            }
+
+            if (observed == 0)
+            {
+                _signal.Release();
+                return true;
+            }
+
+            return false;
+        }
     }
 
-    public async Task WaitAsync(TimeSpan delay, CancellationToken cancellationToken)
+    public async Task<WatchlistWakeReason> WaitAsync(TimeSpan delay, CancellationToken cancellationToken)
     {
         using var signalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var delayTask = Task.Delay(delay, cancellationToken);
@@ -27,15 +52,14 @@ public sealed class WatchlistRunSignal
         if (completed == signalTask)
         {
             await signalTask;
-            Interlocked.Exchange(ref _pending, 0);
-            return;
+            return (WatchlistWakeReason)Interlocked.Exchange(ref _pendingReasons, 0);
         }
 
         signalCancellation.Cancel();
         try
         {
             await signalTask;
-            Interlocked.Exchange(ref _pending, 0);
+            return (WatchlistWakeReason)Interlocked.Exchange(ref _pendingReasons, 0);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -43,5 +67,6 @@ public sealed class WatchlistRunSignal
             // consume a later explicit trigger.
         }
         await delayTask;
+        return WatchlistWakeReason.ScheduledRefresh;
     }
 }

@@ -48,18 +48,15 @@ public sealed class ResolveDeezerApiController : ControllerBase
         => Regex.Split(input, pattern, options, RegexTimeout);
 
     private readonly DeezerClient _deezerClient;
-    private readonly BoomplayDeezerMatchService _boomplayDeezerMatchService;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly ILogger<ResolveDeezerApiController> _logger;
 
     public ResolveDeezerApiController(
         DeezerClient deezerClient,
-        BoomplayDeezerMatchService boomplayDeezerMatchService,
         SpotifyMetadataService spotifyMetadataService,
         ILogger<ResolveDeezerApiController> logger)
     {
         _deezerClient = deezerClient;
-        _boomplayDeezerMatchService = boomplayDeezerMatchService;
         _spotifyMetadataService = spotifyMetadataService;
         _logger = logger;
     }
@@ -108,22 +105,12 @@ public sealed class ResolveDeezerApiController : ControllerBase
 
         if (context.IsBoomplaySource)
         {
-            var boomplayMatch = await _boomplayDeezerMatchService.ResolveAsync(
-                new BoomplayDeezerMatchRequest(
-                    context.Url,
-                    context.Title,
-                    context.Artist,
-                    context.Album,
-                    context.Isrc,
-                    context.DurationMs),
-                cancellationToken,
-                context.IncludeMeta);
-            if (boomplayMatch == null)
+            return BadRequest(new
             {
-                return Ok(new { available = false, reasonCode = "no_match" });
-            }
-
-            return Ok(BuildBoomplayResolveResponse(boomplayMatch, context.IncludeMeta));
+                available = false,
+                reasonCode = "durable_mapping_required",
+                error = "Boomplay tracks use the persisted Boomplay mapping pipeline."
+            });
         }
 
         var deezerId = await ResolveDeezerIdAsync(context, cancellationToken);
@@ -133,25 +120,6 @@ public sealed class ResolveDeezerApiController : ControllerBase
         }
 
         return Ok(await BuildResolveResponseAsync(deezerId, context.IncludeMeta));
-    }
-
-    private static object BuildBoomplayResolveResponse(BoomplayDeezerMatchResult match, bool includeMeta)
-    {
-        if (!includeMeta)
-        {
-            return new { available = true, deezerId = match.DeezerId };
-        }
-
-        return new
-        {
-            available = true,
-            deezerId = match.DeezerId,
-            durationMs = match.DurationMs,
-            title = match.Title,
-            artist = match.Artist,
-            album = match.Album,
-            coverMedium = match.CoverMedium
-        };
     }
 
     private static ResolveRequestContext CreateResolveRequestContext(ResolveDeezerRequest request)

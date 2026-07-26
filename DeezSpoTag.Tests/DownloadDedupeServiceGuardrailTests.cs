@@ -326,9 +326,10 @@ public sealed class DownloadDedupeServiceGuardrailTests
         var source = ReadSource("DeezSpoTag.Web", "Services", "BoomplayWatchlistMappingService.cs");
 
         Assert.DoesNotContain("Task.WhenAll", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("SemaphoreSlim", source, StringComparison.Ordinal);
         Assert.DoesNotContain("MaximumConcurrentMatches", source, StringComparison.Ordinal);
         Assert.Contains("foreach (var track in tracks)", source, StringComparison.Ordinal);
+        Assert.Contains("TrackResolutionLocks", source, StringComparison.Ordinal);
+        Assert.Contains("await resolutionGate.Semaphore.WaitAsync", source, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] relativeParts)

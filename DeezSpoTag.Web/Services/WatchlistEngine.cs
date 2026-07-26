@@ -641,7 +641,7 @@ internal sealed class WatchlistEngine
                     cancellationToken);
                 if (targetJobs.Count > 0)
                 {
-                    _serviceProvider.GetService<WatchlistRunSignal>()?.Request();
+                    _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
                     await AddPlaylistWatchHistoryStageAsync(
                         source,
                         sourceId,

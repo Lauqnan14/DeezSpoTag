@@ -47,7 +47,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         var jobs = await repository.EnqueueWatchlistAllPlaylistSyncJobsAsync(cancellationToken);
         if (jobs > 0)
         {
-            _coordinatorSignal.Request();
+            _coordinatorSignal.Request(WatchlistWakeReason.TargetSync);
         }
     }
 
@@ -464,7 +464,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     playlist.SourceId,
                     cancellationToken))
             {
-                _coordinatorSignal.Request();
+                _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
                 return SyncAttemptOutcome.Retry("Waiting for the durable playlist reconciliation request to complete.");
             }
 
@@ -480,7 +480,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     playlist.Source,
                     playlist.SourceId,
                     cancellationToken);
-                _coordinatorSignal.Request();
+                _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
 

@@ -3942,41 +3942,6 @@ function appendSpotifyTrackRows(tracks) {
     });
 }
 
-function reconcileExternalMatchesFromCache() {
-    const tableBody = document.getElementById('tracks-table-body');
-    if (!tableBody) {
-        return 0;
-    }
-
-    let applied = 0;
-    tableBody.querySelectorAll('tr[data-track-index]').forEach((row) => {
-        const checkbox = row.querySelector('.track-checkbox');
-        if (!checkbox) {
-            return;
-        }
-
-        const existing = String(checkbox.getAttribute('data-track-id') || '').trim();
-        if (existing) {
-            return;
-        }
-
-        const link = String(row.dataset.availabilityUrl || checkbox.getAttribute('data-track-link') || '').trim();
-        if (!link || !externalDeezerMatchCache.has(link)) {
-            return;
-        }
-
-        const deezerId = String(externalDeezerMatchCache.get(link) || '').trim();
-        if (!/^\d+$/.test(deezerId)) {
-            return;
-        }
-
-        applyExternalMatchToRow(row, deezerId);
-        applied += 1;
-    });
-
-    return applied;
-}
-
 function markUnresolvedExternalRowsAsUnmatched(indices) {
     if (!(indices instanceof Set) || indices.size === 0) {
         return;
@@ -4310,6 +4275,7 @@ function buildExternalMatchRequestFromTrack(track, source, fallbackIndex) {
     return {
         link,
         source,
+        boomplayId: track.boomplayId || track.boomplay_id || (source === 'boomplay' ? track.id || '' : ''),
         tidalId: platformIds.tidalId || '',
         spotifyId: platformIds.spotifyId || '',
         appleId: platformIds.appleId || '',
@@ -4434,6 +4400,30 @@ function buildExternalDeezerResolveQuery(current, source) {
     return qs;
 }
 
+function buildBoomplayDurableResolveQuery(current) {
+    const qs = new URLSearchParams();
+    qs.set('url', current.link);
+    if (current.boomplayId) {
+        qs.set('boomplayId', current.boomplayId);
+    }
+    if (current.title) {
+        qs.set('title', current.title);
+    }
+    if (current.artist) {
+        qs.set('artist', current.artist);
+    }
+    if (current.album) {
+        qs.set('album', current.album);
+    }
+    if (current.isrc) {
+        qs.set('isrc', current.isrc);
+    }
+    if (current.durationMs && Number.isFinite(current.durationMs) && current.durationMs > 0) {
+        qs.set('durationMs', String(current.durationMs));
+    }
+    return qs;
+}
+
 async function resolveExternalRequestToDeezer(current, source, row, options = {}) {
     if (!current || !current.link) {
         return '';
@@ -4464,7 +4454,11 @@ async function resolveExternalRequestToDeezer(current, source, row, options = {}
                 }
             }
 
-            if (!deezerId) {
+            if (!deezerId && source === 'boomplay') {
+                const qs = buildBoomplayDurableResolveQuery(current);
+                const data = await fetchJsonWithRetry(`/api/boomplay/resolve-deezer?${qs.toString()}`, 3);
+                deezerId = data?.deezerId || '';
+            } else if (!deezerId) {
                 const qs = buildExternalDeezerResolveQuery(current, source);
                 const data = await fetchJsonWithRetry(`/api/resolve/deezer?${qs.toString()}`, 3);
                 deezerId = data?.deezerId || '';
@@ -4536,19 +4530,10 @@ async function resolveDeezerPlaybackUrlForRow(row, deezerId, playbackType = '') 
 }
 
 function applyExternalMatchToRow(row, deezerId) {
-    const source = getRowTrackSource(row);
-    if (source === 'boomplay') {
-        applyBoomplayMatchToRow(row, deezerId);
-        return;
-    }
     applySpotifyMatchToRow(row, deezerId);
 }
 
 function applySpotifyMatchToRow(row, deezerId) {
-    applyMatchedRowState(row, deezerId);
-}
-
-function applyBoomplayMatchToRow(row, deezerId) {
     applyMatchedRowState(row, deezerId);
 }
 
@@ -4821,8 +4806,7 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
         return;
     }
 
-    const showProgress = normalizedSource === 'boomplay'
-        || normalizedSource === 'apple'
+    const showProgress = normalizedSource === 'apple'
         || normalizedSource === 'tidal'
         || normalizedSource === 'amazon'
         || normalizedSource === 'youtube'
@@ -4881,9 +4865,6 @@ async function resolveExternalTracklistMatches(tracks, source, options = {}) {
     });
 
     await Promise.all(workers);
-    if (source === 'boomplay') {
-        reconcileExternalMatchesFromCache();
-    }
     markUnresolvedExternalRowsAsUnmatched(processedIndices);
 
         if (showProgress) {

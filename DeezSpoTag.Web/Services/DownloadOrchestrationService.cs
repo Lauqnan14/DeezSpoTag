@@ -1733,7 +1733,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         if (queued)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _watchlistRunSignal?.Request();
+            _watchlistRunSignal?.Request(WatchlistWakeReason.Finalization);
         }
         return (queued, nonWatchlistPresent);
     }

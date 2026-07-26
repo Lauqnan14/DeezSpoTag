@@ -103,13 +103,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         _logger.LogInformation("Playlist watch service started.");
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
 
+        var wakeReason = WatchlistWakeReason.ScheduledRefresh;
         while (!stoppingToken.IsCancellationRequested)
         {
-            await RunOnceAsync(stoppingToken);
+            await RunTriggeredOnceAsync(wakeReason, stoppingToken);
 
             try
             {
-                await _runSignal.WaitAsync(GetWatchInterval(), stoppingToken);
+                wakeReason = await _runSignal.WaitAsync(GetWatchInterval(), stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -315,12 +316,17 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     }
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Watch cycle entrypoint intentionally centralizes lock, failure handling, and lifecycle semantics.")]
-    private async Task RunOnceAsync(CancellationToken stoppingToken)
+    private Task RunOnceAsync(CancellationToken stoppingToken)
+        => RunTriggeredOnceAsync(WatchlistWakeReason.ScheduledRefresh, stoppingToken);
+
+    private async Task RunTriggeredOnceAsync(
+        WatchlistWakeReason wakeReason,
+        CancellationToken stoppingToken)
     {
-        await ExecuteRunAsync(stoppingToken);
+        await ExecuteRunAsync(wakeReason, stoppingToken);
     }
 
-    private async Task ExecuteRunAsync(CancellationToken stoppingToken)
+    private async Task ExecuteRunAsync(WatchlistWakeReason wakeReason, CancellationToken stoppingToken)
     {
         await _cycleGate.WaitAsync(stoppingToken);
         using var cycleCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -341,7 +347,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         });
         try
         {
-            await RunOneWatchCycleAsync(cycleCancellation.Token);
+            await RunOneWatchCycleAsync(wakeReason, cycleCancellation.Token);
         }
         catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
         {
@@ -373,7 +379,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
     }
 
-    private async Task RunOneWatchCycleAsync(CancellationToken stoppingToken)
+    private async Task RunOneWatchCycleAsync(
+        WatchlistWakeReason wakeReason,
+        CancellationToken stoppingToken)
     {
         using var scope = _serviceProvider.CreateScope();
         var settingsService = scope.ServiceProvider.GetRequiredService<DeezSpoTagSettingsService>();
@@ -436,44 +444,50 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
 
-        var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
-        var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
-        try
+        var shouldRunSourceRefresh =
+            wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
+            || pendingRequestCount > 0;
+        if (shouldRunSourceRefresh)
         {
-            var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
-                1000,
-                TimeSpan.FromMinutes(15),
-                _reconciliationLeaseOwner,
-                stoppingToken);
-            using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
+            var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
+            var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
             try
             {
-                await RunWatchCycleCoreAsync(
-                    scope.ServiceProvider,
-                    settings,
-                    queueAdmission,
-                    reconciliationRequests,
+                var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
+                    1000,
+                    TimeSpan.FromMinutes(15),
+                    _reconciliationLeaseOwner,
                     stoppingToken);
+                using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
+                try
+                {
+                    await RunWatchCycleCoreAsync(
+                        scope.ServiceProvider,
+                        settings,
+                        queueAdmission,
+                        reconciliationRequests,
+                        stoppingToken);
+                }
+                finally
+                {
+                    leaseRenewalCancellation.Cancel();
+                    try
+                    {
+                        await leaseRenewal;
+                    }
+                    catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+                    {
+                        // Expected after the claimed reconciliation batch leaves processing.
+                    }
+                }
             }
             finally
             {
-                leaseRenewalCancellation.Cancel();
-                try
+                if (queueAdmissionToken != 0)
                 {
-                    await leaseRenewal;
+                    queueAdmission.EndRun(queueAdmissionToken);
                 }
-                catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
-                {
-                    // Expected after the claimed reconciliation batch leaves processing.
-                }
-            }
-        }
-        finally
-        {
-            if (queueAdmissionToken != 0)
-            {
-                queueAdmission.EndRun(queueAdmissionToken);
             }
         }
 

@@ -118,7 +118,7 @@ public sealed class WatchlistFinalizationService
         if (sent > 0)
         {
             await _notifier.RequestAllPlaylistSyncAsync(cancellationToken);
-            _runSignal.Request();
+            _runSignal.Request(WatchlistWakeReason.Reconciliation | WatchlistWakeReason.TargetSync);
         }
 
         return sent;
