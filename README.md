@@ -67,6 +67,16 @@ DeezSpoTag automates music workflows end-to-end:
 
 ---
 
+## Public Download APIs and SpotiFLAC Mobile
+
+DeezSpoTag provides access to three public download APIs made available through [SpotiFLAC Mobile](https://github.com/zarzet/SpotiFLAC-Mobile). These APIs are available from the login tabs for:
+
+- Amazon Music
+- Qobuz
+- Tidal
+
+The public APIs may occasionally require manual verification before downloads can continue. Please consider supporting SpotiFLAC Mobile and its contributors to help keep projects and services like these freely available to the public.
+
 ## Login Requirements
 
 Use the `Login` page to configure platform credentials.
