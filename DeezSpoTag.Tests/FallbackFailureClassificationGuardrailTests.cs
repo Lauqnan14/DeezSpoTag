@@ -57,7 +57,7 @@ public sealed class FallbackFailureClassificationGuardrailTests
     {
         var coordinator = ReadSource("DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs");
 
-        Assert.Contains("BuildPlanSteps(request, settings)", coordinator, StringComparison.Ordinal);
+        Assert.Contains("BuildPlanSteps(request, payloadForSerialization)", coordinator, StringComparison.Ordinal);
         Assert.Contains("request.FallbackPlan", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildAlternate", coordinator, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("SecondaryFallback", coordinator, StringComparison.OrdinalIgnoreCase);

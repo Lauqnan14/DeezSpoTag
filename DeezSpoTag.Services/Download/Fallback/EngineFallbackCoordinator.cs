@@ -139,7 +139,7 @@ public sealed class EngineFallbackCoordinator
         CancellationToken cancellationToken)
     {
         var settings = ResolveEffectiveSettings(request);
-        var planSteps = BuildPlanSteps(request, settings);
+        var planSteps = BuildPlanSteps(request, payloadForSerialization);
         if (planSteps.Count == 0)
         {
             _activityLog.Warn($"Quality plan unavailable: {request.QueueUuid}");
@@ -520,35 +520,37 @@ public sealed class EngineFallbackCoordinator
 
     private static List<(string Source, string? Quality)> BuildPlanSteps(
         FallbackAdvanceRequest request,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+        object payloadForSerialization)
     {
-        _ = settings;
         var steps = new List<(string Source, string? Quality)>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var atmosOnly = IsAtmosRequest(request);
 
         if (request.FallbackPlan != null && request.FallbackPlan.Count > 0)
         {
-            foreach (var step in request.FallbackPlan)
+            var normalizedPlan = DownloadExecutionPlan.NormalizeForRequest(
+                request.FallbackPlan,
+                request.ContentType,
+                request.Quality);
+            if (request.FallbackPlan.Count != normalizedPlan.Count
+                && payloadForSerialization is EngineQueueItemBase payload)
             {
-                AppendPlanStep(steps, seen, step.Engine, step.Quality, atmosOnly);
+                payload.FallbackPlan = normalizedPlan;
+            }
+
+            foreach (var step in normalizedPlan)
+            {
+                AppendPlanStep(steps, seen, step.Engine, step.Quality);
             }
         }
 
         return steps;
     }
 
-    private static bool IsAtmosRequest(FallbackAdvanceRequest request)
-        => string.Equals(request.ContentType?.Trim(), "atmos", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(request.Quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(request.Quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase);
-
     private static void AppendPlanStep(
         List<(string Source, string? Quality)> steps,
         HashSet<string> seen,
         string? source,
-        string? quality,
-        bool atmosOnly = false)
+        string? quality)
     {
         if (string.IsNullOrWhiteSpace(source))
         {
@@ -557,25 +559,12 @@ public sealed class EngineFallbackCoordinator
 
         var normalizedSource = source.Trim();
         var normalizedQuality = string.IsNullOrWhiteSpace(quality) ? null : quality.Trim();
-        if (atmosOnly && !IsAtmosStep(normalizedSource, normalizedQuality))
-        {
-            return;
-        }
-
         var key = DownloadSourceOrder.EncodeAutoSource(normalizedSource, normalizedQuality);
         if (seen.Add(key))
         {
             steps.Add((normalizedSource, normalizedQuality));
         }
     }
-
-    private static bool IsAtmosStep(string source, string? quality)
-        => (string.Equals(source, AppleEngine, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(quality?.Trim(), "ATMOS", StringComparison.OrdinalIgnoreCase))
-           || (string.Equals(source, "tidal", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase))
-           || (string.Equals(source, AmazonEngine, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(quality?.Trim(), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase));
 
     private static int FindStepIndex(List<(string Source, string? Quality)> autoSources, string engine, string quality)
     {

@@ -188,6 +188,70 @@ public sealed class DownloadExecutionPlanTests
         Assert.Equal(2, index);
     }
 
+    [Fact]
+    public void PersistedStereoPlan_RemovesAtmosStepsAndResetsContaminatedRetryState()
+    {
+        var storedPlan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "7", [], "isrc"),
+            new("step-1", "tidal", "HI_RES", [], "isrc"),
+            new("step-2", "tidal", "DOLBY_ATMOS", [], "isrc"),
+            new("step-3", "amazon", "DOLBY_ATMOS", [], "mapped_url")
+        };
+        var payload = new JsonObject
+        {
+            ["ContentType"] = "stereo",
+            ["Engine"] = "tidal",
+            ["SourceService"] = "tidal",
+            ["Quality"] = "DOLBY_ATMOS",
+            ["AutoIndex"] = 2,
+            ["ResolvedEngine"] = "tidal",
+            ["ResolvedQuality"] = "DOLBY_ATMOS",
+            ["ResolvedSourceUrl"] = "https://tidal.com/browse/track/123",
+            ["FallbackPlan"] = JsonSerializer.SerializeToNode(storedPlan)
+        };
+
+        var changed = DownloadExecutionPlan.NormalizePersistedRetryPlan(payload, out var normalized);
+
+        Assert.True(changed);
+        Assert.Equal(2, normalized.Count);
+        Assert.All(normalized, step =>
+            Assert.DoesNotContain("ATMOS", step.Quality ?? string.Empty, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(["step-0", "step-1"], normalized.Select(step => step.StepId));
+        Assert.Equal("qobuz", payload["Engine"]!.GetValue<string>());
+        Assert.Equal("qobuz", payload["SourceService"]!.GetValue<string>());
+        Assert.Equal("7", payload["Quality"]!.GetValue<string>());
+        Assert.Equal(0, payload["AutoIndex"]!.GetValue<int>());
+        Assert.Equal(string.Empty, payload["ResolvedEngine"]!.GetValue<string>());
+        Assert.Equal(string.Empty, payload["ResolvedQuality"]!.GetValue<string>());
+        Assert.Equal(string.Empty, payload["ResolvedSourceUrl"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void ExplicitStereoContentType_IsAuthoritativeOverContaminatedAtmosQuality()
+    {
+        Assert.False(DownloadExecutionPlan.IsAtmosRequest("stereo", "DOLBY_ATMOS"));
+        Assert.True(DownloadExecutionPlan.IsAtmosRequest("atmos", "HI_RES"));
+        Assert.True(DownloadExecutionPlan.IsAtmosRequest(null, "DOLBY_ATMOS"));
+    }
+
+    [Fact]
+    public void PersistedAtmosPlan_RemovesStereoSteps()
+    {
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "tidal", "HI_RES", [], "isrc"),
+            new("step-1", "apple", "ATMOS", [], "catalog"),
+            new("step-2", "tidal", "DOLBY_ATMOS", [], "isrc")
+        };
+
+        var normalized = DownloadExecutionPlan.NormalizeForRequest(plan, "atmos", "DOLBY_ATMOS");
+
+        Assert.Equal(["apple|ATMOS", "tidal|DOLBY_ATMOS"], normalized
+            .Select(step => $"{step.Engine}|{step.Quality}"));
+        Assert.Equal(["step-0", "step-1"], normalized.Select(step => step.StepId));
+    }
+
     private static DownloadQueueItem CreateQueueItem(string engine) => new(
         Id: 1,
         QueueUuid: "plan-resume",

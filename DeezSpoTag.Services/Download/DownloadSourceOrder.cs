@@ -104,11 +104,13 @@ public static class DownloadSourceOrder
             ? settings.Service?.Trim().ToLowerInvariant()
             : forcedServiceOverride.Trim().ToLowerInvariant();
         var includeAtmos = IsAtmosQuality(targetQuality);
-        var qualityProfiles = includeAtmos
-            ? settings.DownloadEngineOrder?.Enabled == true
-                ? ResolveConfiguredProfiles(settings).Where(profile => IsAtmosQuality(profile.Quality)).ToArray()
-                : AtmosPriority
-            : null;
+        var qualityProfiles = settings.DownloadEngineOrder?.Enabled == true
+            ? ResolveConfiguredProfiles(settings)
+                .Where(profile => IsAtmosQuality(profile.Quality) == includeAtmos)
+                .ToArray()
+            : includeAtmos
+                ? AtmosPriority
+                : StereoPriority;
         var sources = BuildConfiguredAutoSources(
             settings,
             includeDeezer,

@@ -1,6 +1,9 @@
+using DeezSpoTag.Services.Download.Fallback;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Settings;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace DeezSpoTag.Services.Download.Queue;
 
@@ -90,6 +93,7 @@ public sealed class DownloadRetryScheduler
                 continue;
             }
 
+            await NormalizePersistedPlanAsync(queueUuid, cancellationToken);
             var requeued = await _queueRepository.RequeueAsync(
                 queueUuid,
                 QueueRequeueOrigin.AutoRetry,
@@ -116,6 +120,41 @@ public sealed class DownloadRetryScheduler
 
         _lastKnownPending = await _queueRepository.HasScheduledRetriesAsync(cancellationToken);
         return requeuedAny;
+    }
+
+    private async Task NormalizePersistedPlanAsync(
+        string queueUuid,
+        CancellationToken cancellationToken)
+    {
+        var item = await _queueRepository.GetByUuidAsync(queueUuid, cancellationToken);
+        if (string.IsNullOrWhiteSpace(item?.PayloadJson))
+        {
+            return;
+        }
+
+        JsonObject? payload;
+        try
+        {
+            payload = JsonNode.Parse(item.PayloadJson) as JsonObject;
+        }
+        catch (JsonException)
+        {
+            return;
+        }
+
+        if (payload == null
+            || !DownloadExecutionPlan.NormalizePersistedRetryPlan(payload, out var plan)
+            || plan.Count == 0)
+        {
+            return;
+        }
+
+        await _queueRepository.UpdatePayloadAndEngineAsync(
+            queueUuid,
+            plan[0].Engine,
+            payload.ToJsonString(),
+            cancellationToken);
+        _activityLog.Info($"Normalized persisted fallback plan before retry: {queueUuid}");
     }
 
     public async Task ClearAsync(

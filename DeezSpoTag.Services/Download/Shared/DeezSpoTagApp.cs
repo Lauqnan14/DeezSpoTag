@@ -626,7 +626,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return false;
         }
 
-        var plan = DownloadExecutionPlan.Read(payloadObj);
+        DownloadExecutionPlan.NormalizePersistedRetryPlan(payloadObj, out var plan);
         if (plan.Count == 0)
         {
             _logger.LogWarning("Manual retry blocked for {QueueUuid}: execution plan is missing.", safeUuid);

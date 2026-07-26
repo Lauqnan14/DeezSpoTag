@@ -344,6 +344,43 @@ public sealed class DownloadSourceOrderFallbackParityTests
         Assert.Equal("9", resolved.Quality);
     }
 
+    [Fact]
+    public void ResolveQualityAutoSources_StereoRequestExcludesEnabledAtmosProfiles()
+    {
+        var settings = CreateCustomOrderSettings(
+            ("qobuz", true, new[] { ("7", true), ("6", true) }),
+            ("tidal", true, new[] { ("HI_RES", true), ("LOSSLESS", true), ("DOLBY_ATMOS", true) }),
+            ("amazon", true, new[] { ("HD_FLAC", true), ("DOLBY_ATMOS", true) }),
+            ("apple", true, new[] { ("ALAC", true), ("ATMOS", true) }));
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings,
+            includeDeezer: true,
+            targetQuality: "HI_RES");
+
+        Assert.NotEmpty(sources);
+        Assert.DoesNotContain(sources, source => source.Contains("ATMOS", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ResolveQualityAutoSources_AtmosRequestIncludesOnlyEnabledAtmosProfiles()
+    {
+        var settings = CreateCustomOrderSettings(
+            ("qobuz", true, new[] { ("7", true), ("6", true) }),
+            ("tidal", true, new[] { ("HI_RES", true), ("DOLBY_ATMOS", true) }),
+            ("amazon", true, new[] { ("HD_FLAC", true), ("DOLBY_ATMOS", true) }),
+            ("apple", true, new[] { ("ALAC", true), ("ATMOS", true) }));
+
+        var sources = DownloadSourceOrder.ResolveQualityAutoSources(
+            settings,
+            includeDeezer: true,
+            targetQuality: "ATMOS");
+
+        Assert.Equal(
+            ["apple|ATMOS", "tidal|DOLBY_ATMOS", "amazon|DOLBY_ATMOS"],
+            sources);
+    }
+
     private static DeezSpoTagSettings CreateCustomOrderSettings(
         params (string Engine, bool Enabled, (string Quality, bool Enabled)[] Qualities)[] engines)
     {
