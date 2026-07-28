@@ -573,7 +573,7 @@ public sealed class LiveDiagnosticsTests
             var ttmlPath = Path.Join(directory, "track.ttml");
             Assert.True(File.Exists(ttmlPath), "Timed Apple TTML was resolved but no .ttml sidecar was saved.");
             var ttml = await File.ReadAllTextAsync(ttmlPath, cancellationToken);
-            Assert.True(AppleLyricsService.IsTimedTtml(ttml), "Saved Apple .ttml sidecar is not timed TTML.");
+            Assert.True(AppleLyricsService.IsWordSyncedTtml(ttml), "Saved Apple .ttml sidecar is not word-synchronized TTML.");
             Assert.DoesNotContain("timing=\"None\"", ttml, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(Path.Join(directory, "track.lrc")), "TTML-only live test unexpectedly wrote an LRC sidecar.");
         }

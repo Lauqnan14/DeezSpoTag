@@ -5,12 +5,21 @@ using System.Globalization;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Schema;
+using System.Text.RegularExpressions;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 
 namespace DeezSpoTag.Services.Apple;
+
+public enum AppleTtmlTimingKind
+{
+    Invalid = 0,
+    Untimed = 1,
+    Line = 2,
+    Word = 3
+}
 
 public sealed class AppleLyricsService
 {
@@ -19,6 +28,11 @@ public sealed class AppleLyricsService
         string AppleId,
         string Storefront,
         string MediaUserToken);
+
+    private sealed record AppleLyricsCandidates(
+        string? WordTtml,
+        string? LineTtml,
+        string? UntimedTtml);
 
     private const string DefaultLanguage = "en-US";
     private const string SyncedLyricsType = "lyrics";
@@ -71,8 +85,15 @@ public sealed class AppleLyricsService
         var language = string.IsNullOrWhiteSpace(settings.DeezerLanguage) ? DefaultLanguage : settings.DeezerLanguage;
         var lrcType = string.IsNullOrWhiteSpace(settings.LrcType) ? SyncedLyricsType : settings.LrcType;
 
-        var ttml = await FetchLyricsTtmlAsync(appleId, storefront, language, lrcType, mediaUserToken, cancellationToken);
-        if (string.IsNullOrWhiteSpace(ttml) && string.IsNullOrWhiteSpace(mediaUserToken))
+        var candidates = await FetchLyricsTtmlAsync(
+            appleId,
+            storefront,
+            language,
+            lrcType,
+            mediaUserToken,
+            settings.SynthesizeLrcFromTtml,
+            cancellationToken);
+        if (!HasUsableCandidate(candidates) && string.IsNullOrWhiteSpace(mediaUserToken))
         {
             mediaUserToken = NormalizeMediaUserToken(await TryResolveWrapperMusicTokenAsync(cancellationToken));
             if (!string.IsNullOrWhiteSpace(mediaUserToken))
@@ -81,17 +102,30 @@ public sealed class AppleLyricsService
                     settings.AppleMusic?.Storefront,
                     mediaUserToken,
                     cancellationToken);
-                ttml = await FetchLyricsTtmlAsync(appleId, storefront, language, lrcType, mediaUserToken, cancellationToken);
+                candidates = await FetchLyricsTtmlAsync(
+                    appleId,
+                    storefront,
+                    language,
+                    lrcType,
+                    mediaUserToken,
+                    settings.SynthesizeLrcFromTtml,
+                    cancellationToken);
             }
         }
 
-        if (string.IsNullOrWhiteSpace(ttml))
+        if (!HasUsableCandidate(candidates))
         {
             return AppleLyrics.CreateError("Apple Music lyrics not available.");
         }
 
-        return AppleLyrics.FromTtml(ttml);
+        return AppleLyrics.FromCandidates(candidates!, settings.SynthesizeLrcFromTtml);
     }
+
+    private static bool HasUsableCandidate(AppleLyricsCandidates? candidates)
+        => candidates != null
+           && (!string.IsNullOrWhiteSpace(candidates.WordTtml)
+               || !string.IsNullOrWhiteSpace(candidates.LineTtml)
+               || !string.IsNullOrWhiteSpace(candidates.UntimedTtml));
 
     private async Task<string?> TryResolveWrapperMusicTokenAsync(CancellationToken cancellationToken)
     {
@@ -149,12 +183,13 @@ public sealed class AppleLyricsService
         return !string.IsNullOrWhiteSpace(musicToken) && musicToken.Length >= MinMediaUserTokenLength;
     }
 
-    private async Task<string?> FetchLyricsTtmlAsync(
+    private async Task<AppleLyricsCandidates?> FetchLyricsTtmlAsync(
         string appleId,
         string storefront,
         string language,
         string lrcType,
         string mediaUserToken,
+        bool synthesizeLrcFromTtml,
         CancellationToken cancellationToken)
     {
         var token = await _catalogService.GetCatalogTokenAsync(cancellationToken);
@@ -164,7 +199,7 @@ public sealed class AppleLyricsService
         }
 
         var languageCandidates = BuildLanguageCandidates(language);
-        var typeCandidates = BuildLyricsTypeCandidates(lrcType);
+        var typeCandidates = BuildLyricsTypeCandidates(lrcType, synthesizeLrcFromTtml);
         if (string.IsNullOrWhiteSpace(mediaUserToken))
         {
             return null;
@@ -185,13 +220,15 @@ public sealed class AppleLyricsService
         return trimmed is { Length: >= MinMediaUserTokenLength } ? trimmed : string.Empty;
     }
 
-    private async Task<string?> TryFetchLyricsFromTypedEndpointsAsync(
+    private async Task<AppleLyricsCandidates?> TryFetchLyricsFromTypedEndpointsAsync(
         HttpClient client,
         TypedLyricsRequestContext context,
         IEnumerable<string> typeCandidates,
         IEnumerable<string> languageCandidates,
         CancellationToken cancellationToken)
     {
+        string? wordTtml = null;
+        string? lineTtml = null;
         string? plainTextTtml = null;
         foreach (var type in typeCandidates)
         {
@@ -221,36 +258,48 @@ public sealed class AppleLyricsService
                 await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
                 using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
                 var ttml = TryExtractLyricsTtml(doc.RootElement, lang);
-                if (IsTimedTtml(ttml))
+                switch (ClassifyTtml(ttml))
                 {
-                    return ttml;
-                }
-
-                if (plainTextTtml == null && TryExtractPlainLyrics(ttml, out _))
-                {
-                    plainTextTtml = ttml;
+                    case AppleTtmlTimingKind.Word when wordTtml == null:
+                        wordTtml = ttml;
+                        break;
+                    case AppleTtmlTimingKind.Line when lineTtml == null:
+                        lineTtml = ttml;
+                        break;
+                    case AppleTtmlTimingKind.Untimed when plainTextTtml == null:
+                        plainTextTtml = ttml;
+                        break;
                 }
             }
         }
 
-        return plainTextTtml;
+        return new AppleLyricsCandidates(wordTtml, lineTtml, plainTextTtml);
     }
 
-    private static IEnumerable<string> BuildLyricsTypeCandidates(string lrcType)
+    private static IEnumerable<string> BuildLyricsTypeCandidates(string lrcType, bool synthesizeLrcFromTtml)
     {
         var selectedTypes = ParseLyricsTypeSelection(lrcType);
         var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var candidate in selectedTypes
-                     .Select(NormalizeAppleLyricsType)
-                     .Where(static candidate => !string.IsNullOrWhiteSpace(candidate))
-                     .Select(static candidate => candidate!)
-                     .Where(candidate => emitted.Add(candidate)))
+        if (selectedTypes.Contains(TtmlLyricsType, StringComparer.OrdinalIgnoreCase)
+            && emitted.Add(SyllableLyricsType))
         {
-            yield return candidate;
+            yield return SyllableLyricsType;
         }
 
-        if (emitted.Add(SyncedLyricsType))
+        if (synthesizeLrcFromTtml && emitted.Add(SyncedLyricsType))
+        {
+            yield return SyncedLyricsType;
+        }
+
+        if (selectedTypes.Contains(SyllableLyricsType, StringComparer.OrdinalIgnoreCase)
+            && emitted.Add(SyllableLyricsType))
+        {
+            yield return SyllableLyricsType;
+        }
+
+        if (selectedTypes.Contains(UnsyncedLyricsType, StringComparer.OrdinalIgnoreCase)
+            && emitted.Add(SyncedLyricsType))
         {
             yield return SyncedLyricsType;
         }
@@ -313,22 +362,6 @@ public sealed class AppleLyricsService
         };
     }
 
-    private static string? NormalizeAppleLyricsType(string normalizedType)
-    {
-        if (string.IsNullOrWhiteSpace(normalizedType))
-        {
-            return null;
-        }
-
-        return normalizedType switch
-        {
-            SyllableLyricsType => SyllableLyricsType,
-            TtmlLyricsType => SyncedLyricsType,
-            UnsyncedLyricsType => SyncedLyricsType,
-            _ => SyncedLyricsType
-        };
-    }
-
     private static IEnumerable<string> BuildLanguageCandidates(string language)
     {
         var baseLang = string.IsNullOrWhiteSpace(language) ? DefaultLanguage : language;
@@ -370,23 +403,39 @@ public sealed class AppleLyricsService
         }
 
         var directTtml = TryReadDirectTtml(attrs);
+        var localizedTtml = TryReadLocalizedTtml(attrs, preferredLanguage);
+        if (IsWordSyncedTtml(directTtml))
+        {
+            return directTtml;
+        }
+        if (IsWordSyncedTtml(localizedTtml))
+        {
+            return localizedTtml;
+        }
         if (IsUsableAppleLyricsTtml(directTtml))
         {
             return directTtml;
         }
-
-        var localizedTtml = TryReadLocalizedTtml(attrs, preferredLanguage);
         return IsUsableAppleLyricsTtml(localizedTtml) ? localizedTtml : null;
     }
 
     private static bool IsUsableAppleLyricsTtml(string? ttml)
-        => IsTimedTtml(ttml) || TryExtractPlainLyrics(ttml, out _);
+        => ClassifyTtml(ttml) is not AppleTtmlTimingKind.Invalid;
 
     public static bool IsTimedTtml(string? ttml)
+        => ClassifyTtml(ttml) is AppleTtmlTimingKind.Line or AppleTtmlTimingKind.Word;
+
+    public static bool IsWordSyncedTtml(string? ttml)
+        => ClassifyTtml(ttml) == AppleTtmlTimingKind.Word;
+
+    public static bool IsLineSyncedTtml(string? ttml)
+        => ClassifyTtml(ttml) == AppleTtmlTimingKind.Line;
+
+    public static AppleTtmlTimingKind ClassifyTtml(string? ttml)
     {
         if (!TryReadTtmlDocument(ttml, out var document))
         {
-            return false;
+            return AppleTtmlTimingKind.Invalid;
         }
 
         var root = document.Root!;
@@ -395,22 +444,216 @@ public sealed class AppleLyricsService
             .Value.Trim();
         if (string.Equals(timing, "None", StringComparison.OrdinalIgnoreCase))
         {
-            return false;
+            return document.Descendants().Any(element =>
+                element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(element.Value))
+                ? AppleTtmlTimingKind.Untimed
+                : AppleTtmlTimingKind.Invalid;
         }
 
         if (string.Equals(timing, "Word", StringComparison.OrdinalIgnoreCase))
         {
-            return document.Descendants().Any(element =>
-                element.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)
-                && HasAppleTimestamp(element, "begin")
-                && HasAppleTimestamp(element, "end")
-                && !string.IsNullOrWhiteSpace(element.Value));
+            return document.Descendants()
+                .Where(element => element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase))
+                .Any(paragraph => paragraph.Descendants().Any(element =>
+                    element.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)
+                    && HasAppleTimestamp(element, "begin")
+                    && HasAppleTimestamp(element, "end")
+                    && !string.IsNullOrWhiteSpace(element.Value)))
+                ? AppleTtmlTimingKind.Word
+                : AppleTtmlTimingKind.Invalid;
         }
 
         return document.Descendants().Any(element =>
             element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase)
             && HasAppleTimestamp(element, "begin")
-            && !string.IsNullOrWhiteSpace(element.Value));
+            && !string.IsNullOrWhiteSpace(element.Value))
+            ? AppleTtmlTimingKind.Line
+            : AppleTtmlTimingKind.Invalid;
+    }
+
+    public static bool TryConvertTtmlToSynchronizedLyrics(
+        string? ttml,
+        out List<SynchronizedLyric> synchronizedLyrics)
+    {
+        synchronizedLyrics = new List<SynchronizedLyric>();
+        var kind = ClassifyTtml(ttml);
+        if (kind is not AppleTtmlTimingKind.Line and not AppleTtmlTimingKind.Word
+            || !TryReadTtmlDocument(ttml, out var document))
+        {
+            return false;
+        }
+
+        foreach (var paragraph in document.Descendants()
+                     .Where(element => element.Name.LocalName.Equals("p", StringComparison.OrdinalIgnoreCase)))
+        {
+            var text = kind == AppleTtmlTimingKind.Word
+                ? BuildWordParagraphText(paragraph)
+                : NormalizeLyricText(paragraph.Value);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            if (!TryReadTimestampMilliseconds(paragraph, "begin", out var beginMilliseconds)
+                && !paragraph.Descendants()
+                    .Where(element => element.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase))
+                    .Any(span => TryReadTimestampMilliseconds(span, "begin", out beginMilliseconds)))
+            {
+                continue;
+            }
+
+            var duration = 0;
+            if (TryReadTimestampMilliseconds(paragraph, "end", out var endMilliseconds)
+                && endMilliseconds > beginMilliseconds)
+            {
+                duration = endMilliseconds - beginMilliseconds;
+            }
+
+            var lyric = new SynchronizedLyric(
+                text,
+                SynchronizedLyric.BuildLrcTimestamp(beginMilliseconds),
+                beginMilliseconds,
+                duration)
+            {
+                Agent = paragraph.Attributes()
+                    .FirstOrDefault(attribute =>
+                        attribute.Name.LocalName.Equals("agent", StringComparison.OrdinalIgnoreCase))?
+                    .Value.Trim(),
+                IsBackground = paragraph.AncestorsAndSelf().Any(element =>
+                    element.Attributes().Any(attribute =>
+                        attribute.Name.LocalName.Equals("role", StringComparison.OrdinalIgnoreCase)
+                        && IsBackgroundRole(attribute.Value))),
+                Translation = ReadRoleText(paragraph, "x-translation"),
+                Romanization = ReadRoleText(paragraph, "x-roman"),
+                BackgroundVocals = ReadRoleText(paragraph, "x-bg")
+            };
+            if (kind == AppleTtmlTimingKind.Word)
+            {
+                lyric.Words = paragraph.Descendants()
+                    .Where(element =>
+                        element.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)
+                        && !HasAuxiliaryRole(element)
+                        && !element.Descendants().Any(descendant =>
+                            descendant.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)))
+                    .Select(element =>
+                    {
+                        var hasStart = TryReadTimestampMilliseconds(element, "begin", out var start);
+                        var hasEnd = TryReadTimestampMilliseconds(element, "end", out var end);
+                        var wordText = element.Value;
+                        return hasStart && hasEnd && end > start && !string.IsNullOrWhiteSpace(wordText)
+                            ? new SynchronizedLyricWord(wordText, start, end)
+                            {
+                                IsBackground = element.AncestorsAndSelf().Any(ancestor =>
+                                    ancestor.Attributes().Any(attribute =>
+                                        attribute.Name.LocalName.Equals("role", StringComparison.OrdinalIgnoreCase)
+                                        && IsBackgroundRole(attribute.Value)))
+                            }
+                            : null;
+                    })
+                    .Where(static word => word != null)
+                    .Select(static word => word!)
+                    .ToList();
+            }
+            synchronizedLyrics.Add(lyric);
+        }
+
+        synchronizedLyrics = synchronizedLyrics
+            .OrderBy(line => line.Milliseconds)
+            .GroupBy(line => line.Milliseconds)
+            .Select(group => group.First())
+            .ToList();
+        return synchronizedLyrics.Count > 0;
+    }
+
+    private static string BuildWordParagraphText(XElement paragraph)
+    {
+        var words = paragraph.Descendants()
+            .Where(element =>
+                element.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)
+                && !HasAuxiliaryRole(element)
+                && HasAppleTimestamp(element, "begin")
+                && HasAppleTimestamp(element, "end")
+                && !element.Descendants().Any(descendant =>
+                    descendant.Name.LocalName.Equals("span", StringComparison.OrdinalIgnoreCase)
+                    && HasAppleTimestamp(descendant, "begin")
+                    && HasAppleTimestamp(descendant, "end")))
+            .Select(element => NormalizeLyricText(element.Value))
+            .Where(static text => !string.IsNullOrWhiteSpace(text))
+            .ToArray();
+        if (words.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        return Regex.Replace(
+            string.Join(' ', words),
+            @"\s+([,.;:!?])",
+            "$1",
+            RegexOptions.CultureInvariant);
+    }
+
+    private static string NormalizeLyricText(string? value)
+        => Regex.Replace(
+                value?.Trim() ?? string.Empty,
+                @"\s+",
+                " ",
+                RegexOptions.CultureInvariant)
+            .Trim();
+
+    private static string? ReadRoleText(XElement paragraph, string role)
+    {
+        var values = paragraph.Descendants()
+            .Where(element => element.Attributes().Any(attribute =>
+                attribute.Name.LocalName.Equals("role", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(attribute.Value.Trim(), role, StringComparison.OrdinalIgnoreCase)))
+            .Select(element => NormalizeLyricText(element.Value))
+            .Where(static value => value.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return values.Length == 0 ? null : string.Join(' ', values);
+    }
+
+    private static bool HasAuxiliaryRole(XElement element)
+        => element.AncestorsAndSelf().Any(candidate =>
+            candidate.Attributes().Any(attribute =>
+                attribute.Name.LocalName.Equals("role", StringComparison.OrdinalIgnoreCase)
+                && (attribute.Value.Trim().Equals("x-bg", StringComparison.OrdinalIgnoreCase)
+                    || attribute.Value.Trim().Equals("x-translation", StringComparison.OrdinalIgnoreCase)
+                    || attribute.Value.Trim().Equals("x-roman", StringComparison.OrdinalIgnoreCase))));
+
+    private static bool IsBackgroundRole(string role)
+        => role.Trim().Equals("x-bg", StringComparison.OrdinalIgnoreCase)
+           || role.Contains("background", StringComparison.OrdinalIgnoreCase);
+
+    private static bool TryReadTimestampMilliseconds(XElement element, string attributeName, out int milliseconds)
+    {
+        milliseconds = 0;
+        var value = element.Attributes()
+            .FirstOrDefault(attribute => attribute.Name.LocalName.Equals(attributeName, StringComparison.OrdinalIgnoreCase))?
+            .Value.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var seconds)
+            && seconds >= 0
+            && seconds <= int.MaxValue / 1000m)
+        {
+            milliseconds = (int)decimal.Round(seconds * 1000m, 0, MidpointRounding.AwayFromZero);
+            return true;
+        }
+
+        if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var timestamp)
+            && timestamp >= TimeSpan.Zero
+            && timestamp.TotalMilliseconds <= int.MaxValue)
+        {
+            milliseconds = (int)Math.Round(timestamp.TotalMilliseconds, MidpointRounding.AwayFromZero);
+            return true;
+        }
+
+        return false;
     }
 
     public static bool TryExtractPlainLyrics(string? ttml, out string plainLyrics)
@@ -647,27 +890,38 @@ public sealed class AppleLyricsService
             return lyrics;
         }
 
-        public static AppleLyrics FromTtml(string ttml)
+        public static AppleLyrics FromCandidates(
+            AppleLyricsCandidates candidates,
+            bool synthesizeLrcFromTtml)
         {
-            if (IsTimedTtml(ttml))
+            var lyrics = new AppleLyrics();
+            if (IsWordSyncedTtml(candidates.WordTtml))
             {
-                return new AppleLyrics
-                {
-                    TtmlLyrics = ttml,
-                    TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
-                };
+                lyrics.TtmlLyrics = candidates.WordTtml;
+                lyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
             }
 
-            if (TryExtractPlainLyrics(ttml, out var plainLyrics))
+            if (synthesizeLrcFromTtml)
             {
-                return new AppleLyrics
+                var lrcSource = IsLineSyncedTtml(candidates.LineTtml)
+                    ? candidates.LineTtml
+                    : candidates.WordTtml;
+                if (TryConvertTtmlToSynchronizedLyrics(lrcSource, out var synchronizedLyrics))
                 {
-                    UnsyncedLyrics = plainLyrics,
-                    UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText
-                };
+                    lyrics.SyncedLyrics = synchronizedLyrics;
+                    lyrics.SyncedLyricsSourceFormat = LyricsSourceFormat.ConvertedFromTtml;
+                }
             }
 
-            return CreateError("Apple Music returned unusable lyrics timing.");
+            if (TryExtractPlainLyrics(candidates.UntimedTtml, out var plainLyrics))
+            {
+                lyrics.UnsyncedLyrics = plainLyrics;
+                lyrics.UnsyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedPlainText;
+            }
+
+            return lyrics.IsLoaded()
+                ? lyrics
+                : CreateError("Apple Music returned unusable lyrics timing.");
         }
     }
 }

@@ -49,7 +49,7 @@ public static class TechnicalLyricsSettingsApplier
 
         settings.SyncedLyrics = technical.SyncedLyrics;
         settings.SaveLyrics = technical.SaveLyrics;
-        settings.SynthesizeTtmlLyrics = technical.SynthesizeTtmlLyrics;
+        settings.SynthesizeLrcFromTtml = technical.SynthesizeLrcFromTtml;
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
         settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;
         settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;

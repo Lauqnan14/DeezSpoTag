@@ -33,6 +33,23 @@ public sealed class AutoTagProviderCapabilityContractTests
     ];
 
     [Fact]
+    public void WordSynchronizedLyricsProviders_AdvertiseTtmlOutput()
+    {
+        var environment = new StubWebHostEnvironment();
+        var descriptors = new IAutoTagPlatform[]
+        {
+            new MusixmatchPlatform(environment),
+            new YouLyPlusPlatform(environment),
+            new BetterLyricsPlatform(environment)
+        };
+
+        foreach (var provider in descriptors)
+        {
+            Assert.Contains(SupportedTag.TtmlLyrics, provider.Describe().SupportedTags);
+        }
+    }
+
+    [Fact]
     public void Spotify_DoesNotAdvertiseUnavailableAudioFeatures()
     {
         var descriptor = new SpotifyPlatform(new StubWebHostEnvironment()).Describe();
@@ -188,8 +205,8 @@ public sealed class AutoTagProviderCapabilityContractTests
         var map = GetSupportedTagMap();
         var writable = map.Values.Cast<SupportedTag>().ToHashSet();
 
-        Assert.Equal(14, descriptors.Count);
-        Assert.Equal(14, descriptors.Select(descriptor => descriptor.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(16, descriptors.Count);
+        Assert.Equal(16, descriptors.Select(descriptor => descriptor.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.All(descriptors, descriptor =>
         {
             Assert.NotEmpty(descriptor.SupportedTags);
@@ -507,7 +524,9 @@ public sealed class AutoTagProviderCapabilityContractTests
 
         Assert.Contains("lookupSettings.LyricsFallbackOrder = provider;", source, StringComparison.Ordinal);
         Assert.Contains("RestrictLyricsRequestToProvider", source, StringComparison.Ordinal);
-        Assert.Contains("provider is not AppleProvider and not DeezerPlatform and not SpotifyPlatform", source, StringComparison.Ordinal);
+        Assert.Contains("LyricsProviderRegistry.IsRegistered(provider)", source, StringComparison.Ordinal);
+        Assert.Contains("LyricsProviderRegistry.YouLyPlus", source, StringComparison.Ordinal);
+        Assert.Contains("LyricsProviderRegistry.BetterLyrics", source, StringComparison.Ordinal);
     }
 
     private static void AssertContainsAll(AutoTagPlatformDescriptor descriptor, params SupportedTag[] tags)
@@ -644,6 +663,8 @@ public sealed class AutoTagProviderCapabilityContractTests
             new ItunesPlatform(environment),
             new MusixmatchPlatform(environment),
             new LrclibPlatform(environment),
+            new YouLyPlusPlatform(environment),
+            new BetterLyricsPlatform(environment),
             new SpotifyPlatform(environment),
             new LastFmPlatform(environment),
             new DeezerPlatform(environment),

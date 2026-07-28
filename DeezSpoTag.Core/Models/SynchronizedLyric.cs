@@ -38,6 +38,21 @@ public class SynchronizedLyric
     [JsonPropertyName("words")]
     public List<SynchronizedLyricWord>? Words { get; set; }
 
+    [JsonPropertyName("agent")]
+    public string? Agent { get; set; }
+
+    [JsonPropertyName("isBackground")]
+    public bool IsBackground { get; set; }
+
+    [JsonPropertyName("translation")]
+    public string? Translation { get; set; }
+
+    [JsonPropertyName("romanization")]
+    public string? Romanization { get; set; }
+
+    [JsonPropertyName("backgroundVocals")]
+    public string? BackgroundVocals { get; set; }
+
     /// <summary>
     /// Offset as TimeSpan for easier manipulation
     /// </summary>
@@ -121,6 +136,9 @@ public sealed class SynchronizedLyricWord
 
     [JsonPropertyName("endMilliseconds")]
     public int EndMilliseconds { get; set; }
+
+    [JsonPropertyName("isBackground")]
+    public bool IsBackground { get; set; }
 
     public SynchronizedLyricWord()
     {

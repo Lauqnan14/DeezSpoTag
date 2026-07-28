@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Download.Utils;
 
 namespace DeezSpoTag.Services.Settings;
 
@@ -33,9 +34,9 @@ public static class TaggingProfileSettingsOverlay
         settings.SaveLyrics = technical.SaveLyrics;
         settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
         settings.LrcFormat = technical.LrcFormat ?? "richlyrics";
-        settings.SynthesizeTtmlLyrics = technical.SynthesizeTtmlLyrics;
+        settings.SynthesizeLrcFromTtml = technical.SynthesizeLrcFromTtml;
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
-        settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? "apple,deezer,spotify,lrclib,musixmatch";
+        settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? string.Join(",", LyricsProviderRegistry.DefaultOrder);
         settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;
         settings.ArtworkFallbackOrder = technical.ArtworkFallbackOrder ?? defaultArtworkFallbackOrder;
         settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;

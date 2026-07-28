@@ -1,4 +1,6 @@
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
+using System.Text;
 using DeezSpoTag.Services.Download.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -10,6 +12,12 @@ public sealed class LyricsArtifactState
 
     [JsonPropertyName("status")]
     public string Status { get; set; } = "disabled";
+
+    [JsonPropertyName("attemptId")]
+    public string AttemptId { get; set; } = string.Empty;
+
+    [JsonPropertyName("planFingerprint")]
+    public string PlanFingerprint { get; set; } = string.Empty;
 
     [JsonPropertyName("requestedFormats")]
     public List<string> RequestedFormats { get; set; } = new();
@@ -35,24 +43,47 @@ public sealed class LyricsArtifactState
     [JsonPropertyName("filesByFormat")]
     public Dictionary<string, string> FilesByFormat { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    [JsonPropertyName("fileHashesByFormat")]
+    public Dictionary<string, string> FileHashesByFormat { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     [JsonPropertyName("error")]
     public string? Error { get; set; }
 
     public static LyricsArtifactState Fetching(LyricsResolutionPlan plan, LyricsArtifactState? previous = null)
     {
+        var planFingerprint = BuildPlanFingerprint(plan);
+        var canReusePrevious = previous == null
+            || string.IsNullOrWhiteSpace(previous.PlanFingerprint)
+            || string.Equals(previous.PlanFingerprint, planFingerprint, StringComparison.Ordinal);
+        var verifiedFiles = canReusePrevious
+            ? VerifyExistingFiles(previous?.FilesByFormat, previous?.FileHashesByFormat)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var verifiedFormats = NormalizeFormats(verifiedFiles.Keys);
         var state = new LyricsArtifactState
         {
             Revision = Math.Max(
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 (previous?.Revision ?? 0) + 1),
             Status = plan.RequestedFormats.Count == 0 ? "disabled" : "fetching",
+            AttemptId = Guid.NewGuid().ToString("N"),
+            PlanFingerprint = planFingerprint,
             RequestedFormats = NormalizeFormats(plan.RequestedFormats),
             PlainFallbackAllowed = plan.PlainFallbackAllowed,
             Providers = NormalizeTokens(plan.Providers),
-            ResolvedFormats = NormalizeFormats(previous?.ResolvedFormats ?? []),
-            DownloadedFormats = NormalizeFormats(previous?.DownloadedFormats ?? []),
-            SourcesByFormat = new Dictionary<string, string>(previous?.SourcesByFormat ?? new(), StringComparer.OrdinalIgnoreCase),
-            FilesByFormat = new Dictionary<string, string>(previous?.FilesByFormat ?? new(), StringComparer.OrdinalIgnoreCase)
+            ResolvedFormats = verifiedFormats.ToList(),
+            DownloadedFormats = verifiedFormats.ToList(),
+            SourcesByFormat = (previous?.SourcesByFormat ?? new Dictionary<string, string>())
+                .Where(pair => verifiedFormats.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+            FilesByFormat = verifiedFiles,
+            FileHashesByFormat = verifiedFiles
+                .Select(pair => new
+                {
+                    pair.Key,
+                    Hash = TryComputeFileHash(DownloadPathResolver.ResolveIoPath(pair.Value))
+                })
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Hash))
+                .ToDictionary(pair => pair.Key, pair => pair.Hash!, StringComparer.OrdinalIgnoreCase)
         };
         state.SuppressPlainWhenRichExists();
         if (state.Satisfies(plan))
@@ -92,9 +123,7 @@ public sealed class LyricsArtifactState
         Status = ResolvedFormats.Count > 0 ? "resolved" : "unavailable";
     }
 
-    public void ApplyDownloadedFiles(
-        IReadOnlyDictionary<string, string> filesByFormat,
-        bool ttmlSynthesized = false)
+    public void ApplyDownloadedFiles(IReadOnlyDictionary<string, string> filesByFormat)
     {
         Revision++;
         FilesByFormat = filesByFormat
@@ -104,16 +133,20 @@ public sealed class LyricsArtifactState
                 pair => DownloadPathResolver.NormalizeDisplayPath(pair.Value),
                 StringComparer.OrdinalIgnoreCase);
         DownloadedFormats = NormalizeFormats(FilesByFormat.Keys);
+        FileHashesByFormat = FilesByFormat
+            .Select(pair => new
+            {
+                pair.Key,
+                Hash = TryComputeFileHash(DownloadPathResolver.ResolveIoPath(pair.Value))
+            })
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Hash))
+            .ToDictionary(pair => pair.Key, pair => pair.Hash!, StringComparer.OrdinalIgnoreCase);
         foreach (var format in DownloadedFormats)
         {
             if (!ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
             {
                 ResolvedFormats.Add(format);
             }
-        }
-        if (ttmlSynthesized && DownloadedFormats.Contains("ttml", StringComparer.OrdinalIgnoreCase))
-        {
-            SourcesByFormat["ttml"] = "synthesized";
         }
         SuppressPlainWhenRichExists();
         Status = ResolvedFormats.Count > 0 ? "completed" : Status;
@@ -142,10 +175,87 @@ public sealed class LyricsArtifactState
         DownloadedFormats.RemoveAll(format => string.Equals(format, "txt", StringComparison.OrdinalIgnoreCase));
         SourcesByFormat.Remove("txt");
         FilesByFormat.Remove("txt");
+        FileHashesByFormat?.Remove("txt");
     }
 
     private static bool IsSupportedFormat(string format)
         => format.Trim().ToLowerInvariant() is "ttml" or "elrc" or "lrc" or "txt";
+
+    private static Dictionary<string, string> VerifyExistingFiles(
+        IReadOnlyDictionary<string, string>? filesByFormat,
+        IReadOnlyDictionary<string, string>? hashesByFormat)
+    {
+        if (filesByFormat == null)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var verified = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in filesByFormat)
+        {
+            var format = pair.Key.Trim().ToLowerInvariant();
+            if (!IsSupportedFormat(format) || string.IsNullOrWhiteSpace(pair.Value))
+            {
+                continue;
+            }
+
+            var path = DownloadPathResolver.ResolveIoPath(pair.Value);
+            if (!File.Exists(path)
+                || !string.Equals(
+                    Path.GetExtension(path),
+                    $".{format}",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (new FileInfo(path).Length > 0)
+                {
+                    var actualHash = ComputeFileHash(path);
+                    if (hashesByFormat?.TryGetValue(format, out var expectedHash) == true
+                        && !string.IsNullOrWhiteSpace(expectedHash)
+                        && !string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    verified[format] = DownloadPathResolver.NormalizeDisplayPath(path);
+                }
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+            {
+                // Missing or unreadable artifacts are intentionally refetched.
+            }
+        }
+        return verified;
+    }
+
+    private static string BuildPlanFingerprint(LyricsResolutionPlan plan)
+    {
+        var value = $"{string.Join(',', NormalizeFormats(plan.RequestedFormats))}\u001f"
+            + $"{string.Join(',', NormalizeTokens(plan.Providers))}\u001f"
+            + plan.PlainFallbackAllowed;
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    }
+
+    private static string ComputeFileHash(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    private static string? TryComputeFileHash(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? ComputeFileHash(path) : null;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return null;
+        }
+    }
 
     private static List<string> NormalizeFormats(IEnumerable<string> formats)
         => formats.Select(static value => value.Trim().ToLowerInvariant())

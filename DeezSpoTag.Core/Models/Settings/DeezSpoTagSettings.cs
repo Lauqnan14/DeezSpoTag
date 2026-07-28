@@ -60,9 +60,10 @@ public class DeezSpoTagSettings
     public DownloadEngineOrderSettings DownloadEngineOrder { get; set; } = DownloadEngineOrderSettings.CreateDefault();
 
     // Lyrics preference + fallback
-    public bool SynthesizeTtmlLyrics { get; set; } = false;
+    public bool SynthesizeLrcFromTtml { get; set; } = false;
     public bool LyricsFallbackEnabled { get; set; } = true;
-    public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch";
+    public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics";
+    public int LyricsProviderRegistryVersion { get; set; }
     public bool NormalizeGenreTags { get; set; } = false;
     public List<string> GenreTagBlockList { get; set; } = new() { "other", "others", "Worldwide" };
     public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
@@ -150,7 +151,7 @@ public class DeezSpoTagSettings
 
     // Apple-derived download options (engine-agnostic)
     public string AuthorizationToken { get; set; } = "";
-    public string LrcType { get; set; } = "lyrics,syllable-lyrics,unsynced-lyrics";
+    public string LrcType { get; set; } = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
     public bool SaveAnimatedArtwork { get; set; } = true;
     public string AnimatedArtworkFormats { get; set; } = "mp4";

@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -509,7 +511,7 @@ public sealed class LyricsServicePrivateHelpersTests
         };
         var appleLyrics = new LyricsSource
         {
-            TtmlLyrics = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"00:00:01.000\">Line</p></div></body></tt>"
+            TtmlLyrics = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"2.0\"><span begin=\"1.0\" end=\"2.0\">Word</span></p></div></body></tt>"
         };
 
         var result = InvokeStatic<bool>("ShouldSaveTtml", settings, appleLyrics);
@@ -558,7 +560,10 @@ public sealed class LyricsServicePrivateHelpersTests
             }
             """);
 
-        var lyrics = InvokeStatic<LyricsBase>("ParsePaxsenixLyricsPayload", payload.RootElement);
+        var lyrics = InvokeStatic<LyricsBase>(
+            "ParsePaxsenixLyricsPayload",
+            payload.RootElement,
+            new DeezSpoTagSettings());
 
         Assert.Equal("First line\nSecond line", lyrics.UnsyncedLyrics);
         Assert.Equal(LyricsSourceFormat.DownloadedPlainText, lyrics.UnsyncedLyricsSourceFormat);
@@ -567,11 +572,38 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Theory]
-    [InlineData("<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"17.235\" end=\"18.958\">Line</p></div></body></tt>")]
-    [InlineData("<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p><span begin=\"00:00:01.250\" end=\"00:00:02.000\">Word</span></p></div></body></tt>")]
-    public void AppleTtmlTiming_AcceptsReferenceLineAndWordPayloads(string ttml)
+    [InlineData("<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"17.235\" end=\"18.958\">Line</p></div></body></tt>", AppleTtmlTimingKind.Line)]
+    [InlineData("<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p><span begin=\"00:00:01.250\" end=\"00:00:02.000\">Word</span></p></div></body></tt>", AppleTtmlTimingKind.Word)]
+    public void AppleTtmlTiming_ClassifiesReferenceLineAndWordPayloads(
+        string ttml,
+        AppleTtmlTimingKind expected)
     {
-        Assert.True(DeezSpoTag.Services.Apple.AppleLyricsService.IsTimedTtml(ttml));
+        Assert.Equal(expected, DeezSpoTag.Services.Apple.AppleLyricsService.ClassifyTtml(ttml));
+    }
+
+    [Fact]
+    public void AppleTtmlTiming_RejectsWordLabelWithoutTimedWordSpans()
+    {
+        const string ttml = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"2.0\">Line only</p></div></body></tt>";
+
+        Assert.Equal(AppleTtmlTimingKind.Invalid, AppleLyricsService.ClassifyTtml(ttml));
+        Assert.False(AppleLyricsService.IsWordSyncedTtml(ttml));
+    }
+
+    [Fact]
+    public void AppleLyricsEndpointOrder_RequestsWordBeforeLine_WhenBothOutputsAreNeeded()
+    {
+        var method = typeof(AppleLyricsService).GetMethod(
+            "BuildLyricsTypeCandidates",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("AppleLyricsService.BuildLyricsTypeCandidates not found.");
+        var candidates = ((IEnumerable<string>)method.Invoke(
+                null,
+                ["lyrics,ttml-lyrics", true])!)
+            .ToArray();
+
+        Assert.Equal("syllable-lyrics", candidates[0]);
+        Assert.Contains("lyrics", candidates);
     }
 
     [Theory]
@@ -622,6 +654,24 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public void ShouldSaveTtml_RejectsLineSynchronizedApplePayload()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "ttml-lyrics",
+            LrcFormat = "ttml"
+        };
+        var lyrics = new LyricsSource
+        {
+            TtmlLyrics = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"1.0\" end=\"2.0\">Line</p></div></body></tt>",
+            TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+        };
+
+        Assert.False(InvokeStatic<bool>("ShouldSaveTtml", settings, lyrics));
+    }
+
+    [Fact]
     public async Task SaveLyricsAsync_WritesTtmlSidecar_FromRawAppleTtml()
     {
         var service = (LyricsService)RuntimeHelpers.GetUninitializedObject(typeof(LyricsService));
@@ -635,12 +685,12 @@ public sealed class LyricsServicePrivateHelpersTests
             var settings = new DeezSpoTagSettings
             {
                 SyncedLyrics = true,
-                LrcType = "lyrics,ttml-lyrics",
+                LrcType = "ttml-lyrics",
                 LrcFormat = "ttml"
             };
             var lyrics = new LyricsSource
             {
-                TtmlLyrics = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"00:00:01.000\">Apple line</p></div></body></tt>"
+                TtmlLyrics = "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"2.0\"><span begin=\"1.0\" end=\"2.0\">Apple word</span></p></div></body></tt>"
             };
             var track = new Track
             {
@@ -654,7 +704,7 @@ public sealed class LyricsServicePrivateHelpersTests
 
             var ttmlPath = Path.Combine(directory, "apple-ttml-test.ttml");
             Assert.True(File.Exists(ttmlPath));
-            Assert.Contains("Apple line", await File.ReadAllTextAsync(ttmlPath));
+            Assert.Contains("Apple word", await File.ReadAllTextAsync(ttmlPath));
         }
         finally
         {
@@ -678,7 +728,7 @@ public sealed class LyricsServicePrivateHelpersTests
             };
             var lyrics = new LyricsSource
             {
-                TtmlLyrics = "<tt><body><div><p begin=\"00:00:01.000\">Timed</p></div></body></tt>",
+                TtmlLyrics = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"2.0\"><span begin=\"1.0\" end=\"2.0\">Timed</span></p></div></body></tt>",
                 UnsyncedLyrics = "Plain"
             };
 
@@ -819,7 +869,7 @@ public sealed class LyricsServicePrivateHelpersTests
                 SaveLyrics = true,
                 LrcType = "lyrics,ttml-lyrics,unsynced-lyrics",
                 LrcFormat = "lrc,elrc,ttml",
-                SynthesizeTtmlLyrics = true
+                SynthesizeLrcFromTtml = true
             };
             var lyrics = new LyricsSource
             {
@@ -836,6 +886,8 @@ public sealed class LyricsServicePrivateHelpersTests
                     }
                 ],
                 SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
+                TtmlLyrics = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"3.0\"><span begin=\"1.0\" end=\"1.3\">Oh</span><span begin=\"1.4\" end=\"2.5\">yeah</span></p></div></body></tt>",
+                TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml,
                 UnsyncedLyrics = "Plain"
             };
 
@@ -851,7 +903,7 @@ public sealed class LyricsServicePrivateHelpersTests
             Assert.Contains("[00:01.00]Oh yeah", lrc);
             Assert.DoesNotContain("<00:01.000>", lrc);
             Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", elrc);
-            Assert.DoesNotContain("<span", ttml);
+            Assert.Contains("<span", ttml);
         }
         finally
         {
@@ -860,7 +912,7 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
-    public async Task SaveLyricsAsync_LrcOnly_DoesNotCreateLrcFromTtml()
+    public async Task SaveLyricsAsync_LrcOnly_CreatesLrcFromConvertedLineTtml()
     {
         var service = CreateUninitializedLyricsService();
         var directory = CreateLyricsTestDirectory();
@@ -869,18 +921,19 @@ public sealed class LyricsServicePrivateHelpersTests
             var settings = new DeezSpoTagSettings
             {
                 SyncedLyrics = true,
-                LrcType = "lyrics",
-                LrcFormat = "lrc"
+                LrcType = "ttml-lyrics",
+                LrcFormat = "lrc",
+                SynthesizeLrcFromTtml = true
             };
             var lyrics = new LyricsSource
             {
-                TtmlLyrics = "<tt><body><div><p begin=\"00:00:01.000\">Apple line</p></div></body></tt>",
-                TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+                SyncedLyrics = [new SynchronizedLyric("Apple line", "[00:01.00]", 1000)],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ConvertedFromTtml
             };
 
             await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
-            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
             Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
             Assert.False(File.Exists(Path.Join(directory, "track.txt")));
         }
@@ -924,41 +977,98 @@ public sealed class LyricsServicePrivateHelpersTests
         using var doc = JsonDocument.Parse("""
             {
               "type": "TTML",
-              "content": "<?xml version='1.0' encoding='utf-8'?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"00:00:01.000\">Apple public line</p></div></body></tt>"
+              "content": "<?xml version='1.0' encoding='utf-8'?><tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"2.0\"><span begin=\"1.0\" end=\"2.0\">Apple public word</span></p></div></body></tt>"
             }
             """);
 
-        var lyrics = InvokeStatic<LyricsBase>("ParsePaxsenixLyricsPayload", doc.RootElement);
+        var lyrics = InvokeStatic<LyricsBase>(
+            "ParsePaxsenixLyricsPayload",
+            doc.RootElement,
+            new DeezSpoTagSettings());
 
         Assert.NotNull(lyrics.TtmlLyrics);
         Assert.Equal(LyricsSourceFormat.DownloadedTtml, lyrics.TtmlLyricsSourceFormat);
         Assert.StartsWith("<?xml", lyrics.TtmlLyrics);
-        Assert.Contains("Apple public line", lyrics.TtmlLyrics);
+        Assert.Contains("Apple public word", lyrics.TtmlLyrics);
         Assert.DoesNotContain("\"type\"", lyrics.TtmlLyrics);
     }
 
     [Fact]
-    public void TryBuildTtmlFromSyncedLyrics_BuildsOrderedEncodedParagraphs()
+    public void ParsePaxsenixLyricsPayload_ConvertsLineTtmlToLrcOnlyWhenEnabled()
     {
-        var lyrics = new LyricsSource
+        using var doc = JsonDocument.Parse("""
+            {
+              "type": "TTML",
+              "content": "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"1.0\" end=\"2.0\">Apple line</p></div></body></tt>"
+            }
+            """);
+
+        var disabled = InvokeStatic<LyricsBase>(
+            "ParsePaxsenixLyricsPayload",
+            doc.RootElement,
+            new DeezSpoTagSettings { SynthesizeLrcFromTtml = false });
+        var enabled = InvokeStatic<LyricsBase>(
+            "ParsePaxsenixLyricsPayload",
+            doc.RootElement,
+            new DeezSpoTagSettings { SynthesizeLrcFromTtml = true });
+
+        Assert.False(disabled.CanSaveLrcSidecar());
+        Assert.Null(disabled.TtmlLyrics);
+        Assert.True(enabled.CanSaveLrcSidecar());
+        Assert.Equal(LyricsSourceFormat.ConvertedFromTtml, enabled.SyncedLyricsSourceFormat);
+        Assert.Equal("Apple line", Assert.Single(enabled.SyncedLyrics!).Text);
+        Assert.Null(enabled.TtmlLyrics);
+    }
+
+    [Fact]
+    public void ConvertLineTtmlToSynchronizedLyrics_BuildsOrderedLrcLines()
+    {
+        const string ttml = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Line\"><body><div><p begin=\"5.0\" end=\"6.0\">Second line</p><p begin=\"1.0\" end=\"2.0\">First line</p></div></body></tt>";
+
+        Assert.True(AppleLyricsService.TryConvertTtmlToSynchronizedLyrics(ttml, out var lines));
+        Assert.Collection(
+            lines,
+            first =>
+            {
+                Assert.Equal(1000, first.Milliseconds);
+                Assert.Equal("First line", first.Text);
+            },
+            second =>
+            {
+                Assert.Equal(5000, second.Milliseconds);
+                Assert.Equal("Second line", second.Text);
+            });
+    }
+
+    [Fact]
+    public void ConvertWordTtmlToSynchronizedLyrics_UsesWordsWhenLineTtmlIsUnavailable()
+    {
+        const string ttml = "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div><p begin=\"1.0\" end=\"2.0\"><span begin=\"1.0\" end=\"1.3\">Hello</span><span begin=\"1.4\" end=\"2.0\">world!</span></p></div></body></tt>";
+
+        Assert.True(AppleLyricsService.TryConvertTtmlToSynchronizedLyrics(ttml, out var lines));
+        var line = Assert.Single(lines);
+        Assert.Equal(1000, line.Milliseconds);
+        Assert.Equal("Hello world!", line.Text);
+    }
+
+    [Fact]
+    public void MergeLyricsData_PrefersDirectLrcOverTtmlConversion()
+    {
+        var converted = new LyricsSource
         {
-            SyncedLyrics =
-            [
-                new SynchronizedLyric("Second line", "[00:05.00]", 5000),
-                new SynchronizedLyric("First <line>", "[00:01.00]", 1000),
-                new SynchronizedLyric(" ", "[00:09.00]", 9000)
-            ]
+            SyncedLyrics = [new SynchronizedLyric("Converted", "[00:01.00]", 1000)],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.ConvertedFromTtml
+        };
+        var direct = new LyricsSource
+        {
+            SyncedLyrics = [new SynchronizedLyric("Direct", "[00:02.00]", 2000)],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.DownloadedLrc
         };
 
-        var ttml = InvokeStatic<string?>("TryBuildTtmlFromSyncedLyrics", lyrics);
+        GetStaticMethod("MergeLyricsData").Invoke(null, [converted, direct]);
 
-        Assert.NotNull(ttml);
-        Assert.Contains("<?xml version=\"1.0\" encoding=\"utf-8\"?>", ttml);
-        Assert.Contains("&lt;line&gt;", ttml);
-        Assert.Contains("begin=\"00:00:01.000\"", ttml);
-        Assert.DoesNotContain("> </p>", ttml);
-        Assert.True(ttml.IndexOf("First &lt;line&gt;", StringComparison.Ordinal)
-            < ttml.IndexOf("Second line", StringComparison.Ordinal));
+        Assert.Equal(LyricsSourceFormat.DownloadedLrc, converted.SyncedLyricsSourceFormat);
+        Assert.Equal("Direct", Assert.Single(converted.SyncedLyrics!).Text);
     }
 
     [Fact]
@@ -1027,68 +1137,6 @@ public sealed class LyricsServicePrivateHelpersTests
 
         Assert.Contains("[00:01.00]Line only", lrc);
         Assert.DoesNotContain("<00:01.000>", lrc);
-    }
-
-    [Fact]
-    public void TryBuildTtmlFromSyncedLyrics_DoesNotUseEnhancedWordSpans()
-    {
-        var lyrics = new LyricsSource
-        {
-            SyncedLyrics =
-            [
-                new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
-                {
-                    Words =
-                    [
-                        new SynchronizedLyricWord("Oh", 1000, 1300),
-                        new SynchronizedLyricWord(" ", 1300, 1301),
-                        new SynchronizedLyricWord("yeah", 1400, 2500)
-                    ]
-                }
-            ]
-        };
-
-        var ttml = InvokeStatic<string?>("TryBuildTtmlFromSyncedLyrics", lyrics);
-
-        Assert.NotNull(ttml);
-        Assert.Contains("<p begin=\"00:00:01.000\" end=\"00:00:03.000\">", ttml);
-        Assert.Contains(">Oh yeah</p>", ttml);
-        Assert.DoesNotContain("<span", ttml);
-    }
-
-    [Fact]
-    public void ShouldSynthesizeTtmlBySettings_IsDisabledByDefault()
-    {
-        var settings = new DeezSpoTagSettings
-        {
-            SyncedLyrics = true,
-            LrcFormat = "ttml"
-        };
-
-        var result = InvokeStatic<bool>("ShouldSynthesizeTtmlBySettings", settings);
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public void ShouldSynthesizeTtmlBySettings_RequiresExplicitPreferenceAndTtmlOutput()
-    {
-        var lrcOnly = new DeezSpoTagSettings
-        {
-            SyncedLyrics = true,
-            LrcFormat = "lrc",
-            SynthesizeTtmlLyrics = true
-        };
-        var ttml = new DeezSpoTagSettings
-        {
-            SyncedLyrics = true,
-            LrcType = "ttml-lyrics",
-            LrcFormat = "ttml",
-            SynthesizeTtmlLyrics = true
-        };
-
-        Assert.False(InvokeStatic<bool>("ShouldSynthesizeTtmlBySettings", lrcOnly));
-        Assert.True(InvokeStatic<bool>("ShouldSynthesizeTtmlBySettings", ttml));
     }
 
     [Fact]

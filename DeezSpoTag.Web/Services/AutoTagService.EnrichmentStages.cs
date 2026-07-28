@@ -173,8 +173,8 @@ public partial class AutoTagService
     }
 
     private static bool IsLyricsProviderPlatform(string? platform)
-        => string.Equals(platform?.Trim(), "lrclib", StringComparison.OrdinalIgnoreCase)
-           || string.Equals(platform?.Trim(), "musixmatch", StringComparison.OrdinalIgnoreCase);
+        => DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.TryGet(platform, out var provider)
+           && provider.IsLyricsOnly;
 
     private static bool PlatformSupportsAnyRequestedTag(
         string platform,

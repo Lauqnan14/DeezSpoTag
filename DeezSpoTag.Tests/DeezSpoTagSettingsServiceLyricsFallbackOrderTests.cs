@@ -31,6 +31,35 @@ public sealed class DeezSpoTagSettingsServiceLyricsFallbackOrderTests : IDisposa
 
         var persisted = _settingsService.LoadSettings();
         Assert.Equal("apple,lrclib,musixmatch,deezer", persisted.LyricsFallbackOrder);
+        Assert.Equal(1, persisted.LyricsProviderRegistryVersion);
+    }
+
+    [Fact]
+    public void SaveSettings_DoesNotReenableNewProviderAfterRegistryMigration()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.LyricsProviderRegistryVersion = 1;
+        settings.LyricsFallbackOrder = "apple,deezer";
+
+        _settingsService.SaveSettings(settings);
+
+        var persisted = _settingsService.LoadSettings();
+        Assert.Equal("apple,deezer", persisted.LyricsFallbackOrder);
+        Assert.Equal(1, persisted.LyricsProviderRegistryVersion);
+    }
+
+    [Fact]
+    public void SaveSettings_AppendsNewProvidersOnceForPreRegistrySettings()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.LyricsProviderRegistryVersion = 0;
+        settings.LyricsFallbackOrder = "apple,lrclib";
+
+        _settingsService.SaveSettings(settings);
+
+        var persisted = _settingsService.LoadSettings();
+        Assert.Equal("apple,lrclib,youlyplus,betterlyrics", persisted.LyricsFallbackOrder);
+        Assert.Equal(1, persisted.LyricsProviderRegistryVersion);
     }
 
     [Fact]
@@ -42,7 +71,7 @@ public sealed class DeezSpoTagSettingsServiceLyricsFallbackOrderTests : IDisposa
         _settingsService.SaveSettings(settings);
 
         var persisted = _settingsService.LoadSettings();
-        Assert.Equal("apple,deezer,spotify,lrclib,musixmatch", persisted.LyricsFallbackOrder);
+        Assert.Equal("apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics", persisted.LyricsFallbackOrder);
     }
 
     public void Dispose()

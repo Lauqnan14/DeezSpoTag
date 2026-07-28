@@ -2789,9 +2789,7 @@ public static partial class EngineAudioPostDownloadHelper
                 paths,
                 execution.Request.Settings,
                 token);
-            runState.LyricsArtifacts.ApplyDownloadedFiles(
-                savedLyrics.FilesByFormat,
-                lyrics.TtmlLyricsSourceFormat == LyricsSourceFormat.SynthesizedTtml);
+            runState.LyricsArtifacts.ApplyDownloadedFiles(savedLyrics.FilesByFormat);
             execution.Request.Payload.LyricsArtifacts = runState.LyricsArtifacts;
             await execution.Request.QueueRepository.UpdateLyricsArtifactsAsync(
                 execution.Paths.QueueUuid,

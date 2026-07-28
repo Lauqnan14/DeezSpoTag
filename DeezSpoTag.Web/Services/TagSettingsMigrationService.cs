@@ -197,7 +197,7 @@ public sealed class TagSettingsMigrationService
             result.EmbedLyrics = (tagSettings?.Lyrics ?? false) || (tagSettings?.SyncedLyrics ?? false);
             result.LrcType = settings.LrcType;
             result.LrcFormat = settings.LrcFormat;
-            result.SynthesizeTtmlLyrics = settings.SynthesizeTtmlLyrics;
+            result.SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml;
             result.LyricsFallbackEnabled = settings.LyricsFallbackEnabled;
             result.LyricsFallbackOrder = settings.LyricsFallbackOrder;
             result.ArtworkFallbackEnabled = settings.ArtworkFallbackEnabled;

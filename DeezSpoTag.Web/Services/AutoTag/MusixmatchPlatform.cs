@@ -17,7 +17,8 @@ public sealed class MusixmatchPlatform : AutoTagPlatformBase
             SupportedTags = new List<SupportedTag>
             {
                 SupportedTag.SyncedLyrics,
-                SupportedTag.UnsyncedLyrics
+                SupportedTag.UnsyncedLyrics,
+                SupportedTag.TtmlLyrics
             }
         };
 

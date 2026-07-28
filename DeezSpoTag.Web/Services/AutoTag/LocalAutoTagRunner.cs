@@ -28,6 +28,7 @@ using SixLabors.ImageSharp.Formats.Png;
 using TagLib;
 using IOFile = System.IO.File;
 using DownloadLyricsService = DeezSpoTag.Services.Download.Utils.LyricsService;
+using LyricsProviderRegistry = DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
@@ -2418,7 +2419,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         if (wantsAppleLyrics)
         {
-            await PopulateAppleLyricsAsync(filePath, track, config, settings, appleIdentity?.AppleId, token);
+            await PopulatePlatformLyricsAsync(
+                AppleProvider,
+                filePath,
+                track,
+                config,
+                settings,
+                token,
+                appleIdentity?.AppleId);
         }
 
         if (!wantsAnimatedArtwork)
@@ -2645,10 +2653,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         AutoTagTrack track,
         AutoTagRunnerConfig config,
         DeezSpoTagSettings settings,
-        CancellationToken token)
+        CancellationToken token,
+        string? providerTrackId = null)
     {
         var provider = NormalizeLyricsLookupSource(platform.Trim().ToLowerInvariant());
-        if (provider is not AppleProvider and not DeezerPlatform and not SpotifyPlatform and not LrclibProvider and not "musixmatch")
+        if (!LyricsProviderRegistry.IsRegistered(provider))
         {
             return;
         }
@@ -2666,7 +2675,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(track.TrackId) &&
+        if (provider is not LyricsProviderRegistry.YouLyPlus and not LyricsProviderRegistry.BetterLyrics
+            && string.IsNullOrWhiteSpace(providerTrackId)
+            && string.IsNullOrWhiteSpace(track.TrackId) &&
             string.IsNullOrWhiteSpace(track.Url) &&
             string.IsNullOrWhiteSpace(track.Isrc))
         {
@@ -2674,6 +2685,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         var lookupTrack = BuildLyricsLookupTrack(track, provider);
+        if (!string.IsNullOrWhiteSpace(providerTrackId))
+        {
+            lookupTrack.Id = providerTrackId;
+            lookupTrack.SourceId = providerTrackId;
+            AddLookupUrl(lookupTrack.Urls, $"{provider}_track_id", providerTrackId);
+        }
         var lookupSettings = BuildLyricsLookupSettings(
             settings,
             request.WantsSynced,
@@ -2712,7 +2729,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         LyricsPopulationRequest request,
         string provider)
     {
-        var supportsTtml = string.Equals(provider, AppleProvider, StringComparison.OrdinalIgnoreCase);
+        var supportsTtml = LyricsProviderRegistry.TryGet(provider, out var descriptor)
+            && (descriptor.SupportsNativeTtml || descriptor.SupportsWordSynchronized);
         return request with { WantsTtml = request.WantsTtml && supportsTtml };
     }
 
@@ -2893,10 +2911,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             Video = baseSettings.Video,
             SyncedLyrics = allowsSyncedBySettings && (wantsSynced || wantsTtml),
             SaveLyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
-            SynthesizeTtmlLyrics = baseSettings.SynthesizeTtmlLyrics,
+            SynthesizeLrcFromTtml = baseSettings.SynthesizeLrcFromTtml,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
-                ? $"apple,deezer,spotify,{LrclibProvider},musixmatch"
+                ? string.Join(",", LyricsProviderRegistry.DefaultOrder)
                 : baseSettings.LyricsFallbackOrder,
             LrcFormat = NormalizeLyricsFormat(baseSettings.LrcFormat),
             LrcType = string.IsNullOrWhiteSpace(baseSettings.LrcType)
@@ -2930,47 +2948,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 PreferSynced = lrclibConfig.PreferSynced
             }
         };
-    }
-
-    private async Task PopulateAppleLyricsAsync(
-        string filePath,
-        AutoTagTrack track,
-        AutoTagRunnerConfig config,
-        DeezSpoTagSettings settings,
-        string? appleId,
-        CancellationToken token)
-    {
-        var request = BuildLyricsPopulationRequest(filePath, track, config, settings);
-        if (!request.ShouldFetch)
-        {
-            return;
-        }
-
-        if (request.HasAllRequestedLyrics())
-        {
-            return;
-        }
-
-        LyricsBase? lyrics;
-        try
-        {
-            lyrics = await ResolveAppleLyricsAsync(appleId, settings, token);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Apple lyrics resolution failed for {Title}.", SanitizeLogValue(track.Title));
-            }
-            return;
-        }
-
-        if (lyrics == null || !lyrics.IsLoaded())
-        {
-            return;
-        }
-
-        ApplyResolvedLyrics(track, lyrics, request);
     }
 
     private static LyricsPopulationRequest BuildLyricsPopulationRequest(
@@ -3064,7 +3041,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         if (!request.WantsTtml
             || request.HasTtml
-            || !AppleLyricsService.IsTimedTtml(lyrics.TtmlLyrics))
+            || !AppleLyricsService.IsWordSyncedTtml(lyrics.TtmlLyrics))
         {
             return;
         }
@@ -3079,20 +3056,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         {
             track.Other[LyricsTag] = lines;
         }
-    }
-
-    private async Task<LyricsBase?> ResolveAppleLyricsAsync(
-        string? appleId,
-        DeezSpoTagSettings settings,
-        CancellationToken token)
-    {
-        if (string.IsNullOrWhiteSpace(appleId))
-        {
-            return null;
-        }
-
-        var lyrics = await _appleLyricsService.ResolveLyricsAsync(appleId, settings, token);
-        return lyrics.IsLoaded() ? lyrics : null;
     }
 
     private static LyricsRequestFlags ApplyLyricsPreferenceGate(
@@ -3342,8 +3305,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     }
 
     private static bool IsLyricsOnlyPlatform(string platform)
-        => string.Equals(platform, LrclibProvider, StringComparison.OrdinalIgnoreCase)
-           || string.Equals(platform, "musixmatch", StringComparison.OrdinalIgnoreCase);
+        => LyricsProviderRegistry.TryGet(platform, out var provider)
+           && provider.IsLyricsOnly;
 
     private Dictionary<string, HashSet<SupportedTag>> BuildPlatformSupportedTags()
     {
@@ -3379,6 +3342,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var traxsourceExtend = HasAnyTags(context.Config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);
         var traxsourceAlbumMeta = HasAnyTags(context.Config, CatalogNumberTag, TrackNumberTag, AlbumArtTag, TrackTotalTag, AlbumArtistTag);
         var discogsNeedsLabelCatalog = HasAnyTags(context.Config, LabelTag, CatalogNumberTag);
+        if (LyricsProviderRegistry.TryGet(platform, out var lyricsProvider)
+            && lyricsProvider.IsLyricsOnly)
+        {
+            return await MatchLyricsProviderAsync(
+                lyricsProvider.Id,
+                info,
+                context,
+                enableLyrics,
+                hasLyricsSidecar,
+                token);
+        }
 
         switch (platform.Trim().ToLowerInvariant())
         {
@@ -3411,10 +3385,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 return await _lastFmMatcher.MatchAsync(info, LoadConfig(context.Config.Custom, "lastfm", new LastFmConfig()), token);
             case ShazamPlatform:
                 return await MatchShazamAsync(context.FilePath, info, context.Config, context.Settings, context.MatchingConfig, context.ShazamCache, token);
-            case "musixmatch":
-                return await MatchLyricsProviderAsync("musixmatch", info, context, enableLyrics, hasLyricsSidecar, token);
-            case "lrclib":
-                return await MatchLyricsProviderAsync(LrclibProvider, info, context, enableLyrics, hasLyricsSidecar, token);
             default:
                 return null;
         }
@@ -3764,7 +3734,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("lyricsUnsyncedToggle=").Append(settings.SaveLyrics).Append(';');
         builder.Append("lyricsType=").Append(NormalizeCacheToken(settings.LrcType)).Append(';');
         builder.Append("lyricsFormat=").Append(NormalizeCacheToken(settings.LrcFormat)).Append(';');
-        builder.Append("lyricsSynthesizeTtml=").Append(settings.SynthesizeTtmlLyrics).Append(';');
+        builder.Append("lyricsSynthesizeLrcFromTtml=").Append(settings.SynthesizeLrcFromTtml).Append(';');
         builder.Append("beatportReleaseMeta=").Append(normalizedTags.Any(tag => tag is "albumartist" or "tracktotal")).Append(';');
         builder.Append("traxsourceExtend=").Append(normalizedTags.Any(tag => tag is "albumart" or AlbumTag or "catalognumber" or "releaseid" or "albumartist" or "tracknumber" or "tracktotal")).Append(';');
         builder.Append("traxsourceAlbumMeta=").Append(normalizedTags.Any(tag => tag is "catalognumber" or "tracknumber" or "albumart" or "tracktotal" or "albumartist")).Append(';');
@@ -6790,11 +6760,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        var sidecarTtml = ResolveTtmlSidecarPayload(context.SourceTrack, sidecarLrcLines, context.FilePath);
+        var sidecarTtml = ResolveTtmlSidecarPayload(context.SourceTrack, context.FilePath);
         if (context.EnabledTags.Contains(TtmlLyricsTag)
             && context.AllowsLyricsBySettings
             && context.AllowsTtmlByFormat
-            && AppleLyricsService.IsTimedTtml(sidecarTtml))
+            && AppleLyricsService.IsWordSyncedTtml(sidecarTtml))
         {
             var ttmlPath = BuildLyricsSidecarPath(context, TtmlExtension);
             if (!IOFile.Exists(ttmlPath))
@@ -6915,7 +6885,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
         try
         {
-            return AppleLyricsService.IsTimedTtml(IOFile.ReadAllText(path));
+            return AppleLyricsService.IsWordSyncedTtml(IOFile.ReadAllText(path));
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -8546,29 +8516,12 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return NormalizeLyricsLines(payload, requireTimestamp: true);
     }
 
-    private static string? ResolveTtmlSidecarPayload(AutoTagTrack sourceTrack, IReadOnlyList<string> sidecarLrcLines, string filePath)
+    private static string? ResolveTtmlSidecarPayload(AutoTagTrack sourceTrack, string filePath)
     {
         var existingTtmlPath = Path.ChangeExtension(filePath, TtmlExtension);
         if (IOFile.Exists(existingTtmlPath))
         {
             return null;
-        }
-
-        var existingLrcPath = Path.ChangeExtension(filePath, ".lrc");
-        if (IOFile.Exists(existingLrcPath) && sidecarLrcLines.Count == 0)
-        {
-            try
-            {
-                var existingLrcLines = NormalizeLyricsLines(IOFile.ReadAllLines(existingLrcPath), requireTimestamp: true);
-                if (existingLrcLines.Count > 0)
-                {
-                    return BuildTtmlFromLrcLines(existingLrcLines);
-                }
-            }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-            {
-                // Ignore malformed sidecar and continue.
-            }
         }
 
         if (sourceTrack.Other.TryGetValue(TtmlLyricsTag, out var ttmlPayload) && ttmlPayload.Count > 0)
@@ -8580,12 +8533,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             }
         }
 
-        if (sidecarLrcLines.Count == 0)
-        {
-            return null;
-        }
-
-        return BuildTtmlFromLrcLines(sidecarLrcLines);
+        return null;
     }
 
     private static List<string> NormalizeLyricsLines(IEnumerable<string> lines, bool requireTimestamp)
@@ -8614,67 +8562,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var ttml = string.Join(Environment.NewLine, payloadLines.Where(value => !string.IsNullOrWhiteSpace(value)));
         return string.IsNullOrWhiteSpace(ttml) ? null : ttml;
-    }
-
-    private static string? BuildTtmlFromLrcLines(IEnumerable<string> lrcLines)
-    {
-        var parsed = new List<(TimeSpan Start, string Text)>();
-        foreach (var line in lrcLines)
-        {
-            if (!TryParseLrcLine(line, out var timestamp, out var text) || string.IsNullOrWhiteSpace(text))
-            {
-                continue;
-            }
-
-            parsed.Add((timestamp, text.Trim()));
-        }
-
-        if (parsed.Count == 0)
-        {
-            return null;
-        }
-
-        parsed = parsed
-            .OrderBy(entry => entry.Start)
-            .ToList();
-
-        var builder = new StringBuilder();
-        builder.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
-        builder.AppendLine("<tt xmlns=\"http://www.w3.org/ns/ttml\">");
-        builder.AppendLine("  <body>");
-        builder.AppendLine("    <div>");
-
-        for (var i = 0; i < parsed.Count; i++)
-        {
-            var current = parsed[i];
-            var beginMs = Math.Max(0, (int)Math.Round(current.Start.TotalMilliseconds));
-            var endMs = beginMs + 4000;
-            if (i + 1 < parsed.Count)
-            {
-                var nextMs = Math.Max(beginMs + 1, (int)Math.Round(parsed[i + 1].Start.TotalMilliseconds));
-                endMs = nextMs;
-            }
-
-            var encodedText = WebUtility.HtmlEncode(current.Text);
-            if (string.IsNullOrWhiteSpace(encodedText))
-            {
-                continue;
-            }
-
-            builder.AppendLine($"      <p begin=\"{FormatTtmlSidecarTimestamp(beginMs)}\" end=\"{FormatTtmlSidecarTimestamp(endMs)}\">{encodedText}</p>");
-        }
-
-        builder.AppendLine("    </div>");
-        builder.AppendLine("  </body>");
-        builder.AppendLine("</tt>");
-        return builder.ToString();
-    }
-
-    private static string FormatTtmlSidecarTimestamp(int milliseconds)
-    {
-        var clamped = Math.Max(0, milliseconds);
-        var ts = TimeSpan.FromMilliseconds(clamped);
-        return $"{(int)ts.TotalHours:00}:{ts.Minutes:00}:{ts.Seconds:00}.{ts.Milliseconds:000}";
     }
 
     private static void ApplyAlbumArt(TagLib.File file, string imagePath, bool coverDescriptionUtf8)

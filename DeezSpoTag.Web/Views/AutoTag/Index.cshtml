@@ -1,6 +1,17 @@
 @{
     ViewData["Title"] = "AutoTag Flow";
     Layout = "~/Views/Shared/_Layout.cshtml";
+    var lyricsProviders = DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.All;
+    var lyricsProviderJson = System.Text.Json.JsonSerializer.Serialize(
+        lyricsProviders.Select(provider => new
+        {
+            id = provider.Id,
+            label = provider.DisplayName,
+            aliases = provider.Aliases
+        }));
+    var defaultLyricsProviderOrder = string.Join(
+        ",",
+        DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder);
 }
 
 @section Styles {
@@ -1599,6 +1610,7 @@
             </div>
 
             <!-- Lyrics Settings -->
+            <script type="application/json" id="lyricsProviderRegistry">@Html.Raw(lyricsProviderJson)</script>
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
                     <h5 class="mb-0">
@@ -1633,11 +1645,10 @@
                                     </span>
                                 </label>
                                 <select id="lyricsDefaultSource">
-                                    <option value="apple">Apple Music</option>
-                                    <option value="deezer">Deezer</option>
-                                    <option value="spotify">Spotify</option>
-                                    <option value="lrclib">LRCLIB</option>
-                                    <option value="musixmatch">Musixmatch</option>
+                                    @foreach (var provider in lyricsProviders)
+                                    {
+                                        <option value="@provider.Id">@provider.DisplayName</option>
+                                    }
                                 </select>
                             </div>
                             <div class="checkbox-group align-self-start source-priority-toggle">
@@ -1652,41 +1663,27 @@
                                     </span>
                                 </label>
                                 <div class="dropdown-select lyrics-order-dropdown" id="lyricsFallbackOrderDropdown">
-                                    <button type="button" class="dropdown-trigger" id="lyricsFallbackOrderTrigger">apple → deezer → spotify → lrclib → musixmatch</button>
+                                    <button type="button" class="dropdown-trigger" id="lyricsFallbackOrderTrigger">@string.Join(" → ", lyricsProviders.Select(provider => provider.DisplayName))</button>
                                     <div class="dropdown-menu lyrics-order-menu" id="lyricsFallbackOrderMenu">
                                         <div class="lyrics-order-hint">Drag to reorder. First item is the preferred source.</div>
                                         <ul class="lyrics-order-list" id="lyricsFallbackOrderList">
-                                            <li class="lyrics-order-item" draggable="true" data-value="apple">
-                                                <span>Apple Music</span>
-                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
-                                            </li>
-                                            <li class="lyrics-order-item" draggable="true" data-value="deezer">
-                                                <span>Deezer</span>
-                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
-                                            </li>
-                                            <li class="lyrics-order-item" draggable="true" data-value="spotify">
-                                                <span>Spotify</span>
-                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
-                                            </li>
-                                            <li class="lyrics-order-item" draggable="true" data-value="lrclib">
-                                                <span>LRCLIB</span>
-                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
-                                            </li>
-                                            <li class="lyrics-order-item" draggable="true" data-value="musixmatch">
-                                                <span>Musixmatch</span>
-                                                <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
-                                            </li>
+                                            @foreach (var provider in lyricsProviders)
+                                            {
+                                                <li class="lyrics-order-item" draggable="true" data-value="@provider.Id">
+                                                    <span>@provider.DisplayName</span>
+                                                    <span class="material-icons drag-handle" aria-hidden="true">drag_handle</span>
+                                                </li>
+                                            }
                                         </ul>
                                         <div class="lyrics-order-hint">Add or remove sources</div>
                                         <div class="fallback-source-toggles" id="lyricsFallbackSources">
-                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="apple" checked /> Apple Music</label>
-                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="deezer" checked /> Deezer</label>
-                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="spotify" checked /> Spotify</label>
-                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="lrclib" checked /> LRCLIB</label>
-                                            <label class="fallback-source-toggle"><input type="checkbox" data-value="musixmatch" checked /> Musixmatch</label>
+                                            @foreach (var provider in lyricsProviders)
+                                            {
+                                                <label class="fallback-source-toggle"><input type="checkbox" data-value="@provider.Id" checked /> @provider.DisplayName</label>
+                                            }
                                         </div>
                                     </div>
-                                    <input type="hidden" id="lyricsFallbackOrder" value="apple,deezer,spotify,lrclib,musixmatch" />
+                                    <input type="hidden" id="lyricsFallbackOrder" value="@defaultLyricsProviderOrder" />
                                 </div>
                             </div>
                         </div>
@@ -1741,11 +1738,11 @@
                                         <input type="checkbox" id="lyrics-format-ttml" data-value="ttml" checked />
                                         <label for="lyrics-format-ttml">TTML lyrics (.ttml)</label>
                                     </div>
-                                    <div class="checkbox-group" id="synthesizeTtmlLyricsGroup" style="display: none;">
-                                        <input type="checkbox" id="synthesizeTtmlLyrics" />
-                                        <label for="synthesizeTtmlLyrics">
-                                            Synthesize TTML from synced lyrics
-                                            <span class="autotag-tooltip-icon ms-1" title="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly." aria-label="Disabled by default. When off, requested .ttml lyrics are saved only when the lyrics source provides TTML directly.">
+                                    <div class="checkbox-group" id="synthesizeLrcFromTtmlGroup" style="display: none;">
+                                        <input type="checkbox" id="synthesizeLrcFromTtml" />
+                                        <label for="synthesizeLrcFromTtml">
+                                            Synthesize LRC from TTML
+                                            <span class="autotag-tooltip-icon ms-1" title="Disabled by default. Uses line-synchronized TTML when available, or word-synchronized TTML when necessary, to create a standard .lrc file." aria-label="Disabled by default. Uses line-synchronized TTML when available, or word-synchronized TTML when necessary, to create a standard .lrc file.">
                                                 <i class="fas fa-question-circle"></i>
                                             </span>
                                         </label>

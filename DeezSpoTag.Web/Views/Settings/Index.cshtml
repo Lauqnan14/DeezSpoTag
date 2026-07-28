@@ -4085,7 +4085,7 @@ function loadSettings(settings) {
     setFieldValue('artworkFallbackOrder', settings.artworkFallbackOrder || 'apple,deezer,spotify');
     setCheckboxValue('artistArtworkFallbackEnabled', settings.artistArtworkFallbackEnabled !== false);
     setFieldValue('artistArtworkFallbackOrder', settings.artistArtworkFallbackOrder || settings.artworkFallbackOrder || 'apple,deezer,spotify');
-    setCheckboxValue('synthesizeTtmlLyrics', settings.synthesizeTtmlLyrics === true);
+    setCheckboxValue('synthesizeLrcFromTtml', settings.synthesizeLrcFromTtml === true);
     setCheckboxValue('saveAnimatedArtwork', settings.saveAnimatedArtwork);
     setCheckboxValue('dlAlbumcoverForPlaylist', settings.dlAlbumcoverForPlaylist !== false);
     setCheckboxValue('getM3u8FromDevice', apple.getM3u8FromDevice !== false);
@@ -4457,9 +4457,9 @@ function collectFormData() {
         authorizationToken: getValue('authorizationToken'),
         lrcType: getValue('lrcType', baseSettings.lrcType ?? 'lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics'),
         lrcFormat: getValue('lrcFormat', baseSettings.lrcFormat ?? 'richlyrics'),
-        synthesizeTtmlLyrics: getChecked('synthesizeTtmlLyrics', baseSettings.synthesizeTtmlLyrics ?? false),
+        synthesizeLrcFromTtml: getChecked('synthesizeLrcFromTtml', baseSettings.synthesizeLrcFromTtml ?? false),
         lyricsFallbackEnabled: getChecked('lyricsFallbackEnabled', baseSettings.lyricsFallbackEnabled ?? true),
-        lyricsFallbackOrder: getValue('lyricsFallbackOrder', baseSettings.lyricsFallbackOrder ?? 'apple,deezer,spotify,lrclib,musixmatch'),
+        lyricsFallbackOrder: getValue('lyricsFallbackOrder', baseSettings.lyricsFallbackOrder ?? 'apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics'),
         artworkFallbackEnabled: getChecked('artworkFallbackEnabled', baseSettings.artworkFallbackEnabled ?? true),
         artworkFallbackOrder: getValue('artworkFallbackOrder', baseSettings.artworkFallbackOrder ?? 'apple,deezer,spotify'),
         artistArtworkFallbackEnabled: getChecked('artistArtworkFallbackEnabled', baseSettings.artistArtworkFallbackEnabled ?? true),

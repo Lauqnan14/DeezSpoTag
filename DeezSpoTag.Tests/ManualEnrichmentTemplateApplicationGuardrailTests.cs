@@ -57,13 +57,13 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
             ExtractMethod(source, "private static List<string> FilterAutomaticDownloadEnrichmentPlatforms"),
             StringComparison.Ordinal);
         Assert.Contains(
-            "lrclib",
+            "LyricsProviderRegistry.TryGet",
             ExtractMethod(source, "private static bool IsLyricsProviderPlatform"),
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.Ordinal);
         Assert.Contains(
-            "musixmatch",
+            "provider.IsLyricsOnly",
             ExtractMethod(source, "private static bool IsLyricsProviderPlatform"),
-            StringComparison.OrdinalIgnoreCase);
+            StringComparison.Ordinal);
         Assert.Contains(
             ".Where(tag => !IsLyricsTag(tag))",
             ExtractMethod(source, "private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags"),

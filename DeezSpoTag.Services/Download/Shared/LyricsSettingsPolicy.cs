@@ -7,6 +7,7 @@ public static class LyricsSettingsPolicy
     private const string LyricsType = "lyrics";
     private const string UnsyncedLyricsType = "unsynced-lyrics";
     private const string SyllableLyricsType = "syllable-lyrics";
+    private const string TtmlLyricsType = "ttml-lyrics";
 
     public static bool IsLyricsGateEnabled(DeezSpoTagSettings settings)
     {
@@ -24,6 +25,7 @@ public static class LyricsSettingsPolicy
         var selected = ParseSelectedTypes(settings.LrcType);
         return selected.Contains(LyricsType)
             || selected.Contains(SyllableLyricsType)
+            || selected.Contains(TtmlLyricsType)
             || selected.Contains(UnsyncedLyricsType);
     }
 
@@ -42,6 +44,7 @@ public static class LyricsSettingsPolicy
         {
             selected.Add(LyricsType);
             selected.Add(SyllableLyricsType);
+            selected.Add(TtmlLyricsType);
             selected.Add(UnsyncedLyricsType);
         }
 
@@ -59,6 +62,10 @@ public static class LyricsSettingsPolicy
             "time-synced-lyrics" => SyllableLyricsType,
             "timesynced-lyrics" => SyllableLyricsType,
             "time_synced_lyrics" => SyllableLyricsType,
+            TtmlLyricsType => TtmlLyricsType,
+            "ttml" => TtmlLyricsType,
+            "ttmllyrics" => TtmlLyricsType,
+            "ttml_lyrics" => TtmlLyricsType,
             UnsyncedLyricsType => UnsyncedLyricsType,
             "unsyncedlyrics" => UnsyncedLyricsType,
             "unsynced" => UnsyncedLyricsType,

@@ -71,19 +71,19 @@ public sealed class TaggingProfileSettingsMapperTests
     {
         var settings = new DeezSpoTagSettings
         {
-            SynthesizeTtmlLyrics = false,
+            SynthesizeLrcFromTtml = false,
             Tags = new TagSettings()
         };
         var profile = new TaggingProfile
         {
             Technical = new TechnicalTagSettings
             {
-                SynthesizeTtmlLyrics = true
+                SynthesizeLrcFromTtml = true
             }
         };
 
         TaggingProfileSettingsMapper.ApplyProfileToSettings(settings, profile);
 
-        Assert.True(settings.SynthesizeTtmlLyrics);
+        Assert.True(settings.SynthesizeLrcFromTtml);
     }
 }

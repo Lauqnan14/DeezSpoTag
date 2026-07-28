@@ -1,5 +1,7 @@
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Download.Shared;
+using System;
+using System.Reflection;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -75,5 +77,43 @@ public sealed class LyricsSettingsPolicyTests
         var result = LyricsSettingsPolicy.CanFetchLyrics(settings);
 
         Assert.True(result);
+    }
+
+    [Fact]
+    public void CanFetchLyrics_ReturnsTrue_WhenOnlyTtmlIsSelected()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = false,
+            SyncedLyrics = true,
+            LrcType = "ttml-lyrics",
+            LrcFormat = "ttml"
+        };
+
+        Assert.True(LyricsSettingsPolicy.CanFetchLyrics(settings));
+    }
+
+    [Fact]
+    public void ResolveSettings_PreservesTtmlOnlySelection()
+    {
+        var builderType = typeof(LyricsSettingsPolicy).Assembly.GetType(
+            "DeezSpoTag.Services.Download.Shared.LyricsResolveSettingsBuilder")
+            ?? throw new InvalidOperationException("LyricsResolveSettingsBuilder not found.");
+        var build = builderType.GetMethod("Build", BindingFlags.Static | BindingFlags.Public)
+            ?? throw new InvalidOperationException("LyricsResolveSettingsBuilder.Build not found.");
+        var source = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = false,
+            LrcType = "ttml-lyrics",
+            LrcFormat = "ttml"
+        };
+
+        var result = (DeezSpoTagSettings)build.Invoke(
+            null,
+            [source, new TagSettings { SyncedLyrics = true }])!;
+
+        Assert.Equal("ttml-lyrics", result.LrcType);
+        Assert.Equal("ttml", result.LrcFormat);
     }
 }

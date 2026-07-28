@@ -25,7 +25,7 @@ public sealed class QueueSourceSettingsSnapshot
     public bool? SaveLyrics { get; set; }
     public string? LrcType { get; set; }
     public string? LrcFormat { get; set; }
-    public bool? SynthesizeTtmlLyrics { get; set; }
+    public bool? SynthesizeLrcFromTtml { get; set; }
     public bool? LyricsFallbackEnabled { get; set; }
     public string? LyricsFallbackOrder { get; set; }
 
@@ -45,7 +45,7 @@ public sealed class QueueSourceSettingsSnapshot
         || SaveLyrics.HasValue
         || !string.IsNullOrWhiteSpace(LrcType)
         || !string.IsNullOrWhiteSpace(LrcFormat)
-        || SynthesizeTtmlLyrics.HasValue
+        || SynthesizeLrcFromTtml.HasValue
         || LyricsFallbackEnabled.HasValue
         || !string.IsNullOrWhiteSpace(LyricsFallbackOrder);
 
@@ -69,7 +69,7 @@ public sealed class QueueSourceSettingsSnapshot
             SaveLyrics = settings.SaveLyrics,
             LrcType = NormalizeString(settings.LrcType),
             LrcFormat = NormalizeString(settings.LrcFormat),
-            SynthesizeTtmlLyrics = settings.SynthesizeTtmlLyrics,
+            SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml,
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = NormalizeString(settings.LyricsFallbackOrder)
         };
@@ -103,7 +103,7 @@ public sealed class QueueSourceSettingsSnapshot
         effective.SaveLyrics = SaveLyrics ?? effective.SaveLyrics;
         effective.LrcType = LrcType ?? effective.LrcType;
         effective.LrcFormat = LrcFormat ?? effective.LrcFormat;
-        effective.SynthesizeTtmlLyrics = SynthesizeTtmlLyrics ?? effective.SynthesizeTtmlLyrics;
+        effective.SynthesizeLrcFromTtml = SynthesizeLrcFromTtml ?? effective.SynthesizeLrcFromTtml;
         effective.LyricsFallbackEnabled = LyricsFallbackEnabled ?? effective.LyricsFallbackEnabled;
         effective.LyricsFallbackOrder = LyricsFallbackOrder ?? effective.LyricsFallbackOrder;
 
@@ -140,7 +140,7 @@ public sealed class QueueSourceSettingsSnapshot
             SaveLyrics = ReadBool(snapshotObj, "SaveLyrics", "saveLyrics"),
             LrcType = ReadString(snapshotObj, "LrcType", "lrcType"),
             LrcFormat = ReadString(snapshotObj, "LrcFormat", "lrcFormat"),
-            SynthesizeTtmlLyrics = ReadBool(snapshotObj, "SynthesizeTtmlLyrics", "synthesizeTtmlLyrics"),
+            SynthesizeLrcFromTtml = ReadBool(snapshotObj, "SynthesizeLrcFromTtml", "synthesizeLrcFromTtml"),
             LyricsFallbackEnabled = ReadBool(snapshotObj, "LyricsFallbackEnabled", "lyricsFallbackEnabled"),
             LyricsFallbackOrder = ReadString(snapshotObj, "LyricsFallbackOrder", "lyricsFallbackOrder")
         };

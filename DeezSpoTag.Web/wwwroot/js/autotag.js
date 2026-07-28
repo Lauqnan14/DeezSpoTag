@@ -305,30 +305,29 @@
     const DEFAULT_LYRICS_TYPE_SELECTION = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
     const DEFAULT_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
     const DEFAULT_ARTIST_ARTWORK_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify"]);
-    const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(["apple", "deezer", "spotify", "lrclib", "musixmatch"]);
+    const LYRICS_PROVIDER_REGISTRY = Object.freeze(
+        JSON.parse(document.getElementById("lyricsProviderRegistry")?.textContent || "[]")
+    );
+    const DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze(
+        LYRICS_PROVIDER_REGISTRY.map((provider) => String(provider.id || "").trim().toLowerCase()).filter(Boolean)
+    );
     const ARTWORK_SOURCE_ORDER = [...DEFAULT_ARTWORK_SOURCE_ORDER];
     const ARTIST_ARTWORK_SOURCE_ORDER = ["apple", "deezer", "spotify", "lastfm"];
     const LYRICS_SOURCE_ORDER = [...DEFAULT_LYRICS_SOURCE_ORDER];
     const SOURCE_LABELS = new Map([
-        ["apple", "Apple Music"],
-        ["deezer", "Deezer"],
-        ["spotify", "Spotify"],
         ["lastfm", "Last.fm"],
-        ["lrclib", "LRCLIB"],
-        ["musixmatch", "Musixmatch"],
         ["shazam", "Shazam"],
-        ["boomplay", "Boomplay"]
+        ["boomplay", "Boomplay"],
+        ...LYRICS_PROVIDER_REGISTRY.map((provider) => [provider.id, provider.label])
     ]);
-    const PROVIDER_PLATFORM_IDS = Object.freeze({
-        apple: Object.freeze(["itunes", "applemusic", "apple"]),
-        deezer: Object.freeze(["deezer"]),
-        spotify: Object.freeze(["spotify"]),
+    const PROVIDER_PLATFORM_IDS = Object.freeze(Object.assign({
         lastfm: Object.freeze(["lastfm"]),
-        lrclib: Object.freeze(["lrclib", "lrcget", "lrc-get", "lrc_get"]),
-        musixmatch: Object.freeze(["musixmatch"]),
         shazam: Object.freeze(["shazam"]),
         boomplay: Object.freeze(["boomplay"])
-    });
+    }, Object.fromEntries(LYRICS_PROVIDER_REGISTRY.map((provider) => [
+        provider.id,
+        Object.freeze([provider.id, ...(provider.aliases || [])])
+    ]))));
     const ARTWORK_CAPABILITY_KEYS = Object.freeze(["cover", "albumart", "artwork"]);
     const LYRICS_CAPABILITY_KEYS = Object.freeze([
         "lyrics",
@@ -5532,17 +5531,20 @@
         const saveLyrics = document.getElementById("saveLyrics");
         const embedLyricsFormatGroup = document.getElementById("embedLyricsFormatGroup");
         const lyricsFormatOptions = document.getElementById("lyricsFormatOptions");
-        const synthesizeTtmlLyricsGroup = document.getElementById("synthesizeTtmlLyricsGroup");
+        const synthesizeLrcFromTtmlGroup = document.getElementById("synthesizeLrcFromTtmlGroup");
         const lrcFormat = document.getElementById("lrcFormat");
-        const synthesizeTtmlLyrics = document.getElementById("synthesizeTtmlLyrics");
+        const synthesizeLrcFromTtml = document.getElementById("synthesizeLrcFromTtml");
         if (!embedLyricsFormatGroup) {
             return;
         }
 
         const show = saveLyrics?.checked === true;
+        const canSynthesizeLrc = show
+            && document.getElementById("lyrics-format-lrc")?.checked === true
+            && document.getElementById("lyrics-type-ttml")?.checked === true;
         embedLyricsFormatGroup.style.display = show ? "" : "none";
-        if (synthesizeTtmlLyricsGroup) {
-            synthesizeTtmlLyricsGroup.style.display = show ? "" : "none";
+        if (synthesizeLrcFromTtmlGroup) {
+            synthesizeLrcFromTtmlGroup.style.display = canSynthesizeLrc ? "" : "none";
         }
         if (lrcFormat) {
             lrcFormat.disabled = !show;
@@ -5552,8 +5554,8 @@
                 checkbox.disabled = !show;
             });
         }
-        if (synthesizeTtmlLyrics) {
-            synthesizeTtmlLyrics.disabled = !show;
+        if (synthesizeLrcFromTtml) {
+            synthesizeLrcFromTtml.disabled = !canSynthesizeLrc;
         }
     }
 
@@ -5622,6 +5624,9 @@
         if (saveLyrics) {
             saveLyrics.addEventListener("change", updateEmbedLyricsFormatVisibility);
         }
+        ["lyrics-format-lrc", "lyrics-type-ttml"].forEach((id) => {
+            document.getElementById(id)?.addEventListener("change", updateEmbedLyricsFormatVisibility);
+        });
         updateEmbedLyricsFormatVisibility();
 
         const saveArtwork = document.getElementById("saveArtwork");
@@ -5748,7 +5753,7 @@
         applyFieldCheckedWhenBoolean("embedLyrics", technical.embedLyrics ?? true);
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
         applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "richlyrics"));
-        applyFieldCheckedWhenBoolean("synthesizeTtmlLyrics", technical.synthesizeTtmlLyrics ?? false);
+        applyFieldCheckedWhenBoolean("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
         applyFieldCheckedWhenBoolean("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
         applyFieldValueIfPresent("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
         applyFieldCheckedWhenBoolean("artworkFallbackEnabled", technical.artworkFallbackEnabled);
@@ -5876,7 +5881,7 @@
         technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
         technical.lrcType = normalizeLyricsTypeSetting(getValue("lrcType", technical.lrcType ?? DEFAULT_LYRICS_TYPE_SELECTION));
         technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "richlyrics"));
-        technical.synthesizeTtmlLyrics = getChecked("synthesizeTtmlLyrics", technical.synthesizeTtmlLyrics ?? false);
+        technical.synthesizeLrcFromTtml = getChecked("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
         technical.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled ?? true);
         technical.lyricsFallbackOrder = resolveSavedFallbackOrder({
             fallbackEnabled: technical.lyricsFallbackEnabled,

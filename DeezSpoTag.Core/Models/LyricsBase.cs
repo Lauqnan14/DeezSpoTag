@@ -59,6 +59,15 @@ public abstract class LyricsBase
     [JsonPropertyName("ttmlLyricsSourceFormat")]
     public LyricsSourceFormat TtmlLyricsSourceFormat { get; set; } = LyricsSourceFormat.Unknown;
 
+    [JsonPropertyName("providerId")]
+    public string? ProviderId { get; set; }
+
+    [JsonPropertyName("nativeSourceFormat")]
+    public string? NativeSourceFormat { get; set; }
+
+    [JsonPropertyName("sourcePayloadHash")]
+    public string? SourcePayloadHash { get; set; }
+
     /// <summary>
     /// Whether the lyrics contain explicit content
     /// </summary>
@@ -92,7 +101,8 @@ public abstract class LyricsBase
     {
         return IsSynced()
             && (SyncedLyricsSourceFormat == LyricsSourceFormat.DownloadedLrc
-                || SyncedLyricsSourceFormat == LyricsSourceFormat.ProviderSyncedJson);
+                || SyncedLyricsSourceFormat == LyricsSourceFormat.ProviderSyncedJson
+                || SyncedLyricsSourceFormat == LyricsSourceFormat.ConvertedFromTtml);
     }
 
     /// <summary>

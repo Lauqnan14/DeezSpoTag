@@ -10,5 +10,5 @@ public enum LyricsSourceFormat
     DownloadedTtml = 2,
     DownloadedPlainText = 3,
     ProviderSyncedJson = 4,
-    SynthesizedTtml = 5
+    ConvertedFromTtml = 5
 }

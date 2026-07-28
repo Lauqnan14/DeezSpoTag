@@ -17,9 +17,13 @@ internal static class LyricsResolveSettingsBuilder
         {
             SyncedLyrics = allowsSyncedBySettings,
             SaveLyrics = allowsUnsyncedBySettings,
-            LrcType = ResolveTypes(tagSettings, allowsSyncedBySettings, allowsUnsyncedBySettings),
+            LrcType = ResolveTypes(
+                tagSettings,
+                allowsSyncedBySettings,
+                allowsUnsyncedBySettings,
+                settings.LrcType),
             LrcFormat = settings.LrcFormat,
-            SynthesizeTtmlLyrics = settings.SynthesizeTtmlLyrics,
+            SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml,
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = settings.LyricsFallbackOrder,
             DeezerCountry = settings.DeezerCountry,
@@ -33,16 +37,34 @@ internal static class LyricsResolveSettingsBuilder
         };
     }
 
-    private static string ResolveTypes(TagSettings tagSettings, bool allowsSynced, bool allowsUnsynced)
+    private static string ResolveTypes(
+        TagSettings tagSettings,
+        bool allowsSynced,
+        bool allowsUnsynced,
+        string? configuredTypes)
     {
         var types = new List<string>();
-        if (tagSettings.SyncedLyrics && allowsSynced)
+        var selected = (configuredTypes ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeType)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (selected.Count == 0)
         {
-            types.Add(LyricsType);
-            types.Add(SyllableLyricsType);
+            selected.UnionWith([LyricsType, SyllableLyricsType, "ttml-lyrics", UnsyncedLyricsType]);
         }
 
-        if (tagSettings.Lyrics && allowsUnsynced)
+        if (tagSettings.SyncedLyrics && allowsSynced)
+        {
+            foreach (var type in new[] { LyricsType, SyllableLyricsType, "ttml-lyrics" })
+            {
+                if (selected.Contains(type))
+                {
+                    types.Add(type);
+                }
+            }
+        }
+
+        if (tagSettings.Lyrics && allowsUnsynced && selected.Contains(UnsyncedLyricsType))
         {
             types.Add(UnsyncedLyricsType);
         }
@@ -54,4 +76,14 @@ internal static class LyricsResolveSettingsBuilder
 
         return string.Join(',', types.Distinct(StringComparer.OrdinalIgnoreCase));
     }
+
+    private static string NormalizeType(string value)
+        => value.Trim().ToLowerInvariant() switch
+        {
+            "synced-lyrics" => LyricsType,
+            "time-synced-lyrics" or "timesynced-lyrics" or "time_synced_lyrics" => SyllableLyricsType,
+            "ttml" or "ttmllyrics" or "ttml_lyrics" => "ttml-lyrics",
+            "unsyncedlyrics" or "unsynced" or "unsynchronized-lyrics" or "unsynchronised-lyrics" => UnsyncedLyricsType,
+            var normalized => normalized
+        };
 }

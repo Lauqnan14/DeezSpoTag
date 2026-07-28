@@ -40,7 +40,8 @@ public class DeezSpoTagSettingsService : ISettingsService
     private const string WatchSingleGroup = "single";
     private const string WatchCompilationGroup = "compilation";
     private const string WatchAppearsOnGroup = "appears_on";
-    private static readonly string[] CanonicalLyricsProviders = { AppleLyricsProvider, "deezer", "spotify", LRCLibLyricsProvider, "musixmatch" };
+    private static readonly IReadOnlyList<string> CanonicalLyricsProviders =
+        DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder;
     private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, TtmlLyricsType, UnsyncedLyricsType };
     private static readonly string[] CanonicalLyricsFormats = { "lrc", "elrc", "ttml" };
     private static readonly JsonSerializerOptions SettingsDeserializeOptions = new()
@@ -1005,6 +1006,28 @@ public class DeezSpoTagSettingsService : ISettingsService
         DeezSpoTagSettings defaultSettings,
         SettingsFixTracker fixes)
     {
+        if (settings.LyricsProviderRegistryVersion < 1)
+        {
+            var existing = (settings.LyricsFallbackOrder ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+            foreach (var provider in new[]
+                     {
+                         DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.YouLyPlus,
+                         DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.BetterLyrics
+                     })
+            {
+                if (!existing.Contains(provider, StringComparer.OrdinalIgnoreCase))
+                {
+                    existing.Add(provider);
+                }
+            }
+            settings.LyricsFallbackOrder = string.Join(",", existing);
+            settings.LyricsProviderRegistryVersion = 1;
+            fixes.Mark(nameof(settings.LyricsProviderRegistryVersion));
+            fixes.Mark(nameof(settings.LyricsFallbackOrder));
+        }
+
         ApplyFixIf(
             string.IsNullOrWhiteSpace(settings.DeezerLanguage),
             () => settings.DeezerLanguage = defaultSettings.DeezerLanguage,
@@ -1639,8 +1662,8 @@ public class DeezSpoTagSettingsService : ISettingsService
     {
         var parsed = (fallbackOrder ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(NormalizeLyricsProviderToken)
-            .Where(p => CanonicalLyricsProviders.Contains(p, StringComparer.OrdinalIgnoreCase))
+            .Select(DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.NormalizeOrEmpty)
+            .Where(static provider => provider.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -1650,24 +1673,6 @@ public class DeezSpoTagSettingsService : ISettingsService
         }
 
         return string.Join(",", parsed);
-    }
-
-    private static string NormalizeLyricsProviderToken(string? token)
-    {
-        var normalized = (token ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "itunes" => AppleLyricsProvider,
-            "applemusic" => AppleLyricsProvider,
-            "apple-music" => AppleLyricsProvider,
-            "apple_music" => AppleLyricsProvider,
-            "apple music" => AppleLyricsProvider,
-            "music.apple" => AppleLyricsProvider,
-            "lrcget" => LRCLibLyricsProvider,
-            "lrc-get" => LRCLibLyricsProvider,
-            "lrc_get" => LRCLibLyricsProvider,
-            _ => normalized
-        };
     }
 
     private static string NormalizeLyricsTypeSelection(string? value)
