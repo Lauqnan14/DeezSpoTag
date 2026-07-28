@@ -116,4 +116,28 @@ public sealed class WatchlistQueueAdmissionServiceTests
         Assert.Equal(0, service.GetRemaining());
     }
 
+    [Theory]
+    [InlineData(true, "online", false, false, true)]
+    [InlineData(true, "online", true, true, true)]
+    [InlineData(true, "online", true, false, false)]
+    [InlineData(true, "offline", false, true, false)]
+    [InlineData(true, "degraded", false, true, false)]
+    [InlineData(true, "rate_limited", false, true, false)]
+    [InlineData(false, "online", false, true, false)]
+    public void PublicApiReadiness_UsesOnlyOnlineHealthAndRequiredVerification(
+        bool enabled,
+        string status,
+        bool requiresVerification,
+        bool verificationValid,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            WatchlistPublicApiReadinessService.IsProviderUsable(
+                enabled,
+                status,
+                requiresVerification,
+                verificationValid));
+    }
+
 }

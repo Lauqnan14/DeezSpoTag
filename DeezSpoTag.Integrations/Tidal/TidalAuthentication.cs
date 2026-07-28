@@ -37,7 +37,8 @@ public sealed record TidalPublicProvider(
     string? FailureCategory,
     string? FailureMessage,
     long? ResponseTimeMs,
-    DateTimeOffset? CooldownUntil);
+    DateTimeOffset? CooldownUntil,
+    bool RequiresVerification = false);
 
 public interface ITidalPublicProviderRegistry
 {
@@ -55,7 +56,8 @@ public sealed record TidalPublicProviderDefinition(
     string Kind,
     string Endpoint,
     string? HealthEndpoint,
-    string? HealthServiceKey);
+    string? HealthServiceKey,
+    bool RequiresVerification = false);
 
 public static class TidalPublicProviderDefaults
 {
@@ -73,7 +75,8 @@ public static class TidalPublicProviderDefaults
             provider.Kind,
             Decode(provider.EncodedEndpoint),
             string.IsNullOrWhiteSpace(provider.EncodedHealthEndpoint) ? null : Decode(provider.EncodedHealthEndpoint),
-            provider.HealthServiceKey))
+            provider.HealthServiceKey,
+            RequiresVerification: true))
         .ToArray();
 
     public static IReadOnlyList<string> Endpoints { get; } = Providers.Select(static provider => provider.Endpoint).ToArray();

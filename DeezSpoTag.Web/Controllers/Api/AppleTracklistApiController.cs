@@ -237,7 +237,16 @@ public sealed class AppleTracklistApiController : ControllerBase
         var trackCount = attrs.TryGetProperty("trackCount", out var tcEl) ? tcEl.GetInt32() : tracks.Count;
         var description = ResolvePlaylistDescription(attrs);
 
-        return BuildTracklistResponse(title, curator, cover, trackCount, string.Empty, description, tracks);
+        return BuildPlaylistTracklistResponse(
+            title,
+            curator,
+            cover,
+            trackCount,
+            string.Empty,
+            description,
+            tracks,
+            sourceUrl: attrs.TryGetProperty("url", out var urlElement) ? urlElement.GetString() : null,
+            storefront);
     }
 
     private static List<object> BuildRelationshipTracks(JsonElement relationships)
@@ -345,6 +354,27 @@ public sealed class AppleTracklistApiController : ControllerBase
         string releaseDate,
         string description,
         List<object> tracks)
+        => BuildPlaylistTracklistResponse(
+            title,
+            artistName,
+            cover,
+            trackCount,
+            releaseDate,
+            description,
+            tracks,
+            sourceUrl: null,
+            storefront: null);
+
+    private static object BuildPlaylistTracklistResponse(
+        string title,
+        string artistName,
+        string cover,
+        int trackCount,
+        string releaseDate,
+        string description,
+        List<object> tracks,
+        string? sourceUrl,
+        string? storefront)
     {
         return new
         {
@@ -356,6 +386,8 @@ public sealed class AppleTracklistApiController : ControllerBase
                 nb_tracks = trackCount,
                 release_date = releaseDate,
                 description,
+                source_url = sourceUrl,
+                storefront,
                 tracks
             }
         };

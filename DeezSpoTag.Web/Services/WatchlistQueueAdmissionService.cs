@@ -191,12 +191,23 @@ public sealed class WatchlistStateService
 
 public sealed class WatchlistQueueAdmissionService
 {
+    private readonly WatchlistPublicApiReadinessService? _publicApiReadiness;
     private readonly object _gate = new();
     private readonly AsyncLocal<long> _executionGeneration = new();
     private long _generation;
     private long _activeGeneration;
     private int _limit;
     private int _remaining;
+
+    public WatchlistQueueAdmissionService()
+    {
+    }
+
+    public WatchlistQueueAdmissionService(
+        WatchlistPublicApiReadinessService publicApiReadiness)
+    {
+        _publicApiReadiness = publicApiReadiness;
+    }
 
     public async Task<WatchlistQueueAdmissionDecision> EvaluateDownloadGateAsync(
         DownloadOrchestrationService orchestrationService,
@@ -239,6 +250,20 @@ public sealed class WatchlistQueueAdmissionService
                 null,
                 true,
                 "Waiting for active downloads, moves, or enrichment to finish.");
+        }
+
+        if (_publicApiReadiness is not null)
+        {
+            var readiness = await _publicApiReadiness.EvaluateAsync(cancellationToken);
+            if (!readiness.Usable)
+            {
+                return new WatchlistQueueAdmissionDecision(
+                    false,
+                    WatchQueueStopReason.DownloadGate,
+                    null,
+                    true,
+                    readiness.Message);
+            }
         }
 
         return WatchlistQueueAdmissionDecision.Allow();

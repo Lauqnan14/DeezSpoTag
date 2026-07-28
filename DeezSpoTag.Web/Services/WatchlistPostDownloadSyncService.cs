@@ -8,7 +8,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan SyncJobExecutionTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan TargetOperationTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
@@ -72,36 +72,30 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
     public async Task ProcessTargetSyncWorkAsync(
         int syncJobLimit,
-        TimeSpan timeBudget,
         CancellationToken cancellationToken)
     {
-        using var phaseCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        phaseCancellation.CancelAfter(timeBudget);
         try
         {
-            await RepairIncompleteJobsIfNeededAsync(phaseCancellation.Token);
-            for (var processed = 0; processed < syncJobLimit && IsWatchlistEnabled(); processed++)
+            await RepairIncompleteJobsIfNeededAsync(cancellationToken);
+            if (!IsWatchlistEnabled())
             {
-                using var scope = _serviceProvider.CreateScope();
-                var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-                if (!repository.IsConfigured)
-                {
-                    return;
-                }
-
-                var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(1, ProcessingLease, _leaseOwner, phaseCancellation.Token);
-                var job = jobs.FirstOrDefault();
-                if (job == null)
-                {
-                    return;
-                }
-
-                await ProcessClaimedJobAsync(repository, job, phaseCancellation.Token, cancellationToken);
+                return;
             }
-        }
-        catch (OperationCanceledException) when (phaseCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            _logger.LogInformation("Watchlist target sync phase reached its {Seconds:0}-second cycle budget; remaining jobs stay queued.", timeBudget.TotalSeconds);
+
+            using var scope = _serviceProvider.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+            if (!repository.IsConfigured)
+            {
+                return;
+            }
+
+            var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(
+                Math.Clamp(syncJobLimit, 1, 100),
+                ProcessingLease,
+                _leaseOwner,
+                cancellationToken: cancellationToken);
+            await Task.WhenAll(jobs.Select(job =>
+                ProcessClaimedJobAsync(repository, job, cancellationToken)));
         }
         catch (OperationCanceledException)
         {
@@ -307,13 +301,20 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         {
             return;
         }
+        _lastRepairAttemptUtc = DateTimeOffset.UtcNow;
+        var repairedBacklog = await repository.RepairWatchlistSyncBacklogAsync(cancellationToken);
+        if (repairedBacklog > 0)
+        {
+            _logger.LogInformation(
+                "Repaired {Count} expired or obsolete Watchlist target synchronization job(s).",
+                repairedBacklog);
+        }
         var counts = await repository.GetWatchlistSyncJobStatusCountsAsync(cancellationToken);
         if (counts.RepairRequired <= 0)
         {
             return;
         }
 
-        _lastRepairAttemptUtc = DateTimeOffset.UtcNow;
         var playlists = await repository.GetPlaylistWatchlistAsync(cancellationToken);
         var repairService = scope.ServiceProvider.GetRequiredService<WatchlistFinalizationService>();
         await repairService.RepairPlaylistsAsync(playlists, cancellationToken);
@@ -328,12 +329,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private async Task ProcessClaimedJobAsync(
         LibraryRepository repository,
         WatchlistSyncJobDto job,
-        CancellationToken executionCancellationToken,
-        CancellationToken coordinatorCancellationToken)
+        CancellationToken cancellationToken)
     {
-        using var jobCancellation = CancellationTokenSource.CreateLinkedTokenSource(executionCancellationToken);
-        jobCancellation.CancelAfter(SyncJobExecutionTimeout);
-        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(jobCancellation.Token);
+        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        operationCancellation.CancelAfter(TargetOperationTimeout);
+        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationCancellation.Token);
         var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
         try
         {
@@ -344,17 +344,26 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 job.TrackId,
                 job.TargetService,
                 job.AttemptCount);
-            var outcome = await TrySyncOnceAsync(request, job.AttemptCount + 1, jobCancellation.Token);
+            var outcome = await TrySyncOnceAsync(
+                request,
+                job.AttemptCount + 1,
+                operationCancellation.Token);
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
-                    await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, coordinatorCancellationToken);
+                    if (await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken))
+                    {
+                        await ResumePlaylistReconciliationAfterInitialSyncAsync(repository, job, cancellationToken);
+                    }
                     return;
                 case SyncAttemptOutcomeKind.Obsolete:
-                    await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, coordinatorCancellationToken);
+                    if (await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken))
+                    {
+                        await ResumePlaylistReconciliationAfterInitialSyncAsync(repository, job, cancellationToken);
+                    }
                     return;
                 case SyncAttemptOutcomeKind.Blocked:
-                    await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, coordinatorCancellationToken);
+                    await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
                     return;
             }
             var attempt = job.AttemptCount + 1;
@@ -365,24 +374,26 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 attempt,
                 DateTimeOffset.UtcNow + retryDelay,
                 outcome.Message,
-                coordinatorCancellationToken);
+                cancellationToken);
         }
-        catch (OperationCanceledException) when (coordinatorCancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException) when (jobCancellation.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (operationCancellation.IsCancellationRequested)
         {
             _logger.LogWarning(
-                "Watchlist target sync job {JobId} exceeded the per-job execution timeout; returning it to durable retry.",
-                job.Id);
+                ex,
+                "Watchlist target sync job {JobId} for {Target} was cancelled by the target operation; returning only that target to durable retry.",
+                job.Id,
+                job.TargetService);
             await repository.RetryWatchlistSyncJobAsync(
                 job.Id,
                 _leaseOwner,
                 job.AttemptCount + 1,
                 DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
-                $"Target sync job exceeded {SyncJobExecutionTimeout.TotalMinutes:0} minutes.",
-                coordinatorCancellationToken);
+                $"{FormatTargetServiceLabel(job.TargetService)} target operation exceeded {TargetOperationTimeout.TotalMinutes:0} minutes.",
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -396,7 +407,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 job.AttemptCount + 1,
                 DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
                 ex.Message,
-                coordinatorCancellationToken);
+                cancellationToken);
         }
         finally
         {
@@ -410,6 +421,34 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 // Expected once the claimed job leaves processing.
             }
         }
+    }
+
+    private async Task ResumePlaylistReconciliationAfterInitialSyncAsync(
+        LibraryRepository repository,
+        WatchlistSyncJobDto completedJob,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(completedJob.TrackId, "playlist", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var remainingInitialJobs = (await repository.GetWatchlistSyncJobsAsync(
+                completedJob.Source,
+                completedJob.PlaylistId,
+                cancellationToken))
+            .Any(static job => string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase));
+        if (remainingInitialJobs)
+        {
+            return;
+        }
+
+        await repository.EnqueueWatchlistReconciliationRequestAsync(
+            "playlist",
+            completedJob.Source,
+            completedJob.PlaylistId,
+            cancellationToken);
+        _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
     }
 
     private async Task RenewLeaseAsync(LibraryRepository repository, long jobId, CancellationToken cancellationToken)
@@ -514,7 +553,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
 
-            await RefreshConfiguredMediaServerAsync(scope.ServiceProvider, request.TargetService, cancellationToken);
             var syncResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
                 .SyncAvailablePlaylistTracksAsync(
                 playlist,
@@ -526,12 +564,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
             if (syncResult.Success)
             {
-                await TransitionPlaylistStateAsync(
-                    scope.ServiceProvider,
-                    playlist,
-                    WatchlistPlaylistState.MediaSyncCompleted,
-                    $"{FormatTargetServiceLabel(request.TargetService)} playlist synchronization completed.",
-                    cancellationToken);
                 await AddPlaylistSyncHistoryAsync(
                     scope.ServiceProvider,
                     playlist,
@@ -542,12 +574,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             }
 
             var terminalFailure = IsTerminalSyncFailure(syncResult);
-            await TransitionPlaylistStateAsync(
-                scope.ServiceProvider,
-                playlist,
-                terminalFailure ? WatchlistPlaylistState.MediaSyncBlocked : WatchlistPlaylistState.MediaSyncWaiting,
-                syncResult.Message,
-                cancellationToken);
             await AddPlaylistSyncHistoryAsync(
                 scope.ServiceProvider,
                 playlist,
@@ -625,25 +651,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             cancellationToken);
     }
 
-    private static Task TransitionPlaylistStateAsync(
-        IServiceProvider serviceProvider,
-        PlaylistWatchlistDto playlist,
-        WatchlistPlaylistState state,
-        string? message,
-        CancellationToken cancellationToken)
-        => serviceProvider.GetRequiredService<WatchlistStateService>().TransitionPlaylistAsync(
-            new WatchlistPlaylistStateTransition(
-                playlist.Source,
-                playlist.SourceId,
-                state,
-                message,
-                playlist.TrackCount,
-                playlist.SnapshotId,
-                NextAttemptUtc: null,
-                ConsecutiveFailures: state == WatchlistPlaylistState.MediaSyncBlocked ? 1 : 0,
-                TouchLastChecked: false),
-            cancellationToken);
-
     private void LogPlaylistMissing(SyncRequest request)
     {
         _logger.LogWarning(
@@ -691,21 +698,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         return items.FirstOrDefault(item =>
             string.Equals(item.Source, request.Source, StringComparison.OrdinalIgnoreCase)
             && string.Equals(item.SourceId, request.PlaylistId, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static async Task RefreshConfiguredMediaServerAsync(
-        IServiceProvider services,
-        string targetService,
-        CancellationToken cancellationToken)
-    {
-        var normalizedTarget = NormalizeTargetService(targetService);
-        if (normalizedTarget is not ("plex" or "jellyfin" or "navidrome"))
-        {
-            return;
-        }
-
-        var refreshService = services.GetRequiredService<MediaServerLibraryRefreshService>();
-        await refreshService.RefreshAsync(normalizedTarget, cancellationToken);
     }
 
     private static string NormalizeTargetService(string? target)

@@ -365,7 +365,23 @@ public sealed class QobuzPublicProviderRegistry : IQobuzPublicProviderRegistry
     private static QobuzPublicProvider ToPublicProvider(ProviderState provider)
     {
         var status = provider.Enabled ? provider.Status : DisabledStatus;
-        return new(provider.Id, provider.DisplayName, provider.Kind, provider.Endpoint, provider.Region, provider.HealthEndpoint, provider.HealthServiceKey, provider.Enabled, status, provider.LastCheckedAt, provider.LastSuccessAt, provider.FailureCategory, provider.FailureMessage, provider.ResponseTimeMs, provider.CooldownUntil);
+        return new(
+            provider.Id,
+            provider.DisplayName,
+            provider.Kind,
+            provider.Endpoint,
+            provider.Region,
+            provider.HealthEndpoint,
+            provider.HealthServiceKey,
+            provider.Enabled,
+            status,
+            provider.LastCheckedAt,
+            provider.LastSuccessAt,
+            provider.FailureCategory,
+            provider.FailureMessage,
+            provider.ResponseTimeMs,
+            provider.CooldownUntil,
+            RequiresVerification: string.Equals(provider.Kind, SignedProviderKind, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string ResolveFailureStatus(string category) => category switch

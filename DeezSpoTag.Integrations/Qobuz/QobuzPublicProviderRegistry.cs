@@ -15,7 +15,8 @@ public sealed record QobuzPublicProvider(
     string? FailureCategory,
     string? FailureMessage,
     long? ResponseTimeMs,
-    DateTimeOffset? CooldownUntil);
+    DateTimeOffset? CooldownUntil,
+    bool RequiresVerification = false);
 
 public interface IQobuzPublicProviderRegistry
 {

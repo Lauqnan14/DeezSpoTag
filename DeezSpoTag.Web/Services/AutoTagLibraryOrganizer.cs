@@ -83,6 +83,44 @@ public class AutoTagLibraryOrganizer
         return OrganizeAsync(rootPath, filePaths, new AutoTagOrganizerOptions(), report: null, log);
     }
 
+    public Task<string?> QuarantineConfirmedDuplicateAsync(
+        string rootPath,
+        string duplicateFilePath,
+        string? duplicatesFolderName,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(rootPath)
+            || string.IsNullOrWhiteSpace(duplicateFilePath)
+            || !IOFile.Exists(duplicateFilePath))
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        var normalizedRoot = Path.GetFullPath(rootPath);
+        var normalizedSource = Path.GetFullPath(duplicateFilePath);
+        if (!IsPathUnderRoot(normalizedSource, normalizedRoot))
+        {
+            throw new InvalidOperationException("Confirmed duplicate is outside its configured library root.");
+        }
+
+        var options = new AutoTagOrganizerOptions
+        {
+            DuplicatesFolderName = string.IsNullOrWhiteSpace(duplicatesFolderName)
+                ? DuplicateCleanerService.DuplicatesFolderName
+                : duplicatesFolderName.Trim()
+        };
+        var target = QuarantineDuplicateFile(normalizedRoot, options.DuplicatesFolderName, normalizedSource);
+        MoveAssociatedDuplicateSidecarsToQuarantine(
+            normalizedRoot,
+            normalizedSource,
+            target,
+            options,
+            report: null,
+            log: null);
+        return Task.FromResult<string?>(target);
+    }
+
     public Task OrganizeFilesAsync(
         string rootPath,
         IReadOnlyCollection<string> filePaths,

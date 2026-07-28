@@ -150,7 +150,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
         await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
         try
         {
-            var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance);
+            var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance, null!);
             var decision = await DownloadDedupeService.CheckFinalDestinationAsync(new DownloadDedupeRequest
             {
                 TrackTitle = "Track",
@@ -230,7 +230,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
         await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
         try
         {
-            var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance);
+            var service = new DownloadDedupeService(null!, null!, NullLogger<DownloadDedupeService>.Instance, null!);
             var decision = await DownloadDedupeService.CheckFinalDestinationAsync(new DownloadDedupeRequest
             {
                 TrackTitle = "Track",

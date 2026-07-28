@@ -85,6 +85,7 @@ public sealed class LibraryDbService
             ["idx_manual_unavailable_track_retry"] = (ManualUnavailableTrackTable, "next_retry_at_utc", false),
             ["idx_track_shazam_cache_status"] = (TrackShazamCacheTable, "status", false),
             ["idx_track_shazam_cache_scanned"] = (TrackShazamCacheTable, "scanned_at_utc", false),
+            ["idx_local_duplicate_resolution_event_duplicate"] = ("local_duplicate_resolution_event", "duplicate_track_id, created_at_utc DESC", false),
             ["idx_album_artist_id"] = (AlbumTable, ArtistIdColumn, false),
             ["idx_track_album_id"] = (TrackTable, AlbumIdColumn, false),
             ["idx_track_local_audio_file_id"] = (TrackLocalTable, "audio_file_id", false),
@@ -407,6 +408,8 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "description", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "sync_priority", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, "owner_name", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchlistTable, "source_url", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchlistTable, "source_storefront", TextType, cancellationToken);
         await BackfillPlaylistWatchlistPrioritiesAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "preferred_engine", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, "download_engine_order_json", TextType, cancellationToken);
@@ -754,10 +757,51 @@ CREATE TABLE IF NOT EXISTS track_shazam_cache (
     related_tracks_json TEXT,
     scanned_at_utc TEXT,
     error TEXT,
+    file_path TEXT,
+    file_size INTEGER,
+    file_modified_utc TEXT,
+    spotify_id TEXT,
+    apple_id TEXT,
+    deezer_id TEXT,
+    album TEXT,
+    release_date TEXT,
+    explicit INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );", cancellationToken);
+        await EnsureColumnsAsync(
+            connection,
+            TrackShazamCacheTable,
+            cancellationToken,
+            ("file_path", TextType),
+            ("file_size", BigIntType),
+            ("file_modified_utc", TextType),
+            ("spotify_id", TextType),
+            ("apple_id", TextType),
+            ("deezer_id", TextType),
+            ("album", TextType),
+            ("release_date", TextType),
+            ("explicit", IntegerType));
         await EnsureIndexAsync(connection, "idx_track_shazam_cache_status", TrackShazamCacheTable, "status", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_track_shazam_cache_scanned", TrackShazamCacheTable, "scanned_at_utc", unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS local_duplicate_resolution_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    winner_track_id INTEGER NOT NULL,
+    duplicate_track_id INTEGER NOT NULL,
+    source_path TEXT NOT NULL,
+    destination_path TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);", cancellationToken);
+        await EnsureIndexAsync(
+            connection,
+            "idx_local_duplicate_resolution_event_duplicate",
+            "local_duplicate_resolution_event",
+            "duplicate_track_id, created_at_utc DESC",
+            unique: false,
+            cancellationToken);
         await MigrateLibrarySettingsSchemaAsync(connection, cancellationToken);
 
         await MigrateSourceMappingTablesAsync(connection, cancellationToken);

@@ -6,8 +6,8 @@ namespace DeezSpoTag.Web.Services;
 
 internal static class PlaylistCandidateContract
 {
-    public const int CurrentCacheSchemaVersion = 2;
-    public const string ValidationRevision = "playlist-candidate-v2";
+    public const int CurrentCacheSchemaVersion = 4;
+    public const string ValidationRevision = "playlist-candidate-v4";
 
     public static bool IsResolvable(string source, PlaylistTrackCandidate? candidate)
     {
@@ -41,8 +41,7 @@ internal static class PlaylistCandidateContract
                    ? (expectedTrackCount.Value <= 0
                        ? candidates.Count == 0
                        : candidates.Count > 0 && candidates.Count <= expectedTrackCount.Value)
-                   : candidates.Count == Math.Max(0, expectedTrackCount.Value)))
-           && candidates.All(candidate => IsResolvable(source, candidate));
+                   : candidates.Count == Math.Max(0, expectedTrackCount.Value)));
 
     public static IReadOnlyList<PlaylistTrackCandidate> ResolvableCandidates(
         string source,
@@ -61,6 +60,7 @@ internal static class PlaylistCandidateContract
             artist = Normalize(candidate.Artist),
             album = Normalize(candidate.Album),
             durationMs = candidate.DurationMs,
+            sourcePosition = candidate.SourcePosition,
             mappingStatus = Normalize(candidate.MappingStatus)
         }));
         return $"{ValidationRevision}:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)))}";

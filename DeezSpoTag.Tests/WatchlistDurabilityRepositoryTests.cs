@@ -120,7 +120,11 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
             ("path", existingPath),
             ("folderId", firstFolder.Id));
 
-        var dedupe = new DownloadDedupeService(null!, _repository, NullLogger<DownloadDedupeService>.Instance);
+        var dedupe = new DownloadDedupeService(
+            null!,
+            _repository,
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver());
         var stereoDecision = await dedupe.CheckLibraryPresenceAsync(new DownloadDedupeRequest
         {
             TrackTitle = "Existing Track",
@@ -140,6 +144,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
 
         Assert.False(stereoDecision.Allowed);
         Assert.Equal("library_duplicate", stereoDecision.ReasonCode);
+        Assert.Equal(9001, stereoDecision.LocalTrackId);
         Assert.True(atmosDecision.Allowed);
         var stereoIdentity = await _repository.ResolveLocalTrackIdentityAsync(
             new LibraryRepository.LibraryExistenceInput(
@@ -204,6 +209,41 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.Equal(0, resumed.AttemptCount);
         Assert.Null(resumed.LastError);
         Assert.True(await _repository.CompleteWatchlistSyncJobAsync(resumed.Id, "worker-d"));
+    }
+
+    [Fact]
+    public async Task TrackVerification_CompletedRequiresAnIndexedLocalTrack()
+    {
+        await AddPlaylistWithTargetsAsync("identity-state-list", ["plex"]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "identity-state-list",
+            [new PlaylistWatchTrackInsert("track-1", "TESTISRC0001")]);
+        await _repository.UpdatePlaylistWatchTrackStatusAsync(
+            "spotify",
+            "identity-state-list",
+            "track-1",
+            "completed");
+
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "identity-state-list",
+            new PlaylistWatchTrackVerification("track-1", null, "missing", "Not indexed."));
+        var missing = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync(
+            "spotify",
+            "identity-state-list"));
+        Assert.Equal("missing", missing.Status);
+        Assert.Null(missing.LocalTrackId);
+
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "identity-state-list",
+            new PlaylistWatchTrackVerification("track-1", 9001, "identity_verified", "Indexed."));
+        var available = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync(
+            "spotify",
+            "identity-state-list"));
+        Assert.Equal("completed", available.Status);
+        Assert.Equal(9001, available.LocalTrackId);
     }
 
     [Fact]
@@ -327,8 +367,9 @@ WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';
         Assert.True(PlaylistCandidateContract.IsResolvable("boomplay", hydrated));
         Assert.False(PlaylistCandidateContract.IsReusableCache(
             "boomplay", 0, [hydrated], 1, isComplete: true));
-        Assert.False(PlaylistCandidateContract.IsReusableCache(
+        Assert.True(PlaylistCandidateContract.IsReusableCache(
             "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [opaque], 1, isComplete: true));
+        Assert.Empty(PlaylistCandidateContract.ResolvableCandidates("boomplay", [opaque]));
         Assert.True(PlaylistCandidateContract.IsReusableCache(
             "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 1, isComplete: true));
     }
@@ -504,6 +545,47 @@ WHERE id=@id;",
         Assert.All(first, static job => Assert.Equal("playlist", job.TrackId));
         var claimed = await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "target-worker");
         Assert.Equal(3, claimed.Count);
+    }
+
+    [Fact]
+    public async Task PlaylistSyncWork_ExcludesAttemptedTargetAndLeavesSiblingTargetsClaimable()
+    {
+        await AddPlaylistWithTargetsAsync("isolated-list", ["plex", "jellyfin", "navidrome"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "isolated-list");
+
+        var plex = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "worker-a"));
+        Assert.Equal("plex", plex.TargetService);
+        Assert.True(await _repository.RetryWatchlistSyncJobAsync(
+            plex.Id,
+            "worker-a",
+            1,
+            DateTimeOffset.UtcNow,
+            "Plex failed"));
+
+        var jellyfin = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "worker-a",
+            [plex.Id]));
+        Assert.Equal("jellyfin", jellyfin.TargetService);
+        Assert.True(await _repository.CompleteWatchlistSyncJobAsync(jellyfin.Id, "worker-a"));
+
+        var navidrome = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "worker-a",
+            [plex.Id, jellyfin.Id]));
+        Assert.Equal("navidrome", navidrome.TargetService);
+        Assert.True(await _repository.CompleteWatchlistSyncJobAsync(navidrome.Id, "worker-a"));
+
+        var diagnostics = await _repository.GetWatchlistSyncJobsAsync("spotify", "isolated-list");
+        var failedPlex = Assert.Single(diagnostics);
+        Assert.Equal("plex", failedPlex.TargetService);
+        Assert.Equal("retry", failedPlex.Status);
+        Assert.Equal("Plex failed", failedPlex.LastError);
     }
 
     [Fact]

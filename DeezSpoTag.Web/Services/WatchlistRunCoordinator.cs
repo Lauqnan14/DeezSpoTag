@@ -495,7 +495,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         {
             await coordinatorWork.ProcessTargetSyncWorkAsync(
                 syncJobLimit: 15,
-                timeBudget: TimeSpan.FromSeconds(30),
                 stoppingToken);
         }
     }
@@ -590,7 +589,18 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         if (!queueGate.Allowed)
         {
             UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
-            _logger.LogInformation("Watchlist reconciliation and queue phase deferred: {Reason}", queueGate.Message);
+            _logger.LogInformation(
+                "Watchlist download admission deferred while source metadata and target synchronization continue: {Reason}",
+                queueGate.Message);
+            await ProcessPlaylistWatchItemsAsync(
+                playlistItems,
+                settings,
+                repository,
+                serviceProvider,
+                queueAdmission,
+                requestedPlaylistKeys,
+                PlaylistReconciliationMode.SyncOnly,
+                stoppingToken);
             await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
                 reconciliationRequests,
                 _reconciliationLeaseOwner,
@@ -866,7 +876,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             {
                 await targetSync.ProcessTargetSyncWorkAsync(
                     syncJobLimit: 1,
-                    timeBudget: TimeSpan.FromSeconds(5),
                     stoppingToken);
             }
 

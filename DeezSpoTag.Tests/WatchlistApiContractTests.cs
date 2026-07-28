@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -131,6 +132,88 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         {
             Assert.True(GetBooleanProperty(doc.RootElement, "removed"));
         }
+    }
+
+    [Fact]
+    public async Task ApplePlaylistWatchlist_PersistsOriginalUrlAndStorefront()
+    {
+        var controller = CreatePlaylistWatchlistController();
+        const string appleUrl =
+            "https://music.apple.com/us/playlist/hip-hop-r-b-throwback/pl.674abcd261d04582b58d6388394cd047";
+
+        var result = await controller.Add(
+            new WatchlistApiController.PlaylistWatchlistRequest(
+                Source: "apple",
+                SourceId: "pl.674abcd261d04582b58d6388394cd047",
+                Name: "Hip-Hop/R&B Throwback",
+                ImageUrl: null,
+                Description: null,
+                TrackCount: 250,
+                SourceUrl: appleUrl,
+                SourceStorefront: "gb"),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
+        Assert.Equal(appleUrl, GetStringProperty(document.RootElement, "sourceUrl"));
+        Assert.Equal("us", GetStringProperty(document.RootElement, "sourceStorefront"));
+    }
+
+    [Fact]
+    public async Task TargetSyncDiagnostics_ReportEachConfiguredServerIndependently()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "target-diagnostics",
+            new PlaylistWatchlistMetadataInput("Target diagnostics", null, null, 3));
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "spotify",
+                SourceId: "target-diagnostics",
+                DestinationFolderId: 1,
+                Service: "plex",
+                SyncTargets: ["plex", "jellyfin", "navidrome"],
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: "mirror",
+                UpdateArtwork: false,
+                ReuseSavedArtwork: false));
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "target-diagnostics");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "diagnostic-worker"));
+        Assert.Equal("plex", claimed.TargetService);
+        Assert.True(await _repository.RetryWatchlistSyncJobAsync(
+            claimed.Id,
+            "diagnostic-worker",
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            "Plex endpoint rejected the request."));
+
+        var result = await CreatePlaylistWatchlistController().GetTargetSyncJobs(
+            "spotify",
+            "target-diagnostics",
+            CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(result);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
+        Assert.Equal(3, document.RootElement.GetArrayLength());
+        var plex = document.RootElement.EnumerateArray()
+            .Single(item => GetStringProperty(item, "target") == "plex");
+        var jellyfin = document.RootElement.EnumerateArray()
+            .Single(item => GetStringProperty(item, "target") == "jellyfin");
+        var navidrome = document.RootElement.EnumerateArray()
+            .Single(item => GetStringProperty(item, "target") == "navidrome");
+        Assert.Equal("waiting", GetStringProperty(plex, "state"));
+        var plexJobs = plex.EnumerateObject()
+            .Single(property => string.Equals(property.Name, "jobs", StringComparison.OrdinalIgnoreCase))
+            .Value;
+        Assert.Equal(
+            "Plex endpoint rejected the request.",
+            GetStringProperty(plexJobs[0], "lastError"));
+        Assert.Equal("waiting", GetStringProperty(jellyfin, "state"));
+        Assert.Equal("waiting", GetStringProperty(navidrome, "state"));
     }
 
     [Fact]

@@ -58,6 +58,7 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
         _syncService = new PlaylistSyncService(new PlaylistSyncService.PlaylistSyncDependencies
         {
             LibraryRepository = _repository,
+            LocalIdentityResolver = new PassthroughLocalTrackAmbiguityResolver(),
             SpotifyMetadataService = null!,
             PlexApiClient = plexClient,
             JellyfinApiClient = jellyfinClient,

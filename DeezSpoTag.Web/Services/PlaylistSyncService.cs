@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Text.Json;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -85,6 +86,7 @@ public sealed class PlaylistSyncService
     private const string JellyfinNotConfiguredMessage = "Jellyfin is not configured.";
     private const string NavidromeNotConfiguredMessage = "Navidrome is not configured.";
     private readonly LibraryRepository _libraryRepository;
+    private readonly ILocalTrackAmbiguityResolver _localIdentityResolver;
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
@@ -98,6 +100,7 @@ public sealed class PlaylistSyncService
     public PlaylistSyncService(PlaylistSyncDependencies dependencies)
     {
         _libraryRepository = dependencies.LibraryRepository;
+        _localIdentityResolver = dependencies.LocalIdentityResolver;
         _spotifyMetadataService = dependencies.SpotifyMetadataService;
         _plexApiClient = dependencies.PlexApiClient;
         _jellyfinApiClient = dependencies.JellyfinApiClient;
@@ -112,6 +115,7 @@ public sealed class PlaylistSyncService
     public sealed class PlaylistSyncDependencies
     {
         public required LibraryRepository LibraryRepository { get; init; }
+        public required ILocalTrackAmbiguityResolver LocalIdentityResolver { get; init; }
         public required SpotifyMetadataService SpotifyMetadataService { get; init; }
         public required PlexApiClient PlexApiClient { get; init; }
         public required JellyfinApiClient JellyfinApiClient { get; init; }
@@ -1183,7 +1187,7 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed("No eligible tracks after blocked/ignored filtering.");
         }
 
-        var availableTrackRows = await ResolveAvailableTrackRowsAndPersistVerificationAsync(
+        var availableTrackRows = await ResolvePersistedAvailableTrackRowsAsync(
             playlist.Source,
             playlist.SourceId,
             eligibleTracks,
@@ -1492,41 +1496,27 @@ public sealed class PlaylistSyncService
         return availableTrackRows;
     }
 
-    private async Task<List<(SyncTrackSummary Track, long LocalTrackId)>> ResolveAvailableTrackRowsAndPersistVerificationAsync(
+    private async Task<List<(SyncTrackSummary Track, long LocalTrackId)>> ResolvePersistedAvailableTrackRowsAsync(
         string source,
         string sourceId,
         IReadOnlyList<SyncTrackSummary> eligibleTracks,
         CancellationToken cancellationToken)
     {
-        var availableTrackRows = new List<(SyncTrackSummary Track, long LocalTrackId)>(eligibleTracks.Count);
-        var inputs = BuildLocalTrackIdentityInputs(source, eligibleTracks);
-        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
-            inputs,
-            cancellationToken,
-            audioVariant: "stereo_preferred");
-        for (var index = 0; index < eligibleTracks.Count; index++)
-        {
-            var track = eligibleTracks[index];
-            var identity = identities[index];
-            var identityStatus = identity.IsAmbiguous
-                ? "review"
-                : identity.LocalTrackId.HasValue ? "identity_verified" : "missing";
-            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+        var localTrackIdBySourceId = (await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
                 source,
                 sourceId,
-                new PlaylistWatchTrackVerification(
-                    track.SourceTrackId,
-                    identity.LocalTrackId,
-                    identityStatus,
-                    identity.Reason),
-                cancellationToken);
-            if (identity.LocalTrackId.HasValue && !identity.IsAmbiguous)
-            {
-                availableTrackRows.Add((track, identity.LocalTrackId.Value));
-            }
-        }
-
-        return availableTrackRows;
+                cancellationToken))
+            .Where(static status => status.LocalTrackId.HasValue
+                                    && !string.Equals(status.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(static status => status.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                static group => group.Key,
+                static group => group.First().LocalTrackId!.Value,
+                StringComparer.OrdinalIgnoreCase);
+        return eligibleTracks
+            .Where(track => localTrackIdBySourceId.ContainsKey(track.SourceTrackId))
+            .Select(track => (track, localTrackIdBySourceId[track.SourceTrackId]))
+            .ToList();
     }
 
     public async Task<PlaylistSyncResult> SyncPlaylistArtworkOnlyAsync(
@@ -1699,6 +1689,12 @@ public sealed class PlaylistSyncService
         }
 
         var playlistName = ResolvePlaylistName(playlist);
+        existingPlaylistId = await ResolveAuthoritativePlexPlaylistIdAsync(
+            plex,
+            playlist,
+            preference,
+            existingPlaylistId,
+            cancellationToken);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var matchSummary = await ResolvePlexRatingKeysAsync(plex, tracks, orderedTrackIds, cancellationToken);
         if (matchSummary.TargetIds.Count == 0)
@@ -1794,6 +1790,12 @@ public sealed class PlaylistSyncService
         }
 
         var playlistName = ResolvePlaylistName(playlist);
+        existingPlaylistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
+            jellyfin,
+            playlist,
+            preference,
+            existingPlaylistId,
+            cancellationToken);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var jellyfinMatches = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, orderedTrackIds, cancellationToken);
         var itemIds = jellyfinMatches.Select(static item => item.TargetItemId).ToList();
@@ -1928,6 +1930,12 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(NavidromeNotConfiguredMessage);
         }
 
+        existingPlaylistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
+            navidrome,
+            playlist,
+            preference,
+            existingPlaylistId,
+            cancellationToken);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var navidromeMatches = await ResolveNavidromeItemIdsAsync(navidrome, tracks, orderedTrackIds, cancellationToken);
         var itemIds = navidromeMatches.Select(static item => item.TargetItemId).ToList();
@@ -2126,6 +2134,126 @@ public sealed class PlaylistSyncService
         };
     }
 
+    private async Task<string?> ResolveAuthoritativePlexPlaylistIdAsync(
+        PlexConnection connection,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string? storedPlaylistId,
+        CancellationToken cancellationToken)
+    {
+        var playlists = await _plexApiClient.GetPlaylistsAsync(
+            connection.Url,
+            connection.Token,
+            cancellationToken);
+        var playlistName = ResolvePlaylistName(playlist);
+        var resolved = playlists.FirstOrDefault(item =>
+                !string.IsNullOrWhiteSpace(item.Id)
+                && !string.IsNullOrWhiteSpace(storedPlaylistId)
+                && string.Equals(item.Id, storedPlaylistId, StringComparison.OrdinalIgnoreCase))?.Id
+            ?? playlists.FirstOrDefault(item =>
+                !string.IsNullOrWhiteSpace(item.Id)
+                && string.Equals(item.Title, playlistName, StringComparison.OrdinalIgnoreCase))?.Id;
+        await PersistResolvedTargetBindingAsync(
+            playlist,
+            preference,
+            PlexService,
+            storedPlaylistId,
+            resolved,
+            cancellationToken);
+        return resolved;
+    }
+
+    private async Task<string?> ResolveAuthoritativeJellyfinPlaylistIdAsync(
+        JellyfinConnection connection,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string? storedPlaylistId,
+        CancellationToken cancellationToken)
+    {
+        string? resolved = null;
+        if (!string.IsNullOrWhiteSpace(storedPlaylistId))
+        {
+            var existing = await _jellyfinApiClient.GetItemAsync(
+                connection.Url,
+                connection.ApiKey,
+                connection.UserId,
+                storedPlaylistId,
+                cancellationToken);
+            resolved = string.IsNullOrWhiteSpace(existing?.Id) ? null : existing.Id;
+        }
+
+        resolved ??= await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+            connection.Url,
+            connection.ApiKey,
+            connection.UserId,
+            ResolvePlaylistName(playlist),
+            cancellationToken);
+        await PersistResolvedTargetBindingAsync(
+            playlist,
+            preference,
+            JellyfinService,
+            storedPlaylistId,
+            resolved,
+            cancellationToken);
+        return resolved;
+    }
+
+    private async Task<string?> ResolveAuthoritativeNavidromePlaylistIdAsync(
+        NavidromeConnection connection,
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string? storedPlaylistId,
+        CancellationToken cancellationToken)
+    {
+        string? resolved = null;
+        if (!string.IsNullOrWhiteSpace(storedPlaylistId))
+        {
+            var existing = await _navidromeApiClient.GetPlaylistAsync(
+                connection.Url,
+                connection.Username,
+                connection.Password,
+                storedPlaylistId,
+                cancellationToken);
+            resolved = string.IsNullOrWhiteSpace(existing?.Id) ? null : existing.Id;
+        }
+
+        resolved ??= await _navidromeApiClient.FindPlaylistIdByNameAsync(
+            connection.Url,
+            connection.Username,
+            connection.Password,
+            ResolvePlaylistName(playlist),
+            cancellationToken);
+        await PersistResolvedTargetBindingAsync(
+            playlist,
+            preference,
+            NavidromeService,
+            storedPlaylistId,
+            resolved,
+            cancellationToken);
+        return resolved;
+    }
+
+    private async Task PersistResolvedTargetBindingAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string service,
+        string? storedPlaylistId,
+        string? resolvedPlaylistId,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(storedPlaylistId, resolvedPlaylistId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await _libraryRepository.UpdatePlaylistWatchTargetPlaylistIdAsync(
+            playlist.Source,
+            playlist.SourceId,
+            service,
+            resolvedPlaylistId,
+            cancellationToken);
+    }
+
     private static string? NormalizeExistingTargetPlaylistId(string? playlistId)
     {
         var normalized = (playlistId ?? string.Empty).Trim();
@@ -2246,18 +2374,19 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(PlexNotConfiguredMessage);
         }
 
-        var playlistId = ResolveExistingTargetPlaylistId(preference, PlexService);
+        var playlistId = await ResolveAuthoritativePlexPlaylistIdAsync(
+            plex,
+            playlist,
+            preference,
+            ResolveExistingTargetPlaylistId(preference, PlexService),
+            cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            var playlistName = ResolvePlaylistName(playlist);
-            var playlists = await _plexApiClient.GetPlaylistsAsync(plex.Url, plex.Token, cancellationToken);
-            playlistId = playlists.FirstOrDefault(item =>
-                !string.IsNullOrWhiteSpace(item.Id)
-                && string.Equals(item.Title, playlistName, StringComparison.OrdinalIgnoreCase))?.Id;
-        }
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            return PlaylistSyncResult.Failed("Target Plex playlist was not found.");
+            return await RecreateMissingTargetPlaylistAsync(
+                playlist,
+                preference,
+                PlexService,
+                cancellationToken);
         }
 
         var updated = await SyncPlexPlaylistArtworkAsync(
@@ -2288,20 +2417,20 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(JellyfinNotConfiguredMessage);
         }
 
-        var playlistId = ResolveExistingTargetPlaylistId(preference, JellyfinService);
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            playlistId = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                jellyfin.UserId,
-                ResolvePlaylistName(playlist),
-                cancellationToken);
-        }
+        var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
+            jellyfin,
+            playlist,
+            preference,
+            ResolveExistingTargetPlaylistId(preference, JellyfinService),
+            cancellationToken);
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            return PlaylistSyncResult.Failed("Target Jellyfin playlist was not found.");
+            return await RecreateMissingTargetPlaylistAsync(
+                playlist,
+                preference,
+                JellyfinService,
+                cancellationToken);
         }
 
         var updated = await SyncJellyfinPlaylistArtworkAsync(
@@ -2332,20 +2461,20 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(NavidromeNotConfiguredMessage);
         }
 
-        var playlistId = ResolveExistingTargetPlaylistId(preference, NavidromeService);
-        if (string.IsNullOrWhiteSpace(playlistId))
-        {
-            playlistId = await _navidromeApiClient.FindPlaylistIdByNameAsync(
-                navidrome.Url,
-                navidrome.Username,
-                navidrome.Password,
-                ResolvePlaylistName(playlist),
-                cancellationToken);
-        }
+        var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
+            navidrome,
+            playlist,
+            preference,
+            ResolveExistingTargetPlaylistId(preference, NavidromeService),
+            cancellationToken);
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            return PlaylistSyncResult.Failed("Target Navidrome playlist was not found.");
+            return await RecreateMissingTargetPlaylistAsync(
+                playlist,
+                preference,
+                NavidromeService,
+                cancellationToken);
         }
 
         var updated = await SyncNavidromePlaylistArtworkAsync(
@@ -2358,6 +2487,44 @@ public sealed class PlaylistSyncService
         return updated
             ? new PlaylistSyncResult(true, "Playlist artwork synced.", playlistId)
             : new PlaylistSyncResult(false, "Failed to sync Navidrome playlist artwork.", playlistId);
+    }
+
+    private async Task<PlaylistSyncResult> RecreateMissingTargetPlaylistAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string targetService,
+        CancellationToken cancellationToken)
+    {
+        var cache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(
+            playlist.Source,
+            playlist.SourceId,
+            cancellationToken);
+        IReadOnlyList<PlaylistTrackCandidate>? candidates = null;
+        if (!string.IsNullOrWhiteSpace(cache?.CandidatesJson))
+        {
+            try
+            {
+                candidates = JsonSerializer.Deserialize<List<PlaylistTrackCandidate>>(
+                    cache.CandidatesJson);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Stored playlist candidates could not be read while recreating {Target} playlist {Source}:{SourceId}.",
+                    FormatTargetServiceLabel(targetService),
+                    SafeLog(playlist.Source),
+                    SafeLog(playlist.SourceId));
+            }
+        }
+
+        return await SyncAvailablePlaylistTracksAsync(
+            playlist,
+            preference,
+            candidates,
+            targetService,
+            force: false,
+            cancellationToken);
     }
 
     private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
@@ -2516,13 +2683,19 @@ public sealed class PlaylistSyncService
             cancellationToken);
         if (animatedVisual != null)
         {
-            return await _navidromeApiClient.UpdatePlaylistImageFromFileAsync(
+            var updated = await _navidromeApiClient.UpdatePlaylistImageFromFileAsync(
                 navidrome.Url,
                 navidrome.Username,
                 navidrome.Password,
                 playlistId,
                 animatedVisual.FilePath,
                 animatedVisual.ContentType,
+                cancellationToken);
+            return updated && await _navidromeApiClient.HasPlaylistImageAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                playlistId,
                 cancellationToken);
         }
 
@@ -2546,7 +2719,12 @@ public sealed class PlaylistSyncService
                     SafeLog(cachedVisual.FilePath));
             }
 
-            return cachedUpdated;
+            return cachedUpdated && await _navidromeApiClient.HasPlaylistImageAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                playlistId,
+                cancellationToken);
         }
 
         _logger.LogWarning(
@@ -2878,11 +3056,17 @@ public sealed class PlaylistSyncService
         IReadOnlyList<SyncTrackSummary> tracks,
         CancellationToken cancellationToken)
     {
+        var inputs = BuildLocalTrackIdentityInputs(playlistSource, tracks);
         var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
-            BuildLocalTrackIdentityInputs(playlistSource, tracks),
+            inputs,
             cancellationToken,
             audioVariant: "stereo_preferred");
-        return identities
+        var resolved = new List<LibraryRepository.LocalTrackIdentityResult>(identities.Count);
+        for (var index = 0; index < identities.Count; index++)
+        {
+            resolved.Add(await _localIdentityResolver.ResolveAsync(inputs[index], identities[index], cancellationToken));
+        }
+        return resolved
             .Select(static decision => decision.IsAmbiguous ? 0L : decision.LocalTrackId ?? 0L)
             .ToList();
     }
@@ -2901,7 +3085,8 @@ public sealed class PlaylistSyncService
                     track.DurationMs,
                     identitySource,
                     identityTrackId,
-                    track.Album);
+                    track.Album,
+                    track.Explicit);
             })
             .ToList();
 
@@ -2911,16 +3096,19 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var (identitySource, identityTrackId) = ResolveTrackIdentity(playlistSource, track);
-        var decision = await _libraryRepository.ResolveLocalTrackIdentityAsync(
-            new LibraryRepository.LibraryExistenceInput(
+        var input = new LibraryRepository.LibraryExistenceInput(
                 track.Isrc,
                 track.Name,
                 track.Artists,
                 track.DurationMs,
                 identitySource,
                 identityTrackId,
-                track.Album),
+                track.Album,
+                track.Explicit);
+        var initial = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            input,
             cancellationToken: cancellationToken);
+        var decision = await _localIdentityResolver.ResolveAsync(input, initial, cancellationToken);
         return decision.IsAmbiguous ? null : decision.LocalTrackId;
     }
 

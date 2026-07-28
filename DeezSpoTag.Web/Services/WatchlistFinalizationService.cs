@@ -23,6 +23,7 @@ public sealed class WatchlistFinalizationService
     private readonly PlaylistWatchReconciler _playlistWatchReconciler;
     private readonly WatchlistRunSignal _runSignal;
     private readonly IWatchlistPostDownloadSyncNotifier _notifier;
+    private readonly WatchlistLocalIdentityResolver _localIdentityResolver;
     private readonly ILogger<WatchlistFinalizationService> _logger;
 
     public WatchlistFinalizationService(
@@ -31,6 +32,7 @@ public sealed class WatchlistFinalizationService
         PlaylistWatchReconciler playlistWatchReconciler,
         WatchlistRunSignal runSignal,
         IWatchlistPostDownloadSyncNotifier notifier,
+        WatchlistLocalIdentityResolver localIdentityResolver,
         ILogger<WatchlistFinalizationService> logger)
     {
         _queueRepository = queueRepository;
@@ -38,6 +40,7 @@ public sealed class WatchlistFinalizationService
         _playlistWatchReconciler = playlistWatchReconciler;
         _runSignal = runSignal;
         _notifier = notifier;
+        _localIdentityResolver = localIdentityResolver;
         _logger = logger;
     }
 
@@ -155,21 +158,52 @@ public sealed class WatchlistFinalizationService
             }
             var candidate = candidates.FirstOrDefault(item =>
                 string.Equals(item.TrackSourceId, notification.TrackId, StringComparison.OrdinalIgnoreCase));
-            if (candidate == null || !IsIdentityMatch(NormalizeSource(notification.Source), candidate, identity))
+            var effectiveIdentity = identity;
+            var effectiveLocalTrackId = localTrackId;
+            if (candidate != null && !IsIdentityMatch(NormalizeSource(notification.Source), candidate, effectiveIdentity))
+            {
+                var input = new LibraryRepository.LibraryExistenceInput(
+                    candidate.Isrc,
+                    candidate.Title,
+                    candidate.Artist,
+                    candidate.DurationMs,
+                    NormalizeSource(notification.Source),
+                    candidate.TrackSourceId,
+                    candidate.Album,
+                    candidate.Explicit);
+                var initial = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+                    input,
+                    audioVariant: "stereo_preferred",
+                    cancellationToken: cancellationToken);
+                var resolved = await _localIdentityResolver.ResolveAsync(input, initial, cancellationToken);
+                if (resolved.LocalTrackId.HasValue && !resolved.IsAmbiguous)
+                {
+                    var resolvedIdentity = await _libraryRepository.GetLocalTrackIdentityAsync(
+                        resolved.LocalTrackId.Value,
+                        cancellationToken);
+                    if (resolvedIdentity != null)
+                    {
+                        effectiveLocalTrackId = resolved.LocalTrackId.Value;
+                        effectiveIdentity = BuildFinalizedTrackIdentity(resolvedIdentity);
+                    }
+                }
+            }
+
+            if (candidate == null || !IsIdentityMatch(NormalizeSource(notification.Source), candidate, effectiveIdentity))
             {
                 await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
                     notification.Source,
                     notification.PlaylistId,
                     new PlaylistWatchTrackVerification(
                         notification.TrackId,
-                        localTrackId,
+                        effectiveLocalTrackId,
                         "review",
                         "Finalized audio identity does not match the monitored playlist track."),
                     cancellationToken);
                 continue;
             }
 
-            var finalizedSourceTrackId = identity.GetTrackIdForSource(NormalizeSource(notification.Source));
+            var finalizedSourceTrackId = effectiveIdentity.GetTrackIdForSource(NormalizeSource(notification.Source));
             var redirected = !string.IsNullOrWhiteSpace(finalizedSourceTrackId)
                 && !string.Equals(finalizedSourceTrackId, notification.TrackId, StringComparison.OrdinalIgnoreCase);
             await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
@@ -177,7 +211,7 @@ public sealed class WatchlistFinalizationService
                 notification.PlaylistId,
                 new PlaylistWatchTrackVerification(
                     notification.TrackId,
-                    localTrackId,
+                    effectiveLocalTrackId,
                     redirected ? "redirected" : "identity_verified",
                     redirected ? "Verified replacement identity." : "Finalized audio identity verified.",
                     redirected ? finalizedSourceTrackId : null,

@@ -84,7 +84,16 @@ public sealed class LibraryRepository
         string? Isrc,
         IReadOnlyList<RecommendationTrackDto>? RelatedTracks,
         DateTimeOffset ScannedAtUtc,
-        string? Error);
+        string? Error,
+        string? FilePath = null,
+        long? FileSize = null,
+        DateTimeOffset? FileModifiedUtc = null,
+        string? SpotifyId = null,
+        string? AppleId = null,
+        string? DeezerId = null,
+        string? Album = null,
+        string? ReleaseDate = null,
+        bool? Explicit = null);
 
     public sealed record PlayHistoryWriteInput(
         long PlexUserId,
@@ -2456,7 +2465,16 @@ SELECT lt.track_id,
        c.isrc,
        c.related_tracks_json,
        c.scanned_at_utc,
-       c.error
+       c.error,
+       c.file_path,
+       c.file_size,
+       c.file_modified_utc,
+       c.spotify_id,
+       c.apple_id,
+       c.deezer_id,
+       c.album,
+       c.release_date,
+       c.explicit
 FROM (
     SELECT DISTINCT tl.track_id
     FROM track_local tl
@@ -2471,6 +2489,58 @@ LEFT JOIN track_shazam_cache c ON c.track_id = lt.track_id;";
         command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
+        var map = new Dictionary<long, ShazamTrackCacheDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var trackId = reader.GetInt64(0);
+            map[trackId] = await ReadShazamTrackCacheDtoAsync(trackId, reader, cancellationToken);
+        }
+
+        return map;
+    }
+
+    public async Task<IReadOnlyDictionary<long, ShazamTrackCacheDto>> GetShazamTrackCacheByTrackIdsAsync(
+        IReadOnlyCollection<long> trackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var ids = trackIds.Where(static id => id > 0).Distinct().ToArray();
+        if (!IsConfigured || ids.Length == 0)
+        {
+            return new Dictionary<long, ShazamTrackCacheDto>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var parameterNames = new string[ids.Length];
+        for (var index = 0; index < ids.Length; index++)
+        {
+            parameterNames[index] = $"@trackId{index}";
+            command.Parameters.AddWithValue(parameterNames[index], ids[index]);
+        }
+
+        command.CommandText = $@"
+SELECT requested.id,
+       c.status,
+       c.shazam_track_id,
+       c.title,
+       c.artist,
+       c.isrc,
+       c.related_tracks_json,
+       c.scanned_at_utc,
+       c.error,
+       c.file_path,
+       c.file_size,
+       c.file_modified_utc,
+       c.spotify_id,
+       c.apple_id,
+       c.deezer_id,
+       c.album,
+       c.release_date,
+       c.explicit
+FROM track requested
+LEFT JOIN track_shazam_cache c ON c.track_id = requested.id
+WHERE requested.id IN ({string.Join(", ", parameterNames)});";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var map = new Dictionary<long, ShazamTrackCacheDto>();
         while (await reader.ReadAsync(cancellationToken))
         {
@@ -2498,7 +2568,16 @@ LEFT JOIN track_shazam_cache c ON c.track_id = lt.track_id;";
             await ReadNullableStringAsync(reader, 5, cancellationToken),
             relatedTracks,
             scannedAtUtc,
-            await ReadNullableStringAsync(reader, 8, cancellationToken));
+            await ReadNullableStringAsync(reader, 8, cancellationToken),
+            await ReadNullableStringAsync(reader, 9, cancellationToken),
+            await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetInt64(10),
+            ParseDateTimeOffsetOrNull(await ReadNullableStringAsync(reader, 11, cancellationToken)),
+            await ReadNullableStringAsync(reader, 12, cancellationToken),
+            await ReadNullableStringAsync(reader, 13, cancellationToken),
+            await ReadNullableStringAsync(reader, 14, cancellationToken),
+            await ReadNullableStringAsync(reader, 15, cancellationToken),
+            await ReadNullableStringAsync(reader, 16, cancellationToken),
+            await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetInt64(17) != 0);
     }
 
     public async Task<IReadOnlyList<long>> GetTrackIdsNeedingShazamRefreshAsync(
@@ -2567,7 +2646,16 @@ INSERT INTO track_shazam_cache (
     status,
     related_tracks_json,
     scanned_at_utc,
-    error
+    error,
+    file_path,
+    file_size,
+    file_modified_utc,
+    spotify_id,
+    apple_id,
+    deezer_id,
+    album,
+    release_date,
+    explicit
 )
 VALUES (
     @trackId,
@@ -2578,7 +2666,16 @@ VALUES (
     @status,
     @relatedTracksJson,
     @scannedAtUtc,
-    @error
+    @error,
+    @filePath,
+    @fileSize,
+    @fileModifiedUtc,
+    @spotifyId,
+    @appleId,
+    @deezerId,
+    @album,
+    @releaseDate,
+    @explicit
 )
 ON CONFLICT(track_id) DO UPDATE SET
     shazam_track_id = excluded.shazam_track_id,
@@ -2589,6 +2686,15 @@ ON CONFLICT(track_id) DO UPDATE SET
     related_tracks_json = excluded.related_tracks_json,
     scanned_at_utc = excluded.scanned_at_utc,
     error = excluded.error,
+    file_path = excluded.file_path,
+    file_size = excluded.file_size,
+    file_modified_utc = excluded.file_modified_utc,
+    spotify_id = excluded.spotify_id,
+    apple_id = excluded.apple_id,
+    deezer_id = excluded.deezer_id,
+    album = excluded.album,
+    release_date = excluded.release_date,
+    explicit = excluded.explicit,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
         var relatedTracksJson = input.RelatedTracks is { Count: > 0 } ? JsonSerializer.Serialize(input.RelatedTracks) : null;
@@ -2601,6 +2707,57 @@ ON CONFLICT(track_id) DO UPDATE SET
         command.Parameters.AddWithValue("relatedTracksJson", (object?)relatedTracksJson ?? DBNull.Value);
         command.Parameters.AddWithValue("scannedAtUtc", input.ScannedAtUtc.ToString("O"));
         command.Parameters.AddWithValue("error", (object?)input.Error ?? DBNull.Value);
+        command.Parameters.AddWithValue("filePath", (object?)input.FilePath ?? DBNull.Value);
+        command.Parameters.AddWithValue("fileSize", (object?)input.FileSize ?? DBNull.Value);
+        command.Parameters.AddWithValue("fileModifiedUtc", input.FileModifiedUtc.HasValue ? input.FileModifiedUtc.Value.ToString("O") : DBNull.Value);
+        command.Parameters.AddWithValue("spotifyId", (object?)input.SpotifyId ?? DBNull.Value);
+        command.Parameters.AddWithValue("appleId", (object?)input.AppleId ?? DBNull.Value);
+        command.Parameters.AddWithValue("deezerId", (object?)input.DeezerId ?? DBNull.Value);
+        command.Parameters.AddWithValue("album", (object?)input.Album ?? DBNull.Value);
+        command.Parameters.AddWithValue("releaseDate", (object?)input.ReleaseDate ?? DBNull.Value);
+        command.Parameters.AddWithValue("explicit", input.Explicit.HasValue ? (input.Explicit.Value ? 1 : 0) : DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task AddLocalDuplicateResolutionEventAsync(
+        long winnerTrackId,
+        long duplicateTrackId,
+        string sourcePath,
+        string? destinationPath,
+        string status,
+        string? error,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO local_duplicate_resolution_event (
+    winner_track_id,
+    duplicate_track_id,
+    source_path,
+    destination_path,
+    status,
+    error,
+    created_at_utc,
+    updated_at_utc
+)
+VALUES (
+    @winnerTrackId,
+    @duplicateTrackId,
+    @sourcePath,
+    @destinationPath,
+    @status,
+    @error,
+    @now,
+    @now
+);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("winnerTrackId", winnerTrackId);
+        command.Parameters.AddWithValue("duplicateTrackId", duplicateTrackId);
+        command.Parameters.AddWithValue("sourcePath", sourcePath);
+        command.Parameters.AddWithValue("destinationPath", (object?)destinationPath ?? DBNull.Value);
+        command.Parameters.AddWithValue("status", status);
+        command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
+        command.Parameters.AddWithValue("now", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -7150,7 +7307,9 @@ SELECT id,
        pw.owner_name,
        COALESCE(claim_summary.pending_count, 0),
        COALESCE(state_summary.unavailable_count, 0),
-       COALESCE(state_summary.review_count, 0)
+       COALESCE(state_summary.review_count, 0),
+       pw.source_url,
+       pw.source_storefront
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
@@ -7245,7 +7404,9 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                 QueuedTrackCount: await reader.IsDBNullAsync(19, cancellationToken) ? 0 : reader.GetInt32(19),
                 DownloadingTrackCount: 0,
                 UnavailableTrackCount: await reader.IsDBNullAsync(20, cancellationToken) ? 0 : reader.GetInt32(20),
-                ReviewTrackCount: await reader.IsDBNullAsync(21, cancellationToken) ? 0 : reader.GetInt32(21)));
+                ReviewTrackCount: await reader.IsDBNullAsync(21, cancellationToken) ? 0 : reader.GetInt32(21),
+                SourceUrl: await reader.IsDBNullAsync(22, cancellationToken) ? null : reader.GetString(22),
+                SourceStorefront: await reader.IsDBNullAsync(23, cancellationToken) ? null : reader.GetString(23)));
         }
 
         return items;
@@ -7280,7 +7441,7 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count, owner_name, sync_priority)
+INSERT INTO playlist_watchlist (source, source_id, name, image_url, description, track_count, owner_name, source_url, source_storefront, sync_priority)
 VALUES (
     @source,
     @sourceId,
@@ -7289,6 +7450,8 @@ VALUES (
     @description,
     @trackCount,
     @ownerName,
+    @sourceUrl,
+    @sourceStorefront,
     1
 )
 ON CONFLICT(source, source_id) DO UPDATE SET
@@ -7296,7 +7459,9 @@ ON CONFLICT(source, source_id) DO UPDATE SET
     image_url = COALESCE(excluded.image_url, playlist_watchlist.image_url),
     description = COALESCE(excluded.description, playlist_watchlist.description),
     track_count = COALESCE(excluded.track_count, playlist_watchlist.track_count),
-    owner_name = COALESCE(excluded.owner_name, playlist_watchlist.owner_name);";
+    owner_name = COALESCE(excluded.owner_name, playlist_watchlist.owner_name),
+    source_url = COALESCE(excluded.source_url, playlist_watchlist.source_url),
+    source_storefront = COALESCE(excluded.source_storefront, playlist_watchlist.source_storefront);";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -7305,6 +7470,8 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         command.Parameters.AddWithValue("description", (object?)metadata.Description ?? DBNull.Value);
         command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
         command.Parameters.AddWithValue("ownerName", (object?)metadata.OwnerName ?? DBNull.Value);
+        command.Parameters.AddWithValue("sourceUrl", (object?)metadata.SourceUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("sourceStorefront", (object?)metadata.SourceStorefront ?? DBNull.Value);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         command.Transaction = transaction;
         var isNewEntry = !await PlaylistWatchlistEntryExistsAsync(connection, transaction, normalizedSource, normalizedSourceId, cancellationToken);
@@ -7325,7 +7492,9 @@ SELECT id,
        track_count,
        created_at,
        sync_priority,
-       owner_name
+       owner_name,
+       source_url,
+       source_storefront
 FROM playlist_watchlist
 WHERE source = @source AND source_id = @sourceId
 LIMIT 1;";
@@ -7348,13 +7517,17 @@ LIMIT 1;";
 
     private static async Task<PlaylistWatchlistDto?> ReadPlaylistWatchlistEntryAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         string selectSql,
         string source,
         string sourceId,
         CancellationToken cancellationToken)
     {
-        await using var selectCommand = new SqliteCommand(selectSql, connection, transaction);
+        await using var selectCommand = new SqliteCommand(selectSql, connection);
+        if (transaction != null)
+        {
+            selectCommand.Transaction = transaction;
+        }
         selectCommand.Parameters.AddWithValue(SourceField, source);
         selectCommand.Parameters.AddWithValue(SourceIdField, sourceId);
         await using var reader = await selectCommand.ExecuteReaderAsync(cancellationToken);
@@ -7374,7 +7547,45 @@ LIMIT 1;";
             await reader.IsDBNullAsync(6, cancellationToken) ? null : reader.GetInt32(6),
             created,
             SyncPriority: await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8),
-            OwnerName: await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9));
+            OwnerName: await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
+            SourceUrl: await reader.IsDBNullAsync(10, cancellationToken) ? null : reader.GetString(10),
+            SourceStorefront: await reader.IsDBNullAsync(11, cancellationToken) ? null : reader.GetString(11));
+    }
+
+    public async Task<PlaylistWatchlistDto?> GetPlaylistWatchlistEntryAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id,
+       source,
+       source_id,
+       name,
+       image_url,
+       description,
+       track_count,
+       created_at,
+       sync_priority,
+       owner_name,
+       source_url,
+       source_storefront
+FROM playlist_watchlist
+WHERE source = @source AND source_id = @sourceId
+LIMIT 1;";
+        return await ReadPlaylistWatchlistEntryAsync(
+            connection,
+            transaction: null,
+            sql,
+            normalizedSource,
+            normalizedSourceId,
+            cancellationToken);
     }
 
     private static async Task<bool> PlaylistWatchlistEntryExistsAsync(
@@ -7477,7 +7688,9 @@ SET name = COALESCE(@name, name),
     image_url = CASE WHEN @clearImageUrl = 1 THEN @imageUrl ELSE COALESCE(@imageUrl, image_url) END,
     description = COALESCE(@description, description),
     track_count = COALESCE(@trackCount, track_count),
-    owner_name = COALESCE(@ownerName, owner_name)
+    owner_name = COALESCE(@ownerName, owner_name),
+    source_url = COALESCE(@sourceUrl, source_url),
+    source_storefront = COALESCE(@sourceStorefront, source_storefront)
 WHERE source = @source AND source_id = @sourceId;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
@@ -7488,6 +7701,8 @@ WHERE source = @source AND source_id = @sourceId;";
         command.Parameters.AddWithValue(TrackCountField, (object?)metadata.TrackCount ?? DBNull.Value);
         command.Parameters.AddWithValue("clearImageUrl", metadata.ClearImageUrl ? 1 : 0);
         command.Parameters.AddWithValue("ownerName", (object?)metadata.OwnerName ?? DBNull.Value);
+        command.Parameters.AddWithValue("sourceUrl", (object?)metadata.SourceUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("sourceStorefront", (object?)metadata.SourceStorefront ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -7898,12 +8113,11 @@ WHERE source=@source AND playlist_id=@sourceId
         string source,
         string sourceId,
         string service,
-        string playlistId,
+        string? playlistId,
         CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
-            || string.IsNullOrWhiteSpace(service)
-            || string.IsNullOrWhiteSpace(playlistId))
+            || string.IsNullOrWhiteSpace(service))
         {
             return;
         }
@@ -7936,7 +8150,9 @@ WHERE source = @source AND source_id = @sourceId;",
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue("playlistId", playlistId.Trim());
+        command.Parameters.AddWithValue(
+            "playlistId",
+            string.IsNullOrWhiteSpace(playlistId) ? DBNull.Value : playlistId.Trim());
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -9227,7 +9443,7 @@ VALUES (
     @source,
     @sourceId,
     @trackSourceId,
-    'completed',
+    @initialStatus,
     CURRENT_TIMESTAMP,
     CURRENT_TIMESTAMP);";
         await using (var insert = new SqliteCommand(insertSql, connection))
@@ -9235,12 +9451,23 @@ VALUES (
             insert.Parameters.AddWithValue(SourceField, normalizedSource);
             insert.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
             insert.Parameters.AddWithValue("trackSourceId", verification.TrackSourceId.Trim());
+            insert.Parameters.AddWithValue(
+                "initialStatus",
+                verification.LocalTrackId.HasValue && !string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase)
+                    ? "completed"
+                    : string.Equals(verification.IdentityStatus, "review", StringComparison.OrdinalIgnoreCase)
+                        ? "review"
+                        : "missing");
             await insert.ExecuteNonQueryAsync(cancellationToken);
         }
 
         const string sql = @"
 UPDATE playlist_watch_track
-SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' END,
+SET status = CASE
+        WHEN @localTrackId IS NOT NULL AND @identityStatus <> 'review' THEN 'completed'
+        WHEN @identityStatus = 'missing' AND lower(status) IN ('completed', 'complete', 'downloaded') THEN 'missing'
+        ELSE status
+    END,
     local_track_id = @localTrackId,
     identity_status = @identityStatus,
     identity_reason = @identityReason,
@@ -10804,6 +11031,7 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
         int limit,
         TimeSpan lease,
         string leaseOwner,
+        IReadOnlyCollection<long>? excludedJobIds = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
@@ -10816,18 +11044,38 @@ SET status='processing',
     lease_until_utc=@leaseUntilUtc,
     updated_at=CURRENT_TIMESTAMP
 WHERE id IN (
-    SELECT job.id
-    FROM watchlist_sync_job job
-    LEFT JOIN playlist_watchlist playlist
-      ON playlist.source = job.source
-     AND playlist.source_id = job.playlist_id
-    WHERE datetime(job.next_attempt_utc) <= datetime('now')
-      AND (lower(job.status) IN ('pending', 'retry')
-           OR (lower(job.status) = 'processing' AND datetime(job.lease_until_utc) <= datetime('now')))
-    ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,
-             playlist.sync_priority ASC,
-             job.next_attempt_utc,
-             job.id
+    SELECT ranked.id
+    FROM (
+        SELECT job.id,
+               CASE lower(job.target_service)
+                   WHEN 'plex' THEN 0
+                   WHEN 'jellyfin' THEN 1
+                   WHEN 'navidrome' THEN 2
+                   ELSE 3
+               END AS target_order,
+               ROW_NUMBER() OVER (
+                   PARTITION BY lower(job.target_service)
+                   ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,
+                            playlist.sync_priority ASC,
+                            CASE
+                                WHEN lower(job.track_id) = 'playlist' THEN 0
+                                WHEN lower(job.track_id) LIKE 'artwork:%' THEN 2
+                                ELSE 1
+                            END,
+                            job.attempt_count ASC,
+                            job.next_attempt_utc,
+                            job.id
+               ) AS target_rank
+        FROM watchlist_sync_job job
+        LEFT JOIN playlist_watchlist playlist
+          ON playlist.source = job.source
+         AND playlist.source_id = job.playlist_id
+        WHERE datetime(job.next_attempt_utc) <= datetime('now')
+          AND (lower(job.status) IN ('pending', 'retry')
+               OR (lower(job.status) = 'processing' AND datetime(job.lease_until_utc) <= datetime('now')))
+          AND job.id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(@excludedJobIdsJson))
+    ) ranked
+    ORDER BY ranked.target_rank, ranked.target_order, ranked.id
     LIMIT @limit
 )
 RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
@@ -10836,6 +11084,9 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 100));
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
+        command.Parameters.AddWithValue(
+            "excludedJobIdsJson",
+            JsonSerializer.Serialize(excludedJobIds?.Distinct().ToArray() ?? []));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var jobs = new List<WatchlistSyncJobDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -10845,6 +11096,46 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         return jobs;
+    }
+
+    public async Task<int> RepairWatchlistSyncBacklogAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var recover = new SqliteCommand(@"
+UPDATE watchlist_sync_job
+SET status='retry',
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    last_error=COALESCE(last_error, 'Recovered expired target synchronization lease.'),
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(status)='processing'
+  AND datetime(lease_until_utc) <= datetime('now');", connection, transaction);
+        var repaired = await recover.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var removeObsolete = new SqliteCommand(@"
+DELETE FROM watchlist_sync_job
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM playlist_watchlist playlist
+    JOIN playlist_watch_preferences preference
+      ON preference.source=playlist.source
+     AND preference.source_id=playlist.source_id
+    JOIN json_each(CASE
+        WHEN json_valid(preference.sync_targets_json)
+             AND json_array_length(preference.sync_targets_json) > 0
+            THEN preference.sync_targets_json
+        ELSE json_array(preference.service)
+    END) configured
+      ON lower(trim(configured.value))=lower(watchlist_sync_job.target_service)
+    WHERE playlist.source=watchlist_sync_job.source
+      AND playlist.source_id=watchlist_sync_job.playlist_id
+);", connection, transaction);
+        repaired += await removeObsolete.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return repaired;
     }
 
     private static async Task<WatchlistSyncJobDto> ReadWatchlistSyncJobAsync(
@@ -10906,6 +11197,42 @@ FROM watchlist_sync_job;";
             await reader.IsDBNullAsync(5, cancellationToken) ? 0 : reader.GetInt32(5),
             await reader.IsDBNullAsync(6, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(6)),
             await reader.IsDBNullAsync(7, cancellationToken) ? null : reader.GetString(7));
+    }
+
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> GetWatchlistSyncJobsAsync(
+        string source,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, playlistId, out var normalizedSource, out var normalizedPlaylistId))
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
+       attempt_count,next_attempt_utc,queue_uuid,lease_owner,status,last_error
+FROM watchlist_sync_job
+WHERE source=@source AND playlist_id=@playlistId
+ORDER BY CASE lower(target_service)
+             WHEN 'plex' THEN 0
+             WHEN 'jellyfin' THEN 1
+             WHEN 'navidrome' THEN 2
+             ELSE 3
+         END,
+         track_id,
+         id;", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+        var jobs = new List<WatchlistSyncJobDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            jobs.Add(await ReadWatchlistSyncJobAsync(reader, cancellationToken));
+        }
+
+        return jobs;
     }
 
     public async Task<bool> RetryWatchlistSyncJobAsync(long id, string leaseOwner, int attempts, DateTimeOffset nextAttemptUtc, string? error, CancellationToken cancellationToken = default)
@@ -12431,7 +12758,8 @@ SELECT f.root_path, af.relative_path, af.path
         int? DurationMs,
         string? Source = null,
         string? SourceId = null,
-        string? AlbumTitle = null);
+        string? AlbumTitle = null,
+        bool? Explicit = null);
 
     public sealed record LocalTrackIdentityResult(
         long? LocalTrackId,
@@ -12443,6 +12771,21 @@ SELECT f.root_path, af.relative_path, af.path
         public bool Exists => LocalTrackId.HasValue || CandidateTrackIds.Count > 0;
         public bool IsAmbiguous => string.Equals(MatchType, "ambiguous", StringComparison.Ordinal);
     }
+
+    public sealed record LocalTrackResolutionCandidate(
+        long TrackId,
+        string FilePath,
+        string RootPath,
+        long? FolderId,
+        string Title,
+        string Artist,
+        string Album,
+        int? DurationMs,
+        int QualityRank,
+        int MetadataRichness,
+        string? Isrc,
+        IReadOnlyDictionary<string, string> SourceIds,
+        IReadOnlySet<string> PopulatedTags);
 
     private sealed record LocalTrackMetadataCandidate(
         long TrackId,
@@ -12932,6 +13275,151 @@ LIMIT 100;";
                 await ReadNullableIntAsync(reader, 6, cancellationToken) ?? 0));
         }
 
+        return candidates;
+    }
+
+    public async Task<IReadOnlyList<LocalTrackResolutionCandidate>> GetLocalTrackResolutionCandidatesAsync(
+        IReadOnlyCollection<long> trackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedIds = trackIds.Where(static id => id > 0).Distinct().OrderBy(static id => id).ToArray();
+        if (!IsConfigured || normalizedIds.Length == 0)
+        {
+            return Array.Empty<LocalTrackResolutionCandidate>();
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var create = connection.CreateCommand())
+        {
+            create.Transaction = (SqliteTransaction)transaction;
+            create.CommandText = "CREATE TEMP TABLE IF NOT EXISTS temp_local_resolution_track_id (track_id INTEGER PRIMARY KEY); DELETE FROM temp_local_resolution_track_id;";
+            await create.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var insert = connection.CreateCommand())
+        {
+            insert.Transaction = (SqliteTransaction)transaction;
+            insert.CommandText = "INSERT OR IGNORE INTO temp_local_resolution_track_id(track_id) VALUES (@trackId);";
+            var parameter = insert.Parameters.Add("trackId", SqliteType.Integer);
+            foreach (var trackId in normalizedIds)
+            {
+                parameter.Value = trackId;
+                await insert.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        var candidates = new List<LocalTrackResolutionCandidate>(normalizedIds.Length);
+        const string sql = @"
+SELECT t.id,
+       af.path,
+       af.relative_path,
+       f.root_path,
+       f.id,
+       COALESCE(NULLIF(t.tag_title, ''), t.title),
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name),
+       COALESCE(NULLIF(t.tag_album, ''), al.title),
+       COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms),
+       COALESCE(
+           af.quality_rank,
+           CASE
+               WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 5
+               WHEN COALESCE(af.bits_per_sample, 0) >= 24 OR COALESCE(af.sample_rate_hz, 0) > 48000 THEN 4
+               WHEN COALESCE(af.bits_per_sample, 0) >= 16
+                 OR LOWER(COALESCE(af.codec, '')) LIKE '%flac%'
+                 OR LOWER(COALESCE(af.codec, '')) LIKE '%alac%'
+                 OR LOWER(COALESCE(af.codec, '')) LIKE '%lossless%'
+                 OR LOWER(COALESCE(af.codec, '')) LIKE '%pcm%' THEN 3
+               WHEN COALESCE(af.bitrate_kbps, af.bitrate, 0) >= 192 THEN 2
+               ELSE 1
+           END),
+       " + LocalTrackMetadataRichnessSql + @",
+       NULLIF(TRIM(t.tag_isrc), ''),
+       (CASE WHEN NULLIF(TRIM(COALESCE(t.tag_title, t.title)), '') IS NOT NULL THEN 'Title|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(COALESCE(t.tag_artist, ar.name)), '') IS NOT NULL THEN 'Artist|Artists|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(COALESCE(t.tag_album, al.title)), '') IS NOT NULL THEN 'Album|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_album_artist), '') IS NOT NULL THEN 'AlbumArtist|' ELSE '' END) ||
+       (CASE WHEN COALESCE(t.tag_track_no, t.track_no) IS NOT NULL THEN 'TrackNumber|' ELSE '' END) ||
+       (CASE WHEN t.tag_track_total IS NOT NULL THEN 'TrackTotal|' ELSE '' END) ||
+       (CASE WHEN COALESCE(t.tag_disc, t.disc) IS NOT NULL THEN 'DiscNumber|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_genre), '') IS NOT NULL THEN 'Genre|' ELSE '' END) ||
+       (CASE WHEN t.tag_year IS NOT NULL THEN 'Year|Date|' ELSE '' END) ||
+       (CASE WHEN COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) IS NOT NULL THEN 'Duration|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_isrc), '') IS NOT NULL THEN 'Isrc|RecordingId|' ELSE '' END) ||
+       (CASE WHEN t.tag_bpm IS NOT NULL THEN 'Bpm|Tempo|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_key), '') IS NOT NULL THEN 'Key|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_label), '') IS NOT NULL THEN 'Label|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_catalog_number), '') IS NOT NULL THEN 'CatalogNumber|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_release_date), '') IS NOT NULL THEN 'ReleaseDate|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_publish_date), '') IS NOT NULL THEN 'PublishDate|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_url), '') IS NOT NULL THEN 'Url|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_release_id), '') IS NOT NULL THEN 'ReleaseId|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.tag_track_id), '') IS NOT NULL THEN 'TrackId|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.lyrics_unsynced), '') IS NOT NULL THEN 'UnsyncedLyrics|' ELSE '' END) ||
+       (CASE WHEN NULLIF(TRIM(t.lyrics_synced), '') IS NOT NULL THEN 'SyncedLyrics|' ELSE '' END)
+FROM temp_local_resolution_track_id requested
+JOIN track t ON t.id = requested.track_id
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+JOIN track_local tl ON tl.track_id = t.id
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+WHERE f.enabled = TRUE
+ORDER BY t.id,
+         COALESCE(
+             af.quality_rank,
+             CASE
+                 WHEN LOWER(TRIM(COALESCE(af.audio_variant, ''))) = 'atmos' THEN 5
+                 WHEN COALESCE(af.bits_per_sample, 0) >= 24 OR COALESCE(af.sample_rate_hz, 0) > 48000 THEN 4
+                 WHEN COALESCE(af.bits_per_sample, 0) >= 16
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%flac%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%alac%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%lossless%'
+                   OR LOWER(COALESCE(af.codec, '')) LIKE '%pcm%' THEN 3
+                 WHEN COALESCE(af.bitrate_kbps, af.bitrate, 0) >= 192 THEN 2
+                 ELSE 1
+             END) DESC,
+         af.size DESC,
+         af.id DESC;";
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = (SqliteTransaction)transaction;
+            command.CommandText = sql;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            var seen = new HashSet<long>();
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var trackId = reader.GetInt64(0);
+                if (!seen.Add(trackId))
+                {
+                    continue;
+                }
+
+                var storedPath = await ReadNullableStringAsync(reader, 1, cancellationToken);
+                var relativePath = await ReadNullableStringAsync(reader, 2, cancellationToken);
+                var rootPath = await ReadNullableStringAsync(reader, 3, cancellationToken);
+                var filePath = BuildAbsolutePath(rootPath, relativePath, storedPath) ?? string.Empty;
+                var identity = await GetLocalTrackIdentityAsync(trackId, cancellationToken);
+                candidates.Add(new LocalTrackResolutionCandidate(
+                    trackId,
+                    filePath,
+                    rootPath ?? string.Empty,
+                    await reader.IsDBNullAsync(4, cancellationToken) ? null : reader.GetInt64(4),
+                    await ReadNullableStringAsync(reader, 5, cancellationToken) ?? string.Empty,
+                    await ReadNullableStringAsync(reader, 6, cancellationToken) ?? string.Empty,
+                    await ReadNullableStringAsync(reader, 7, cancellationToken) ?? string.Empty,
+                    await ReadNullableIntAsync(reader, 8, cancellationToken),
+                    await ReadNullableIntAsync(reader, 9, cancellationToken) ?? 0,
+                    await ReadNullableIntAsync(reader, 10, cancellationToken) ?? 0,
+                    await ReadNullableStringAsync(reader, 11, cancellationToken),
+                    identity?.SourceIds ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                    (await ReadNullableStringAsync(reader, 12, cancellationToken) ?? string.Empty)
+                        .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase)));
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
         return candidates;
     }
 

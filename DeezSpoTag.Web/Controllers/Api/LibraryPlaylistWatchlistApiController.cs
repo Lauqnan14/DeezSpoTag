@@ -240,11 +240,104 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
-        var watching = await _repository.IsPlaylistWatchlistedAsync(normalizedSource, sourceId, cancellationToken);
-        return Ok(new { watching });
+        var normalizedSourceId = (sourceId ?? string.Empty).Trim();
+        var playlist = await _repository.GetPlaylistWatchlistEntryAsync(
+            normalizedSource,
+            normalizedSourceId,
+            cancellationToken);
+        return Ok(new
+        {
+            watching = playlist != null,
+            sourceUrl = playlist?.SourceUrl,
+            sourceStorefront = playlist?.SourceStorefront
+        });
     }
 
-    public sealed record PlaylistWatchlistRequest(string Source, string SourceId, string Name, string? ImageUrl, string? Description, int? TrackCount);
+    [HttpGet("{source}/{sourceId}/sync-jobs")]
+    public async Task<IActionResult> GetTargetSyncJobs(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return DatabaseNotConfigured();
+        }
+
+        var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
+        if (!await _repository.IsPlaylistWatchlistedAsync(normalizedSource, sourceId, cancellationToken))
+        {
+            return NotFound(PlaylistWatchlistEntryNotFoundMessage);
+        }
+
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(
+            normalizedSource,
+            sourceId,
+            cancellationToken);
+        var jobs = await _repository.GetWatchlistSyncJobsAsync(
+            normalizedSource,
+            sourceId,
+            cancellationToken);
+        var jobsByTarget = jobs
+            .GroupBy(job => job.TargetService, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(job => new
+                {
+                    job.TrackId,
+                    job.Status,
+                    job.AttemptCount,
+                    job.NextAttemptUtc,
+                    job.LastError
+                }).ToList(),
+                StringComparer.OrdinalIgnoreCase);
+        var configuredTargets = preference?.SyncTargets is { Count: > 0 }
+            ? preference.SyncTargets
+            : string.IsNullOrWhiteSpace(preference?.Service)
+                ? []
+                : [preference.Service];
+
+        return Ok(configuredTargets
+            .Select(target => target.Trim().ToLowerInvariant())
+            .Where(target => target is "plex" or "jellyfin" or "navidrome")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(target => new
+            {
+                Target = target,
+                PlaylistId = target switch
+                {
+                    "plex" => preference?.PlexPlaylistId,
+                    "jellyfin" => preference?.JellyfinPlaylistId,
+                    "navidrome" => preference?.NavidromePlaylistId,
+                    _ => null
+                },
+                State = jobsByTarget.TryGetValue(target, out var targetJobs)
+                    ? targetJobs.Any(job => string.Equals(job.Status, "processing", StringComparison.OrdinalIgnoreCase))
+                        ? "processing"
+                        : targetJobs.Any(job => string.Equals(job.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+                            ? "blocked"
+                            : "waiting"
+                    : target switch
+                    {
+                        "plex" when !string.IsNullOrWhiteSpace(preference?.PlexPlaylistId) => "completed",
+                        "jellyfin" when !string.IsNullOrWhiteSpace(preference?.JellyfinPlaylistId) => "completed",
+                        "navidrome" when !string.IsNullOrWhiteSpace(preference?.NavidromePlaylistId) => "completed",
+                        _ => "not_scheduled"
+                    },
+                Jobs = jobsByTarget.GetValueOrDefault(target, [])
+            })
+            .ToList());
+    }
+
+    public sealed record PlaylistWatchlistRequest(
+        string Source,
+        string SourceId,
+        string Name,
+        string? ImageUrl,
+        string? Description,
+        int? TrackCount,
+        string? SourceUrl = null,
+        string? SourceStorefront = null);
     public sealed record PlaylistWatchlistPriorityRequest(string Source, string SourceId);
 
     [HttpPost]
@@ -265,6 +358,39 @@ public partial class WatchlistApiController : ControllerBase
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(request.Source);
         var normalizedSourceId = request.SourceId.Trim();
+        var sourceUrl = string.IsNullOrWhiteSpace(request.SourceUrl) ? null : request.SourceUrl.Trim();
+        var sourceStorefront = string.IsNullOrWhiteSpace(request.SourceStorefront)
+            ? null
+            : request.SourceStorefront.Trim().ToLowerInvariant();
+        if (string.Equals(normalizedSource, "apple", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(sourceUrl))
+            {
+                if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var appleUri)
+                    || !string.Equals(appleUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(appleUri.Host, "music.apple.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    return BadRequest("Apple playlist URL must use https://music.apple.com.");
+                }
+
+                sourceStorefront = appleUri.AbsolutePath
+                    .Split('/', StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault()?
+                    .Trim()
+                    .ToLowerInvariant();
+            }
+
+            if (string.IsNullOrWhiteSpace(sourceStorefront))
+            {
+                return BadRequest("Apple playlist storefront is required.");
+            }
+        }
+        else
+        {
+            sourceUrl = null;
+            sourceStorefront = null;
+        }
+
         if (string.Equals(normalizedSource, "boomplay", StringComparison.OrdinalIgnoreCase))
         {
             var resolvedSourceId = await _boomplayMetadataService.ResolveContentIdAsync(
@@ -286,7 +412,9 @@ public partial class WatchlistApiController : ControllerBase
                 request.Name,
                 request.ImageUrl,
                 request.Description,
-                request.TrackCount),
+                request.TrackCount,
+                SourceUrl: sourceUrl,
+                SourceStorefront: sourceStorefront),
             cancellationToken);
 
         if (added is null)
@@ -1408,9 +1536,9 @@ public partial class WatchlistApiController : ControllerBase
             if (status?.LocalTrackId.HasValue != true)
             {
                 return new PlaylistTrackLocationStatus(
-                    "downloaded",
-                    "Downloaded",
-                    "Downloaded but not yet verified in the local library.");
+                    "missing",
+                    "Missing",
+                    "Not present in the indexed library.");
             }
 
             return new PlaylistTrackLocationStatus(
@@ -1425,6 +1553,12 @@ public partial class WatchlistApiController : ControllerBase
                 ? $"Unavailable from enabled sources. Recheck after {nextRecheck.ToLocalTime():g}."
                 : "Unavailable from enabled sources. Availability recheck scheduled.";
             return new PlaylistTrackLocationStatus("unavailable", "Unavailable", detail);
+        }
+
+        var queueState = ResolveQueueLocationStatus(normalized);
+        if (queueState != null)
+        {
+            return queueState;
         }
 
         return new PlaylistTrackLocationStatus("missing", "Missing", "Not downloaded and not currently queued.");

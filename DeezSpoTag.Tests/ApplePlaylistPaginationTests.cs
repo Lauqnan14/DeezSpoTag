@@ -42,6 +42,35 @@ public sealed class ApplePlaylistPaginationTests
     }
 
     [Fact]
+    public async Task CompletePlaylistTracks_ReturnsAll250PositionsIncludingRepeatedTrackIds()
+    {
+        const string secondPage = "https://amp-api.music.apple.com/v1/catalog/us/playlists/list/tracks?offset=100";
+        const string thirdPage = "https://amp-api.music.apple.com/v1/catalog/us/playlists/list/tracks?offset=200";
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        cache.Set(
+            "apple:playlist:tracks:us:list:100:0:en-US",
+            BuildPage(1, 100, secondPage));
+        cache.Set(
+            $"apple:playlist:page:{secondPage}",
+            BuildPage(101, 100, thirdPage));
+        cache.Set(
+            $"apple:playlist:page:{thirdPage}",
+            BuildPage(201, 50, null, repeatedId: "25"));
+        var service = CreateService(cache);
+
+        var result = await service.GetCompletePlaylistTracksAsync(
+            "list",
+            "us",
+            "en-US",
+            CancellationToken.None);
+
+        Assert.True(result.IsComplete);
+        Assert.Equal(250, result.Tracks.Count);
+        Assert.Equal("25", result.Tracks[24].GetProperty("id").GetString());
+        Assert.Equal("25", result.Tracks[249].GetProperty("id").GetString());
+    }
+
+    [Fact]
     public async Task CompletePlaylistTracks_RejectsRepeatedNextLink()
     {
         const string nextUrl = "https://amp-api.music.apple.com/v1/catalog/us/playlists/list/tracks?offset=100";
@@ -77,6 +106,13 @@ public sealed class ApplePlaylistPaginationTests
         Assert.DoesNotContain("BuildPlaylistTracksByFeedAsync", controller, StringComparison.Ordinal);
         Assert.DoesNotContain("TryGetApplePlaylistTracksData", watchlist, StringComparison.Ordinal);
         Assert.DoesNotContain("pageSafety", catalog, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveStorefrontAsync(", watchlist, StringComparison.Ordinal);
+        Assert.Contains("GetPersistedAppleStorefrontAsync(", watchlist, StringComparison.Ordinal);
+        var mapper = ExtractMethod(
+            watchlist,
+            "private static IReadOnlyList<PlaylistTrackCandidate> MapWatchIntentTrackCandidates");
+        Assert.DoesNotContain("!seen.Add(trackId)", mapper, StringComparison.Ordinal);
+        Assert.Contains("SourcePosition", mapper, StringComparison.Ordinal);
     }
 
     private static AppleMusicCatalogService CreateService(IMemoryCache cache)
@@ -102,12 +138,22 @@ public sealed class ApplePlaylistPaginationTests
         throw new FileNotFoundException("Unable to locate source file.", relativePath);
     }
 
-    private static string BuildPage(int firstId, int count, string? next)
+    private static string ExtractMethod(string source, string methodName)
+    {
+        var start = source.IndexOf(methodName, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Method {methodName} was not found.");
+        var nextMethod = source.IndexOf("\n    private ", start + methodName.Length, StringComparison.Ordinal);
+        return nextMethod > start ? source[start..nextMethod] : source[start..];
+    }
+
+    private static string BuildPage(int firstId, int count, string? next, string? repeatedId = null)
     {
         var tracks = Enumerable.Range(firstId, count)
-            .Select(id => new
+            .Select((id, index) => new
             {
-                id = id.ToString(),
+                id = index == count - 1 && !string.IsNullOrWhiteSpace(repeatedId)
+                    ? repeatedId
+                    : id.ToString(),
                 type = "songs",
                 attributes = new
                 {

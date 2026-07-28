@@ -1473,6 +1473,7 @@ public partial class Program
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {
                 LibraryRepository = sp.GetRequiredService<DeezSpoTag.Services.Library.LibraryRepository>(),
+                LocalIdentityResolver = sp.GetRequiredService<DeezSpoTag.Services.Library.ILocalTrackAmbiguityResolver>(),
                 SpotifyMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.SpotifyMetadataService>(),
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),
@@ -1571,8 +1572,12 @@ public partial class Program
                 WatchlistHistoryService = sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistHistoryService>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistQueueAdmissionService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPublicApiReadinessService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistStateService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistHistoryService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistLocalIdentityResolver>();
+        services.AddSingleton<DeezSpoTag.Services.Library.ILocalTrackAmbiguityResolver>(
+            sp => sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistLocalIdentityResolver>());
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistEngine>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchReconciler>(sp =>
             new DeezSpoTag.Web.Services.PlaylistWatchReconciler(

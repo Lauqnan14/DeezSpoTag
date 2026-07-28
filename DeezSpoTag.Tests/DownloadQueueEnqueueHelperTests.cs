@@ -324,7 +324,8 @@ public sealed class DownloadQueueEnqueueHelperTests
         var dedupeService = new DownloadDedupeService(
             queueRepository,
             libraryRepository,
-            NullLogger<DownloadDedupeService>.Instance);
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver());
         var previousConfigDir = Environment.GetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR");
         Environment.SetEnvironmentVariable("DEEZSPOTAG_CONFIG_DIR", Path.Join(tempRoot, "config"));
         var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);

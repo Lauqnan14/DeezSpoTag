@@ -321,14 +321,20 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("IsPendingWatchClaimStillOwnedByQueue", source, StringComparison.Ordinal);
         Assert.Contains("queue_duplicate", source, StringComparison.Ordinal);
         Assert.Contains("library_duplicate", source, StringComparison.Ordinal);
+        Assert.Contains("decision.LocalTrackId", source, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlaylistWatchTrackVerificationAsync", source, StringComparison.Ordinal);
         Assert.Contains("blocklist_match", source, StringComparison.Ordinal);
         Assert.Contains("TryRecordWatchDownloadClaimsAsync", source, StringComparison.Ordinal);
-        Assert.Contains("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryMarkWatchTrackCompletedAsync", source, StringComparison.Ordinal);
         Assert.Contains("CheckLibraryPresenceAsync", source, StringComparison.Ordinal);
         Assert.True(
-            source.IndexOf("TrySyncAvailablePlaylistTracksAsync(", StringComparison.Ordinal)
+            source.IndexOf("EnqueueWatchlistPlaylistSyncJobsAsync(", StringComparison.Ordinal)
             < source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal),
-            "Playlist target sync must run before missing-track queue planning.");
+            "Playlist target jobs must be scheduled before missing-track queue planning.");
+        Assert.True(
+            source.IndexOf("WatchlistPlaylistState.WaitingForTargetSync", StringComparison.Ordinal)
+            < source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal),
+            "Initial target synchronization must gate missing-track queue planning.");
         Assert.DoesNotContain("PlaylistReconciliationMode.QueueMissingOnly", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
@@ -346,10 +352,12 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("if (shouldSyncTargets && hasConfiguredPlaylistSyncTargets)", source, StringComparison.Ordinal);
         Assert.Contains("var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;", source, StringComparison.Ordinal);
         Assert.Contains("NoTargetServerSelectedMessage", source, StringComparison.Ordinal);
-        Assert.Contains("&& (!hasConfiguredPlaylistSyncTargets || syncResult is null || syncResult.Success);", source, StringComparison.Ordinal);
+        Assert.Contains("var targetSyncScheduled = false;", source, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("No playlist sync targets configured", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync(", source, StringComparison.Ordinal);
 
-        var syncCallIndex = source.IndexOf("TrySyncAvailablePlaylistTracksAsync(", StringComparison.Ordinal);
+        var syncCallIndex = source.IndexOf("EnqueueWatchlistPlaylistSyncJobsAsync(", StringComparison.Ordinal);
         var queueSelectionIndex = source.IndexOf("selection = await SelectMissingPlaylistTracksAsync(", StringComparison.Ordinal);
         Assert.True(syncCallIndex >= 0);
         Assert.True(queueSelectionIndex > syncCallIndex);
@@ -534,7 +542,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             "Queue",
             "DownloadQueueRecoveryPolicy.cs"));
 
-        Assert.Contains("SET status = CASE WHEN @identityStatus = 'review' THEN status ELSE 'completed' END", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("WHEN @localTrackId IS NOT NULL AND @identityStatus <> 'review' THEN 'completed'", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("WHEN @identityStatus = 'missing' AND lower(status) IN ('completed', 'complete', 'downloaded') THEN 'missing'", repositorySource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                item.QueueUuid,\n                notification.Source,", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", hostedSource, StringComparison.Ordinal);
@@ -543,7 +552,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void PlaylistWatch_MirrorSyncDoesNotBlockMissingTrackQueueing()
+    public void PlaylistWatch_InitialTargetSyncBlocksOnlyThatPlaylistsQueueAdmission()
     {
         var repoRoot = ResolveRepoRoot();
         var watchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
@@ -556,10 +565,46 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("\"sync_failed\"", watchSource, StringComparison.Ordinal);
         Assert.Contains("var success = queueResult.FailedCount == 0", watchSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("WatchlistPlaylistState.WaitingForTargetSync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IsTerminalPlaylistSyncFailure", watchSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("ResumePlaylistReconciliationAfterInitialSyncAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TransitionPlaylistStateAsync(", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("ResolvePersistedAvailableTrackRowsAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveAvailableTrackRowsAndPersistVerificationAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IsFinalizedTrackSyncedAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IsPlaylistWatchTrackSyncedToTargetAsync", postDownloadSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ReviewResolution_UsesOneShazamAssistedResolverAcrossWatchlistSyncFinalizationAndDedupe()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var resolverSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Web",
+            "Services",
+            "WatchlistLocalIdentityResolver.cs"));
+        var watchSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
+        var finalizationSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistFinalizationService.cs"));
+        var dedupeSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Download", "DownloadDedupeService.cs"));
+        var organizerSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagLibraryOrganizer.cs"));
+
+        Assert.Contains("if (!initial.IsAmbiguous", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("_shazam.RecognizeAsync", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("SourceIdentityScore", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("ThenByDescending(static candidate => candidate.Candidate.QualityRank)", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("ThenByDescending(static candidate => candidate.Candidate.MetadataRichness)", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("ThenBy(static candidate => candidate.Candidate.TrackId)", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("QuarantineConfirmedDuplicateAsync", resolverSource, StringComparison.Ordinal);
+        Assert.Contains("MoveAssociatedDuplicateSidecarsToQuarantine", organizerSource, StringComparison.Ordinal);
+        Assert.Contains("_localIdentityResolver.ResolveAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_localIdentityResolver.ResolveAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("_localIdentityResolver.ResolveAsync", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("_ambiguityResolver.ResolveAsync", dedupeSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Multiple local files match the playlist metadata equally", resolverSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -605,11 +650,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         var jellyfinArtworkOnlyBody = ExtractMethodBody(syncSource, "private async Task<PlaylistSyncResult> SyncJellyfinPlaylistArtworkOnlyAsync(");
         Assert.Contains("ResolveExistingTargetPlaylistId(preference, JellyfinService)", jellyfinArtworkOnlyBody, StringComparison.Ordinal);
-        Assert.Contains("FindPlaylistIdByNameAsync", jellyfinArtworkOnlyBody, StringComparison.Ordinal);
-        Assert.True(
-            jellyfinArtworkOnlyBody.IndexOf("ResolveExistingTargetPlaylistId(preference, JellyfinService)", StringComparison.Ordinal)
-            < jellyfinArtworkOnlyBody.IndexOf("FindPlaylistIdByNameAsync", StringComparison.Ordinal),
-            "Jellyfin artwork-only sync must use the persisted target playlist id before falling back to a name lookup.");
+        Assert.Contains("ResolveAuthoritativeJellyfinPlaylistIdAsync", jellyfinArtworkOnlyBody, StringComparison.Ordinal);
+        Assert.Contains("RecreateMissingTargetPlaylistAsync", jellyfinArtworkOnlyBody, StringComparison.Ordinal);
 
         var plexArtworkBody = ExtractMethodBody(syncSource, "private async Task<bool> SyncPlexPlaylistArtworkAsync(");
         var navidromeArtworkBody = ExtractMethodBody(syncSource, "private async Task<bool> SyncNavidromePlaylistArtworkAsync(");
@@ -966,6 +1008,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var repoRoot = ResolveRepoRoot();
         var syncSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
         var coordinatorSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
+        var engineSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var programSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Program.cs"));
         var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask RequestAllPlaylistSyncAsync(");
         Assert.Contains("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
@@ -983,7 +1026,26 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("SyncAvailablePlaylistTracksAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("request.TargetService", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("timeBudget", syncSource, StringComparison.Ordinal);
+        Assert.Contains("operationCancellation.CancelAfter(TargetOperationTimeout)", syncSource, StringComparison.Ordinal);
+        Assert.Contains("Task.WhenAll", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync", engineSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", engineSource, StringComparison.Ordinal);
         Assert.DoesNotContain("target_service', 'all'", File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs")), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetSync_UsesCachedBatchIdentityWithoutPerJobServerReindex()
+    {
+        var source = File.ReadAllText(Path.Join(
+            ResolveRepoRoot(),
+            "DeezSpoTag.Web",
+            "Services",
+            "WatchlistPostDownloadSyncService.cs"));
+
+        Assert.DoesNotContain("RefreshConfiguredMediaServerAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("MediaServerLibraryRefreshService", source, StringComparison.Ordinal);
+        Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]

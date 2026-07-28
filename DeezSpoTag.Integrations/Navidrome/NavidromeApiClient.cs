@@ -553,6 +553,47 @@ public sealed class NavidromeApiClient
             cancellationToken);
     }
 
+    public async Task<bool> HasPlaylistImageAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return false;
+        }
+
+        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            BuildNativeUrl(
+                serverUrl,
+                $"/api/playlist/{Uri.EscapeDataString(playlistId)}/image"));
+        request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var buffer = new byte[1];
+        return await stream.ReadAsync(buffer.AsMemory(0, 1), cancellationToken) == 1;
+    }
+
     public async Task<bool> UpdateArtistImageFromFileAsync(
         string serverUrl,
         string username,

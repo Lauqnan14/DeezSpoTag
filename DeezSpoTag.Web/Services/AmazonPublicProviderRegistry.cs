@@ -240,7 +240,10 @@ public sealed class AmazonPublicProviderRegistry : IAmazonPublicProviderRegistry
             provider.FailureCategory,
             provider.FailureMessage,
             provider.ResponseTimeMs,
-            provider.CooldownUntil);
+            provider.CooldownUntil,
+            RequiresVerification: AmazonPublicProviderDefaults.Providers
+                .FirstOrDefault(definition => string.Equals(definition.Id, provider.Id, StringComparison.OrdinalIgnoreCase))
+                ?.RequiresVerification == true);
     }
 
     private static string NormalizeEndpoint(string? endpoint) => (endpoint ?? string.Empty).Trim().TrimEnd('/');

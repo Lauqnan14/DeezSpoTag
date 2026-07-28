@@ -60,7 +60,8 @@ public sealed record PlaylistTrackCandidate(
     string? DeezerId = null,
     string? MappingStatus = null,
     string? MappingError = null,
-    string? SourceUrl = null);
+    string? SourceUrl = null,
+    int? SourcePosition = null);
 
 public sealed record PlaylistReconciliationResult(
     bool Success,
@@ -99,15 +100,12 @@ internal sealed class WatchlistEngine
         int FailedCount,
         bool Deferred,
         int AttemptedCount,
-        int SystemicFailureCount,
-        string? FirstSystemicFailureFingerprint,
         string? FirstFailureMessage,
         WatchQueueStopReason StopReason,
         int RemainingQueueableCount,
         int UnavailableCount);
 
     private readonly record struct QueueWatchTrackResult(int QueuedCount, bool Completed, bool Failed, bool Unavailable);
-    private readonly record struct WatchFailureClassification(bool IsSystemic, string? Fingerprint, string? Message);
     private readonly record struct PlaylistTrackSelection(
         List<WatchIntentTrack> MissingTracks,
         int IgnoredCount,
@@ -170,6 +168,7 @@ internal sealed class WatchlistEngine
     private readonly WatchlistQueueAdmissionService _queueAdmission;
     private readonly WatchlistStateService _watchlistState;
     private readonly WatchlistHistoryService _watchlistHistory;
+    private readonly ILocalTrackAmbiguityResolver _localIdentityResolver;
     private readonly IReadOnlyDictionary<string, IPlaylistSourceAdapter> _sourceAdapters;
     private readonly ILogger<WatchlistEngine> _logger;
 
@@ -219,6 +218,7 @@ internal sealed class WatchlistEngine
         PlaylistWatchRuntimeServices runtimeServices,
         DeezSpoTagSettingsService settingsService,
         IServiceProvider serviceProvider,
+        ILocalTrackAmbiguityResolver localIdentityResolver,
         ILogger<WatchlistEngine> logger)
     {
         _libraryRepository = libraryRepository;
@@ -241,6 +241,7 @@ internal sealed class WatchlistEngine
         _watchlistState = runtimeServices.WatchlistStateService ?? new WatchlistStateService(libraryRepository);
         _watchlistHistory = runtimeServices.WatchlistHistoryService
             ?? new WatchlistHistoryService(libraryRepository, runtimeServices.ActivitiesRealtimeService);
+        _localIdentityResolver = localIdentityResolver;
         _sourceAdapters = CreateSourceAdapters();
         _logger = logger;
     }
@@ -288,6 +289,10 @@ internal sealed class WatchlistEngine
         {
             return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, 0, null);
         }
+        var stateAtStart = await _libraryRepository.GetPlaylistWatchStateAsync(
+            source,
+            sourceId,
+            cancellationToken);
         await UpdatePlaylistStateAsync(
             source,
             sourceId,
@@ -483,8 +488,7 @@ internal sealed class WatchlistEngine
 
         var candidatesJson = JsonSerializer.Serialize(candidates);
         var candidateIdentityRevision = PlaylistCandidateContract.BuildIdentityRevision(source, candidates);
-        var candidateCacheComplete = liveSnapshot.IsComplete
-            && candidates.All(candidate => PlaylistCandidateContract.IsResolvable(source, candidate));
+        var candidateCacheComplete = liveSnapshot.IsComplete;
         var sourceChanged = HasPlaylistSourceChanged(
             existingCandidateCache,
             liveSnapshot,
@@ -624,6 +628,19 @@ internal sealed class WatchlistEngine
                 cancellationToken);
         }
 
+        await _libraryRepository.AddPlaylistWatchTracksAsync(
+            source,
+            sourceId,
+            candidates
+                .Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc))
+                .ToList(),
+            cancellationToken);
+        var localTrackCount = await ResolveAndPersistLocalTrackIdentitiesAsync(
+            source,
+            sourceId,
+            candidates,
+            cancellationToken);
+
         var queueOptions = BuildQueueWatchOptions(new QueueWatchOptionsInput
         {
             SourceLabel = ResolveSourceLabel(source),
@@ -640,26 +657,36 @@ internal sealed class WatchlistEngine
         });
 
         var hasConfiguredPlaylistSyncTargets = HasConfiguredPlaylistSyncTargets(preference);
-        PlaylistSyncResult? syncResult = null;
+        var targetSyncScheduled = false;
         if (shouldSyncTargets && hasConfiguredPlaylistSyncTargets)
         {
-            if (forceMediaServerSync)
-            {
-                syncResult = await TrySyncAvailablePlaylistTracksAsync(
-                    currentPlaylist,
-                    preference,
-                    candidates,
-                    forceMediaServerSync,
-                    cancellationToken);
-            }
-            else
-            {
-                var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            var existingTargetJobs = (await _libraryRepository.GetWatchlistSyncJobsAsync(
                     source,
                     sourceId,
-                    cancellationToken);
+                    cancellationToken))
+                .Where(static job => string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            var resumedAfterInitialSync = string.Equals(
+                    stateAtStart?.LastRunStatus,
+                    WatchlistStateService.ToPersistedStatus(WatchlistPlaylistState.WaitingForTargetSync),
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                    NormalizeSnapshotId(stateAtStart?.SnapshotId),
+                    NormalizeSnapshotId(liveSnapshot.SnapshotId),
+                    StringComparison.Ordinal)
+                && existingTargetJobs.Count == 0;
+
+            if (!resumedAfterInitialSync)
+            {
+                var targetJobs = existingTargetJobs.Count > 0
+                    ? existingTargetJobs
+                    : (await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
+                        source,
+                        sourceId,
+                        cancellationToken)).ToList();
                 if (targetJobs.Count > 0)
                 {
+                    targetSyncScheduled = true;
                     _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
                     await AddPlaylistWatchHistoryStageAsync(
                         source,
@@ -668,6 +695,31 @@ internal sealed class WatchlistEngine
                         candidates.Count,
                         WatchlistHistoryStatus.MediaSyncWaiting,
                         cancellationToken);
+                    const string waitingMessage = "Waiting for selected target servers to synchronize the current playlist snapshot.";
+                    await UpdatePlaylistStateAsync(
+                        source,
+                        sourceId,
+                        liveTrackCount,
+                        liveSnapshot.SnapshotId,
+                        WatchlistPlaylistState.WaitingForTargetSync,
+                        waitingMessage,
+                        nextAttemptUtc: null,
+                        consecutiveFailures: 0,
+                        cancellationToken);
+                    return new PlaylistReconciliationResult(
+                        true,
+                        waitingMessage,
+                        liveTrackCount,
+                        MissingTracks: 0,
+                        IgnoredTracks: 0,
+                        LocalTracks: localTrackCount,
+                        QueuedTracks: 0,
+                        CompletedTracks: localTrackCount,
+                        FailedTracks: 0,
+                        SyncResult: null,
+                        Deferred: true,
+                        QueueStopReason: WatchQueueStopReason.TrackDeferred.ToString(),
+                        RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount));
                 }
             }
         }
@@ -679,10 +731,10 @@ internal sealed class WatchlistEngine
             && hasConfiguredPlaylistSyncTargets)
         {
             var artworkJobs = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
-                source,
-                sourceId,
-                artworkRevision,
-                cancellationToken);
+                    source,
+                    sourceId,
+                    artworkRevision,
+                    cancellationToken);
             if (artworkJobs.Count > 0)
             {
                 _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
@@ -692,47 +744,39 @@ internal sealed class WatchlistEngine
         if (!shouldQueueMissing)
         {
             var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;
-            var syncSucceeded = !forcedSyncWithoutTargets
-                && (!hasConfiguredPlaylistSyncTargets || syncResult is null || syncResult.Success);
-            var syncMessage = syncResult?.Message
-                ?? (forcedSyncWithoutTargets
+            var syncRequestAccepted = !forcedSyncWithoutTargets;
+            var syncMessage = (forcedSyncWithoutTargets
                     ? NoTargetServerSelectedMessage
                     : null)
                 ?? (hasConfiguredPlaylistSyncTargets
-                    ? "Playlist target sync scheduled; continuing with download monitoring."
+                    ? "Playlist target sync scheduled independently for each selected server."
                     : PlaylistSyncDisabledDownloadMonitoringMessage);
             await UpdatePlaylistStateAsync(
                 source,
                 sourceId,
                 liveTrackCount,
                 liveSnapshot.SnapshotId,
-                syncSucceeded ? WatchlistPlaylistState.MediaSyncCompleted : WatchlistPlaylistState.MediaSyncWaiting,
+                targetSyncScheduled
+                    ? WatchlistPlaylistState.MediaSyncWaiting
+                    : syncRequestAccepted
+                        ? WatchlistPlaylistState.MediaSyncCompleted
+                        : WatchlistPlaylistState.MediaSyncBlocked,
                 syncMessage,
                 nextAttemptUtc: null,
-                consecutiveFailures: syncSucceeded ? 0 : null,
+                consecutiveFailures: syncRequestAccepted ? 0 : 1,
                 cancellationToken);
-            if (syncSucceeded && hasConfiguredPlaylistSyncTargets)
-            {
-                await AddPlaylistWatchHistoryStageAsync(
-                    source,
-                    sourceId,
-                    currentPlaylist.Name,
-                    syncResult?.SyncedTracks ?? 0,
-                    WatchlistHistoryStatus.MediaSyncCompleted,
-                    cancellationToken);
-            }
 
             return new PlaylistReconciliationResult(
-                syncSucceeded,
+                syncRequestAccepted,
                 syncMessage,
                 liveTrackCount,
-                syncResult?.MissingTracks ?? 0,
+                MissingTracks: 0,
                 IgnoredTracks: 0,
-                syncResult?.LocalMatches ?? 0,
+                LocalTracks: 0,
                 QueuedTracks: 0,
                 CompletedTracks: 0,
-                FailedTracks: syncSucceeded ? 0 : 1,
-                syncResult,
+                FailedTracks: syncRequestAccepted ? 0 : 1,
+                SyncResult: null,
                 QueueStopReason: WatchQueueStopReason.Completed.ToString(),
                 RemainingQueueableTracks: 0);
         }
@@ -743,13 +787,6 @@ internal sealed class WatchlistEngine
             candidates,
             preference?.DestinationFolderId,
             queueOptions,
-            cancellationToken);
-        await _libraryRepository.AddPlaylistWatchTracksAsync(
-            source,
-            sourceId,
-            selection.MissingTracks
-                .Select(track => new PlaylistWatchTrackInsert(track.TrackId, track.Isrc))
-                .ToList(),
             cancellationToken);
         var queueResult = await QueueWatchIntentTracksAsync(
             selection.MissingTracks,
@@ -834,11 +871,11 @@ internal sealed class WatchlistEngine
             queueResult.QueuedCount,
             queueResult.CompletedCount,
             queueResult.FailedCount,
-            syncResult,
+            SyncResult: null,
             Deferred: queueResult.Deferred,
             AttemptedTracks: queueResult.AttemptedCount,
-            SystemicFailures: queueResult.SystemicFailureCount,
-            FailureFingerprint: queueResult.FirstSystemicFailureFingerprint,
+            SystemicFailures: 0,
+            FailureFingerprint: null,
             FailureMessage: queueResult.FirstFailureMessage,
             QueueStopReason: queueResult.StopReason.ToString(),
             RemainingQueueableTracks: queueResult.RemainingQueueableCount);
@@ -895,43 +932,6 @@ internal sealed class WatchlistEngine
                 rule.ConditionField,
                 rule.ConditionOperator,
                 rule.ConditionValue)));
-    }
-
-    private async Task<PlaylistSyncResult?> TrySyncAvailablePlaylistTracksAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        IReadOnlyList<PlaylistTrackCandidate> candidates,
-        bool forceMediaServerSync,
-        CancellationToken cancellationToken)
-    {
-        var syncService = _serviceProvider.GetService<PlaylistSyncService>();
-        if (syncService == null)
-        {
-            return PlaylistSyncResult.Failed("Playlist sync service is not available.");
-        }
-
-        try
-        {
-            return await syncService.SyncAvailablePlaylistTracksAsync(
-                playlist,
-                preference,
-                candidates,
-                forceMediaServerSync,
-                cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(
-                ex,
-                "Watchlist immediate playlist sync failed for {Source}:{SourceId}; durable sync will retry.",
-                playlist.Source,
-                playlist.SourceId);
-            return PlaylistSyncResult.Failed(ex.Message);
-        }
     }
 
     private static bool HasConfiguredPlaylistSyncTargets(PlaylistWatchPreferenceDto? preference)
@@ -1206,7 +1206,7 @@ internal sealed class WatchlistEngine
             }
             if (ignored.Contains(candidate.TrackSourceId))
             {
-                await TryMarkWatchTrackCompletedAsync(source, sourceId, candidate.TrackSourceId, cancellationToken);
+                await TryMarkWatchTrackStatusAsync(source, sourceId, candidate.TrackSourceId, "blocked", cancellationToken);
                 ignoredCount++;
                 continue;
             }
@@ -1294,6 +1294,66 @@ internal sealed class WatchlistEngine
         }
 
         return new PlaylistTrackSelection(missingTracks, ignoredCount, localCount, claimedCount, blockedCount, recoveredClaimCount, unavailableCount);
+    }
+
+    private async Task<int> ResolveAndPersistLocalTrackIdentitiesAsync(
+        string source,
+        string sourceId,
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        CancellationToken cancellationToken)
+    {
+        var inputs = candidates
+            .Select(candidate =>
+            {
+                var identitySource = !string.IsNullOrWhiteSpace(candidate.DeezerId)
+                    ? DeezerSource
+                    : source;
+                var identityTrackId = !string.IsNullOrWhiteSpace(candidate.DeezerId)
+                    ? candidate.DeezerId
+                    : candidate.TrackSourceId;
+                return new LibraryRepository.LibraryExistenceInput(
+                    candidate.Isrc,
+                    candidate.Title,
+                    candidate.Artist,
+                    candidate.DurationMs,
+                    identitySource,
+                    identityTrackId,
+                    candidate.Album,
+                    candidate.Explicit);
+            })
+            .ToList();
+        var identities = await _libraryRepository.ResolveLocalTrackIdentitiesAsync(
+            inputs,
+            cancellationToken,
+            audioVariant: "stereo_preferred");
+        var localTrackCount = 0;
+        for (var index = 0; index < candidates.Count; index++)
+        {
+            var identity = await _localIdentityResolver.ResolveAsync(
+                inputs[index],
+                identities[index],
+                cancellationToken);
+            var identityStatus = identity.IsAmbiguous
+                ? "review"
+                : identity.LocalTrackId.HasValue
+                    ? "identity_verified"
+                    : "missing";
+            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                source,
+                sourceId,
+                new PlaylistWatchTrackVerification(
+                    candidates[index].TrackSourceId,
+                    identity.LocalTrackId,
+                    identityStatus,
+                    identity.Reason),
+                cancellationToken);
+            if (identity.LocalTrackId.HasValue && !identity.IsAmbiguous)
+            {
+                localTrackCount++;
+            }
+        }
+
+        return localTrackCount;
     }
 
     private readonly record struct PreQueueDedupeHandledResult(
@@ -1442,12 +1502,24 @@ internal sealed class WatchlistEngine
 
             case "library_duplicate":
             case "library_quality_not_higher":
-                await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
+                if (!decision.LocalTrackId.HasValue)
+                {
+                    return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
+                }
+                await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                    source,
+                    sourceId,
+                    new PlaylistWatchTrackVerification(
+                        track.TrackId,
+                        decision.LocalTrackId,
+                        "identity_verified",
+                        decision.Message),
+                    cancellationToken);
                 return new PreQueueDedupeHandledResult(true, 1, 0, 0, 0);
 
             case "blocklist_match":
                 await TryPersistWatchTrackIgnoreAsync(source, sourceId, track, cancellationToken);
-                await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
+                await TryMarkWatchTrackStatusAsync(source, sourceId, track.TrackId, "blocked", cancellationToken);
                 return new PreQueueDedupeHandledResult(true, 0, 0, 1, 1);
 
             default:
@@ -1506,6 +1578,24 @@ internal sealed class WatchlistEngine
                     cancellationToken);
                 if (!libraryDecision.Allowed)
                 {
+                    if (!libraryDecision.LocalTrackId.HasValue)
+                    {
+                        await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                            claim.QueueUuid,
+                            claim.Source,
+                            claim.SourceId,
+                            claim.TrackSourceId,
+                            FailedStatus,
+                            cancellationToken);
+                        await TryMarkWatchTrackStatusAsync(
+                            claim.Source,
+                            claim.SourceId,
+                            claim.TrackSourceId,
+                            "missing",
+                            cancellationToken);
+                        recoveredTrackIds.Add(claim.TrackSourceId);
+                        continue;
+                    }
                     await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                         claim.QueueUuid,
                         claim.Source,
@@ -1513,10 +1603,14 @@ internal sealed class WatchlistEngine
                         claim.TrackSourceId,
                         CompletedStatus,
                         cancellationToken);
-                    await TryMarkWatchTrackCompletedAsync(
+                    await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
                         claim.Source,
                         claim.SourceId,
-                        claim.TrackSourceId,
+                        new PlaylistWatchTrackVerification(
+                            claim.TrackSourceId,
+                            libraryDecision.LocalTrackId,
+                            "identity_verified",
+                            libraryDecision.Message),
                         cancellationToken);
                     recoveredTrackIds.Add(claim.TrackSourceId);
                     continue;
@@ -1610,7 +1704,19 @@ internal sealed class WatchlistEngine
                 cancellationToken);
             if (!libraryDecision.Allowed)
             {
-                await TryMarkWatchTrackCompletedAsync(source, sourceId, track.TrackId, cancellationToken);
+                if (!libraryDecision.LocalTrackId.HasValue)
+                {
+                    return new PreQueueDedupeHandledResult(false, 0, 0, 0, 0);
+                }
+                await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                    source,
+                    sourceId,
+                    new PlaylistWatchTrackVerification(
+                        track.TrackId,
+                        libraryDecision.LocalTrackId,
+                        "identity_verified",
+                        libraryDecision.Message),
+                    cancellationToken);
                 await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                     decision.QueueUuid,
                     source,
@@ -2103,11 +2209,13 @@ internal sealed class WatchlistEngine
             return new LivePlaylistSnapshotMetadata();
         }
 
-        var settings = _settingsService.LoadSettings();
-        var storefront = await _appleCatalogService.ResolveStorefrontAsync(
-            settings.AppleMusic?.Storefront,
-            settings.AppleMusic?.MediaUserToken,
-            cancellationToken);
+        var storefront = await GetPersistedAppleStorefrontAsync(sourceId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(storefront))
+        {
+            return new LivePlaylistSnapshotMetadata(
+                IsComplete: false,
+                FailureCode: "apple_storefront_not_persisted");
+        }
 
         using var doc = await _appleCatalogService.GetPlaylistAsync(
             sourceId,
@@ -2688,15 +2796,32 @@ internal sealed class WatchlistEngine
     {
         var playlistData = await GetApplePlaylistWatchDataAsync(sourceId, cancellationToken);
         var candidates = MapWatchIntentTrackCandidates(playlistData?.Tracks);
+        var declaredTrackCount = playlistData?.TrackCount;
+        var positionsComplete = candidates
+            .Select(static candidate => candidate.SourcePosition)
+            .Where(static position => position.HasValue)
+            .Select(static position => position!.Value)
+            .SequenceEqual(Enumerable.Range(1, candidates.Count));
+        var countComplete = !declaredTrackCount.HasValue
+                            || declaredTrackCount.Value <= 0
+                            || declaredTrackCount.Value == candidates.Count;
+        var isComplete = playlistData?.IsComplete == true
+                         && positionsComplete
+                         && countComplete;
         return BuildLivePlaylistSnapshot(
             candidates,
             new LivePlaylistSnapshotMetadata(
                 Name: playlistData?.Name,
                 Description: playlistData?.Description,
                 ImageUrl: playlistData?.ImageUrl,
-                TrackCount: playlistData?.TrackCount,
-                IsComplete: playlistData?.IsComplete == true,
-                CanClearImageUrl: true));
+                TrackCount: declaredTrackCount,
+                IsComplete: isComplete,
+                CanClearImageUrl: true,
+                FailureCode: isComplete
+                    ? null
+                    : candidates.Count == 0
+                        ? "apple_storefront_or_snapshot_unavailable"
+                        : "apple_playlist_position_count_mismatch"));
     }
 
     private async Task<LivePlaylistSnapshot> GetBoomplaySnapshotAsync(
@@ -3075,12 +3200,13 @@ internal sealed class WatchlistEngine
             return Array.Empty<PlaylistTrackCandidate>();
         }
 
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var candidates = new List<PlaylistTrackCandidate>(tracks.Count);
+        var position = 0;
         foreach (var track in tracks)
         {
+            position++;
             var trackId = (track.TrackId ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(trackId) || !seen.Add(trackId))
+            if (string.IsNullOrWhiteSpace(trackId))
             {
                 continue;
             }
@@ -3095,7 +3221,9 @@ internal sealed class WatchlistEngine
                 track.Intent.DurationMs > 0 ? track.Intent.DurationMs : null,
                 track.Intent.Explicit,
                 NormalizeGenres(track.Intent.Genres),
-                EmptyToNull(track.Intent.Cover)));
+                EmptyToNull(track.Intent.Cover),
+                SourceUrl: EmptyToNull(track.Intent.SourceUrl),
+                SourcePosition: track.SourcePosition ?? position));
         }
 
         return candidates;
@@ -3257,11 +3385,17 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return null;
         }
 
-        var settings = _settingsService.LoadSettings();
-        var storefront = await _appleCatalogService.ResolveStorefrontAsync(
-            settings.AppleMusic?.Storefront,
-            settings.AppleMusic?.MediaUserToken,
-            cancellationToken);
+        var storefront = await GetPersistedAppleStorefrontAsync(playlistId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(storefront))
+        {
+            return new ApplePlaylistWatchData(
+                "Apple Playlist",
+                null,
+                null,
+                null,
+                Array.Empty<WatchIntentTrack>(),
+                IsComplete: false);
+        }
 
         using var doc = await _appleCatalogService.GetPlaylistAsync(
             playlistId,
@@ -3295,9 +3429,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             storefront,
             "en-US",
             cancellationToken);
+        var sourcePosition = 0;
         foreach (var track in playlistTracks.Tracks)
         {
-            var watchTrack = BuildApplePlaylistWatchTrack(track, storefront, imageUrl);
+            sourcePosition++;
+            var watchTrack = BuildApplePlaylistWatchTrack(track, storefront, imageUrl, sourcePosition);
             if (watchTrack is not null)
             {
                 tracks.Add(watchTrack);
@@ -3324,7 +3460,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     private static WatchIntentTrack? BuildApplePlaylistWatchTrack(
         JsonElement track,
         string storefront,
-        string? fallbackImageUrl)
+        string? fallbackImageUrl,
+        int sourcePosition)
     {
         if (track.ValueKind != JsonValueKind.Object)
         {
@@ -3371,7 +3508,27 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             Genres = ReadJsonStringArray(trackAttributes, "genreNames")
         };
 
-        return new WatchIntentTrack(trackId, intent.Isrc, intent);
+        return new WatchIntentTrack(trackId, intent.Isrc, intent, sourcePosition);
+    }
+
+    private async Task<string?> GetPersistedAppleStorefrontAsync(
+        string playlistId,
+        CancellationToken cancellationToken)
+    {
+        var playlist = await _libraryRepository.GetPlaylistWatchlistEntryAsync(
+            AppleSource,
+            playlistId,
+            cancellationToken);
+        return NormalizeAppleStorefront(playlist?.SourceStorefront);
+    }
+
+    private static string? NormalizeAppleStorefront(string? storefront)
+    {
+        var normalized = (storefront ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.Length is >= 2 and <= 5
+               && normalized.All(character => char.IsAsciiLetter(character) || character == '-')
+            ? normalized
+            : null;
     }
 
     private async Task<BoomplayPlaylistWatchData?> GetBoomplayPlaylistWatchDataAsync(
@@ -3997,8 +4154,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 0,
                 Deferred: true,
                 AttemptedCount: 0,
-                SystemicFailureCount: 0,
-                FirstSystemicFailureFingerprint: null,
                 FirstFailureMessage: null,
                 StopReason: WatchQueueStopReason.WatchlistDisabled,
                 RemainingQueueableCount: tracks.Count,
@@ -4017,8 +4172,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var failedCount = 0;
         var unavailableCount = 0;
         var attemptedCount = 0;
-        var systemicFailureCount = 0;
-        string? firstSystemicFailureFingerprint = null;
         string? firstFailureMessage = null;
         var deferred = false;
         var stopReason = WatchQueueStopReason.None;
@@ -4099,15 +4252,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 if (trackResult.Failed)
                 {
                     failedCount++;
-                    var failureClassification = ClassifyWatchFailure(result);
                     if (string.IsNullOrWhiteSpace(firstFailureMessage))
                     {
-                        firstFailureMessage = failureClassification.Message;
-                    }
-                    if (failureClassification.IsSystemic)
-                    {
-                        systemicFailureCount++;
-                        firstSystemicFailureFingerprint ??= failureClassification.Fingerprint;
+                        firstFailureMessage = result.Message;
                     }
                 }
                 else if (trackResult.Unavailable)
@@ -4126,7 +4273,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         if (stopReason == WatchQueueStopReason.None)
         {
-            stopReason = ResolveCompletedStopReason(systemicFailureCount, failedCount, queuedCount);
+            stopReason = ResolveCompletedStopReason(failedCount, queuedCount);
         }
 
         return new QueueWatchResult(
@@ -4135,8 +4282,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             failedCount,
             Deferred: deferred,
             AttemptedCount: attemptedCount,
-            SystemicFailureCount: systemicFailureCount,
-            FirstSystemicFailureFingerprint: firstSystemicFailureFingerprint,
             FirstFailureMessage: firstFailureMessage,
             StopReason: stopReason,
             RemainingQueueableCount: Math.Max(0, trackList.Count - attemptedCount),
@@ -4144,15 +4289,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     }
 
     private static WatchQueueStopReason ResolveCompletedStopReason(
-        int systemicFailureCount,
         int failedCount,
         int queuedCount)
     {
-        if (systemicFailureCount > 0)
-        {
-            return WatchQueueStopReason.SystemicFailure;
-        }
-
         return failedCount > 0 && queuedCount == 0
             ? WatchQueueStopReason.TrackFailures
             : WatchQueueStopReason.Completed;
@@ -4256,6 +4395,13 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     context.Options.WatchlistPlaylistId,
                     track,
                     cancellationToken);
+                await TryMarkWatchTrackStatusAsync(
+                    context.Options.WatchlistSource,
+                    context.Options.WatchlistPlaylistId,
+                    track.TrackId,
+                    "blocked",
+                    cancellationToken);
+                return new QueueWatchTrackResult(queuedCount, Completed: true, Failed: false, Unavailable: false);
             }
             queuedCount += await TryQueueAtmosIntentAsync(
                 context.IntentService,
@@ -4264,10 +4410,30 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 new AtmosQueueRequest(context.Options.SourceLabel, track.TrackId, AfterPrimarySkip: true),
                 context.Options,
                 cancellationToken);
-            await TryMarkWatchTrackCompletedAsync(
-                context.Options.WatchlistSource,
-                context.Options.WatchlistPlaylistId,
-                track.TrackId,
+            var libraryDecision = await _serviceProvider.GetRequiredService<DownloadDedupeService>()
+                .CheckLibraryPresenceAsync(
+                    DownloadDedupeService.FromDownloadIntent(
+                        intent,
+                        blockRules: context.Options.BlockRules),
+                    cancellationToken);
+            if (!libraryDecision.LocalTrackId.HasValue)
+            {
+                await TryMarkWatchTrackStatusAsync(
+                    context.Options.WatchlistSource,
+                    context.Options.WatchlistPlaylistId,
+                    track.TrackId,
+                    "missing",
+                    cancellationToken);
+                return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: true, Unavailable: false);
+            }
+            await _libraryRepository.UpdatePlaylistWatchTrackVerificationAsync(
+                context.Options.WatchlistSource!,
+                context.Options.WatchlistPlaylistId!,
+                new PlaylistWatchTrackVerification(
+                    track.TrackId,
+                    libraryDecision.LocalTrackId,
+                    "identity_verified",
+                    libraryDecision.Message),
                 cancellationToken);
             return new QueueWatchTrackResult(queuedCount, Completed: true, Failed: false, Unavailable: false);
         }
@@ -4503,18 +4669,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                && !string.IsNullOrWhiteSpace(watchlistPlaylistId);
     }
 
-    private async Task TryMarkWatchTrackCompletedAsync(
-        string? watchlistSource,
-        string? watchlistPlaylistId,
-        string trackId,
-        CancellationToken cancellationToken)
-        => await TryMarkWatchTrackStatusAsync(
-            watchlistSource,
-            watchlistPlaylistId,
-            trackId,
-            "completed",
-            cancellationToken);
-
     private async Task TryMarkWatchTrackStatusAsync(
         string? watchlistSource,
         string? watchlistPlaylistId,
@@ -4667,11 +4821,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
     private static bool ShouldMarkWatchTrackUnavailable(DownloadIntentResult result)
     {
-        if (ClassifyWatchFailure(result).IsSystemic)
-        {
-            return false;
-        }
-
         var normalizedCodes = result.SkipReasonCodes?
             .Where(static code => !string.IsNullOrWhiteSpace(code))
             .Select(NormalizeReasonCode)
@@ -4767,107 +4916,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
         return result.SkipReasonCodes.Any(
             reasonCode => string.Equals(reasonCode?.Trim(), "blocklist_match", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static WatchFailureClassification ClassifyWatchFailure(DownloadIntentResult? result)
-    {
-        var message = result?.Message?.Trim();
-        var normalizedMessage = string.IsNullOrWhiteSpace(message)
-            ? string.Empty
-            : message.ToLowerInvariant();
-        var reasonCodes = result?.SkipReasonCodes ?? new List<string>();
-        var normalizedCodes = reasonCodes
-            .Where(static code => !string.IsNullOrWhiteSpace(code))
-            .Select(static code => code.Trim().ToLowerInvariant())
-            .ToList();
-
-        if (normalizedCodes.Contains("download_gate_paused"))
-        {
-            return new WatchFailureClassification(false, "download_gate_paused", message);
-        }
-
-        if (normalizedCodes.Contains("queue_duplicate")
-            || normalizedCodes.Contains("queue_insert_ignored")
-            || normalizedCodes.Contains("library_duplicate")
-            || normalizedCodes.Contains("library_quality_not_higher")
-            || normalizedCodes.Contains("blocklist_match"))
-        {
-            return new WatchFailureClassification(false, normalizedCodes.FirstOrDefault(), message);
-        }
-
-        if (normalizedCodes.Contains("provider_timeout")
-            || normalizedCodes.Contains("provider_http_429")
-            || normalizedCodes.Contains("provider_http_5xx")
-            || normalizedCodes.Contains("provider_auth")
-            || normalizedCodes.Contains("provider_captcha"))
-        {
-            return new WatchFailureClassification(true, normalizedCodes.FirstOrDefault(), message);
-        }
-
-        if (normalizedMessage.Contains("captcha", StringComparison.Ordinal)
-            || normalizedMessage.Contains("http 403", StringComparison.Ordinal)
-            || normalizedMessage.Contains("http 401", StringComparison.Ordinal)
-            || normalizedMessage.Contains("forbidden", StringComparison.Ordinal)
-            || normalizedMessage.Contains("unauthorized", StringComparison.Ordinal)
-            || normalizedMessage.Contains("too many requests", StringComparison.Ordinal)
-            || normalizedMessage.Contains("429", StringComparison.Ordinal)
-            || normalizedMessage.Contains("rate limit", StringComparison.Ordinal)
-            || normalizedMessage.Contains("timed out", StringComparison.Ordinal)
-            || normalizedMessage.Contains("timeout", StringComparison.Ordinal)
-            || normalizedMessage.Contains("httpclient.timeout", StringComparison.Ordinal)
-            || normalizedMessage.Contains("service unavailable", StringComparison.Ordinal)
-            || normalizedMessage.Contains("gateway timeout", StringComparison.Ordinal)
-            || normalizedMessage.Contains("http 500", StringComparison.Ordinal)
-            || normalizedMessage.Contains("http 502", StringComparison.Ordinal)
-            || normalizedMessage.Contains("http 503", StringComparison.Ordinal)
-            || normalizedMessage.Contains("http 504", StringComparison.Ordinal)
-            || normalizedMessage.Contains("login required", StringComparison.Ordinal))
-        {
-            return new WatchFailureClassification(true, BuildSystemicFingerprint(normalizedMessage), message);
-        }
-
-        return new WatchFailureClassification(false, normalizedCodes.FirstOrDefault(), message);
-    }
-
-    private static string BuildSystemicFingerprint(string normalizedMessage)
-    {
-        if (normalizedMessage.Contains("captcha", StringComparison.Ordinal))
-        {
-            return "provider_captcha";
-        }
-        if (normalizedMessage.Contains("401", StringComparison.Ordinal)
-            || normalizedMessage.Contains("unauthorized", StringComparison.Ordinal)
-            || normalizedMessage.Contains("login required", StringComparison.Ordinal))
-        {
-            return "provider_auth_401";
-        }
-        if (normalizedMessage.Contains("403", StringComparison.Ordinal)
-            || normalizedMessage.Contains("forbidden", StringComparison.Ordinal))
-        {
-            return "provider_auth_403";
-        }
-        if (normalizedMessage.Contains("429", StringComparison.Ordinal)
-            || normalizedMessage.Contains("rate limit", StringComparison.Ordinal)
-            || normalizedMessage.Contains("too many requests", StringComparison.Ordinal))
-        {
-            return "provider_http_429";
-        }
-        if (normalizedMessage.Contains("500", StringComparison.Ordinal)
-            || normalizedMessage.Contains("502", StringComparison.Ordinal)
-            || normalizedMessage.Contains("503", StringComparison.Ordinal)
-            || normalizedMessage.Contains("504", StringComparison.Ordinal)
-            || normalizedMessage.Contains("service unavailable", StringComparison.Ordinal)
-            || normalizedMessage.Contains("gateway timeout", StringComparison.Ordinal))
-        {
-            return "provider_http_5xx";
-        }
-        if (normalizedMessage.Contains("timeout", StringComparison.Ordinal)
-            || normalizedMessage.Contains("timed out", StringComparison.Ordinal))
-        {
-            return "provider_timeout";
-        }
-
-        return "provider_systemic";
     }
 
     private static string BuildSpotifyTrackUrl(string trackId, string? sourceUrl)
@@ -5246,7 +5294,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? CandidateIdentityRevision,
         string? ProviderReadinessRevision);
 
-    private sealed record WatchIntentTrack(string TrackId, string? Isrc, DownloadIntent Intent);
+    private sealed record WatchIntentTrack(
+        string TrackId,
+        string? Isrc,
+        DownloadIntent Intent,
+        int? SourcePosition = null);
 
     private interface IPlaylistSourceAdapter
     {

@@ -3425,7 +3425,13 @@ function renderTracklist(data, options = {}) {
         name: title,
         imageUrl: coverImage || null,
         description: description || null,
-        trackCount: trackCount || null
+        trackCount: trackCount || null,
+        sourceUrl: tracklistSource === 'apple'
+            ? (data.tracklist?.source_url || tracklistAppleUrl || null)
+            : null,
+        sourceStorefront: tracklistSource === 'apple'
+            ? (data.tracklist?.storefront || null)
+            : null
     };
     
     const isPlaylistLike = tracklistLayoutIsPlaylistLike;
@@ -4936,6 +4942,15 @@ async function updateMonitorButtonState() {
             return;
         }
         if (status?.watching) {
+            if (currentTracklistMeta.source === 'apple'
+                && currentTracklistMeta.sourceStorefront
+                && String(status.sourceStorefront || '').toLowerCase() !== String(currentTracklistMeta.sourceStorefront).toLowerCase()) {
+                await fetchJson('/api/library/playlists', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(currentTracklistMeta)
+                });
+            }
             if (monitorLabel) {
                 monitorLabel.textContent = 'Monitored';
             }
@@ -5166,7 +5181,9 @@ if (monitorButton) {
                     name: currentTracklistMeta.name,
                     imageUrl: currentTracklistMeta.imageUrl,
                     description: currentTracklistMeta.description,
-                    trackCount: currentTracklistMeta.trackCount
+                    trackCount: currentTracklistMeta.trackCount,
+                    sourceUrl: currentTracklistMeta.sourceUrl,
+                    sourceStorefront: currentTracklistMeta.sourceStorefront
                 })
             });
             if (monitorLabel) {

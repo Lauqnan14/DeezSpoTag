@@ -138,6 +138,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     public void HostedCycle_InterleavesBoundedTargetSyncBetweenPlaylistReconciliations()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
         var loopStart = hostedSource.IndexOf(
             "foreach (var activeItem in scheduledItems)",
             StringComparison.Ordinal);
@@ -150,7 +151,10 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync(", loopBody, StringComparison.Ordinal);
         Assert.Contains("syncJobLimit: 1", loopBody, StringComparison.Ordinal);
-        Assert.Contains("timeBudget: TimeSpan.FromSeconds(5)", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("timeBudget", loopBody, StringComparison.Ordinal);
+        Assert.Contains("TargetOperationTimeout", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("Task.WhenAll", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("operationCancellation.CancelAfter(TargetOperationTimeout)", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]

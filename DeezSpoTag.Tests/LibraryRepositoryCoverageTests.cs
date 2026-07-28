@@ -845,6 +845,17 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var tied = await _repository.ResolveLocalTrackIdentityAsync(input);
         Assert.True(tied.IsAmbiguous);
         Assert.Equal(new[] { lowerQualityRichId, equalId }.Order(), tied.CandidateTrackIds.Order());
+        var resolutionCandidates = await _repository.GetLocalTrackResolutionCandidatesAsync(tied.CandidateTrackIds);
+        Assert.Equal(2, resolutionCandidates.Count);
+        Assert.All(resolutionCandidates, candidate =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(candidate.FilePath));
+            Assert.False(string.IsNullOrWhiteSpace(candidate.RootPath));
+            Assert.True(candidate.FolderId > 0);
+            Assert.Equal(4, candidate.QualityRank);
+            Assert.True(candidate.MetadataRichness > 0);
+            Assert.Equal("ISRC00000001", candidate.Isrc);
+        });
 
         var batch = await _repository.ResolveLocalTrackIdentitiesAsync([
             input,
@@ -862,7 +873,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
         var dedupe = new DownloadDedupeService(
             new DownloadQueueRepository(_configuration, NullLogger<DownloadQueueRepository>.Instance),
             _repository,
-            NullLogger<DownloadDedupeService>.Instance);
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver());
         var equalQualityDecision = await dedupe.CheckAsync(new DownloadDedupeRequest
         {
             Isrc = "ISRC00000001",
@@ -1224,13 +1236,50 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
                     CreateRecommendationTrack("rel-1", "Related Song")
                 ],
                 ScannedAtUtc: scannedAt,
-                Error: null));
+                Error: null,
+                FilePath: seeded.TrackPathsByTitle["Song One"],
+                FileSize: 12345,
+                FileModifiedUtc: scannedAt.AddMinutes(-2),
+                SpotifyId: "spotify-resolved-1",
+                AppleId: "apple-resolved-1",
+                DeezerId: "deezer-resolved-1",
+                Album: "Album One",
+                ReleaseDate: "2026-01-01",
+                Explicit: true));
 
         var updatedCache = await _repository.GetShazamTrackCacheByTrackIdForLibraryAsync(seeded.LibraryId);
         Assert.True(updatedCache.TryGetValue(trackId, out var updatedEntry));
         Assert.Equal("matched", updatedEntry!.Status);
         Assert.Equal("shz-1", updatedEntry.ShazamTrackId);
         Assert.Single(updatedEntry.RelatedTracks);
+        Assert.Equal(seeded.TrackPathsByTitle["Song One"], updatedEntry.FilePath);
+        Assert.Equal(12345, updatedEntry.FileSize);
+        Assert.Equal("spotify-resolved-1", updatedEntry.SpotifyId);
+        Assert.Equal("apple-resolved-1", updatedEntry.AppleId);
+        Assert.Equal("deezer-resolved-1", updatedEntry.DeezerId);
+        Assert.Equal("Album One", updatedEntry.Album);
+        Assert.Equal("2026-01-01", updatedEntry.ReleaseDate);
+        Assert.True(updatedEntry.Explicit);
+
+        await _repository.AddLocalDuplicateResolutionEventAsync(
+            trackId,
+            trackId + 1,
+            seeded.TrackPathsByTitle["Song One"],
+            Path.Join(_tempRoot, "%duplicates%", "Song One.flac"),
+            "moved",
+            null);
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT status, source_path, destination_path FROM local_duplicate_resolution_event WHERE winner_track_id=@trackId;";
+            command.Parameters.AddWithValue("trackId", trackId);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("moved", reader.GetString(0));
+            Assert.Equal(seeded.TrackPathsByTitle["Song One"], reader.GetString(1));
+            Assert.Contains("%duplicates%", reader.GetString(2), StringComparison.Ordinal);
+        }
 
         var refreshedCandidates = await _repository.GetTrackIdsNeedingShazamRefreshAsync(
             seeded.LibraryId,
@@ -1278,6 +1327,55 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
 
         var trackIdsByRatingKey = await _repository.GetTrackIdsByPlexRatingKeysAsync(PlexRatingKeys);
         Assert.Equal(trackId, trackIdsByRatingKey["rk-1"]);
+    }
+
+    [Fact]
+    public async Task Existing_ShazamCache_schema_is_upgraded_additively()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+DROP TABLE track_shazam_cache;
+CREATE TABLE track_shazam_cache (
+    track_id BIGINT PRIMARY KEY REFERENCES track(id) ON DELETE CASCADE,
+    shazam_track_id TEXT,
+    title TEXT,
+    artist TEXT,
+    isrc TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    related_tracks_json TEXT,
+    scanned_at_utc TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+
+        await using var verified = new SqliteConnection($"Data Source={_dbPath}");
+        await verified.OpenAsync();
+        await using var columns = verified.CreateCommand();
+        columns.CommandText = "PRAGMA table_info(track_shazam_cache);";
+        await using var reader = await columns.ExecuteReaderAsync();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync())
+        {
+            names.Add(reader.GetString(1));
+        }
+
+        Assert.Contains("file_path", names);
+        Assert.Contains("file_size", names);
+        Assert.Contains("file_modified_utc", names);
+        Assert.Contains("spotify_id", names);
+        Assert.Contains("apple_id", names);
+        Assert.Contains("deezer_id", names);
+        Assert.Contains("album", names);
+        Assert.Contains("release_date", names);
+        Assert.Contains("explicit", names);
     }
 
     [Fact]

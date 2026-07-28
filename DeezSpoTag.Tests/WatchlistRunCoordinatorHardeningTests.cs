@@ -126,6 +126,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
             },
             _settingsService,
             serviceProvider: null!,
+            localIdentityResolver: new PassthroughLocalTrackAmbiguityResolver(),
             logger: NullLogger<WatchlistEngine>.Instance);
 
         var artistWatchService = new ArtistWatchService(
@@ -223,7 +224,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains(
             logger.Entries,
             entry => entry.Message.Contains(
-                "Watchlist reconciliation and queue phase deferred",
+                "Watchlist download admission deferred while source metadata and target synchronization continue",
                 StringComparison.Ordinal));
     }
 

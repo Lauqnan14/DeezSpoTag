@@ -202,7 +202,16 @@ public sealed record ShazamTrackCacheDto(
     string? Isrc,
     IReadOnlyList<RecommendationTrackDto> RelatedTracks,
     DateTimeOffset? ScannedAtUtc,
-    string? Error);
+    string? Error,
+    string? FilePath = null,
+    long? FileSize = null,
+    DateTimeOffset? FileModifiedUtc = null,
+    string? SpotifyId = null,
+    string? AppleId = null,
+    string? DeezerId = null,
+    string? Album = null,
+    string? ReleaseDate = null,
+    bool? Explicit = null);
 
 public sealed record LibraryShazamScanStatusDto(
     long LibraryId,
@@ -656,7 +665,9 @@ public sealed record PlaylistWatchlistDto(
     int? QueuedTrackCount = null,
     int? DownloadingTrackCount = null,
     int? UnavailableTrackCount = null,
-    int? ReviewTrackCount = null);
+    int? ReviewTrackCount = null,
+    string? SourceUrl = null,
+    string? SourceStorefront = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,
@@ -664,7 +675,9 @@ public sealed record PlaylistWatchlistMetadataInput(
     string? Description,
     int? TrackCount,
     bool ClearImageUrl = false,
-    string? OwnerName = null);
+    string? OwnerName = null,
+    string? SourceUrl = null,
+    string? SourceStorefront = null);
 
 public sealed record PlaylistTrackRoutingRule(
     string ConditionField,

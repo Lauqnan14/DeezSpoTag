@@ -14,7 +14,8 @@ public sealed record AmazonPublicProvider(
     string? FailureCategory,
     string? FailureMessage,
     long? ResponseTimeMs,
-    DateTimeOffset? CooldownUntil);
+    DateTimeOffset? CooldownUntil,
+    bool RequiresVerification = false);
 
 public interface IAmazonPublicProviderRegistry
 {
@@ -31,7 +32,8 @@ public sealed record AmazonPublicProviderDefinition(
     string Kind,
     string Endpoint,
     string? HealthEndpoint,
-    string? HealthServiceKey);
+    string? HealthServiceKey,
+    bool RequiresVerification = false);
 
 public static class AmazonPublicProviderDefaults
 {
@@ -45,6 +47,7 @@ public static class AmazonPublicProviderDefaults
             DownloadProviderKind,
             "https://api.zarz.moe/v2/dl/amazeamazeamaze",
             "https://api.zarz.moe/v2/health",
-            null)
+            null,
+            RequiresVerification: true)
     ];
 }

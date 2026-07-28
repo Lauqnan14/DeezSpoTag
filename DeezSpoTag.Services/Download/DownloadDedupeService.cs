@@ -18,16 +18,19 @@ public sealed class DownloadDedupeService
     private const string AmazonMusicPlatform = "amazonmusic";
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
+    private readonly ILocalTrackAmbiguityResolver _ambiguityResolver;
     private readonly ILogger<DownloadDedupeService> _logger;
 
     public DownloadDedupeService(
         DownloadQueueRepository queueRepository,
         LibraryRepository libraryRepository,
-        ILogger<DownloadDedupeService> logger)
+        ILogger<DownloadDedupeService> logger,
+        ILocalTrackAmbiguityResolver ambiguityResolver)
     {
         _queueRepository = queueRepository;
         _libraryRepository = libraryRepository;
         _logger = logger;
+        _ambiguityResolver = ambiguityResolver;
     }
 
     public bool IsLibraryConfigured => _libraryRepository.IsConfigured;
@@ -86,7 +89,11 @@ public sealed class DownloadDedupeService
         // monitored track is already available locally.
         var identity = await ResolveLocalLibraryIdentityAsync(request, cancellationToken);
         return identity.Exists
-            ? DownloadDedupeDecision.Rejected("library_duplicate", "Skipped: matching file already exists in library.", "library")
+            ? DownloadDedupeDecision.Rejected(
+                "library_duplicate",
+                "Skipped: matching file already exists in library.",
+                "library",
+                localTrackId: identity.LocalTrackId)
             : DownloadDedupeDecision.AllowedDecision;
     }
 
@@ -291,7 +298,8 @@ public sealed class DownloadDedupeService
                 return DownloadDedupeDecision.Rejected(
                     "library_quality_not_higher",
                     "Skipped: requested quality is not higher than the file already in your library.",
-                    "library");
+                    "library",
+                    localTrackId: identity.LocalTrackId);
             }
 
             if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value > bestLocalQualityRank.Value)
@@ -370,17 +378,19 @@ public sealed class DownloadDedupeService
         DownloadDedupeRequest request,
         CancellationToken cancellationToken)
     {
-        return await _libraryRepository.ResolveLocalTrackIdentityAsync(
-            new LibraryRepository.LibraryExistenceInput(
+        var input = new LibraryRepository.LibraryExistenceInput(
                 request.Isrc,
                 request.TrackTitle,
                 request.TrackArtist,
                 request.DurationMs,
                 ResolvePrimarySource(request),
                 ResolvePrimarySourceId(request),
-                request.Album),
+                request.Album);
+        var initial = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+            input,
             audioVariant: request.RequestedAudioVariant,
             cancellationToken: cancellationToken);
+        return await _ambiguityResolver.ResolveAsync(input, initial, cancellationToken);
     }
 
     private static DuplicateLookupRequest BuildQueueLookup(DownloadDedupeRequest request)
@@ -635,14 +645,16 @@ public sealed record DownloadDedupeDecision(
     string? ReasonCode,
     string? Message,
     string? Source,
-    string? QueueUuid)
+    string? QueueUuid,
+    long? LocalTrackId)
 {
-    public static DownloadDedupeDecision AllowedDecision { get; } = new(true, null, null, null, null);
+    public static DownloadDedupeDecision AllowedDecision { get; } = new(true, null, null, null, null, null);
 
     public static DownloadDedupeDecision Rejected(
         string reasonCode,
         string message,
         string source,
-        string? queueUuid = null)
-        => new(false, reasonCode, message, source, queueUuid);
+        string? queueUuid = null,
+        long? localTrackId = null)
+        => new(false, reasonCode, message, source, queueUuid, localTrackId);
 }

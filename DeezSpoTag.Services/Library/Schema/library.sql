@@ -450,6 +450,8 @@ CREATE TABLE IF NOT EXISTS playlist_watchlist (
     image_url TEXT,
     description TEXT,
     track_count INTEGER,
+    source_url TEXT,
+    source_storefront TEXT,
     sync_priority INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (source, source_id)
@@ -819,6 +821,15 @@ CREATE TABLE IF NOT EXISTS track_shazam_cache (
     related_tracks_json TEXT,
     scanned_at_utc TEXT,
     error TEXT,
+    file_path TEXT,
+    file_size INTEGER,
+    file_modified_utc TEXT,
+    spotify_id TEXT,
+    apple_id TEXT,
+    deezer_id TEXT,
+    album TEXT,
+    release_date TEXT,
+    explicit INTEGER,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -827,6 +838,21 @@ CREATE INDEX IF NOT EXISTS idx_track_shazam_cache_status
 
 CREATE INDEX IF NOT EXISTS idx_track_shazam_cache_scanned
     ON track_shazam_cache (scanned_at_utc);
+
+CREATE TABLE IF NOT EXISTS local_duplicate_resolution_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    winner_track_id INTEGER NOT NULL,
+    duplicate_track_id INTEGER NOT NULL,
+    source_path TEXT NOT NULL,
+    destination_path TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_local_duplicate_resolution_event_duplicate
+    ON local_duplicate_resolution_event (duplicate_track_id, created_at_utc DESC);
 
 CREATE TABLE IF NOT EXISTS watchlist_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
