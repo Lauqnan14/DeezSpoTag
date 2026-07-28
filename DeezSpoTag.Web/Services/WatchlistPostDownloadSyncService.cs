@@ -44,10 +44,14 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             return;
         }
 
-        var jobs = await repository.EnqueueWatchlistAllPlaylistSyncJobsAsync(cancellationToken);
-        if (jobs > 0)
+        var accepted = await repository.EnqueueWatchlistReconciliationRequestAsync(
+            "all",
+            source: null,
+            identifier: null,
+            cancellationToken);
+        if (accepted)
         {
-            _coordinatorSignal.Request(WatchlistWakeReason.TargetSync);
+            _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
         }
     }
 
@@ -351,7 +355,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
-                    if (await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken))
+                    var completed = string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase)
+                        ? await repository.CompleteWatchlistPlaylistSyncJobAsync(job, _leaseOwner, cancellationToken)
+                        : await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
+                    if (completed)
                     {
                         await ResumePlaylistReconciliationAfterInitialSyncAsync(repository, job, cancellationToken);
                     }
@@ -439,6 +446,19 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 cancellationToken))
             .Any(static job => string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase));
         if (remainingInitialJobs)
+        {
+            return;
+        }
+
+        var state = await repository.GetPlaylistWatchStateAsync(
+            completedJob.Source,
+            completedJob.PlaylistId,
+            cancellationToken);
+        if (state == null
+            || !string.Equals(
+                state.LastRunStatus,
+                WatchlistStateService.ToPersistedStatus(WatchlistPlaylistState.WaitingForTargetSync),
+                StringComparison.OrdinalIgnoreCase))
         {
             return;
         }

@@ -176,7 +176,8 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         await AddPlaylistWithTargetsAsync("lease-list", ["plex"]);
         var jobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
-            "lease-list");
+            "lease-list",
+            "snapshot-1");
 
         Assert.Equal(new[] { "plex" }, jobs.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
         Assert.All(jobs, static job => Assert.Equal("playlist", job.TrackId));
@@ -189,7 +190,7 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.True(await _repository.RenewWatchlistSyncJobLeaseAsync(first.Id, "worker-a", TimeSpan.FromMinutes(1)));
         Assert.True(await _repository.CompleteWatchlistSyncJobAsync(first.Id, "worker-a"));
 
-        _ = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "lease-list");
+        _ = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "lease-list", "snapshot-2");
         var second = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(1), "worker-b"));
         await SetExpiredProcessingLeaseAsync(second.Id);
         var counts = await _repository.GetWatchlistSyncJobStatusCountsAsync();
@@ -322,7 +323,8 @@ WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';
             [new PlaylistWatchTargetMembership("remove", 99, "remote-remove")]);
         await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
-            "prune-list");
+            "prune-list",
+            "snapshot-1");
 
         Assert.Equal(1, await _repository.RemovePlaylistWatchTracksNotInAsync("spotify", "prune-list", ["keep"]));
         Assert.Empty(await _repository.GetPlaylistWatchDownloadClaimsAsync("queue-remove"));
@@ -345,7 +347,8 @@ WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';
         Assert.False(await _repository.IsPlaylistWatchTrackSyncedToTargetAsync("spotify", "prune-list", "keep", "jellyfin"));
         var recreated = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
-            "prune-list");
+            "prune-list",
+            "snapshot-2");
         var job = Assert.Single(recreated);
         Assert.Equal("plex", job.TargetService);
         Assert.Equal("playlist", job.TrackId);
@@ -372,6 +375,8 @@ WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';
         Assert.Empty(PlaylistCandidateContract.ResolvableCandidates("boomplay", [opaque]));
         Assert.True(PlaylistCandidateContract.IsReusableCache(
             "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 1, isComplete: true));
+        Assert.True(PlaylistCandidateContract.IsReusableCache(
+            "boomplay", PlaylistCandidateContract.CurrentCacheSchemaVersion, [hydrated], 2, isComplete: true));
     }
 
     [Fact]
@@ -537,8 +542,8 @@ WHERE id=@id;",
     public async Task PlaylistSyncWork_CoalescesToOneJobPerPlaylistTarget()
     {
         await AddPlaylistWithTargetsAsync("refresh-list", ["plex", "jellyfin", "navidrome"]);
-        var first = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list");
-        var second = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list");
+        var first = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list", "snapshot-1");
+        var second = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "refresh-list", "snapshot-1");
 
         Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, first.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
         Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, second.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
@@ -548,10 +553,30 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task CompletedPlaylistSnapshot_IsNotScheduledAgainUntilSnapshotChanges()
+    {
+        await AddPlaylistWithTargetsAsync("revision-list", ["plex"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "revision-list", "snapshot-1");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1, TimeSpan.FromMinutes(1), "revision-worker"));
+
+        Assert.Equal("snapshot-1", claimed.SnapshotId);
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed, "revision-worker"));
+        Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "revision-list", "snapshot-1"));
+
+        var changed = Assert.Single(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "revision-list", "snapshot-2"));
+        Assert.Equal("snapshot-2", changed.SnapshotId);
+    }
+
+    [Fact]
     public async Task PlaylistSyncWork_ExcludesAttemptedTargetAndLeavesSiblingTargetsClaimable()
     {
         await AddPlaylistWithTargetsAsync("isolated-list", ["plex", "jellyfin", "navidrome"]);
-        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "isolated-list");
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "isolated-list", "snapshot-1");
 
         var plex = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
             1,
@@ -593,12 +618,13 @@ WHERE id=@id;",
     {
         await AddPlaylistWithTargetsAsync("reset-list", ["plex"]);
         await _repository.UpsertPlaylistTrackCandidateCacheAsync(
-            "spotify", "reset-list", "snapshot", JsonSerializer.Serialize(new[] { Candidate("track-1", "Title", "Artist") }));
+            "spotify", "reset-list", "snapshot", JsonSerializer.Serialize(new[] { Candidate("track-1", "Title", "Artist") }),
+            4, "identity", "provider", true);
         await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
             "spotify", "reset-list", "snapshot", 1, null, null, DateTimeOffset.UtcNow,
             "processing", "active", null, 0, "reconciling", 1, 1, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(5)));
         await _repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null);
-        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "reset-list");
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "reset-list", "snapshot");
         _ = await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(15), "active-worker");
         await _repository.UpsertPlaylistWatchDownloadClaimsAsync("spotify", "reset-list", "track-1", ["queue-1"], 42);
         await _repository.UpsertWatchlistFinalizationOutboxAsync("queue-1", "{}", ["/music/final.flac"]);
@@ -633,7 +659,7 @@ INSERT INTO artist_watch_state(artist_id,current_phase) VALUES(99,'reconciling')
     }
 
     [Fact]
-    public async Task SchemaMigration_CoalescesLegacyPerTrackSyncJobsToPerTargetPlaylistScope()
+    public async Task SchemaMigration_ReconcilesLegacySyncJobsWithoutAPlaylistSnapshot()
     {
         await AddPlaylistWithTargetsAsync("legacy-sync-list", ["plex", "jellyfin"]);
         await ExecuteSqlAsync(@"
@@ -650,19 +676,12 @@ VALUES
         await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
 
         var jobs = await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "migration-worker");
-        var migrated = jobs
-            .Where(item => item.Source == "spotify" && item.PlaylistId == "legacy-sync-list")
-            .OrderBy(static item => item.TargetService, StringComparer.Ordinal)
-            .ToList();
-        Assert.Equal(new[] { "jellyfin", "plex" }, migrated.Select(static job => job.TargetService).ToArray());
-        Assert.All(migrated, static job =>
-        {
-            Assert.Equal("playlist", job.TrackId);
-            Assert.Equal(0, job.AttemptCount);
-            Assert.Null(job.QueueUuid);
-            Assert.Null(job.LastError);
-        });
-        Assert.DoesNotContain(jobs, item => item.TrackId is "track-a" or "track-b");
+        Assert.DoesNotContain(jobs, item => item.Source == "spotify" && item.PlaylistId == "legacy-sync-list");
+        Assert.Contains(
+            await _repository.GetWatchlistReconciliationRequestsAsync(),
+            request => request.Kind == "playlist"
+                       && request.Source == "spotify"
+                       && request.Identifier == "legacy-sync-list");
     }
 
     [Fact]
@@ -675,7 +694,8 @@ VALUES
         await _repository.MarkPlaylistWatchTrackUnavailableAsync(
             "boomplay", "legacy-list", "opaque-id", null, "not resolvable", "legacy", DateTimeOffset.UtcNow.AddDays(7));
         await _repository.UpsertPlaylistTrackCandidateCacheAsync(
-            "boomplay", "legacy-list", "snapshot", JsonSerializer.Serialize(new[] { Candidate("opaque-id", "", "") }));
+            "boomplay", "legacy-list", "snapshot", JsonSerializer.Serialize(new[] { Candidate("opaque-id", "", "") }),
+            0, null, null, false);
         await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
             "boomplay", "legacy-list", "snapshot", 1, null, null, DateTimeOffset.UtcNow,
             "backoff", "Unknown Watchlist history status was rejected.", DateTimeOffset.UtcNow.AddHours(1), 4));

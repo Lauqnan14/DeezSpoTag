@@ -865,7 +865,8 @@ public sealed record WatchlistSyncJobDto(
     string? QueueUuid = null,
     string? LeaseOwner = null,
     string Status = "pending",
-    string? LastError = null);
+    string? LastError = null,
+    string? SnapshotId = null);
 
 public sealed record WatchlistSyncJobStatusCounts(
     int Due,

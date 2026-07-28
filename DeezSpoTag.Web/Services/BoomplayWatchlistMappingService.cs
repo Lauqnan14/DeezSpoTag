@@ -333,9 +333,7 @@ public sealed class BoomplayWatchlistMappingService
             boomplayTrackId = NormalizeFingerprintValue(track.BoomplayTrackId),
             isrc = NormalizeFingerprintValue(track.Isrc),
             title = NormalizeFingerprintValue(track.Title),
-            artist = NormalizeFingerprintValue(track.Artist),
-            album = NormalizeFingerprintValue(track.Album),
-            durationMs = track.DurationMs is > 0 ? track.DurationMs : null
+            artist = NormalizeFingerprintValue(track.Artist)
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
     }

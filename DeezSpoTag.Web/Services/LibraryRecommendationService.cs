@@ -2256,6 +2256,10 @@ public sealed class LibraryRecommendationService
                 scope.ScopeKey,
                 BuildDailyPoolSnapshotId(dayUtc),
                 JsonSerializer.Serialize(payload),
+                schemaVersion: 0,
+                identityRevision: null,
+                providerReadinessRevision: null,
+                isComplete: true,
                 cancellationToken);
             return PersistDailyPoolResult.Ok;
         }
@@ -2417,6 +2421,10 @@ public sealed class LibraryRecommendationService
                 scope.ScopeKey,
                 $"{ExposureHistorySnapshotVersion}:{dayKey}",
                 JsonSerializer.Serialize(new RecommendationExposureHistoryDto(entries)),
+                schemaVersion: 0,
+                identityRevision: null,
+                providerReadinessRevision: null,
+                isComplete: true,
                 cancellationToken);
         }
         catch (OperationCanceledException)

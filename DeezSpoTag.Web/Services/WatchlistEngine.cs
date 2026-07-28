@@ -289,10 +289,6 @@ internal sealed class WatchlistEngine
         {
             return new PlaylistReconciliationResult(false, "Playlist source is not available.", 0, 0, 0, 0, 0, 0, 0, null);
         }
-        var stateAtStart = await _libraryRepository.GetPlaylistWatchStateAsync(
-            source,
-            sourceId,
-            cancellationToken);
         await UpdatePlaylistStateAsync(
             source,
             sourceId,
@@ -660,67 +656,54 @@ internal sealed class WatchlistEngine
         var targetSyncScheduled = false;
         if (shouldSyncTargets && hasConfiguredPlaylistSyncTargets)
         {
-            var existingTargetJobs = (await _libraryRepository.GetWatchlistSyncJobsAsync(
+            var localTrackStatuses = await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
+                source,
+                sourceId,
+                cancellationToken);
+            var syncSnapshotRevision = PlaylistCandidateContract.BuildTargetSyncRevision(
+                candidateIdentityRevision,
+                localTrackStatuses);
+            var targetJobs = await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
+                source,
+                sourceId,
+                syncSnapshotRevision,
+                cancellationToken);
+            if (targetJobs.Count > 0)
+            {
+                targetSyncScheduled = true;
+                _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
+                await AddPlaylistWatchHistoryStageAsync(
                     source,
                     sourceId,
-                    cancellationToken))
-                .Where(static job => string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            var resumedAfterInitialSync = string.Equals(
-                    stateAtStart?.LastRunStatus,
-                    WatchlistStateService.ToPersistedStatus(WatchlistPlaylistState.WaitingForTargetSync),
-                    StringComparison.OrdinalIgnoreCase)
-                && string.Equals(
-                    NormalizeSnapshotId(stateAtStart?.SnapshotId),
-                    NormalizeSnapshotId(liveSnapshot.SnapshotId),
-                    StringComparison.Ordinal)
-                && existingTargetJobs.Count == 0;
-
-            if (!resumedAfterInitialSync)
-            {
-                var targetJobs = existingTargetJobs.Count > 0
-                    ? existingTargetJobs
-                    : (await _libraryRepository.EnqueueWatchlistPlaylistSyncJobsAsync(
-                        source,
-                        sourceId,
-                        cancellationToken)).ToList();
-                if (targetJobs.Count > 0)
-                {
-                    targetSyncScheduled = true;
-                    _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
-                    await AddPlaylistWatchHistoryStageAsync(
-                        source,
-                        sourceId,
-                        currentPlaylist.Name,
-                        candidates.Count,
-                        WatchlistHistoryStatus.MediaSyncWaiting,
-                        cancellationToken);
-                    const string waitingMessage = "Waiting for selected target servers to synchronize the current playlist snapshot.";
-                    await UpdatePlaylistStateAsync(
-                        source,
-                        sourceId,
-                        liveTrackCount,
-                        liveSnapshot.SnapshotId,
-                        WatchlistPlaylistState.WaitingForTargetSync,
-                        waitingMessage,
-                        nextAttemptUtc: null,
-                        consecutiveFailures: 0,
-                        cancellationToken);
-                    return new PlaylistReconciliationResult(
-                        true,
-                        waitingMessage,
-                        liveTrackCount,
-                        MissingTracks: 0,
-                        IgnoredTracks: 0,
-                        LocalTracks: localTrackCount,
-                        QueuedTracks: 0,
-                        CompletedTracks: localTrackCount,
-                        FailedTracks: 0,
-                        SyncResult: null,
-                        Deferred: true,
-                        QueueStopReason: WatchQueueStopReason.TrackDeferred.ToString(),
-                        RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount));
-                }
+                    currentPlaylist.Name,
+                    candidates.Count,
+                    WatchlistHistoryStatus.MediaSyncWaiting,
+                    cancellationToken);
+                const string waitingMessage = "Waiting for selected target servers to synchronize the current playlist snapshot.";
+                await UpdatePlaylistStateAsync(
+                    source,
+                    sourceId,
+                    liveTrackCount,
+                    liveSnapshot.SnapshotId,
+                    WatchlistPlaylistState.WaitingForTargetSync,
+                    waitingMessage,
+                    nextAttemptUtc: null,
+                    consecutiveFailures: 0,
+                    cancellationToken);
+                return new PlaylistReconciliationResult(
+                    true,
+                    waitingMessage,
+                    liveTrackCount,
+                    MissingTracks: 0,
+                    IgnoredTracks: 0,
+                    LocalTracks: localTrackCount,
+                    QueuedTracks: 0,
+                    CompletedTracks: localTrackCount,
+                    FailedTracks: 0,
+                    SyncResult: null,
+                    Deferred: true,
+                    QueueStopReason: WatchQueueStopReason.TrackDeferred.ToString(),
+                    RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount));
             }
         }
         var artworkRevision = preference?.ReuseSavedArtwork == true
@@ -960,11 +943,7 @@ internal sealed class WatchlistEngine
             throw new InvalidOperationException("Playlist source is not available.");
         }
 
-        var liveSnapshot = await FetchLivePlaylistSnapshotAsync(
-            source,
-            sourceId,
-            CompletePlaylistCandidateFetchCount,
-            cancellationToken);
+        var liveSnapshot = await FetchPlaylistMetadataSnapshotAsync(source, sourceId, cancellationToken);
         if (!HasUsableMetadataRefresh(playlist, liveSnapshot))
         {
             throw new InvalidOperationException($"Playlist source refresh returned no usable data for {source}:{sourceId}.");
@@ -1006,16 +985,6 @@ internal sealed class WatchlistEngine
                 cancellationToken);
         }
 
-        await UpdatePlaylistStateAsync(
-            source,
-            sourceId,
-            liveTrackCount,
-            liveSnapshot.SnapshotId,
-            WatchlistPlaylistState.MetadataRefreshed,
-            "Metadata refreshed from source.",
-            nextAttemptUtc: null,
-            consecutiveFailures: 0,
-            cancellationToken);
         await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
             source,
             sourceId,
@@ -1028,17 +997,33 @@ internal sealed class WatchlistEngine
                 currentPlaylist.OwnerName),
             cancellationToken);
 
-        if (liveSnapshot.Candidates.Count > 0)
+        return currentPlaylist;
+    }
+
+    private async Task<LivePlaylistSnapshot> FetchPlaylistMetadataSnapshotAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase))
         {
-            await _libraryRepository.UpsertPlaylistTrackCandidateCacheAsync(
+            return await FetchLivePlaylistSnapshotAsync(
                 source,
                 sourceId,
-                liveSnapshot.SnapshotId,
-                JsonSerializer.Serialize(liveSnapshot.Candidates),
+                CompletePlaylistCandidateFetchCount,
                 cancellationToken);
         }
 
-        return currentPlaylist;
+        var playlist = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
+        return BuildLivePlaylistSnapshot(
+            Array.Empty<PlaylistTrackCandidate>(),
+            new LivePlaylistSnapshotMetadata(
+                Name: playlist?.Name,
+                Description: playlist?.Description,
+                ImageUrl: playlist?.ImageUrl,
+                TrackCount: playlist?.TrackCount,
+                IsComplete: playlist != null,
+                CanClearImageUrl: true));
     }
 
     private static bool HasUsableMetadataRefresh(PlaylistWatchlistDto playlist, LivePlaylistSnapshot liveSnapshot)

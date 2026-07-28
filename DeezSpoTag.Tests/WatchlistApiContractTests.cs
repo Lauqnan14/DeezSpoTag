@@ -179,7 +179,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
                 SyncMode: "mirror",
                 UpdateArtwork: false,
                 ReuseSavedArtwork: false));
-        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "target-diagnostics");
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "target-diagnostics", "snapshot-1");
         var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
             1,
             TimeSpan.FromMinutes(1),

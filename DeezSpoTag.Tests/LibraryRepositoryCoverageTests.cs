@@ -454,7 +454,11 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             source: " Spotify ",
             sourceId: " pl-123 ",
             snapshotId: "snap-1",
-            candidatesJson: "[{\"id\":\"dz-song-1\"}]");
+            candidatesJson: "[{\"id\":\"dz-song-1\"}]",
+            schemaVersion: 4,
+            identityRevision: "identity",
+            providerReadinessRevision: "provider",
+            isComplete: true);
         var cache = await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "pl-123");
         Assert.NotNull(cache);
         Assert.Equal("snap-1", cache!.SnapshotId);
@@ -607,7 +611,8 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             new List<PlaylistWatchIgnoreInsert> { new("dz-song-orphan-check", null) });
         var targetJobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
-            "pl-123");
+            "pl-123",
+            "snapshot-1");
         Assert.Equal(
             new[] { "jellyfin", "plex" },
             targetJobs.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());

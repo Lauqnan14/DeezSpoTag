@@ -496,6 +496,7 @@ CREATE TABLE IF NOT EXISTS watchlist_sync_job (
     track_id TEXT NOT NULL,
     target_service TEXT NOT NULL,
     queue_uuid TEXT,
+    snapshot_id TEXT,
     destination_folder_id BIGINT,
     final_file_paths_json TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -555,6 +556,7 @@ CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_owner", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, "watchlist_sync_job", "snapshot_id", TextType, cancellationToken);
         await MigrateWatchlistSyncJobsToPerTargetPlaylistScopeAsync(connection, cancellationToken);
         await DropIndexIfExistsAsync(connection, "idx_watchlist_sync_job_due", cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_sync_job_due", "watchlist_sync_job", "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
@@ -644,7 +646,19 @@ CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
         await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "identity_revision", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "provider_readiness_revision", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistTrackCandidateCacheTable, "is_complete", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_watch_target_sync_state (
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_service TEXT NOT NULL,
+    applied_snapshot_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, source_id, target_service)
+);", cancellationToken);
         await ApplyWatchlistReliabilityRepairAsync(connection, cancellationToken);
+        await RepairPlaylistCandidateAndTargetSyncRuntimeAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS boomplay_deezer_track_mapping (
     boomplay_track_id TEXT NOT NULL PRIMARY KEY,
@@ -1296,6 +1310,54 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc=excluded.completed_at_u
 UPDATE manual_unavailable_track
 SET next_retry_at_utc = datetime(added_at_utc, '+7 days')
 WHERE next_retry_at_utc IS NULL OR trim(next_retry_at_utc) = '';";
+        await using var command = new SqliteCommand(sql, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task RepairPlaylistCandidateAndTargetSyncRuntimeAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+INSERT INTO watchlist_reconciliation_request (kind,source,identifier,status,next_attempt_utc)
+SELECT 'playlist', cache.source, cache.source_id, 'pending', CURRENT_TIMESTAMP
+FROM playlist_track_candidate_cache cache
+JOIN playlist_watchlist playlist
+  ON playlist.source=cache.source AND playlist.source_id=cache.source_id
+WHERE cache.schema_version<>4 OR cache.is_complete=0
+ON CONFLICT(kind,source,identifier) DO UPDATE SET
+    status='pending',
+    attempt_count=0,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    last_error=NULL,
+    updated_at=CURRENT_TIMESTAMP;
+
+DELETE FROM playlist_track_candidate_cache
+WHERE EXISTS (
+    SELECT 1 FROM playlist_watchlist playlist
+    WHERE playlist.source=playlist_track_candidate_cache.source
+      AND playlist.source_id=playlist_track_candidate_cache.source_id)
+  AND (schema_version<>4 OR is_complete=0);
+
+INSERT INTO watchlist_reconciliation_request (kind,source,identifier,status,next_attempt_utc)
+SELECT DISTINCT 'playlist', job.source, job.playlist_id, 'pending', CURRENT_TIMESTAMP
+FROM watchlist_sync_job job
+WHERE lower(job.track_id)='playlist'
+  AND (job.snapshot_id IS NULL OR trim(job.snapshot_id)='')
+ON CONFLICT(kind,source,identifier) DO UPDATE SET
+    status='pending',
+    attempt_count=0,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    last_error=NULL,
+    updated_at=CURRENT_TIMESTAMP;
+
+DELETE FROM watchlist_sync_job
+WHERE lower(track_id)='playlist'
+  AND (snapshot_id IS NULL OR trim(snapshot_id)='');";
         await using var command = new SqliteCommand(sql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

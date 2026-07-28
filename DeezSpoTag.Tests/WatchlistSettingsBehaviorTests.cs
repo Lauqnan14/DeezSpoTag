@@ -1012,7 +1012,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var programSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Program.cs"));
         var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask RequestAllPlaylistSyncAsync(");
         Assert.Contains("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
-        Assert.Contains("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", notifyBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
         Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("public async Task ProcessFinalizationWorkAsync(", syncSource, StringComparison.Ordinal);
         Assert.Contains("public async Task ProcessTargetSyncWorkAsync(", syncSource, StringComparison.Ordinal);
@@ -1032,6 +1033,20 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", engineSource, StringComparison.Ordinal);
         Assert.DoesNotContain("target_service', 'all'", File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs")), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BoomplayMetadataRefresh_DoesNotMapTracksOrRewriteCandidateCache()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var refreshBody = ExtractMethodBody(source, "public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(");
+        var metadataBody = ExtractMethodBody(source, "private async Task<LivePlaylistSnapshot> FetchPlaylistMetadataSnapshotAsync(");
+
+        Assert.Contains("FetchPlaylistMetadataSnapshotAsync", refreshBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertPlaylistTrackCandidateCacheAsync", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("GetBoomplayPlaylistWatchDataAsync", metadataBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("MapBoomplayWatchIntentTrackCandidatesAsync", metadataBody, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -103,6 +103,26 @@ public sealed class BoomplayWatchlistMappingServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PendingRetry_IsNotInvalidatedByAlbumOrDurationMetadataChanges()
+    {
+        var resolverCalls = 0;
+        var service = NewService((_, _) =>
+        {
+            resolverCalls++;
+            return Task.FromResult<BoomplayDeezerMatchResult?>(null);
+        });
+        var input = new BoomplayWatchlistTrackInput(
+            "boom-stable", null, "Title", "Artist", "Album", null, 200_000, null);
+
+        _ = await service.ResolveTracksAsync([input], CancellationToken.None);
+        _ = await service.ResolveTracksAsync(
+            [input with { Album = "Album deluxe", DurationMs = 201_000 }],
+            CancellationToken.None);
+
+        Assert.Equal(1, resolverCalls);
+    }
+
+    [Fact]
     public async Task TemporaryRematchFailure_DoesNotErasePreviouslyVerifiedDeezerIdentity()
     {
         var input = new BoomplayWatchlistTrackInput(

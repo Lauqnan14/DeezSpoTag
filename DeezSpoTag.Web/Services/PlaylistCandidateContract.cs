@@ -37,7 +37,7 @@ internal static class PlaylistCandidateContract
            && isComplete
            && candidates != null
            && (!expectedTrackCount.HasValue
-               || (string.Equals(Normalize(source), "spotify", StringComparison.Ordinal)
+               || (Normalize(source) is "spotify" or "boomplay"
                    ? (expectedTrackCount.Value <= 0
                        ? candidates.Count == 0
                        : candidates.Count > 0 && candidates.Count <= expectedTrackCount.Value)
@@ -64,6 +64,23 @@ internal static class PlaylistCandidateContract
             mappingStatus = Normalize(candidate.MappingStatus)
         }));
         return $"{ValidationRevision}:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)))}";
+    }
+
+    public static string BuildTargetSyncRevision(
+        string candidateIdentityRevision,
+        IEnumerable<DeezSpoTag.Services.Library.PlaylistWatchTrackStatusDto> trackStatuses)
+    {
+        var localIdentityPayload = JsonSerializer.Serialize(trackStatuses
+            .Where(static status => status.LocalTrackId.HasValue)
+            .OrderBy(static status => status.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .Select(static status => new
+            {
+                sourceId = Normalize(status.TrackSourceId),
+                localTrackId = status.LocalTrackId,
+                identityStatus = Normalize(status.IdentityStatus)
+            }));
+        var payload = $"{candidateIdentityRevision}\n{localIdentityPayload}";
+        return $"playlist-target-v1:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)))}";
     }
 
     private static string Normalize(string? value)
