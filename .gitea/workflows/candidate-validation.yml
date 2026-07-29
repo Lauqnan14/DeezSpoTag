@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      REGISTRY: 192.168.28.24:3430
+      REGISTRY: 127.0.0.1:3430
       IMAGE_REPOSITORY: lauqnan14/deezspotag-candidate
       IMAGE_TAG: candidate-${{ gitea.sha }}
       TEST_CONTAINER: deezspotag-candidate-test
@@ -136,4 +136,3 @@ jobs:
           docker image rm "$image"
           docker logout "$REGISTRY"
           exit 0
-
