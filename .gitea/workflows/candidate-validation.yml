@@ -33,25 +33,6 @@ jobs:
           docker version
           docker info
 
-      - name: Authenticate to Gitea Container Registry
-        shell: bash
-        env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5; do
-            if printf '%s' "$REGISTRY_TOKEN" |
-              docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin; then
-              exit 0
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "Gitea Container Registry authentication failed after five attempts." >&2
-              exit 1
-            fi
-            sleep $((attempt * 5))
-          done
-
       - name: Build candidate image
         shell: bash
         run: |
@@ -65,10 +46,25 @@ jobs:
 
       - name: Push candidate image to Gitea
         shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           image="$REGISTRY/$IMAGE_REPOSITORY:$IMAGE_TAG"
-          docker push "$image"
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "$REGISTRY_TOKEN" |
+              docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin &&
+              docker push "$image"; then
+              exit 0
+            fi
+            docker logout "$REGISTRY" >/dev/null 2>&1 || true
+            if [ "$attempt" -eq 5 ]; then
+              echo "Candidate image push failed after five authenticated attempts." >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Scan candidate image with Trivy
         shell: bash
