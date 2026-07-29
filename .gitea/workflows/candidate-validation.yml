@@ -40,8 +40,17 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" |
-            docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
+          for attempt in 1 2 3 4 5; do
+            if printf '%s' "$REGISTRY_TOKEN" |
+              docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "Gitea Container Registry authentication failed after five attempts." >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
 
       - name: Build candidate image
         shell: bash
