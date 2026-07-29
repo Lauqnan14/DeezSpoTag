@@ -152,34 +152,35 @@ public sealed class ProviderIntegrationSurfaceTests
     }
 
     [Fact]
-    public void QobuzTryExtractCommonProviderUrlPayload_RejectsHtmlWithProviderLabel()
+    public void QobuzTryExtractQualityResolution_RejectsHtmlWithProviderLabel()
     {
         var method = typeof(QobuzDownloadService).GetMethod(
-            "TryExtractCommonProviderUrlPayload",
+            "TryExtractQualityResolution",
             BindingFlags.NonPublic | BindingFlags.Static);
 
         Assert.NotNull(method);
 
-        var args = new object?[] { "<html></html>", "Provider", null };
+        var args = new object?[] { "<html></html>", "Provider", 123L, "6", "provider", null };
         var exception = Assert.Throws<TargetInvocationException>(() => method!.Invoke(null, args));
         Assert.IsType<InvalidOperationException>(exception.InnerException);
         Assert.Equal("Provider returned HTML instead of JSON.", exception.InnerException!.Message);
     }
 
     [Fact]
-    public void QobuzTryExtractCommonProviderUrlPayload_AcceptsDirectUrlPayload()
+    public void QobuzTryExtractQualityResolution_AcceptsDirectUrlPayload()
     {
         var method = typeof(QobuzDownloadService).GetMethod(
-            "TryExtractCommonProviderUrlPayload",
+            "TryExtractQualityResolution",
             BindingFlags.NonPublic | BindingFlags.Static);
 
         Assert.NotNull(method);
 
-        var args = new object?[] { "\"https://example.test/file.flac\"", "Provider", null };
+        var args = new object?[] { "\"https://example.test/file.flac\"", "Provider", 123L, "6", "provider", null };
         var success = (bool)method!.Invoke(null, args)!;
 
         Assert.True(success);
-        Assert.Equal("https://example.test/file.flac", args[2] as string);
+        var resolution = Assert.IsType<QobuzQualityResolution>(args[5]);
+        Assert.Equal("https://example.test/file.flac", resolution.DownloadUrl);
     }
 
     [Fact]

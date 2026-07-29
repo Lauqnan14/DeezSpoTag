@@ -511,22 +511,4 @@ public sealed class QobuzMetadataService : IQobuzMetadataService
         return await _apiClient.GetTrackAsync(trackId, ct);
     }
 
-    public async Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct)
-    {
-        var track = await _apiClient.GetTrackAsync(trackId, ct);
-        if (track == null)
-        {
-            return null;
-        }
-
-        return new QobuzQualityInfo
-        {
-            BitDepth = track.MaximumBitDepth,
-            SampleRate = track.MaximumSamplingRate,
-            IsHiRes = track.HiRes,
-            IsStreamable = track.Album?.Streamable ?? false,
-            IsDownloadable = track.Album?.Downloadable ?? false,
-            IsPurchasable = track.Album?.Purchasable ?? false
-        };
-    }
 }

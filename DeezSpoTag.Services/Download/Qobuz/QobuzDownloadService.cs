@@ -27,8 +27,18 @@ public interface IQobuzDownloadService
     Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken);
     Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken);
     Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken cancellationToken);
+    Task<QobuzQualityResolution?> ResolveQualityAsync(long trackId, string qualityCode, CancellationToken cancellationToken);
     Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken);
 }
+
+public sealed record QobuzQualityResolution(
+    long TrackId,
+    string QualityCode,
+    string AvailableQualityCode,
+    string DownloadUrl,
+    int BitDepth,
+    double SamplingRate,
+    string Provider);
 
 public sealed class QobuzDownloadService : IQobuzDownloadService
 {
@@ -218,6 +228,19 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         var qualityCode = requestedQuality;
         {
+            if (IsReusableResolution(request.ResolvedQuality, trackId, qualityCode))
+            {
+                request.Quality = qualityCode;
+                await NotifySelectedQualityAsync(request, qualityCode);
+                await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
+                {
+                    DownloadUrl = request.ResolvedQuality!.DownloadUrl,
+                    OutputPath = outputPath,
+                    Request = request
+                }, cancellationToken);
+                return;
+            }
+
             var officialAttempt = await TryDownloadWithOfficialCredentialsAsync(
                 trackId,
                 qualityCode,
@@ -269,6 +292,73 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         throw new InvalidOperationException(DownloadUrlUnavailableMessage);
     }
+
+    public async Task<QobuzQualityResolution?> ResolveQualityAsync(
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        if (trackId <= 0)
+        {
+            return null;
+        }
+
+        var normalizedQuality = NormalizeQobuzQualityCode(qualityCode);
+        QobuzQualityResolution? official = null;
+        try
+        {
+            official = await TryResolveOfficialQualityAsync(trackId, normalizedQuality, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Qobuz official quality resolution failed for track {TrackId} quality {Quality}; checking enabled public providers.",
+                trackId,
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedQuality));
+        }
+
+        if (official != null)
+        {
+            return official;
+        }
+
+        foreach (var provider in await BuildPublicProvidersAsync(trackId, normalizedQuality, cancellationToken))
+        {
+            if (IsProviderCoolingDown(provider.Name))
+            {
+                continue;
+            }
+
+            var attempt = await TryResolveProviderAsync(
+                provider,
+                trackId,
+                normalizedQuality,
+                cancellationToken);
+            if (attempt.Resolution != null)
+            {
+                return attempt.Resolution;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsReusableResolution(
+        QobuzQualityResolution? resolution,
+        long trackId,
+        string qualityCode)
+        => resolution != null
+           && resolution.TrackId == trackId
+           && string.Equals(
+               NormalizeQobuzQualityCode(resolution.QualityCode),
+               NormalizeQobuzQualityCode(qualityCode),
+               StringComparison.OrdinalIgnoreCase)
+           && !string.IsNullOrWhiteSpace(resolution.DownloadUrl);
 
     private sealed record ProviderDownloadAttempt(bool Succeeded, Exception? Failure);
 
@@ -346,7 +436,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var resolution = await TryResolveProviderAsync(provider, trackId, qualityCode, cancellationToken);
-        if (string.IsNullOrWhiteSpace(resolution.DownloadUrl))
+        if (resolution.Resolution == null)
         {
             return new ProviderDownloadAttempt(false, resolution.Failure);
         }
@@ -357,7 +447,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             await NotifySelectedQualityAsync(request, qualityCode);
             await ExecuteDownloadAndTagAsync(new DownloadExecutionContext
             {
-                DownloadUrl = resolution.DownloadUrl,
+                DownloadUrl = resolution.Resolution.DownloadUrl,
                 OutputPath = outputPath,
                 Request = request
             }, cancellationToken);
@@ -412,7 +502,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static string NormalizeQobuzQualityCode(string? quality) => QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "6");
 
-    private sealed record ProviderResolutionAttempt(string? DownloadUrl, Exception? Failure);
+    private sealed record ProviderResolutionAttempt(QobuzQualityResolution? Resolution, Exception? Failure);
 
     private async Task<ProviderResolutionAttempt> TryResolveProviderAsync(
         ProviderCandidate provider,
@@ -426,7 +516,7 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         {
             var resolved = await provider.ResolveAsync(cancellationToken);
             stopwatch.Stop();
-            if (!string.IsNullOrWhiteSpace(resolved))
+            if (resolved != null && !string.IsNullOrWhiteSpace(resolved.DownloadUrl))
             {
                 await _publicProviderRegistry.RecordSuccessAsync(provider.Id, stopwatch.ElapsedMilliseconds, cancellationToken);
             }
@@ -600,10 +690,19 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string qualityCode,
         CancellationToken cancellationToken)
     {
+        var resolution = await TryResolveOfficialQualityAsync(trackId, qualityCode, cancellationToken);
+        return resolution?.DownloadUrl;
+    }
+
+    private async Task<QobuzQualityResolution?> TryResolveOfficialQualityAsync(
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
         await ProviderResolutionGate.WaitAsync(cancellationToken);
         try
         {
-            return await TryGetOfficialQobuzStreamUrlAsync(trackId, qualityCode, cancellationToken);
+            return await TryGetOfficialQobuzQualityAsync(trackId, qualityCode, cancellationToken);
         }
         finally
         {
@@ -612,6 +711,15 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     }
 
     private async Task<string?> TryGetOfficialQobuzStreamUrlAsync(
+        long trackId,
+        string qualityCode,
+        CancellationToken cancellationToken)
+    {
+        var resolution = await TryGetOfficialQobuzQualityAsync(trackId, qualityCode, cancellationToken);
+        return resolution?.DownloadUrl;
+    }
+
+    private async Task<QobuzQualityResolution?> TryGetOfficialQobuzQualityAsync(
         long trackId,
         string qualityCode,
         CancellationToken cancellationToken)
@@ -652,9 +760,15 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var payload = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (TryExtractCommonProviderUrlPayload(payload, "Qobuz official API", out var directUrl))
+        if (TryExtractQualityResolution(
+                payload,
+                "Qobuz official API",
+                trackId,
+                normalizedQuality,
+                "official",
+                out var resolution))
         {
-            return directUrl;
+            return resolution;
         }
 
         throw new InvalidOperationException("Qobuz official API response did not contain a usable stream URL.");
@@ -673,9 +787,12 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return "unavailable";
     }
 
-    private sealed record ProviderCandidate(string Id, string Name, Func<CancellationToken, Task<string?>> ResolveAsync);
+    private sealed record ProviderCandidate(
+        string Id,
+        string Name,
+        Func<CancellationToken, Task<QobuzQualityResolution?>> ResolveAsync);
 
-    private async Task<string?> TryGetSignedZarzStreamUrlAsync(
+    private async Task<QobuzQualityResolution?> TryGetSignedZarzStreamUrlAsync(
         long trackId,
         string qualityCode,
         CancellationToken cancellationToken)
@@ -702,9 +819,15 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new InvalidOperationException(BuildZarzFailure("zarz", response, body));
         }
 
-        if (TryExtractCommonProviderUrlPayload(body, "zarz", out var directUrl))
+        if (TryExtractQualityResolution(
+                body,
+                "zarz",
+                trackId,
+                NormalizeQobuzQualityCode(qualityCode),
+                "zarz",
+                out var resolution))
         {
-            return directUrl;
+            return resolution;
         }
 
         throw new InvalidOperationException("Qobuz API v1.1.0 did not return a usable stream URL.");
@@ -1050,13 +1173,26 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         return body;
     }
 
-    private static bool TryExtractCommonProviderUrlPayload(
+    private static bool TryExtractQualityResolution(
         string body,
         string providerLabel,
-        out string? directUrl)
+        long trackId,
+        string qualityCode,
+        string provider,
+        out QobuzQualityResolution? resolution)
     {
+        resolution = null;
+        string? directUrl;
         if (TryExtractDirectUrlPayload(body, out directUrl))
         {
+            resolution = new QobuzQualityResolution(
+                trackId,
+                qualityCode,
+                string.Empty,
+                directUrl!,
+                0,
+                0,
+                provider);
             return true;
         }
 
@@ -1070,6 +1206,18 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             using var doc = JsonDocument.Parse(body);
             if (TryExtractProviderUrl(doc.RootElement, out directUrl))
             {
+                var qualityElement = ResolveProviderPayloadElement(doc.RootElement);
+                var bitDepth = ReadProviderNumber(qualityElement, "bit_depth");
+                var samplingRate = ReadProviderNumber(qualityElement, "sampling_rate");
+                var availableQuality = ReadProviderString(qualityElement, "quality_label");
+                resolution = new QobuzQualityResolution(
+                    trackId,
+                    qualityCode,
+                    QobuzQualityCodeNormalizer.Normalize(availableQuality, defaultCode: string.Empty),
+                    directUrl!,
+                    bitDepth > 0 ? (int)Math.Round(bitDepth) : 0,
+                    NormalizeProviderSamplingRate(samplingRate),
+                    provider);
                 return true;
             }
         }
@@ -1080,6 +1228,46 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         return false;
     }
+
+    private static JsonElement ResolveProviderPayloadElement(JsonElement root)
+        => root.ValueKind == JsonValueKind.Object
+           && root.TryGetProperty("data", out var data)
+           && data.ValueKind == JsonValueKind.Object
+            ? data
+            : root;
+
+    private static double ReadProviderNumber(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind != JsonValueKind.Object
+            || !element.TryGetProperty(propertyName, out var value))
+        {
+            return 0;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+        {
+            return number;
+        }
+
+        return value.ValueKind == JsonValueKind.String
+               && double.TryParse(
+                   value.GetString(),
+                   NumberStyles.Float,
+                   CultureInfo.InvariantCulture,
+                   out number)
+            ? number
+            : 0;
+    }
+
+    private static string ReadProviderString(JsonElement element, string propertyName)
+        => element.ValueKind == JsonValueKind.Object
+           && element.TryGetProperty(propertyName, out var value)
+           && value.ValueKind == JsonValueKind.String
+            ? value.GetString()?.Trim() ?? string.Empty
+            : string.Empty;
+
+    private static double NormalizeProviderSamplingRate(double samplingRate)
+        => samplingRate >= 1000 ? samplingRate / 1000d : samplingRate;
 
     private static bool TryExtractProviderUrl(JsonElement root, out string? url)
     {

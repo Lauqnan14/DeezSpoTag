@@ -44,7 +44,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
     private readonly IPostDownloadTaskScheduler _postDownloadTaskScheduler;
     private readonly IFolderConversionSettingsOverlay _folderConversionSettingsOverlay;
     private readonly IDownloadTagSettingsResolver _tagSettingsResolver;
-    private readonly IQobuzMetadataService _qobuzMetadataService;
     private readonly ILogger<QobuzEngineProcessor> _logger;
 
     public QobuzEngineProcessor(
@@ -65,7 +64,6 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         _postDownloadTaskScheduler = serviceProvider.GetRequiredService<IPostDownloadTaskScheduler>();
         _folderConversionSettingsOverlay = serviceProvider.GetRequiredService<IFolderConversionSettingsOverlay>();
         _tagSettingsResolver = serviceProvider.GetRequiredService<IDownloadTagSettingsResolver>();
-        _qobuzMetadataService = serviceProvider.GetRequiredService<IQobuzMetadataService>();
         _logger = logger;
     }
 
@@ -164,7 +162,16 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         var context = await BuildTrackContextAsync(payload, settings, itemToken);
         var request = BuildRequest(payload, settings, context);
         payload.QobuzRequestedQuality = request.Quality;
-        var qualityDecision = await ApplyCatalogQualityDecisionAsync(next.QueueUuid, payload, request, resolvedTrack, itemToken);
+        var resolvedQuality = await _qobuzDownloader.ResolveQualityAsync(
+            resolvedTrack.Track.Id,
+            request.Quality,
+            itemToken);
+        var qualityDecision = await ApplyResolvedQualityDecisionAsync(
+            next.QueueUuid,
+            payload,
+            request,
+            resolvedQuality,
+            itemToken);
         if (qualityDecision.SkipCurrentPlanStep)
         {
             FallbackAttemptRecorder.RecordCurrent(
@@ -529,11 +536,11 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         return DownloadWithQualityAsync(context, request.Quality);
     }
 
-    private async Task<QobuzQualityDecisionResult> ApplyCatalogQualityDecisionAsync(
+    private async Task<QobuzQualityDecisionResult> ApplyResolvedQualityDecisionAsync(
         string queueUuid,
         QobuzQueueItem payload,
         QobuzDownloadRequest request,
-        QobuzTrackResolution resolution,
+        QobuzQualityResolution? resolution,
         CancellationToken cancellationToken)
     {
         var requestedQuality = NormalizeQobuzQualityCode(request.Quality);
@@ -541,107 +548,79 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             ? requestedQuality
             : NormalizeQobuzQualityCode(payload.QobuzRequestedQuality);
 
-        var signal = await ResolveCatalogQualitySignalAsync(resolution.Track, cancellationToken);
-        if (signal == null)
+        var providerQuality = resolution == null
+            ? string.Empty
+            : QobuzQualityCodeNormalizer.Normalize(
+                resolution.AvailableQualityCode,
+                defaultCode: string.Empty);
+        if (string.IsNullOrWhiteSpace(providerQuality)
+            && resolution is { BitDepth: > 0, SamplingRate: > 0 })
+        {
+            providerQuality = MapCatalogQuality(resolution.BitDepth, resolution.SamplingRate);
+        }
+
+        if (resolution == null || string.IsNullOrWhiteSpace(providerQuality))
         {
             payload.QobuzCatalogQuality = string.Empty;
-            payload.QobuzQualityDecisionReason = "catalog_quality_unknown";
+            payload.QobuzQualityDecisionReason = "provider_quality_unknown";
             payload.QobuzMaximumBitDepth = 0;
             payload.QobuzMaximumSamplingRate = 0;
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
             return QobuzQualityDecisionResult.Skip(
-                $"Qobuz catalog quality is unknown for current plan step {requestedQuality}; skipping download before audio transfer.");
+                $"Qobuz provider could not verify quality for current plan step {requestedQuality}; skipping download before audio transfer.");
         }
 
-        var catalogQuality = MapCatalogQuality(signal.Value.BitDepth, signal.Value.SampleRate);
-        payload.QobuzMaximumBitDepth = signal.Value.BitDepth;
-        payload.QobuzMaximumSamplingRate = signal.Value.SampleRate;
-        payload.QobuzCatalogQuality = catalogQuality;
+        payload.QobuzMaximumBitDepth = resolution.BitDepth > 0
+            ? resolution.BitDepth
+            : CanonicalBitDepth(providerQuality);
+        payload.QobuzMaximumSamplingRate = resolution.SamplingRate > 0
+            ? resolution.SamplingRate
+            : CanonicalSamplingRate(providerQuality);
+        payload.QobuzCatalogQuality = providerQuality;
 
-        var selectedQuality = SelectQualityWithinCatalogCeiling(requestedQuality, catalogQuality);
+        var selectedQuality = SelectQualityWithinCatalogCeiling(requestedQuality, providerQuality);
         var lowersRequestedQuality = !string.Equals(selectedQuality, requestedQuality, StringComparison.OrdinalIgnoreCase);
         if (lowersRequestedQuality)
         {
-            payload.QobuzQualityDecisionReason = "catalog_quality_lower_than_requested_global_plan_preserved";
+            payload.QobuzQualityDecisionReason = "provider_quality_lower_than_requested_global_plan_preserved";
             await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
             var message =
-                $"Qobuz catalog max quality is {selectedQuality}, below current plan step {requestedQuality}; advancing global source plan.";
+                $"Qobuz provider max quality is {selectedQuality}, below current plan step {requestedQuality}; advancing global source plan.";
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
-                    "Qobuz catalog quality below current global plan step for {QueueUuid}: requested={RequestedQuality} catalog={CatalogQuality} max={BitDepth}-bit/{SampleRate}kHz",
+                    "Qobuz provider quality below current global plan step for {QueueUuid}: requested={RequestedQuality} available={AvailableQuality} max={BitDepth}-bit/{SampleRate}kHz",
                     queueUuid,
                     requestedQuality,
                     selectedQuality,
-                    signal.Value.BitDepth,
-                    signal.Value.SampleRate);
+                    payload.QobuzMaximumBitDepth,
+                    payload.QobuzMaximumSamplingRate);
             }
 
             return QobuzQualityDecisionResult.Skip(message);
         }
 
         request.Quality = selectedQuality;
+        request.ResolvedQuality = resolution;
         payload.Quality = selectedQuality;
         payload.QobuzResolvedQuality = selectedQuality;
         payload.QobuzQualityDecisionReason = !lowersRequestedQuality
-            ? "catalog_quality_allows_requested"
-            : "catalog_quality_lower_than_requested";
+            ? "provider_quality_allows_requested"
+            : "provider_quality_lower_than_requested";
 
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
         if (lowersRequestedQuality && _logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Qobuz catalog quality selected {SelectedQuality} instead of requested {RequestedQuality} for {QueueUuid}: max={BitDepth}-bit/{SampleRate}kHz",
+                "Qobuz provider quality selected {SelectedQuality} instead of requested {RequestedQuality} for {QueueUuid}: max={BitDepth}-bit/{SampleRate}kHz",
                 selectedQuality,
                 requestedQuality,
                 queueUuid,
-                signal.Value.BitDepth,
-                signal.Value.SampleRate);
+                payload.QobuzMaximumBitDepth,
+                payload.QobuzMaximumSamplingRate);
         }
 
         return QobuzQualityDecisionResult.Continue();
-    }
-
-    private async Task<QobuzCatalogQualitySignal?> ResolveCatalogQualitySignalAsync(
-        DeezSpoTag.Core.Models.Qobuz.QobuzTrack track,
-        CancellationToken cancellationToken)
-    {
-        var direct = BuildCatalogQualitySignal(track.MaximumBitDepth, track.MaximumSamplingRate);
-        if (direct != null)
-        {
-            return direct;
-        }
-
-        if (track.Id <= 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            var quality = await _qobuzMetadataService.GetTrackQuality(track.Id, cancellationToken);
-            return quality == null
-                ? null
-                : BuildCatalogQualitySignal(quality.BitDepth, quality.SampleRate);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                ex,
-                "Qobuz catalog quality lookup failed for track {TrackId}; keeping requested quality.",
-                track.Id);
-            return null;
-        }
-    }
-
-    private static QobuzCatalogQualitySignal? BuildCatalogQualitySignal(int bitDepth, double sampleRate)
-    {
-        if (bitDepth <= 0)
-        {
-            return null;
-        }
-
-        return new QobuzCatalogQualitySignal(bitDepth, sampleRate > 0 ? sampleRate : 0);
     }
 
     internal static string SelectQualityWithinCatalogCeiling(string requestedQuality, string catalogQuality)
@@ -671,10 +650,25 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             _ => 0
         };
 
+    private static int CanonicalBitDepth(string quality)
+        => NormalizeQobuzQualityCode(quality) switch
+        {
+            "27" or "7" => 24,
+            "6" => 16,
+            _ => 0
+        };
+
+    private static double CanonicalSamplingRate(string quality)
+        => NormalizeQobuzQualityCode(quality) switch
+        {
+            "27" => 192,
+            "7" => 96,
+            "6" => 44.1,
+            _ => 0
+        };
+
     private static string NormalizeQobuzQualityCode(string? quality)
         => QobuzQualityCodeNormalizer.Normalize(quality, defaultCode: "6");
-
-    private readonly record struct QobuzCatalogQualitySignal(int BitDepth, double SampleRate);
 
     private readonly record struct QobuzQualityDecisionResult(bool SkipCurrentPlanStep, string Message)
     {

@@ -25,6 +25,7 @@ public sealed class QobuzDownloadRequest : EngineDownloadRequestBase
 {
     public string Quality { get; set; } = "";
     public string? TrackUrl { get; set; }
+    public QobuzQualityResolution? ResolvedQuality { get; set; }
     public bool EmbedMaxQualityCover { get; set; }
     public Func<string, Task>? SelectedQualityCallback { get; set; }
     public TagSettings? TagSettings { get; set; }

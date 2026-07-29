@@ -90,23 +90,76 @@ public sealed class QobuzQualityFallbackTests
     }
 
     [Fact]
-    public void CatalogUnknownPath_DoesNotContinueToAudioDownload()
+    public void ProviderUnknownPath_DoesNotContinueToAudioDownload()
     {
         var sourcePath = Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
         var source = File.ReadAllText(sourcePath);
         var unknownBranchStart = source.IndexOf(
-            "payload.QobuzQualityDecisionReason = \"catalog_quality_unknown\";",
+            "payload.QobuzQualityDecisionReason = \"provider_quality_unknown\";",
             StringComparison.Ordinal);
 
         Assert.True(unknownBranchStart >= 0);
-        var unknownBranchEnd = source.IndexOf("var catalogQuality =", unknownBranchStart, StringComparison.Ordinal);
+        var unknownBranchEnd = source.IndexOf(
+            "payload.QobuzMaximumBitDepth = resolution.BitDepth",
+            unknownBranchStart,
+            StringComparison.Ordinal);
         Assert.True(unknownBranchEnd > unknownBranchStart);
         var unknownBranch = source[unknownBranchStart..unknownBranchEnd];
 
         Assert.Contains("QobuzQualityDecisionResult.Skip", unknownBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("QobuzQualityDecisionResult.Continue", unknownBranch, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""{"download_url":"https://audio.test/track.flac","quality_label":"6","bit_depth":16,"sampling_rate":44.1}""", 16, 44.1, "6")]
+    [InlineData("""{"data":{"url":"https://audio.test/track.flac","quality_label":"7","bit_depth":24,"sampling_rate":96}}""", 24, 96, "7")]
+    [InlineData("""{"url":"https://audio.test/track.flac","quality_label":"27","bit_depth":"24","sampling_rate":"192000"}""", 24, 192, "27")]
+    public void ProviderQualityResolution_DrivesThePlanWithoutCatalogLookup(
+        string json,
+        int expectedBitDepth,
+        double expectedSamplingRate,
+        string expectedQuality)
+    {
+        var method = typeof(QobuzDownloadService).GetMethod(
+            "TryExtractQualityResolution",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var args = new object?[] { json, "test", 280142894L, "7", "test-provider", null };
+        var success = Assert.IsType<bool>(method!.Invoke(null, args));
+        var resolution = Assert.IsType<QobuzQualityResolution>(args[5]);
+
+        Assert.True(success);
+        Assert.Equal(expectedBitDepth, resolution.BitDepth);
+        Assert.Equal(expectedSamplingRate, resolution.SamplingRate);
+        Assert.Equal(expectedQuality, resolution.AvailableQualityCode);
+        Assert.Equal(expectedQuality, InvokeMapCatalogQuality(resolution.BitDepth, resolution.SamplingRate));
+    }
+
+    [Fact]
+    public void QobuzProcessor_UsesProviderQualityResolutionAndNotCatalogTrackQuality()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        var source = File.ReadAllText(sourcePath);
+
+        Assert.Contains("_qobuzDownloader.ResolveQualityAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("request.ResolvedQuality = resolution;", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetTrackQuality(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveCatalogQualitySignalAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SixteenBitProviderResult_SkipsHiResButSatisfiesCdLossless()
+    {
+        const string availableQuality = "6";
+
+        Assert.Equal("6", InvokeSelectQualityWithinCatalogCeiling("7", availableQuality));
+        Assert.Equal("6", InvokeSelectQualityWithinCatalogCeiling("6", availableQuality));
+        Assert.NotEqual("7", InvokeSelectQualityWithinCatalogCeiling("7", availableQuality));
     }
 
     [Fact]
@@ -174,4 +227,5 @@ public sealed class QobuzQualityFallbackTests
         var result = method!.Invoke(null, new object[] { requested, catalog });
         return Assert.IsType<string>(result);
     }
+
 }

@@ -402,9 +402,5 @@ public sealed class QobuzTrackResolverTests
             return Task.FromResult(TrackResult);
         }
 
-        public Task<QobuzQualityInfo?> GetTrackQuality(int trackId, CancellationToken ct)
-        {
-            return Task.FromResult<QobuzQualityInfo?>(null);
-        }
     }
 }
