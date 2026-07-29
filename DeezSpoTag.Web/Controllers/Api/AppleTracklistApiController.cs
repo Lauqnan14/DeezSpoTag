@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Linq;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -41,16 +42,19 @@ public sealed class AppleTracklistApiController : ControllerBase
         AppleStorefrontRegexTimeout);
     private readonly AppleMusicCatalogService _catalog;
     private readonly DeezSpoTagSettingsService _settingsService;
+    private readonly LibraryRepository _repository;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly ILogger<AppleTracklistApiController> _logger;
     public AppleTracklistApiController(
         AppleMusicCatalogService catalog,
         DeezSpoTagSettingsService settingsService,
+        LibraryRepository repository,
         PlaylistVisualService playlistVisualService,
         ILogger<AppleTracklistApiController> logger)
     {
         _catalog = catalog;
         _settingsService = settingsService;
+        _repository = repository;
         _playlistVisualService = playlistVisualService;
         _logger = logger;
     }
@@ -74,8 +78,9 @@ public sealed class AppleTracklistApiController : ControllerBase
 
         try
         {
-            var storefront = ResolveStorefrontFromAppleUrl(appleUrl)
-                ?? await ResolveStorefrontAsync(cancellationToken);
+            var storefront = type == PlaylistType
+                ? await ResolvePlaylistStorefrontAsync(resolvedId, appleUrl, cancellationToken)
+                : ResolveStorefrontFromAppleUrl(appleUrl) ?? ResolveConfiguredStorefront();
             if (type == AlbumType)
             {
                 var payload = await GetAlbumTracklist(resolvedId, storefront, cancellationToken);
@@ -146,21 +151,58 @@ public sealed class AppleTracklistApiController : ControllerBase
     private static string ResolveAppleId(string id, string? appleUrl)
         => AppleIdParser.Resolve(id, appleUrl) ?? string.Empty;
 
-    private async Task<string> ResolveStorefrontAsync(CancellationToken cancellationToken)
+    private async Task<string> ResolvePlaylistStorefrontAsync(
+        string playlistId,
+        string? appleUrl,
+        CancellationToken cancellationToken)
     {
-        try
+        var explicitStorefront = ResolveStorefrontFromAppleUrl(appleUrl);
+        if (!string.IsNullOrWhiteSpace(explicitStorefront))
         {
-            var settings = _settingsService.LoadSettings();
-            return await _catalog.ResolveStorefrontAsync(
-                settings.AppleMusic?.Storefront,
-                settings.AppleMusic?.MediaUserToken,
+            return explicitStorefront;
+        }
+
+        string? persistedStorefront = null;
+        if (_repository.IsConfigured)
+        {
+            var playlist = await _repository.GetPlaylistWatchlistEntryAsync(
+                AppleSource,
+                playlistId,
                 cancellationToken);
+            persistedStorefront = playlist?.SourceStorefront;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Apple tracklist storefront resolution failed; falling back to us.");
-            return "us";
-        }
+
+        return ResolveStorefrontPrecedence(
+            explicitStorefront: null,
+            persistedStorefront: persistedStorefront,
+            configuredStorefront: _settingsService.LoadSettings().AppleMusic?.Storefront);
+    }
+
+    private string ResolveConfiguredStorefront()
+        => ResolveStorefrontPrecedence(
+            explicitStorefront: null,
+            persistedStorefront: null,
+            configuredStorefront: _settingsService.LoadSettings().AppleMusic?.Storefront);
+
+    internal static string ResolveStorefrontPrecedence(
+        string? explicitStorefront,
+        string? persistedStorefront,
+        string? configuredStorefront)
+        => NormalizeStorefront(explicitStorefront)
+           ?? NormalizeStorefront(persistedStorefront)
+           ?? NormalizeStorefront(configuredStorefront)
+           ?? "us";
+
+    private static string? NormalizeStorefront(string? storefront)
+    {
+        var normalized = (storefront ?? string.Empty).Trim().ToLowerInvariant();
+        return Regex.IsMatch(
+            normalized,
+            @"^[a-z]{2}(?:-[a-z]{2})?$",
+            RegexOptions.CultureInvariant,
+            AppleStorefrontRegexTimeout)
+            ? normalized
+            : null;
     }
 
     private async Task<object> GetAlbumTracklist(string id, string storefront, CancellationToken cancellationToken)

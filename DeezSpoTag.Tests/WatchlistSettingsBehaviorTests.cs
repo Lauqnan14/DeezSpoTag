@@ -618,6 +618,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var visualSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "PlaylistVisualService.cs"));
 
         Assert.Contains("GetActiveStoredStillVisual", syncSource, StringComparison.Ordinal);
+        Assert.Contains("GetTargetArtworkRevision", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistPosterFromFileAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("UpdateItemPrimaryImageFromFileAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("VerifyJellyfinPrimaryImageChangedAsync", syncSource, StringComparison.Ordinal);
@@ -626,6 +627,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("ResolveJellyfinVisualFromManagedImage", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkOnlyAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkOnlyAsync", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("var previousRevision = _playlistVisualService.GetActiveArtworkRevision", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("var artworkChanged =", controllerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveStoredVisualForArtworkSync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveManagedVisualUrlAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("ResolveUnmaterializedVisualUrl(remoteUrl, reuseSavedArtwork, existingUrl)", visualSource, StringComparison.Ordinal);
@@ -661,11 +664,13 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("ResolveJellyfinVisual", navidromeArtworkBody, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkToTargetAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("request.TrackId.StartsWith(\"artwork:\"", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("GetActiveArtworkRevision", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("GetTargetArtworkRevision", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("IsPlaylistWatchArtworkRevisionAppliedAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyArtworkToNewTargetAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasPlaylistImageAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("GetQobuzSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetTidalSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("await SyncPlexPlaylistArtworkAsync(plex, playlist, preference, playlistId", syncSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -765,6 +770,12 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Equal("image/jpeg", isolatedStill!.ContentType);
         Assert.NotNull(isolatedAnimated);
         Assert.Equal("cover.webp", Path.GetFileName(isolatedAnimated!.FilePath));
+        var plexRevision = service.GetTargetArtworkRevision(source, sourceId, "plex");
+        var jellyfinRevision = service.GetTargetArtworkRevision(source, sourceId, "jellyfin");
+        var navidromeRevision = service.GetTargetArtworkRevision(source, sourceId, "navidrome");
+        Assert.False(string.IsNullOrWhiteSpace(plexRevision));
+        Assert.Equal(plexRevision, jellyfinRevision);
+        Assert.NotEqual(plexRevision, navidromeRevision);
     }
 
     [Fact]

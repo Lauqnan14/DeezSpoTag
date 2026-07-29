@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Settings;
+using DeezSpoTag.Web.Controllers.Api;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -16,6 +17,26 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ApplePlaylistPaginationTests
 {
+    [Theory]
+    [InlineData("gb", "us", "ke", "gb")]
+    [InlineData(null, "us", "ke", "us")]
+    [InlineData(null, null, "ca", "ca")]
+    [InlineData(null, null, null, "us")]
+    [InlineData(null, null, "invalid", "us")]
+    public void TracklistStorefront_UsesExplicitThenPersistedThenConfiguredThenUs(
+        string? explicitStorefront,
+        string? persistedStorefront,
+        string? configuredStorefront,
+        string expected)
+    {
+        var actual = AppleTracklistApiController.ResolveStorefrontPrecedence(
+            explicitStorefront,
+            persistedStorefront,
+            configuredStorefront);
+
+        Assert.Equal(expected, actual);
+    }
+
     [Fact]
     public async Task CompletePlaylistTracks_FollowsNextLinksAndPreservesOrder()
     {
@@ -106,6 +127,9 @@ public sealed class ApplePlaylistPaginationTests
         Assert.DoesNotContain("BuildPlaylistTracksByFeedAsync", controller, StringComparison.Ordinal);
         Assert.DoesNotContain("TryGetApplePlaylistTracksData", watchlist, StringComparison.Ordinal);
         Assert.DoesNotContain("pageSafety", catalog, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistWatchlistEntryAsync(", controller, StringComparison.Ordinal);
+        Assert.Contains("ResolveStorefrontPrecedence(", controller, StringComparison.Ordinal);
+        Assert.DoesNotContain("_catalog.ResolveStorefrontAsync(", controller, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveStorefrontAsync(", watchlist, StringComparison.Ordinal);
         Assert.Contains("GetPersistedAppleStorefrontAsync(", watchlist, StringComparison.Ordinal);
         var mapper = ExtractMethod(
@@ -113,6 +137,27 @@ public sealed class ApplePlaylistPaginationTests
             "private static IReadOnlyList<PlaylistTrackCandidate> MapWatchIntentTrackCandidates");
         Assert.DoesNotContain("!seen.Add(trackId)", mapper, StringComparison.Ordinal);
         Assert.Contains("SourcePosition", mapper, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AppleWatchlistUpgrade_RepairsStorefrontWithoutACompetingFetchPath()
+    {
+        var watchlist = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
+        var coordinator = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var repository = ReadSource("DeezSpoTag.Services/Library/LibraryRepository.cs");
+        var database = ReadSource("DeezSpoTag.Services/Library/LibraryDbService.cs");
+
+        Assert.Contains("BackfillLegacyApplePlaylistStorefrontAsync(", coordinator, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistReconciliationRequestAsync(", coordinator, StringComparison.Ordinal);
+        Assert.Contains("BackfillLegacyApplePlaylistStorefrontAsync(", repository, StringComparison.Ordinal);
+        Assert.Contains("apple_storefront_not_persisted", watchlist, StringComparison.Ordinal);
+        Assert.Contains("apple_playlist_unavailable", watchlist, StringComparison.Ordinal);
+        Assert.Contains("apple_playlist_incomplete", watchlist, StringComparison.Ordinal);
+        Assert.DoesNotContain("apple_storefront_or_snapshot_unavailable", watchlist, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "AND (schema_version<>4 OR is_complete=0);\n\nDELETE FROM playlist_track_candidate_cache",
+            database,
+            StringComparison.Ordinal);
     }
 
     private static AppleMusicCatalogService CreateService(IMemoryCache cache)

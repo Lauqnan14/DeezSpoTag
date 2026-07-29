@@ -7706,6 +7706,38 @@ WHERE source = @source AND source_id = @sourceId;";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<string>> BackfillLegacyApplePlaylistStorefrontAsync(
+        string storefront,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedStorefront = (storefront ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedStorefront.Length is < 2 or > 5
+            || normalizedStorefront.Any(character => !char.IsAsciiLetter(character) && character != '-'))
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE playlist_watchlist
+SET source_storefront=@storefront
+WHERE lower(source)='apple'
+  AND (source_storefront IS NULL OR trim(source_storefront)='')
+RETURNING source_id;", connection);
+        command.Parameters.AddWithValue("storefront", normalizedStorefront);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var repairedSourceIds = new List<string>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (!await reader.IsDBNullAsync(0, cancellationToken))
+            {
+                repairedSourceIds.Add(reader.GetString(0));
+            }
+        }
+
+        return repairedSourceIds;
+    }
+
     public async Task<PlaylistWatchArtworkStateDto?> GetPlaylistWatchArtworkStateAsync(
         string source,
         string sourceId,
@@ -7783,44 +7815,55 @@ ON CONFLICT(source,source_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+    public async Task<WatchlistSyncJobDto?> EnqueueWatchlistPlaylistArtworkSyncJobAsync(
         string source,
         string playlistId,
+        string targetService,
         string revision,
         CancellationToken cancellationToken = default)
     {
         if (!TryNormalizePlaylistWatchKey(source, playlistId, out var normalizedSource, out var normalizedPlaylistId)
+            || string.IsNullOrWhiteSpace(targetService)
             || string.IsNullOrWhiteSpace(revision))
         {
-            return [];
+            return null;
         }
 
+        var normalizedTarget = targetService.Trim().ToLowerInvariant();
+        if (normalizedTarget is not ("plex" or "jellyfin" or "navidrome"))
+        {
+            return null;
+        }
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using (var removeObsolete = new SqliteCommand(@"
 DELETE FROM watchlist_sync_job
 WHERE source=@source AND playlist_id=@playlistId
+  AND target_service=@target
   AND track_id LIKE 'artwork:%' AND track_id <> 'artwork:' || @revision
   AND lower(status) IN ('pending','retry','completed');", connection))
         {
             removeObsolete.Parameters.AddWithValue(SourceField, normalizedSource);
             removeObsolete.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+            removeObsolete.Parameters.AddWithValue("target", normalizedTarget);
             removeObsolete.Parameters.AddWithValue("revision", revision.Trim());
             await removeObsolete.ExecuteNonQueryAsync(cancellationToken);
         }
         await using var command = new SqliteCommand(@"
 INSERT INTO watchlist_sync_job (source,playlist_id,track_id,target_service,status,next_attempt_utc)
-SELECT @source,@playlistId,'artwork:' || @revision,lower(trim(configured.value)),'pending',CURRENT_TIMESTAMP
-FROM playlist_watch_preferences preference,
-     json_each(CASE
-       WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json)>0
-       THEN preference.sync_targets_json ELSE json_array(preference.service) END) configured
+SELECT @source,@playlistId,'artwork:' || @revision,@target,'pending',CURRENT_TIMESTAMP
+FROM playlist_watch_preferences preference
 WHERE preference.source=@source AND preference.source_id=@playlistId
   AND preference.update_artwork=1
-  AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
+  AND EXISTS (
+      SELECT 1
+      FROM json_each(CASE
+        WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json)>0
+        THEN preference.sync_targets_json ELSE json_array(preference.service) END) configured
+      WHERE lower(trim(configured.value))=@target)
   AND NOT EXISTS (
       SELECT 1 FROM playlist_watch_artwork_target_state target
       WHERE target.source=@source AND target.source_id=@playlistId
-        AND target.target_service=lower(trim(configured.value))
+        AND target.target_service=@target
         AND target.status='applied' AND target.applied_revision=@revision)
 ON CONFLICT(source,playlist_id,track_id,target_service) DO UPDATE SET
  status=CASE
@@ -7839,14 +7882,12 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
  attempt_count,next_attempt_utc,queue_uuid,lease_owner,status,last_error,snapshot_id;", connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+        command.Parameters.AddWithValue("target", normalizedTarget);
         command.Parameters.AddWithValue("revision", revision.Trim());
-        var jobs = new List<WatchlistSyncJobDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            jobs.Add(await ReadWatchlistSyncJobAsync(reader, cancellationToken));
-        }
-        return jobs;
+        return await reader.ReadAsync(cancellationToken)
+            ? await ReadWatchlistSyncJobAsync(reader, cancellationToken)
+            : null;
     }
 
     public async Task SetPlaylistWatchArtworkTargetStateAsync(
@@ -7874,6 +7915,38 @@ ON CONFLICT(source,source_id,target_service) DO UPDATE SET
         command.Parameters.AddWithValue("error", (object?)error ?? DBNull.Value);
         command.Parameters.AddWithValue("attempt", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> IsPlaylistWatchArtworkRevisionAppliedAsync(
+        string source,
+        string sourceId,
+        string targetService,
+        string revision,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(targetService)
+            || string.IsNullOrWhiteSpace(revision))
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT EXISTS (
+    SELECT 1
+    FROM playlist_watch_artwork_target_state
+    WHERE source=@source
+      AND source_id=@sourceId
+      AND target_service=@target
+      AND status='applied'
+      AND applied_revision=@revision
+);", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("target", targetService.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("revision", revision.Trim());
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
     }
 
     public async Task<bool> RemovePlaylistWatchlistAsync(string source, string sourceId, CancellationToken cancellationToken = default)

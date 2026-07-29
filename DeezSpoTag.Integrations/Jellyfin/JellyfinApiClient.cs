@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -1057,7 +1058,30 @@ public class JellyfinApiClient
         };
         uploadRequest.Headers.Add(EmbyTokenHeader, apiKey);
         using var uploadResponse = await _httpClient.SendAsync(uploadRequest, cancellationToken);
-        return uploadResponse.IsSuccessStatusCode;
+        if (!uploadResponse.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        using var verifyRequest = new HttpRequestMessage(
+            HttpMethod.Get,
+            BuildUrl(
+                serverUrl,
+                $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary?tag={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"));
+        verifyRequest.Headers.Add(EmbyTokenHeader, apiKey);
+        using var verifyResponse = await _httpClient.SendAsync(
+            verifyRequest,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        if (!verifyResponse.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        var storedBytes = await verifyResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+        return CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(imageBytes),
+            SHA256.HashData(storedBytes));
     }
 
     private async Task<bool> UploadImageAsync(string url, string apiKey, string imagePath, CancellationToken cancellationToken)

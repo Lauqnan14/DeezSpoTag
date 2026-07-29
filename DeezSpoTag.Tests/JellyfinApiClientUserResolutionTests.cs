@@ -232,6 +232,15 @@ public sealed class JellyfinApiClientUserResolutionTests
                     return new HttpResponseMessage(HttpStatusCode.NoContent);
                 }
 
+                if (request.Method == HttpMethod.Get
+                    && request.RequestUri?.AbsolutePath == "/Items/playlist-1/Images/Primary")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 })
+                    };
+                }
+
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             });
             var client = CreateClient(handler);
@@ -245,7 +254,7 @@ public sealed class JellyfinApiClientUserResolutionTests
                 CancellationToken.None);
 
             Assert.True(updated);
-            Assert.Single(handler.RequestedUris);
+            Assert.Equal(2, handler.RequestedUris.Count);
         }
         finally
         {

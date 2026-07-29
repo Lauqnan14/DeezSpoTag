@@ -264,10 +264,12 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
             DateTimeOffset.UtcNow,
             "revision-a"));
 
-        var firstRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
-            "spotify",
-            "artwork-list",
-            "revision-a");
+        var firstRevision = new[]
+        {
+            await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync("spotify", "artwork-list", "plex", "revision-a"),
+            await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync("spotify", "artwork-list", "jellyfin", "revision-a"),
+            await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync("spotify", "artwork-list", "navidrome", "revision-a")
+        }.OfType<WatchlistSyncJobDto>().ToList();
 
         Assert.Equal(
             new[] { "jellyfin", "navidrome", "plex" },
@@ -281,21 +283,34 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
             "revision-a",
             success: true,
             error: null);
+        Assert.True(await _repository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+            "spotify",
+            "artwork-list",
+            "plex",
+            "revision-a"));
+        Assert.False(await _repository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+            "spotify",
+            "artwork-list",
+            "jellyfin",
+            "revision-a"));
         await ExecuteSqlAsync(@"
 UPDATE watchlist_sync_job
 SET status='completed'
 WHERE source='spotify' AND playlist_id='artwork-list' AND target_service='plex';");
 
-        var sameRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+        var sameRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
             "spotify",
             "artwork-list",
+            "plex",
             "revision-a");
-        Assert.DoesNotContain(sameRevision, static job => job.TargetService == "plex");
+        Assert.Null(sameRevision);
 
-        var nextRevision = await _repository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
-            "spotify",
-            "artwork-list",
-            "revision-b");
+        var nextRevision = new[]
+        {
+            await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync("spotify", "artwork-list", "plex", "revision-b"),
+            await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync("spotify", "artwork-list", "jellyfin", "revision-b"),
+            await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync("spotify", "artwork-list", "navidrome", "revision-b")
+        }.OfType<WatchlistSyncJobDto>().ToList();
         Assert.Equal(3, nextRevision.Count);
         Assert.All(nextRevision, static job => Assert.Equal("artwork:revision-b", job.TrackId));
         Assert.Equal(0, await CountArtworkJobsAsync("artwork-list", "revision-a"));
@@ -685,7 +700,7 @@ VALUES
     }
 
     [Fact]
-    public async Task DeploymentRepair_InvalidatesLegacyCacheAndFalseUnavailableStateWithoutDeletingMembership()
+    public async Task DeploymentRepair_PreservesLegacyCacheAndResetsFalseUnavailableState()
     {
         await _repository.AddPlaylistWatchlistAsync(
             "boomplay", "legacy-list", new PlaylistWatchlistMetadataInput("Legacy", null, null, 1));
@@ -703,7 +718,7 @@ VALUES
 
         await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
 
-        Assert.Null(await _repository.GetPlaylistTrackCandidateCacheAsync("boomplay", "legacy-list"));
+        Assert.NotNull(await _repository.GetPlaylistTrackCandidateCacheAsync("boomplay", "legacy-list"));
         var track = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("boomplay", "legacy-list"));
         Assert.Equal("pending", track.Status);
         var state = await _repository.GetPlaylistWatchStateAsync("boomplay", "legacy-list");
@@ -712,6 +727,70 @@ VALUES
         Assert.Null(state.NextAttemptUtc);
         Assert.Single(await _repository.GetPlaylistWatchlistAsync(), item => item.SourceId == "legacy-list");
         Assert.Contains(await _repository.GetWatchlistReconciliationRequestsAsync(), request => request.Kind == "all");
+    }
+
+    [Fact]
+    public async Task LegacyAppleStorefrontRepair_IsIdempotentAndPreservesExistingStorefronts()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "apple",
+            "legacy-apple",
+            new PlaylistWatchlistMetadataInput("Legacy Apple", null, null, 192));
+        await _repository.AddPlaylistWatchlistAsync(
+            "apple",
+            "existing-apple",
+            new PlaylistWatchlistMetadataInput(
+                "Existing Apple",
+                null,
+                null,
+                50,
+                SourceStorefront: "gb"));
+
+        var repaired = await _repository.BackfillLegacyApplePlaylistStorefrontAsync(" US ");
+        var repeated = await _repository.BackfillLegacyApplePlaylistStorefrontAsync("us");
+
+        Assert.Equal(["legacy-apple"], repaired);
+        Assert.Empty(repeated);
+        Assert.Equal(
+            "us",
+            (await _repository.GetPlaylistWatchlistEntryAsync("apple", "legacy-apple"))?.SourceStorefront);
+        Assert.Equal(
+            "gb",
+            (await _repository.GetPlaylistWatchlistEntryAsync("apple", "existing-apple"))?.SourceStorefront);
+    }
+
+    [Fact]
+    public async Task SchemaRepair_QueuesOutdatedCandidateCacheWithoutDeletingIt()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "apple",
+            "cached-apple",
+            new PlaylistWatchlistMetadataInput(
+                "Cached Apple",
+                null,
+                null,
+                1,
+                SourceStorefront: "us"));
+        await _repository.UpsertPlaylistTrackCandidateCacheAsync(
+            "apple",
+            "cached-apple",
+            "old-snapshot",
+            JsonSerializer.Serialize(new[] { Candidate("track-1", "Track", "Artist") }),
+            schemaVersion: 3,
+            identityRevision: "old-identity",
+            providerReadinessRevision: "old-readiness",
+            isComplete: true);
+
+        await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
+
+        var preserved = await _repository.GetPlaylistTrackCandidateCacheAsync("apple", "cached-apple");
+        Assert.NotNull(preserved);
+        Assert.Equal("old-snapshot", preserved!.SnapshotId);
+        Assert.Contains(
+            await _repository.GetWatchlistReconciliationRequestsAsync(),
+            request => request.Kind == "playlist"
+                       && request.Source == "apple"
+                       && request.Identifier == "cached-apple");
     }
 
     private static PlaylistTrackCandidate Candidate(string id, string title, string artist)

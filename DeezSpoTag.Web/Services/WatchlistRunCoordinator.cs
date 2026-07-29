@@ -499,6 +499,62 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
     }
 
+    private async Task RepairLegacyApplePlaylistStorefrontsAsync(
+        LibraryRepository repository,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var storefront = NormalizeAppleStorefront(settings.AppleMusic?.Storefront);
+        if (storefront is null)
+        {
+            return;
+        }
+
+        var repairedSourceIds = await repository.BackfillLegacyApplePlaylistStorefrontAsync(
+            storefront,
+            cancellationToken);
+        if (repairedSourceIds.Count == 0)
+        {
+            return;
+        }
+
+        await repository.UpsertWatchlistSourceCircuitStateAsync(
+            new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                PlaylistWatchType,
+                "apple",
+                IsOpen: false,
+                OpenUntilUtc: null,
+                Reason: null,
+                Fingerprint: null,
+                FailureCount: 0),
+            cancellationToken);
+
+        foreach (var sourceId in repairedSourceIds)
+        {
+            var key = $"playlist:apple:{sourceId}";
+            _nextAllowedRun.TryRemove(key, out _);
+            _consecutiveFailures.TryRemove(key, out _);
+            await repository.EnqueueWatchlistReconciliationRequestAsync(
+                PlaylistKind,
+                "apple",
+                sourceId,
+                cancellationToken);
+        }
+
+        _logger.LogInformation(
+            "Repaired persisted Apple storefront for {PlaylistCount} legacy monitored playlist(s).",
+            repairedSourceIds.Count);
+    }
+
+    private static string? NormalizeAppleStorefront(string? storefront)
+    {
+        var normalized = (storefront ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized.Length is >= 2 and <= 5
+               && normalized.All(character => char.IsAsciiLetter(character) || character == '-')
+            ? normalized
+            : null;
+    }
+
     private async Task RenewReconciliationLeasesAsync(
         LibraryRepository repository,
         CancellationToken cancellationToken)
@@ -540,6 +596,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         var profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         await TryRepairWatchlistDestinationIntegrityAsync(repository, profileResolutionService, stoppingToken);
+        await RepairLegacyApplePlaylistStorefrontsAsync(repository, settings, stoppingToken);
         await RefreshWatchlistIdentityIndexAsync(
             serviceProvider,
             profileResolutionService,

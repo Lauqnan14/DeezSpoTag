@@ -1046,12 +1046,18 @@ public partial class WatchlistApiController : ControllerBase
             return NotFound(PlaylistWatchlistEntryNotFoundMessage);
         }
 
+        var previousRevision = _playlistVisualService.GetActiveArtworkRevision(item.Source, item.SourceId);
         var refreshedItem = await _playlistWatchReconciler.RefreshPlaylistMetadataOnlyAsync(
             item,
             cancellationToken,
             forceArtworkRefresh: true);
-        var artworkSync = await SyncArtworkForWatchlistItemAsync(refreshedItem, cancellationToken);
-        return Ok(new { refreshed = true, artworkSync });
+        var currentRevision = _playlistVisualService.GetActiveArtworkRevision(item.Source, item.SourceId);
+        var artworkChanged = !string.IsNullOrWhiteSpace(currentRevision)
+            && !string.Equals(previousRevision, currentRevision, StringComparison.OrdinalIgnoreCase);
+        var artworkSync = artworkChanged
+            ? await SyncArtworkForWatchlistItemAsync(refreshedItem, cancellationToken)
+            : null;
+        return Ok(new { refreshed = true, artworkChanged, artworkSync });
     }
 
     [HttpGet("{source}/{sourceId}/visual")]
@@ -1101,6 +1107,7 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var normalizedSource = WatchlistPreferenceNormalizer.PlaylistSource(source);
+        var previousRevision = _playlistVisualService.GetActiveArtworkRevision(normalizedSource, sourceId);
         var updated = _playlistVisualService.SetActiveVisual(normalizedSource, sourceId, request.FileName);
         if (!updated)
         {
@@ -1122,11 +1129,14 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var item = await FindWatchlistItemAsync(normalizedSource, sourceId, cancellationToken);
-        var artworkSync = item != null && activeVisual != null
+        var currentRevision = _playlistVisualService.GetActiveArtworkRevision(normalizedSource, sourceId);
+        var artworkChanged = !string.IsNullOrWhiteSpace(currentRevision)
+            && !string.Equals(previousRevision, currentRevision, StringComparison.OrdinalIgnoreCase);
+        var artworkSync = artworkChanged && item != null && activeVisual != null
             ? await SyncArtworkForWatchlistItemAsync(item with { ImageUrl = activeVisual.Url }, cancellationToken)
             : null;
 
-        return Ok(new { updated = true, imageUrl = activeVisual?.Url, artworkSync });
+        return Ok(new { updated = true, imageUrl = activeVisual?.Url, artworkChanged, artworkSync });
     }
 
     [HttpGet("{source}/{sourceId}/routing-rules")]

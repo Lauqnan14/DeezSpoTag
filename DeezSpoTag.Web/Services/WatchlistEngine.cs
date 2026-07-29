@@ -433,6 +433,7 @@ internal sealed class WatchlistEngine
 
         if (!liveSnapshot.IsComplete || (candidates.Count == 0 && !liveSnapshot.IsAuthoritativeEmpty))
         {
+            var playlistScopedFailure = IsPlaylistScopedSourceFailure(liveSnapshot.FailureCode);
             var sourceFailureMessage = !string.IsNullOrWhiteSpace(liveSnapshot.FailureCode)
                 ? $"Playlist source failed ({liveSnapshot.FailureCode}); the previous valid snapshot was preserved and reconciliation will retry."
                 : candidates.Count == 0
@@ -459,7 +460,7 @@ internal sealed class WatchlistEngine
                 0,
                 1,
                 null,
-                SystemicFailures: 1,
+                SystemicFailures: playlistScopedFailure ? 0 : 1,
                 FailureFingerprint: !string.IsNullOrWhiteSpace(liveSnapshot.FailureCode)
                     ? liveSnapshot.FailureCode
                     : candidates.Count == 0
@@ -706,19 +707,33 @@ internal sealed class WatchlistEngine
                     RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount));
             }
         }
-        var artworkRevision = preference?.ReuseSavedArtwork == true
-            ? _playlistVisualService?.GetActiveArtworkRevision(source, sourceId)
-            : artworkInspection?.Revision;
-        if ((preference?.UpdateArtwork == true || preference?.ReuseSavedArtwork == true)
-            && !string.IsNullOrWhiteSpace(artworkRevision)
+        if (artworkInspection?.Changed == true
+            && _playlistVisualService != null
+            && preference?.UpdateArtwork == true
             && hasConfiguredPlaylistSyncTargets)
         {
-            var artworkJobs = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobsAsync(
+            var artworkJobQueued = false;
+            foreach (var targetService in ResolveConfiguredPlaylistSyncTargets(preference))
+            {
+                var targetRevision = _playlistVisualService.GetTargetArtworkRevision(
                     source,
                     sourceId,
-                    artworkRevision,
+                    targetService);
+                if (string.IsNullOrWhiteSpace(targetRevision))
+                {
+                    continue;
+                }
+
+                var artworkJob = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
+                    source,
+                    sourceId,
+                    targetService,
+                    targetRevision,
                     cancellationToken);
-            if (artworkJobs.Count > 0)
+                artworkJobQueued |= artworkJob != null;
+            }
+
+            if (artworkJobQueued)
             {
                 _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
             }
@@ -918,15 +933,18 @@ internal sealed class WatchlistEngine
     }
 
     private static bool HasConfiguredPlaylistSyncTargets(PlaylistWatchPreferenceDto? preference)
+        => ResolveConfiguredPlaylistSyncTargets(preference).Count > 0;
+
+    private static IReadOnlyList<string> ResolveConfiguredPlaylistSyncTargets(PlaylistWatchPreferenceDto? preference)
     {
         var targets = preference?.SyncTargets is { Count: > 0 }
             ? preference.SyncTargets
             : [preference?.Service ?? string.Empty];
-        return targets.Any(static target =>
-        {
-            var normalized = (target ?? string.Empty).Trim().ToLowerInvariant();
-            return normalized is "plex" or "jellyfin" or "navidrome";
-        });
+        return targets
+            .Select(static target => (target ?? string.Empty).Trim().ToLowerInvariant())
+            .Where(static target => target is "plex" or "jellyfin" or "navidrome")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public async Task<PlaylistWatchlistDto> RefreshPlaylistMetadataOnlyAsync(
@@ -2779,9 +2797,28 @@ internal sealed class WatchlistEngine
         string sourceId,
         CancellationToken cancellationToken)
     {
-        var playlistData = await GetApplePlaylistWatchDataAsync(sourceId, cancellationToken);
-        var candidates = MapWatchIntentTrackCandidates(playlistData?.Tracks);
-        var declaredTrackCount = playlistData?.TrackCount;
+        var storefront = await GetPersistedAppleStorefrontAsync(sourceId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(storefront))
+        {
+            return BuildLivePlaylistSnapshot(
+                Array.Empty<PlaylistTrackCandidate>(),
+                new LivePlaylistSnapshotMetadata(
+                    IsComplete: false,
+                    FailureCode: "apple_storefront_not_persisted"));
+        }
+
+        var playlistData = await GetApplePlaylistWatchDataAsync(sourceId, storefront, cancellationToken);
+        if (playlistData is null)
+        {
+            return BuildLivePlaylistSnapshot(
+                Array.Empty<PlaylistTrackCandidate>(),
+                new LivePlaylistSnapshotMetadata(
+                    IsComplete: false,
+                    FailureCode: "apple_playlist_unavailable"));
+        }
+
+        var candidates = MapWatchIntentTrackCandidates(playlistData.Tracks);
+        var declaredTrackCount = playlistData.TrackCount;
         var positionsComplete = candidates
             .Select(static candidate => candidate.SourcePosition)
             .Where(static position => position.HasValue)
@@ -2790,7 +2827,7 @@ internal sealed class WatchlistEngine
         var countComplete = !declaredTrackCount.HasValue
                             || declaredTrackCount.Value <= 0
                             || declaredTrackCount.Value == candidates.Count;
-        var isComplete = playlistData?.IsComplete == true
+        var isComplete = playlistData.IsComplete
                          && positionsComplete
                          && countComplete;
         return BuildLivePlaylistSnapshot(
@@ -2804,9 +2841,7 @@ internal sealed class WatchlistEngine
                 CanClearImageUrl: true,
                 FailureCode: isComplete
                     ? null
-                    : candidates.Count == 0
-                        ? "apple_storefront_or_snapshot_unavailable"
-                        : "apple_playlist_position_count_mismatch"));
+                    : "apple_playlist_incomplete"));
     }
 
     private async Task<LivePlaylistSnapshot> GetBoomplaySnapshotAsync(
@@ -3363,23 +3398,12 @@ internal sealed class WatchlistEngine
 
 private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string playlistId,
+        string storefront,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             return null;
-        }
-
-        var storefront = await GetPersistedAppleStorefrontAsync(playlistId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(storefront))
-        {
-            return new ApplePlaylistWatchData(
-                "Apple Playlist",
-                null,
-                null,
-                null,
-                Array.Empty<WatchIntentTrack>(),
-                IsComplete: false);
         }
 
         using var doc = await _appleCatalogService.GetPlaylistAsync(
@@ -3515,6 +3539,12 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             ? normalized
             : null;
     }
+
+    private static bool IsPlaylistScopedSourceFailure(string? failureCode)
+        => string.Equals(
+            failureCode,
+            "apple_storefront_not_persisted",
+            StringComparison.OrdinalIgnoreCase);
 
     private async Task<BoomplayPlaylistWatchData?> GetBoomplayPlaylistWatchDataAsync(
         string playlistId,

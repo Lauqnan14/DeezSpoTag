@@ -21,7 +21,8 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("ResolveAuthoritativePlexPlaylistIdAsync", source, StringComparison.Ordinal);
         Assert.Contains("ResolveAuthoritativeJellyfinPlaylistIdAsync", source, StringComparison.Ordinal);
         Assert.Contains("ResolveAuthoritativeNavidromePlaylistIdAsync", source, StringComparison.Ordinal);
-        Assert.Contains("PersistResolvedTargetBindingAsync", source, StringComparison.Ordinal);
+        Assert.Contains("PersistTargetPlaylistBindingAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PersistResolvedTargetBindingAsync", source, StringComparison.Ordinal);
         Assert.Contains("RecreateMissingTargetPlaylistAsync", source, StringComparison.Ordinal);
         Assert.Contains("return await SyncAvailablePlaylistTracksAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Target Plex playlist was not found.", source, StringComparison.Ordinal);
@@ -52,7 +53,7 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
     }
 
     [Fact]
-    public void ArtworkSync_VerifiesNavidromeAndRecreatesMissingTargets()
+    public void ArtworkSync_UsesUploadResultAndAppliesCachedArtworkToNewTargets()
     {
         var service = File.ReadAllText(Path.Combine(
             Root,
@@ -65,9 +66,26 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "Navidrome",
             "NavidromeApiClient.cs"));
 
-        Assert.Contains("HasPlaylistImageAsync", service, StringComparison.Ordinal);
-        Assert.Contains("HasPlaylistImageAsync", client, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasPlaylistImageAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasPlaylistImageAsync", client, StringComparison.Ordinal);
+        Assert.Contains("ApplyArtworkToNewTargetAsync", service, StringComparison.Ordinal);
+        Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", service, StringComparison.Ordinal);
+        Assert.Equal(3, CountOccurrences(service, "&& !await ApplyArtworkToNewTargetAsync("));
+        Assert.Equal(6, CountOccurrences(service, "await PersistTargetPlaylistBindingAsync("));
         Assert.Contains("RecreateMissingTargetPlaylistAsync", service, StringComparison.Ordinal);
+    }
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += value.Length;
+        }
+
+        return count;
     }
 
     [Fact]

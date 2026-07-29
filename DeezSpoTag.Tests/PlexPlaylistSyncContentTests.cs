@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -57,6 +58,77 @@ public sealed class PlexPlaylistSyncContentTests
             CancellationToken.None);
 
         Assert.Null(playlistId);
+    }
+
+    [Fact]
+    public async Task UpdatePlaylistPosterFromFileAsync_VerifiesStoredPosterBytes()
+    {
+        var posterBytes = new byte[] { 0xFF, 0xD8, 0x01, 0xFF, 0xD9 };
+        var posterPath = Path.Join(Path.GetTempPath(), $"plex-playlist-{Guid.NewGuid():N}.jpg");
+        await File.WriteAllBytesAsync(posterPath, posterBytes);
+        try
+        {
+            using var handler = new PlaylistPosterHandler(posterBytes);
+            using var httpClient = new HttpClient(handler);
+            var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+            var updated = await client.UpdatePlaylistPosterFromFileAsync(
+                "http://plex.local:32400",
+                "token",
+                "900",
+                posterPath,
+                "image/jpeg",
+                CancellationToken.None);
+
+            Assert.True(updated);
+            Assert.True(handler.Uploaded);
+            Assert.True(handler.Verified);
+        }
+        finally
+        {
+            File.Delete(posterPath);
+        }
+    }
+
+    private sealed class PlaylistPosterHandler(byte[] expectedBytes) : HttpMessageHandler
+    {
+        public bool Uploaded { get; private set; }
+        public bool Verified { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Post
+                && request.RequestUri?.AbsolutePath == "/library/metadata/900/posters")
+            {
+                Uploaded = request.Content != null
+                    && (await request.Content.ReadAsByteArrayAsync(cancellationToken)).SequenceEqual(expectedBytes);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri?.AbsolutePath == "/playlists/900")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "<MediaContainer><Playlist ratingKey=\"900\" title=\"Playlist\" thumb=\"/library/metadata/900/thumb/1\" /></MediaContainer>")
+                };
+            }
+
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri?.AbsolutePath == "/library/metadata/900/thumb/1")
+            {
+                Verified = true;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(expectedBytes)
+                };
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
     }
 
     private sealed class PlaylistSyncHandler(bool dropLastWrittenItem = false) : HttpMessageHandler

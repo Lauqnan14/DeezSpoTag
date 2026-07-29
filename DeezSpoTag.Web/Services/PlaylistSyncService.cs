@@ -1551,6 +1551,21 @@ public sealed class PlaylistSyncService
                 _ => PlaylistSyncResult.Failed(UnsupportedPlaylistSyncTargetMessage)
             };
             results.Add((service, result));
+            var revision = _playlistVisualService.GetTargetArtworkRevision(
+                playlist.Source,
+                playlist.SourceId,
+                service);
+            if (!string.IsNullOrWhiteSpace(revision))
+            {
+                await _libraryRepository.SetPlaylistWatchArtworkTargetStateAsync(
+                    playlist.Source,
+                    playlist.SourceId,
+                    service,
+                    revision,
+                    result.Success,
+                    result.Success ? null : result.Message,
+                    cancellationToken);
+            }
         }
 
         return CombinePlaylistSyncTargetResults(results);
@@ -1689,10 +1704,10 @@ public sealed class PlaylistSyncService
         }
 
         var playlistName = ResolvePlaylistName(playlist);
+        var storedPlaylistId = NormalizeExistingTargetPlaylistId(existingPlaylistId);
         existingPlaylistId = await ResolveAuthoritativePlexPlaylistIdAsync(
             plex,
             playlist,
-            preference,
             existingPlaylistId,
             cancellationToken);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
@@ -1750,7 +1765,6 @@ public sealed class PlaylistSyncService
             playlist.Description,
             cancellationToken);
 
-        await PersistTargetPlaylistBindingAsync(playlist, preference, PlexService, playlistId, cancellationToken);
         var verifiedMemberships = await PersistPlexMembershipAsync(
             playlist,
             plex,
@@ -1764,6 +1778,32 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
+        var targetBindingChanged = !string.Equals(
+            storedPlaylistId,
+            playlistId,
+            StringComparison.OrdinalIgnoreCase);
+        if (targetBindingChanged
+            && !await ApplyArtworkToNewTargetAsync(
+                playlist,
+                preference,
+                PlexService,
+                playlistId,
+                () => SyncPlexPlaylistArtworkAsync(
+                    plex,
+                    playlist,
+                    preference,
+                    playlistId,
+                    cancellationToken),
+                cancellationToken))
+        {
+            return BuildPartialResult(
+                BuildSyncMessage("Plex playlist tracks synced, but initial playlist artwork did not update.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
+        }
+
+        await PersistTargetPlaylistBindingAsync(playlist, preference, PlexService, playlistId, cancellationToken);
         return BuildSuccessResult(
             BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
             playlistId,
@@ -1790,10 +1830,10 @@ public sealed class PlaylistSyncService
         }
 
         var playlistName = ResolvePlaylistName(playlist);
+        var storedPlaylistId = NormalizeExistingTargetPlaylistId(existingPlaylistId);
         existingPlaylistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
             jellyfin,
             playlist,
-            preference,
             existingPlaylistId,
             cancellationToken);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
@@ -1878,7 +1918,6 @@ public sealed class PlaylistSyncService
             playlist,
             playlistId,
             cancellationToken);
-        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
         var verifiedMemberships = await PersistJellyfinMembershipAsync(
             playlist,
             jellyfin,
@@ -1893,6 +1932,32 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
+        var targetBindingChanged = !string.Equals(
+            storedPlaylistId,
+            playlistId,
+            StringComparison.OrdinalIgnoreCase);
+        if (targetBindingChanged
+            && !await ApplyArtworkToNewTargetAsync(
+                playlist,
+                preference,
+                JellyfinService,
+                playlistId,
+                () => SyncJellyfinPlaylistArtworkAsync(
+                    jellyfin,
+                    playlist,
+                    preference,
+                    playlistId,
+                    cancellationToken),
+                cancellationToken))
+        {
+            return BuildPartialResult(
+                BuildSyncMessage("Jellyfin playlist tracks synced, but initial playlist artwork did not update.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
+        }
+
+        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
         var fullSyncIssues = BuildJellyfinFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
         {
@@ -1930,10 +1995,10 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(NavidromeNotConfiguredMessage);
         }
 
+        var storedPlaylistId = NormalizeExistingTargetPlaylistId(existingPlaylistId);
         existingPlaylistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
             navidrome,
             playlist,
-            preference,
             existingPlaylistId,
             cancellationToken);
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
@@ -1979,7 +2044,6 @@ public sealed class PlaylistSyncService
             playlist,
             playlistId,
             cancellationToken);
-        await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
         var verifiedMemberships = await PersistNavidromeMembershipAsync(
             playlist,
             navidrome,
@@ -1991,6 +2055,32 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
+        var targetBindingChanged = !string.Equals(
+            storedPlaylistId,
+            playlistId,
+            StringComparison.OrdinalIgnoreCase);
+        if (targetBindingChanged
+            && !await ApplyArtworkToNewTargetAsync(
+                playlist,
+                preference,
+                NavidromeService,
+                playlistId,
+                () => SyncNavidromePlaylistArtworkAsync(
+                    navidrome,
+                    playlist,
+                    preference,
+                    playlistId,
+                    cancellationToken),
+                cancellationToken))
+        {
+            return BuildPartialResult(
+                BuildSyncMessage("Navidrome playlist tracks synced, but initial playlist artwork did not update.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
+        }
+
+        await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         var fullSyncIssues = BuildNavidromeFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
@@ -2137,7 +2227,6 @@ public sealed class PlaylistSyncService
     private async Task<string?> ResolveAuthoritativePlexPlaylistIdAsync(
         PlexConnection connection,
         PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
         string? storedPlaylistId,
         CancellationToken cancellationToken)
     {
@@ -2153,20 +2242,12 @@ public sealed class PlaylistSyncService
             ?? playlists.FirstOrDefault(item =>
                 !string.IsNullOrWhiteSpace(item.Id)
                 && string.Equals(item.Title, playlistName, StringComparison.OrdinalIgnoreCase))?.Id;
-        await PersistResolvedTargetBindingAsync(
-            playlist,
-            preference,
-            PlexService,
-            storedPlaylistId,
-            resolved,
-            cancellationToken);
         return resolved;
     }
 
     private async Task<string?> ResolveAuthoritativeJellyfinPlaylistIdAsync(
         JellyfinConnection connection,
         PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
         string? storedPlaylistId,
         CancellationToken cancellationToken)
     {
@@ -2188,20 +2269,12 @@ public sealed class PlaylistSyncService
             connection.UserId,
             ResolvePlaylistName(playlist),
             cancellationToken);
-        await PersistResolvedTargetBindingAsync(
-            playlist,
-            preference,
-            JellyfinService,
-            storedPlaylistId,
-            resolved,
-            cancellationToken);
         return resolved;
     }
 
     private async Task<string?> ResolveAuthoritativeNavidromePlaylistIdAsync(
         NavidromeConnection connection,
         PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
         string? storedPlaylistId,
         CancellationToken cancellationToken)
     {
@@ -2223,35 +2296,7 @@ public sealed class PlaylistSyncService
             connection.Password,
             ResolvePlaylistName(playlist),
             cancellationToken);
-        await PersistResolvedTargetBindingAsync(
-            playlist,
-            preference,
-            NavidromeService,
-            storedPlaylistId,
-            resolved,
-            cancellationToken);
         return resolved;
-    }
-
-    private async Task PersistResolvedTargetBindingAsync(
-        PlaylistWatchlistDto playlist,
-        PlaylistWatchPreferenceDto? preference,
-        string service,
-        string? storedPlaylistId,
-        string? resolvedPlaylistId,
-        CancellationToken cancellationToken)
-    {
-        if (string.Equals(storedPlaylistId, resolvedPlaylistId, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        await _libraryRepository.UpdatePlaylistWatchTargetPlaylistIdAsync(
-            playlist.Source,
-            playlist.SourceId,
-            service,
-            resolvedPlaylistId,
-            cancellationToken);
     }
 
     private static string? NormalizeExistingTargetPlaylistId(string? playlistId)
@@ -2377,7 +2422,6 @@ public sealed class PlaylistSyncService
         var playlistId = await ResolveAuthoritativePlexPlaylistIdAsync(
             plex,
             playlist,
-            preference,
             ResolveExistingTargetPlaylistId(preference, PlexService),
             cancellationToken);
         if (string.IsNullOrWhiteSpace(playlistId))
@@ -2395,6 +2439,15 @@ public sealed class PlaylistSyncService
             preference,
             playlistId,
             cancellationToken);
+        if (updated)
+        {
+            await PersistTargetPlaylistBindingAsync(
+                playlist,
+                preference,
+                PlexService,
+                playlistId,
+                cancellationToken);
+        }
 
         return updated
             ? new PlaylistSyncResult(true, "Playlist artwork synced.", playlistId)
@@ -2420,7 +2473,6 @@ public sealed class PlaylistSyncService
         var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
             jellyfin,
             playlist,
-            preference,
             ResolveExistingTargetPlaylistId(preference, JellyfinService),
             cancellationToken);
 
@@ -2439,6 +2491,15 @@ public sealed class PlaylistSyncService
             preference,
             playlistId,
             cancellationToken);
+        if (updated)
+        {
+            await PersistTargetPlaylistBindingAsync(
+                playlist,
+                preference,
+                JellyfinService,
+                playlistId,
+                cancellationToken);
+        }
 
         return updated
             ? new PlaylistSyncResult(true, "Playlist artwork synced.", playlistId)
@@ -2464,7 +2525,6 @@ public sealed class PlaylistSyncService
         var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
             navidrome,
             playlist,
-            preference,
             ResolveExistingTargetPlaylistId(preference, NavidromeService),
             cancellationToken);
 
@@ -2483,6 +2543,15 @@ public sealed class PlaylistSyncService
             preference,
             playlistId,
             cancellationToken);
+        if (updated)
+        {
+            await PersistTargetPlaylistBindingAsync(
+                playlist,
+                preference,
+                NavidromeService,
+                playlistId,
+                cancellationToken);
+        }
 
         return updated
             ? new PlaylistSyncResult(true, "Playlist artwork synced.", playlistId)
@@ -2530,6 +2599,42 @@ public sealed class PlaylistSyncService
     private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
     {
         return preference == null || preference.UpdateArtwork || preference.ReuseSavedArtwork;
+    }
+
+    private async Task<bool> ApplyArtworkToNewTargetAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string targetService,
+        string targetPlaylistId,
+        Func<Task<bool>> applyArtwork,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldSyncPlaylistArtwork(preference))
+        {
+            return true;
+        }
+
+        var revision = _playlistVisualService.GetTargetArtworkRevision(
+            playlist.Source,
+            playlist.SourceId,
+            targetService);
+        if (string.IsNullOrWhiteSpace(revision))
+        {
+            return true;
+        }
+
+        var success = await applyArtwork();
+        await _libraryRepository.SetPlaylistWatchArtworkTargetStateAsync(
+            playlist.Source,
+            playlist.SourceId,
+            targetService,
+            revision,
+            success,
+            success
+                ? null
+                : $"Initial playlist artwork failed for target playlist {targetPlaylistId}.",
+            cancellationToken);
+        return success;
     }
 
     private async Task<bool> SyncPlexPlaylistArtworkAsync(
@@ -2691,12 +2796,7 @@ public sealed class PlaylistSyncService
                 animatedVisual.FilePath,
                 animatedVisual.ContentType,
                 cancellationToken);
-            return updated && await _navidromeApiClient.HasPlaylistImageAsync(
-                navidrome.Url,
-                navidrome.Username,
-                navidrome.Password,
-                playlistId,
-                cancellationToken);
+            return updated;
         }
 
         var cachedVisual = _playlistVisualService.GetActiveStoredStillVisual(playlist.Source, playlist.SourceId);
@@ -2719,12 +2819,7 @@ public sealed class PlaylistSyncService
                     SafeLog(cachedVisual.FilePath));
             }
 
-            return cachedUpdated && await _navidromeApiClient.HasPlaylistImageAsync(
-                navidrome.Url,
-                navidrome.Username,
-                navidrome.Password,
-                playlistId,
-                cancellationToken);
+            return cachedUpdated;
         }
 
         _logger.LogWarning(

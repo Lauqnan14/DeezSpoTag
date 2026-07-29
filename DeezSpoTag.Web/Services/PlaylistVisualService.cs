@@ -351,6 +351,15 @@ public sealed class PlaylistVisualService
         return BuildArtworkRevision(stillHash, animatedHash);
     }
 
+    public string? GetTargetArtworkRevision(string source, string sourceId, string targetService)
+    {
+        var normalizedTarget = (targetService ?? string.Empty).Trim().ToLowerInvariant();
+        var visual = normalizedTarget == "navidrome"
+            ? GetStoredAnimatedVisual(source, sourceId) ?? GetActiveStoredStillVisual(source, sourceId)
+            : GetActiveStoredStillVisual(source, sourceId);
+        return ComputeContentHash(visual?.FilePath);
+    }
+
     public async Task<StoredPlaylistVisual?> ResolveApplePlaylistAnimatedVisualAsync(
         string source,
         string sourceId,

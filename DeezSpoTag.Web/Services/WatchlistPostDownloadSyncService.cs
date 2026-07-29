@@ -521,11 +521,24 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             {
                 var revision = request.TrackId["artwork:".Length..].Trim();
                 var activeRevision = scope.ServiceProvider.GetRequiredService<PlaylistVisualService>()
-                    .GetActiveArtworkRevision(playlist.Source, playlist.SourceId);
+                    .GetTargetArtworkRevision(
+                        playlist.Source,
+                        playlist.SourceId,
+                        request.TargetService);
                 if (string.IsNullOrWhiteSpace(activeRevision)
                     || !string.Equals(activeRevision, revision, StringComparison.OrdinalIgnoreCase))
                 {
                     return SyncAttemptOutcome.Obsolete("A newer playlist artwork revision is active.");
+                }
+
+                if (await repository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+                        playlist.Source,
+                        playlist.SourceId,
+                        request.TargetService,
+                        revision,
+                        cancellationToken))
+                {
+                    return SyncAttemptOutcome.Completed("Playlist artwork revision is already applied.");
                 }
 
                 var artworkResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()

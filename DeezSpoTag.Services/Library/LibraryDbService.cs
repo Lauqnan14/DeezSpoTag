@@ -1334,13 +1334,6 @@ ON CONFLICT(kind,source,identifier) DO UPDATE SET
     last_error=NULL,
     updated_at=CURRENT_TIMESTAMP;
 
-DELETE FROM playlist_track_candidate_cache
-WHERE EXISTS (
-    SELECT 1 FROM playlist_watchlist playlist
-    WHERE playlist.source=playlist_track_candidate_cache.source
-      AND playlist.source_id=playlist_track_candidate_cache.source_id)
-  AND (schema_version<>4 OR is_complete=0);
-
 INSERT INTO watchlist_reconciliation_request (kind,source,identifier,status,next_attempt_utc)
 SELECT DISTINCT 'playlist', job.source, job.playlist_id, 'pending', CURRENT_TIMESTAMP
 FROM watchlist_sync_job job
@@ -1628,20 +1621,6 @@ WHERE lower(status)='unavailable'
   );", connection, transaction))
         {
             await clearFalseUnavailable.ExecuteNonQueryAsync(cancellationToken);
-        }
-
-        await using (var deleteInvalidCaches = new SqliteCommand(
-                         @"DELETE FROM playlist_track_candidate_cache
-WHERE (schema_version < 2 OR is_complete=0)
-  AND EXISTS (
-      SELECT 1 FROM playlist_watchlist watched
-      WHERE watched.source=playlist_track_candidate_cache.source
-        AND watched.source_id=playlist_track_candidate_cache.source_id
-  );",
-                         connection,
-                         transaction))
-        {
-            await deleteInvalidCaches.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await using (var resetParserBackoff = new SqliteCommand(@"

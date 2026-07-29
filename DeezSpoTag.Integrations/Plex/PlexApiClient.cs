@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
 
@@ -2078,13 +2079,24 @@ public class PlexApiClient
             content.Headers.ContentType = response.Content.Headers.ContentType
                 ?? new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
 
-            return await SendPlexRequestAsync(
+            var uploaded = await SendPlexRequestAsync(
                 HttpMethod.Post,
                 $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}",
                 "upload playlist poster",
                 playlistId,
                 cancellationToken,
                 content);
+            if (!uploaded)
+            {
+                return false;
+            }
+
+            return await VerifyPlaylistPosterAsync(
+                serverUrl,
+                token,
+                playlistId,
+                bytes,
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2122,19 +2134,54 @@ public class PlexApiClient
             content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
                 string.IsNullOrWhiteSpace(contentType) ? "image/jpeg" : contentType);
 
-            return await SendPlexRequestAsync(
+            var uploaded = await SendPlexRequestAsync(
                 HttpMethod.Post,
                 $"{serverUrl.TrimEnd('/')}/library/metadata/{playlistId}/posters?X-Plex-Token={token}",
                 "upload playlist poster",
                 playlistId,
                 cancellationToken,
                 content);
+            return uploaded
+                && await VerifyPlaylistPosterAsync(
+                    serverUrl,
+                    token,
+                    playlistId,
+                    bytes,
+                    cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to refresh Plex playlist poster for {PlaylistId} from local file {PosterPath}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), DeezSpoTag.Core.Security.LogSanitizer.OneLine(posterPath));
             return false;
         }
+    }
+
+    private async Task<bool> VerifyPlaylistPosterAsync(
+        string serverUrl,
+        string token,
+        string playlistId,
+        byte[] expectedBytes,
+        CancellationToken cancellationToken)
+    {
+        var playlist = await GetPlaylistAsync(serverUrl, token, playlistId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(playlist?.CoverUrl))
+        {
+            return false;
+        }
+
+        var separator = playlist.CoverUrl.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+        using var verifyResponse = await _httpClient.GetAsync(
+            $"{playlist.CoverUrl}{separator}v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+            cancellationToken);
+        if (!verifyResponse.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        var storedBytes = await verifyResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+        return CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(expectedBytes),
+            SHA256.HashData(storedBytes));
     }
 
     private async Task<bool> ClearPlaylistItemsAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken)
