@@ -50,7 +50,7 @@ jobs:
           image="$REGISTRY/$IMAGE_REPOSITORY:$IMAGE_TAG"
           docker build \
             --pull \
-            --build-arg "DEEZSPOTAG_BUILD_VERSION=${GITEA_SHA}" \
+            --build-arg "DEEZSPOTAG_BUILD_VERSION=${{ gitea.sha }}" \
             --tag "$image" \
             .
 
@@ -93,7 +93,7 @@ jobs:
             --user 1000:1000 \
             --env ASPNETCORE_URLS=http://0.0.0.0:8668 \
             --env DEEZSPOTAG_BOOTSTRAP_USER=CandidateValidation \
-            --env "DEEZSPOTAG_BOOTSTRAP_PASS=CandidateOnly-${GITEA_RUN_ID}-9x!" \
+            --env "DEEZSPOTAG_BOOTSTRAP_PASS=CandidateOnly-${{ gitea.run_id }}-9x!" \
             --env DEEZSPOTAG_DATA_DIR=/data \
             --env DEEZSPOTAG_CONFIG_DIR=/data \
             --env DEEZSPOTAG_DATA_PROTECTION_KEYS_DIR=/data/security/data-protection-keys \
