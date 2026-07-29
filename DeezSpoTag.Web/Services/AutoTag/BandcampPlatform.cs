@@ -26,8 +26,13 @@ public sealed class BandcampPlatform : AutoTagPlatformBase
                 SupportedTag.Style,
                 SupportedTag.Genre,
                 SupportedTag.TrackId,
+                SupportedTag.RecordingId,
+                SupportedTag.ArtistId,
+                SupportedTag.AlbumArtistId,
                 SupportedTag.URL,
                 SupportedTag.ReleaseId,
+                SupportedTag.AlbumId,
+                SupportedTag.Duration,
                 SupportedTag.TrackTotal,
                 SupportedTag.ReleaseType,
                 SupportedTag.Description

@@ -29,6 +29,8 @@ public sealed class ShazamPlatform : AutoTagPlatformBase
                 SupportedTag.AlbumArt,
                 SupportedTag.URL,
                 SupportedTag.TrackId,
+                SupportedTag.RecordingId,
+                SupportedTag.ArtistId,
                 SupportedTag.ISRC,
                 SupportedTag.Duration,
                 SupportedTag.TrackNumber,

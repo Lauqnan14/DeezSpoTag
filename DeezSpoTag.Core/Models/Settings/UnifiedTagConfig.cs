@@ -42,6 +42,7 @@ public class UnifiedTagConfig
 
     public TagSource UnsyncedLyrics { get; set; } = TagSource.DownloadSource;
     public TagSource SyncedLyrics { get; set; } = TagSource.DownloadSource;
+    public TagSource TtmlLyrics { get; set; } = TagSource.DownloadSource;
 
     public TagSource Composer { get; set; } = TagSource.DownloadSource;
     public TagSource Lyricist { get; set; } = TagSource.DownloadSource;
@@ -71,6 +72,8 @@ public class UnifiedTagConfig
     public TagSource Remixer { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Version { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Mood { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource Activity { get; set; } = TagSource.AutoTagPlatform;
+    public TagSource Language { get; set; } = TagSource.AutoTagPlatform;
     public TagSource Url { get; set; } = TagSource.AutoTagPlatform;
     public TagSource OtherTags { get; set; } = TagSource.AutoTagPlatform;
     public TagSource MetaTags { get; set; } = TagSource.AutoTagPlatform;

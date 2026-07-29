@@ -11,6 +11,8 @@ public sealed class SpotifyTrackInfo : AudioFeaturesBase
     public string Url { get; set; } = "";
     public string TrackId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
+    public string ArtistId { get; set; } = "";
+    public string AlbumArtistId { get; set; } = "";
     public TimeSpan Duration { get; set; }
     public string? Art { get; set; }
     public string? Isrc { get; set; }

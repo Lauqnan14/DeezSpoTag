@@ -95,8 +95,12 @@ public sealed class BeatportTrackInfo
     public string Url { get; set; } = "";
     public string? Label { get; set; }
     public string? CatalogNumber { get; set; }
+    public string? Barcode { get; set; }
     public string TrackId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
+    public string? ArtistId { get; set; }
+    public string? AlbumArtistId { get; set; }
+    public string? AlbumId { get; set; }
     public TimeSpan Duration { get; set; }
     public List<string> Remixers { get; set; } = new();
     public int? TrackNumber { get; set; }

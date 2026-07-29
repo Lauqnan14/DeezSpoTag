@@ -281,6 +281,8 @@ public sealed class SpotifyMatcher
             TrackId = normalizedTrackId ?? string.Empty,
             ReleaseId = track.ReleaseId,
             RecordingId = normalizedTrackId,
+            ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
             AlbumId = track.ReleaseId,
             Duration = track.Duration,
             Art = track.Art,
@@ -310,6 +312,16 @@ public sealed class SpotifyMatcher
         if (!string.IsNullOrWhiteSpace(normalizedUrl))
         {
             mapped.Other["SPOTIFY_URL"] = new List<string> { normalizedUrl };
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.ArtistId))
+        {
+            mapped.Other["SPOTIFY_ARTIST_ID"] = new List<string> { track.ArtistId };
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.AlbumArtistId))
+        {
+            mapped.Other["SPOTIFY_ALBUM_ARTIST_ID"] = new List<string> { track.AlbumArtistId };
         }
 
         return mapped;

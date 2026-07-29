@@ -96,6 +96,10 @@ public sealed class ItunesMatcher
         {
             other["ITUNES_ARTIST_ID"] = new List<string> { track.ArtistId };
         }
+        if (!string.IsNullOrWhiteSpace(track.AlbumArtistId))
+        {
+            other["ITUNES_ALBUM_ARTIST_ID"] = new List<string> { track.AlbumArtistId };
+        }
         if (!string.IsNullOrWhiteSpace(track.TrackId))
         {
             other[AutoTagIdentityTags.AppleTrackId] = new List<string> { track.TrackId };
@@ -126,7 +130,9 @@ public sealed class ItunesMatcher
             ReleaseId = track.ReleaseId,
             RecordingId = track.TrackId,
             ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
             AlbumId = track.ReleaseId,
+            ReleaseCountry = track.ReleaseCountry,
             Duration = track.Duration,
             Genres = track.Genres.ToList(),
             ReleaseDate = track.ReleaseDate,

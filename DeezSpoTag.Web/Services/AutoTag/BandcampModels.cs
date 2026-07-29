@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Serialization;
+using System.Xml;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
@@ -47,6 +48,8 @@ public sealed class BandcampSearchResult
             Album = AlbumName,
             ReleaseId = AlbumId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
             TrackId = Id.ToString(CultureInfo.InvariantCulture),
+            ArtistId = BandId.ToString(CultureInfo.InvariantCulture),
+            AlbumArtistId = BandId.ToString(CultureInfo.InvariantCulture),
             Url = ItemUrlPath
         };
     }
@@ -109,6 +112,8 @@ public sealed class BandcampTrack
             .ToList();
 
         var albumArtist = InAlbum.ByArtist?.Name ?? ByArtist.Name;
+        var artistId = ByArtist.Id;
+        var albumArtistId = InAlbum.ByArtist?.Id ?? artistId;
 
         return new BandcampTrackInfo
         {
@@ -123,13 +128,32 @@ public sealed class BandcampTrack
             TrackId = Id,
             Url = Id,
             ReleaseId = InAlbum.Id ?? string.Empty,
+            ArtistId = artistId,
+            AlbumArtistId = albumArtistId,
             TrackTotal = InAlbum.NumTracks,
             ReleaseDate = releaseDate,
             ReleaseYear = releaseDate?.Year,
+            Duration = ParseDuration(Duration),
             Description = Description
         };
     }
 
+    private static TimeSpan? ParseDuration(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        try
+        {
+            return XmlConvert.ToTimeSpan(value);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
 
 }
 
@@ -152,6 +176,9 @@ public sealed class BandcampArtistSmall
 {
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
+
+    [JsonPropertyName("@id")]
+    public string? Id { get; set; }
 }
 
 public sealed class BandcampPublisherSmall
@@ -192,9 +219,12 @@ public sealed class BandcampTrackInfo
     public string Url { get; set; } = "";
     public string TrackId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
+    public string? ArtistId { get; set; }
+    public string? AlbumArtistId { get; set; }
     public int? TrackTotal { get; set; }
     public DateTime? ReleaseDate { get; set; }
     public int? ReleaseYear { get; set; }
+    public TimeSpan? Duration { get; set; }
     public string? Description { get; set; }
 }
 

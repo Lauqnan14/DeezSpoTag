@@ -48,6 +48,8 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
                 "releaseId",
                 "recordingId",
                 "artistId",
+                "albumArtistId",
+                "releaseCountry",
                 "albumId"
             },
             SupportedTags = AutoTagSupportedTags(),
@@ -105,7 +107,9 @@ public sealed class ItunesPlatform : AutoTagPlatformBase
             SupportedTag.ReleaseId,
             SupportedTag.RecordingId,
             SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId,
             SupportedTag.AlbumId,
+            SupportedTag.ReleaseCountry,
             SupportedTag.Duration,
             SupportedTag.TrackNumber,
             SupportedTag.TrackTotal,

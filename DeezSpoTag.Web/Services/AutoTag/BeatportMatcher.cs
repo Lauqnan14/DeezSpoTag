@@ -176,6 +176,8 @@ public sealed class BeatportMatcher
                 {
                     info.TrackTotal = release.TrackCount;
                     info.AlbumArtists = release.Artists?.Select(a => a.Name).ToList() ?? new List<string>();
+                    info.AlbumArtistId = release.Artists?.Where(a => a.Id > 0).Select(a => a.Id.ToString(CultureInfo.InvariantCulture)).FirstOrDefault();
+                    info.Barcode = release.Upc;
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -193,6 +195,7 @@ public sealed class BeatportMatcher
         {
             Title = result.Name,
             TrackId = result.Id.ToString(CultureInfo.InvariantCulture),
+            ArtistId = result.Artists.Where(a => a.Id > 0).Select(a => a.Id.ToString(CultureInfo.InvariantCulture)).FirstOrDefault(),
             Artists = result.Artists.Select(a => a.Name).ToList(),
             Version = includeVersion ? result.MixName : null,
             Duration = TimeSpan.FromMilliseconds(result.LengthMs ?? 0),
@@ -216,8 +219,12 @@ public sealed class BeatportMatcher
             Url = $"https://www.beatport.com/track/{track.Slug}/{track.Id}",
             Label = track.Release.Label.Name,
             CatalogNumber = track.CatalogNumber,
+            Barcode = track.Release.Upc,
             TrackId = track.Id.ToString(CultureInfo.InvariantCulture),
             ReleaseId = track.Release.Id.ToString(CultureInfo.InvariantCulture),
+            ArtistId = track.Artists.Where(a => a.Id > 0).Select(a => a.Id.ToString(CultureInfo.InvariantCulture)).FirstOrDefault(),
+            AlbumArtistId = track.Release.Artists?.Where(a => a.Id > 0).Select(a => a.Id.ToString(CultureInfo.InvariantCulture)).FirstOrDefault(),
+            AlbumId = track.Release.Id.ToString(CultureInfo.InvariantCulture),
             Duration = TimeSpan.FromMilliseconds(track.LengthMs ?? 0),
             Remixers = track.Remixers.Select(r => r.Name).ToList(),
             TrackNumber = track.Number.HasValue ? (int)track.Number.Value : null,

@@ -25,6 +25,7 @@ public sealed class BpmSupremePlatform : AutoTagPlatformBase
                 SupportedTag.Label,
                 SupportedTag.ReleaseDate,
                 SupportedTag.TrackId,
+                SupportedTag.RecordingId,
                 SupportedTag.Mood,
                 SupportedTag.URL
             }

@@ -207,8 +207,12 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Copyright = ParseTagSource(tagConfigObject, "copyright"),
             UnsyncedLyrics = ParseTagSource(tagConfigObject, "unsyncedLyrics"),
             SyncedLyrics = ParseTagSource(tagConfigObject, "syncedLyrics"),
+            TtmlLyrics = ParseTagSource(tagConfigObject, "ttmlLyrics"),
             Composer = ParseTagSource(tagConfigObject, "composer"),
+            Lyricist = ParseTagSource(tagConfigObject, "lyricist"),
             InvolvedPeople = ParseTagSource(tagConfigObject, "involvedPeople"),
+            Publisher = ParseTagSource(tagConfigObject, "publisher"),
+            Description = ParseTagSource(tagConfigObject, "description"),
             Source = ParseTagSource(tagConfigObject, "source"),
             Explicit = ParseTagSource(tagConfigObject, "explicit"),
             Rating = ParseTagSource(tagConfigObject, "rating"),
@@ -230,6 +234,8 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Remixer = ParseTagSource(tagConfigObject, "remixer"),
             Version = ParseTagSource(tagConfigObject, "version"),
             Mood = ParseTagSource(tagConfigObject, "mood"),
+            Activity = ParseTagSource(tagConfigObject, "activity"),
+            Language = ParseTagSource(tagConfigObject, "language"),
             Url = ParseTagSource(tagConfigObject, "url"),
             OtherTags = ParseTagSource(tagConfigObject, "otherTags"),
             MetaTags = ParseTagSource(tagConfigObject, "metaTags")
@@ -404,8 +410,12 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Copyright = TagSource.None,
             UnsyncedLyrics = TagSource.None,
             SyncedLyrics = TagSource.None,
+            TtmlLyrics = TagSource.None,
             Composer = TagSource.None,
+            Lyricist = TagSource.None,
             InvolvedPeople = TagSource.None,
+            Publisher = TagSource.None,
+            Description = TagSource.None,
             Source = TagSource.None,
             Explicit = TagSource.None,
             Rating = TagSource.None,
@@ -427,6 +437,8 @@ public sealed class TaggingProfilesApiController : ControllerBase
             Remixer = TagSource.None,
             Version = TagSource.None,
             Mood = TagSource.None,
+            Activity = TagSource.None,
+            Language = TagSource.None,
             Url = TagSource.None,
             OtherTags = TagSource.None,
             MetaTags = TagSource.None
@@ -559,11 +571,25 @@ public sealed class TaggingProfilesApiController : ControllerBase
             case "syncedLyrics":
                 config.SyncedLyrics = MergeTagSource(config.SyncedLyrics, source);
                 break;
+            case "ttmlLyrics":
+                config.TtmlLyrics = MergeTagSource(config.TtmlLyrics, source);
+                break;
             case "composer":
                 config.Composer = MergeTagSource(config.Composer, source);
                 break;
+            case "lyricist":
+                config.Lyricist = MergeTagSource(config.Lyricist, source);
+                break;
             case "involvedPeople":
                 config.InvolvedPeople = MergeTagSource(config.InvolvedPeople, source);
+                break;
+            case "publisher":
+                config.Publisher = MergeTagSource(config.Publisher, source);
+                break;
+            case "description":
+            case "comment":
+            case "comments":
+                config.Description = MergeTagSource(config.Description, source);
                 break;
             case "source":
                 config.Source = MergeTagSource(config.Source, source);
@@ -627,6 +653,12 @@ public sealed class TaggingProfilesApiController : ControllerBase
                 break;
             case "mood":
                 config.Mood = MergeTagSource(config.Mood, source);
+                break;
+            case "activity":
+                config.Activity = MergeTagSource(config.Activity, source);
+                break;
+            case "language":
+                config.Language = MergeTagSource(config.Language, source);
                 break;
             case "url":
                 config.Url = MergeTagSource(config.Url, source);

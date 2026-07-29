@@ -71,6 +71,7 @@ public sealed class BpmSupremeMatcher
             Label = track.Label,
             ReleaseDate = track.ReleaseDate,
             TrackId = track.TrackId,
+            RecordingId = track.TrackId,
             Mood = track.Mood,
             Url = track.Url,
             Art = track.Art

@@ -109,6 +109,7 @@
         { tag: "album", label: "Album" },
         { tag: "albumArtist", label: "Album Artist" },
         { tag: "artist", label: "Artist" },
+        { tag: "artists", label: "Artists (multi)" },
         { tag: "title", label: "Title" },
         { tag: "version", label: "Version" },
         { tag: "remixer", label: "Remixers", tooltip: "Available from Beatport" },
@@ -3585,6 +3586,9 @@
         }
         if (normalized === "year" || normalized === "date") {
             return "releaseDate";
+        }
+        if (normalized === "artists") {
+            return "artist";
         }
         if (normalized === "cover") {
             return "albumArt";

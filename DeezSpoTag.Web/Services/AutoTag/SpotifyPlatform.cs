@@ -41,6 +41,8 @@ public sealed class SpotifyPlatform : AutoTagPlatformBase
                 "trackId",
                 "releaseId",
                 "recordingId",
+                "artistId",
+                "albumArtistId",
                 "albumId"
             },
             SupportedTags = supportedTags
@@ -62,6 +64,8 @@ public sealed class SpotifyPlatform : AutoTagPlatformBase
             SupportedTag.TrackId,
             SupportedTag.ReleaseId,
             SupportedTag.RecordingId,
+            SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId,
             SupportedTag.AlbumId,
             SupportedTag.Duration,
             SupportedTag.TrackNumber,

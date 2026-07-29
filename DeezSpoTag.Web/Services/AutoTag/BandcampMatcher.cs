@@ -43,6 +43,8 @@ public sealed class BandcampMatcher
             if (full != null)
             {
                 var detailed = full.ToTrackInfo();
+                detailed.ArtistId ??= match.Value.Track.ArtistId;
+                detailed.AlbumArtistId ??= match.Value.Track.AlbumArtistId;
                 return new AutoTagMatchResult { Accuracy = match.Value.Accuracy, Track = ToAutoTagTrack(detailed) };
             }
         }
@@ -69,9 +71,14 @@ public sealed class BandcampMatcher
             Url = track.Url,
             TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
+            RecordingId = track.TrackId,
+            ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
+            AlbumId = track.ReleaseId,
             TrackTotal = track.TrackTotal,
             ReleaseType = AutoTagReleaseCategory.Resolve(null, track.TrackTotal),
             ReleaseDate = track.ReleaseDate,
+            Duration = track.Duration,
             Description = track.Description
         };
     }

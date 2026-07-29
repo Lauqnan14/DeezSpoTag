@@ -949,9 +949,22 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         IEnumerable<SupportedTag> expectedTags)
     {
         var missing = new HashSet<SupportedTag>();
+        var expected = expectedTags.ToHashSet();
         using var file = TagLib.File.Create(filePath);
         var extension = Path.GetExtension(filePath);
-        foreach (var tag in expectedTags)
+        if (expected.Contains(SupportedTag.Artist)
+            && BuildConfiguredTagSet(config.Tags).Contains(ArtistsTag)
+            && !string.Equals(
+                config.Technical?.MultiArtistSeparator ?? MultiArtistSeparatorDefault,
+                MultiArtistSeparatorDefault,
+                StringComparison.OrdinalIgnoreCase)
+            && track.Artists.Count > 0
+            && !HasRawTag(file, extension, "ARTISTS"))
+        {
+            missing.Add(SupportedTag.Artist);
+        }
+
+        foreach (var tag in expected)
         {
             var persisted = tag switch
             {
@@ -5463,6 +5476,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         WriteTitleTag(tagWriteContext, context);
         WriteVersionTag(tagWriteContext, context);
         WriteArtistTag(tagWriteContext, context);
+        WriteArtistsTag(tagWriteContext, context);
         WriteAlbumArtistTag(tagWriteContext, context);
         WriteAlbumTag(tagWriteContext, context);
         WriteKeyTag(tagWriteContext, context);
@@ -5582,6 +5596,41 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         SetField(tagWriteContext, new TagFieldBinding("TPE1", ArtistUpperTag, "©ART", SupportedTag.Artist), artistValues);
+    }
+
+    private static void WriteArtistsTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)
+    {
+        if (!context.EnabledTags.Contains(ArtistsTag) || !context.EffectiveTagSettings.Artists)
+        {
+            return;
+        }
+
+        if (string.Equals(
+                context.EffectiveTagSettings.MultiArtistSeparator,
+                MultiArtistSeparatorDefault,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var artists = context.CoreTrack.Artists
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (artists.Count == 0)
+        {
+            return;
+        }
+
+        var value = context.EffectiveTagSettings.MultiArtistSeparator switch
+        {
+            MultiArtistSeparatorNothing => context.CoreTrack.MainArtist?.Name ?? artists[0],
+            MultiArtistSeparatorDefault => string.Join(", ", artists),
+            _ when !string.IsNullOrWhiteSpace(context.CoreTrack.ArtistsString) => context.CoreTrack.ArtistsString,
+            _ => string.Join(", ", artists)
+        };
+        SetRawIfAllowed(tagWriteContext, ArtistsTag, "ARTISTS", new List<string> { value });
     }
 
     private static void WriteAlbumArtistTag(TagWriteContext tagWriteContext, TagWriteExecutionContext context)

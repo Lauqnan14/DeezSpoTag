@@ -18,6 +18,9 @@ internal static class AutoTagTrackFactory
         public string? CatalogNumber { get; init; }
         public string? TrackId { get; init; }
         public string? ReleaseId { get; init; }
+        public string? ArtistId { get; init; }
+        public string? AlbumArtistId { get; init; }
+        public string? AlbumId { get; init; }
         public TimeSpan? Duration { get; init; }
         public int? TrackNumber { get; init; }
         public int? TrackTotal { get; init; }
@@ -42,6 +45,10 @@ internal static class AutoTagTrackFactory
             CatalogNumber = input.CatalogNumber,
             TrackId = input.TrackId,
             ReleaseId = input.ReleaseId,
+            RecordingId = input.TrackId,
+            ArtistId = input.ArtistId,
+            AlbumArtistId = input.AlbumArtistId,
+            AlbumId = input.AlbumId,
             Duration = input.Duration,
             TrackNumber = input.TrackNumber,
             TrackTotal = input.TrackTotal,
@@ -59,8 +66,13 @@ internal static class AutoTagTrackFactory
 
         autoTagTrack.Styles = track.Styles.ToList();
         autoTagTrack.TrackId = track.TrackId;
+        autoTagTrack.RecordingId = track.TrackId;
+        autoTagTrack.ArtistId = track.ArtistId;
+        autoTagTrack.AlbumArtistId = track.AlbumArtistId;
+        autoTagTrack.AlbumId = track.AlbumId;
         autoTagTrack.Remixers = track.Remixers.ToList();
         autoTagTrack.Isrc = track.Isrc;
+        autoTagTrack.Barcode = track.Barcode;
         autoTagTrack.PublishDate = track.PublishDate;
         autoTagTrack.Other = track.Other.ToDictionary(k => k.Key, v => v.Values);
         return autoTagTrack;
@@ -84,6 +96,9 @@ internal static class AutoTagTrackFactory
             CatalogNumber = track.CatalogNumber,
             TrackId = track.TrackId,
             ReleaseId = track.ReleaseId,
+            ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
+            AlbumId = track.AlbumId,
             Duration = track.Duration,
             TrackNumber = track.TrackNumber,
             TrackTotal = track.TrackTotal,
@@ -106,7 +121,11 @@ internal static class AutoTagTrackFactory
         mapped.Url = track.Url;
         mapped.Label = track.Label;
         mapped.CatalogNumber = track.CatalogNumber;
+        mapped.TrackId = track.TrackId;
         mapped.ReleaseId = track.ReleaseId;
+        mapped.ArtistId = track.ArtistId;
+        mapped.AlbumArtistId = track.AlbumArtistId;
+        mapped.AlbumId = track.AlbumId;
         mapped.Duration = track.Duration;
         mapped.TrackNumber = track.TrackNumber;
         mapped.TrackTotal = track.TrackTotal;

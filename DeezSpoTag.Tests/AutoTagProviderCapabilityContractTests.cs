@@ -253,6 +253,61 @@ public sealed class AutoTagProviderCapabilityContractTests
     }
 
     [Fact]
+    public void MultiArtistSelection_UsesTheArtistProviderCapability()
+    {
+        var script = File.ReadAllText(Path.Combine(
+            ResolveRepoRoot(),
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag.js"));
+
+        Assert.Contains("if (normalized === \"artists\")", script, StringComparison.Ordinal);
+        Assert.Contains("return \"artist\";", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnrichmentAndEnhancementCatalog_ExposesEveryConcreteProviderMetadataTag()
+    {
+        var script = File.ReadAllText(Path.Combine(
+            ResolveRepoRoot(),
+            "DeezSpoTag.Web",
+            "wwwroot",
+            "js",
+            "autotag.js"));
+        var tagList = ExtractConstArray(script, "const TAGS = [");
+        var exposed = tagList
+            .Split(["tag:"], StringSplitOptions.None)
+            .Select(part =>
+            {
+                var start = part.IndexOf('"');
+                if (start < 0)
+                {
+                    return null;
+                }
+
+                var end = part.IndexOf('"', start + 1);
+                return end > start ? part[(start + 1)..end] : null;
+            })
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var normalize = typeof(AutoTagService).GetMethod(
+            "NormalizeSupportedTagKey",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("AutoTagService.NormalizeSupportedTagKey not found.");
+
+        foreach (var descriptor in CreateAllPlatforms().Select(platform => platform.Describe()))
+        {
+            foreach (var providerTag in descriptor.DownloadTags.Where(tag => !IsLyricsTagKey(tag)))
+            {
+                var canonicalTag = Assert.IsType<string>(normalize.Invoke(null, [providerTag]));
+                Assert.Contains(canonicalTag, exposed);
+            }
+        }
+    }
+
+    [Fact]
     public void DownloadTagContracts_DoNotOmitNonLyricsProviderCapabilities()
     {
         var normalize = typeof(AutoTagService).GetMethod(
@@ -323,16 +378,23 @@ public sealed class AutoTagProviderCapabilityContractTests
         AssertContainsAll(
             new BandcampPlatform(environment).Describe(),
             SupportedTag.AlbumArtist,
+            SupportedTag.RecordingId,
+            SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId,
+            SupportedTag.AlbumId,
             SupportedTag.Description);
         AssertContainsAll(
             new ShazamPlatform(environment).Describe(),
             SupportedTag.Composer,
             SupportedTag.Lyricist,
             SupportedTag.Publisher,
-            SupportedTag.Language);
+            SupportedTag.Language,
+            SupportedTag.ArtistId);
         AssertContainsAll(
             new SpotifyPlatform(environment).Describe(),
-            SupportedTag.Copyright);
+            SupportedTag.Copyright,
+            SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId);
         AssertContainsAll(
             new DiscogsPlatform(environment).Describe(),
             SupportedTag.ReleaseCountry,
@@ -342,13 +404,26 @@ public sealed class AutoTagProviderCapabilityContractTests
             SupportedTag.Publisher,
             SupportedTag.Remixer,
             SupportedTag.InvolvedPeople);
+        AssertContainsAll(
+            new BeatportPlatform(environment).Describe(),
+            SupportedTag.RecordingId,
+            SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId,
+            SupportedTag.AlbumId,
+            SupportedTag.Barcode);
+        AssertContainsAll(
+            new TraxsourcePlatform(environment).Describe(),
+            SupportedTag.RecordingId,
+            SupportedTag.ArtistId,
+            SupportedTag.AlbumArtistId,
+            SupportedTag.AlbumId);
 
         Assert.DoesNotContain(SupportedTag.CatalogNumber, new DeezerPlatform(environment).Describe().SupportedTags);
         Assert.DoesNotContain(SupportedTag.Rating, new DeezerPlatform(environment).Describe().SupportedTags);
         Assert.DoesNotContain(SupportedTag.CatalogNumber, new BpmSupremePlatform(environment).Describe().SupportedTags);
         Assert.DoesNotContain(SupportedTag.ReleaseId, new ShazamPlatform(environment).Describe().SupportedTags);
-        Assert.DoesNotContain(SupportedTag.Barcode, new ItunesPlatform(environment).Describe().SupportedTags);
-        Assert.DoesNotContain(SupportedTag.AlbumArtistId, new ItunesPlatform(environment).Describe().SupportedTags);
+        Assert.Contains(SupportedTag.AlbumArtistId, new ItunesPlatform(environment).Describe().SupportedTags);
+        Assert.Contains(SupportedTag.ReleaseCountry, new ItunesPlatform(environment).Describe().SupportedTags);
     }
 
     [Fact]
@@ -386,6 +461,19 @@ public sealed class AutoTagProviderCapabilityContractTests
         Assert.Equal("12345678", boomplay.TrackId);
         Assert.Equal("87654321", boomplay.ReleaseId);
         Assert.Equal("87654321", boomplay.AlbumId);
+
+        var boomplayPublisher = InvokeMapper<BoomplayMatcher, BoomplayTrackMetadata>(
+            new BoomplayTrackMetadata
+            {
+                Id = "publisher-track",
+                Title = "Publisher Track",
+                Artist = "Publisher Artist",
+                Publisher = "Publisher Name"
+            });
+        Assert.Equal("Publisher Name", boomplayPublisher.Publisher);
+        AssertReturnedTagsAreOffered(
+            new BoomplayPlatform(new StubWebHostEnvironment()).Describe(),
+            boomplayPublisher);
     }
 
     [Fact]
@@ -396,6 +484,8 @@ public sealed class AutoTagProviderCapabilityContractTests
             TrackId = "1710609788",
             ReleaseId = "1710609780",
             ArtistId = "1234",
+            AlbumArtistId = "5678",
+            ReleaseCountry = "US",
             Title = "Apple Track",
             Artists = ["Apple Artist"],
             AlbumArtists = ["Apple Album Artist"],
@@ -417,15 +507,27 @@ public sealed class AutoTagProviderCapabilityContractTests
         });
         Assert.Equal("iTunes", Assert.Single(itunes.Other["source"]));
         Assert.Equal("1710609788", Assert.Single(itunes.Other["sourceId"]));
+        Assert.Equal("5678", itunes.AlbumArtistId);
+        Assert.Equal("US", itunes.ReleaseCountry);
         AssertReturnedTagsAreOffered(new ItunesPlatform(new StubWebHostEnvironment()).Describe(), itunes);
 
         var bandcamp = InvokeMapper<BandcampMatcher, BandcampTrackInfo>(new BandcampTrackInfo
         {
             Title = "Bandcamp Track",
+            TrackId = "bandcamp-track",
+            ReleaseId = "bandcamp-album",
+            ArtistId = "bandcamp-artist",
+            AlbumArtistId = "bandcamp-album-artist",
             TrackTotal = 8,
+            Duration = TimeSpan.FromMinutes(4),
             Description = "Bandcamp description"
         });
         Assert.Equal("album", bandcamp.ReleaseType, ignoreCase: true);
+        Assert.Equal(TimeSpan.FromMinutes(4), bandcamp.Duration);
+        Assert.Equal("bandcamp-track", bandcamp.RecordingId);
+        Assert.Equal("bandcamp-artist", bandcamp.ArtistId);
+        Assert.Equal("bandcamp-album-artist", bandcamp.AlbumArtistId);
+        Assert.Equal("bandcamp-album", bandcamp.AlbumId);
         Assert.Equal("Bandcamp description", bandcamp.Description);
         AssertReturnedTagsAreOffered(new BandcampPlatform(new StubWebHostEnvironment()).Describe(), bandcamp);
 
@@ -434,6 +536,9 @@ public sealed class AutoTagProviderCapabilityContractTests
             Title = "Discogs Track",
             TrackTotal = 9,
             ReleaseCountry = "US",
+            ArtistId = "discogs-artist",
+            AlbumArtistId = "discogs-album-artist",
+            AlbumId = "discogs-release",
             Media = ["1 x Vinyl, LP"],
             Composers = ["Discogs Composer"],
             Remixers = ["Discogs Remixer"],
@@ -443,6 +548,9 @@ public sealed class AutoTagProviderCapabilityContractTests
         });
         Assert.Equal("album", discogs.ReleaseType, ignoreCase: true);
         Assert.Equal("US", discogs.ReleaseCountry);
+        Assert.Equal("discogs-artist", discogs.ArtistId);
+        Assert.Equal("discogs-album-artist", discogs.AlbumArtistId);
+        Assert.Equal("discogs-release", discogs.AlbumId);
         Assert.Equal("1 x Vinyl, LP", Assert.Single(discogs.Media));
         Assert.Equal("Discogs Lyricist", discogs.Lyricist);
         Assert.Equal("Discogs Publisher", discogs.Publisher);
@@ -454,10 +562,14 @@ public sealed class AutoTagProviderCapabilityContractTests
             Artists = ["Spotify Artist"],
             TrackId = "0VjIjW4GlUZAMYd2vXMi3b",
             ReleaseId = "album-id",
+            ArtistId = "spotify-artist-id",
+            AlbumArtistId = "spotify-album-artist-id",
             Duration = TimeSpan.FromMinutes(3),
             Copyright = "℗ 2026 Spotify Label"
         });
         Assert.Equal("℗ 2026 Spotify Label", Assert.Single(spotify.Other["copyright"]));
+        Assert.Equal("spotify-artist-id", spotify.ArtistId);
+        Assert.Equal("spotify-album-artist-id", spotify.AlbumArtistId);
         AssertReturnedTagsAreOffered(new SpotifyPlatform(new StubWebHostEnvironment()).Describe(), spotify);
 
         var beatport = AutoTagTrackFactory.FromBeatport(new BeatportTrackInfo
@@ -475,8 +587,12 @@ public sealed class AutoTagProviderCapabilityContractTests
             Url = "https://beatport.com/track/test/100",
             Label = "Label",
             CatalogNumber = "CAT100",
+            Barcode = "123456789012",
             TrackId = "100",
             ReleaseId = "200",
+            ArtistId = "300",
+            AlbumArtistId = "400",
+            AlbumId = "200",
             Duration = TimeSpan.FromMinutes(6),
             Remixers = ["Remixer"],
             TrackNumber = 2,
@@ -486,6 +602,11 @@ public sealed class AutoTagProviderCapabilityContractTests
             PublishDate = new DateTime(2025, 12, 1),
             Other = [("BEATPORT_EXCLUSIVE", ["1"])]
         });
+        Assert.Equal("123456789012", beatport.Barcode);
+        Assert.Equal("100", beatport.RecordingId);
+        Assert.Equal("300", beatport.ArtistId);
+        Assert.Equal("400", beatport.AlbumArtistId);
+        Assert.Equal("200", beatport.AlbumId);
         AssertReturnedTagsAreOffered(new BeatportPlatform(new StubWebHostEnvironment()).Describe(), beatport);
 
         var traxsource = AutoTagTrackFactory.FromTraxsource(new TraxsourceTrackInfo
@@ -504,12 +625,97 @@ public sealed class AutoTagProviderCapabilityContractTests
             CatalogNumber = "CAT300",
             TrackId = "300",
             ReleaseId = "400",
+            ArtistId = "500",
+            AlbumArtistId = "600",
+            AlbumId = "400",
             Duration = TimeSpan.FromMinutes(5),
             TrackNumber = 1,
             TrackTotal = 8,
             ReleaseDate = new DateTime(2026, 2, 1)
         });
+        Assert.Equal("300", traxsource.RecordingId);
+        Assert.Equal("500", traxsource.ArtistId);
+        Assert.Equal("600", traxsource.AlbumArtistId);
+        Assert.Equal("400", traxsource.AlbumId);
         AssertReturnedTagsAreOffered(new TraxsourcePlatform(new StubWebHostEnvironment()).Describe(), traxsource);
+    }
+
+    [Fact]
+    public void ProviderSourceModels_PreserveAllOwnedMetadataExposedAsTags()
+    {
+        var bandcamp = new BandcampTrack
+        {
+            Name = "Timed Track",
+            Duration = "PT3M42S",
+            InAlbum = new BandcampAlbumSmall
+            {
+                Name = "Timed Album",
+                Id = "album-id",
+                NumTracks = 8,
+                ByArtist = new BandcampArtistSmall { Name = "Bandcamp Artist" }
+            },
+            ByArtist = new BandcampArtistSmall
+            {
+                Name = "Bandcamp Artist",
+                Id = "https://bandcamp.test/artist/bandcamp-artist"
+            },
+            Publisher = new BandcampPublisherSmall { Name = "Bandcamp Label" }
+        }.ToTrackInfo();
+        Assert.Equal(TimeSpan.FromMinutes(3) + TimeSpan.FromSeconds(42), bandcamp.Duration);
+        Assert.Equal("https://bandcamp.test/artist/bandcamp-artist", bandcamp.ArtistId);
+
+        var itunes = new ItunesSearchResult
+        {
+            WrapperType = "track",
+            TrackName = "Apple Track",
+            ArtistName = "Track Artist",
+            ArtistId = 10,
+            CollectionArtistName = "Album Artist",
+            CollectionArtistId = 20,
+            CollectionName = "Apple Album",
+            TrackId = 30,
+            CollectionId = 40,
+            Country = "US"
+        }.ToTrackInfo(new ItunesMatchConfig());
+        Assert.NotNull(itunes);
+        Assert.Equal("10", itunes!.ArtistId);
+        Assert.Equal("20", itunes.AlbumArtistId);
+        Assert.Equal("US", itunes.ReleaseCountry);
+
+        var spotifySummary = new SpotifyTrackSummary(
+            "spotify-track",
+            "Spotify Track",
+            "Track Artist, Album Artist",
+            "Spotify Album",
+            180000,
+            "https://open.spotify.com/track/spotify-track",
+            null,
+            null)
+        {
+            AlbumArtist = "Album Artist",
+            ArtistIds = ["track-artist-id", "album-artist-id"]
+        };
+        var spotifyMapper = typeof(SpotifyClient).GetMethod(
+            "ToTrackInfo",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("SpotifyClient.ToTrackInfo not found.");
+        var spotify = Assert.IsType<SpotifyTrackInfo>(spotifyMapper.Invoke(null, [spotifySummary]));
+        Assert.Equal("track-artist-id", spotify.ArtistId);
+        Assert.Equal("album-artist-id", spotify.AlbumArtistId);
+    }
+
+    [Fact]
+    public void MultiArtistSelection_HasAnIndependentRawTagWriterAndPersistenceCheck()
+    {
+        var source = ReadLocalAutoTagRunnerSource();
+        var writer = ExtractVoidMethodBody(source, "WriteArtistsTag");
+        var verification = ExtractAnyMethodBody(source, "VerifyPersistedTags");
+
+        Assert.Contains("context.EnabledTags.Contains(ArtistsTag)", writer, StringComparison.Ordinal);
+        Assert.Contains("context.EffectiveTagSettings.Artists", writer, StringComparison.Ordinal);
+        Assert.Contains("\"ARTISTS\"", writer, StringComparison.Ordinal);
+        Assert.Contains("SetRawIfAllowed", writer, StringComparison.Ordinal);
+        Assert.Contains("HasRawTag(file, extension, \"ARTISTS\")", verification, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -589,6 +795,56 @@ public sealed class AutoTagProviderCapabilityContractTests
         throw new InvalidOperationException($"{methodName} method body terminator was not found.");
     }
 
+    private static string ExtractVoidMethodBody(string source, string methodName)
+    {
+        var methodStart = source.IndexOf($"private static void {methodName}", StringComparison.Ordinal);
+        if (methodStart < 0)
+        {
+            throw new InvalidOperationException($"{methodName} method body was not found.");
+        }
+
+        var bodyStart = source.IndexOf('{', methodStart);
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}' && --depth == 0)
+            {
+                return source[bodyStart..(index + 1)];
+            }
+        }
+
+        throw new InvalidOperationException($"{methodName} method body terminator was not found.");
+    }
+
+    private static string ExtractAnyMethodBody(string source, string methodName)
+    {
+        var name = source.IndexOf($"private static HashSet<SupportedTag> {methodName}(", StringComparison.Ordinal);
+        if (name < 0)
+        {
+            throw new InvalidOperationException($"{methodName} method body was not found.");
+        }
+
+        var bodyStart = source.IndexOf('{', name);
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+            {
+                depth++;
+            }
+            else if (source[index] == '}' && --depth == 0)
+            {
+                return source[bodyStart..(index + 1)];
+            }
+        }
+
+        throw new InvalidOperationException($"{methodName} method body terminator was not found.");
+    }
+
     private static string ReadLocalAutoTagRunnerSource()
         => File.ReadAllText(Path.Combine(
             ResolveRepoRoot(),
@@ -624,6 +880,12 @@ public sealed class AutoTagProviderCapabilityContractTests
 
     private static bool IsLyricsTag(SupportedTag tag)
         => tag is SupportedTag.SyncedLyrics or SupportedTag.UnsyncedLyrics or SupportedTag.TtmlLyrics;
+
+    private static bool IsLyricsTagKey(string tag)
+        => tag.Equals("lyrics", StringComparison.OrdinalIgnoreCase)
+           || tag.Equals("unsyncedLyrics", StringComparison.OrdinalIgnoreCase)
+           || tag.Equals("syncedLyrics", StringComparison.OrdinalIgnoreCase)
+           || tag.Equals("ttmlLyrics", StringComparison.OrdinalIgnoreCase);
 
     private static string ToUiTagKey(SupportedTag tag)
         => tag switch

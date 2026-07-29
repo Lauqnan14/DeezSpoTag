@@ -13,6 +13,9 @@ public sealed class TraxsourceTrackInfo
     public List<string> Genres { get; set; } = new();
     public string? TrackId { get; set; }
     public string ReleaseId { get; set; } = "";
+    public string? ArtistId { get; set; }
+    public string? AlbumArtistId { get; set; }
+    public string? AlbumId { get; set; }
     public TimeSpan Duration { get; set; }
     public string? Album { get; set; }
     public string? CatalogNumber { get; set; }

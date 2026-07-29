@@ -65,6 +65,7 @@ public static class TaggingProfileCanonicalizer
         new("copyright", c => c.Copyright, (c, v) => c.Copyright = v),
         new("lyrics", c => c.UnsyncedLyrics, (c, v) => c.UnsyncedLyrics = v, "unsyncedLyrics"),
         new("syncedLyrics", c => c.SyncedLyrics, (c, v) => c.SyncedLyrics = v),
+        new("ttmlLyrics", c => c.TtmlLyrics, (c, v) => c.TtmlLyrics = v),
         new("composer", c => c.Composer, (c, v) => c.Composer = v),
         new("lyricist", c => c.Lyricist, (c, v) => c.Lyricist = v),
         new("involvedPeople", c => c.InvolvedPeople, (c, v) => c.InvolvedPeople = v),
@@ -91,6 +92,8 @@ public static class TaggingProfileCanonicalizer
         new("remixer", c => c.Remixer, (c, v) => c.Remixer = v),
         new("version", c => c.Version, (c, v) => c.Version = v),
         new("mood", c => c.Mood, (c, v) => c.Mood = v),
+        new("activity", c => c.Activity, (c, v) => c.Activity = v),
+        new("language", c => c.Language, (c, v) => c.Language = v),
         new("url", c => c.Url, (c, v) => c.Url = v),
         new("otherTags", c => c.OtherTags, (c, v) => c.OtherTags = v),
         new("metaTags", c => c.MetaTags, (c, v) => c.MetaTags = v)

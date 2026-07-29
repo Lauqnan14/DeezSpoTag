@@ -34,7 +34,7 @@ DeezSpoTag automates music workflows end-to-end:
 - This project is under heavy development.
 - Some features are experimental and may modify music metadata.
 - Do not run this on your main library without a backup.
-- Most tagging platforms have been thoroughly tested with the exception of Beatport, BPM Supreme, Truxsource and Last.fm
+- Most tagging platforms have been thoroughly tested with the exception of Beatport, BPM Supreme, Traxsource and Last.fm
 - Enhacement run, otherwise can be considered as Library maintenance, is approximately 70% ready. Folder Uniformity is the biggest section that is still under development, and requires thorough testing.
 - Manual tagging is still under heavy development.
 - Soundtrack fetching requires a lot of work to reliably fetch soundtracks.
@@ -83,6 +83,7 @@ Use the `Login` page to configure platform credentials.
 
 ### Deezer
 
+- `Credentials Login`: enter your Deezer email and password.
 - `ARL Login`: paste your Deezer `arl` cookie value.
 
 ### Spotify
@@ -122,6 +123,7 @@ Use the `Login` page to configure platform credentials.
 ### Qobuz
 
 - `Qobuz Credentials`:
+  - `Qobuz App ID` can be changed when required.
   - `Qobuz user auth token` is required.
   - `Qobuz App Secret` is required.
 
@@ -130,7 +132,17 @@ Use the `Login` page to configure platform credentials.
 - `Tidal Credentials`:
   - `Client ID` is required.
   - `Client Secret` is required.
+  - Existing access and refresh tokens can be supplied when available.
   - `User ID` is optional.
+  - `Country Code` defaults to `US`.
+
+### Amazon Music
+
+- `Amazon Music Session`:
+  - `Music host` defaults to `music.amazon.com`.
+  - `Locale` defaults to `en_US`.
+  - `Cookie` is optional and enables the authenticated Amazon Music session.
+- Amazon Music downloads can also use an enabled `Public API Provider` without an authenticated Amazon Music session.
 
 ### Soulseek
 
@@ -152,6 +164,11 @@ Use the `Login` page to configure platform credentials.
 
 - UI collects `Email`, `Password`, and `Library` (`Supreme` or `Latino`).
 
+### Boomplay
+
+- `Boomplay Session`:
+  - `Cookie` from a logged-in Boomplay browser session is required.
+
 ### Plex
 
 - `Server URL` and `Token` are required.
@@ -159,6 +176,22 @@ Use the `Login` page to configure platform credentials.
 ### Jellyfin
 
 - `Server URL`, `API Key`, and `Username` are required.
+
+### Navidrome
+
+- `Navidrome Integration`:
+  - `Server URL` is required.
+  - `Username` is required.
+  - `Password or token` is required.
+
+### Beatport
+
+- `Beatport Authentication`:
+  - `Client ID` is required.
+  - `Client Secret` can be saved when required by the Beatport API application.
+  - `Redirect URI` must be DeezSpoTag's displayed Beatport callback URL and must also be registered with the Beatport API application.
+  - `Scope` is optional.
+- **Beatport has not been tested.**
 
 Provider-specific features run only when that provider has valid credentials configured.
 

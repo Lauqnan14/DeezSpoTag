@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
@@ -13,6 +15,69 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TaggingProfileLyricsMigrationTests
 {
+    [Fact]
+    public async Task UpsertAndReload_PreservesAllEnrichmentSelections()
+    {
+        using var environment = new TemporaryEnvironment();
+        var service = new TaggingProfileService(
+            environment,
+            NullLogger<TaggingProfileService>.Instance);
+        var tagConfig = new UnifiedTagConfig();
+
+        foreach (var property in typeof(UnifiedTagConfig).GetProperties()
+                     .Where(property => property.PropertyType == typeof(TagSource) && property.CanWrite))
+        {
+            property.SetValue(tagConfig, TagSource.None);
+        }
+
+        tagConfig.Activity = TagSource.AutoTagPlatform;
+        tagConfig.Language = TagSource.AutoTagPlatform;
+        tagConfig.Lyricist = TagSource.AutoTagPlatform;
+        tagConfig.Publisher = TagSource.AutoTagPlatform;
+        tagConfig.Description = TagSource.AutoTagPlatform;
+
+        var profile = new TaggingProfile
+        {
+            Name = "Enrichment persistence",
+            TagConfig = tagConfig,
+            AutoTag = new AutoTagSettings
+            {
+                Data = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                    """
+                    {
+                      "downloadTags": [],
+                      "tags": ["Activity", "Language", "Lyricist", "Publisher", "Description"],
+                      "gapFillTags": []
+                    }
+                    """)!
+            }
+        };
+
+        await service.UpsertAsync(profile);
+
+        var reloadedService = new TaggingProfileService(
+            environment,
+            NullLogger<TaggingProfileService>.Instance);
+        var reloadedProfile = Assert.Single(await reloadedService.LoadAsync());
+        var persistedTags = reloadedProfile.AutoTag.Data["tags"]
+            .EnumerateArray()
+            .Select(value => value.GetString())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToList();
+
+        foreach (var tag in new[] { "Activity", "Language", "Lyricist", "Publisher", "Description" })
+        {
+            Assert.Contains(tag, persistedTags, StringComparer.OrdinalIgnoreCase);
+        }
+
+        Assert.Equal(TagSource.AutoTagPlatform, reloadedProfile.TagConfig.Activity);
+        Assert.Equal(TagSource.AutoTagPlatform, reloadedProfile.TagConfig.Language);
+        Assert.Equal(TagSource.AutoTagPlatform, reloadedProfile.TagConfig.Lyricist);
+        Assert.Equal(TagSource.AutoTagPlatform, reloadedProfile.TagConfig.Publisher);
+        Assert.Equal(TagSource.AutoTagPlatform, reloadedProfile.TagConfig.Description);
+    }
+
     [Fact]
     public async Task LoadAsync_MigratesLyricsConfigurationOnce_WithoutResettingPreferences()
     {

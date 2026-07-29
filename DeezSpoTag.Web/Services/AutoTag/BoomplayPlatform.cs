@@ -33,10 +33,12 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 "mood",
                 "activity",
                 "composer",
+                "publisher",
                 "language",
                 "source",
                 "url",
                 "trackId",
+                "recordingId",
                 "releaseId",
                 "albumId"
             },
@@ -49,6 +51,7 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 SupportedTag.AlbumArt,
                 SupportedTag.URL,
                 SupportedTag.TrackId,
+                SupportedTag.RecordingId,
                 SupportedTag.ReleaseId,
                 SupportedTag.AlbumId,
                 SupportedTag.Duration,
@@ -63,6 +66,7 @@ public sealed class BoomplayPlatform : AutoTagPlatformBase
                 SupportedTag.BPM,
                 SupportedTag.Key,
                 SupportedTag.Composer,
+                SupportedTag.Publisher,
                 SupportedTag.Language,
                 SupportedTag.Source
             },

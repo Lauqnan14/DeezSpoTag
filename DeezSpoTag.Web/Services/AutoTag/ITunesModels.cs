@@ -147,6 +147,8 @@ public sealed class ItunesSearchResult
             ArtistId = ArtistId?.ToString(CultureInfo.InvariantCulture)
                 ?? CollectionArtistId?.ToString(CultureInfo.InvariantCulture)
                 ?? string.Empty,
+            AlbumArtistId = CollectionArtistId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            ReleaseCountry = Country,
             Duration = TrackTimeMillis.HasValue ? TimeSpan.FromMilliseconds(TrackTimeMillis.Value) : TimeSpan.Zero,
             Genres = !string.IsNullOrWhiteSpace(PrimaryGenreName) ? new List<string> { PrimaryGenreName } : new List<string>(),
             ReleaseDate = releaseDate,
@@ -232,6 +234,8 @@ public sealed class ItunesTrackInfo
     public string TrackId { get; set; } = "";
     public string ReleaseId { get; set; } = "";
     public string ArtistId { get; set; } = "";
+    public string AlbumArtistId { get; set; } = "";
+    public string? ReleaseCountry { get; set; }
     public TimeSpan Duration { get; set; }
     public List<string> Genres { get; set; } = new();
     public DateTime? ReleaseDate { get; set; }

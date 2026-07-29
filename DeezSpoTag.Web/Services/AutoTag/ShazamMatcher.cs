@@ -97,6 +97,8 @@ public sealed class ShazamMatcher
             Isrc = recognized.Isrc,
             Url = recognized.Url,
             TrackId = recognized.TrackId,
+            RecordingId = recognized.TrackId,
+            ArtistId = recognized.ArtistIds.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)),
             TrackNumber = recognized.TrackNumber,
             DiscNumber = recognized.DiscNumber,
             Explicit = recognized.Explicit,

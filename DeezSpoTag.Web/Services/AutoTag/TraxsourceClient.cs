@@ -72,6 +72,7 @@ public sealed class TraxsourceClient
                 releaseId = releaseId[..slashIndex];
             }
             track.ReleaseId = releaseId;
+            track.AlbumId = releaseId;
         }
 
         if (!albumMeta)
@@ -94,8 +95,22 @@ public sealed class TraxsourceClient
         var artistsNode = albumDoc.DocumentNode.SelectSingleNode("//h1[contains(@class,'artists')]");
         if (artistsNode != null)
         {
-            var artistText = artistsNode.InnerText.Trim();
-            track.AlbumArtists = artistText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            var albumArtistLinks = artistsNode.SelectNodes(".//a");
+            if (albumArtistLinks is { Count: > 0 })
+            {
+                track.AlbumArtists = albumArtistLinks
+                    .Select(link => link.InnerText.Trim())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .ToList();
+                track.AlbumArtistId = albumArtistLinks
+                    .Select(link => ExtractEntityId(link.GetAttributeValue("href", string.Empty), "artist"))
+                    .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            }
+            else
+            {
+                var artistText = artistsNode.InnerText.Trim();
+                track.AlbumArtists = artistText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(track.TrackId))
@@ -144,7 +159,11 @@ public sealed class TraxsourceClient
         var link = titleNode.SelectSingleNode(".//a");
         var href = link?.GetAttributeValue("href", "") ?? string.Empty;
         var trackId = ExtractTrackId(href);
-        var artists = row.SelectNodes(".//div[contains(@class,'artists')]//a")?.Select(a => a.InnerText.Trim()).ToList() ?? new List<string>();
+        var artistLinks = row.SelectNodes(".//div[contains(@class,'artists')]//a");
+        var artists = artistLinks?.Select(a => a.InnerText.Trim()).ToList() ?? new List<string>();
+        var artistId = artistLinks?
+            .Select(link => ExtractEntityId(link.GetAttributeValue("href", string.Empty), "artist"))
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         var label = row.SelectSingleNode(".//div[contains(@class,'label')]")?.InnerText.Trim();
         var (key, bpm) = ParseKeyBpm(row);
         var genre = row.SelectSingleNode(".//div[contains(@class,'genre')]")?.InnerText.Trim();
@@ -162,6 +181,7 @@ public sealed class TraxsourceClient
             ReleaseDate = releaseDate,
             Genres = genre != null ? new List<string> { genre } : new List<string>(),
             TrackId = trackId,
+            ArtistId = artistId,
             Duration = duration
         };
         return true;
@@ -192,6 +212,20 @@ public sealed class TraxsourceClient
         }
 
         return trackId;
+    }
+
+    private static string? ExtractEntityId(string href, string entity)
+    {
+        var prefix = $"/{entity}/";
+        var start = href.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        var value = href[(start + prefix.Length)..];
+        var slash = value.IndexOf('/');
+        return (slash >= 0 ? value[..slash] : value).Trim();
     }
 
     private static (string? Key, long? Bpm) ParseKeyBpm(HtmlNode row)

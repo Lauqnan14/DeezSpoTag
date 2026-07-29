@@ -318,12 +318,21 @@ public sealed class DiscogsMatcher
         var media = BuildMediaFormats(release);
         var credits = BuildCreditFields((track.ExtraArtists ?? new List<DiscogsExtraArtist>())
             .Concat(release.ExtraArtists ?? new List<DiscogsExtraArtist>()));
+        var trackArtistNames = track.Artists?.Select(a => CleanArtist(a.Name)).ToList()
+            ?? release.Artists.Select(a => CleanArtist(a.Name)).ToList();
+        var trackArtistId = track.Artists?
+            .Where(a => a.Id > 0)
+            .Select(a => a.Id.ToString(CultureInfo.InvariantCulture))
+            .FirstOrDefault()
+            ?? release.Artists
+                .Where(a => a.Id > 0)
+                .Select(a => a.Id.ToString(CultureInfo.InvariantCulture))
+                .FirstOrDefault();
 
         return new DiscogsTrackInfo
         {
             Title = track.Title,
-            Artists = track.Artists?.Select(a => CleanArtist(a.Name)).ToList()
-                      ?? release.Artists.Select(a => CleanArtist(a.Name)).ToList(),
+            Artists = trackArtistNames,
             AlbumArtists = release.Artists.Select(a => CleanArtist(a.Name)).ToList(),
             Album = release.Title,
             Genres = release.Genres,
@@ -335,6 +344,9 @@ public sealed class DiscogsMatcher
             ReleaseDate = releaseDate,
             CatalogNumber = catalogNumber,
             ReleaseId = release.Id.ToString(CultureInfo.InvariantCulture),
+            ArtistId = trackArtistId,
+            AlbumArtistId = release.Artists.Where(a => a.Id > 0).Select(a => a.Id.ToString(CultureInfo.InvariantCulture)).FirstOrDefault(),
+            AlbumId = release.Id.ToString(CultureInfo.InvariantCulture),
             ReleaseCountry = release.Country,
             Media = media,
             Duration = ParseDuration(track.Duration),
@@ -499,6 +511,9 @@ public sealed class DiscogsMatcher
             ReleaseDate = track.ReleaseDate,
             CatalogNumber = track.CatalogNumber,
             ReleaseId = track.ReleaseId,
+            ArtistId = track.ArtistId,
+            AlbumArtistId = track.AlbumArtistId,
+            AlbumId = track.AlbumId,
             ReleaseCountry = track.ReleaseCountry,
             Media = track.Media.ToList(),
             Duration = track.Duration,
@@ -549,6 +564,9 @@ public sealed class DiscogsTrackInfo
     public DateTime? ReleaseDate { get; set; }
     public string? CatalogNumber { get; set; }
     public string ReleaseId { get; set; } = "";
+    public string? ArtistId { get; set; }
+    public string? AlbumArtistId { get; set; }
+    public string? AlbumId { get; set; }
     public string? ReleaseCountry { get; set; }
     public List<string> Media { get; set; } = new();
     public TimeSpan Duration { get; set; }

@@ -87,6 +87,8 @@ public sealed class SpotifyClient
             Url = summary.SourceUrl,
             TrackId = summary.Id,
             ReleaseId = summary.AlbumId ?? string.Empty,
+            ArtistId = summary.ArtistIds?.FirstOrDefault() ?? string.Empty,
+            AlbumArtistId = ResolveAlbumArtistId(summary, artists),
             Duration = summary.DurationMs.HasValue ? TimeSpan.FromMilliseconds(summary.DurationMs.Value) : TimeSpan.Zero,
             Art = summary.ImageUrl,
             Isrc = summary.Isrc,
@@ -107,6 +109,24 @@ public sealed class SpotifyClient
         return artists
             ?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToList() ?? new List<string>();
+    }
+
+    private static string ResolveAlbumArtistId(SpotifyTrackSummary summary, IReadOnlyList<string> artists)
+    {
+        if (string.IsNullOrWhiteSpace(summary.AlbumArtist) || summary.ArtistIds == null)
+        {
+            return string.Empty;
+        }
+
+        for (var index = 0; index < artists.Count && index < summary.ArtistIds.Count; index++)
+        {
+            if (string.Equals(artists[index], summary.AlbumArtist, StringComparison.OrdinalIgnoreCase))
+            {
+                return summary.ArtistIds[index];
+            }
+        }
+
+        return string.Empty;
     }
 
     private static DateTime? TryParseDate(string? value)
