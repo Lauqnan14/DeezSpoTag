@@ -1,8 +1,18 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
+using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Tidal;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -37,6 +47,197 @@ public sealed class TidalStereoQualitySeparationTests
         var request = TidalRequestBuilder.BuildRequest(item, settings);
 
         Assert.Equal("HI_RES", request.Quality);
+    }
+
+    [Fact]
+    public void TidalDirectDownload_PerformsQualityAwareCatalogResolutionBeforeManifestAcquisition()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindRepoRoot(),
+            "DeezSpoTag.Services",
+            "Download",
+            "Tidal",
+            "TidalDownloadService.cs"));
+        var qualityResolution = source.IndexOf(
+            "tidalUrl = await ResolveTrackUrlForQualityAsync(",
+            StringComparison.Ordinal);
+        var manifestAcquisition = source.IndexOf(
+            "return await DownloadByUrlAsync(",
+            qualityResolution,
+            StringComparison.Ordinal);
+
+        Assert.True(qualityResolution >= 0);
+        Assert.True(manifestAcquisition > qualityResolution);
+        Assert.Contains("if (!IsTidalAtmosRequest(request))", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalFallbackResolution_UsesTheActiveStepsQuality()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindRepoRoot(),
+            "DeezSpoTag.Services",
+            "Download",
+            "Fallback",
+            "EngineFallbackCoordinator.cs"));
+
+        Assert.Contains(
+            "Quality = step.Quality ?? context.ResolutionRequest.Quality",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalManifestRouting_UsesAuthenticatedSessionOtherwisePublicProviderRegistry()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindRepoRoot(),
+            "DeezSpoTag.Services",
+            "Download",
+            "Tidal",
+            "TidalDownloadService.cs"));
+        var methodStart = source.IndexOf(
+            "private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync(",
+            StringComparison.Ordinal);
+        var authenticatedBranch = source.IndexOf(
+            "if (await _accessTokenProvider.HasAuthenticatedSessionAsync(cancellationToken))",
+            methodStart,
+            StringComparison.Ordinal);
+        var authenticatedFetch = source.IndexOf(
+            "FetchManifestFromAuthenticatedApiAsync(",
+            authenticatedBranch,
+            StringComparison.Ordinal);
+        var publicProviderRegistry = source.IndexOf(
+            "_providerSource.GetRotatedProviderRecordsAsync(cancellationToken)",
+            authenticatedFetch,
+            StringComparison.Ordinal);
+        var nextMethod = source.IndexOf(
+            "private async Task<string> FetchManifestFromAuthenticatedApiAsync(",
+            publicProviderRegistry,
+            StringComparison.Ordinal);
+
+        Assert.True(methodStart >= 0);
+        Assert.True(authenticatedBranch > methodStart);
+        Assert.True(authenticatedFetch > authenticatedBranch);
+        Assert.True(publicProviderRegistry > authenticatedFetch);
+        Assert.True(nextMethod > publicProviderRegistry);
+
+        var routingMethod = source[methodStart..nextMethod];
+        Assert.DoesNotContain("Zarz", routingMethod, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("TryFetchManifestFromCredentialApiAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TidalDashSegments_RetryIndependentlyAndMergeInManifestOrder()
+    {
+        using var server = new SegmentTestServer();
+        server.Start();
+        var outputDirectory = Path.Join(Path.GetTempPath(), $"deezspotag-tidal-segments-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var outputPath = Path.Join(outputDirectory, "combined.bin");
+
+        try
+        {
+            var service = new TidalDownloadService(
+                NullLogger<TidalDownloadService>.Instance,
+                new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+                new UnauthenticatedTidalAccessTokenProvider());
+            var method = typeof(TidalDownloadService).GetMethod(
+                "DownloadSegmentsAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+
+            var task = Assert.IsAssignableFrom<Task>(method.Invoke(
+                service,
+                [
+                    new[]
+                    {
+                        server.Url("init"),
+                        server.Url("media-1"),
+                        server.Url("media-2")
+                    },
+                    outputPath,
+                    null,
+                    CancellationToken.None
+                ]));
+            await task;
+
+            Assert.Equal("INIT-ONE-TWO", await File.ReadAllTextAsync(outputPath));
+            Assert.Equal(1, server.RequestCount("init"));
+            Assert.Equal(2, server.RequestCount("media-1"));
+            Assert.Equal(2, server.RequestCount("media-2"));
+            Assert.Empty(Directory.GetDirectories(outputDirectory, "*.segments-*"));
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TidalDashSegments_ProduceTaggableAudioWithoutDroppingWrittenMetadata()
+    {
+        var outputDirectory = Path.Join(Path.GetTempPath(), $"deezspotag-tidal-tags-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(outputDirectory);
+        var sourcePath = Path.Join(outputDirectory, "source.flac");
+        var outputPath = Path.Join(outputDirectory, "downloaded.flac");
+
+        try
+        {
+            await GenerateTestFlacAsync(sourcePath);
+            var sourceBytes = await File.ReadAllBytesAsync(sourcePath);
+            var firstBoundary = sourceBytes.Length / 3;
+            var secondBoundary = firstBoundary * 2;
+            var payloads = new Dictionary<string, byte[]>(StringComparer.Ordinal)
+            {
+                ["init"] = sourceBytes[..firstBoundary],
+                ["media-1"] = sourceBytes[firstBoundary..secondBoundary],
+                ["media-2"] = sourceBytes[secondBoundary..]
+            };
+
+            using var server = new SegmentTestServer(payloads, simulateFailures: false);
+            server.Start();
+            await InvokeSegmentDownloadAsync(
+                server,
+                outputPath,
+                ["init", "media-1", "media-2"]);
+
+            Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(outputPath));
+
+            using (var tagFile = TagLib.File.Create(outputPath))
+            {
+                tagFile.Tag.Title = "Segment Download Title";
+                tagFile.Tag.Performers = ["Primary Artist", "Featured Artist"];
+                tagFile.Tag.AlbumArtists = ["Album Artist"];
+                tagFile.Tag.Album = "Segment Download Album";
+                tagFile.Tag.Genres = ["Hip-Hop", "R&B"];
+                tagFile.Tag.Track = 7;
+                tagFile.Tag.TrackCount = 12;
+                tagFile.Tag.Disc = 1;
+                tagFile.Tag.DiscCount = 2;
+                tagFile.Tag.Year = 2026;
+                tagFile.Tag.Comment = "Tidal segment metadata verification";
+                tagFile.Save();
+            }
+
+            using var verified = TagLib.File.Create(outputPath);
+            Assert.Equal("Segment Download Title", verified.Tag.Title);
+            Assert.Equal(new[] { "Primary Artist", "Featured Artist" }, verified.Tag.Performers);
+            Assert.Equal(new[] { "Album Artist" }, verified.Tag.AlbumArtists);
+            Assert.Equal("Segment Download Album", verified.Tag.Album);
+            Assert.Equal(new[] { "Hip-Hop", "R&B" }, verified.Tag.Genres);
+            Assert.Equal(7u, verified.Tag.Track);
+            Assert.Equal(12u, verified.Tag.TrackCount);
+            Assert.Equal(1u, verified.Tag.Disc);
+            Assert.Equal(2u, verified.Tag.DiscCount);
+            Assert.Equal(2026u, verified.Tag.Year);
+            Assert.Equal("Tidal segment metadata verification", verified.Tag.Comment);
+            Assert.True(verified.Properties.Duration > TimeSpan.Zero);
+        }
+        finally
+        {
+            Directory.Delete(outputDirectory, recursive: true);
+        }
     }
 
     [Theory]
@@ -125,5 +326,248 @@ public sealed class TidalStereoQualitySeparationTests
             </MPD>
             """;
         return "MANIFEST:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest));
+    }
+
+    private static string FindRepoRoot()
+    {
+        var directory = Directory.GetCurrentDirectory();
+        while (!string.IsNullOrWhiteSpace(directory))
+        {
+            if (Directory.Exists(Path.Join(directory, "DeezSpoTag.Services"))
+                && Directory.Exists(Path.Join(directory, "DeezSpoTag.Tests")))
+            {
+                return directory;
+            }
+
+            directory = Directory.GetParent(directory)?.FullName ?? string.Empty;
+        }
+
+        throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+
+    private static async Task InvokeSegmentDownloadAsync(
+        SegmentTestServer server,
+        string outputPath,
+        IReadOnlyList<string> paths)
+    {
+        var service = new TidalDownloadService(
+            NullLogger<TidalDownloadService>.Instance,
+            new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
+            new UnauthenticatedTidalAccessTokenProvider());
+        var method = typeof(TidalDownloadService).GetMethod(
+            "DownloadSegmentsAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var urls = paths.Select(server.Url).ToArray();
+        var task = Assert.IsAssignableFrom<Task>(method.Invoke(
+            service,
+            [urls, outputPath, null, CancellationToken.None]));
+        await task;
+    }
+
+    private static async Task GenerateTestFlacAsync(string outputPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "ffmpeg",
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("-hide_banner");
+        startInfo.ArgumentList.Add("-loglevel");
+        startInfo.ArgumentList.Add("error");
+        startInfo.ArgumentList.Add("-f");
+        startInfo.ArgumentList.Add("lavfi");
+        startInfo.ArgumentList.Add("-i");
+        startInfo.ArgumentList.Add("sine=frequency=440:duration=1");
+        startInfo.ArgumentList.Add("-c:a");
+        startInfo.ArgumentList.Add("flac");
+        startInfo.ArgumentList.Add("-y");
+        startInfo.ArgumentList.Add(outputPath);
+
+        using var process = Process.Start(startInfo);
+        Assert.NotNull(process);
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        var error = await errorTask;
+        Assert.True(process.ExitCode == 0, error);
+        Assert.True(new FileInfo(outputPath).Length > 0);
+    }
+
+    private sealed class SegmentTestServer : IDisposable
+    {
+        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _shutdown = new();
+        private readonly Dictionary<string, int> _requestCounts = new(StringComparer.Ordinal);
+        private readonly IReadOnlyDictionary<string, byte[]>? _payloads;
+        private readonly bool _simulateFailures;
+        private Task? _acceptLoop;
+
+        public SegmentTestServer(
+            IReadOnlyDictionary<string, byte[]>? payloads = null,
+            bool simulateFailures = true)
+        {
+            _payloads = payloads;
+            _simulateFailures = simulateFailures;
+        }
+
+        public void Start()
+        {
+            _listener.Start();
+            _acceptLoop = AcceptLoopAsync(_shutdown.Token);
+        }
+
+        public string Url(string path)
+            => $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/{path}";
+
+        public int RequestCount(string path)
+        {
+            lock (_requestCounts)
+            {
+                return _requestCounts.GetValueOrDefault(path);
+            }
+        }
+
+        private async Task AcceptLoopAsync(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                TcpClient client;
+                try
+                {
+                    client = await _listener.AcceptTcpClientAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                _ = HandleAsync(client, cancellationToken);
+            }
+        }
+
+        private async Task HandleAsync(TcpClient client, CancellationToken cancellationToken)
+        {
+            using (client)
+            {
+                var stream = client.GetStream();
+                using var reader = new StreamReader(
+                    stream,
+                    Encoding.ASCII,
+                    detectEncodingFromByteOrderMarks: false,
+                    bufferSize: 1024,
+                    leaveOpen: true);
+                var requestLine = await reader.ReadLineAsync(cancellationToken);
+                string? line;
+                do
+                {
+                    line = await reader.ReadLineAsync(cancellationToken);
+                }
+                while (!string.IsNullOrEmpty(line));
+
+                var path = requestLine?.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .ElementAtOrDefault(1)?
+                    .TrimStart('/') ?? string.Empty;
+                int count;
+                lock (_requestCounts)
+                {
+                    count = _requestCounts.GetValueOrDefault(path) + 1;
+                    _requestCounts[path] = count;
+                }
+
+                if (_simulateFailures && path == "media-1" && count == 1)
+                {
+                    await WriteResponseAsync(stream, "503 Service Unavailable", [], "Retry-After: 0\r\n", cancellationToken);
+                    return;
+                }
+
+                if (_simulateFailures && path == "media-2" && count == 1)
+                {
+                    await WriteResponseAsync(stream, "200 OK", [], string.Empty, cancellationToken);
+                    return;
+                }
+
+                var payload = _payloads?.GetValueOrDefault(path)
+                    ?? Encoding.UTF8.GetBytes(path switch
+                    {
+                        "init" => "INIT-",
+                        "media-1" => "ONE-",
+                        "media-2" => "TWO",
+                        _ => "UNKNOWN"
+                    });
+                await WriteResponseAsync(stream, "200 OK", payload, string.Empty, cancellationToken);
+            }
+        }
+
+        private static async Task WriteResponseAsync(
+            Stream stream,
+            string status,
+            byte[] payload,
+            string extraHeaders,
+            CancellationToken cancellationToken)
+        {
+            var headers = Encoding.ASCII.GetBytes(
+                $"HTTP/1.1 {status}\r\nContent-Length: {payload.Length}\r\nConnection: close\r\n{extraHeaders}\r\n");
+            await stream.WriteAsync(headers, cancellationToken);
+            if (payload.Length > 0)
+            {
+                await stream.WriteAsync(payload, cancellationToken);
+            }
+
+            await stream.FlushAsync(cancellationToken);
+        }
+
+        public void Dispose()
+        {
+            _shutdown.Cancel();
+            _listener.Stop();
+            _shutdown.Dispose();
+        }
+    }
+
+    private sealed class EmptyTidalPublicProviderRegistry : ITidalPublicProviderRegistry
+    {
+        public Task<IReadOnlyList<TidalPublicProvider>> GetProvidersAsync(CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<TidalPublicProvider>>([]);
+
+        public Task<IReadOnlyList<TidalPublicProvider>> CheckEnabledProvidersAsync(CancellationToken cancellationToken)
+            => GetProvidersAsync(cancellationToken);
+
+        public Task<TidalPublicProvider?> SetEnabledAsync(string providerId, bool enabled, CancellationToken cancellationToken)
+            => Task.FromResult<TidalPublicProvider?>(null);
+
+        public Task RecordSuccessAsync(string endpoint, long responseTimeMs, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        public Task RecordFailureAsync(
+            string endpoint,
+            string category,
+            long responseTimeMs,
+            DateTimeOffset? cooldownUntil,
+            CancellationToken cancellationToken)
+            => Task.CompletedTask;
+    }
+
+    private sealed class UnauthenticatedTidalAccessTokenProvider : ITidalAccessTokenProvider
+    {
+        public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
+            => Task.FromResult(string.Empty);
+
+        public Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
+            => Task.FromResult("US");
+
+        public Task<bool> HasAuthenticatedSessionAsync(CancellationToken cancellationToken)
+            => Task.FromResult(false);
+
+        public Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken)
+            => Task.FromResult(false);
+
+        public void Invalidate()
+        {
+        }
     }
 }

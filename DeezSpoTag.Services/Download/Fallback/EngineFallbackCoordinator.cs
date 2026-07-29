@@ -321,7 +321,11 @@ public sealed class EngineFallbackCoordinator
         try
         {
             resolvedUrl = await ResolveSourceUrlAsync(
-                context.ResolutionRequest with { Engine = step.Source },
+                context.ResolutionRequest with
+                {
+                    Engine = step.Source,
+                    Quality = step.Quality ?? context.ResolutionRequest.Quality
+                },
                 cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

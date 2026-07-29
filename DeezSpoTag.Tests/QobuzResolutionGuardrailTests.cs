@@ -133,7 +133,7 @@ public sealed class QobuzResolutionGuardrailTests
         Assert.Contains("if (publicTrack != null && HasTidalAtmosMode(publicTrack))", tidalSource, StringComparison.Ordinal);
         Assert.DoesNotContain("allTracks.AddRange(result.Where(HasTidalAtmosMode))", tidalSource, StringComparison.Ordinal);
         Assert.DoesNotContain("return null;\n                }\n            }\n\n            var trackInfo = await SearchAtmosTrackByMetadataWithIsrcAsync", tidalSource, StringComparison.Ordinal);
-        Assert.Contains("Tidal credential playback info returned a preview asset", tidalSource, StringComparison.Ordinal);
+        Assert.Contains("Authenticated Tidal playback info returned a preview asset", tidalSource, StringComparison.Ordinal);
 
         Assert.Contains("ResolveAtmosTrackAsync", amazonSource, StringComparison.Ordinal);
         Assert.Contains("candidate.HasAtmos && IsAcceptedResolvedTrack", amazonSource, StringComparison.Ordinal);

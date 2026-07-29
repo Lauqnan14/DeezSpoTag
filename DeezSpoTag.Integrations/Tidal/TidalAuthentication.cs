@@ -8,7 +8,8 @@ public readonly record struct TidalOfficialCredentials(
     string AccessToken,
     string RefreshToken,
     string UserId,
-    string CountryCode);
+    string CountryCode,
+    bool CredentialsValid);
 
 public interface ITidalCredentialProvider
 {
@@ -19,6 +20,7 @@ public interface ITidalAccessTokenProvider
 {
     Task<string> GetAccessTokenAsync(CancellationToken cancellationToken);
     Task<string> GetCountryCodeAsync(CancellationToken cancellationToken);
+    Task<bool> HasAuthenticatedSessionAsync(CancellationToken cancellationToken);
     Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken);
     void Invalidate();
 }

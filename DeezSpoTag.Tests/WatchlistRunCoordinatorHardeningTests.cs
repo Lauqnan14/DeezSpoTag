@@ -703,6 +703,9 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         public Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
             => Task.FromResult("US");
 
+        public Task<bool> HasAuthenticatedSessionAsync(CancellationToken cancellationToken)
+            => Task.FromResult(false);
+
         public Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken)
             => Task.FromResult(true);
 

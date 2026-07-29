@@ -21,7 +21,8 @@ public sealed class PlatformAuthTidalCredentialProvider : ITidalCredentialProvid
             auth?.AccessToken?.Trim() ?? string.Empty,
             auth?.RefreshToken?.Trim() ?? string.Empty,
             auth?.UserId?.Trim() ?? string.Empty,
-            NormalizeCountryCode(auth?.CountryCode));
+            NormalizeCountryCode(auth?.CountryCode),
+            auth?.CredentialsValid == true);
     }
 
     private static string NormalizeCountryCode(string? value)

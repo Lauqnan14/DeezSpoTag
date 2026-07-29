@@ -103,6 +103,12 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
     public async Task<string> GetCountryCodeAsync(CancellationToken cancellationToken)
         => (await _credentialProvider.GetCredentialsAsync(cancellationToken)).CountryCode;
 
+    public async Task<bool> HasAuthenticatedSessionAsync(CancellationToken cancellationToken)
+    {
+        var credentials = await _credentialProvider.GetCredentialsAsync(cancellationToken);
+        return credentials.CredentialsValid;
+    }
+
     public async Task<bool> ValidateCredentialsAsync(CancellationToken cancellationToken)
     {
         var token = await GetAccessTokenAsync(cancellationToken);

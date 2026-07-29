@@ -58,12 +58,23 @@ public sealed class PublicDownloadProviderBoundaryGuardrailTests
         Assert.DoesNotContain("CheckProviderHealthEndpointAsync", tidalService, StringComparison.Ordinal);
 
         var candidatePathIndex = tidalService.IndexOf("private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync", StringComparison.Ordinal);
-        var credentialIndex = tidalService.IndexOf("TryFetchManifestFromCredentialApiAsync", candidatePathIndex, StringComparison.Ordinal);
-        var providerIndex = tidalService.IndexOf("_providerSource.GetRotatedProviderRecordsAsync", candidatePathIndex, StringComparison.Ordinal);
+        var authenticatedSessionIndex = tidalService.IndexOf(
+            "_accessTokenProvider.HasAuthenticatedSessionAsync",
+            candidatePathIndex,
+            StringComparison.Ordinal);
+        var authenticatedManifestIndex = tidalService.IndexOf(
+            "FetchManifestFromAuthenticatedApiAsync",
+            authenticatedSessionIndex,
+            StringComparison.Ordinal);
+        var providerIndex = tidalService.IndexOf(
+            "_providerSource.GetRotatedProviderRecordsAsync",
+            authenticatedManifestIndex,
+            StringComparison.Ordinal);
 
         Assert.True(candidatePathIndex >= 0);
-        Assert.True(credentialIndex > candidatePathIndex);
-        Assert.True(providerIndex > credentialIndex);
+        Assert.True(authenticatedSessionIndex > candidatePathIndex);
+        Assert.True(authenticatedManifestIndex > authenticatedSessionIndex);
+        Assert.True(providerIndex > authenticatedManifestIndex);
     }
 
     [Fact]
