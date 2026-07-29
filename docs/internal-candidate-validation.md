@@ -8,8 +8,10 @@ production Compose configuration, GHCR publishing, and GitHub Actions.
 
 1. A change is committed locally and pushed to the Gitea `main` branch.
 2. The Gitea runner builds a commit-specific candidate image.
-3. The image is pushed to the private Gitea Container Registry at
-   `192.168.28.24:3430/lauqnan14/deezspotag-candidate`.
+3. The image is pushed through the NAS loopback interface to the private Gitea
+   Container Registry at
+   `127.0.0.1:3430/lauqnan14/deezspotag-candidate`. Loopback preserves the
+   existing Docker registry policy without adding a LAN-wide insecure registry.
 4. Trivy scans the exact pushed image. Any fixed HIGH or CRITICAL vulnerability
    fails the run before deployment.
 5. A disposable container starts from that scanned image using:
@@ -55,4 +57,3 @@ A commit may be published to GitHub only after its Gitea candidate run has:
 - started with isolated state;
 - returned a healthy response;
 - completed cleanup.
-
