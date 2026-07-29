@@ -84,8 +84,41 @@ public sealed class LrclibLyricsService
     private static bool TryResolveTrackIdentity(Track track, out string title, out string artist)
     {
         title = track.Title ?? string.Empty;
-        artist = track.MainArtist?.Name ?? string.Empty;
+        artist = ResolveTrackArtist(track);
         return !string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(artist);
+    }
+
+    private static string ResolveTrackArtist(Track track)
+    {
+        if (!string.IsNullOrWhiteSpace(track.MainArtist?.Name))
+        {
+            return track.MainArtist.Name.Trim();
+        }
+        if (track.Artists?.Count > 0)
+        {
+            var artists = track.Artists
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (artists.Count > 0)
+            {
+                return string.Join(", ", artists);
+            }
+        }
+        if (track.Artist.TryGetValue("Main", out var mainArtists))
+        {
+            var artists = mainArtists
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (artists.Count > 0)
+            {
+                return string.Join(", ", artists);
+            }
+        }
+        return track.ArtistString?.Trim() ?? string.Empty;
     }
 
     private static int ResolveHintedDuration(Track track, LrclibRequestOptions options)

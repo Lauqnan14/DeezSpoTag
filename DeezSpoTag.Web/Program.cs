@@ -1413,6 +1413,9 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyUserStateProvider>();
         services.AddSingleton<DeezSpoTag.Services.Apple.AppleMusicCatalogService>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyBlobService>();
+        services.AddSingleton<
+            DeezSpoTag.Services.Download.Utils.ISpotifyLyricsAuthProvider,
+            DeezSpoTag.Web.Services.SpotifyLyricsAuthProvider>();
         services.AddSingleton<DeezSpoTag.Web.Services.SpotifyAppTokenService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AmazonMusicMetadataService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Fallback.IAmazonFallbackTrackResolver>(sp =>

@@ -4041,7 +4041,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Mp4 = raw.StylesCustomTag.Mp4
                 },
             Id3CommLang = raw.Id3CommLang,
-            WriteLrc = raw.WriteLrc,
             CapitalizeGenres = raw.CapitalizeGenres,
             TracknameTemplate = raw.TracknameTemplate,
             FolderStructure = raw.FolderStructure,
@@ -5406,6 +5405,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var allowsTtmlByFormat = allowsSyncedByToggle
             && selectedLyricsTypes.Contains(TtmlLyricsType)
             && ParseLyricsFormatSelection(request.Settings.LrcFormat).Contains("ttml");
+        var allowsLrcByFormat = allowsSyncedByToggle
+            && ParseLyricsFormatSelection(request.Settings.LrcFormat).Contains("lrc");
         var sidecarState = GetLyricsSidecarState(request.FilePath);
 
         return new TagWriteExecutionContext
@@ -5427,6 +5428,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             AllowsLyricsBySettings = allowsLyricsBySettings,
             AllowsSyncedType = allowsSyncedType,
             AllowsUnsyncedType = allowsUnsyncedType,
+            AllowsLrcByFormat = allowsLrcByFormat,
             AllowsTtmlByFormat = allowsTtmlByFormat,
             SidecarState = sidecarState,
             ShouldSkipEmbeddedLyrics = sidecarState.HasAny
@@ -6747,8 +6749,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var wroteLrcSidecar = false;
         var wroteTtmlSidecar = false;
         var sidecarLrcLines = ResolveLrcSidecarLines(context.SourceTrack, context.FilePath);
-        if (context.Config.WriteLrc
-            && context.AllowsLyricsBySettings
+        if (context.AllowsLyricsBySettings
+            && context.AllowsLrcByFormat
             && (context.AllowsSyncedType || context.AllowsUnsyncedType)
             && sidecarLrcLines.Count > 0)
         {
@@ -7796,6 +7798,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public required bool AllowsLyricsBySettings { get; init; }
         public required bool AllowsSyncedType { get; init; }
         public required bool AllowsUnsyncedType { get; init; }
+        public required bool AllowsLrcByFormat { get; init; }
         public required bool AllowsTtmlByFormat { get; init; }
         public required (bool HasAny, bool HasLrc, bool HasElrc, bool HasTtml, bool HasTxt, string TxtPath) SidecarState { get; init; }
         public required bool ShouldSkipEmbeddedLyrics { get; init; }
@@ -10112,7 +10115,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public JsonObject? Custom { get; set; }
         public AutoTagStylesCustomTag? StylesCustomTag { get; set; }
         public string? Id3CommLang { get; set; }
-        public bool WriteLrc { get; set; } = true;
         public bool CapitalizeGenres { get; set; }
         public string? TracknameTemplate { get; set; }
         public FolderStructureSettings? FolderStructure { get; set; }

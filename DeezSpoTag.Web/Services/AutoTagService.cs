@@ -3322,7 +3322,6 @@ public partial class AutoTagService
             AutoTagLiterals.CustomKey,
             "stylesCustomTag",
             "id3CommLang",
-            "writeLrc",
             "capitalizeGenres",
             AutoTagLiterals.DownloadTagSourceKey,
             TracknameTemplateKey,

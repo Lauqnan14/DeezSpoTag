@@ -2,6 +2,8 @@ namespace DeezSpoTag.Core.Models.Settings;
 
 public class TechnicalTagSettings
 {
+    public const int CurrentLyricsSchemaVersion = 1;
+
     public bool SavePlaylistAsCompilation { get; set; } = false;
     public bool UseNullSeparator { get; set; } = false;
     public bool SaveID3v1 { get; set; } = true;
@@ -25,6 +27,7 @@ public class TechnicalTagSettings
     public bool SynthesizeLrcFromTtml { get; set; } = false;
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics";
+    public int LyricsSchemaVersion { get; set; }
 
     public bool ArtworkFallbackEnabled { get; set; } = true;
     public string ArtworkFallbackOrder { get; set; } = "apple,deezer,spotify";

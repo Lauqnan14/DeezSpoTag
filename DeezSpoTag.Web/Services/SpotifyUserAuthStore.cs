@@ -81,6 +81,125 @@ public sealed class SpotifyUserAuthStore
         }
     }
 
+    public async Task<SpotifyUserAuthState> LoadAuthoritativeAsync(
+        string userId,
+        PlatformAuthService platformAuthService)
+    {
+        var state = await LoadAsync(userId);
+        var changed = false;
+        var userAuthFileExists = File.Exists(GetUserAuthFilePath(userId));
+
+        // An existing per-user file is authoritative, including an intentionally
+        // empty file created by logout. Import legacy state only during migration.
+        if (!userAuthFileExists && state.Accounts.Count == 0 && string.IsNullOrWhiteSpace(state.ActiveAccount))
+        {
+            var fallback = await TryLoadFallbackAsync(userId);
+            if (fallback != null)
+            {
+                state = fallback;
+                changed = true;
+            }
+        }
+
+        if (!userAuthFileExists)
+        {
+            var platformState = await platformAuthService.LoadAsync();
+            if (platformState.Spotify != null)
+            {
+                changed |= ImportPlatformState(state, platformState.Spotify);
+            }
+        }
+
+        changed |= EnsureActiveAccount(state);
+        if (changed)
+        {
+            await SaveAsync(userId, state);
+        }
+
+        return state;
+    }
+
+    private static bool ImportPlatformState(SpotifyUserAuthState state, SpotifyConfig spotify)
+    {
+        var changed = false;
+        if (string.IsNullOrWhiteSpace(state.WebPlayerSpDc) && !string.IsNullOrWhiteSpace(spotify.WebPlayerSpDc))
+        {
+            state.WebPlayerSpDc = spotify.WebPlayerSpDc;
+            changed = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(state.WebPlayerUserAgent) && !string.IsNullOrWhiteSpace(spotify.WebPlayerUserAgent))
+        {
+            state.WebPlayerUserAgent = spotify.WebPlayerUserAgent;
+            changed = true;
+        }
+
+        changed |= ImportPlatformAccounts(state, spotify);
+        if (string.IsNullOrWhiteSpace(state.ActiveAccount) && !string.IsNullOrWhiteSpace(spotify.ActiveAccount))
+        {
+            state.ActiveAccount = spotify.ActiveAccount;
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private static bool ImportPlatformAccounts(SpotifyUserAuthState state, SpotifyConfig spotify)
+    {
+        var accounts = state.Accounts.Count == 0
+            ? spotify.Accounts
+            : spotify.Accounts.Where(account =>
+                !string.IsNullOrWhiteSpace(spotify.ActiveAccount)
+                && account.Name.Equals(spotify.ActiveAccount, StringComparison.OrdinalIgnoreCase));
+        var changed = false;
+
+        foreach (var source in accounts.Where(account => !string.IsNullOrWhiteSpace(account.Name)))
+        {
+            var target = state.Accounts.FirstOrDefault(account =>
+                account.Name.Equals(source.Name, StringComparison.OrdinalIgnoreCase));
+            if (target == null)
+            {
+                var createdAt = source.CreatedAt == default ? DateTimeOffset.UtcNow : source.CreatedAt;
+                state.Accounts.Add(new SpotifyUserAccount
+                {
+                    Name = source.Name,
+                    Region = source.Region,
+                    BlobPath = source.BlobPath,
+                    LibrespotBlobPath = source.LibrespotBlobPath,
+                    WebPlayerBlobPath = source.WebPlayerBlobPath,
+                    CreatedAt = createdAt,
+                    UpdatedAt = source.UpdatedAt == default ? createdAt : source.UpdatedAt
+                });
+                changed = true;
+                continue;
+            }
+
+            var updated = false;
+            if (string.IsNullOrWhiteSpace(target.BlobPath) && !string.IsNullOrWhiteSpace(source.BlobPath))
+            {
+                target.BlobPath = source.BlobPath;
+                updated = true;
+            }
+            if (string.IsNullOrWhiteSpace(target.LibrespotBlobPath) && !string.IsNullOrWhiteSpace(source.LibrespotBlobPath))
+            {
+                target.LibrespotBlobPath = source.LibrespotBlobPath;
+                updated = true;
+            }
+            if (string.IsNullOrWhiteSpace(target.WebPlayerBlobPath) && !string.IsNullOrWhiteSpace(source.WebPlayerBlobPath))
+            {
+                target.WebPlayerBlobPath = source.WebPlayerBlobPath;
+                updated = true;
+            }
+            if (updated)
+            {
+                target.UpdatedAt = DateTimeOffset.UtcNow;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
     public async Task<SpotifyUserAuthState?> TryLoadFallbackAsync(string userId)
     {
         try

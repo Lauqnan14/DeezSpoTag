@@ -10,6 +10,8 @@ using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Library;
+using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -71,40 +73,82 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
-    public void ReadSpotifyBlobPaths_PrefersWebPlayerBlobPathBeforeGenericBlobPath()
+    public void SpotifyLyricsAuth_DoesNotRetainLegacyBlobParser()
     {
-        using var doc = JsonDocument.Parse(
-            """
-            {
-              "activeAccount": "Edloaqx",
-              "accounts": [
-                {
-                  "name": "Other",
-                  "webPlayerBlobPath": "/data/spotify/other-web.json",
-                  "blobPath": "/data/spotify/other-librespot.json"
-                },
-                {
-                  "name": "Edloaqx",
-                  "webPlayerBlobPath": "/data/spotify/web-player.web.json",
-                  "blobPath": "/data/spotify/Edloaqx.json"
-                }
-              ]
-            }
-            """);
-
-        var paths = InvokeStatic<List<string>>(
+        var legacyMethod = typeof(LyricsService).GetMethod(
             "ReadSpotifyBlobPaths",
-            doc.RootElement,
-            "Edloaqx");
+            BindingFlags.NonPublic | BindingFlags.Static);
 
-        Assert.Equal(
-            [
-                "/data/spotify/web-player.web.json",
-                "/data/spotify/Edloaqx.json",
-                "/data/spotify/other-web.json",
-                "/data/spotify/other-librespot.json"
-            ],
-            paths);
+        Assert.Null(legacyMethod);
+    }
+
+    [Fact]
+    public void EnhancementLyricsIdentity_RecoversWeakIndexValuesFromLibraryPathAndPreservesIsrc()
+    {
+        var info = new TrackAudioInfoDto(
+            TrackId: 42,
+            Title: "Track",
+            ArtistName: "Unknown Artist",
+            AlbumTitle: "Unknown Album",
+            DurationMs: 201_000,
+            FilePath: Path.Join(
+                Path.GetPathRoot(Environment.CurrentDirectory) ?? Path.DirectorySeparatorChar.ToString(),
+                "library",
+                "Fuji The Sound",
+                "Ade Ori Okin",
+                "01 - Aye Ole.flac"),
+            CoverPath: null,
+            DestinationFolderId: 1);
+        var links = new TrackSourceLinksDto(
+            DeezerTrackId: null,
+            SpotifyTrackId: null,
+            AppleTrackId: null,
+            Isrc: "  USABC1234567 ",
+            DeezerUrl: null,
+            SpotifyUrl: null,
+            AppleUrl: null);
+
+        var method = typeof(LyricsRefreshQueueService).GetMethod(
+            "BuildTrack",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var track = Assert.IsType<Track>(method!.Invoke(null, [info, links]));
+
+        Assert.Equal("Aye Ole", track.Title);
+        Assert.Equal("Fuji The Sound", track.MainArtist?.Name);
+        Assert.Equal("Ade Ori Okin", track.Album?.Title);
+        Assert.Equal("USABC1234567", track.ISRC);
+    }
+
+    [Fact]
+    public void EnhancementLyricsIdentity_UsesArtistTitleFilenameWhenIndexedIdentityIsWeak()
+    {
+        var info = new TrackAudioInfoDto(
+            TrackId: 43,
+            Title: "Untitled",
+            ArtistName: "Unknown",
+            AlbumTitle: "Album",
+            DurationMs: null,
+            FilePath: Path.Join(
+                Path.GetPathRoot(Environment.CurrentDirectory) ?? Path.DirectorySeparatorChar.ToString(),
+                "library",
+                "Unknown Artist",
+                "Album",
+                "01 - Alikiba - AJE.flac"),
+            CoverPath: null,
+            DestinationFolderId: 1);
+
+        var method = typeof(LyricsRefreshQueueService).GetMethod(
+            "BuildTrack",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var track = Assert.IsType<Track>(method!.Invoke(null, [info, null]));
+
+        Assert.Equal("AJE", track.Title);
+        Assert.Equal("Alikiba", track.MainArtist?.Name);
+        Assert.Equal("Album", track.Album?.Title);
     }
 
     [Fact]

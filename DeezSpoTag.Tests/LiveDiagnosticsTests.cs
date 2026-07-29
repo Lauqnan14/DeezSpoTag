@@ -16,7 +16,9 @@ using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web;
+using DeezSpoTag.Web.Services;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
@@ -298,7 +300,7 @@ public sealed class LiveDiagnosticsTests
             timedTrack,
             settings,
             timeout.Token);
-        var directFallback = await ResolveApplePublicFallbackDirectlyAsync(service, timedTrack, timeout.Token);
+        var directFallback = await ResolveApplePublicFallbackDirectlyAsync(service, timedTrack, settings, timeout.Token);
         Assert.True(
             AppleLyricsService.IsTimedTtml(directFallback?.TtmlLyrics),
             $"Apple public fallback did not return timed TTML directly: {directFallback?.ErrorMessage}");
@@ -403,6 +405,50 @@ public sealed class LiveDiagnosticsTests
     }
 
     [Fact]
+    public async Task EnhancementLyricsRefreshProcessesIndexedLibraryTrackLive()
+    {
+        if (!IsEnabled(AppleLyricsLiveFlag))
+        {
+            return;
+        }
+
+        var rawTrackId = Environment.GetEnvironmentVariable("DEEZSPOTAG_LIVE_LYRICS_REFRESH_TRACK_ID");
+        if (!long.TryParse(rawTrackId, out var trackId) || trackId <= 0)
+        {
+            return;
+        }
+
+        var dataRoot = Environment.GetEnvironmentVariable(DataRootEnv);
+        Assert.False(string.IsNullOrWhiteSpace(dataRoot), $"{DataRootEnv} must point to the configured application data directory.");
+        Assert.True(Directory.Exists(dataRoot), $"{DataRootEnv} does not exist: {dataRoot}");
+
+        await using var provider = BuildIdentityResolverProvider(dataRoot);
+        var repository = provider.GetRequiredService<LibraryRepository>();
+        var refreshService = provider.GetRequiredService<LyricsRefreshQueueService>();
+        var info = await repository.GetTrackAudioInfoAsync(trackId);
+        Assert.NotNull(info);
+        Assert.True(File.Exists(info!.FilePath), $"Indexed audio file is unavailable: {info.FilePath}");
+
+        var stem = Path.Join(
+            Path.GetDirectoryName(info.FilePath) ?? string.Empty,
+            Path.GetFileNameWithoutExtension(info.FilePath));
+        Assert.False(
+            File.Exists($"{stem}.lrc") || File.Exists($"{stem}.elrc") || File.Exists($"{stem}.ttml"),
+            $"The selected live track already has a lyrics sidecar: {info.FilePath}");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var result = await refreshService.RefreshTrackNowAsync(trackId, timeout.Token);
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotEmpty(result.SidecarFormats);
+        Assert.True(
+            File.Exists($"{stem}.lrc") || File.Exists($"{stem}.elrc") || File.Exists($"{stem}.ttml"),
+            $"Enhancement reported success but created no lyrics sidecar beside {info.FilePath}");
+        Console.WriteLine(
+            $"trackId={trackId} title=\"{info.Title}\" artist=\"{info.ArtistName}\" formats={string.Join(',', result.SidecarFormats)} file=\"{info.FilePath}\"");
+    }
+
+    [Fact]
     public async Task MusixmatchProviderTimedJsonCreatesEnhancedLrcSidecarLive()
     {
         if (!IsEnabled(AppleLyricsLiveFlag))
@@ -439,6 +485,84 @@ public sealed class LiveDiagnosticsTests
         Assert.True(lyrics.HasEnhancedSynchronizedLyrics(), "Musixmatch did not return richsync word timing eligible for .elrc creation.");
 
         await AssertLrcSidecarSavedAsync(service, lyrics, track, settings, timeout.Token, expectElrc: true);
+    }
+
+    [Theory]
+    [InlineData("youlyplus")]
+    [InlineData("betterlyrics")]
+    public async Task NewWordTimedProvidersCreateRichSidecarsLive(string providerName)
+    {
+        if (!IsEnabled(AppleLyricsLiveFlag))
+        {
+            return;
+        }
+
+        var dataRoot = Environment.GetEnvironmentVariable(DataRootEnv);
+        Assert.False(string.IsNullOrWhiteSpace(dataRoot), $"{DataRootEnv} must point to the configured application data directory.");
+        Assert.True(Directory.Exists(dataRoot), $"{DataRootEnv} does not exist: {dataRoot}");
+
+        await using var provider = BuildIdentityResolverProvider(dataRoot);
+        var service = provider.GetRequiredService<LyricsService>();
+        var settings = provider.GetRequiredService<DeezSpoTagSettingsService>().LoadSettings();
+        settings.SyncedLyrics = true;
+        settings.SaveLyrics = false;
+        settings.LyricsFallbackEnabled = true;
+        settings.LyricsFallbackOrder = providerName;
+        settings.LrcType = "lyrics,syllable-lyrics,ttml-lyrics";
+        settings.LrcFormat = "elrc,ttml";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var track = new Track
+        {
+            Id = $"{providerName}-live-lyrics-shape-of-you",
+            Source = "local",
+            Title = "Shape of You",
+            ArtistString = "Ed Sheeran"
+        };
+
+        var lyrics = await service.ResolveLyricsAsync(track, settings, timeout.Token);
+
+        Assert.True(lyrics?.HasEnhancedSynchronizedLyrics() == true,
+            $"{providerName} did not return word-timed lyrics: {lyrics?.ErrorMessage}");
+        Assert.True(AppleLyricsService.IsWordSyncedTtml(lyrics!.TtmlLyrics),
+            $"{providerName} did not provide a word-synchronized TTML representation.");
+    }
+
+    [Fact]
+    public async Task LrclibProviderUsesUnifiedIdentityAndCreatesLrcSidecarLive()
+    {
+        if (!IsEnabled(AppleLyricsLiveFlag))
+        {
+            return;
+        }
+
+        var dataRoot = Environment.GetEnvironmentVariable(DataRootEnv);
+        Assert.False(string.IsNullOrWhiteSpace(dataRoot), $"{DataRootEnv} must point to the configured application data directory.");
+        Assert.True(Directory.Exists(dataRoot), $"{DataRootEnv} does not exist: {dataRoot}");
+
+        await using var provider = BuildIdentityResolverProvider(dataRoot);
+        var service = provider.GetRequiredService<LyricsService>();
+        var settings = provider.GetRequiredService<DeezSpoTagSettingsService>().LoadSettings();
+        settings.SyncedLyrics = true;
+        settings.SaveLyrics = false;
+        settings.LyricsFallbackEnabled = true;
+        settings.LyricsFallbackOrder = "lrclib";
+        settings.LrcType = "lyrics";
+        settings.LrcFormat = "lrc";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var track = new Track
+        {
+            Id = "lrclib-live-lyrics-blinding-lights",
+            Source = "local",
+            Title = "Blinding Lights",
+            ArtistString = "The Weeknd",
+            Album = new Album("After Hours"),
+            Duration = 200
+        };
+
+        var lyrics = await service.ResolveLyricsAsync(track, settings, timeout.Token);
+
+        Assert.True(lyrics?.IsSynced() == true, $"LRCLIB did not return synchronized lyrics: {lyrics?.ErrorMessage}");
+        await AssertLrcSidecarSavedAsync(service, lyrics!, track, settings, timeout.Token);
     }
 
     [Fact]
@@ -632,13 +756,14 @@ public sealed class LiveDiagnosticsTests
     private static async Task<LyricsBase?> ResolveApplePublicFallbackDirectlyAsync(
         LyricsService service,
         Track track,
+        DeezSpoTagSettings settings,
         CancellationToken cancellationToken)
     {
         var method = typeof(LyricsService).GetMethod(
             "ResolvePaxsenixAppleLyricsByIdAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        var task = (Task<LyricsBase?>)(method.Invoke(service, [track, cancellationToken])
+        var task = (Task<LyricsBase?>)(method.Invoke(service, [track, settings, cancellationToken])
             ?? throw new InvalidOperationException("Apple public fallback invocation returned null task."));
         return await task;
     }

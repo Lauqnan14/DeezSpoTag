@@ -33,6 +33,16 @@ public sealed class LrclibLyricsProviderOptions
     public bool? PreferSynced { get; init; }
 }
 
+public sealed record SpotifyLyricsAuthToken(
+    string AccessToken,
+    string? Market,
+    string? UserAgent);
+
+public interface ISpotifyLyricsAuthProvider
+{
+    Task<SpotifyLyricsAuthToken?> GetAccessTokenAsync(CancellationToken cancellationToken);
+}
+
 public sealed record LyricsResolutionPlan(
     IReadOnlyList<string> RequestedFormats,
     IReadOnlyList<string> Providers,
@@ -63,14 +73,10 @@ public class LyricsService
     private readonly AuthenticatedDeezerService _authenticatedDeezerService;
     private readonly DeezSpoTag.Services.Apple.AppleLyricsService _appleLyricsService;
     private readonly LrclibLyricsService _lrclibLyricsService;
-    private readonly ProtectedCredentialFileStore _spotifyWebPlayerCredentialStore;
+    private readonly ISpotifyLyricsAuthProvider _spotifyAuthProvider;
     private string? _cachedGwToken;
     private DateTime _cachedGwTokenExpiry = DateTime.MinValue;
-    private readonly SemaphoreSlim _spotifyTokenGate = new(1, 1);
     private readonly SemaphoreSlim _musixmatchTokenGate = new(1, 1);
-    private string? _cachedSpotifyAccessToken;
-    private DateTimeOffset _cachedSpotifyAccessTokenExpiry = DateTimeOffset.MinValue;
-    private string? _cachedSpotifyAccessTokenKey;
     private string? _cachedMusixmatchUserToken;
     private string? _cachedMusixmatchSecret;
     private const int GwTokenTtlMinutes = 45;
@@ -95,14 +101,9 @@ public class LyricsService
     private const string SyllableLyricsType = "syllable-lyrics";
     private const string TtmlLyricsType = "ttml-lyrics";
     private const string MessagePropertyName = "message";
-    private const string SpotifyDataDir = "spotify";
-    private const string BlobsDir = "blobs";
     private const string HttpsScheme = "https";
-    private const string SpotifyOpenHost = "open.spotify.com";
-    private static readonly string SpotifyOpenBaseUrl = BuildAuthorityUrl(SpotifyOpenHost);
-    private static readonly string SpotifyOpenRootUrl = BuildRootUrl(SpotifyOpenHost);
-    private const string SpotifyOpenTokenPath = "/api/token";
-    private const string SpotifyOpenFallbackTokenPath = "/get_access_token";
+    private static readonly string SpotifyOpenBaseUrl = BuildAuthorityUrl("open.spotify.com");
+    private static readonly string SpotifyOpenRootUrl = BuildRootUrl("open.spotify.com");
     private static readonly string DeezerPipeApiUrl = BuildUrl("pipe.deezer.com", "/api/");
     private static readonly string DeezerGwUserDataUrl = BuildUrl("www.deezer.com", "/ajax/gw-light.php?method=deezer.getUserData&input=3&api_version=1.0&api_token=null");
     private static readonly IReadOnlyList<string> DefaultLyricsProviderOrder = LyricsProviderRegistry.DefaultOrder;
@@ -122,7 +123,7 @@ public class LyricsService
     private static readonly SemaphoreSlim ProviderDiskCacheGate = new(1, 1);
     private static readonly TimeSpan ProviderResultCacheLifetime = TimeSpan.FromDays(7);
     private static readonly TimeSpan ProviderNegativeCacheLifetime = TimeSpan.FromMinutes(15);
-    private const string ProviderCacheVersion = "lyrics-v2";
+    private const string ProviderCacheVersion = "lyrics-v4";
     private sealed record CachedLyricsResult(DateTimeOffset ExpiresAt, LyricsBase Lyrics);
     private sealed record PersistedLyricsCacheEntry(
         string Version,
@@ -163,7 +164,7 @@ public class LyricsService
         AuthenticatedDeezerService authenticatedDeezerService,
         DeezSpoTag.Services.Apple.AppleLyricsService appleLyricsService,
         LrclibLyricsService lrclibLyricsService,
-        IServiceProvider serviceProvider)
+        ISpotifyLyricsAuthProvider spotifyAuthProvider)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -171,7 +172,7 @@ public class LyricsService
         _authenticatedDeezerService = authenticatedDeezerService;
         _appleLyricsService = appleLyricsService;
         _lrclibLyricsService = lrclibLyricsService;
-        _spotifyWebPlayerCredentialStore = serviceProvider.GetRequiredService<ProtectedCredentialFileStore>();
+        _spotifyAuthProvider = spotifyAuthProvider;
     }
 
     /// <summary>
@@ -532,7 +533,7 @@ public class LyricsService
                 track,
                 settings,
                 () => ResolveLoadedLyricsOrNullAsync(
-                    () => ResolveMusixmatchLyricsAsync(track, cancellationToken))),
+                    () => ResolveMusixmatchLyricsAsync(track, settings, cancellationToken))),
             YouLyPlusProvider => await ResolveCachedProviderLyricsAsync(
                 YouLyPlusProvider,
                 track,
@@ -1498,6 +1499,10 @@ public class LyricsService
             result.SyncedLyrics = ParseYouLyPlusLines(lyricsElement);
             if (result.SyncedLyrics.Count > 0)
             {
+                if (!YouLyPlusTimelineMatches(result.SyncedLyrics, track.Duration))
+                {
+                    return null;
+                }
                 result.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
                 if (result.HasEnhancedSynchronizedLyrics()
                     && settings.SyncedLyrics
@@ -1527,17 +1532,48 @@ public class LyricsService
 
     private static bool YouLyPlusIdentityMatches(JsonElement root, Track track, string artist)
     {
-        var titleMatches = root.TryGetProperty("trackName", out var returnedTitle)
+        var hasTitle = root.TryGetProperty("trackName", out var returnedTitle)
             && returnedTitle.ValueKind == JsonValueKind.String
-            && MetadataTextMatches(track.Title, returnedTitle.GetString());
-        var artistMatches = root.TryGetProperty("artistName", out var returnedArtist)
+            && !string.IsNullOrWhiteSpace(returnedTitle.GetString());
+        var hasArtist = root.TryGetProperty("artistName", out var returnedArtist)
             && returnedArtist.ValueKind == JsonValueKind.String
-            && MetadataTextMatches(artist, returnedArtist.GetString());
+            && !string.IsNullOrWhiteSpace(returnedArtist.GetString());
+        var titleMatches = !hasTitle || MetadataTextMatches(track.Title, returnedTitle.GetString());
+        var artistMatches = !hasArtist || MetadataTextMatches(artist, returnedArtist.GetString());
         var durationMatches = !root.TryGetProperty("duration", out var returnedDuration)
             || !returnedDuration.TryGetDouble(out var duration)
             || track.Duration <= 0
             || Math.Abs(duration - track.Duration) <= 10;
         return titleMatches && artistMatches && durationMatches;
+    }
+
+    private static bool YouLyPlusTimelineMatches(
+        IReadOnlyCollection<SynchronizedLyric> lines,
+        int expectedDurationSeconds)
+    {
+        if (lines.Count == 0)
+        {
+            return false;
+        }
+
+        var previousMilliseconds = -1;
+        foreach (var line in lines)
+        {
+            if (line.Milliseconds < 0 || line.Milliseconds < previousMilliseconds)
+            {
+                return false;
+            }
+
+            previousMilliseconds = line.Milliseconds;
+        }
+
+        var finalMilliseconds = lines.Max(static line =>
+            Math.Max(line.Milliseconds + Math.Max(0, line.Duration),
+                line.Words?.Count > 0
+                    ? line.Words.Max(static word => word.EndMilliseconds)
+                    : line.Milliseconds));
+        return expectedDurationSeconds <= 0
+            || finalMilliseconds <= ((long)expectedDurationSeconds + 15L) * 1000L;
     }
 
     private static bool MetadataTextMatches(string? expected, string? actual)
@@ -1622,7 +1658,7 @@ public class LyricsService
     private static string BuildWordSynchronizedTtml(IReadOnlyList<SynchronizedLyric> lines)
     {
         var builder = new StringBuilder(
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div>");
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\" timing=\"Word\"><body><div>");
         foreach (var line in lines.Where(line => line.Words?.Any(word => word.IsValid()) == true))
         {
             var end = line.Duration > 0
@@ -1659,7 +1695,10 @@ public class LyricsService
     private static string ComputePayloadHash(string payload)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload)));
 
-    private async Task<LyricsBase> ResolveMusixmatchLyricsAsync(Track track, CancellationToken cancellationToken)
+    private async Task<LyricsBase> ResolveMusixmatchLyricsAsync(
+        Track track,
+        DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(track.Title))
         {
@@ -1697,6 +1736,11 @@ public class LyricsService
         {
             output.SyncedLyrics = richsyncLines;
             output.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
+            if (ResolveOutputRequirements(settings).WantsTtmlLyrics)
+            {
+                output.TtmlLyrics = BuildWordSynchronizedTtml(richsyncLines);
+                output.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
+            }
             return output;
         }
 
@@ -2435,21 +2479,19 @@ public class LyricsService
             return CreateLyricsError("Unable to resolve Spotify track ID for lyrics.");
         }
 
-        var authContext = await ResolveSpotifyAuthContextAsync(cancellationToken);
-        if (authContext is null)
+        var authToken = await _spotifyAuthProvider.GetAccessTokenAsync(cancellationToken);
+        if (authToken is null || string.IsNullOrWhiteSpace(authToken.AccessToken))
         {
             return CreateLyricsError("Spotify auth is not available for lyrics.");
         }
 
-        var accessToken = await ResolveSpotifyWebPlayerAccessTokenAsync(authContext, cancellationToken);
-        if (string.IsNullOrWhiteSpace(accessToken))
+        foreach (var url in BuildSpotifyLyricsUrls(spotifyTrackId, authToken.Market))
         {
-            return CreateLyricsError("Unable to obtain Spotify web player token for lyrics.");
-        }
-
-        foreach (var url in BuildSpotifyLyricsUrls(spotifyTrackId, settings))
-        {
-            var payload = await TryFetchSpotifyLyricsPayloadAsync(url, accessToken, authContext.UserAgent, cancellationToken);
+            var payload = await TryFetchSpotifyLyricsPayloadAsync(
+                url,
+                authToken.AccessToken,
+                authToken.UserAgent,
+                cancellationToken);
             if (payload is null)
             {
                 continue;
@@ -2491,370 +2533,6 @@ public class LyricsService
         }
 
         return track.Urls.TryGetValue(key, out var value) ? value : null;
-    }
-
-    private async Task<SpotifyAuthContext?> ResolveSpotifyAuthContextAsync(CancellationToken cancellationToken)
-    {
-        var state = await TryLoadSpotifyAuthStateAsync(cancellationToken);
-        if (state is null)
-        {
-            return null;
-        }
-
-        var defaultUserAgent = string.IsNullOrWhiteSpace(state.UserAgent)
-            ? DefaultSpotifyWebPlayerUserAgent
-            : state.UserAgent;
-
-        if (!string.IsNullOrWhiteSpace(state.SpDc))
-        {
-            return new SpotifyAuthContext(state.SpDc, defaultUserAgent);
-        }
-
-        foreach (var rawBlobPath in state.BlobPaths)
-        {
-            var fromBlob = await TryExtractSpotifyAuthContextFromBlobAsync(rawBlobPath, defaultUserAgent, cancellationToken);
-            if (fromBlob is not null)
-            {
-                return fromBlob;
-            }
-        }
-
-        return null;
-    }
-
-    private async Task<SpotifyAuthState?> TryLoadSpotifyAuthStateAsync(CancellationToken cancellationToken)
-    {
-        var dataRoot = ResolveSpotifyDataRoot();
-        var statePath = Path.Join(dataRoot, "autotag", "spotify.json");
-        if (!File.Exists(statePath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var json = await File.ReadAllTextAsync(statePath, cancellationToken);
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                return null;
-            }
-
-            using var doc = JsonDocument.Parse(json);
-            var spotify = doc.RootElement;
-            if (spotify.ValueKind != JsonValueKind.Object)
-            {
-                return null;
-            }
-
-            var spDc = TryReadJsonString(spotify, "webPlayerSpDc");
-            var userAgent = TryReadJsonString(spotify, "webPlayerUserAgent");
-            var activeAccount = TryReadJsonString(spotify, "activeAccount");
-            var blobPaths = ReadSpotifyBlobPaths(spotify, activeAccount);
-
-            return new SpotifyAuthState(spDc, userAgent, blobPaths);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to read Spotify auth state from {Path}", statePath);            }
-            return null;
-        }
-    }
-
-    private static List<string> ReadSpotifyBlobPaths(JsonElement spotify, string? activeAccount)
-    {
-        var blobPaths = new List<string>();
-        if (!spotify.TryGetProperty("accounts", out var accounts) || accounts.ValueKind != JsonValueKind.Array)
-        {
-            return blobPaths;
-        }
-
-        AppendActiveAccountBlobPaths(accounts, activeAccount, blobPaths);
-        AppendRemainingBlobPaths(accounts, blobPaths);
-        return blobPaths;
-    }
-
-    private static void AppendActiveAccountBlobPaths(JsonElement accounts, string? activeAccount, List<string> blobPaths)
-    {
-        if (string.IsNullOrWhiteSpace(activeAccount))
-        {
-            return;
-        }
-
-        foreach (var account in accounts.EnumerateArray())
-        {
-            var accountName = TryReadJsonString(account, "name");
-            if (!string.Equals(accountName, activeAccount, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            AppendSpotifyBlobPath(account, "webPlayerBlobPath", blobPaths);
-            AppendSpotifyBlobPath(account, "blobPath", blobPaths);
-        }
-    }
-
-    private static void AppendRemainingBlobPaths(JsonElement accounts, List<string> blobPaths)
-    {
-        foreach (var account in accounts.EnumerateArray())
-        {
-            AppendSpotifyBlobPath(account, "webPlayerBlobPath", blobPaths);
-            AppendSpotifyBlobPath(account, "blobPath", blobPaths);
-        }
-    }
-
-    private static void AppendSpotifyBlobPath(JsonElement account, string propertyName, List<string> blobPaths)
-    {
-        var blobPath = TryReadJsonString(account, propertyName);
-        if (string.IsNullOrWhiteSpace(blobPath))
-        {
-            return;
-        }
-
-        if (blobPaths.Any(existing => string.Equals(existing, blobPath, StringComparison.OrdinalIgnoreCase)))
-        {
-            return;
-        }
-
-        blobPaths.Add(blobPath);
-    }
-
-    private async Task<SpotifyAuthContext?> TryExtractSpotifyAuthContextFromBlobAsync(
-        string rawBlobPath,
-        string fallbackUserAgent,
-        CancellationToken cancellationToken)
-    {
-        var blobPath = ResolveSpotifyBlobPath(rawBlobPath);
-        if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var json = await _spotifyWebPlayerCredentialStore.ReadTextAndMigrateAsync(blobPath, cancellationToken);
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                return null;
-            }
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("auth_type", out _) && root.TryGetProperty("auth_data", out _))
-            {
-                return null;
-            }
-
-            if (!root.TryGetProperty("cookies", out var cookies) || cookies.ValueKind != JsonValueKind.Array)
-            {
-                return null;
-            }
-
-            var spDc = ReadSpotifyCookies(cookies);
-
-            if (string.IsNullOrWhiteSpace(spDc))
-            {
-                return null;
-            }
-
-            var userAgent = TryReadJsonString(root, "userAgent");
-            if (string.IsNullOrWhiteSpace(userAgent))
-            {
-                userAgent = fallbackUserAgent;
-            }
-
-            return new SpotifyAuthContext(spDc, userAgent!);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Failed to parse Spotify blob payload at {Path}", blobPath);            }
-            return null;
-        }
-    }
-
-    private static string? ReadSpotifyCookies(JsonElement cookies)
-    {
-        string? spDc = null;
-        foreach (var cookie in cookies.EnumerateArray())
-        {
-            var name = TryReadJsonString(cookie, "name");
-            var value = TryReadJsonString(cookie, "value");
-            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value))
-            {
-                continue;
-            }
-
-            if (name.Equals("sp_dc", StringComparison.OrdinalIgnoreCase))
-            {
-                spDc = value;
-            }
-        }
-
-        return spDc;
-    }
-
-    private async Task<string?> ResolveSpotifyWebPlayerAccessTokenAsync(
-        SpotifyAuthContext context,
-        CancellationToken cancellationToken)
-    {
-        var cacheKey = context.SpDc;
-        if (string.Equals(cacheKey, _cachedSpotifyAccessTokenKey, StringComparison.Ordinal)
-            && DateTimeOffset.UtcNow < _cachedSpotifyAccessTokenExpiry
-            && !string.IsNullOrWhiteSpace(_cachedSpotifyAccessToken))
-        {
-            return _cachedSpotifyAccessToken;
-        }
-
-        await _spotifyTokenGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (string.Equals(cacheKey, _cachedSpotifyAccessTokenKey, StringComparison.Ordinal)
-                && DateTimeOffset.UtcNow < _cachedSpotifyAccessTokenExpiry
-                && !string.IsNullOrWhiteSpace(_cachedSpotifyAccessToken))
-            {
-                return _cachedSpotifyAccessToken;
-            }
-
-            var response = await FetchSpotifyWebPlayerTokenAsync(context, cancellationToken);
-            if (response is null || string.IsNullOrWhiteSpace(response.AccessToken))
-            {
-                return null;
-            }
-
-            var expiresAt = DateTimeOffset.UtcNow.AddMinutes(45);
-            if (response.ExpiresAtUnixMs.HasValue && response.ExpiresAtUnixMs.Value > 0)
-            {
-                expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(response.ExpiresAtUnixMs.Value).AddMinutes(-2);
-            }
-
-            _cachedSpotifyAccessToken = response.AccessToken;
-            _cachedSpotifyAccessTokenExpiry = expiresAt;
-            _cachedSpotifyAccessTokenKey = cacheKey;
-            return response.AccessToken;
-        }
-        finally
-        {
-            _spotifyTokenGate.Release();
-        }
-    }
-
-    private async Task<SpotifyTokenResponse?> FetchSpotifyWebPlayerTokenAsync(
-        SpotifyAuthContext context,
-        CancellationToken cancellationToken)
-    {
-        var cookieContainer = new CookieContainer();
-        cookieContainer.Add(new Cookie("sp_dc", context.SpDc, "/", ".spotify.com")
-        {
-            Secure = true,
-            HttpOnly = true
-        });
-
-        using var handler = new HttpClientHandler
-        {
-            CookieContainer = cookieContainer,
-            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-        };
-        using var client = new HttpClient(handler);
-        client.DefaultRequestHeaders.UserAgent.ParseAdd(string.IsNullOrWhiteSpace(context.UserAgent)
-            ? DefaultSpotifyWebPlayerUserAgent
-            : context.UserAgent);
-
-        await WarmSpotifyWebPlayerSessionAsync(client, cancellationToken);
-
-        var (totp, version) = SpotifyWebPlayerTotp.Generate();
-        if (!string.IsNullOrWhiteSpace(totp))
-        {
-            var apiTokenUrl =
-                $"{SpotifyOpenBaseUrl}{SpotifyOpenTokenPath}?reason=init&productType=web-player&totp={totp}&totpVer={version}&totpServer={totp}";
-            var primary = await RequestSpotifyWebPlayerTokenAsync(client, apiTokenUrl, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(primary?.AccessToken))
-            {
-                return primary;
-            }
-        }
-
-        var fallbackUrl = $"{SpotifyOpenBaseUrl}{SpotifyOpenFallbackTokenPath}?reason=transport&productType=web_player";
-        var fallback = await RequestSpotifyWebPlayerTokenAsync(client, fallbackUrl, cancellationToken);
-        return !string.IsNullOrWhiteSpace(fallback?.AccessToken) ? fallback : null;
-    }
-
-    private async Task<SpotifyTokenResponse?> RequestSpotifyWebPlayerTokenAsync(
-        HttpClient client,
-        string url,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Accept.ParseAdd(ApplicationJson);
-            request.Headers.Referrer = new Uri(SpotifyOpenRootUrl);
-            using var response = await client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(body))
-            {
-                return null;
-            }
-
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var accessToken = TryReadJsonString(root, "accessToken");
-            if (string.IsNullOrWhiteSpace(accessToken))
-            {
-                return null;
-            }
-
-            long? expiresAt = null;
-            if (root.TryGetProperty("accessTokenExpirationTimestampMs", out var expiry) &&
-                expiry.TryGetInt64(out var expiryMs))
-            {
-                expiresAt = expiryMs;
-            }
-
-            bool? isAnonymous = null;
-            if (root.TryGetProperty("isAnonymous", out var anon))
-            {
-                isAnonymous = anon.ValueKind switch
-                {
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    _ => null
-                };
-            }
-
-            var country = TryReadJsonString(root, "country");
-            return new SpotifyTokenResponse(accessToken, expiresAt, country, isAnonymous);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(ex, "Spotify web player token request failed for {Url}", url);            }
-            return null;
-        }
-    }
-
-    private static async Task WarmSpotifyWebPlayerSessionAsync(HttpClient client, CancellationToken cancellationToken)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, SpotifyOpenBaseUrl);
-            request.Headers.Accept.ParseAdd("text/html");
-            request.Headers.Referrer = new Uri(SpotifyOpenRootUrl);
-            using var response = await client.SendAsync(request, cancellationToken);
-            _ = response.Content;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Best-effort warmup only.
-        }
     }
 
     private async Task<JsonElement?> TryFetchSpotifyLyricsPayloadAsync(
@@ -3030,12 +2708,12 @@ public class LyricsService
         return null;
     }
 
-    private static IEnumerable<string> BuildSpotifyLyricsUrls(string spotifyTrackId, DeezSpoTagSettings settings)
+    private static IEnumerable<string> BuildSpotifyLyricsUrls(string spotifyTrackId, string? authenticatedMarket)
     {
         var markets = new List<string> { "from_token" };
-        if (!string.IsNullOrWhiteSpace(settings.DeezerCountry))
+        if (!string.IsNullOrWhiteSpace(authenticatedMarket))
         {
-            var country = settings.DeezerCountry.Trim().ToUpperInvariant();
+            var country = authenticatedMarket.Trim().ToUpperInvariant();
             if (country.Length == 2 && !markets.Contains(country, StringComparer.OrdinalIgnoreCase))
             {
                 markets.Add(country);
@@ -3047,48 +2725,6 @@ public class LyricsService
             yield return $"https://spclient.wg.spotify.com/color-lyrics/v2/track/{spotifyTrackId}?format=json&market={market}";
             yield return $"https://spclient.wg.spotify.com/lyrics/v1/track/{spotifyTrackId}?format=json&market={market}";
         }
-    }
-
-    private static string ResolveSpotifyDataRoot()
-    {
-        return AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-    }
-
-    private static string? ResolveSpotifyBlobPath(string? rawPath)
-    {
-        if (string.IsNullOrWhiteSpace(rawPath))
-        {
-            return null;
-        }
-
-        var trimmed = rawPath.Trim();
-        if (File.Exists(trimmed))
-        {
-            return Path.GetFullPath(trimmed);
-        }
-
-        var dataRoot = ResolveSpotifyDataRoot();
-        var candidates = new List<string>();
-        if (Path.IsPathRooted(trimmed))
-        {
-            var fileName = Path.GetFileName(trimmed);
-            if (!string.IsNullOrWhiteSpace(fileName))
-            {
-                candidates.Add(Path.Join(dataRoot, SpotifyDataDir, BlobsDir, fileName));
-            }
-        }
-        else
-        {
-            candidates.Add(Path.Join(dataRoot, trimmed));
-            candidates.Add(Path.Join(dataRoot, SpotifyDataDir, BlobsDir, trimmed));
-            var fileName = Path.GetFileName(trimmed);
-            if (!string.IsNullOrWhiteSpace(fileName))
-            {
-                candidates.Add(Path.Join(dataRoot, SpotifyDataDir, BlobsDir, fileName));
-            }
-        }
-
-        return candidates.FirstOrDefault(File.Exists);
     }
 
     private static string? TryReadJsonString(JsonElement element, string propertyName)
@@ -3109,10 +2745,6 @@ public class LyricsService
         lyrics.SetErrorMessage(message);
         return lyrics;
     }
-
-    private sealed record SpotifyAuthState(string? SpDc, string? UserAgent, List<string> BlobPaths);
-    private sealed record SpotifyAuthContext(string SpDc, string UserAgent);
-    private sealed record SpotifyTokenResponse(string AccessToken, long? ExpiresAtUnixMs, string? Country, bool? IsAnonymous);
 
     /// <summary>
     /// Get lyrics using refreezer's dual API approach
@@ -3334,7 +2966,13 @@ public class LyricsService
     /// <summary>
     /// Call Deezer GW API
     /// </summary>
-    private async Task<JsonElement?> CallGwApiAsync(string method, string body, string arl, string? sid, CancellationToken cancellationToken)
+    private async Task<JsonElement?> CallGwApiAsync(
+        string method,
+        string body,
+        string arl,
+        string? sid,
+        CancellationToken cancellationToken,
+        bool allowTokenRefresh = true)
     {
         try
         {
@@ -3355,7 +2993,15 @@ public class LyricsService
                 return null;
             }
 
-            var retried = await TryRetryGwApiCallOnInvalidTokenAsync(root.Value, method, body, arl, sid, cancellationToken);
+            var retried = allowTokenRefresh
+                ? await TryRetryGwApiCallOnInvalidTokenAsync(
+                    root.Value,
+                    method,
+                    body,
+                    arl,
+                    sid,
+                    cancellationToken)
+                : null;
             return retried ?? root;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -3432,7 +3078,13 @@ public class LyricsService
             return null;
         }
 
-        return await CallGwApiAsync(method, body, arl, sid, cancellationToken);
+        return await CallGwApiAsync(
+            method,
+            body,
+            arl,
+            sid,
+            cancellationToken,
+            allowTokenRefresh: false);
     }
 
     private static bool IsInvalidGwTokenError(JsonElement root)

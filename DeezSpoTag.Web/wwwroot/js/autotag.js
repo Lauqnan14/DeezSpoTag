@@ -41,7 +41,6 @@
         manualReleasePreference: "album",
         manualForceFingerprint: false,
         moveSuccessLibraryFolderId: null,
-        writeLrc: false,
         capitalizeGenres: false,
         id3CommLang: null,
         spotify: {
@@ -2996,7 +2995,6 @@
         setChecked("enhancementQueueTechnicalProfileUpgrades", state.config.enhancement.qualityChecks.queueTechnicalProfileUpgrades);
         renderEnhancementTechnicalProfilesCatalog();
         void refreshEnhancementTechnicalProfiles();
-        setChecked("autotag-write-lrc", state.config.writeLrc);
         setChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
 
         updateConditionalSections();
@@ -4088,7 +4086,6 @@
     }
 
     function readFinalAutoTagConfig(getChecked, getValue) {
-        state.config.writeLrc = getChecked("autotag-write-lrc", state.config.writeLrc);
         state.config.capitalizeGenres = getChecked("autotag-capitalize-genres", state.config.capitalizeGenres);
         state.config.custom.itunes.art_resolution = Number.parseInt(getValue("autotag-itunes-art-resolution", state.config.custom?.itunes?.art_resolution || 1000), 10) || 1000;
         state.config.custom.itunes.animated_artwork = getAnimatedArtworkValue(
@@ -5749,7 +5746,7 @@
         applyFieldValueIfPresent("featuredToTitle", technical.featuredToTitle);
         applyFieldValueIfPresent("titleCasing", technical.titleCasing);
         applyFieldValueIfPresent("artistCasing", technical.artistCasing);
-        applyFieldCheckedWhenBoolean("saveLyrics", technical.saveLyrics ?? technical.syncedLyrics);
+        applyFieldCheckedWhenBoolean("saveLyrics", technical.saveLyrics === true || technical.syncedLyrics === true);
         applyFieldCheckedWhenBoolean("embedLyrics", technical.embedLyrics ?? true);
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
         applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "richlyrics"));
@@ -5876,10 +5873,16 @@
         technical.featuredToTitle = getValue("featuredToTitle", technical.featuredToTitle ?? "0");
         technical.titleCasing = getValue("titleCasing", technical.titleCasing ?? "nothing");
         technical.artistCasing = getValue("artistCasing", technical.artistCasing ?? "nothing");
-        technical.saveLyrics = getChecked("saveLyrics", technical.saveLyrics ?? technical.syncedLyrics ?? false);
-        technical.syncedLyrics = technical.saveLyrics;
-        technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
+        const lyricsEnabled = getChecked("saveLyrics", technical.saveLyrics === true || technical.syncedLyrics === true);
         technical.lrcType = normalizeLyricsTypeSetting(getValue("lrcType", technical.lrcType ?? DEFAULT_LYRICS_TYPE_SELECTION));
+        const selectedLyricsTypes = new Set(parseLyricsTypeSetting(technical.lrcType));
+        technical.syncedLyrics = lyricsEnabled && (
+            selectedLyricsTypes.has("lyrics")
+            || selectedLyricsTypes.has("syllable-lyrics")
+            || selectedLyricsTypes.has("ttml-lyrics")
+        );
+        technical.saveLyrics = lyricsEnabled && selectedLyricsTypes.has("unsynced-lyrics");
+        technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
         technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "richlyrics"));
         technical.synthesizeLrcFromTtml = getChecked("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
         technical.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled ?? true);

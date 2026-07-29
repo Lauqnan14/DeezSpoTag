@@ -177,6 +177,39 @@ public sealed class LrclibLyricsServiceTests
         Assert.Equal("plain preferred", lyrics.UnsyncedLyrics);
     }
 
+    [Fact]
+    public async Task ResolveLyricsAsync_UsesArtistString_WhenStructuredArtistFieldsAreMissing()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            Assert.Contains("artist_name=Artist%20String", request.RequestUri!.AbsoluteUri, StringComparison.Ordinal);
+            return Json(HttpStatusCode.OK, """
+                {
+                  "id": 15,
+                  "name": "Track E",
+                  "artistName": "Artist String",
+                  "albumName": "Album E",
+                  "plainLyrics": "ArtistString identity succeeded",
+                  "syncedLyrics": null,
+                  "duration": 180
+                }
+                """);
+        });
+        var service = CreateService(handler);
+        var track = new Track
+        {
+            Title = "Track E",
+            ArtistString = "Artist String",
+            Album = new Album("Album E"),
+            Duration = 180
+        };
+
+        var lyrics = await service.ResolveLyricsAsync(track);
+
+        Assert.True(lyrics.IsLoaded());
+        Assert.Equal("ArtistString identity succeeded", lyrics.UnsyncedLyrics);
+    }
+
     private static LrclibLyricsService CreateService(HttpMessageHandler handler)
     {
         var factory = new StubHttpClientFactory(handler);

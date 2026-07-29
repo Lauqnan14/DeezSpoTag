@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Download.Shared;
@@ -12,6 +13,25 @@ namespace DeezSpoTag.Web.Services;
 public sealed class LyricsRefreshQueueService : BackgroundService
 {
     public const string JobTypeLyricsRefresh = "lyrics_refresh";
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly Regex LeadingTrackNumberRegex = new(
+        @"^\s*(?:\d+\s*[-._)\]]\s*)+",
+        RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly Regex ArtistTitleFilenameRegex = new(
+        @"^\s*(?<artist>.+?)\s+-\s+(?<title>.+?)\s*$",
+        RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly HashSet<string> WeakIdentityValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "unknown",
+        "unknown artist",
+        "unknown album artist",
+        "unknown album",
+        "untitled",
+        "track",
+        "audio"
+    };
 
     private readonly LibraryRepository _repository;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -215,6 +235,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
     private static Track BuildTrack(TrackAudioInfoDto info, TrackSourceLinksDto? links)
     {
+        var identity = ResolveLookupIdentity(info);
         var source = ResolveSource(links);
         var sourceId = ResolveSourceId(links, source);
         var urls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -230,16 +251,96 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         return new Track
         {
             Id = !string.IsNullOrWhiteSpace(links?.DeezerTrackId) ? links!.DeezerTrackId! : info.TrackId.ToString(),
-            Title = info.Title ?? string.Empty,
+            Title = identity.Title,
             Duration = Math.Max(0, (info.DurationMs ?? 0) / 1000),
-            MainArtist = new Artist(info.ArtistName ?? string.Empty),
-            Album = new Album(info.AlbumTitle ?? string.Empty),
+            MainArtist = new Artist(identity.Artist),
+            Album = new Album(identity.Album),
+            ISRC = links?.Isrc?.Trim() ?? identity.Isrc ?? string.Empty,
             Source = source,
             SourceId = sourceId,
             Urls = urls,
             DownloadURL = links?.DeezerUrl ?? links?.SpotifyUrl ?? links?.AppleUrl ?? string.Empty
         };
     }
+
+    private static LyricsLookupIdentity ResolveLookupIdentity(TrackAudioInfoDto info)
+    {
+        var title = NormalizeIdentityValue(info.Title);
+        var artist = NormalizeIdentityValue(info.ArtistName);
+        var album = NormalizeIdentityValue(info.AlbumTitle);
+        string? isrc = null;
+
+        try
+        {
+            using var audio = TagLib.File.Create(info.FilePath);
+            if (IsWeakIdentityValue(title))
+            {
+                title = NormalizeIdentityValue(audio.Tag.Title);
+            }
+            if (IsWeakIdentityValue(artist))
+            {
+                artist = audio.Tag.Performers?
+                    .Select(NormalizeIdentityValue)
+                    .FirstOrDefault(value => !IsWeakIdentityValue(value))
+                    ?? NormalizeIdentityValue(audio.Tag.FirstPerformer);
+            }
+            if (IsWeakIdentityValue(album))
+            {
+                album = NormalizeIdentityValue(audio.Tag.Album);
+            }
+            isrc = NormalizeIdentityValue(audio.Tag.ISRC);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The indexed file still provides a safe filename/folder identity below.
+        }
+
+        var fileStem = NormalizeIdentityValue(Path.GetFileNameWithoutExtension(info.FilePath));
+        var cleanedStem = LeadingTrackNumberRegex.Replace(fileStem, string.Empty).Trim();
+        var filenameMatch = ArtistTitleFilenameRegex.Match(cleanedStem);
+        if (filenameMatch.Success)
+        {
+            if (IsWeakIdentityValue(artist))
+            {
+                artist = NormalizeIdentityValue(filenameMatch.Groups["artist"].Value);
+            }
+            if (IsWeakIdentityValue(title))
+            {
+                title = NormalizeIdentityValue(filenameMatch.Groups["title"].Value);
+            }
+        }
+        else if (IsWeakIdentityValue(title))
+        {
+            title = cleanedStem;
+        }
+
+        var albumDirectory = Path.GetDirectoryName(info.FilePath);
+        if (IsWeakIdentityValue(album) && !string.IsNullOrWhiteSpace(albumDirectory))
+        {
+            album = NormalizeIdentityValue(Path.GetFileName(albumDirectory));
+        }
+
+        if (IsWeakIdentityValue(artist) && !string.IsNullOrWhiteSpace(albumDirectory))
+        {
+            var artistDirectory = Directory.GetParent(albumDirectory)?.FullName;
+            if (!string.IsNullOrWhiteSpace(artistDirectory))
+            {
+                artist = NormalizeIdentityValue(Path.GetFileName(artistDirectory));
+            }
+        }
+
+        return new LyricsLookupIdentity(
+            IsWeakIdentityValue(title) ? string.Empty : title,
+            IsWeakIdentityValue(artist) ? string.Empty : artist,
+            IsWeakIdentityValue(album) ? string.Empty : album,
+            isrc);
+    }
+
+    private static string NormalizeIdentityValue(string? value)
+        => value?.Trim().Trim('[', ']') ?? string.Empty;
+
+    private static bool IsWeakIdentityValue(string? value)
+        => string.IsNullOrWhiteSpace(value) || WeakIdentityValues.Contains(NormalizeIdentityValue(value));
 
     private static void AddUrl(Dictionary<string, string> urls, string key, string? value)
     {
@@ -345,6 +446,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
     }
 
     private sealed record QueueItem(string JobType, long TrackId);
+    private sealed record LyricsLookupIdentity(string Title, string Artist, string Album, string? Isrc);
 }
 
 public sealed record LyricsRefreshEnqueueResult(string JobType, int Requested, int Enqueued, int Skipped);

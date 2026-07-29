@@ -346,8 +346,10 @@ public sealed class TaggingProfileService
 
         profile.AutoTag ??= new AutoTagSettings();
         profile.AutoTag.Data ??= new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        profile.Technical ??= new TechnicalTagSettings();
 
         var changed = StripAuthSecrets(profile.AutoTag.Data);
+        changed |= MigrateLyricsProfile(profile);
         if (TaggingProfileDataHelper.CanonicalizeEnhancementConfig(profile.AutoTag.Data))
         {
             changed = true;
@@ -369,6 +371,85 @@ public sealed class TaggingProfileService
         }
 
         return changed;
+    }
+
+    private static bool MigrateLyricsProfile(TaggingProfile profile)
+    {
+        var changed = false;
+        var data = profile.AutoTag.Data;
+        var legacyWriteLrcKey = data.Keys.FirstOrDefault(key =>
+            string.Equals(key, "writeLrc", StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(legacyWriteLrcKey))
+        {
+            changed |= data.Remove(legacyWriteLrcKey);
+        }
+
+        var technical = profile.Technical;
+        if (technical.LyricsSchemaVersion >= TechnicalTagSettings.CurrentLyricsSchemaVersion)
+        {
+            return changed;
+        }
+
+        var providers = SplitNormalized(technical.LyricsFallbackOrder);
+        foreach (var provider in DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder)
+        {
+            if (!providers.Contains(provider, StringComparer.OrdinalIgnoreCase))
+            {
+                providers.Add(provider);
+            }
+        }
+        technical.LyricsFallbackOrder = string.Join(",", providers);
+
+        var formats = NormalizeLyricsFormats(technical.LrcFormat);
+        technical.LrcFormat = string.Join(",", formats);
+        var types = SplitNormalized(technical.LrcType);
+        if (formats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
+            && !types.Contains("ttml-lyrics", StringComparer.OrdinalIgnoreCase))
+        {
+            types.Add("ttml-lyrics");
+        }
+        if (types.Count == 0)
+        {
+            types.AddRange(["lyrics", "syllable-lyrics", "ttml-lyrics", "unsynced-lyrics"]);
+        }
+        technical.LrcType = string.Join(",", types);
+        technical.LyricsSchemaVersion = TechnicalTagSettings.CurrentLyricsSchemaVersion;
+        return true;
+    }
+
+    private static List<string> SplitNormalized(string? value)
+        => (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static token => token.Trim().ToLowerInvariant())
+            .Where(static token => token.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<string> NormalizeLyricsFormats(string? value)
+    {
+        var formats = new List<string>();
+        foreach (var token in SplitNormalized(value))
+        {
+            var expanded = token switch
+            {
+                "both" or "richlyrics" or "rich-lyrics" or "lyrics" => new[] { "lrc", "elrc", "ttml" },
+                "lrc+ttml" or "ttml+lrc" => new[] { "lrc", "ttml" },
+                "enhanced-lrc" or "enhanced-synchronized-lyrics" => new[] { "elrc" },
+                _ => new[] { token }
+            };
+            foreach (var format in expanded.Where(static format => format is "lrc" or "elrc" or "ttml"))
+            {
+                if (!formats.Contains(format, StringComparer.OrdinalIgnoreCase))
+                {
+                    formats.Add(format);
+                }
+            }
+        }
+        if (formats.Count == 0)
+        {
+            formats.AddRange(["lrc", "elrc", "ttml"]);
+        }
+        return formats;
     }
 
     private static bool TryNormalizeDownloadTagSourceField(Dictionary<string, JsonElement> data)

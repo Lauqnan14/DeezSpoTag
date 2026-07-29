@@ -88,6 +88,9 @@ public sealed class LyricsProviderRegistryTests
         Assert.Contains("@foreach (var provider in lyricsProviders)", view, StringComparison.Ordinal);
         Assert.Contains("lyricsProviderRegistry", script, StringComparison.Ordinal);
         Assert.DoesNotContain("DEFAULT_LYRICS_SOURCE_ORDER = Object.freeze([\"apple\"", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("autotag-write-lrc", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("writeLrc", script, StringComparison.Ordinal);
+        Assert.Contains("technical.saveLyrics === true || technical.syncedLyrics === true", script, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -184,6 +187,7 @@ public sealed class LyricsProviderRegistryTests
         Assert.True(result!.HasEnhancedSynchronizedLyrics());
         Assert.Equal(2, result.SyncedLyrics![0].Words!.Count);
         Assert.Contains("<span begin=\"00:00:01.000\"", result.TtmlLyrics, StringComparison.Ordinal);
+        Assert.True(AppleLyricsService.IsWordSyncedTtml(result.TtmlLyrics));
     }
 
     [Fact]
@@ -211,6 +215,69 @@ public sealed class LyricsProviderRegistryTests
         Assert.True(result!.IsSynced());
         Assert.False(result.HasEnhancedSynchronizedLyrics());
         Assert.Null(result.TtmlLyrics);
+    }
+
+    [Fact]
+    public void YouLyPlusPayload_AcceptsLiveShapeWithoutRepeatedIdentity()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "lyrics": [
+                {
+                  "text": "Aje",
+                  "time": 1000,
+                  "duration": 900,
+                  "syllabus": [
+                    { "text": "A", "time": 1000, "duration": 300 },
+                    { "text": "je", "time": 1300, "duration": 600 }
+                  ]
+                }
+              ]
+            }
+            """);
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics",
+            LrcFormat = "lrc,elrc,ttml"
+        };
+
+        var result = InvokeYouLyPlusParser(document.RootElement, settings);
+
+        Assert.NotNull(result);
+        Assert.True(result!.HasEnhancedSynchronizedLyrics());
+        Assert.NotNull(result.TtmlLyrics);
+        Assert.True(AppleLyricsService.IsWordSyncedTtml(result.TtmlLyrics));
+    }
+
+    [Fact]
+    public void YouLyPlusPayload_RejectsTimelineBeyondTrackDuration()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "lyrics": [
+                {
+                  "text": "Wrong timeline",
+                  "time": 250000,
+                  "duration": 1000,
+                  "syllabus": [
+                    { "text": "Wrong", "time": 250000, "duration": 500 },
+                    { "text": "timeline", "time": 250500, "duration": 500 }
+                  ]
+                }
+              ]
+            }
+            """);
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics",
+            LrcFormat = "lrc,elrc,ttml"
+        };
+
+        Assert.Null(InvokeYouLyPlusParser(document.RootElement, settings));
     }
 
     [Fact]
