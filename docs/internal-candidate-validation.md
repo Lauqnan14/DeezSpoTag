@@ -12,6 +12,8 @@ production Compose configuration, GHCR publishing, and GitHub Actions.
    Container Registry at
    `127.0.0.1:3430/lauqnan14/deezspotag-candidate`. Loopback preserves the
    existing Docker registry policy without adding a LAN-wide insecure registry.
+   Registry login retries the same loopback endpoint when the NAS token service
+   temporarily exceeds Docker's client timeout; it never switches registries.
 4. Trivy scans the exact pushed image. Any fixed HIGH or CRITICAL vulnerability
    fails the run before deployment.
 5. A disposable container starts from that scanned image using:
