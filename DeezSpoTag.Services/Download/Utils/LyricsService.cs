@@ -1661,28 +1661,78 @@ public class LyricsService
             "<?xml version=\"1.0\" encoding=\"utf-8\"?><tt xmlns=\"http://www.w3.org/ns/ttml\" timing=\"Word\"><body><div>");
         foreach (var line in lines.Where(line => line.Words?.Any(word => word.IsValid()) == true))
         {
+            var timedWords = line.Words!
+                .Where(word => word.IsValid())
+                .ToList();
+            var spanTexts = ResolveTtmlSpanTexts(line.Text, timedWords);
             var end = line.Duration > 0
                 ? line.Milliseconds + line.Duration
-                : line.Words!.Max(word => word.EndMilliseconds);
+                : timedWords.Max(word => word.EndMilliseconds);
             builder.Append("<p begin=\"")
                 .Append(FormatTtmlTime(line.Milliseconds))
                 .Append("\" end=\"")
                 .Append(FormatTtmlTime(end))
                 .Append("\">");
-            foreach (var word in line.Words!.Where(word => word.IsValid()))
+            for (var index = 0; index < timedWords.Count; index++)
             {
+                var word = timedWords[index];
                 builder.Append("<span begin=\"")
                     .Append(FormatTtmlTime(word.StartMilliseconds))
                     .Append("\" end=\"")
                     .Append(FormatTtmlTime(word.EndMilliseconds))
                     .Append("\">")
-                    .Append(XmlEscape(word.Text!))
+                    .Append(XmlEscape(spanTexts[index]))
                     .Append("</span>");
             }
             builder.Append("</p>");
         }
         builder.Append("</div></body></tt>");
         return builder.ToString();
+    }
+
+    private static IReadOnlyList<string> ResolveTtmlSpanTexts(
+        string? lineText,
+        IReadOnlyList<SynchronizedLyricWord> timedWords)
+    {
+        var providerTexts = timedWords
+            .Select(static word => word.Text ?? string.Empty)
+            .ToArray();
+        if (timedWords.Count == 0 || string.IsNullOrEmpty(lineText))
+        {
+            return providerTexts;
+        }
+
+        var resolved = new string[timedWords.Count];
+        var cursor = 0;
+        for (var index = 0; index < timedWords.Count; index++)
+        {
+            var token = providerTexts[index].Trim();
+            if (token.Length == 0)
+            {
+                return providerTexts;
+            }
+
+            var tokenIndex = lineText.IndexOf(token, cursor, StringComparison.Ordinal);
+            if (tokenIndex < 0)
+            {
+                tokenIndex = lineText.IndexOf(token, cursor, StringComparison.OrdinalIgnoreCase);
+            }
+            if (tokenIndex < 0)
+            {
+                return providerTexts;
+            }
+
+            var tokenEnd = tokenIndex + token.Length;
+            resolved[index] = lineText[cursor..tokenEnd];
+            cursor = tokenEnd;
+        }
+
+        if (cursor < lineText.Length)
+        {
+            resolved[^1] += lineText[cursor..];
+        }
+
+        return resolved;
     }
 
     private static string FormatTtmlTime(int milliseconds)

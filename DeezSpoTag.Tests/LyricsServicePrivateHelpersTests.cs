@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Apple;
@@ -29,6 +30,95 @@ public sealed class LyricsServicePrivateHelpersTests
     {
         return (T)(GetStaticMethod(methodName).Invoke(null, args)
             ?? throw new InvalidOperationException($"LyricsService.{methodName} returned null."));
+    }
+
+    [Fact]
+    public void BuildWordSynchronizedTtml_PreservesSpacesMissingFromProviderWordTokens()
+    {
+        var line = new SynchronizedLyric(
+            "These words must remain separated",
+            "[00:01.00]",
+            1_000,
+            2_000)
+        {
+            Words =
+            [
+                new("These", 1_000, 1_300),
+                new("words", 1_300, 1_600),
+                new("must", 1_600, 1_900),
+                new("remain", 1_900, 2_300),
+                new("separated", 2_300, 3_000)
+            ]
+        };
+
+        var ttml = InvokeStatic<string>(
+            "BuildWordSynchronizedTtml",
+            new List<SynchronizedLyric> { line });
+
+        Assert.Equal(line.Text, ReadFirstTtmlLine(ttml));
+    }
+
+    [Fact]
+    public void BuildWordSynchronizedTtml_PreservesPunctuationAndContractions()
+    {
+        var line = new SynchronizedLyric(
+            "Don't stop, we're ready!",
+            "[00:01.00]",
+            1_000,
+            2_000)
+        {
+            Words =
+            [
+                new("Don't", 1_000, 1_250),
+                new("stop", 1_250, 1_550),
+                new(",", 1_550, 1_600),
+                new("we're", 1_600, 2_000),
+                new("ready", 2_000, 2_600),
+                new("!", 2_600, 3_000)
+            ]
+        };
+
+        var ttml = InvokeStatic<string>(
+            "BuildWordSynchronizedTtml",
+            new List<SynchronizedLyric> { line });
+
+        Assert.Equal(line.Text, ReadFirstTtmlLine(ttml));
+    }
+
+    [Theory]
+    [InlineData("Aje", "A", "je")]
+    [InlineData("今日は世界", "今日", "は", "世界")]
+    public void BuildWordSynchronizedTtml_DoesNotInventSpaces(
+        string lineText,
+        params string[] tokens)
+    {
+        var words = tokens
+            .Select((token, index) => new SynchronizedLyricWord(
+                token,
+                1_000 + (index * 300),
+                1_300 + (index * 300)))
+            .ToList();
+        var line = new SynchronizedLyric(
+            lineText,
+            "[00:01.00]",
+            1_000,
+            words[^1].EndMilliseconds - 1_000)
+        {
+            Words = words
+        };
+
+        var ttml = InvokeStatic<string>(
+            "BuildWordSynchronizedTtml",
+            new List<SynchronizedLyric> { line });
+
+        Assert.Equal(lineText, ReadFirstTtmlLine(ttml));
+    }
+
+    private static string ReadFirstTtmlLine(string ttml)
+    {
+        var document = XDocument.Parse(ttml);
+        XNamespace ns = "http://www.w3.org/ns/ttml";
+        return document.Descendants(ns + "p").Single().Value;
     }
 
     [Theory]
