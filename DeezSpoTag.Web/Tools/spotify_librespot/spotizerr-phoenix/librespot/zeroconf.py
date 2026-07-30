@@ -14,8 +14,6 @@ import io
 import json
 import hmac as stdlib_hmac
 import logging
-import os
-import secrets
 import socket
 import threading
 import time
@@ -60,23 +58,17 @@ class ZeroconfServer(Closeable):
         "statusString": "OK",
     }
     __eol = b"\r\n"
-    __max_port = 65535
-    __min_port = 1024
     __runner: HttpRunner
     __service_info: zeroconf.ServiceInfo
     __session: Session | None = None
     __session_listeners: typing.List[SessionListener] = []
     __zeroconf: zeroconf.Zeroconf
-    __any_interface_ip = ""
-    __any_interface_label = "all-interfaces"
 
     def __init__(self, inner: Inner, listen_port):
         self.__inner = inner
         self.__keys = DiffieHellman()
-        if listen_port == -1:
-            listen_port = self.__min_port + 1 + secrets.randbelow(
-                self.__max_port - self.__min_port
-            )
+        if listen_port <= 0 or listen_port > 65535:
+            raise ValueError("A valid stable Spotify Connect listener port is required.")
         self.__runner = ZeroconfServer.HttpRunner(self, listen_port)
         threading.Thread(target=self.__runner.run,
                          name="zeroconf-http-server",
@@ -126,84 +118,65 @@ class ZeroconfServer(Closeable):
         )
 
     def _create_zeroconf(self) -> zeroconf.Zeroconf:
-        configured_interface = os.environ.get(
-            "DEEZSPOTAG_SPOTIFY_ZEROCONF_INTERFACE", ""
-        ).strip()
-        if configured_interface:
-            self.logger.info(
-                "Starting Zeroconf on interface %s", configured_interface
-            )
-            try:
-                return zeroconf.Zeroconf(interfaces=[configured_interface])
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to initialize Zeroconf on interface {configured_interface}: {exc}"
-                ) from exc
-
-        self.logger.info("Starting Zeroconf on default interfaces")
+        self.logger.info("Starting Zeroconf on active local interfaces")
         return zeroconf.Zeroconf(interfaces=zeroconf.InterfaceChoice.Default)
 
     def _get_local_ip(self) -> str:
-        """Tries to determine a non-loopback local IP address for network advertisement."""
-        s = None
-        ip_address = self.__any_interface_ip # Default to all interfaces if specific IP cannot be found
-        try:
-            # UDP connect does not send packets; it asks the OS which local
-            # address would be used for this routable host.
-            probe_host = os.environ.get("SPOTIFY_ZEROCONF_IP_PROBE_HOST", "dns.google")
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.settimeout(0.1) # Short timeout for the connect attempt
-            s.connect((probe_host, 80))
-            ip_address = s.getsockname()[0]
-            self.logger.info(f"Determined local IP via connect trick: {ip_address}")
-        except OSError as e: # Catches socket errors like [Errno 101] Network is unreachable
-            self.logger.warning(f"Could not determine local IP via connect trick ({e}). Trying socket.gethostname().")
-            try:
-                hostname = socket.gethostname()
-                # gethostbyname can return 127.0.0.1 if hostname resolves to it
-                ip_address = socket.gethostbyname(hostname)
-                self.logger.info(f"IP from socket.gethostname('{hostname}'): {ip_address}")
-            except socket.gaierror:
-                self.logger.error(
-                    f"socket.gaierror resolving hostname '{socket.gethostname()}'. Falling back to {self.__any_interface_label}."
+        interface_name = self._get_default_route_interface()
+        if interface_name:
+            interface_address = self._get_interface_ipv4(interface_name)
+            if interface_address:
+                self.logger.info(
+                    "Using default-route Spotify Connect LAN address %s on %s",
+                    interface_address,
+                    interface_name,
                 )
-                ip_address = self.__any_interface_ip
-        finally:
-            if s:
-                s.close()
+                return interface_address
 
-        # If the IP is loopback (127.x.x.x) or still the all-interfaces default, try to find a better one.
-        if ip_address.startswith("127.") or not ip_address:
-            self.logger.warning(
-                f"Current IP ('{ip_address or self.__any_interface_label}') is loopback or all-interfaces default. Attempting to find a non-loopback IP from host interfaces."
+        addresses = sorted({
+            address[4][0]
+            for address in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+            if not address[4][0].startswith("127.")
+        })
+        private_addresses = [
+            address for address in addresses
+            if address.startswith("10.")
+            or address.startswith("192.168.")
+            or address.startswith("172.") and 16 <= int(address.split(".")[1]) <= 31
+        ]
+        if not private_addresses:
+            raise RuntimeError(
+                "Spotify Connect could not determine a local LAN IPv4 address."
             )
-            try:
-                current_hostname = socket.gethostname()
-                all_ips_info = socket.gethostbyname_ex(current_hostname)
-                # all_ips_info is a tuple: (hostname, aliaslist, ipaddrlist)
-                non_loopback_ips = [ip for ip in all_ips_info[2] if not ip.startswith("127.")]
-                
-                if non_loopback_ips:
-                    ip_address = non_loopback_ips[0] # Pick the first non-loopback IP
-                    self.logger.info(f"Found non-loopback IP from host interfaces ('{current_hostname}'): {ip_address}")
-                else:
-                    self.logger.warning(
-                        f"No non-loopback IPs found for hostname '{current_hostname}'. Retaining '{ip_address}'."
-                    )
-                    # If ip_address was all-interfaces, it remains so. If it was 127.0.0.1, it remains so.
-            except socket.gaierror:
-                self.logger.error(
-                    f"socket.gaierror during fallback IP search for hostname '{socket.gethostname()}'. Retaining '{ip_address}'."
-                )
-        
-        if not ip_address:
-            self.logger.warning("Failed to determine a specific non-loopback IP. Zeroconf will attempt to use all available interfaces.")
-        elif ip_address.startswith("127."):
-             self.logger.warning(f"Final IP for advertisement is loopback ('{ip_address}'). Service discovery may not work correctly on the network.")
-        else:
-            self.logger.info(f"Using IP address for Zeroconf advertisement: {ip_address}")
-            
-        return ip_address
+        self.logger.info("Using detected Spotify Connect LAN address: %s", private_addresses[0])
+        return private_addresses[0]
+
+    @staticmethod
+    def _get_default_route_interface() -> str | None:
+        try:
+            with open("/proc/net/route", encoding="ascii") as routes:
+                next(routes, None)
+                for line in routes:
+                    fields = line.split()
+                    if len(fields) >= 4 and fields[1] == "00000000" and int(fields[3], 16) & 2:
+                        return fields[0]
+        except (OSError, ValueError):
+            return None
+        return None
+
+    @staticmethod
+    def _get_interface_ipv4(interface_name: str) -> str | None:
+        try:
+            import fcntl
+            import struct
+
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                request = struct.pack("256s", interface_name.encode("utf-8")[:15])
+                response = fcntl.ioctl(probe.fileno(), 0x8915, request)
+                address = socket.inet_ntoa(response[20:24])
+                return None if address.startswith("127.") else address
+        except (ImportError, OSError):
+            return None
 
     def add_session_listener(self, listener: ZeroconfServer):
         self.__session_listeners.append(listener)
@@ -461,7 +434,10 @@ class ZeroconfServer(Closeable):
                 self.__worker.submit(anonymous)
 
         def __handle(self, __socket: socket.socket) -> None:
-            request = io.BytesIO(__socket.recv(1024 * 1024))
+            __socket.settimeout(15)
+            request = self.__read_http_request(__socket)
+            if request is None:
+                return
             request_line = request.readline().strip().split(b" ")
             if len(request_line) != 3:
                 self.__zeroconf_server.logger.warning(
@@ -474,8 +450,8 @@ class ZeroconfServer(Closeable):
                 header = request.readline().strip()
                 if not header:
                     break
-                split = header.split(b":")
-                headers[split[0].decode()] = split[1].strip().decode()
+                key, value = header.split(b":", 1)
+                headers[key.decode()] = value.strip().decode()
             if not self.__zeroconf_server.has_valid_session():
                 self.__zeroconf_server.logger.debug(
                     "Handling request: {}, {}, {}, headers: {}".format(
@@ -494,11 +470,10 @@ class ZeroconfServer(Closeable):
                     return
                 content_length = int(content_length_str)
                 body = request.read(content_length).decode()
-                pairs = body.split("&")
-                for pair in pairs:
-                    split = pair.split("=")
-                    params[urllib.parse.unquote(
-                        split[0])] = urllib.parse.unquote(split[1])
+                params = {
+                    key: values[-1]
+                    for key, values in urllib.parse.parse_qs(body, keep_blank_values=True).items()
+                }
             else:
                 params = self.__zeroconf_server.parse_path(path)
             action = params.get("action")
@@ -507,6 +482,34 @@ class ZeroconfServer(Closeable):
                     "Request is missing action.")
                 return
             self.handle_request(__socket, http_version, action, params)
+
+        @staticmethod
+        def __read_http_request(client_socket: socket.socket) -> io.BytesIO | None:
+            buffer = bytearray()
+            while b"\r\n\r\n" not in buffer:
+                chunk = client_socket.recv(8192)
+                if not chunk:
+                    return None
+                buffer.extend(chunk)
+                if len(buffer) > 1024 * 1024:
+                    raise ValueError("Spotify Connect request headers exceed the allowed size.")
+
+            header_end = buffer.index(b"\r\n\r\n") + 4
+            headers = buffer[:header_end].decode("iso-8859-1")
+            content_length = 0
+            for header in headers.split("\r\n")[1:]:
+                if header.lower().startswith("content-length:"):
+                    content_length = int(header.split(":", 1)[1].strip())
+                    break
+            if content_length < 0 or content_length > 1024 * 1024:
+                raise ValueError("Spotify Connect request body exceeds the allowed size.")
+            required = header_end + content_length
+            while len(buffer) < required:
+                chunk = client_socket.recv(min(8192, required - len(buffer)))
+                if not chunk:
+                    return None
+                buffer.extend(chunk)
+            return io.BytesIO(bytes(buffer[:required]))
 
         def handle_request(self, __socket: socket.socket, http_version: str,
                            action: str, params: dict[str, str]) -> None:

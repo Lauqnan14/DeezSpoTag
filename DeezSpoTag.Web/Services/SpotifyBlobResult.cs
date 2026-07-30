@@ -4,5 +4,5 @@ public sealed record SpotifyBlobResult
 {
     public required string BlobPath { get; init; }
     public DateTimeOffset CreatedAt { get; init; }
+    public string? DeviceName { get; init; }
 }
-

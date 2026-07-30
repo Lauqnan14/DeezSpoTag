@@ -34,6 +34,7 @@ public sealed class SpotifyBlobService
     private const string SpotifyLibrespotFolder = "spotify_librespot";
     private const string SpotizerrPhoenixFolder = "spotizerr-phoenix";
     private const string ZeroconfAuthScript = "spotify_zeroconf_auth.py";
+    private const int SpotifyConnectListenerPort = 4070;
     private const string LibrespotTokenScript = "spotify_librespot_token.py";
     private const string LibrespotPlaylistScript = "spotify_librespot_playlist.py";
     private const string LibrespotTracksScript = "spotify_librespot_tracks.py";
@@ -72,6 +73,7 @@ public sealed class SpotifyBlobService
     private readonly ProtectedCredentialFileStore _webPlayerCredentialStore;
     private readonly ProtectedCredentialFileStore _librespotCredentialStore;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> BlobGenerationLocks = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpotifyBlobGenerationStatus> BlobGenerationStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
@@ -84,6 +86,8 @@ public sealed class SpotifyBlobService
         {
         }
     }
+
+    public sealed record SpotifyBlobGenerationStatus(string Phase, string Message, string? DeviceName, DateTimeOffset UpdatedAt);
 
     public SpotifyBlobService(
         IWebHostEnvironment environment,
@@ -121,6 +125,11 @@ public sealed class SpotifyBlobService
         return GenerateBlobAsync(accountName, headless, blobDir, removeExisting: true, cancellationToken);
     }
 
+    public SpotifyBlobGenerationStatus? GetGenerationStatus(string accountName, string blobDir)
+        => BlobGenerationStatuses.TryGetValue(NormalizeAccountLockKey(blobDir, accountName), out var status)
+            ? status
+            : null;
+
     public Task<SpotifyBlobResult> GenerateBlobAsync(
         string accountName,
         bool headless,
@@ -141,6 +150,8 @@ public sealed class SpotifyBlobService
         {
             throw new SpotifyBlobGenerationInProgressException(accountName);
         }
+
+        SetGenerationStatus(lockKey, "starting", "Starting the Spotify Connect receiver.", null);
 
         var configRoot = GetConfigRoot();
         Directory.CreateDirectory(blobDir);
@@ -177,11 +188,13 @@ public sealed class SpotifyBlobService
                 "--output", blobPath,
                 "--credentials-dir", authWorkingDir,
                 "--device-name", "DeezSpoTag",
+                "--listen-port", SpotifyConnectListenerPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "--timeout", timeoutSeconds.ToString());
 
             using var process = new Process { StartInfo = startInfo };
             process.Start();
-            var processOutput = await WaitForProcessExitAsync(process, timeout: null, cancellationToken);
+            SetGenerationStatus(lockKey, "listening", "Spotify Connect receiver is active. Transfer playback to DeezSpoTag in Spotify.", "DeezSpoTag");
+            var processOutput = await WaitForSpotifyAuthProcessExitAsync(process, lockKey, cancellationToken);
             var stdout = processOutput.StandardOutput;
             var stderr = processOutput.StandardError;
             if (!string.IsNullOrWhiteSpace(stderr))
@@ -194,7 +207,11 @@ public sealed class SpotifyBlobService
 
             if (string.IsNullOrWhiteSpace(stdout))
             {
-                throw new InvalidOperationException("Spotify credentials generator produced no output.");
+                _logger.LogError(
+                    "Spotify credentials generator exited without structured output. Exit code: {ExitCode}. Error: {Error}",
+                    processOutput.ExitCode,
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
+                throw new InvalidOperationException("Spotify Connect listener stopped before credential capture completed. Check the application log for the receiver error.");
             }
 
             if (!TryParseJsonFromStdout(stdout, out var doc, out var parseError))
@@ -209,6 +226,7 @@ public sealed class SpotifyBlobService
                 if (!root.TryGetProperty("ok", out var okElement) || !okElement.GetBoolean())
                 {
                     var errorMessage = root.TryGetProperty(ErrorField, out var errorElement) ? errorElement.GetString() : "Unknown error";
+                    SetGenerationStatus(lockKey, "failed", errorMessage ?? "Spotify Connect login failed.", null);
                     throw new InvalidOperationException($"Spotify credentials generator failed: {errorMessage}");
                 }
 
@@ -222,12 +240,23 @@ public sealed class SpotifyBlobService
                 InvalidateWebApiAccessToken(blobPath);
                 await ProtectBlobFileByKindAsync(blobPath, cancellationToken);
 
+                var deviceName = root.TryGetProperty("deviceName", out var deviceNameElement)
+                    ? deviceNameElement.GetString()
+                    : null;
+                SetGenerationStatus(lockKey, "complete", "Spotify credentials were captured.", deviceName);
+
                 return new SpotifyBlobResult
                 {
                     BlobPath = blobPath,
-                    CreatedAt = DateTimeOffset.UtcNow
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    DeviceName = deviceName
                 };
             }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            SetGenerationStatus(lockKey, "failed", ex.Message, null);
+            throw;
         }
         finally
         {
@@ -239,6 +268,9 @@ public sealed class SpotifyBlobService
             }
         }
     }
+
+    private static void SetGenerationStatus(string lockKey, string phase, string message, string? deviceName)
+        => BlobGenerationStatuses[lockKey] = new SpotifyBlobGenerationStatus(phase, message, deviceName, DateTimeOffset.UtcNow);
 
     public async Task<string?> GetAccountProductAsync(string blobPath, CancellationToken cancellationToken = default)
     {
@@ -1766,6 +1798,63 @@ public sealed class SpotifyBlobService
         var stdout = (await stdoutTask).Trim();
         var stderr = (await stderrTask).Trim();
         return new ProcessOutputResult(process.ExitCode, stdout, stderr);
+    }
+
+    private async Task<ProcessOutputResult> WaitForSpotifyAuthProcessExitAsync(
+        Process process,
+        string lockKey,
+        CancellationToken cancellationToken)
+    {
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderr = new StringBuilder();
+        while (true)
+        {
+            var line = await process.StandardError.ReadLineAsync(cancellationToken);
+            if (line is null)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            if (line.StartsWith("PROGRESS:", StringComparison.Ordinal))
+            {
+                TryApplySpotifyAuthProgress(lockKey, line["PROGRESS:".Length..]);
+                continue;
+            }
+
+            if (stderr.Length > 0)
+            {
+                stderr.AppendLine();
+            }
+            stderr.Append(line);
+        }
+
+        await process.WaitForExitAsync(cancellationToken);
+        return new ProcessOutputResult(process.ExitCode, (await stdoutTask).Trim(), stderr.ToString().Trim());
+    }
+
+    private static void TryApplySpotifyAuthProgress(string lockKey, string payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+            var phase = root.TryGetProperty("phase", out var phaseElement) ? phaseElement.GetString() : null;
+            var message = root.TryGetProperty("message", out var messageElement) ? messageElement.GetString() : null;
+            var deviceName = root.TryGetProperty("deviceName", out var deviceNameElement) ? deviceNameElement.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(phase) && !string.IsNullOrWhiteSpace(message))
+            {
+                SetGenerationStatus(lockKey, phase, message, deviceName);
+            }
+        }
+        catch (JsonException)
+        {
+            // Helper progress does not affect credential capture.
+        }
     }
 
     private static void TryKillProcessTree(Process process)

@@ -313,7 +313,13 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         AddAccountName(replacedAccountNames, name);
         ClearSpotifySessionArtifacts(userId, replacedAccountNames);
 
-        return Ok(new { generated = true, librespotBlobPath, webPlayerBlobPath = preserveWebPlayerState.WebPlayerBlobPath });
+        return Ok(new
+        {
+            generated = true,
+            librespotBlobPath,
+            webPlayerBlobPath = preserveWebPlayerState.WebPlayerBlobPath,
+            deviceName = result.DeviceName
+        });
     }
 
     [HttpPost("accounts/{name}/regenerate")]
@@ -325,6 +331,25 @@ public abstract class SpotifyCredentialsApiControllerCore : ControllerBase
         }
 
         return GenerateAccount(name, request, cancellationToken);
+    }
+
+    [HttpGet("accounts/{name}/generation-status")]
+    public IActionResult GetGenerationStatus(string name)
+    {
+        var userId = GetUserId();
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            return Unauthorized();
+        }
+
+        name = name?.Trim() ?? string.Empty;
+        if (!IsValidAccountName(name))
+        {
+            return BadRequest("Account name must be 1-64 chars: letters, numbers, dot, underscore, hyphen.");
+        }
+
+        var status = _blobService.GetGenerationStatus(name, _userAuthStore.GetUserBlobDir(userId));
+        return status is null ? NotFound() : Ok(status);
     }
 
     public sealed class SpotifyApiConfigRequest

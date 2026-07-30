@@ -256,7 +256,7 @@
                     </div>
                     <div class="settings-group mt-6" id="spotifyBlobSection">
                         <h4 class="settings-group__header">Spotify Account Credentials</h4>
-                        <p class="text-muted">
+                        <p class="text-muted" id="spotifyConnectInstructions">
                             Click Login, then open the Spotify desktop app or the Spotify Web Player and transfer playback to
                             the “DeezSpoTag” device in the Connect menu.
                         </p>
@@ -4730,16 +4730,22 @@ async function generateSpotifyBlob() {
 
     const generateButton = document.getElementById('spotifyGenerateBlobBtn');
     const originalButtonText = generateButton?.dataset?.originalText || generateButton?.textContent || 'Login';
+    let generationStatusTimer = null;
 
     try {
         spotifyBlobGenerationInFlight = true;
         if (generateButton) {
             generateButton.dataset.originalText = originalButtonText;
             generateButton.disabled = true;
-            generateButton.textContent = 'Generating...';
+            generateButton.textContent = 'Waiting for Spotify Connect...';
+        }
+        const instructions = document.getElementById('spotifyConnectInstructions');
+        if (instructions) {
+            instructions.textContent = 'Spotify Connect is starting. Open Spotify and transfer playback to the “DeezSpoTag” device.';
         }
 
-        const response = await fetch(`/api/spotify-credentials/accounts/${encodeURIComponent(name)}/generate`, {
+        const generationUrl = `/api/spotify-credentials/accounts/${encodeURIComponent(name)}`;
+        const generationRequest = fetch(`${generationUrl}/generate`, {
             method: 'POST',
             credentials: 'same-origin',
             headers: {
@@ -4748,6 +4754,25 @@ async function generateSpotifyBlob() {
             },
             body: JSON.stringify({ region })
         });
+        generationStatusTimer = window.setInterval(async () => {
+            try {
+                const statusResponse = await fetch(`${generationUrl}/generation-status`, {
+                    cache: 'no-store',
+                    credentials: 'same-origin',
+                    headers: { Accept: 'application/json' }
+                });
+                if (!statusResponse.ok || !instructions) {
+                    return;
+                }
+                const status = await statusResponse.json();
+                if (typeof status?.message === 'string' && status.message.trim()) {
+                    instructions.textContent = status.message.trim();
+                }
+            } catch {
+                // The generation request remains authoritative for completion and errors.
+            }
+        }, 750);
+        const response = await generationRequest;
 
         if (isAuthRedirectResponse(response)) {
             showToast('Login required to generate Spotify credentials', 'error');
@@ -4760,6 +4785,13 @@ async function generateSpotifyBlob() {
             return;
         }
 
+        const data = await response.json();
+        const deviceName = typeof data?.deviceName === 'string' && data.deviceName.trim()
+            ? data.deviceName.trim()
+            : 'DeezSpoTag';
+        if (instructions) {
+            instructions.textContent = `Spotify credentials captured from the “${deviceName}” device.`;
+        }
         showToast('Spotify credentials generated', 'success');
         await loadSpotifyConfig({
             forceStatus: true,
@@ -4770,6 +4802,9 @@ async function generateSpotifyBlob() {
         console.error('Spotify credentials generation error:', error);
         showToast('Network error generating Spotify credentials', 'error');
     } finally {
+        if (generationStatusTimer !== null) {
+            window.clearInterval(generationStatusTimer);
+        }
         spotifyBlobGenerationInFlight = false;
         if (generateButton) {
             generateButton.disabled = false;

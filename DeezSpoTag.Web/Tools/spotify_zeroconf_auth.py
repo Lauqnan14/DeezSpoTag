@@ -18,15 +18,24 @@ logging.basicConfig(
 )
 
 
-def _write_result(ok, output=None, username=None, error=None):
+def _write_result(ok, output=None, username=None, device_name=None, error=None):
     payload = {"ok": ok}
     if output:
         payload["output"] = output
     if username:
         payload["username"] = username
+    if device_name:
+        payload["deviceName"] = device_name
     if error:
         payload["error"] = error
     print(json.dumps(payload))
+
+
+def _write_progress(phase, message, device_name=None):
+    payload = {"phase": phase, "message": message}
+    if device_name:
+        payload["deviceName"] = device_name
+    print(f"PROGRESS:{json.dumps(payload)}", file=sys.stderr, flush=True)
 
 
 def _load_librespot():
@@ -53,6 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, help="Output credentials.json path")
     parser.add_argument("--credentials-dir", default="", help="Writable directory for transient credentials.json")
     parser.add_argument("--device-name", default="DeezSpoTag", help="Spotify Connect device name")
+    parser.add_argument("--listen-port", type=int, required=True, help="Stable Spotify Connect listener port")
     parser.add_argument("--timeout", type=int, default=90, help="Timeout in seconds")
     return parser
 
@@ -67,20 +77,25 @@ def _remove_existing_credentials_file(credential_file: pathlib.Path) -> str | No
     return None
 
 
-def _create_zeroconf_server(zeroconf_server_cls, base_device_name: str):
+def _create_zeroconf_server(zeroconf_server_cls, base_device_name: str, listen_port: int):
     device_name = base_device_name
     for _ in range(5):
         try:
-            server = zeroconf_server_cls.Builder().set_device_name(device_name).create()
+            server = (
+                zeroconf_server_cls.Builder()
+                .set_device_name(device_name)
+                .set_listen_port(listen_port)
+                .create()
+            )
             logging.info("Zeroconf server started with device name: %s", device_name)
-            return server, None
+            return server, device_name, None
         except Exception as exc:
             if "NonUniqueNameException" not in exc.__class__.__name__:
-                return None, f"Failed to start Spotify Connect listener: {exc}"
+                return None, None, f"Failed to start Spotify Connect listener: {exc}"
             suffix = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
             device_name = f"{base_device_name}-{suffix}"
             time.sleep(0.2)
-    return None, "Failed to allocate a unique Spotify Connect device name."
+    return None, None, "Failed to allocate a unique Spotify Connect device name."
 
 
 def _wait_for_credentials_file(server, credential_file: pathlib.Path, timeout_seconds: int) -> bool:
@@ -144,15 +159,25 @@ def main():
         return 1
     logging.getLogger("Librespot:ZeroconfServer").setLevel(logging.INFO)
 
-    server, server_error = _create_zeroconf_server(zeroconf_server_cls, args.device_name)
+    server, actual_device_name, server_error = _create_zeroconf_server(
+        zeroconf_server_cls, args.device_name, args.listen_port
+    )
     if server is None:
         _write_result(False, error=server_error)
         return 1
 
+    _write_progress(
+        "listening",
+        f"Spotify Connect receiver is active. Transfer playback to {actual_device_name} in Spotify.",
+        actual_device_name,
+    )
+
     try:
+        _write_progress("waiting", "Waiting for Spotify to transfer playback.", actual_device_name)
         if not _wait_for_credentials_file(server, credential_file, args.timeout):
             _write_result(False, error="Timeout waiting for Spotify Connect session.")
             return 1
+        _write_progress("saving", "Saving Spotify credentials.", actual_device_name)
         username, persist_error = _persist_credentials(credential_file, output_path)
         if persist_error is not None:
             _write_result(False, error=persist_error)
@@ -160,9 +185,14 @@ def main():
     finally:
         server.close()
 
-    _write_result(True, output=str(output_path), username=username)
+    _write_result(True, output=str(output_path), username=username, device_name=actual_device_name)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        logging.exception("Spotify Connect authentication helper failed")
+        _write_result(False, error=f"Spotify Connect authentication failed: {exc}")
+        raise SystemExit(1)

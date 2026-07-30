@@ -34,6 +34,12 @@ public sealed class SpotifyCredentialsGenerationGuardrailTests
 
         Assert.Contains("parser.add_argument(\"--credentials-dir\"", source, StringComparison.Ordinal);
         Assert.Contains("credential_file = credentials_dir / \"credentials.json\"", source, StringComparison.Ordinal);
+        Assert.Contains("parser.add_argument(\"--listen-port\"", source, StringComparison.Ordinal);
+        Assert.Contains(".set_listen_port(listen_port)", source, StringComparison.Ordinal);
+        Assert.Contains("return server, device_name, None", source, StringComparison.Ordinal);
+        Assert.Contains("device_name=actual_device_name", source, StringComparison.Ordinal);
+        Assert.Contains("PROGRESS:", source, StringComparison.Ordinal);
+        Assert.Contains("Spotify Connect authentication helper failed", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -53,7 +59,27 @@ public sealed class SpotifyCredentialsGenerationGuardrailTests
         Assert.Contains("let spotifyBlobGenerationInFlight = false;", source, StringComparison.Ordinal);
         Assert.Contains("if (spotifyBlobGenerationInFlight)", source, StringComparison.Ordinal);
         Assert.Contains("generateButton.disabled = true;", source, StringComparison.Ordinal);
-        Assert.Contains("generateButton.textContent = 'Generating...';", source, StringComparison.Ordinal);
+        Assert.Contains("generateButton.textContent = 'Waiting for Spotify Connect...';", source, StringComparison.Ordinal);
+        Assert.Contains("spotifyConnectInstructions", source, StringComparison.Ordinal);
+        Assert.Contains("generation-status", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpotifyZeroconf_UsesStableLanAdvertisementAndBufferedHttpParsing()
+    {
+        var source = ReadRepoFile("DeezSpoTag.Web", "Tools", "spotify_librespot", "spotizerr-phoenix", "librespot", "zeroconf.py");
+
+        Assert.Contains("A valid stable Spotify Connect listener port is required.", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("SPOTIFY_ZEROCONF_IP_PROBE_HOST", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("dns.google", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DEEZSPOTAG_SPOTIFY_ZEROCONF_INTERFACE", source, StringComparison.Ordinal);
+        Assert.Contains("_get_default_route_interface", source, StringComparison.Ordinal);
+        Assert.Contains("/proc/net/route", source, StringComparison.Ordinal);
+        Assert.Contains("_get_interface_ipv4", source, StringComparison.Ordinal);
+        Assert.Contains("__read_http_request", source, StringComparison.Ordinal);
+        Assert.Contains("while b\"\\r\\n\\r\\n\" not in buffer:", source, StringComparison.Ordinal);
+        Assert.Contains("urllib.parse.parse_qs(body, keep_blank_values=True)", source, StringComparison.Ordinal);
+        Assert.Contains("Spotify Connect listener stopped before credential capture completed.", ReadRepoFile("DeezSpoTag.Web", "Services", "SpotifyBlobService.cs"), StringComparison.Ordinal);
     }
 
     private static string ReadRepoFile(params string[] parts)
