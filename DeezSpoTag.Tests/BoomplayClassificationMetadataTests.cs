@@ -76,6 +76,7 @@ public sealed class BoomplayClassificationMetadataTests
     [InlineData("https://www.boomplay.com/songs/EQve1j5y6O5cFQswuejgba_Z", "track", "EQve1j5y6O5cFQswuejgba_Z")]
     [InlineData("https://www.boomplay.com/playlists/EQFGpOEkQenBdQefk4jpozq2", "playlist", "EQFGpOEkQenBdQefk4jpozq2")]
     [InlineData("https://www.boomplay.com/playlists/EQHxv9OfBPj-dhStUdbqizcI", "playlist", "EQHxv9OfBPj-dhStUdbqizcI")]
+    [InlineData("https://www.boomplay.com/playlists/EQFm1p0vFa0uwEYJxy-vHRMz?from=home", "playlist", "EQFm1p0vFa0uwEYJxy-vHRMz")]
     [InlineData("https://www.boomplay.com/songs/256487581", "track", "256487581")]
     public void TryParseBoomplayUrl_AcceptsCurrentAndLegacyPublicIds(
         string url,
@@ -96,23 +97,106 @@ public sealed class BoomplayClassificationMetadataTests
     }
 
     [Fact]
-    public void ParseLinkEndpoint_RecognizesCurrentOpaquePlaylistWithoutNetworkResolution()
+    public async Task GetPlaylistAsync_ResolvesCurrentPublicIdBeforeLoadingOfficialSnapshot()
     {
-        const string url = "https://www.boomplay.com/playlists/EQHxv9OfBPj-dhStUdbqizcI";
-        var controller = new BoomplayApiController(
-            boomplayMetadataService: null!,
-            libraryRepository: null,
-            boomplayWatchlistMappingService: null,
-            httpClientFactory: null!,
-            NullLogger<BoomplayApiController>.Instance);
+        const string publicId = "EQFm1p0vFa0uwEYJxy-vHRMz";
+        const string numericId = "26966239";
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-playlist-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var requests = new List<string>();
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            string Route(HttpRequestMessage request)
+            {
+                var uri = request.RequestUri ?? throw new InvalidOperationException("Request URI is required.");
+                requests.Add(uri.ToString());
+                if (uri.Host.Equals("www.boomplay.com", StringComparison.OrdinalIgnoreCase)
+                    && uri.AbsolutePath.Equals($"/playlists/{publicId}", StringComparison.Ordinal))
+                {
+                    return $"""
+                    <html><head><title>Reggae Roots | Boomplay Music</title></head>
+                    <body><main id="playlistsDetails" data-cid="{numericId}"></main></body></html>
+                    """;
+                }
 
-        var result = Assert.IsType<OkObjectResult>(controller.ParseLink(url));
-        var json = JsonConvert.SerializeObject(result.Value);
+                if (uri.Host.Equals("www.boomplay.com", StringComparison.OrdinalIgnoreCase)
+                    && uri.AbsolutePath.Equals($"/playlists/{numericId}", StringComparison.Ordinal))
+                {
+                    return $"""
+                    <html><head><title>Reggae Roots | Boomplay Music</title></head><body>
+                      <main id="playlistsDetails" data-cid="{numericId}">
+                        <li class="clearfix play_one" data-id="49847968"
+                            data-data="49847968%40%2B%231%40%2B%23{numericId}">
+                          <a class="songName" href="/songs/EQvCMAUEvpl7878KkkYwUFAt">Mother Matty</a>
+                          <a class="artistName">Norris Cole</a>
+                        </li>
+                      </main>
+                    </body></html>
+                    """;
+                }
 
-        Assert.Contains("\"type\":\"playlist\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"id\":\"EQHxv9OfBPj-dhStUdbqizcI\"", json, StringComparison.Ordinal);
-        Assert.Contains($"\"canonicalUrl\":\"{url}\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"error\":\"\"", json, StringComparison.Ordinal);
+                if (uri.Host.Equals("api.boomplaymusic.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    return """
+                    {
+                      "detailCol": { "name": "Reggae Roots", "songCount": 1 },
+                      "musics": [
+                        {
+                          "musicID": "49847968",
+                          "name": "Mother Matty",
+                          "singers": [{ "name": "Norris Cole" }],
+                          "deaution": "188"
+                        }
+                      ]
+                    }
+                    """;
+                }
+
+                return "{}";
+            }
+            using var httpClientFactory = new RoutingHttpClientFactory(Route);
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+            var controller = new BoomplayApiController(
+                service,
+                libraryRepository: null,
+                boomplayWatchlistMappingService: null,
+                httpClientFactory,
+                NullLogger<BoomplayApiController>.Instance);
+
+            var parseResult = Assert.IsType<OkObjectResult>(await controller.ParseLink(
+                $"https://www.boomplay.com/playlists/{publicId}?from=home",
+                CancellationToken.None));
+            var parsedLink = JsonConvert.SerializeObject(parseResult.Value);
+            Assert.Contains("\"type\":\"playlist\"", parsedLink, StringComparison.Ordinal);
+            Assert.Contains($"\"id\":\"{numericId}\"", parsedLink, StringComparison.Ordinal);
+
+            using var numericHttpClientFactory = new RoutingHttpClientFactory(Route);
+            var numericService = new BoomplayMetadataService(
+                numericHttpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+            var playlist = await numericService.GetPlaylistAsync(numericId, CancellationToken.None);
+
+            Assert.True(playlist != null, string.Join(" | ", requests));
+            Assert.Equal(numericId, playlist.Id);
+            Assert.Equal("Reggae Roots", playlist.Title);
+            var track = Assert.Single(playlist.Tracks);
+            Assert.Equal("49847968", track.Id);
+            Assert.Equal("Mother Matty", track.Title);
+            Assert.Equal("Norris Cole", track.Artist);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -353,7 +437,7 @@ public sealed class BoomplayClassificationMetadataTests
             return;
         }
 
-        const string publicId = "EQHxv9OfBPj-dhStUdbqizcI";
+        const string publicId = "EQFm1p0vFa0uwEYJxy-vHRMz";
         const string playlistUrl = $"https://www.boomplay.com/playlists/{publicId}";
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 BoomplayMetadataLiveTest/1.0");
@@ -362,14 +446,14 @@ public sealed class BoomplayClassificationMetadataTests
         var playlist = Assert.IsType<BoomplayPlaylistMetadata>(
             ParsePlaylistHtml.Invoke(null, new object?[] { publicId, html, playlistUrl }));
 
-        Assert.Equal("17565916", playlist.Id);
+        Assert.Equal("26966239", playlist.Id);
         Assert.Equal(playlistUrl, playlist.Url);
         Assert.NotEmpty(playlist.TrackIds);
         Assert.All(playlist.TrackIds, static id => Assert.All(id, static character => Assert.True(char.IsDigit(character))));
         Assert.All(playlist.TrackHints.Values, static hint => Assert.StartsWith("https://www.boomplay.com/songs/", hint.Url));
         Assert.All(playlist.TrackHints.Values, static hint => Assert.False(string.IsNullOrWhiteSpace(hint.Artist)));
 
-        const string numericPlaylistId = "17565916";
+        const string numericPlaylistId = "26966239";
         var legacyUrl = $"https://www.boomplay.com/playlists/{numericPlaylistId}";
         var legacyHtml = await client.GetStringAsync(legacyUrl);
         var legacyPlaylist = Assert.IsType<BoomplayPlaylistMetadata>(
@@ -400,7 +484,7 @@ public sealed class BoomplayClassificationMetadataTests
             return;
         }
 
-        const string publicId = "EQHxv9OfBPj-dhStUdbqizcI";
+        const string publicId = "EQFm1p0vFa0uwEYJxy-vHRMz";
         const string playlistUrl = $"https://www.boomplay.com/playlists/{publicId}";
         var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-live-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -417,27 +501,26 @@ public sealed class BoomplayClassificationMetadataTests
                 auth,
                 NullLogger<BoomplayMetadataService>.Instance);
 
-            var playlist = await service.GetPlaylistAsync(publicId, CancellationToken.None);
-            Assert.NotNull(playlist);
-            Assert.Equal("17565916", playlist.Id);
-            Assert.Equal(playlistUrl, playlist.Url);
-            Assert.NotEmpty(playlist.Tracks);
-            Assert.All(playlist.Tracks, static track => Assert.False(string.IsNullOrWhiteSpace(track.Artist)));
-
             var controller = new BoomplayApiController(
                 service,
                 null,
                 null,
                 httpClientFactory,
                 NullLogger<BoomplayApiController>.Instance);
+            var parseResult = Assert.IsType<OkObjectResult>(await controller.ParseLink(
+                playlistUrl,
+                CancellationToken.None));
+            var parsedLink = JsonConvert.SerializeObject(parseResult.Value);
+            Assert.Contains("\"id\":\"26966239\"", parsedLink, StringComparison.Ordinal);
+
             var tracklistResult = Assert.IsType<OkObjectResult>(await controller.GetTracklist(
-                publicId,
+                "26966239",
                 "playlist",
                 CancellationToken.None));
             var payload = JsonConvert.SerializeObject(tracklistResult.Value);
             Assert.DoesNotContain("Boomplay Music: Not Found", payload, StringComparison.Ordinal);
-            Assert.Contains("\"nb_tracks\":135", payload, StringComparison.Ordinal);
-            Assert.Contains("\"name\":\"Etana\"", payload, StringComparison.Ordinal);
+            Assert.Contains("\"nb_tracks\":281", payload, StringComparison.Ordinal);
+            Assert.Contains("\"name\":\"Norris Cole\"", payload, StringComparison.Ordinal);
         }
         finally
         {
@@ -467,11 +550,22 @@ public sealed class BoomplayClassificationMetadataTests
 
     private sealed class LiveHttpClientFactory : IHttpClientFactory, IDisposable
     {
-        private readonly HttpClient _client = new() { Timeout = TimeSpan.FromSeconds(30) };
+        private readonly List<HttpClient> _clients = [];
 
-        public HttpClient CreateClient(string name) => _client;
+        public HttpClient CreateClient(string name)
+        {
+            var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            _clients.Add(client);
+            return client;
+        }
 
-        public void Dispose() => _client.Dispose();
+        public void Dispose()
+        {
+            foreach (var client in _clients)
+            {
+                client.Dispose();
+            }
+        }
     }
 
     private sealed class RoutingHttpClientFactory(Func<HttpRequestMessage, string> route) : IHttpClientFactory, IDisposable

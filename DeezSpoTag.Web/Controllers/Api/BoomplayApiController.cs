@@ -41,7 +41,9 @@ public sealed class BoomplayApiController : ControllerBase
     }
 
     [HttpGet("parse-link")]
-    public IActionResult ParseLink([FromQuery] string url)
+    public async Task<IActionResult> ParseLink(
+        [FromQuery] string url,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
@@ -55,10 +57,21 @@ public sealed class BoomplayApiController : ControllerBase
 
         if (BoomplayMetadataService.TryParseBoomplayUrl(url, out var type, out var id))
         {
+            var resolvedId = await _boomplayMetadataService.ResolveContentIdAsync(type, id, cancellationToken);
+            if (string.IsNullOrWhiteSpace(resolvedId))
+            {
+                return Ok(new
+                {
+                    type = string.Empty,
+                    id = string.Empty,
+                    error = "Boomplay item could not be resolved."
+                });
+            }
+
             return Ok(new
             {
                 type,
-                id,
+                id = resolvedId,
                 canonicalUrl = url.Trim(),
                 error = string.Empty
             });
@@ -213,7 +226,16 @@ public sealed class BoomplayApiController : ControllerBase
 
             if (normalizedType == PlaylistType)
             {
-                var playlist = await _boomplayMetadataService.GetPlaylistAsync(id, cancellationToken);
+                var resolvedId = await _boomplayMetadataService.ResolveContentIdAsync(
+                    PlaylistType,
+                    id,
+                    cancellationToken);
+                if (string.IsNullOrWhiteSpace(resolvedId))
+                {
+                    return NotFound(new { error = "Playlist not found." });
+                }
+
+                var playlist = await _boomplayMetadataService.GetPlaylistAsync(resolvedId, cancellationToken);
                 if (playlist == null)
                 {
                     return NotFound(new { error = "Playlist not found." });
