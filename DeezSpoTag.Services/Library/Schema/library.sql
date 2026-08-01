@@ -617,6 +617,14 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
     redirect_track_source_id TEXT,
     redirect_reason TEXT,
     verified_at_utc TEXT,
+    source_position INTEGER,
+    title TEXT,
+    artist TEXT,
+    album TEXT,
+    duration_ms INTEGER,
+    cover_url TEXT,
+    candidate_revision TEXT,
+    last_snapshot_id TEXT,
     PRIMARY KEY (source, source_id, track_source_id)
 );
 

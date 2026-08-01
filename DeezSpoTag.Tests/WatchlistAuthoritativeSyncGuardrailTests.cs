@@ -45,7 +45,9 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "LibraryRepository.cs"));
 
         Assert.Contains("Task.WhenAll", worker, StringComparison.Ordinal);
-        Assert.Contains("TargetOperationTimeout", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("TargetOperationTimeout", worker, StringComparison.Ordinal);
+        Assert.Contains("RenewWatchlistSyncJobLeaseAsync", worker, StringComparison.Ordinal);
+        Assert.Contains("GetNextWatchlistSyncJobDueUtcAsync", repository, StringComparison.Ordinal);
         Assert.Contains("RepairWatchlistSyncBacklogAsync", worker, StringComparison.Ordinal);
         Assert.Contains("ROW_NUMBER() OVER", repository, StringComparison.Ordinal);
         Assert.Contains("PARTITION BY lower(job.target_service)", repository, StringComparison.Ordinal);
@@ -102,7 +104,9 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "Services",
             "WatchlistEngine.cs"));
 
-        Assert.Contains("PlaylistReconciliationMode.SyncOnly", coordinator, StringComparison.Ordinal);
+        Assert.Contains("ProcessPlaylistQueueAdmissionsAsync", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistReconciliationMode", coordinator, StringComparison.Ordinal);
+        Assert.Contains("AdmitCachedMissingTracksAsync", engine, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildSystemicFingerprint", engine, StringComparison.Ordinal);
         Assert.DoesNotContain("new WatchFailureClassification(true", engine, StringComparison.Ordinal);
     }
@@ -149,5 +153,49 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "var candidateCacheComplete = liveSnapshot.IsComplete;",
             engine,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MissingTrackLedger_PersistsSnapshotMetadataAndDrivesAdmissionOrder()
+    {
+        var schema = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "Schema", "library.sql"));
+        var database = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryDbService.cs"));
+        var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var engine = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+
+        Assert.Contains("source_position INTEGER", schema, StringComparison.Ordinal);
+        Assert.Contains("candidate_revision TEXT", schema, StringComparison.Ordinal);
+        Assert.DoesNotContain("idx_playlist_watch_track_admission", schema, StringComparison.Ordinal);
+        Assert.Contains("EnsureColumnAsync(connection, PlaylistWatchTrackTable, \"source_position\"", database, StringComparison.Ordinal);
+        Assert.Contains("EnsureIndexAsync(connection, \"idx_playlist_watch_track_admission\"", database, StringComparison.Ordinal);
+        Assert.Contains("ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET", repository, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END", repository, StringComparison.Ordinal);
+        Assert.Contains("Position = statusByTrackId.TryGetValue", engine, StringComparison.Ordinal);
+        Assert.Contains("foreach (var candidate in orderedCandidates)", engine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetVerification_IsIndependentExactAndRepairsStaleIdentityMappings()
+    {
+        var service = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
+        var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+
+        Assert.Equal(3, CountOccurrences(service, "verifiedMemberships.Count != tracks.Count"));
+        Assert.Equal(3, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));
+        Assert.Contains("DELETE FROM media_server_track_metadata", repository, StringComparison.Ordinal);
+        Assert.Contains("DELETE FROM plex_track_metadata", repository, StringComparison.Ordinal);
+        Assert.Contains("PARTITION BY lower(job.target_service)", repository, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtworkJobs_RunOnlyForChangedRevisionsAndBeforePlaylistJobs()
+    {
+        var engine = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+
+        Assert.Contains("if (artworkInspection?.Changed == true", engine, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistArtworkSyncJobAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0", repository, StringComparison.Ordinal);
+        Assert.Contains("WHEN lower(job.track_id) = 'playlist' THEN 1", repository, StringComparison.Ordinal);
     }
 }

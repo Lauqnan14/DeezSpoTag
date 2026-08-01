@@ -2,5 +2,8 @@ namespace DeezSpoTag.Services.Download.Shared;
 
 public interface IWatchlistPostDownloadSyncNotifier
 {
-    ValueTask RequestAllPlaylistSyncAsync(CancellationToken cancellationToken = default);
+    ValueTask RequestPlaylistSyncAsync(
+        string source,
+        string playlistId,
+        CancellationToken cancellationToken = default);
 }

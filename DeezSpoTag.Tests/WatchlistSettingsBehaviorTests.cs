@@ -349,7 +349,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         Assert.Contains("PlaylistSyncDisabledDownloadMonitoringMessage", source, StringComparison.Ordinal);
         Assert.Contains("\"Playlist sync disabled; continuing with download monitoring.\"", source, StringComparison.Ordinal);
-        Assert.Contains("if (shouldSyncTargets && hasConfiguredPlaylistSyncTargets)", source, StringComparison.Ordinal);
+        Assert.Contains("if (hasConfiguredPlaylistSyncTargets)", source, StringComparison.Ordinal);
         Assert.Contains("var forcedSyncWithoutTargets = forceMediaServerSync && !hasConfiguredPlaylistSyncTargets;", source, StringComparison.Ordinal);
         Assert.Contains("NoTargetServerSelectedMessage", source, StringComparison.Ordinal);
         Assert.Contains("var targetSyncScheduled = false;", source, StringComparison.Ordinal);
@@ -402,10 +402,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("ResolutionBudget", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.QueuedTracks <= 0)", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.KeepActivePlaylist)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("IsBlockingPlaylistStopReason(result.QueueStopReason)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("return PlaylistAdvanceDecision.StopRunClearActive;", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("WatchQueueStopReason.DownloadGate.ToString()", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("WatchQueueStopReason.TrackDeferred.ToString()", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("queueAdmission.GetRemaining() <= 0", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WatchQueueStopReason.RunBudget.ToString()", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveInitialPlaylistItem", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AdvanceToNextPlaylistAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveNextPlaylistItemAfter", hostedSource, StringComparison.Ordinal);
@@ -1021,7 +1019,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var coordinatorSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
         var engineSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var programSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Program.cs"));
-        var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask RequestAllPlaylistSyncAsync(");
+        var notifyBody = ExtractMethodBody(syncSource, "public async ValueTask RequestPlaylistSyncAsync(");
         Assert.Contains("if (!IsWatchlistEnabled())", notifyBody, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", notifyBody, StringComparison.Ordinal);
         Assert.DoesNotContain("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
@@ -1039,7 +1037,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("request.TargetService", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("timeBudget", syncSource, StringComparison.Ordinal);
-        Assert.Contains("operationCancellation.CancelAfter(TargetOperationTimeout)", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TargetOperationTimeout", syncSource, StringComparison.Ordinal);
+        Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("Task.WhenAll", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", engineSource, StringComparison.Ordinal);

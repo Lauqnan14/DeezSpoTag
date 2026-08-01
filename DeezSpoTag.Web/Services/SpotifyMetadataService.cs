@@ -212,7 +212,11 @@ public sealed class SpotifyMetadataService
             }
             catch (JsonException ex)
             {
-                _logger.LogDebug(ex, "Invalid persisted Spotify {Type} metadata for {SpotifyId}.", parsed.Type, DeezSpoTag.Core.Security.LogSanitizer.OneLine(parsed.Id));
+                _logger.LogDebug(
+                    ex,
+                    "Invalid persisted Spotify {Type} metadata for {SpotifyId}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(parsed.Type),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(parsed.Id));
             }
         }
 

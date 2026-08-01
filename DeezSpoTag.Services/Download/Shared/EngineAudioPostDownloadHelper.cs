@@ -3468,7 +3468,10 @@ public static partial class EngineAudioPostDownloadHelper
         var notifier = scope.ServiceProvider.GetService<IWatchlistPostDownloadSyncNotifier>();
         if (notifier is not null)
         {
-            await notifier.RequestAllPlaylistSyncAsync(cancellationToken);
+            await notifier.RequestPlaylistSyncAsync(
+                payload.WatchlistSource,
+                payload.WatchlistPlaylistId,
+                cancellationToken);
         }
 
         context.Listener.Send(UpdateQueueEvent, new

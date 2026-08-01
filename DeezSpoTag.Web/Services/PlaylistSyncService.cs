@@ -1778,6 +1778,14 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
+        if (verifiedMemberships.Count != tracks.Count)
+        {
+            return BuildPartialResult(
+                BuildSyncMessage("Plex playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
+        }
         var targetBindingChanged = !string.Equals(
             storedPlaylistId,
             playlistId,
@@ -1932,6 +1940,14 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
+        if (verifiedMemberships.Count != tracks.Count)
+        {
+            return BuildPartialResult(
+                BuildSyncMessage("Jellyfin playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
+        }
         var targetBindingChanged = !string.Equals(
             storedPlaylistId,
             playlistId,
@@ -2055,6 +2071,14 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
+        if (verifiedMemberships.Count != tracks.Count)
+        {
+            return BuildPartialResult(
+                BuildSyncMessage("Navidrome playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
+        }
         var targetBindingChanged = !string.Equals(
             storedPlaylistId,
             playlistId,
@@ -2119,6 +2143,10 @@ public sealed class PlaylistSyncService
         var verified = expectedMemberships
             .Where(item => actualTargetIds.Contains(item.TargetItemId))
             .ToList();
+        await _libraryRepository.DeleteMediaServerTrackMetadataAsync(
+            PlexService,
+            expectedMemberships.Except(verified).Select(static item => item.LocalTrackId).ToList(),
+            cancellationToken);
         await _libraryRepository.ReplacePlaylistWatchTargetMembershipAsync(
             playlist.Source,
             playlist.SourceId,
@@ -2147,6 +2175,10 @@ public sealed class PlaylistSyncService
         var verified = expectedMemberships
             .Where(item => actualTargetIds.Contains(item.TargetItemId))
             .ToList();
+        await _libraryRepository.DeleteMediaServerTrackMetadataAsync(
+            JellyfinService,
+            expectedMemberships.Except(verified).Select(static item => item.LocalTrackId).ToList(),
+            cancellationToken);
         await _libraryRepository.ReplacePlaylistWatchTargetMembershipAsync(
             playlist.Source,
             playlist.SourceId,
@@ -2175,6 +2207,10 @@ public sealed class PlaylistSyncService
         var verified = expectedMemberships
             .Where(item => actualTargetIds.Contains(item.TargetItemId))
             .ToList();
+        await _libraryRepository.DeleteMediaServerTrackMetadataAsync(
+            NavidromeService,
+            expectedMemberships.Except(verified).Select(static item => item.LocalTrackId).ToList(),
+            cancellationToken);
         await _libraryRepository.ReplacePlaylistWatchTargetMembershipAsync(
             playlist.Source,
             playlist.SourceId,

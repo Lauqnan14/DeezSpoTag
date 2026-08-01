@@ -866,8 +866,7 @@ public partial class WatchlistApiController : ControllerBase
         var reconciliation = await _playlistWatchReconciler.ReconcilePlaylistAsync(
             item,
             CancellationToken.None,
-            forceMediaServerSync: true,
-            mode: PlaylistReconciliationMode.SyncOnly);
+            forceMediaServerSync: true);
         var result = reconciliation.SyncResult;
         return Ok(new
         {

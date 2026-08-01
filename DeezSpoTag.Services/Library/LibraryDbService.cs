@@ -124,6 +124,8 @@ public sealed class LibraryDbService
             ,
             ["idx_playlist_watch_track_unavailable_retry"] = (PlaylistWatchTrackTable, "source, source_id, status, unavailable_next_retry_utc", false)
             ,
+            ["idx_playlist_watch_track_admission"] = (PlaylistWatchTrackTable, "status, source, source_id, source_position, unavailable_next_retry_utc", false)
+            ,
             ["idx_playlist_watch_target_membership_target"] = (PlaylistWatchTargetMembershipTable, "target_service, target_playlist_id", false)
             ,
             ["idx_playlist_watch_target_membership_track"] = (PlaylistWatchTargetMembershipTable, "source, source_id, track_source_id", false)
@@ -444,6 +446,15 @@ WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_track_source_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "redirect_reason", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "verified_at_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "source_position", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "title", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "artist", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "album", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "duration_ms", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "cover_url", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "candidate_revision", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "last_snapshot_id", TextType, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_track_admission", PlaylistWatchTrackTable, "status, source, source_id, source_position, unavailable_next_retry_utc", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
     source TEXT NOT NULL,

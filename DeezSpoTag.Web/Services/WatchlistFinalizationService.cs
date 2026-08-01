@@ -22,7 +22,6 @@ public sealed class WatchlistFinalizationService
     private readonly LibraryRepository _libraryRepository;
     private readonly PlaylistWatchReconciler _playlistWatchReconciler;
     private readonly WatchlistRunSignal _runSignal;
-    private readonly IWatchlistPostDownloadSyncNotifier _notifier;
     private readonly WatchlistLocalIdentityResolver _localIdentityResolver;
     private readonly ILogger<WatchlistFinalizationService> _logger;
 
@@ -31,7 +30,6 @@ public sealed class WatchlistFinalizationService
         LibraryRepository libraryRepository,
         PlaylistWatchReconciler playlistWatchReconciler,
         WatchlistRunSignal runSignal,
-        IWatchlistPostDownloadSyncNotifier notifier,
         WatchlistLocalIdentityResolver localIdentityResolver,
         ILogger<WatchlistFinalizationService> logger)
     {
@@ -39,7 +37,6 @@ public sealed class WatchlistFinalizationService
         _libraryRepository = libraryRepository;
         _playlistWatchReconciler = playlistWatchReconciler;
         _runSignal = runSignal;
-        _notifier = notifier;
         _localIdentityResolver = localIdentityResolver;
         _logger = logger;
     }
@@ -120,7 +117,6 @@ public sealed class WatchlistFinalizationService
 
         if (sent > 0)
         {
-            await _notifier.RequestAllPlaylistSyncAsync(cancellationToken);
             _runSignal.Request(WatchlistWakeReason.Reconciliation | WatchlistWakeReason.TargetSync);
         }
 

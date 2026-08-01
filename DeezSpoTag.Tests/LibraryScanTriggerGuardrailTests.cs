@@ -358,19 +358,22 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void WatchlistPlaylistNotifier_RequestsFullPlaylistSyncAfterFinalization()
+    public void WatchlistPlaylistNotifier_RequestsOnlyAffectedPlaylistAfterFinalization()
     {
         var interfaceSource = ReadSource("DeezSpoTag.Services", "Download", "Shared", "IWatchlistPostDownloadSyncNotifier.cs");
         var moveSource = ReadSource("DeezSpoTag.Web", "Services", "AutoTagDownloadMoveService.cs");
         var finalizationSource = ReadSource("DeezSpoTag.Web", "Services", "WatchlistFinalizationService.cs");
 
-        Assert.Contains("RequestAllPlaylistSyncAsync", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("RequestPlaylistSyncAsync", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("string source", interfaceSource, StringComparison.Ordinal);
+        Assert.Contains("string playlistId", interfaceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IReadOnlyList<string>? finalFilePaths", interfaceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("UpdateFinalDestinationsAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("PersistWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
         Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"), StringComparison.Ordinal);
-        Assert.Contains("await _notifier.RequestAllPlaylistSyncAsync", finalizationSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RequestAllPlaylistSyncAsync", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);
     }
 

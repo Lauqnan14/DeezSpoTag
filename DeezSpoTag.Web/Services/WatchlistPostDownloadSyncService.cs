@@ -8,7 +8,6 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
-    private static readonly TimeSpan TargetOperationTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
@@ -30,7 +29,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         _logger = logger;
     }
 
-    public async ValueTask RequestAllPlaylistSyncAsync(CancellationToken cancellationToken = default)
+    public async ValueTask RequestPlaylistSyncAsync(
+        string source,
+        string playlistId,
+        CancellationToken cancellationToken = default)
     {
         if (!IsWatchlistEnabled())
         {
@@ -45,9 +47,9 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
 
         var accepted = await repository.EnqueueWatchlistReconciliationRequestAsync(
-            "all",
-            source: null,
-            identifier: null,
+            "playlist",
+            source,
+            playlistId,
             cancellationToken);
         if (accepted)
         {
@@ -335,13 +337,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         WatchlistSyncJobDto job,
         CancellationToken cancellationToken)
     {
-        using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        operationCancellation.CancelAfter(TargetOperationTimeout);
-        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationCancellation.Token);
+        using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
         try
         {
-            if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, operationCancellation.Token))
+            if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, cancellationToken))
             {
                 await repository.RetryWatchlistSyncJobAsync(
                     job.Id,
@@ -363,7 +363,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             var outcome = await TrySyncOnceAsync(
                 request,
                 job.AttemptCount + 1,
-                operationCancellation.Token);
+                cancellationToken);
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
@@ -398,21 +398,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
-        }
-        catch (OperationCanceledException ex) when (operationCancellation.IsCancellationRequested)
-        {
-            _logger.LogWarning(
-                ex,
-                "Watchlist target sync job {JobId} for {Target} was cancelled by the target operation; returning only that target to durable retry.",
-                job.Id,
-                job.TargetService);
-            await repository.RetryWatchlistSyncJobAsync(
-                job.Id,
-                _leaseOwner,
-                job.AttemptCount + 1,
-                DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
-                $"{FormatTargetServiceLabel(job.TargetService)} target operation exceeded {TargetOperationTimeout.TotalMinutes:0} minutes.",
-                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

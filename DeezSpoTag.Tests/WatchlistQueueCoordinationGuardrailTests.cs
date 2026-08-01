@@ -97,20 +97,22 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_EvaluatesQueueGateBeforeSingleSyncAndQueuePass()
+    public void HostedCycle_SeparatesSnapshotSweepFromCachedQueueAdmission()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
         var evaluateIndex = hostedSource.IndexOf("EvaluateQueueGateAsync", StringComparison.Ordinal);
-        var syncAndQueueIndex = hostedSource.IndexOf("PlaylistReconciliationMode.SyncAndQueue", StringComparison.Ordinal);
+        var snapshotIndex = hostedSource.IndexOf("var playlistRunResult = await ProcessPlaylistWatchItemsAsync(", StringComparison.Ordinal);
+        var admissionIndex = hostedSource.IndexOf("await ProcessPlaylistQueueAdmissionsAsync(", StringComparison.Ordinal);
         var beginRunIndex = hostedSource.IndexOf("queueAdmission.BeginRun", StringComparison.Ordinal);
 
         Assert.True(evaluateIndex >= 0);
-        Assert.True(syncAndQueueIndex > evaluateIndex);
+        Assert.True(snapshotIndex > evaluateIndex);
+        Assert.True(admissionIndex > snapshotIndex);
         Assert.True(beginRunIndex >= 0);
         Assert.Contains("HasActiveDownloadPipelineAsync", admissionSource, StringComparison.Ordinal);
         Assert.DoesNotContain("EvaluateBatchAsync", admissionSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("var playlistSyncResult = await ProcessPlaylistWatchItemsAsync(", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistReconciliationMode", hostedSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -123,7 +125,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("ProcessFinalizationWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("PlaylistReconciliationMode.SyncAndQueue", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessPlaylistQueueAdmissionsAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("protected override async Task ExecuteAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("while (!stoppingToken.IsCancellationRequested)", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
@@ -135,7 +137,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_InterleavesBoundedTargetSyncBetweenPlaylistReconciliations()
+    public void HostedCycle_DoesNotInterleaveTargetSyncInsidePlaylistSnapshotSweep()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
@@ -149,12 +151,12 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var loopBody = hostedSource[loopStart..nextMethod];
 
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
-        Assert.Contains("ProcessTargetSyncWorkAsync(", loopBody, StringComparison.Ordinal);
-        Assert.Contains("syncJobLimit: 1", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ProcessTargetSyncWorkAsync(", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("syncJobLimit: 1", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("timeBudget", loopBody, StringComparison.Ordinal);
-        Assert.Contains("TargetOperationTimeout", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("Task.WhenAll", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("operationCancellation.CancelAfter(TargetOperationTimeout)", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TargetOperationTimeout", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("operationCancellation.CancelAfter", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -177,7 +179,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
 
-        Assert.Contains("PlaylistReconciliationMode.SyncAndQueue", watchSource, StringComparison.Ordinal);
+        Assert.Contains("AdmitCachedMissingTracksAsync", watchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistReconciliationMode", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("queuePlanningAllowed", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", postDownloadSource, StringComparison.Ordinal);

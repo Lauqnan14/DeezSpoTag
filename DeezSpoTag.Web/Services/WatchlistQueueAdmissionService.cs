@@ -15,12 +15,6 @@ public enum WatchQueueStopReason
     TrackFailures
 }
 
-public enum PlaylistReconciliationMode
-{
-    SyncAndQueue,
-    SyncOnly
-}
-
 public readonly record struct WatchlistQueueAdmissionDecision(
     bool Allowed,
     WatchQueueStopReason Reason,

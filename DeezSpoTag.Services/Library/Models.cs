@@ -817,7 +817,8 @@ public sealed record PlaylistWatchTrackStatusDto(
     string? SyncStatus = null,
     string? RedirectTrackSourceId = null,
     string? RedirectReason = null,
-    DateTimeOffset? VerifiedAtUtc = null);
+    DateTimeOffset? VerifiedAtUtc = null,
+    int? SourcePosition = null);
 
 public sealed record PlaylistWatchTrackVerification(
     string TrackSourceId,
@@ -841,7 +842,17 @@ public sealed record LocalTrackIdentityDto(
     string? Isrc,
     IReadOnlyDictionary<string, string> SourceIds);
 
-public sealed record PlaylistWatchTrackInsert(string TrackSourceId, string? Isrc);
+public sealed record PlaylistWatchTrackInsert(
+    string TrackSourceId,
+    string? Isrc,
+    int? SourcePosition = null,
+    string? Title = null,
+    string? Artist = null,
+    string? Album = null,
+    int? DurationMs = null,
+    string? CoverUrl = null,
+    string? CandidateRevision = null,
+    string? SnapshotId = null);
 
 public sealed record PlaylistWatchDownloadClaimDto(
     string Source,

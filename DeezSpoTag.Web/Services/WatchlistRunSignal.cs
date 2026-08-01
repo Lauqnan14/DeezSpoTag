@@ -43,7 +43,10 @@ public sealed class WatchlistRunSignal
         }
     }
 
-    public async Task<WatchlistWakeReason> WaitAsync(TimeSpan delay, CancellationToken cancellationToken)
+    public async Task<WatchlistWakeReason> WaitAsync(
+        TimeSpan delay,
+        CancellationToken cancellationToken,
+        WatchlistWakeReason timeoutReason = WatchlistWakeReason.ScheduledRefresh)
     {
         using var signalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var delayTask = Task.Delay(delay, cancellationToken);
@@ -67,6 +70,6 @@ public sealed class WatchlistRunSignal
             // consume a later explicit trigger.
         }
         await delayTask;
-        return WatchlistWakeReason.ScheduledRefresh;
+        return timeoutReason;
     }
 }

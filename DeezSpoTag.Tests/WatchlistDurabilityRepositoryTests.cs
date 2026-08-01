@@ -213,6 +213,32 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
     }
 
     [Fact]
+    public async Task SyncJobs_ExposeTheNextRetryDueTimeToTheCoordinator()
+    {
+        await AddPlaylistWithTargetsAsync("scheduled-retry-list", ["plex"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "scheduled-retry-list",
+            "snapshot-1");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "retry-scheduler"));
+        var expectedDue = DateTimeOffset.UtcNow.AddMinutes(3);
+        Assert.True(await _repository.RetryWatchlistSyncJobAsync(
+            claimed.Id,
+            "retry-scheduler",
+            1,
+            expectedDue,
+            "transient target failure"));
+
+        var actualDue = await _repository.GetNextWatchlistSyncJobDueUtcAsync();
+
+        Assert.NotNull(actualDue);
+        Assert.InRange(actualDue.Value, expectedDue.AddSeconds(-1), expectedDue.AddSeconds(1));
+    }
+
+    [Fact]
     public async Task TrackVerification_CompletedRequiresAnIndexedLocalTrack()
     {
         await AddPlaylistWithTargetsAsync("identity-state-list", ["plex"]);

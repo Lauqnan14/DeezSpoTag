@@ -179,7 +179,7 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.Contains("Skipped before download: final destination already contains", source, StringComparison.Ordinal);
         Assert.Contains("TryCompleteWatchlistFinalDestinationDedupeAsync", source, StringComparison.Ordinal);
         Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", source, StringComparison.Ordinal);
-        Assert.Contains("RequestAllPlaylistSyncAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RequestPlaylistSyncAsync", source, StringComparison.Ordinal);
 
         var qobuz = ReadSource("DeezSpoTag.Services", "Download", "Qobuz", "QobuzEngineProcessor.cs");
         var apple = ReadSource("DeezSpoTag.Services", "Download", "Apple", "AppleEngineProcessor.cs");

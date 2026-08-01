@@ -33,4 +33,17 @@ public sealed class WatchlistRunSignalTests
 
         Assert.Equal(WatchlistWakeReason.ScheduledRefresh, reason);
     }
+
+    [Fact]
+    public async Task TimerWakeCanBeDedicatedToTargetSynchronization()
+    {
+        var signal = new WatchlistRunSignal();
+
+        var reason = await signal.WaitAsync(
+            TimeSpan.FromMilliseconds(10),
+            CancellationToken.None,
+            WatchlistWakeReason.TargetSync);
+
+        Assert.Equal(WatchlistWakeReason.TargetSync, reason);
+    }
 }
