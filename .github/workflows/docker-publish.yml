@@ -28,7 +28,6 @@ concurrency:
 
 jobs:
   release-context:
-    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     outputs:
       channel: ${{ steps.resolve.outputs.channel }}
@@ -49,7 +48,7 @@ jobs:
           echo "Release channel: ${channel}"
 
   bump-version:
-    if: ${{ github.server_url == 'https://github.com' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]') }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]') }}
     runs-on: ubuntu-latest
     outputs:
       bumped: ${{ steps.bump.outputs.bumped }}
@@ -94,7 +93,7 @@ jobs:
 
   publish:
     needs: [release-context, bump-version]
-    if: ${{ github.server_url == 'https://github.com' && always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
