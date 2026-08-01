@@ -2156,6 +2156,23 @@ public class PlexApiClient
         }
     }
 
+    public async Task<bool> VerifyPlaylistPosterFromFileAsync(
+        string serverUrl,
+        string token,
+        string playlistId,
+        string posterPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(posterPath) || !File.Exists(posterPath))
+        {
+            return false;
+        }
+
+        var expectedBytes = await File.ReadAllBytesAsync(posterPath, cancellationToken);
+        return expectedBytes.Length > 0
+            && await VerifyPlaylistPosterAsync(serverUrl, token, playlistId, expectedBytes, cancellationToken);
+    }
+
     private async Task<bool> VerifyPlaylistPosterAsync(
         string serverUrl,
         string token,

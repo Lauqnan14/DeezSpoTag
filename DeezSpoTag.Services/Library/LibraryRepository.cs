@@ -3978,16 +3978,6 @@ ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
             command.Parameters.AddWithValue("trackId", trackId);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
-        if (string.Equals(service.Trim(), "plex", StringComparison.OrdinalIgnoreCase))
-        {
-            const string plexSql = "DELETE FROM plex_track_metadata WHERE track_id=@trackId;";
-            foreach (var trackId in normalizedIds)
-            {
-                await using var command = new SqliteCommand(plexSql, connection, transaction);
-                command.Parameters.AddWithValue("trackId", trackId);
-                await command.ExecuteNonQueryAsync(cancellationToken);
-            }
-        }
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -7901,10 +7891,10 @@ WHERE preference.source=@source AND preference.source_id=@playlistId
         AND target.status='applied' AND target.applied_revision=@revision)
 ON CONFLICT(source,playlist_id,track_id,target_service) DO UPDATE SET
  status=CASE
-   WHEN lower(watchlist_sync_job.status) IN ('completed','processing','retry')
+   WHEN lower(watchlist_sync_job.status) IN ('processing','retry')
    THEN watchlist_sync_job.status ELSE 'pending' END,
  next_attempt_utc=CASE
-   WHEN lower(watchlist_sync_job.status) IN ('completed','processing','retry')
+   WHEN lower(watchlist_sync_job.status) IN ('processing','retry')
    THEN watchlist_sync_job.next_attempt_utc ELSE CURRENT_TIMESTAMP END,
  lease_owner=CASE WHEN lower(watchlist_sync_job.status)='processing' THEN watchlist_sync_job.lease_owner ELSE NULL END,
  lease_until_utc=CASE WHEN lower(watchlist_sync_job.status)='processing' THEN watchlist_sync_job.lease_until_utc ELSE NULL END,
@@ -11381,15 +11371,20 @@ WHERE id IN (
                    WHEN 'navidrome' THEN 2
                    ELSE 3
                END AS target_order,
+               CASE
+                   WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0
+                   WHEN lower(job.track_id) = 'playlist' THEN 1
+                   ELSE 2
+               END AS job_order,
                ROW_NUMBER() OVER (
-                   PARTITION BY lower(job.target_service)
+                   PARTITION BY lower(job.target_service),
+                                CASE
+                                    WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0
+                                    WHEN lower(job.track_id) = 'playlist' THEN 1
+                                    ELSE 2
+                                END
                    ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,
                             playlist.sync_priority ASC,
-                            CASE
-                                WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0
-                                WHEN lower(job.track_id) = 'playlist' THEN 1
-                                ELSE 2
-                            END,
                             job.attempt_count ASC,
                             job.next_attempt_utc,
                             job.id
@@ -11403,7 +11398,7 @@ WHERE id IN (
                OR (lower(job.status) = 'processing' AND datetime(job.lease_until_utc) <= datetime('now')))
           AND job.id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(@excludedJobIdsJson))
     ) ranked
-    ORDER BY ranked.target_rank, ranked.target_order, ranked.id
+    ORDER BY ranked.target_rank, ranked.job_order, ranked.target_order, ranked.id
     LIMIT @limit
 )
 RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,

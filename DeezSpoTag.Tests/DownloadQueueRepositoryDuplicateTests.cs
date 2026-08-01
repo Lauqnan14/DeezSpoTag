@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Queue;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Data.Sqlite;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -31,7 +32,7 @@ public sealed class DownloadQueueRepositoryDuplicateTests
         };
 
         Assert.False(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(completed, now));
-        Assert.True(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(
+        Assert.False(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(
             completed with { EnrichmentStatus = "running" },
             now));
         Assert.False(DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue(
@@ -224,6 +225,44 @@ public sealed class DownloadQueueRepositoryDuplicateTests
             CancellationToken.None);
 
         Assert.False(await context.QueueRepository.HasActiveWatchlistDownloadsAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task QueueGateRecovery_DemotesExpiredRunningPostDownloadStatesWithoutRefreshingTheirLease()
+    {
+        await using var context = await CreateContextAsync();
+        var updatedAt = DateTimeOffset.UtcNow
+            - DownloadQueueRecoveryPolicy.PostDownloadPendingLease
+            - TimeSpan.FromMinutes(1);
+        await context.QueueRepository.EnqueueAsync(
+            CreateQueueItem("expired-post-download", "Artist", "Track", 1) with
+            {
+                Status = "completed",
+                FinalizationStatus = "running",
+                EnrichmentStatus = "running",
+                UpdatedAt = updatedAt
+            },
+            CancellationToken.None);
+        await using (var connection = new SqliteConnection(context.Configuration.GetConnectionString("Queue")))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE download_task SET updated_at=@updatedAt WHERE queue_uuid=@queueUuid;";
+            command.Parameters.AddWithValue("updatedAt", updatedAt.ToString("O"));
+            command.Parameters.AddWithValue("queueUuid", "expired-post-download");
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var recovered = await context.QueueRepository.RecoverExpiredPostDownloadPipelineStatesAsync(
+            CancellationToken.None);
+        var item = await context.QueueRepository.GetByUuidAsync("expired-post-download", CancellationToken.None);
+
+        Assert.Equal(1, recovered);
+        Assert.NotNull(item);
+        Assert.Equal("pending", item!.FinalizationStatus);
+        Assert.Equal("pending", item.EnrichmentStatus);
+        Assert.Equal(updatedAt.ToUnixTimeSeconds(), item.UpdatedAt.ToUnixTimeSeconds());
+        Assert.False(await context.QueueRepository.HasActiveDownloadPipelineAsync(CancellationToken.None));
     }
 
     [Fact]

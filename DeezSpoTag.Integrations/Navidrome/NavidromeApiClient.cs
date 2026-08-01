@@ -543,7 +543,7 @@ public sealed class NavidromeApiClient
             return false;
         }
 
-        return await UploadNativeImageAsync(
+        var uploaded = await UploadNativeImageAsync(
             serverUrl,
             username,
             password,
@@ -551,6 +551,68 @@ public sealed class NavidromeApiClient
             imagePath,
             contentType,
             cancellationToken);
+        return uploaded && await VerifyPlaylistImageFromFileAsync(
+            serverUrl,
+            username,
+            password,
+            playlistId,
+            imagePath,
+            cancellationToken);
+    }
+
+    public async Task<bool> VerifyPlaylistImageFromFileAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistId,
+        string imagePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || string.IsNullOrWhiteSpace(playlistId)
+            || string.IsNullOrWhiteSpace(imagePath)
+            || !File.Exists(imagePath))
+        {
+            return false;
+        }
+
+        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        try
+        {
+            var expectedBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
+            if (expectedBytes.Length == 0)
+            {
+                return false;
+            }
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                BuildNativeUrl(serverUrl,
+                    $"/api/playlist/{Uri.EscapeDataString(playlistId)}/image?v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"));
+            request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var storedBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            return CryptographicOperations.FixedTimeEquals(
+                SHA256.HashData(expectedBytes),
+                SHA256.HashData(storedBytes));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException
+                                   || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
     }
 
     public async Task<bool> UpdateArtistImageFromFileAsync(

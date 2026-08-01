@@ -654,12 +654,12 @@ internal sealed class WatchlistEngine
                     cancellationToken);
             }
         }
-        if (artworkInspection?.Changed == true
-            && _playlistVisualService != null
+        if (_playlistVisualService != null
             && preference?.UpdateArtwork == true
             && hasConfiguredPlaylistSyncTargets)
         {
             var artworkJobQueued = false;
+            var playlistSyncService = _serviceProvider.GetRequiredService<PlaylistSyncService>();
             foreach (var targetService in ResolveConfiguredPlaylistSyncTargets(preference))
             {
                 var targetRevision = _playlistVisualService.GetTargetArtworkRevision(
@@ -669,6 +669,35 @@ internal sealed class WatchlistEngine
                 if (string.IsNullOrWhiteSpace(targetRevision))
                 {
                     continue;
+                }
+
+
+                var recordedApplied = await _libraryRepository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+                    source,
+                    sourceId,
+                    targetService,
+                    targetRevision,
+                    cancellationToken);
+                if (recordedApplied)
+                {
+                    var targetCurrent = await playlistSyncService.IsPlaylistArtworkCurrentOnTargetAsync(
+                        currentPlaylist,
+                        preference,
+                        targetService,
+                        cancellationToken);
+                    if (targetCurrent)
+                    {
+                        continue;
+                    }
+
+                    await _libraryRepository.SetPlaylistWatchArtworkTargetStateAsync(
+                        source,
+                        sourceId,
+                        targetService,
+                        targetRevision,
+                        false,
+                        "The target playlist artwork is missing or stale.",
+                        cancellationToken);
                 }
 
                 var artworkJob = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(

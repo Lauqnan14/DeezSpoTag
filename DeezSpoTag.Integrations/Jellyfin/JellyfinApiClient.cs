@@ -874,6 +874,45 @@ public class JellyfinApiClient
             cancellationToken);
     }
 
+    public async Task<bool> VerifyItemPrimaryImageFromFileAsync(
+        string serverUrl,
+        string apiKey,
+        string itemId,
+        string imagePath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(itemId)
+            || string.IsNullOrWhiteSpace(imagePath)
+            || !File.Exists(imagePath))
+        {
+            return false;
+        }
+
+        var expectedBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
+        if (expectedBytes.Length == 0)
+        {
+            return false;
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            BuildUrl(serverUrl,
+                $"/Items/{Uri.EscapeDataString(itemId)}/Images/Primary?tag={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}"));
+        request.Headers.Add(EmbyTokenHeader, apiKey);
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return false;
+        }
+
+        var storedBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        return CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(expectedBytes),
+            SHA256.HashData(storedBytes));
+    }
+
     public async Task<bool> UpdateArtistImageAsync(string serverUrl, string apiKey, string artistId, string imagePath, CancellationToken cancellationToken = default)
     {
         if (!CanUploadArtistAsset(serverUrl, apiKey, artistId, imagePath))

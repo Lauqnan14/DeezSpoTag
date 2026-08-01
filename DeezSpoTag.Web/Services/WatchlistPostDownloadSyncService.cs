@@ -14,7 +14,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<WatchlistPostDownloadSyncService> _logger;
     private readonly string _leaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
-    private DateTimeOffset _lastRepairAttemptUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastOutboxRepairUtc = DateTimeOffset.MinValue;
 
     public WatchlistPostDownloadSyncService(
@@ -296,24 +295,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
     private async Task RepairIncompleteJobsIfNeededAsync(CancellationToken cancellationToken)
     {
-        if (DateTimeOffset.UtcNow - _lastRepairAttemptUtc < TimeSpan.FromMinutes(5))
-        {
-            return;
-        }
-
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
         if (!repository.IsConfigured)
         {
             return;
-        }
-        _lastRepairAttemptUtc = DateTimeOffset.UtcNow;
-        var repairedBacklog = await repository.RepairWatchlistSyncBacklogAsync(cancellationToken);
-        if (repairedBacklog > 0)
-        {
-            _logger.LogInformation(
-                "Repaired {Count} expired or obsolete Watchlist target synchronization job(s).",
-                repairedBacklog);
         }
         var counts = await repository.GetWatchlistSyncJobStatusCountsAsync(cancellationToken);
         if (counts.RepairRequired <= 0)

@@ -102,6 +102,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     {
         _logger.LogInformation("Playlist watch service started.");
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+        await RecoverCoordinatorStateAsync(stoppingToken);
+        UpdateRuntimeHealth(health => health with { IsRunning = false });
 
         var wakeReason = WatchlistWakeReason.ScheduledRefresh;
         while (!stoppingToken.IsCancellationRequested)
@@ -460,74 +462,108 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _logger.LogDebug("Watchlist skipped - library DB not configured.");
             return;
         }
-        var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(stoppingToken);
-        if (staleWorkRecovered > 0)
-        {
-            _logger.LogWarning("Recovered {Count} Watchlist items whose persisted execution deadlines expired.", staleWorkRecovered);
-        }
-        var playlistReconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
-        var recoveredClaims = await playlistReconciler.RecoverInvalidPendingWatchClaimsAsync(stoppingToken);
-        UpdateRuntimeHealth(health => health with { LastRecoveredClaimCount = recoveredClaims });
+        await RecoverCoordinatorStateAsync(stoppingToken);
         var coordinatorWork = scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>();
         if (coordinatorWork != null)
         {
             await coordinatorWork.ProcessFinalizationWorkAsync(finalizationLimit: 25, stoppingToken);
         }
-        var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
-        UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
-
-        var shouldRunSourceRefresh =
-            wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
-            || pendingRequestCount > 0;
-        if (shouldRunSourceRefresh)
+        var targetSyncTask = coordinatorWork?.ProcessTargetSyncWorkAsync(
+            syncJobLimit: 15,
+            stoppingToken) ?? Task.CompletedTask;
+        try
         {
-            var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
-            var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
-            try
+            var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
+            UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
+
+            var shouldRunSourceRefresh =
+                wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
+                || pendingRequestCount > 0;
+            if (shouldRunSourceRefresh)
             {
-                var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
-                    1000,
-                    TimeSpan.FromMinutes(15),
-                    _reconciliationLeaseOwner,
-                    stoppingToken);
-                using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
+                var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
+                var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
                 try
                 {
-                    await RunWatchCycleCoreAsync(
-                        scope.ServiceProvider,
-                        settings,
-                        queueAdmission,
-                        reconciliationRequests,
+                    var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
+                        1000,
+                        TimeSpan.FromMinutes(15),
+                        _reconciliationLeaseOwner,
                         stoppingToken);
+                    using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                    var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
+                    try
+                    {
+                        await RunWatchCycleCoreAsync(
+                            scope.ServiceProvider,
+                            settings,
+                            queueAdmission,
+                            reconciliationRequests,
+                            stoppingToken);
+                    }
+                    finally
+                    {
+                        leaseRenewalCancellation.Cancel();
+                        try
+                        {
+                            await leaseRenewal;
+                        }
+                        catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+                        {
+                            // Expected after the claimed reconciliation batch leaves processing.
+                        }
+                    }
                 }
                 finally
                 {
-                    leaseRenewalCancellation.Cancel();
-                    try
+                    if (queueAdmissionToken != 0)
                     {
-                        await leaseRenewal;
+                        queueAdmission.EndRun(queueAdmissionToken);
                     }
-                    catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
-                    {
-                        // Expected after the claimed reconciliation batch leaves processing.
-                    }
-                }
-            }
-            finally
-            {
-                if (queueAdmissionToken != 0)
-                {
-                    queueAdmission.EndRun(queueAdmissionToken);
                 }
             }
         }
-
-        if (coordinatorWork != null)
+        finally
         {
-            await coordinatorWork.ProcessTargetSyncWorkAsync(
-                syncJobLimit: 15,
-                stoppingToken);
+            await targetSyncTask;
+        }
+    }
+
+    private async Task RecoverCoordinatorStateAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        if (!repository.IsConfigured)
+        {
+            return;
+        }
+
+        var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(cancellationToken);
+        var expiredTargetJobsRecovered = await repository.RepairWatchlistSyncBacklogAsync(cancellationToken);
+        var recoveredClaims = await scope.ServiceProvider
+            .GetRequiredService<PlaylistWatchReconciler>()
+            .RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
+        UpdateRuntimeHealth(health => health with
+        {
+            LastRecoveredClaimCount = recoveredClaims
+        });
+
+        if (staleWorkRecovered > 0)
+        {
+            _logger.LogWarning(
+                "Recovered {Count} Watchlist items whose persisted execution deadlines expired.",
+                staleWorkRecovered);
+        }
+        if (expiredTargetJobsRecovered > 0)
+        {
+            _logger.LogInformation(
+                "Recovered {Count} expired or obsolete Watchlist target synchronization job(s).",
+                expiredTargetJobsRecovered);
+        }
+
+        if (staleWorkRecovered > 0 || expiredTargetJobsRecovered > 0 || recoveredClaims > 0)
+        {
+            _runSignal.Request(WatchlistWakeReason.TargetSync | WatchlistWakeReason.Reconciliation);
         }
     }
 
@@ -696,6 +732,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingWhenDeferred });
             return;
         }
+
+        UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = null });
 
         var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
             playlistItems,

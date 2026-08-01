@@ -788,6 +788,33 @@ LIMIT 1;";
         return result is not null && result is not DBNull;
     }
 
+    public async Task<int> RecoverExpiredPostDownloadPipelineStatesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET move_status=CASE
+        WHEN lower(COALESCE(move_status, ''))='running' THEN 'pending'
+        ELSE move_status END,
+    enrichment_status=CASE
+        WHEN lower(COALESCE(enrichment_status, ''))='running' THEN 'pending'
+        ELSE enrichment_status END
+WHERE lower(status) IN ('completed', 'complete')
+  AND destination_folder_id IS NOT NULL
+  AND datetime(updated_at) < datetime(@expiredBeforeUtc)
+  AND (
+      lower(COALESCE(move_status, ''))='running'
+      OR lower(COALESCE(enrichment_status, ''))='running'
+  );";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(
+            "expiredBeforeUtc",
+            (DateTimeOffset.UtcNow - DownloadQueueRecoveryPolicy.PostDownloadPendingLease).ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<bool> HasActiveWatchlistDownloadsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);

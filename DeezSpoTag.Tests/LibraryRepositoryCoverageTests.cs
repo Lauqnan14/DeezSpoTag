@@ -77,6 +77,34 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PlexMetadataRepair_UsesOnlySharedMediaServerIdentityTable()
+    {
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+INSERT INTO media_server_track_metadata (track_id,service,target_item_id,updated_at_utc)
+VALUES (7001,'plex','plex-item','2026-08-01T00:00:00Z'),
+       (7001,'jellyfin','jellyfin-item','2026-08-01T00:00:00Z');";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        await _repository.DeleteMediaServerTrackMetadataAsync("plex", [7001]);
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = @"
+SELECT service FROM media_server_track_metadata
+WHERE track_id=7001 ORDER BY service;";
+        await using var reader = await verify.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("jellyfin", reader.GetString(0));
+        Assert.False(await reader.ReadAsync());
+    }
+
+    [Fact]
     public async Task ScanInfo_Settings_And_AutomationState_RoundTrip()
     {
         var initialScan = await _repository.GetScanInfoAsync();

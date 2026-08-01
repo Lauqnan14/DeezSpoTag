@@ -655,6 +655,28 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task TargetSyncClaiming_IsFairAcrossServersAndArtworkMembershipJobTypes()
+    {
+        await AddPlaylistWithTargetsAsync("fair-list", ["plex", "jellyfin", "navidrome"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "fair-list", "snapshot-1");
+        foreach (var target in new[] { "plex", "jellyfin", "navidrome" })
+        {
+            Assert.NotNull(await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
+                "spotify", "fair-list", target, "artwork-revision-1"));
+        }
+
+        var claimed = await _repository.ClaimDueWatchlistSyncJobsAsync(
+            6, TimeSpan.FromMinutes(1), "fair-worker");
+
+        Assert.Equal(6, claimed.Count);
+        Assert.Equal(3, claimed.Count(static job => job.TrackId == "playlist"));
+        Assert.Equal(3, claimed.Count(static job => job.TrackId.StartsWith("artwork:", StringComparison.Ordinal)));
+        Assert.Equal(2, claimed.Count(static job => job.TargetService == "plex"));
+        Assert.Equal(2, claimed.Count(static job => job.TargetService == "jellyfin"));
+        Assert.Equal(2, claimed.Count(static job => job.TargetService == "navidrome"));
+    }
+
+    [Fact]
     public async Task RuntimeReset_ClearsEveryRuntimeRowAndPreservesConfigurationAndCandidateCache()
     {
         await AddPlaylistWithTargetsAsync("reset-list", ["plex"]);

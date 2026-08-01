@@ -43,14 +43,19 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "DeezSpoTag.Services",
             "Library",
             "LibraryRepository.cs"));
+        var coordinator = File.ReadAllText(Path.Combine(
+            Root,
+            "DeezSpoTag.Web",
+            "Services",
+            "WatchlistRunCoordinator.cs"));
 
         Assert.Contains("Task.WhenAll", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetOperationTimeout", worker, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", worker, StringComparison.Ordinal);
         Assert.Contains("GetNextWatchlistSyncJobDueUtcAsync", repository, StringComparison.Ordinal);
-        Assert.Contains("RepairWatchlistSyncBacklogAsync", worker, StringComparison.Ordinal);
+        Assert.Contains("RepairWatchlistSyncBacklogAsync", coordinator, StringComparison.Ordinal);
         Assert.Contains("ROW_NUMBER() OVER", repository, StringComparison.Ordinal);
-        Assert.Contains("PARTITION BY lower(job.target_service)", repository, StringComparison.Ordinal);
+        Assert.Contains("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
         Assert.Contains("Recovered expired target synchronization lease.", repository, StringComparison.Ordinal);
     }
 
@@ -183,17 +188,18 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Equal(3, CountOccurrences(service, "verifiedMemberships.Count != tracks.Count"));
         Assert.Equal(3, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));
         Assert.Contains("DELETE FROM media_server_track_metadata", repository, StringComparison.Ordinal);
-        Assert.Contains("DELETE FROM plex_track_metadata", repository, StringComparison.Ordinal);
-        Assert.Contains("PARTITION BY lower(job.target_service)", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("plex_track_metadata", repository, StringComparison.Ordinal);
+        Assert.Contains("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void ArtworkJobs_RunOnlyForChangedRevisionsAndBeforePlaylistJobs()
+    public void ArtworkJobs_VerifyAppliedTargetsAndRunBeforePlaylistJobs()
     {
         var engine = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
 
-        Assert.Contains("if (artworkInspection?.Changed == true", engine, StringComparison.Ordinal);
+        Assert.Contains("IsPlaylistArtworkCurrentOnTargetAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("The target playlist artwork is missing or stale.", engine, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistArtworkSyncJobAsync", engine, StringComparison.Ordinal);
         Assert.Contains("WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0", repository, StringComparison.Ordinal);
         Assert.Contains("WHEN lower(job.track_id) = 'playlist' THEN 1", repository, StringComparison.Ordinal);

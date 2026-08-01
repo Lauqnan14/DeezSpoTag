@@ -133,6 +133,35 @@ public sealed class NavidromeApiClientPlaylistTests
     }
 
     [Fact]
+    public async Task UpdatePlaylistImageFromFileAsync_RejectsSuccessfulUploadWhenTargetStillServesOldArtwork()
+    {
+        var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-playlist-{Guid.NewGuid():N}.png");
+        await File.WriteAllBytesAsync(imagePath, Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="));
+        try
+        {
+            using var handler = new NavidromePlaylistHandler(serveStalePlaylistImage: true);
+            using var httpClient = new HttpClient(handler);
+            var client = new NavidromeApiClient(httpClient);
+
+            var updated = await client.UpdatePlaylistImageFromFileAsync(
+                "http://navidrome.local",
+                "user",
+                "pass",
+                "playlist-1",
+                imagePath,
+                "image/png",
+                CancellationToken.None);
+
+            Assert.False(updated);
+        }
+        finally
+        {
+            File.Delete(imagePath);
+        }
+    }
+
+    [Fact]
     public async Task SearchArtistsAsync_ReturnsArtistResults()
     {
         using var handler = new NavidromePlaylistHandler();
@@ -245,9 +274,11 @@ public sealed class NavidromeApiClientPlaylistTests
 
     private sealed class NavidromePlaylistHandler(
         bool createReturnsPlaylist = true,
-        bool playlistExistsInitially = true) : HttpMessageHandler
+        bool playlistExistsInitially = true,
+        bool serveStalePlaylistImage = false) : HttpMessageHandler
     {
         private bool _playlistCreated;
+        private byte[] _playlistImageBytes = Array.Empty<byte>();
         public List<string> RequestedUrls { get; } = new();
         public string UploadAuthorization { get; private set; } = string.Empty;
         public string UploadBody { get; private set; } = string.Empty;
@@ -269,6 +300,14 @@ public sealed class NavidromeApiClientPlaylistTests
 
             if (path.EndsWith("/api/playlist/playlist-1/image", StringComparison.Ordinal))
             {
+                if (request.Method == HttpMethod.Get)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(serveStalePlaylistImage ? [0x01, 0x02, 0x03] : _playlistImageBytes)
+                    };
+                }
+
                 return await CaptureImageUploadAsync(request, cancellationToken);
             }
 
@@ -403,6 +442,11 @@ public sealed class NavidromeApiClientPlaylistTests
             UploadBody = request.Content == null
                 ? string.Empty
                 : await request.Content.ReadAsStringAsync(cancellationToken);
+            if (request.RequestUri!.AbsolutePath.EndsWith("/api/playlist/playlist-1/image", StringComparison.Ordinal)
+                && request.Content is MultipartContent multipart)
+            {
+                _playlistImageBytes = await multipart.First().ReadAsByteArrayAsync(cancellationToken);
+            }
             return await Json("""
                 {
                   "status": "ok"

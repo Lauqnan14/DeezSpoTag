@@ -28,7 +28,7 @@ public static class DownloadQueueRecoveryPolicy
         var finalizationStatus = Normalize(item.FinalizationStatus);
         if (enrichmentStatus == "running" || finalizationStatus == "running")
         {
-            return true;
+            return nowUtc - item.UpdatedAt <= PostDownloadPendingLease;
         }
 
         if (enrichmentStatus != "pending" && finalizationStatus != "pending")

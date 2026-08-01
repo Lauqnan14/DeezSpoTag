@@ -1591,6 +1591,80 @@ public sealed class PlaylistSyncService
         };
     }
 
+    public async Task<bool> IsPlaylistArtworkCurrentOnTargetAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        string targetService,
+        CancellationToken cancellationToken)
+    {
+        if (!ShouldSyncPlaylistArtwork(preference))
+        {
+            return true;
+        }
+
+        var normalizedTarget = NormalizeService(targetService);
+        var stillVisual = _playlistVisualService.GetActiveStoredStillVisual(playlist.Source, playlist.SourceId);
+        if (normalizedTarget == PlexService)
+        {
+            var (plex, error) = await TryLoadConfiguredPlexAsync();
+            if (error != null || plex == null || stillVisual == null)
+            {
+                return false;
+            }
+
+            var playlistId = await ResolveAuthoritativePlexPlaylistIdAsync(
+                plex, playlist, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken);
+            return !string.IsNullOrWhiteSpace(playlistId)
+                && await _plexApiClient.VerifyPlaylistPosterFromFileAsync(
+                    plex.Url, plex.Token, playlistId, stillVisual.FilePath, cancellationToken);
+        }
+
+        if (normalizedTarget == JellyfinService)
+        {
+            var (jellyfin, error) = await TryLoadConfiguredJellyfinAsync();
+            if (error != null || jellyfin == null || stillVisual == null)
+            {
+                return false;
+            }
+
+            var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
+                jellyfin, playlist, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken);
+            return !string.IsNullOrWhiteSpace(playlistId)
+                && await _jellyfinApiClient.VerifyItemPrimaryImageFromFileAsync(
+                    jellyfin.Url, jellyfin.ApiKey, playlistId, stillVisual.FilePath, cancellationToken);
+        }
+
+        if (normalizedTarget == NavidromeService)
+        {
+            var (navidrome, error) = await TryLoadConfiguredNavidromeAsync();
+            if (error != null || navidrome == null)
+            {
+                return false;
+            }
+
+            var visual = await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
+                    playlist.Source, playlist.SourceId, cancellationToken)
+                ?? stillVisual;
+            if (visual == null)
+            {
+                return false;
+            }
+
+            var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
+                navidrome, playlist, ResolveExistingTargetPlaylistId(preference, NavidromeService), cancellationToken);
+            return !string.IsNullOrWhiteSpace(playlistId)
+                && await _navidromeApiClient.VerifyPlaylistImageFromFileAsync(
+                    navidrome.Url,
+                    navidrome.Username,
+                    navidrome.Password,
+                    playlistId,
+                    visual.FilePath,
+                    cancellationToken);
+        }
+
+        return false;
+    }
+
     public async Task<PlaylistTrackSyncReadiness> CheckTrackReadyForAutomaticSyncAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
