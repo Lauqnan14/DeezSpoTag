@@ -341,6 +341,18 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
         try
         {
+            if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, operationCancellation.Token))
+            {
+                await repository.RetryWatchlistSyncJobAsync(
+                    job.Id,
+                    _leaseOwner,
+                    job.AttemptCount,
+                    DateTimeOffset.UtcNow.AddSeconds(15),
+                    $"Waiting for {FormatTargetServiceLabel(job.TargetService)} to index finalized library files.",
+                    cancellationToken);
+                return;
+            }
+
             var request = new SyncRequest(
                 job.Id,
                 job.Source,

@@ -1474,6 +1474,11 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>()));
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistWatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.MediaServerRefreshOutboxService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.MediaServerRefreshOutboxService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Durable media-server library refresh processing after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {

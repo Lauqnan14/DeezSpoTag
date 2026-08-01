@@ -13,24 +13,12 @@ public sealed class TidalApiProviderSource
         _providerRegistry = providerRegistry;
     }
 
-    public async Task<IReadOnlyList<string>> GetRotatedProvidersAsync(CancellationToken cancellationToken)
-        => (await GetRotatedProviderRecordsAsync(cancellationToken))
-            .Select(static provider => provider.Endpoint)
-            .ToArray();
-
     public async Task<IReadOnlyList<TidalPublicProvider>> GetRotatedProviderRecordsAsync(CancellationToken cancellationToken)
     {
         var enabledProviders = (await _providerRegistry.GetProvidersAsync(cancellationToken))
             .Where(static provider => provider.Enabled)
             .ToList();
         return RotateProviders(enabledProviders, _lastUsedUrl);
-    }
-
-    public static Task<IReadOnlyList<string>> RefreshAsync(bool force, CancellationToken cancellationToken)
-    {
-        _ = force;
-        _ = cancellationToken;
-        return Task.FromResult(TidalPublicProviderDefaults.Endpoints);
     }
 
     public async Task RememberSuccessAsync(TidalPublicProvider provider, CancellationToken cancellationToken)
@@ -76,48 +64,6 @@ public sealed class TidalApiProviderSource
         => _providerRegistry.RecordSuccessAsync(providerUrl, responseTimeMs, cancellationToken);
 
     private static string NormalizeUrl(string? value) => (value ?? string.Empty).Trim().TrimEnd('/');
-
-    private static List<string> RotateUrls(List<string> urls, string? lastUsedUrl)
-    {
-        if (urls.Count < 2)
-        {
-            return [.. urls];
-        }
-
-        var normalizedLastUsed = NormalizeUrl(lastUsedUrl);
-        if (string.IsNullOrWhiteSpace(normalizedLastUsed))
-        {
-            return [.. urls];
-        }
-
-        var lastIndex = -1;
-        for (var index = 0; index < urls.Count; index++)
-        {
-            if (string.Equals(NormalizeUrl(urls[index]), normalizedLastUsed, StringComparison.OrdinalIgnoreCase))
-            {
-                lastIndex = index;
-                break;
-            }
-        }
-
-        if (lastIndex < 0)
-        {
-            return [.. urls];
-        }
-
-        var rotated = new List<string>(urls.Count);
-        for (var index = lastIndex + 1; index < urls.Count; index++)
-        {
-            rotated.Add(urls[index]);
-        }
-
-        for (var index = 0; index <= lastIndex; index++)
-        {
-            rotated.Add(urls[index]);
-        }
-
-        return rotated;
-    }
 
     private static List<TidalPublicProvider> RotateProviders(List<TidalPublicProvider> providers, string? lastUsedUrl)
     {

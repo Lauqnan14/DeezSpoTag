@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Shared;
+using DeezSpoTag.Services.Download.Tidal;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -34,6 +35,29 @@ public sealed class DownloadLifecycleCheckpointTests : IDisposable
         var arguments = new object?[] { payload, null };
         Assert.True(InvokeBool("TryResume", arguments));
         Assert.Equal(path, arguments[1]);
+    }
+
+    [Fact]
+    public void ExistingValidTidalAudio_IsAdoptedFromTheExactCollisionPath()
+    {
+        var path = Path.Combine(_root, "existing-tidal.wav");
+        WriteWave(path, 24);
+        var payload = new TidalQueueItem
+        {
+            Engine = "tidal",
+            Quality = "HI_RES",
+            AutoIndex = 0,
+            FallbackPlan =
+            [
+                new DeezSpoTag.Services.Download.Fallback.FallbackPlanStep(
+                    "step-0", "tidal", "HI_RES", [], "direct_url")
+            ]
+        };
+
+        Assert.True(InvokeBool("TryAdoptExistingAudioAtPath", payload, path));
+        Assert.True(payload.AudioAcquired);
+        Assert.Equal(path, payload.AcquiredAudioPath);
+        Assert.Equal("tidal", payload.AcquiredEngine);
     }
 
     [Fact]
@@ -122,6 +146,32 @@ public sealed class DownloadLifecycleCheckpointTests : IDisposable
         Assert.Contains("retry_waiting", checkpoint, StringComparison.Ordinal);
         Assert.DoesNotContain("File.Delete", checkpoint, StringComparison.Ordinal);
         Assert.DoesNotContain("TryDelete", checkpoint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalAudio_IsStagedCheckpointedAndPromotedBeforePostProcessing()
+    {
+        var shared = ReadSource("DeezSpoTag.Services", "Download", "Shared", "EngineQueueProcessorHelper.cs");
+        var tidal = ReadSource("DeezSpoTag.Services", "Download", "Tidal", "TidalDownloadService.cs");
+        var processor = ReadSource("DeezSpoTag.Services", "Download", "Tidal", "TidalEngineProcessor.cs");
+
+        var guard = shared.IndexOf("EnsurePlanStepSatisfiedAsync", StringComparison.Ordinal);
+        var checkpoint = shared.IndexOf("PersistAcquiredAsync", guard, StringComparison.Ordinal);
+        var acceptance = shared.IndexOf("AcceptAcquiredAudioAsync", checkpoint, StringComparison.Ordinal);
+        Assert.True(guard >= 0 && checkpoint > guard && acceptance > checkpoint);
+        Assert.Contains("AcquiredStagingMarker", tidal, StringComparison.Ordinal);
+        Assert.Contains("PromoteAcceptedAudioAsync", processor, StringComparison.Ordinal);
+        Assert.Contains("TidalExistingFinalDestinationException", processor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ManualRetry_PreservesARecoverableAcquiredAudioCheckpoint()
+    {
+        var app = ReadSource("DeezSpoTag.Services", "Download", "Shared", "DeezSpoTagApp.cs");
+
+        Assert.Contains("HasRecoverableAcquiredAudio", app, StringComparison.Ordinal);
+        Assert.Contains("if (!preserveAcquiredAudio)", app, StringComparison.Ordinal);
+        Assert.Contains("ReadJsonInt(payloadObj, \"AutoIndex\", \"autoIndex\")", app, StringComparison.Ordinal);
     }
 
     public void Dispose() => Directory.Delete(_root, true);

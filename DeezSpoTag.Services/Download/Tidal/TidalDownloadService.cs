@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Collections.Concurrent;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download;
@@ -24,8 +25,9 @@ namespace DeezSpoTag.Services.Download.Tidal;
 
 public sealed class TidalDownloadService
 {
+    private const string AcquiredStagingMarker = ".tidal-acquired";
     private const string AudioKeyword = "audio";
-    private const string ManifestPrefix = "MANIFEST:";
+    internal const string ManifestPrefix = "MANIFEST:";
     private const string TidalNativeApiHost = "api.tidal.com";
     private const string TidalPublicSearchHost = "tidal.com";
     private const string TidalPublicApiBasePath = "v1";
@@ -41,6 +43,7 @@ public sealed class TidalDownloadService
     private const int MaxConcurrentProviderResolutions = 2;
     private const int MaxConcurrentSegmentDownloads = 4;
     private const int MaxSegmentDownloadAttempts = 4;
+    private const int MaxProviderStageAttempts = 4;
     private const string ZarzSignedBaseUrl = "https://api.zarz.moe/v2";
     private const string ZarzSignedDownloadPath = "/dl/tid";
     private const string ZarzTicketsPath = "/tickets";
@@ -56,6 +59,9 @@ public sealed class TidalDownloadService
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
     private static readonly SemaphoreSlim ZarzSessionGate = new(1, 1);
+    private static readonly ConcurrentDictionary<long, CachedTidalTrack> TrackMetadataCache = new();
+    private static readonly ConcurrentDictionary<string, CachedProviderManifest> ProviderManifestCache = new(StringComparer.Ordinal);
+    private static readonly TimeSpan TrackMetadataCacheLifetime = TimeSpan.FromHours(6);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -69,6 +75,7 @@ public sealed class TidalDownloadService
     private readonly HttpClient _client;
     private readonly TidalApiProviderSource _providerSource;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
+    private readonly TidalPublicDownloadProviderAdapterRegistry _publicProviderAdapters;
     private readonly string _zarzSessionPath;
 
     public sealed record TidalResolvedTrack(
@@ -89,6 +96,11 @@ public sealed class TidalDownloadService
         _logger = logger;
         _providerSource = providerSource;
         _accessTokenProvider = accessTokenProvider;
+        _publicProviderAdapters = new TidalPublicDownloadProviderAdapterRegistry(
+            [new ZarzTidalPublicDownloadProviderAdapter(
+                (payload, trackId, token) => SendZarzDownloadJsonAsync(payload, trackId, token),
+                FetchProviderTextWithRetryAsync,
+                HasPublicDownloadSessionAsync)]);
         _zarzSessionPath = Path.Join(DeezSpoTagDataRootResolver.Resolve(), "tidal", ZarzSessionFileName);
         _client = new HttpClient
         {
@@ -138,6 +150,8 @@ public sealed class TidalDownloadService
                             $"Tidal catalog does not expose a validated track for {TidalStereoQuality.FormatRequested(request.Quality)}.");
                     }
                 }
+
+                request.TidalId = GetTrackIdFromUrl(tidalUrl).ToString(CultureInfo.InvariantCulture);
 
                 return await DownloadByUrlAsync(
                     request,
@@ -468,17 +482,76 @@ public sealed class TidalDownloadService
         var outputPath = AudioFilePathHelper.BuildOutputPath(outputPathContext, isAtmosRequest ? ".m4a" : ".flac");
         await EnsureFinalDestinationAllowedAsync(request, outputPath, cancellationToken);
 
+        var acquiredStagingPath = BuildAcquiredStagingPath(outputPath);
+        DownloadFileUtilities.TryDeleteFile(acquiredStagingPath);
+
         var expectedDurationSeconds = Math.Max(0, request.DurationSeconds);
-        var candidateUrls = await GetDownloadUrlCandidatesAsync(trackId, request.Quality, cancellationToken);
+        var candidateUrls = await GetDownloadUrlCandidatesAsync(trackId, request, cancellationToken);
         await DownloadValidatedFileAsync(
             candidateUrls,
-            outputPath,
+            acquiredStagingPath,
             expectedDurationSeconds,
             request.Quality,
             isAtmosRequest,
             progressCallback,
             cancellationToken);
-        return outputPath;
+        return acquiredStagingPath;
+    }
+
+    public Task<string> PromoteAcceptedAudioAsync(
+        TidalQueueItem payload,
+        string acquiredPath,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsAcquiredStagingPath(acquiredPath))
+        {
+            return Task.FromResult(acquiredPath);
+        }
+
+        var canonicalPath = ResolveCanonicalPath(acquiredPath);
+        if (IOFile.Exists(canonicalPath))
+        {
+            throw new TidalExistingFinalDestinationException(
+                canonicalPath,
+                $"Skipped before download: final destination already contains '{canonicalPath}' and the requested quality is not higher.");
+        }
+
+        IOFile.Move(acquiredPath, canonicalPath, overwrite: false);
+        payload.FilePath = DownloadPathResolver.NormalizeDisplayPath(canonicalPath);
+        return Task.FromResult(canonicalPath);
+    }
+
+    public void DeleteRejectedStagingAudio(TidalQueueItem payload, string rejectedPath)
+    {
+        if (!IsAcquiredStagingPath(rejectedPath))
+        {
+            return;
+        }
+
+        DownloadFileUtilities.TryDeleteFile(rejectedPath);
+        payload.TidalAcquisitionStage = "quality_rejected";
+        DownloadLifecycleCheckpoint.ClearAcquisition(payload);
+    }
+
+    private static string BuildAcquiredStagingPath(string canonicalPath)
+    {
+        var extension = Path.GetExtension(canonicalPath);
+        return Path.Combine(
+            Path.GetDirectoryName(canonicalPath) ?? string.Empty,
+            Path.GetFileNameWithoutExtension(canonicalPath) + AcquiredStagingMarker + extension);
+    }
+
+    private static bool IsAcquiredStagingPath(string path)
+        => Path.GetFileNameWithoutExtension(path).EndsWith(AcquiredStagingMarker, StringComparison.Ordinal);
+
+    private static string ResolveCanonicalPath(string stagingPath)
+    {
+        var extension = Path.GetExtension(stagingPath);
+        var stem = Path.GetFileNameWithoutExtension(stagingPath);
+        return Path.Combine(
+            Path.GetDirectoryName(stagingPath) ?? string.Empty,
+            stem[..^AcquiredStagingMarker.Length] + extension);
     }
 
     private static TrackCandidateValidationResult ValidateResolvedTrack(
@@ -1012,7 +1085,13 @@ public sealed class TidalDownloadService
 
     private async Task<TidalTrack?> TryGetTrackInfoByIdViaPublicApiAsync(long trackId, CancellationToken cancellationToken)
     {
-        return await SendTidalPublicJsonOrDefaultAsync<TidalTrack>(
+        if (TrackMetadataCache.TryGetValue(trackId, out var cached)
+            && cached.ExpiresAtUtc > DateTimeOffset.UtcNow)
+        {
+            return cached.Track;
+        }
+
+        var track = await SendTidalPublicJsonOrDefaultAsync<TidalTrack>(
             BuildTidalNativeApiUrl($"tracks/{trackId}"),
             null,
             ex =>
@@ -1023,6 +1102,51 @@ public sealed class TidalDownloadService
                 }
             },
             cancellationToken);
+        track ??= await ResolveTrackMetadataFromPublicProvidersAsync(trackId, cancellationToken);
+        if (track is not null && track.Id > 0)
+        {
+            TrackMetadataCache[trackId] = new CachedTidalTrack(
+                track,
+                DateTimeOffset.UtcNow.Add(TrackMetadataCacheLifetime));
+        }
+
+        return track;
+    }
+
+    private async Task<TidalTrack?> ResolveTrackMetadataFromPublicProvidersAsync(
+        long trackId,
+        CancellationToken cancellationToken)
+    {
+        var providers = await _providerSource.GetRotatedProviderRecordsAsync(cancellationToken);
+        foreach (var provider in providers.Where(static candidate => candidate.Capabilities?.SupportsMetadata == true))
+        {
+            var adapter = _publicProviderAdapters.Resolve(provider);
+            if (!await adapter.IsReadyAsync(provider, cancellationToken))
+            {
+                continue;
+            }
+
+            var metadata = await adapter.ResolveTrackMetadataAsync(provider, trackId, cancellationToken);
+            if (metadata is null || metadata.TrackId <= 0)
+            {
+                continue;
+            }
+
+            return new TidalTrack
+            {
+                Id = metadata.TrackId,
+                Title = metadata.Title,
+                Isrc = metadata.Isrc,
+                Duration = metadata.DurationSeconds,
+                AudioQuality = metadata.AudioQuality,
+                Artist = new TidalArtist { Name = metadata.Artist },
+                Album = new TidalAlbum { Title = metadata.Album, Cover = metadata.CoverId },
+                AudioModes = metadata.AudioModes.ToList(),
+                MediaMetadata = new TidalMediaMetadata { Tags = metadata.MediaTags.ToList() }
+            };
+        }
+
+        return null;
     }
 
     private async Task<TPayload?> SendTidalPublicJsonOrDefaultAsync<TPayload>(
@@ -1031,46 +1155,64 @@ public sealed class TidalDownloadService
         Action<Exception> logFailure,
         CancellationToken cancellationToken)
     {
-        try
+        Exception? lastFailure = null;
+        for (var attempt = 1; attempt <= MaxProviderStageAttempts; attempt++)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
-            request.Headers.TryAddWithoutValidation("Accept", "application/json");
-            request.Headers.TryAddWithoutValidation("User-Agent", TidalPublicUserAgent);
-
-            using var response = await _client.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                return fallback;
-            }
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("x-tidal-token", TidalPublicToken);
+                request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                request.Headers.TryAddWithoutValidation("User-Agent", TidalPublicUserAgent);
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            return JsonSerializer.Deserialize<TPayload>(body, SerializerOptions);
+                using var response = await _client.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (!IsTransientProviderStatus(response.StatusCode) || attempt == MaxProviderStageAttempts)
+                    {
+                        return fallback;
+                    }
+
+                    await Task.Delay(ResolveProviderRetryDelay(response, attempt), cancellationToken);
+                    continue;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (string.IsNullOrWhiteSpace(body))
+                {
+                    if (attempt == MaxProviderStageAttempts)
+                    {
+                        return fallback;
+                    }
+
+                    await Task.Delay(GetProviderRetryDelay(attempt), cancellationToken);
+                    continue;
+                }
+
+                return JsonSerializer.Deserialize<TPayload>(body, SerializerOptions);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException or InvalidOperationException)
+            {
+                lastFailure = ex;
+                if (!IsTransientProviderException(ex) || attempt == MaxProviderStageAttempts)
+                {
+                    logFailure(ex);
+                    return fallback;
+                }
+
+                await Task.Delay(GetProviderRetryDelay(attempt), cancellationToken);
+            }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+        if (lastFailure is not null)
         {
-            throw;
+            logFailure(lastFailure);
         }
-        catch (HttpRequestException ex)
-        {
-            logFailure(ex);
-            return fallback;
-        }
-        catch (IOException ex)
-        {
-            logFailure(ex);
-            return fallback;
-        }
-        catch (JsonException ex)
-        {
-            logFailure(ex);
-            return fallback;
-        }
-        catch (InvalidOperationException ex)
-        {
-            logFailure(ex);
-            return fallback;
-        }
+        return fallback;
     }
 
     private async Task<TResult> SendTidalJsonOrDefaultAsync<TPayload, TResult>(
@@ -1174,12 +1316,14 @@ public sealed class TidalDownloadService
         await ProviderResolutionGate.WaitAsync(cancellationToken);
         try
         {
-            if (!string.Equals(provider.Kind, TidalPublicProviderDefaults.ZarzProviderKind, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException($"Unsupported Tidal public provider kind: {provider.Kind}.");
-            }
-
-            return await FetchManifestFromZarzAsync(trackId, quality, cancellationToken);
+            var adapter = _publicProviderAdapters.Resolve(provider);
+            return await adapter.AcquireManifestAsync(
+                provider,
+                new TidalPublicManifestRequest(
+                    trackId,
+                    quality,
+                    string.Equals(NormalizeTidalDownloadQuality(quality), "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)),
+                cancellationToken);
         }
         finally
         {
@@ -1187,87 +1331,28 @@ public sealed class TidalDownloadService
         }
     }
 
-    private async Task<string?> FetchManifestFromZarzAsync(
-        long trackId,
-        string quality,
-        CancellationToken cancellationToken)
-    {
-        var normalizedQuality = NormalizeTidalDownloadQuality(quality);
-        if (string.Equals(normalizedQuality, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase))
-        {
-            return await FetchAtmosManifestFromZarzAsync(trackId, cancellationToken);
-        }
-
-        var payload = new
-        {
-            id = trackId.ToString(CultureInfo.InvariantCulture),
-            quality = normalizedQuality
-        };
-        var body = await SendZarzDownloadJsonAsync(payload, trackId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            throw new InvalidOperationException("Tidal Zarz provider returned an empty response.");
-        }
-
-        if (BodyContainsPreviewAsset(body))
-        {
-            throw new InvalidOperationException("Tidal Zarz provider returned a preview asset.");
-        }
-
-        return TryParseManifest(body, out var manifest) ? manifest : null;
-    }
-
-    private async Task<string?> FetchAtmosManifestFromZarzAsync(
-        long trackId,
-        CancellationToken cancellationToken)
-    {
-        var payload = new
-        {
-            id = trackId.ToString(CultureInfo.InvariantCulture),
-            endpoint = "manifests",
-            formats = new[] { "EAC3_JOC" }
-        };
-        var body = await SendZarzDownloadJsonAsync(payload, trackId, cancellationToken);
-        if (!TryExtractZarzAtmosManifestUri(body, out var manifestUri))
-        {
-            throw new InvalidOperationException("Tidal Zarz Atmos provider did not return a manifest URI.");
-        }
-
-        using var manifestResponse = await _client.GetAsync(manifestUri, cancellationToken);
-        if (!manifestResponse.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException($"Tidal Zarz Atmos manifest fetch returned HTTP {(int)manifestResponse.StatusCode}.");
-        }
-
-        var manifestText = await manifestResponse.Content.ReadAsStringAsync(cancellationToken);
-        return string.IsNullOrWhiteSpace(manifestText)
-            ? null
-            : ManifestPrefix + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifestText));
-    }
-
     private async Task<string> SendZarzDownloadJsonAsync<TPayload>(
         TPayload payload,
         long trackId,
         CancellationToken cancellationToken)
     {
-        var ticket = await RequestZarzTicketAsync(trackId, cancellationToken);
         var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
-        using var response = await SendZarzSignedRequestAsync(
-            HttpMethod.Post,
-            ZarzSignedDownloadPath,
-            bodyBytes,
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        return await ExecuteProviderJsonStageWithRetryAsync(
+            "Tidal Zarz provider",
+            async token =>
             {
-                ["X-Zarz-Ticket"] = ticket
+                var ticket = await RequestZarzTicketAsync(trackId, token);
+                return await SendZarzSignedRequestAsync(
+                    HttpMethod.Post,
+                    ZarzSignedDownloadPath,
+                    bodyBytes,
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["X-Zarz-Ticket"] = ticket
+                    },
+                    token);
             },
             cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz provider", response, body));
-        }
-
-        return body;
     }
 
     private async Task<string> RequestZarzTicketAsync(long trackId, CancellationToken cancellationToken)
@@ -1280,17 +1365,15 @@ public sealed class TidalDownloadService
             resource_hash = resourceHash
         };
         var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
-        using var response = await SendZarzSignedRequestAsync(
-            HttpMethod.Post,
-            ZarzTicketsPath,
-            bodyBytes,
-            null,
+        var body = await ExecuteProviderJsonStageWithRetryAsync(
+            "Tidal Zarz ticket provider",
+            token => SendZarzSignedRequestAsync(
+                HttpMethod.Post,
+                ZarzTicketsPath,
+                bodyBytes,
+                null,
+                token),
             cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz ticket provider", response, body));
-        }
 
         try
         {
@@ -1307,6 +1390,66 @@ public sealed class TidalDownloadService
         }
 
         throw new InvalidOperationException("Tidal Zarz ticket provider did not return a ticket.");
+    }
+
+    private async Task<string> ExecuteProviderJsonStageWithRetryAsync(
+        string stage,
+        Func<CancellationToken, Task<HttpResponseMessage>> requestFactory,
+        CancellationToken cancellationToken)
+    {
+        Exception? lastFailure = null;
+        for (var attempt = 1; attempt <= MaxProviderStageAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                using var response = await requestFactory(cancellationToken);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(body))
+                {
+                    return body;
+                }
+
+                Exception failure = response.IsSuccessStatusCode
+                    ? new InvalidDataException($"{stage} returned an empty response.")
+                    : new HttpRequestException(
+                        BuildZarzHttpFailureMessage(stage, response, body),
+                        null,
+                        response.StatusCode);
+                if ((!response.IsSuccessStatusCode && !IsTransientProviderStatus(response.StatusCode))
+                    || attempt == MaxProviderStageAttempts)
+                {
+                    throw failure;
+                }
+
+                lastFailure = failure;
+                await Task.Delay(ResolveProviderRetryDelay(response, attempt), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsTransientProviderException(ex) && attempt < MaxProviderStageAttempts)
+            {
+                lastFailure = ex;
+                await Task.Delay(GetProviderRetryDelay(attempt), cancellationToken);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"{stage} failed after {MaxProviderStageAttempts} attempts.",
+            lastFailure);
+    }
+
+    private async Task<string> FetchProviderTextWithRetryAsync(
+        string url,
+        string stage,
+        CancellationToken cancellationToken)
+    {
+        return await ExecuteProviderJsonStageWithRetryAsync(
+            stage,
+            token => _client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token),
+            cancellationToken);
     }
 
     private async Task<HttpResponseMessage> SendZarzSignedRequestAsync(
@@ -1630,11 +1773,61 @@ public sealed class TidalDownloadService
 
     private async Task DownloadFileAsync(string url, string outputPath, Func<double, double, Task>? progressCallback, CancellationToken cancellationToken)
     {
-        using var response = await _client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        await using var file = IOFile.Create(outputPath);
-        await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
+        Exception? lastFailure = null;
+        for (var attempt = 1; attempt <= MaxProviderStageAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DownloadFileUtilities.TryDeleteFile(outputPath);
+            try
+            {
+                using var response = await _client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var failure = new HttpRequestException(
+                        $"Tidal audio asset returned HTTP {(int)response.StatusCode}.",
+                        null,
+                        response.StatusCode);
+                    if (!IsTransientProviderStatus(response.StatusCode) || attempt == MaxProviderStageAttempts)
+                    {
+                        throw failure;
+                    }
+
+                    lastFailure = failure;
+                    await Task.Delay(ResolveProviderRetryDelay(response, attempt), cancellationToken);
+                    continue;
+                }
+
+                if (response.Content.Headers.ContentLength == 0)
+                {
+                    throw new InvalidDataException("Tidal audio asset returned an empty response.");
+                }
+
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                await using var file = IOFile.Create(outputPath);
+                await DownloadStreamHelper.CopyToAsyncWithProgress(stream, file, response.Content.Headers.ContentLength, progressCallback, cancellationToken);
+                await file.FlushAsync(cancellationToken);
+                if (new FileInfo(outputPath).Length <= 0)
+                {
+                    throw new InvalidDataException("Tidal audio asset download produced a zero-byte file.");
+                }
+
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsTransientProviderException(ex) && attempt < MaxProviderStageAttempts)
+            {
+                lastFailure = ex;
+                await Task.Delay(GetProviderRetryDelay(attempt), cancellationToken);
+            }
+        }
+
+        DownloadFileUtilities.TryDeleteFile(outputPath);
+        throw new InvalidOperationException(
+            $"Tidal audio asset failed after {MaxProviderStageAttempts} attempts.",
+            lastFailure);
     }
 
     private static async Task EnsureFinalDestinationAllowedAsync(
@@ -1647,7 +1840,9 @@ public sealed class TidalDownloadService
             cancellationToken);
         if (!decision.Allowed)
         {
-            throw new InvalidOperationException(decision.Message ?? "Tidal final destination rejected by dedupe.");
+            throw new TidalExistingFinalDestinationException(
+                outputPath,
+                decision.Message ?? "Tidal final destination rejected by dedupe.");
         }
     }
 
@@ -2002,6 +2197,29 @@ public sealed class TidalDownloadService
             or HttpStatusCode.BadGateway
             or HttpStatusCode.ServiceUnavailable
             or HttpStatusCode.GatewayTimeout;
+
+    private static bool IsTransientProviderStatus(HttpStatusCode statusCode)
+        => IsTransientSegmentStatus(statusCode);
+
+    private static bool IsTransientProviderException(Exception exception)
+        => exception is HttpRequestException requestException
+               && (!requestException.StatusCode.HasValue
+                   || IsTransientProviderStatus(requestException.StatusCode.Value))
+           || exception is IOException
+           || exception is InvalidDataException
+           || exception is TaskCanceledException;
+
+    private static TimeSpan ResolveProviderRetryDelay(HttpResponseMessage response, int attempt)
+    {
+        var retryAfter = response.Headers.RetryAfter;
+        var delay = retryAfter?.Delta ?? (retryAfter?.Date - DateTimeOffset.UtcNow);
+        return delay is { } requested && requested > TimeSpan.Zero
+            ? requested
+            : GetProviderRetryDelay(attempt);
+    }
+
+    private static TimeSpan GetProviderRetryDelay(int attempt)
+        => TimeSpan.FromMilliseconds(Math.Min(4000, 250 * Math.Pow(2, Math.Max(0, attempt - 1))));
 
     private static bool IsTransientSegmentException(Exception exception)
         => exception is HttpRequestException requestException
@@ -2485,17 +2703,13 @@ public sealed class TidalDownloadService
             return false;
         }
 
-        if (expectedDurationSeconds <= 0)
-        {
-            return true;
-        }
-
         if (!TryReadFfprobeAtmosAudio(filePath, out actualDurationSeconds))
         {
-            return true;
+            return false;
         }
 
-        return AudioDurationGuard.IsExpectedDurationAcceptable(actualDurationSeconds, expectedDurationSeconds);
+        return expectedDurationSeconds <= 0
+            || AudioDurationGuard.IsExpectedDurationAcceptable(actualDurationSeconds, expectedDurationSeconds);
     }
 
     private static bool TryReadFfprobeAtmosAudio(string filePath, out double durationSeconds)
@@ -2645,7 +2859,7 @@ public sealed class TidalDownloadService
         IOFile.Delete(tempPath);
     }
 
-    private static bool TryParseManifest(string body, out string manifest)
+    internal static bool TryParseManifest(string body, out string manifest)
     {
         manifest = "";
         try
@@ -2719,11 +2933,13 @@ public sealed class TidalDownloadService
 
     private async Task<IReadOnlyList<string>> GetDownloadUrlCandidatesAsync(
         long trackId,
-        string quality,
+        TidalDownloadRequest request,
         CancellationToken cancellationToken)
     {
+        var quality = request.Quality;
         if (await _accessTokenProvider.HasAuthenticatedSessionAsync(cancellationToken))
         {
+            request.ResolvedPublicProviderId = string.Empty;
             var credentialManifest = await FetchManifestFromAuthenticatedApiAsync(
                 trackId,
                 quality,
@@ -2737,10 +2953,16 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Tidal API pool is empty");
         }
 
-        var availableProviders = providers
-            .Where(candidate => !IsProviderCoolingDown(candidate))
-            .ToArray();
-        if (availableProviders.Length == 0)
+        var availableProviders = new List<TidalPublicProvider>();
+        foreach (var candidate in providers.Where(candidate => !IsProviderCoolingDown(candidate)))
+        {
+            var adapter = _publicProviderAdapters.Resolve(candidate);
+            if (await adapter.IsReadyAsync(candidate, cancellationToken))
+            {
+                availableProviders.Add(candidate);
+            }
+        }
+        if (availableProviders.Count == 0)
         {
             throw new InvalidOperationException("No Tidal download provider is currently available.");
         }
@@ -2751,7 +2973,23 @@ public sealed class TidalDownloadService
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                var manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
+                var manifestCacheKey = BuildProviderManifestCacheKey(provider.Id, trackId, quality);
+                string? manifest;
+                if (ProviderManifestCache.TryGetValue(manifestCacheKey, out var cachedManifest)
+                    && cachedManifest.ExpiresAtUtc > DateTimeOffset.UtcNow.AddSeconds(15))
+                {
+                    manifest = cachedManifest.Manifest;
+                }
+                else
+                {
+                    ProviderManifestCache.TryRemove(manifestCacheKey, out _);
+                    manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(manifest)
+                        && TryResolveManifestExpiry(manifest, out var expiresAtUtc))
+                    {
+                        ProviderManifestCache[manifestCacheKey] = new CachedProviderManifest(manifest, expiresAtUtc);
+                    }
+                }
                 stopwatch.Stop();
                 if (string.IsNullOrWhiteSpace(manifest))
                 {
@@ -2764,6 +3002,7 @@ public sealed class TidalDownloadService
                 EnsureTidalManifestMatchesRequestedQuality(manifest, quality, preserveManifestAudio: false);
                 await _providerSource.RememberHealthSuccessAsync(provider, stopwatch.ElapsedMilliseconds, cancellationToken);
                 await _providerSource.RememberSuccessAsync(provider, cancellationToken);
+                request.ResolvedPublicProviderId = provider.Id;
                 return [manifest.Trim()];
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2788,6 +3027,44 @@ public sealed class TidalDownloadService
         throw new InvalidOperationException(
             "All enabled Tidal download providers failed to return a usable manifest.",
             lastFailure);
+    }
+
+    private static string BuildProviderManifestCacheKey(string providerId, long trackId, string quality)
+        => $"{providerId.Trim().ToLowerInvariant()}:{trackId}:{NormalizeTidalDownloadQuality(quality)}";
+
+    private static bool TryResolveManifestExpiry(string manifest, out DateTimeOffset expiresAtUtc)
+    {
+        expiresAtUtc = default;
+        var decoded = TryDecodeManifest(manifest);
+        var matches = MatchesWithTimeout(
+            decoded,
+            @"(?:[?&]|&amp;)(?:exp|expires)=([0-9]{10,13})",
+            RegexOptions.IgnoreCase);
+        var expiries = new List<DateTimeOffset>();
+        foreach (Match match in matches)
+        {
+            if (!long.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var raw))
+            {
+                continue;
+            }
+
+            if (raw > 9_999_999_999 && raw <= 253_402_300_799_999)
+            {
+                expiries.Add(DateTimeOffset.FromUnixTimeMilliseconds(raw));
+            }
+            else if (raw >= 0 && raw <= 253_402_300_799)
+            {
+                expiries.Add(DateTimeOffset.FromUnixTimeSeconds(raw));
+            }
+        }
+
+        if (expiries.Count == 0)
+        {
+            return false;
+        }
+
+        expiresAtUtc = expiries.Min();
+        return expiresAtUtc > DateTimeOffset.UtcNow.AddSeconds(15);
     }
 
     private async Task<string> FetchManifestFromAuthenticatedApiAsync(
@@ -3114,7 +3391,7 @@ public sealed class TidalDownloadService
             : null;
     }
 
-    private static bool BodyContainsPreviewAsset(string body)
+    internal static bool BodyContainsPreviewAsset(string body)
     {
         if (string.IsNullOrWhiteSpace(body))
         {
@@ -3133,7 +3410,7 @@ public sealed class TidalDownloadService
         }
     }
 
-    private static bool TryExtractZarzAtmosManifestUri(string body, out string manifestUri)
+    internal static bool TryExtractZarzAtmosManifestUri(string body, out string manifestUri)
     {
         manifestUri = string.Empty;
         if (string.IsNullOrWhiteSpace(body))
@@ -3270,11 +3547,11 @@ public sealed class TidalDownloadService
             TidalStereoQualityTier.Low or TidalStereoQualityTier.High
                 => actual is TidalManifestQuality.Unknown or TidalManifestQuality.Lossy,
             TidalStereoQualityTier.CdLossless
-                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.CdLossless,
+                => actual is TidalManifestQuality.CdLossless,
             TidalStereoQualityTier.HiRes
-                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.HiRes,
+                => actual is TidalManifestQuality.HiRes or TidalManifestQuality.MaxHiRes,
             TidalStereoQualityTier.MaxHiRes
-                => actual is TidalManifestQuality.Unknown or TidalManifestQuality.MaxHiRes,
+                => actual is TidalManifestQuality.MaxHiRes,
             TidalStereoQualityTier.DolbyAtmos => true,
             _ => true
         };
@@ -3485,6 +3762,10 @@ public sealed class TidalDownloadService
         public TidalMediaMetadata? MediaMetadata { get; set; }
     }
 
+    private sealed record CachedTidalTrack(TidalTrack Track, DateTimeOffset ExpiresAtUtc);
+
+    private sealed record CachedProviderManifest(string Manifest, DateTimeOffset ExpiresAtUtc);
+
     private sealed class TidalMediaMetadata
     {
         [JsonPropertyName("tags")]
@@ -3572,4 +3853,15 @@ public sealed class TidalDownloadService
             mimeType = MimeType;
         }
     }
+}
+
+internal sealed class TidalExistingFinalDestinationException : InvalidOperationException
+{
+    public TidalExistingFinalDestinationException(string filePath, string message)
+        : base(message)
+    {
+        FilePath = filePath;
+    }
+
+    public string FilePath { get; }
 }

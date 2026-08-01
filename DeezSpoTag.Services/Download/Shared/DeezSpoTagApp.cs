@@ -633,17 +633,24 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
             return false;
         }
 
-        payloadObj["AutoIndex"] = 0;
-        payloadObj["autoIndex"] = 0;
-        payloadObj["FallbackHistory"] = new JsonArray();
-        payloadObj["fallbackHistory"] = new JsonArray();
-        ResetPayloadRetryState(payloadObj);
+        var preserveAcquiredAudio = HasRecoverableAcquiredAudio(payloadObj);
+        if (!preserveAcquiredAudio)
+        {
+            payloadObj["AutoIndex"] = 0;
+            payloadObj["autoIndex"] = 0;
+            payloadObj["FallbackHistory"] = new JsonArray();
+            payloadObj["fallbackHistory"] = new JsonArray();
+        }
+        ResetPayloadRetryState(payloadObj, preserveAcquiredAudio);
 
         updatedPayloadForWatchlist = payloadObj.ToJsonString();
         await _queueRepository.UpdatePayloadAsync(uuid, updatedPayloadForWatchlist, cancellationToken);
 
-        firstStepEngine = plan[0].Engine;
-        firstStepQuality = plan[0].Quality ?? string.Empty;
+        var retryStepIndex = preserveAcquiredAudio
+            ? Math.Clamp(ReadJsonInt(payloadObj, "AutoIndex", "autoIndex"), 0, plan.Count - 1)
+            : 0;
+        firstStepEngine = plan[retryStepIndex].Engine;
+        firstStepQuality = plan[retryStepIndex].Quality ?? string.Empty;
         if (!string.IsNullOrWhiteSpace(firstStepEngine))
         {
             await _queueRepository.UpdateEngineAsync(uuid, firstStepEngine, cancellationToken);
@@ -680,7 +687,7 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         return true;
     }
 
-    private static void ResetPayloadRetryState(JsonObject payloadObj)
+    private static void ResetPayloadRetryState(JsonObject payloadObj, bool preserveAcquiredAudio)
     {
         payloadObj["Progress"] = 0;
         payloadObj["progress"] = 0;
@@ -688,18 +695,50 @@ public class DeezSpoTagApp : DeezSpoTag.Services.Download.Deezer.IDeezerQueueCon
         payloadObj["downloaded"] = 0;
         payloadObj["Failed"] = 0;
         payloadObj["failed"] = 0;
-        payloadObj["Files"] = new JsonArray();
-        payloadObj["files"] = new JsonArray();
-        payloadObj["finalDestinations"] = new JsonObject();
         payloadObj["ErrorMessage"] = string.Empty;
         payloadObj["errorMessage"] = string.Empty;
         payloadObj["error"] = string.Empty;
-        payloadObj["FilePath"] = string.Empty;
-        payloadObj["filePath"] = string.Empty;
+        if (!preserveAcquiredAudio)
+        {
+            payloadObj["Files"] = new JsonArray();
+            payloadObj["files"] = new JsonArray();
+            payloadObj["finalDestinations"] = new JsonObject();
+            payloadObj["FilePath"] = string.Empty;
+            payloadObj["filePath"] = string.Empty;
+        }
 
         payloadObj["PrefetchArtworkStatus"] = string.Empty;
         payloadObj.Remove("prefetchArtworkStatus");
     }
+
+    private static bool HasRecoverableAcquiredAudio(JsonObject payload)
+    {
+        var acquired = payload["AudioAcquired"]?.GetValue<bool?>()
+            ?? payload["audioAcquired"]?.GetValue<bool?>()
+            ?? false;
+        var path = payload["AcquiredAudioPath"]?.GetValue<string>()
+            ?? payload["acquiredAudioPath"]?.GetValue<string>()
+            ?? string.Empty;
+        if (!acquired || string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var file = new FileInfo(DownloadPathResolver.ResolveIoPath(path));
+            return file.Exists && file.Length > 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private static int ReadJsonInt(JsonObject payload, string primary, string alternate)
+        => payload[primary]?.GetValue<int?>()
+            ?? payload[alternate]?.GetValue<int?>()
+            ?? 0;
 
     private async Task UpdateWatchlistTrackStatusAsync(string payloadJson, string status, CancellationToken cancellationToken)
     {

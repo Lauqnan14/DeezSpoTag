@@ -40,7 +40,15 @@ public sealed record TidalPublicProvider(
     string? FailureMessage,
     long? ResponseTimeMs,
     DateTimeOffset? CooldownUntil,
-    bool RequiresVerification = false);
+    bool RequiresVerification = false,
+    TidalPublicProviderCapabilities? Capabilities = null);
+
+public sealed record TidalPublicProviderCapabilities(
+    bool SupportsMetadata,
+    bool SupportsStereo,
+    bool SupportsAtmos,
+    bool SupportsDirectAssets,
+    bool SupportsManifests);
 
 public interface ITidalPublicProviderRegistry
 {
@@ -59,7 +67,8 @@ public sealed record TidalPublicProviderDefinition(
     string Endpoint,
     string? HealthEndpoint,
     string? HealthServiceKey,
-    bool RequiresVerification = false);
+    bool RequiresVerification = false,
+    TidalPublicProviderCapabilities? Capabilities = null);
 
 public static class TidalPublicProviderDefaults
 {
@@ -78,7 +87,13 @@ public static class TidalPublicProviderDefaults
             Decode(provider.EncodedEndpoint),
             string.IsNullOrWhiteSpace(provider.EncodedHealthEndpoint) ? null : Decode(provider.EncodedHealthEndpoint),
             provider.HealthServiceKey,
-            RequiresVerification: true))
+            RequiresVerification: true,
+            Capabilities: new TidalPublicProviderCapabilities(
+                SupportsMetadata: false,
+                SupportsStereo: true,
+                SupportsAtmos: true,
+                SupportsDirectAssets: true,
+                SupportsManifests: true)))
         .ToArray();
 
     public static IReadOnlyList<string> Endpoints { get; } = Providers.Select(static provider => provider.Endpoint).ToArray();

@@ -1,0 +1,146 @@
+using DeezSpoTag.Services.Library;
+
+namespace DeezSpoTag.Web.Services;
+
+public sealed class MediaServerRefreshOutboxService : BackgroundService
+{
+    private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(5);
+    private readonly LibraryRepository _repository;
+    private readonly MediaServerLibraryRefreshService _refreshService;
+    private readonly ILogger<MediaServerRefreshOutboxService> _logger;
+    private readonly SemaphoreSlim _wakeSignal = new(0, 1);
+    private readonly string _leaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+
+    public MediaServerRefreshOutboxService(
+        LibraryRepository repository,
+        MediaServerLibraryRefreshService refreshService,
+        ILogger<MediaServerRefreshOutboxService> logger)
+    {
+        _repository = repository;
+        _refreshService = refreshService;
+        _logger = logger;
+    }
+
+    public async Task EnqueueAsync(
+        long destinationFolderId,
+        IReadOnlyCollection<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured || destinationFolderId <= 0 || changedFilePaths.Count == 0)
+        {
+            return;
+        }
+
+        var services = await _refreshService.GetConfiguredServicesAsync();
+        foreach (var service in services)
+        {
+            await _repository.EnqueueMediaServerRefreshAsync(
+                destinationFolderId,
+                service,
+                changedFilePaths,
+                cancellationToken: cancellationToken);
+        }
+
+        if (services.Count > 0 && _wakeSignal.CurrentCount == 0)
+        {
+            _wakeSignal.Release();
+        }
+    }
+
+    public async Task<(int Pending, int Processing, int Retry)> GetStatusAsync(
+        CancellationToken cancellationToken = default)
+        => await _repository.GetMediaServerRefreshOutboxCountsAsync(cancellationToken);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await ProcessDueJobsAsync(stoppingToken);
+                await _wakeSignal.WaitAsync(IdlePollInterval, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Media-server refresh outbox cycle failed; pending jobs will be retried.");
+                await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+            }
+        }
+    }
+
+    private async Task ProcessDueJobsAsync(CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured)
+        {
+            return;
+        }
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var jobs = await _repository.ClaimDueMediaServerRefreshesAsync(
+                6,
+                ProcessingLease,
+                _leaseOwner,
+                cancellationToken);
+            if (jobs.Count == 0)
+            {
+                return;
+            }
+
+            await Task.WhenAll(jobs.Select(job => ProcessJobAsync(job, cancellationToken)));
+        }
+    }
+
+    private async Task ProcessJobAsync(
+        MediaServerRefreshOutboxDto job,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var refreshed = await _refreshService.RequestLibraryRefreshAsync(
+                job.TargetService,
+                cancellationToken);
+            if (refreshed)
+            {
+                await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                return;
+            }
+
+            await RetryAsync(job, $"{job.TargetService} rejected the library refresh request.", cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Media-server refresh failed independently for {Service}, destination folder {DestinationFolderId}.",
+                job.TargetService,
+                job.DestinationFolderId);
+            await RetryAsync(job, ex.Message, cancellationToken);
+        }
+    }
+
+    private async Task RetryAsync(
+        MediaServerRefreshOutboxDto job,
+        string error,
+        CancellationToken cancellationToken)
+    {
+        var attempt = job.AttemptCount + 1;
+        var delayMinutes = Math.Min(30, Math.Pow(2, Math.Min(attempt - 1, 5)));
+        await _repository.RetryMediaServerRefreshAsync(
+            job.Id,
+            _leaseOwner,
+            attempt,
+            DateTimeOffset.UtcNow.AddMinutes(delayMinutes),
+            error,
+            cancellationToken);
+    }
+}

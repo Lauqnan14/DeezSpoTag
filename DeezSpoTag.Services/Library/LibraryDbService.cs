@@ -27,6 +27,7 @@ public sealed class LibraryDbService
     private const string WatchlistSourceCircuitStateTable = "watchlist_source_circuit_state";
     private const string WatchlistReconciliationRequestTable = "watchlist_reconciliation_request";
     private const string WatchlistFinalizationOutboxTable = "watchlist_finalization_outbox";
+    private const string MediaServerRefreshOutboxTable = "media_server_refresh_outbox";
     private const string PlaylistTrackCandidateCacheTable = "playlist_track_candidate_cache";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
@@ -138,6 +139,8 @@ public sealed class LibraryDbService
             ["idx_watchlist_sync_job_due"] = ("watchlist_sync_job", "status, next_attempt_utc, lease_until_utc, id", false)
             ,
             ["idx_watchlist_finalization_outbox_due"] = (WatchlistFinalizationOutboxTable, "status, next_attempt_utc, lease_until_utc, id", false)
+            ,
+            ["idx_media_server_refresh_outbox_due"] = (MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", false)
             ,
             ["idx_watchlist_reconciliation_request_updated"] = (WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", false)
             ,
@@ -553,6 +556,23 @@ CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );", cancellationToken);
         await EnsureIndexAsync(connection, "idx_watchlist_finalization_outbox_due", WatchlistFinalizationOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    destination_folder_id INTEGER NOT NULL,
+    target_service TEXT NOT NULL,
+    changed_file_paths_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (destination_folder_id, target_service)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_media_server_refresh_outbox_due", MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_owner", TextType, cancellationToken);

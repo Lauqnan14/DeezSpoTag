@@ -32,6 +32,37 @@ public sealed class LyricsServicePrivateHelpersTests
             ?? throw new InvalidOperationException($"LyricsService.{methodName} returned null."));
     }
 
+    [Theory]
+    [InlineData("apple", "apple_track_id", "1604260328")]
+    [InlineData("deezer", "deezer_track_id", "1616948912")]
+    [InlineData("spotify", "spotify_track_id", "0IYRMpl9aTh4uz4NAk89IE")]
+    public void BuildProviderCacheKey_ReusesProviderIdentityAcrossStereoAndAtmos(
+        string provider,
+        string idKey,
+        string providerTrackId)
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            SyncedLyrics = true,
+            SaveLyrics = true,
+            LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
+            LrcFormat = "richlyrics"
+        };
+        var stereo = CreateLyricsTestTrack();
+        stereo.ISRC = "USUYG1358396";
+        stereo.Duration = 157;
+        stereo.Urls[idKey] = providerTrackId;
+        var atmos = CreateLyricsTestTrack();
+        atmos.ISRC = "USUYG1440436";
+        atmos.Duration = 158;
+        atmos.Urls[idKey] = providerTrackId;
+
+        var stereoKey = InvokeStatic<string>("BuildProviderCacheKey", provider, stereo, settings);
+        var atmosKey = InvokeStatic<string>("BuildProviderCacheKey", provider, atmos, settings);
+
+        Assert.Equal(stereoKey, atmosKey);
+    }
+
     [Fact]
     public void BuildWordSynchronizedTtml_PreservesSpacesMissingFromProviderWordTokens()
     {

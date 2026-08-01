@@ -33,4 +33,5 @@ public sealed class TidalDownloadRequest : EngineDownloadRequestBase
     public bool IsVideo { get; set; }
     public string VideoOutputRoot { get; set; } = "";
     public int VideoMaxResolution { get; set; } = 1080;
+    public string ResolvedPublicProviderId { get; set; } = "";
 }

@@ -1194,6 +1194,7 @@ public static partial class EngineAudioPostDownloadHelper
             DiscNumber = ResolveDiscNumber(payload),
             Position = payload.Position,
             ISRC = payload.Isrc ?? string.Empty,
+            Duration = Math.Max(0, payload.DurationSeconds),
             Date = parsedDate,
             DateString = parsedDate.Format(settings.DateFormat),
             Danceability = payload.Danceability,
@@ -1830,6 +1831,11 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken cancellationToken = default)
     {
         var requirements = BuildPrefetchRequirements(request);
+        if (requirements.ShouldFetchLyrics)
+        {
+            SynchronizeTrackWithPayloadForTagging(request.Context.Track, request.Payload);
+        }
+
         if (!requirements.ShouldQueueWork)
         {
             ClearPrefetchState(request.QueueUuid);

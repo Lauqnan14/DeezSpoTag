@@ -10954,6 +10954,191 @@ WHERE lower(status)='completed' AND datetime(updated_at) < datetime(@cutoffUtc);
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task EnqueueMediaServerRefreshAsync(
+        long destinationFolderId,
+        string targetService,
+        IReadOnlyCollection<string> changedFilePaths,
+        TimeSpan? coalescingDelay = null,
+        CancellationToken cancellationToken = default)
+    {
+        var service = targetService?.Trim().ToLowerInvariant();
+        var paths = changedFilePaths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (destinationFolderId <= 0
+            || service is not ("plex" or "jellyfin" or "navidrome")
+            || paths.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var read = new SqliteCommand(@"
+SELECT changed_file_paths_json
+FROM media_server_refresh_outbox
+WHERE destination_folder_id=@destinationFolderId AND target_service=@targetService;", connection, transaction))
+        {
+            read.Parameters.AddWithValue("destinationFolderId", destinationFolderId);
+            read.Parameters.AddWithValue("targetService", service);
+            var existingJson = await read.ExecuteScalarAsync(cancellationToken) as string;
+            if (!string.IsNullOrWhiteSpace(existingJson))
+            {
+                try
+                {
+                    paths.AddRange(JsonSerializer.Deserialize<List<string>>(existingJson) ?? []);
+                    paths = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                }
+                catch (JsonException)
+                {
+                    // Replace malformed persisted path data with the current verified paths.
+                }
+            }
+        }
+
+        await using var command = new SqliteCommand(@"
+INSERT INTO media_server_refresh_outbox
+    (destination_folder_id,target_service,changed_file_paths_json,status,attempt_count,next_attempt_utc)
+VALUES (@destinationFolderId,@targetService,@paths,'pending',0,@nextAttemptUtc)
+ON CONFLICT(destination_folder_id,target_service) DO UPDATE SET
+    changed_file_paths_json=excluded.changed_file_paths_json,
+    status='pending',
+    attempt_count=0,
+    next_attempt_utc=excluded.next_attempt_utc,
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    last_error=NULL,
+    updated_at=CURRENT_TIMESTAMP;", connection, transaction);
+        command.Parameters.AddWithValue("destinationFolderId", destinationFolderId);
+        command.Parameters.AddWithValue("targetService", service);
+        command.Parameters.AddWithValue("paths", JsonSerializer.Serialize(paths));
+        command.Parameters.AddWithValue(
+            "nextAttemptUtc",
+            DateTimeOffset.UtcNow.Add(coalescingDelay ?? TimeSpan.FromSeconds(5)).ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<MediaServerRefreshOutboxDto>> ClaimDueMediaServerRefreshesAsync(
+        int limit,
+        TimeSpan lease,
+        string leaseOwner,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE media_server_refresh_outbox
+SET status='processing',lease_owner=@leaseOwner,lease_until_utc=@leaseUntilUtc,updated_at=CURRENT_TIMESTAMP
+WHERE id IN (
+    SELECT id FROM media_server_refresh_outbox
+    WHERE (lower(status) IN ('pending','retry') AND datetime(next_attempt_utc) <= datetime('now'))
+       OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'))
+    ORDER BY next_attempt_utc,id LIMIT @limit
+)
+RETURNING id,destination_folder_id,target_service,changed_file_paths_json,status,attempt_count,
+          next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at;", connection, transaction);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
+        command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
+        command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 25));
+        var rows = new List<MediaServerRefreshOutboxDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new MediaServerRefreshOutboxDto(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetString(2),
+                JsonSerializer.Deserialize<List<string>>(reader.GetString(3)) ?? [],
+                reader.GetString(4),
+                reader.GetInt32(5),
+                ParseDateTimeOffsetInvariant(reader.GetString(6)),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : ParseDateTimeOffsetInvariant(reader.GetString(8)),
+                reader.IsDBNull(9) ? null : reader.GetString(9),
+                ParseDateTimeOffsetInvariant(reader.GetString(10))));
+        }
+        await reader.DisposeAsync();
+        await transaction.CommitAsync(cancellationToken);
+        return rows;
+    }
+
+    public async Task<bool> CompleteMediaServerRefreshAsync(
+        long id,
+        string leaseOwner,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE media_server_refresh_outbox
+SET status='completed',changed_file_paths_json='[]',lease_owner=NULL,lease_until_utc=NULL,
+    last_error=NULL,updated_at=CURRENT_TIMESTAMP
+WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<bool> RetryMediaServerRefreshAsync(
+        long id,
+        string leaseOwner,
+        int attemptCount,
+        DateTimeOffset nextAttemptUtc,
+        string error,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE media_server_refresh_outbox
+SET status='retry',attempt_count=@attemptCount,next_attempt_utc=@nextAttemptUtc,
+    lease_owner=NULL,lease_until_utc=NULL,last_error=@error,updated_at=CURRENT_TIMESTAMP
+WHERE id=@id AND lease_owner=@leaseOwner;", connection);
+        command.Parameters.AddWithValue("id", id);
+        command.Parameters.AddWithValue("leaseOwner", leaseOwner);
+        command.Parameters.AddWithValue("attemptCount", Math.Max(1, attemptCount));
+        command.Parameters.AddWithValue("nextAttemptUtc", nextAttemptUtc.ToString("O"));
+        command.Parameters.AddWithValue("error", error);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<(int Pending, int Processing, int Retry)> GetMediaServerRefreshOutboxCountsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT
+    SUM(CASE WHEN lower(status)='pending' THEN 1 ELSE 0 END),
+    SUM(CASE WHEN lower(status)='processing' THEN 1 ELSE 0 END),
+    SUM(CASE WHEN lower(status)='retry' THEN 1 ELSE 0 END)
+FROM media_server_refresh_outbox;", connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return (0, 0, 0);
+        }
+        return (
+            reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
+            reader.IsDBNull(1) ? 0 : reader.GetInt32(1),
+            reader.IsDBNull(2) ? 0 : reader.GetInt32(2));
+    }
+
+    public async Task<bool> HasPendingMediaServerRefreshAsync(
+        string targetService,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT 1
+FROM media_server_refresh_outbox
+WHERE target_service=@targetService AND lower(status) IN ('pending','processing','retry')
+LIMIT 1;", connection);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
     public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistSyncJobsAsync(
         string source,
         string playlistId,

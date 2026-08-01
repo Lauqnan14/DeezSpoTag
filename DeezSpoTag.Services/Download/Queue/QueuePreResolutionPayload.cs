@@ -146,6 +146,7 @@ public static class QueuePreResolutionPayload
 
     public static void ApplyResolved(JsonObject payload, ResolutionResult result, DateTimeOffset now)
     {
+        var resolvedAutoIndex = ResolveCoherentAutoIndex(result);
         SetResolutionPair(payload, ResolutionStatusPascalKey, ResolutionStatusCamelKey, Resolved);
         SetResolutionPair(payload, "ResolvedAtUtc", "resolvedAtUtc", now);
         SetResolutionPair(payload, "ResolvedEngine", "resolvedEngine", result.Engine);
@@ -202,10 +203,10 @@ public static class QueuePreResolutionPayload
             SetResolutionPair(payload, "DestinationFolderId", "destinationFolderId", result.DestinationFolderId.Value);
         }
 
-        if (result.AutoIndex.HasValue)
+        if (resolvedAutoIndex.HasValue)
         {
-            SetResolutionPair(payload, "ResolvedAutoIndex", "resolvedAutoIndex", result.AutoIndex.Value);
-            SetResolutionPair(payload, "AutoIndex", "autoIndex", result.AutoIndex.Value);
+            SetResolutionPair(payload, "ResolvedAutoIndex", "resolvedAutoIndex", resolvedAutoIndex.Value);
+            SetResolutionPair(payload, "AutoIndex", "autoIndex", resolvedAutoIndex.Value);
         }
 
         if (result.FallbackPlan is { Count: > 0 })
@@ -214,6 +215,34 @@ public static class QueuePreResolutionPayload
             payload["FallbackPlan"] = plan.DeepClone();
             payload["fallbackPlan"] = plan.DeepClone();
         }
+    }
+
+    private static int? ResolveCoherentAutoIndex(ResolutionResult result)
+    {
+        if (result.FallbackPlan is not { Count: > 0 } || string.IsNullOrWhiteSpace(result.Quality))
+        {
+            return result.AutoIndex;
+        }
+
+        var matchingIndexes = result.FallbackPlan
+            .Select((step, index) => (step, index))
+            .Where(candidate =>
+                string.Equals(candidate.step.Engine, result.Engine, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(candidate.step.Quality, result.Quality, StringComparison.OrdinalIgnoreCase))
+            .Select(candidate => candidate.index)
+            .ToList();
+        if (matchingIndexes.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"Resolved engine/quality '{result.Engine}|{result.Quality}' is not present in the persisted fallback plan.");
+        }
+
+        if (result.AutoIndex.HasValue && matchingIndexes.Contains(result.AutoIndex.Value))
+        {
+            return result.AutoIndex.Value;
+        }
+
+        return matchingIndexes[0];
     }
 
     private static void ApplyResolvedMetadata(JsonObject payload, ResolvedMetadata? metadata)

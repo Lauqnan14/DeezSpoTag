@@ -1325,7 +1325,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             cancellationToken);
         if (!decision.Allowed)
         {
-            throw new InvalidOperationException(decision.Message ?? "Qobuz final destination rejected by dedupe.");
+            throw new QobuzExistingFinalDestinationException(
+                outputPath,
+                decision.Message ?? "Qobuz final destination rejected by dedupe.");
         }
     }
 
@@ -1806,4 +1808,15 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         public string? Ticket { get; set; }
     }
 
+}
+
+internal sealed class QobuzExistingFinalDestinationException : InvalidOperationException
+{
+    public QobuzExistingFinalDestinationException(string filePath, string message)
+        : base(message)
+    {
+        FilePath = filePath;
+    }
+
+    public string FilePath { get; }
 }

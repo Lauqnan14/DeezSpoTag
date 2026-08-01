@@ -286,14 +286,12 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
         }
 
         var resolvedQuality = selectedQuality.Trim();
-        var qualityChanged = !string.Equals(payload.Quality, resolvedQuality, StringComparison.OrdinalIgnoreCase);
         var resolvedChanged = !string.Equals(payload.QobuzResolvedQuality, resolvedQuality, StringComparison.OrdinalIgnoreCase);
-        if (!qualityChanged && !resolvedChanged)
+        if (!resolvedChanged)
         {
             return;
         }
 
-        payload.Quality = resolvedQuality;
         payload.QobuzResolvedQuality = resolvedQuality;
         await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, queueUuid, payload, cancellationToken: cancellationToken);
         _deezspotagListener.Send(UpdateQueueEvent, new
@@ -319,6 +317,7 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             return null;
         }
 
+        AlignPayloadToPersistedPlanStep(payload);
         DownloadLifecycleCheckpoint.TryAdoptExistingAudio(payload);
 
         await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
@@ -343,6 +342,30 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             payload.Failed,
             itemToken);
         return payload;
+    }
+
+    private static void AlignPayloadToPersistedPlanStep(QobuzQueueItem payload)
+    {
+        if (payload.FallbackPlan is not { Count: > 0 }
+            || payload.AutoIndex < 0
+            || payload.AutoIndex >= payload.FallbackPlan.Count)
+        {
+            return;
+        }
+
+        var step = payload.FallbackPlan[payload.AutoIndex];
+        if (!string.Equals(step.Engine, EngineName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Qobuz queue item points to fallback step {payload.AutoIndex} for engine '{step.Engine}'.");
+        }
+
+        payload.Engine = step.Engine;
+        payload.SourceService = step.Engine;
+        payload.Quality = step.Quality ?? payload.Quality;
+        payload.ResolvedEngine = step.Engine;
+        payload.ResolvedQuality = payload.Quality;
+        payload.ResolvedAutoIndex = payload.AutoIndex;
     }
 
     private static void ResetRuntimeProgress(QobuzQueueItem payload)
@@ -533,7 +556,22 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             progressReporter,
             cancellationToken);
 
-        return DownloadWithQualityAsync(context, request.Quality);
+        return DownloadOrAdoptExistingAsync(context, request.Quality);
+    }
+
+    private async Task<string> DownloadOrAdoptExistingAsync(
+        DownloadWithQualityContext context,
+        string quality)
+    {
+        try
+        {
+            return await DownloadWithQualityAsync(context, quality);
+        }
+        catch (QobuzExistingFinalDestinationException existing)
+            when (DownloadLifecycleCheckpoint.TryAdoptExistingAudioAtPath(context.Payload, existing.FilePath))
+        {
+            return DownloadPathResolver.ResolveIoPath(existing.FilePath);
+        }
     }
 
     private async Task<QobuzQualityDecisionResult> ApplyResolvedQualityDecisionAsync(

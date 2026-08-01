@@ -241,14 +241,12 @@ public sealed class EngineFallbackCoordinator
 
     private static int ResolveNextPlanIndex(List<(string Source, string? Quality)> planSteps, FallbackAdvanceRequest request)
     {
-        var matchedIndex = FindStepIndex(planSteps, request.CurrentEngine, request.Quality);
-        // Reconcile persisted auto-index with current engine/quality:
-        // some engines can internally step down quality before bubbling a failure.
-        // If that happened, prefer the furthest progressed index so fallback does not revisit already-attempted steps.
-        var currentIndex = request.AutoIndex >= 0
-            ? Math.Max(request.AutoIndex, matchedIndex)
-            : matchedIndex;
-        return currentIndex + 1;
+        if (request.AutoIndex < 0 || request.AutoIndex >= planSteps.Count)
+        {
+            throw new InvalidOperationException($"Persisted fallback index {request.AutoIndex} is outside the active plan.");
+        }
+
+        return request.AutoIndex + 1;
     }
 
     private static SourceResolutionRequest BuildSourceResolutionRequest(
@@ -568,28 +566,6 @@ public sealed class EngineFallbackCoordinator
         {
             steps.Add((normalizedSource, normalizedQuality));
         }
-    }
-
-    private static int FindStepIndex(List<(string Source, string? Quality)> autoSources, string engine, string quality)
-    {
-        for (var i = 0; i < autoSources.Count; i++)
-        {
-            var step = autoSources[i];
-            if (string.Equals(step.Source, engine, StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrWhiteSpace(step.Quality) || string.IsNullOrWhiteSpace(quality))
-                {
-                    return i;
-                }
-
-                if (string.Equals(step.Quality, quality, StringComparison.OrdinalIgnoreCase))
-                {
-                    return i;
-                }
-            }
-        }
-
-        return -1;
     }
 
     private async Task<string?> ResolveSourceUrlAsync(

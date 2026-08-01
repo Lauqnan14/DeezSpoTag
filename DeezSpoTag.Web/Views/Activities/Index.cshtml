@@ -2865,6 +2865,7 @@
                             Clear Canceled
                         </button>
                     </div>
+                    <div id="media-server-refresh-status" class="section-header" hidden></div>
 
                     <div class="tasks-container">
                         <div id="tasksList"></div>
@@ -5594,6 +5595,20 @@ async function loadQueueFromServer(options) {
         const payload = await response.json();
         if (!payload.success) {
             throw new Error(payload.error || 'Queue load failed');
+        }
+
+        const refreshStatus = payload.mediaServerRefresh || {};
+        const refreshStatusElement = document.getElementById('media-server-refresh-status');
+        if (refreshStatusElement) {
+            const pending = Number(refreshStatus.pending || 0);
+            const running = Number(refreshStatus.running || 0);
+            const retryWaiting = Number(refreshStatus.retryWaiting || 0);
+            refreshStatusElement.hidden = pending + running + retryWaiting === 0;
+            refreshStatusElement.textContent = running > 0
+                ? `Target library refresh running (${running})`
+                : retryWaiting > 0
+                    ? `Target library refresh waiting to retry (${retryWaiting})`
+                    : `Target library refresh pending (${pending})`;
         }
 
         const queue = payload.data?.queue || {};

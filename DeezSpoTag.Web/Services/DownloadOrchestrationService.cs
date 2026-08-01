@@ -195,7 +195,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly KnownLibraryFileIngestionService _knownFileIngestionService;
-    private readonly MediaServerLibraryRefreshService _mediaServerLibraryRefreshService;
+    private readonly MediaServerRefreshOutboxService _mediaServerRefreshOutboxService;
     private readonly DownloadRetryScheduler _retryScheduler;
     private readonly TrackAnalysisBackgroundService _analysisService;
     private readonly VibeAnalysisSettingsStore _vibeSettingsStore;
@@ -256,7 +256,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _configBuilder = serviceProvider.GetRequiredService<AutoTagConfigBuilder>();
         _profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         _knownFileIngestionService = serviceProvider.GetRequiredService<KnownLibraryFileIngestionService>();
-        _mediaServerLibraryRefreshService = serviceProvider.GetRequiredService<MediaServerLibraryRefreshService>();
+        _mediaServerRefreshOutboxService = serviceProvider.GetRequiredService<MediaServerRefreshOutboxService>();
         _retryScheduler = serviceProvider.GetRequiredService<DownloadRetryScheduler>();
         _analysisService = serviceProvider.GetRequiredService<TrackAnalysisBackgroundService>();
         _vibeSettingsStore = serviceProvider.GetRequiredService<VibeAnalysisSettingsStore>();
@@ -1554,14 +1554,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     await RemoveQuarantinedEnhancementSourcesFromIndexAsync(group, cancellationToken);
                 }
 
-                var postMoveDispatch = await PersistWatchlistFinalizationOutboxAsync(
+                await PersistWatchlistFinalizationOutboxAsync(
                     group,
                     summary.ChangedFilePaths,
                     cancellationToken);
-                if (postMoveDispatch.NonWatchlistPresent)
-                {
-                    await RefreshConfiguredMediaServersForNonWatchlistMoveAsync(cancellationToken);
-                }
+                await _mediaServerRefreshOutboxService.EnqueueAsync(
+                    group.DestinationFolderId,
+                    summary.ChangedFilePaths,
+                    cancellationToken);
             }
 
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -1697,13 +1697,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return false;
     }
 
-    private async Task<(bool WatchlistQueued, bool NonWatchlistPresent)> PersistWatchlistFinalizationOutboxAsync(
+    private async Task PersistWatchlistFinalizationOutboxAsync(
         PipelineWorkGroup group,
         IReadOnlyList<string> changedFilePaths,
         CancellationToken cancellationToken)
     {
         var queued = false;
-        var nonWatchlistPresent = false;
         foreach (var item in group.PendingItems)
         {
             var claims = await _libraryRepository.GetPlaylistWatchDownloadClaimsAsync(
@@ -1712,7 +1711,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 cancellationToken);
             if (claims.Count == 0 && !WatchlistFinalizationService.PayloadHasWatchlistContext(item.PayloadJson))
             {
-                nonWatchlistPresent = true;
                 continue;
             }
             var itemFinalPaths = DownloadQueueRepository.GetExistingMaterializedFilePaths(item);
@@ -1734,20 +1732,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         {
             cancellationToken.ThrowIfCancellationRequested();
             _watchlistRunSignal?.Request(WatchlistWakeReason.Finalization);
-        }
-        return (queued, nonWatchlistPresent);
-    }
-
-    private async Task RefreshConfiguredMediaServersForNonWatchlistMoveAsync(CancellationToken cancellationToken)
-    {
-        var refresh = await _mediaServerLibraryRefreshService.RefreshConfiguredServersAsync(cancellationToken);
-        if (!refresh.IsComplete)
-        {
-            _logger.LogWarning(
-                "Post-download media-server refresh was incomplete for a non-Watchlist download: refreshedServers={RefreshedServers}/{ConfiguredServers}, failedServers={FailedServers}.",
-                refresh.RefreshedServerCount,
-                refresh.ConfiguredServerCount,
-                string.Join(',', refresh.FailedServers));
         }
     }
 

@@ -727,6 +727,25 @@ CREATE TABLE IF NOT EXISTS watchlist_finalization_outbox (
 CREATE INDEX IF NOT EXISTS idx_watchlist_finalization_outbox_due
     ON watchlist_finalization_outbox (status, next_attempt_utc, lease_until_utc, id);
 
+CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    destination_folder_id INTEGER NOT NULL,
+    target_service TEXT NOT NULL,
+    changed_file_paths_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    lease_owner TEXT,
+    lease_until_utc TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (destination_folder_id, target_service)
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_server_refresh_outbox_due
+    ON media_server_refresh_outbox (status, next_attempt_utc, lease_until_utc, id);
+
 CREATE INDEX IF NOT EXISTS idx_watchlist_sync_job_due
     ON watchlist_sync_job (next_attempt_utc, id);
 

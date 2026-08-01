@@ -1290,18 +1290,40 @@ public class LyricsService
         Track track,
         DeezSpoTagSettings settings)
     {
-        var identity = string.Join(
-            '\u001f',
-            provider,
-            track.ISRC?.Trim().ToUpperInvariant(),
-            track.Title?.Trim().ToUpperInvariant(),
-            ResolveMusixmatchArtist(track).Trim().ToUpperInvariant(),
-            track.Album?.Title?.Trim().ToUpperInvariant(),
-            track.Duration.ToString(CultureInfo.InvariantCulture),
-            ProviderCacheVersion,
-            string.Join(",", DescribeResolutionPlan(settings).RequestedFormats),
-            settings.SynthesizeLrcFromTtml.ToString(CultureInfo.InvariantCulture));
+        var providerTrackId = ResolveProviderTrackIdForCache(provider, track);
+        var identity = !string.IsNullOrWhiteSpace(providerTrackId)
+            ? string.Join(
+                '\u001f',
+                provider,
+                "provider-track-id",
+                providerTrackId.Trim().ToUpperInvariant(),
+                ProviderCacheVersion,
+                string.Join(",", DescribeResolutionPlan(settings).RequestedFormats),
+                settings.SynthesizeLrcFromTtml.ToString(CultureInfo.InvariantCulture))
+            : string.Join(
+                '\u001f',
+                provider,
+                "metadata",
+                track.Title?.Trim().ToUpperInvariant(),
+                ResolveMusixmatchArtist(track).Trim().ToUpperInvariant(),
+                track.Album?.Title?.Trim().ToUpperInvariant(),
+                track.Duration.ToString(CultureInfo.InvariantCulture),
+                track.ISRC?.Trim().ToUpperInvariant(),
+                ProviderCacheVersion,
+                string.Join(",", DescribeResolutionPlan(settings).RequestedFormats),
+                settings.SynthesizeLrcFromTtml.ToString(CultureInfo.InvariantCulture));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+    }
+
+    private static string? ResolveProviderTrackIdForCache(string provider, Track track)
+    {
+        return provider switch
+        {
+            AppleProvider => ResolveAppleLyricsTrackId(track),
+            DeezerProvider => ResolveDeezerLyricsTrackId(track),
+            SpotifyProvider => ResolveSpotifyLyricsTrackId(track),
+            _ => null
+        };
     }
 
     private static LyricsBase CloneLyrics(LyricsBase source)

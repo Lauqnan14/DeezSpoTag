@@ -44,17 +44,72 @@ public sealed class TidalEngineProcessor : QueueEngineProcessorBase
                 async (payload, request, settings, progressReporter, cancellationToken) =>
                 {
                     var tidalRequest = (TidalDownloadRequest)request;
-                    return await _tidalDownloader.DownloadAsync(
-                        tidalRequest,
-                        settings.EmbedMaxQualityCover,
-                        settings.Tags,
-                        progressReporter,
-                        cancellationToken);
+                    payload.TidalResolvedRepresentation = DownloadEngineSettingsHelper.IsAtmosOnlyPayload(
+                        payload.ContentType,
+                        payload.Quality)
+                            ? "atmos"
+                            : "stereo";
+                    payload.TidalResolvedQuality = tidalRequest.Quality;
+                    payload.TidalAtmosConfirmed = false;
+                    payload.TidalResolvedAtUtc ??= DateTimeOffset.UtcNow;
+                    payload.TidalAcquisitionStage = "audio_acquisition";
+                    try
+                    {
+                        var downloadedPath = await _tidalDownloader.DownloadAsync(
+                            tidalRequest,
+                            settings.EmbedMaxQualityCover,
+                            settings.Tags,
+                            progressReporter,
+                            cancellationToken);
+                        payload.TidalPublicProviderId = tidalRequest.ResolvedPublicProviderId;
+                        payload.TidalId = tidalRequest.TidalId;
+                        return downloadedPath;
+                    }
+                    catch (TidalExistingFinalDestinationException existing)
+                        when (DownloadLifecycleCheckpoint.TryAdoptExistingAudioAtPath(payload, existing.FilePath))
+                    {
+                        payload.TidalId = tidalRequest.TidalId;
+                        payload.TidalAcquisitionStage = "audio_recovered";
+                        return existing.FilePath;
+                    }
+                    catch
+                    {
+                        payload.TidalId = tidalRequest.TidalId;
+                        payload.TidalPublicProviderId = tidalRequest.ResolvedPublicProviderId;
+                        payload.TidalAcquisitionStage = "audio_acquisition_failed";
+                        throw;
+                    }
                 },
-                null,
+                (payload, _) =>
+                {
+                    payload.TidalResolvedRepresentation = DownloadEngineSettingsHelper.IsAtmosOnlyPayload(
+                        payload.ContentType,
+                        payload.Quality)
+                            ? "atmos"
+                            : "stereo";
+                    payload.TidalResolvedQuality = payload.Quality;
+                    payload.TidalResolvedAtUtc ??= DateTimeOffset.UtcNow;
+                    payload.TidalAcquisitionStage = "identity_resolved";
+                    return Task.CompletedTask;
+                },
                 request => $"Download start: {item.QueueUuid} engine=tidal quality={((TidalDownloadRequest)request).Quality}",
                 payload => payload.Title,
-                static payload => payload.ToQueuePayload()),
+                static payload => payload.ToQueuePayload(),
+                async (payload, acquiredPath, token) =>
+                {
+                    var promoted = await _tidalDownloader.PromoteAcceptedAudioAsync(payload, acquiredPath, token);
+                    payload.TidalAcquisitionStage = "audio_accepted";
+                    payload.TidalAtmosConfirmed = string.Equals(
+                        payload.TidalResolvedRepresentation,
+                        "atmos",
+                        StringComparison.OrdinalIgnoreCase);
+                    return promoted;
+                },
+                (payload, rejectedPath, token) =>
+                {
+                    _tidalDownloader.DeleteRejectedStagingAudio(payload, rejectedPath);
+                    return Task.CompletedTask;
+                }),
             cancellationToken);
     }
 

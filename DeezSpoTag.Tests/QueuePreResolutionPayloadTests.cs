@@ -87,10 +87,38 @@ public sealed class QueuePreResolutionPayloadTests
         Assert.Equal("205", payload["durationSeconds"]?.ToString());
         Assert.Equal("1", payload["DestinationFolderId"]?.ToString());
         Assert.Equal("stereo", payload["ContentType"]?.ToString());
-        Assert.Equal("2", payload["AutoIndex"]?.ToString());
+        Assert.Equal("0", payload["AutoIndex"]?.ToString());
         Assert.IsType<JsonArray>(payload["FallbackPlan"]);
         Assert.IsType<JsonArray>(payload["fallbackPlan"]);
         Assert.Equal(now, QueuePreResolutionPayload.ReadResolvedAt(payload));
+    }
+
+    [Fact]
+    public void ApplyResolved_RepairsQualityAndIndexToTheSamePersistedPlanStep()
+    {
+        var payload = new JsonObject();
+        var plan = new List<FallbackPlanStep>
+        {
+            new("step-0", "qobuz", "7", [], "direct_url"),
+            new("step-1", "tidal", "HI_RES", [], "direct_url"),
+            new("step-2", "amazon", "ULTRA_HD_FLAC", [], "direct_url"),
+            new("step-3", "qobuz", "6", [], "direct_url")
+        };
+
+        QueuePreResolutionPayload.ApplyResolved(
+            payload,
+            new QueuePreResolutionPayload.ResolutionResult(
+                "qobuz",
+                "https://play.qobuz.com/track/123",
+                "6",
+                0,
+                plan,
+                null),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal("6", payload["Quality"]?.ToString());
+        Assert.Equal("3", payload["AutoIndex"]?.ToString());
+        Assert.Equal("3", payload["ResolvedAutoIndex"]?.ToString());
     }
 
     [Theory]

@@ -15,8 +15,25 @@ public sealed class TidalQueueItem : EngineQueueItemBase
     [JsonIgnore]
     public TidalDownloadStatus Status { get; set; } = TidalDownloadStatus.Queued;
 
+    public string TidalResolvedRepresentation { get; set; } = "";
+    public string TidalResolvedQuality { get; set; } = "";
+    public bool TidalAtmosConfirmed { get; set; }
+    public string TidalPublicProviderId { get; set; } = "";
+    public DateTimeOffset? TidalResolvedAtUtc { get; set; }
+    public string TidalAcquisitionStage { get; set; } = "";
+
     public Dictionary<string, object> ToQueuePayload()
-        => BuildQueuePayload(MapStatusForUi(Status));
+        => BuildQueuePayload(
+            MapStatusForUi(Status),
+            new Dictionary<string, object?>
+            {
+                ["tidalResolvedRepresentation"] = TidalResolvedRepresentation,
+                ["tidalResolvedQuality"] = TidalResolvedQuality,
+                ["tidalAtmosConfirmed"] = TidalAtmosConfirmed,
+                ["tidalPublicProviderId"] = TidalPublicProviderId,
+                ["tidalResolvedAtUtc"] = TidalResolvedAtUtc,
+                ["tidalAcquisitionStage"] = TidalAcquisitionStage
+            });
 
     private static string MapStatusForUi(TidalDownloadStatus status)
         => QueuePayloadBuilder.MapStatusForUi(status.ToString());

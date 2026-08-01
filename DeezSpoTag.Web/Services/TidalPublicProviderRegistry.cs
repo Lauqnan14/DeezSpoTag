@@ -233,6 +233,8 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     private static TidalPublicProvider ToPublicProvider(ProviderState provider)
     {
         var status = provider.Enabled ? provider.Status : DisabledStatus;
+        var definition = TidalPublicProviderDefaults.Providers
+            .FirstOrDefault(candidate => string.Equals(candidate.Id, provider.Id, StringComparison.OrdinalIgnoreCase));
         return new TidalPublicProvider(
             provider.Id,
             provider.DisplayName,
@@ -248,9 +250,8 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             provider.FailureMessage,
             provider.ResponseTimeMs,
             provider.CooldownUntil,
-            RequiresVerification: TidalPublicProviderDefaults.Providers
-                .FirstOrDefault(definition => string.Equals(definition.Id, provider.Id, StringComparison.OrdinalIgnoreCase))
-                ?.RequiresVerification == true);
+            RequiresVerification: definition?.RequiresVerification == true,
+            Capabilities: definition?.Capabilities);
     }
 
     private static string NormalizeEndpoint(string? endpoint) => (endpoint ?? string.Empty).Trim().TrimEnd('/');

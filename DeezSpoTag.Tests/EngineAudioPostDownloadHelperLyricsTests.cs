@@ -165,6 +165,62 @@ public sealed class EngineAudioPostDownloadHelperLyricsTests
         Assert.Equal(1000, track.Lyrics.SyncID3[0].Timestamp);
     }
 
+    [Fact]
+    public void CreateTrackFromPayload_PreservesDurationForLyricsLookup()
+    {
+        var payload = new TestQueueItem
+        {
+            Id = "queue-track",
+            Title = "Birthday Riddim",
+            Artist = "KiDi",
+            Album = "The Golden Boy",
+            Isrc = "USUYG1440436",
+            DurationSeconds = 158
+        };
+        object?[] arguments = [payload, new DeezSpoTagSettings(), "tidal", "275365544", null];
+
+        var track = Assert.IsType<Track>(GetStaticMethod("CreateTrackFromPayload").Invoke(null, arguments));
+
+        Assert.Equal(158, track.Duration);
+        Assert.Equal("USUYG1440436", track.ISRC);
+    }
+
+    [Fact]
+    public void SynchronizeTrackWithPayloadForTagging_PreservesAtmosIsrcAndAddsStereoMetadataIds()
+    {
+        var track = new Track
+        {
+            Title = "Birthday Riddim",
+            ISRC = "USUYG1440436",
+            Duration = 0,
+            Source = "tidal",
+            SourceId = "275365544"
+        };
+        var payload = new TestQueueItem
+        {
+            Title = "Birthday Riddim",
+            Artist = "KiDi",
+            Album = "The Golden Boy",
+            Isrc = "USUYG1358396",
+            DurationSeconds = 158,
+            AppleId = "1604260328",
+            DeezerId = "1616948912",
+            SpotifyId = "0IYRMpl9aTh4uz4NAk89IE"
+        };
+
+        EngineAudioPostDownloadHelper.SynchronizeTrackWithPayloadForTagging(track, payload);
+
+        Assert.Equal("USUYG1440436", track.ISRC);
+        Assert.Equal(158, track.Duration);
+        Assert.Equal("1604260328", track.Urls["apple_track_id"]);
+        Assert.Equal("1616948912", track.Urls["deezer_track_id"]);
+        Assert.Equal("0IYRMpl9aTh4uz4NAk89IE", track.Urls["spotify_track_id"]);
+    }
+
+    private sealed class TestQueueItem : EngineQueueItemBase
+    {
+    }
+
     private sealed class TemporaryDirectory : IDisposable
     {
         public TemporaryDirectory()

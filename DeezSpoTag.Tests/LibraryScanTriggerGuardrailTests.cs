@@ -44,6 +44,34 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void DownloadOrchestration_QueuesMediaRefreshWithoutBlockingOnTargetServers()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var ingestionIndex = source.IndexOf(
+            "IngestMovedFilesBeforeWatchlistFinalizationAsync(group, summary.ChangedFilePaths",
+            StringComparison.Ordinal);
+        var refreshOutboxIndex = source.IndexOf(
+            "await _mediaServerRefreshOutboxService.EnqueueAsync(",
+            StringComparison.Ordinal);
+
+        Assert.True(ingestionIndex >= 0);
+        Assert.True(refreshOutboxIndex > ingestionIndex);
+        Assert.DoesNotContain("RefreshConfiguredMediaServersForNonWatchlistMoveAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _mediaServerLibraryRefreshService.RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OrdinaryMediaServerRefresh_DoesNotRebuildTargetTrackIndexes()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
+
+        Assert.Contains("RequestLibraryRefreshAsync", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshPlexAsync(state.Plex, updateTrackIndex: false", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex: false", source, StringComparison.Ordinal);
+        Assert.Contains("if (updateTrackIndex)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DownloadOrchestration_FinalDestinationReaderUsesDatabaseJsonOnly()
     {
         const string staleStagingPath = "/tmp/deezspotag/staging/Artist/Album/Artist - Song.flac";

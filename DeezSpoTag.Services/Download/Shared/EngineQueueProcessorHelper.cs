@@ -34,7 +34,9 @@ internal static class EngineQueueProcessorHelper
         Func<TPayload, CancellationToken, Task>? PreparePayloadAsync,
         Func<object, string> BuildStartLogMessage,
         Func<TPayload, string?> ResolveFinishTitle,
-        Func<TPayload, Dictionary<string, object>> ToQueuePayload)
+        Func<TPayload, Dictionary<string, object>> ToQueuePayload,
+        Func<TPayload, string, CancellationToken, Task<string>>? AcceptAcquiredAudioAsync = null,
+        Func<TPayload, string, CancellationToken, Task>? RejectAcquiredAudioAsync = null)
         where TPayload : EngineQueueItemBase;
 
     private readonly record struct PrefetchContext(
@@ -228,19 +230,51 @@ internal static class EngineQueueProcessorHelper
                 workContext.Settings,
                 executionState.ProgressReporter,
                 itemToken);
-            await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
-                workContext.Payload,
-                outputPath,
-                workContext.Item.QueueUuid,
-                workContext.Deps.QueueRepository,
-                workContext.Deps.Listener,
-                itemToken);
+            try
+            {
+                await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
+                    workContext.Payload,
+                    outputPath,
+                    workContext.Item.QueueUuid,
+                    workContext.Deps.QueueRepository,
+                    workContext.Deps.Listener,
+                    itemToken);
+            }
+            catch (DeliveredAudioQualityBelowPlanStepException)
+            {
+                if (workContext.Callbacks.RejectAcquiredAudioAsync is not null)
+                {
+                    await workContext.Callbacks.RejectAcquiredAudioAsync(
+                        workContext.Payload,
+                        outputPath,
+                        CancellationToken.None);
+                }
+                throw;
+            }
             await DownloadLifecycleCheckpoint.PersistAcquiredAsync(
                 workContext.Deps.QueueRepository,
                 workContext.Item.QueueUuid,
                 workContext.Payload,
                 outputPath,
                 itemToken);
+        }
+
+        if (workContext.Callbacks.AcceptAcquiredAudioAsync is not null)
+        {
+            var acceptedPath = await workContext.Callbacks.AcceptAcquiredAudioAsync(
+                workContext.Payload,
+                outputPath,
+                itemToken);
+            if (!string.Equals(acceptedPath, outputPath, StringComparison.Ordinal))
+            {
+                outputPath = acceptedPath;
+                await DownloadLifecycleCheckpoint.PersistAcquiredAsync(
+                    workContext.Deps.QueueRepository,
+                    workContext.Item.QueueUuid,
+                    workContext.Payload,
+                    outputPath,
+                    itemToken);
+            }
         }
 
         try

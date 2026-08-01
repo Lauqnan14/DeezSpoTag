@@ -134,6 +134,56 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MediaServerRefreshOutbox_CoalescesPathsPerLibraryAndServer()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/a.flac"], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/b.flac", "/music/a.flac"], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "jellyfin", ["/music/a.flac"], TimeSpan.Zero);
+
+        var claimed = await _repository.ClaimDueMediaServerRefreshesAsync(
+            10,
+            TimeSpan.FromMinutes(5),
+            "test-worker");
+
+        Assert.Equal(2, claimed.Count);
+        var plex = Assert.Single(claimed, row => row.TargetService == "plex");
+        Assert.Equal(["/music/b.flac", "/music/a.flac"], plex.ChangedFilePaths.OrderDescending());
+        Assert.Single(claimed, row => row.TargetService == "jellyfin");
+    }
+
+    [Fact]
+    public async Task MediaServerRefreshOutbox_IsDurableAndServerFailuresAreIndependent()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(25, "plex", ["/music/song.flac"], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(25, "navidrome", ["/music/song.flac"], TimeSpan.Zero);
+
+        var restartedRepository = new LibraryRepository(
+            _configuration,
+            NullLogger<LibraryRepository>.Instance);
+        var claimed = await restartedRepository.ClaimDueMediaServerRefreshesAsync(
+            10,
+            TimeSpan.FromMinutes(5),
+            "restarted-worker");
+        var plex = Assert.Single(claimed, row => row.TargetService == "plex");
+        var navidrome = Assert.Single(claimed, row => row.TargetService == "navidrome");
+
+        Assert.True(await restartedRepository.CompleteMediaServerRefreshAsync(
+            navidrome.Id,
+            "restarted-worker"));
+        Assert.True(await restartedRepository.RetryMediaServerRefreshAsync(
+            plex.Id,
+            "restarted-worker",
+            1,
+            DateTimeOffset.UtcNow.AddMinutes(1),
+            "Plex unavailable"));
+
+        var status = await restartedRepository.GetMediaServerRefreshOutboxCountsAsync();
+        Assert.Equal(0, status.Pending);
+        Assert.Equal(0, status.Processing);
+        Assert.Equal(1, status.Retry);
+    }
+
+    [Fact]
     public async Task Logs_And_QualityScannerRun_Workflow_Completes()
     {
         await _repository.AddLogAsync(new LibraryLogEntry(DateTimeOffset.UtcNow.AddMinutes(-2), "info", "first"));

@@ -60,7 +60,17 @@ internal static class DownloadLifecycleCheckpoint
             return false;
         }
 
-        var ioPath = DownloadPathResolver.ResolveIoPath(payload.FilePath);
+        return TryAdoptExistingAudioAtPath(payload, payload.FilePath);
+    }
+
+    public static bool TryAdoptExistingAudioAtPath(EngineQueueItemBase payload, string audioPath)
+    {
+        if (payload.AudioAcquired || string.IsNullOrWhiteSpace(audioPath))
+        {
+            return false;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(audioPath);
         try
         {
             var file = new FileInfo(ioPath);

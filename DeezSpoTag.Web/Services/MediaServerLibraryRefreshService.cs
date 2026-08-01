@@ -126,7 +126,46 @@ public sealed class MediaServerLibraryRefreshService
         return new MediaServerRefreshSummary(configuredServers, refreshedServers, failures);
     }
 
-    private async Task<bool> RefreshPlexAsync(PlexAuth? plex, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<string>> GetConfiguredServicesAsync()
+    {
+        var state = await _authService.LoadAsync();
+        var services = new List<string>(3);
+        if (HasPlexConfiguration(state.Plex))
+        {
+            services.Add(PlexService);
+        }
+        if (HasJellyfinConfiguration(state.Jellyfin))
+        {
+            services.Add(JellyfinService);
+        }
+        if (HasNavidromeConfiguration(state.Navidrome))
+        {
+            services.Add(NavidromeService);
+        }
+        return services;
+    }
+
+    public async Task<bool> RequestLibraryRefreshAsync(
+        string service,
+        CancellationToken cancellationToken)
+    {
+        var state = await _authService.LoadAsync();
+        return service.Trim().ToLowerInvariant() switch
+        {
+            PlexService => await RefreshPlexAsync(state.Plex, updateTrackIndex: false, cancellationToken: cancellationToken),
+            JellyfinService => await RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex: false, cancellationToken: cancellationToken),
+            NavidromeService => await RefreshNavidromeAsync(state.Navidrome, cancellationToken),
+            _ => false
+        };
+    }
+
+    private Task<bool> RefreshPlexAsync(PlexAuth? plex, CancellationToken cancellationToken)
+        => RefreshPlexAsync(plex, updateTrackIndex: true, cancellationToken: cancellationToken);
+
+    private async Task<bool> RefreshPlexAsync(
+        PlexAuth? plex,
+        bool updateTrackIndex,
+        CancellationToken cancellationToken)
     {
         if (!HasPlexConfiguration(plex))
         {
@@ -170,7 +209,10 @@ public sealed class MediaServerLibraryRefreshService
 
         try
         {
-            await UpdatePlexTrackMetadataIndexAsync(configuredPlex, musicSections, cancellationToken);
+            if (updateTrackIndex)
+            {
+                await UpdatePlexTrackMetadataIndexAsync(configuredPlex, musicSections, cancellationToken);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -286,7 +328,13 @@ public sealed class MediaServerLibraryRefreshService
         }
     }
 
-    private async Task<bool> RefreshJellyfinAsync(JellyfinAuth? jellyfin, CancellationToken cancellationToken)
+    private Task<bool> RefreshJellyfinAsync(JellyfinAuth? jellyfin, CancellationToken cancellationToken)
+        => RefreshJellyfinAsync(jellyfin, updateTrackIndex: true, cancellationToken: cancellationToken);
+
+    private async Task<bool> RefreshJellyfinAsync(
+        JellyfinAuth? jellyfin,
+        bool updateTrackIndex,
+        CancellationToken cancellationToken)
     {
         if (!HasJellyfinConfiguration(jellyfin))
         {
@@ -309,7 +357,10 @@ public sealed class MediaServerLibraryRefreshService
 
         try
         {
-            await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, cancellationToken);
+            if (updateTrackIndex)
+            {
+                await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, cancellationToken);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

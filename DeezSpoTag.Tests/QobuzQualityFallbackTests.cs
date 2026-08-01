@@ -38,6 +38,69 @@ public sealed class QobuzQualityFallbackTests
             BindingFlags.NonPublic | BindingFlags.Static));
     }
 
+    [Fact]
+    public void QobuzRuntime_DoesNotReplaceThePersistedPlanQualityFromDownloadCallback()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        var source = File.ReadAllText(sourcePath);
+        var methodStart = source.IndexOf("private async Task SyncResolvedQualityAsync", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("private async Task<QobuzQueueItem?> DeserializeAndStartAsync", methodStart, StringComparison.Ordinal);
+
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+        Assert.Contains("payload.QobuzResolvedQuality = resolvedQuality;", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("payload.Quality = resolvedQuality;", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FallbackCoordinator_AdvancesOnlyFromPersistedAutoIndex()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Fallback/EngineFallbackCoordinator.cs"));
+        var source = File.ReadAllText(sourcePath);
+        var methodStart = source.IndexOf("private static int ResolveNextPlanIndex", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("private static SourceResolutionRequest", methodStart, StringComparison.Ordinal);
+
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+        Assert.Contains("return request.AutoIndex + 1;", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("Math.Max", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("FindStepIndex", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LegacyQobuzPayload_IsRealignedToItsPersistedPlanStepBeforeValidation()
+    {
+        var payload = new QobuzQueueItem
+        {
+            Engine = "qobuz",
+            SourceService = "qobuz",
+            Quality = "6",
+            AutoIndex = 0,
+            FallbackPlan =
+            [
+                new("step-0", "qobuz", "7", [], "direct_url"),
+                new("step-1", "tidal", "HI_RES", [], "direct_url"),
+                new("step-2", "amazon", "ULTRA_HD_FLAC", [], "direct_url"),
+                new("step-3", "qobuz", "6", [], "direct_url")
+            ]
+        };
+        var method = typeof(QobuzEngineProcessor).GetMethod(
+            "AlignPayloadToPersistedPlanStep",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        method.Invoke(null, [payload]);
+
+        Assert.Equal("7", payload.Quality);
+        Assert.Equal(0, payload.AutoIndex);
+        Assert.Equal("7", payload.ResolvedQuality);
+        Assert.Equal(0, payload.ResolvedAutoIndex);
+    }
+
     [Theory]
     [InlineData(16, 44.1, "6")]
     [InlineData(24, 48, "7")]
@@ -110,6 +173,40 @@ public sealed class QobuzQualityFallbackTests
 
         Assert.Contains("QobuzQualityDecisionResult.Skip", unknownBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("QobuzQualityDecisionResult.Continue", unknownBranch, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CatalogQualityBelowCurrentStep_SkipsBeforeAudioTransfer()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        var source = File.ReadAllText(sourcePath);
+        var lowerBranchStart = source.IndexOf("if (lowersRequestedQuality)", StringComparison.Ordinal);
+        var lowerBranchEnd = source.IndexOf("request.Quality = selectedQuality;", lowerBranchStart, StringComparison.Ordinal);
+
+        Assert.True(lowerBranchStart >= 0 && lowerBranchEnd > lowerBranchStart);
+        var lowerBranch = source[lowerBranchStart..lowerBranchEnd];
+        Assert.Contains("QobuzQualityDecisionResult.Skip", lowerBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("DownloadOnceAsync", lowerBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("payload.Quality = selectedQuality", lowerBranch, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExistingCanonicalDestination_IsAdoptedInsteadOfRedownloaded()
+    {
+        var sourcePath = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Qobuz/QobuzEngineProcessor.cs"));
+        var source = File.ReadAllText(sourcePath);
+        var methodStart = source.IndexOf("private async Task<string> DownloadOrAdoptExistingAsync", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("private async Task<QobuzQualityDecisionResult>", methodStart, StringComparison.Ordinal);
+
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+        Assert.Contains("QobuzExistingFinalDestinationException", method, StringComparison.Ordinal);
+        Assert.Contains("TryAdoptExistingAudioAtPath(context.Payload, existing.FilePath)", method, StringComparison.Ordinal);
+        Assert.Contains("return DownloadPathResolver.ResolveIoPath(existing.FilePath);", method, StringComparison.Ordinal);
     }
 
     [Theory]

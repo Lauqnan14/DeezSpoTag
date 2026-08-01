@@ -891,6 +891,19 @@ public sealed record WatchlistFinalizationOutboxDto(
     string? LastError,
     DateTimeOffset UpdatedAt);
 
+public sealed record MediaServerRefreshOutboxDto(
+    long Id,
+    long DestinationFolderId,
+    string TargetService,
+    IReadOnlyList<string> ChangedFilePaths,
+    string Status,
+    int AttemptCount,
+    DateTimeOffset NextAttemptUtc,
+    string? LeaseOwner,
+    DateTimeOffset? LeaseUntilUtc,
+    string? LastError,
+    DateTimeOffset UpdatedAt);
+
 public sealed record WatchlistReconciliationRequestDto(
     string Kind,
     string Source,

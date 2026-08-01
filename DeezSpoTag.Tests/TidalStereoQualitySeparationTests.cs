@@ -19,6 +19,35 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TidalStereoQualitySeparationTests
 {
+    [Fact]
+    public void TidalAtmosValidation_FailsClosedWhenFfprobeCannotConfirmAtmos()
+    {
+        var source = File.ReadAllText(Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs")));
+        var methodStart = source.IndexOf("private static bool IsAtmosDurationAcceptable", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("private static bool TryReadFfprobeAtmosAudio", methodStart, StringComparison.Ordinal);
+        var method = source[methodStart..methodEnd];
+
+        Assert.Contains("if (!TryReadFfprobeAtmosAudio", method, StringComparison.Ordinal);
+        Assert.Contains("return false;", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("return true;\n        }", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalProviderStagesAndDirectAssets_HaveBoundedTransientRetries()
+    {
+        var source = File.ReadAllText(Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Tidal/TidalDownloadService.cs")));
+
+        Assert.Contains("MaxProviderStageAttempts", source, StringComparison.Ordinal);
+        Assert.Contains("ExecuteProviderJsonStageWithRetryAsync", source, StringComparison.Ordinal);
+        Assert.Contains("FetchProviderTextWithRetryAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveProviderRetryDelay", source, StringComparison.Ordinal);
+        Assert.Contains("response.Headers.RetryAfter", source, StringComparison.Ordinal);
+        Assert.Contains("Tidal audio asset download produced a zero-byte file", source, StringComparison.Ordinal);
+    }
     [Theory]
     [InlineData("LOW", "LOW")]
     [InlineData("HIGH", "HIGH")]

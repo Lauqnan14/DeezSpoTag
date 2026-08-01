@@ -188,10 +188,19 @@ public class ActivitiesController : Controller
         try
         {
             var queueData = await GetEngineQueueAsync();
+            var refreshStatus = await _serviceProvider
+                .GetRequiredService<DeezSpoTag.Web.Services.MediaServerRefreshOutboxService>()
+                .GetStatusAsync(HttpContext.RequestAborted);
             return Json(new
             {
                 success = true,
-                data = queueData
+                data = queueData,
+                mediaServerRefresh = new
+                {
+                    pending = refreshStatus.Pending,
+                    running = refreshStatus.Processing,
+                    retryWaiting = refreshStatus.Retry
+                }
             });
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
