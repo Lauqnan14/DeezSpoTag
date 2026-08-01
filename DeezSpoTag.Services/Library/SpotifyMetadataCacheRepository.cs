@@ -246,6 +246,41 @@ ON CONFLICT(type, source_id) DO UPDATE SET
         }
     }
 
+    public async Task ClearBySourcePrefixAsync(
+        string type,
+        string sourceIdPrefix,
+        CancellationToken cancellationToken)
+    {
+        var connectionString = GetConnectionString();
+        if (string.IsNullOrWhiteSpace(connectionString) || string.IsNullOrWhiteSpace(sourceIdPrefix))
+        {
+            return;
+        }
+
+        const string sql = @"
+DELETE FROM spotify_metadata_cache
+WHERE type = $type
+  AND substr(source_id, 1, length($source_id_prefix)) = $source_id_prefix;";
+
+        try
+        {
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqliteCommand(sql, connection);
+            command.Parameters.AddWithValue(TypeParameter, type);
+            command.Parameters.AddWithValue("$source_id_prefix", sourceIdPrefix);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Spotify metadata cache prefix clear failed (type={Type}, prefix={Prefix})",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(type),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceIdPrefix));
+        }
+    }
+
     public async Task<SpotifyMetadataCacheStats?> TryGetStatsAsync(CancellationToken cancellationToken)
     {
         var connectionString = GetConnectionString();

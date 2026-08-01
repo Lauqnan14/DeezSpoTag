@@ -62,13 +62,91 @@ public sealed class SpotifyIncrementalPlaybackGuardrailTests
     public void LibrespotBatchFailure_DoesNotSpawnSerialPerTrackProcesses()
     {
         var metadata = ReadSource("DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs");
-        var helper = ReadSource("DeezSpoTag.Web", "Tools", "spotify_librespot_tracks.py");
+        var helper = ReadSource("DeezSpoTag.Web", "Tools", "spotify_librespot_worker.py");
+        var blob = ReadSource("DeezSpoTag.Web", "Services", "SpotifyBlobService.cs");
         var method = SliceMethod(metadata, "HydrateLibrespotBatchAsync", "MergeHydratedTracks");
 
         Assert.DoesNotContain("foreach (var trackId in batchTrackIds)", method, StringComparison.Ordinal);
         Assert.DoesNotContain("new List<string> { trackId }", method, StringComparison.Ordinal);
         Assert.Contains("ThreadPoolExecutor", helper, StringComparison.Ordinal);
-        Assert.Contains("executor.map(fetch_track, ids)", helper, StringComparison.Ordinal);
+        Assert.Contains("executor.map(fetch, track_ids)", helper, StringComparison.Ordinal);
+        Assert.Contains("LibrespotWorkerProcess", blob, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotify_librespot_tracks.py", blob, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PartialLibrespotHydration_ContinuesOnlyThroughPathfinderForMissingFields()
+    {
+        var metadata = ReadSource("DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs");
+        var method = SliceMethod(metadata, "HydrateTrackDetailsWithBlobAsync", "HydrateTrackIsrcsAsync");
+
+        Assert.Contains("tracks = await HydrateTrackDetailsWithLibrespotAsync", method, StringComparison.Ordinal);
+        Assert.Contains("return await HydrateTrackDetailsAsync(tracks", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildLibrespotContextAsync", metadata, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpotifySearch_UsesOneWebPlayerAttemptThenTheLibrespotOnlyContext()
+    {
+        var search = ReadSource("DeezSpoTag.Web", "Services", "SpotifySearchService.cs");
+        var method = SliceMethod(
+            search,
+            "private async Task<SearchContext?> BuildRequestContextAsync",
+            "private async Task<SearchContext?> BuildWebPlayerCookieContextAsync");
+
+        Assert.Contains("BuildWebPlayerCookieContextAsync", method, StringComparison.Ordinal);
+        Assert.Contains("BuildLibrespotOnlyContextAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildLibrespotContextAsync", search, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpotifyHome_PreservesLegacyPersonalizedFeedCompatibility()
+    {
+        var pathfinder = ReadSource("DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs");
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "SpotifyHomeFeedApiController.cs");
+
+        Assert.Contains("7fa05a3b71ee950cd63f5b738a0285f7c58b20a93e735ada5ad9a8d5e116d791", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("[\"homeEndUserIntegration\"] = IntegrationWebPlayer", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("variables[\"sp_t\"] = context.DeviceId", pathfinder, StringComparison.Ordinal);
+        Assert.DoesNotContain("tokenInfo.IsAnonymous == true", pathfinder, StringComparison.Ordinal);
+        var homeMethod = SliceMethod(pathfinder, "public async Task<JsonDocument?> FetchHomeFeedWithBlobAsync", "public async Task<bool> ValidateBlobAsync");
+        Assert.Contains("TryResolveActiveSpotifyBlobPathAsync", homeMethod, StringComparison.Ordinal);
+        Assert.Contains("BuildBlobAuthContextAsync(blobPath, cancellationToken)", homeMethod, StringComparison.Ordinal);
+        Assert.Contains("FetchHomeFeedLegacyWithBlobAsync", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("legacyTask", controller, StringComparison.Ordinal);
+        var trendingMethod = SliceMethod(controller, "private async Task<object?> TryFetchTrendingSongsSectionAsync", "private async Task<object?> TryFetchTrendingSongsSectionByUriAsync");
+        var trendingByUriMethod = SliceMethod(controller, "private async Task<object?> TryFetchTrendingSongsSectionByUriAsync", "private static object MapSpotifyTrackSummaryToHomeTrendingItem");
+        Assert.Contains("FetchBrowseAllAnonymousAsync", trendingMethod, StringComparison.Ordinal);
+        Assert.Contains("FetchBrowseSectionTrackSummariesAnonymousAsync", trendingByUriMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("WithBlobAsync", trendingMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("WithBlobAsync", trendingByUriMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpotifyPlaylistRecommendations_UseTheCurrentPlaylistSectionContract()
+    {
+        var pathfinder = ReadSource("DeezSpoTag.Web", "Services", "SpotifyPathfinderMetadataClient.cs");
+
+        Assert.Contains("PlaylistSectionOperationName = \"playlistSection\"", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("2615df403a9043c1d7d3094fbeb4c9653b07b11a33d8081fbd31f0f7959ff4a1", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("spotify:section:0JQ5DAob0LgAOAm50K90Od", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("[\"sectionUri\"] = MoreLikeThisPlaylistSectionUri", pathfinder, StringComparison.Ordinal);
+        Assert.Contains("[\"playlistUri\"] = contextUri", pathfinder, StringComparison.Ordinal);
+        Assert.DoesNotContain("moreLikeThisPlaylist", pathfinder, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpotifyHome_PreservesEveryRenderablePersonalizedSection()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "SpotifyHomeFeedApiController.cs");
+        var view = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "home-index.js");
+
+        Assert.Contains("PersonalSectionKeywords", controller, StringComparison.Ordinal);
+        Assert.Contains("PersonalItemKeywords", controller, StringComparison.Ordinal);
+        Assert.Contains("IsPersonalSpotifyHomeItem", controller, StringComparison.Ordinal);
+        Assert.Contains("filterHomeSectionsForRender", view, StringComparison.Ordinal);
+        Assert.Contains("itemCount >= 4", view, StringComparison.Ordinal);
+        Assert.Contains("isEpisodesYouMightLikeSection", view, StringComparison.Ordinal);
     }
 
     [Fact]

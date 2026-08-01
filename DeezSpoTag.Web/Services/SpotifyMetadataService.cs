@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Globalization;
+using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -122,6 +123,7 @@ public sealed class SpotifyMetadataService
     private readonly SpotifyUserAuthStore _userAuthStore;
     private readonly ISpotifyUserContextAccessor _userContext;
     private readonly SpotifyPathfinderMetadataClient _pathfinderMetadataClient;
+    private readonly SpotifyMetadataCacheRepository _metadataCacheRepository;
     private readonly ILogger<SpotifyMetadataService> _logger;
     private static readonly TimeSpan PlaylistCacheTtl = TimeSpan.FromSeconds(60);
     private const int PlaylistCacheLimit = 256;
@@ -134,11 +136,13 @@ public sealed class SpotifyMetadataService
     private static readonly TimeSpan PlaylistPageCacheTtl = TimeSpan.FromSeconds(60);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyPlaylistPage Page)> PlaylistPageCache = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<SpotifyPlaylistPage>>> PlaylistPageRequests = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> PlaylistSnapshots = new(StringComparer.OrdinalIgnoreCase);
     private static readonly TimeSpan LibrespotTrackCacheTtl = TimeSpan.FromMinutes(10);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyTrackSummary Track)> LibrespotTrackCache = new();
     private readonly object _userAgentLock = new();
     private readonly Random _userAgentRandom = new();
     private readonly string _userAgent;
+    private readonly JsonSerializerOptions _cacheJsonOptions = new(JsonSerializerDefaults.Web);
 
     public SpotifyMetadataService(
         PlatformAuthService platformAuthService,
@@ -147,6 +151,7 @@ public sealed class SpotifyMetadataService
         SpotifyUserAuthStore userAuthStore,
         ISpotifyUserContextAccessor userContext,
         SpotifyPathfinderMetadataClient pathfinderMetadataClient,
+        SpotifyMetadataCacheRepository metadataCacheRepository,
         ILogger<SpotifyMetadataService> logger)
     {
         _platformAuthService = platformAuthService;
@@ -155,6 +160,7 @@ public sealed class SpotifyMetadataService
         _userAuthStore = userAuthStore;
         _userContext = userContext;
         _pathfinderMetadataClient = pathfinderMetadataClient;
+        _metadataCacheRepository = metadataCacheRepository;
         _logger = logger;
         _userAgent = SpotifyUserAgentGenerator.BuildRandom(_userAgentRandom, _userAgentLock);
     }
@@ -180,12 +186,48 @@ public sealed class SpotifyMetadataService
             return await FetchPlaylistUrlMetadataAsync(parsed.Id, cancellationToken);
         }
 
+        var persistedType = $"spotify-{parsed.Type}-metadata";
+        var persisted = await _metadataCacheRepository.TryGetAsync(persistedType, parsed.Id, cancellationToken);
+        if (persisted is not null && _metadataCacheRepository.IsFresh(persisted.FetchedUtc))
+        {
+            try
+            {
+                var cachedMetadata = JsonSerializer.Deserialize<SpotifyUrlMetadata>(persisted.PayloadJson, _cacheJsonOptions);
+                if (cachedMetadata is not null)
+                {
+                    if (hydrateTracks
+                        && parsed.Type == TrackType
+                        && cachedMetadata.TrackList.Count > 0)
+                    {
+                        cachedMetadata = await HydrateTrackMetadataAsync(cachedMetadata, cancellationToken);
+                        await _metadataCacheRepository.UpsertAsync(
+                            persistedType,
+                            parsed.Id,
+                            JsonSerializer.Serialize(cachedMetadata, _cacheJsonOptions),
+                            DateTimeOffset.UtcNow,
+                            cancellationToken);
+                    }
+                    return cachedMetadata;
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogDebug(ex, "Invalid persisted Spotify {Type} metadata for {SpotifyId}.", parsed.Type, DeezSpoTag.Core.Security.LogSanitizer.OneLine(parsed.Id));
+            }
+        }
+
         var pathfinderMetadata = await _pathfinderMetadataClient.FetchByUrlAsync(url, cancellationToken);
         if (pathfinderMetadata is null)
         {
             var fallbackMetadata = await TryFetchMetadataFallbackAsync(parsed, cancellationToken);
             if (fallbackMetadata is not null)
             {
+                await _metadataCacheRepository.UpsertAsync(
+                    persistedType,
+                    parsed.Id,
+                    JsonSerializer.Serialize(fallbackMetadata, _cacheJsonOptions),
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
                 return fallbackMetadata;
             }
 
@@ -200,6 +242,13 @@ public sealed class SpotifyMetadataService
         {
             pathfinderMetadata = await MergeAlbumFallbackAsync(parsed.Id, pathfinderMetadata, cancellationToken);
         }
+
+        await _metadataCacheRepository.UpsertAsync(
+            persistedType,
+            parsed.Id,
+            JsonSerializer.Serialize(pathfinderMetadata, _cacheJsonOptions),
+            DateTimeOffset.UtcNow,
+            cancellationToken);
 
         return pathfinderMetadata;
     }
@@ -907,6 +956,25 @@ public sealed class SpotifyMetadataService
             }
         }
 
+
+        var persisted = await _metadataCacheRepository.TryGetAsync("spotify-playlist-metadata", playlistId, cancellationToken);
+        if (persisted is not null && DateTimeOffset.UtcNow - persisted.FetchedUtc <= PlaylistCacheTtl)
+        {
+            try
+            {
+                var persistedMetadata = JsonSerializer.Deserialize<SpotifyUrlMetadata>(persisted.PayloadJson, _cacheJsonOptions);
+                if (HasTrustedPlaylistMetadata(persistedMetadata))
+                {
+                    CachePlaylistMetadata(playlistId, persistedMetadata!);
+                    return persistedMetadata! with { TrackList = new List<SpotifyTrackSummary>() };
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogDebug(ex, "Invalid persisted Spotify playlist metadata for {PlaylistId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
+            }
+        }
+
         var pathfinderPage = await _pathfinderMetadataClient.FetchPlaylistPageAsync(
             playlistId,
             offset: 0,
@@ -917,6 +985,12 @@ public sealed class SpotifyMetadataService
             var pathfinderMetadata = MapSpotiFlacPlaylistMetadata(playlistId, pathfinderPage.Payload, includeTracks: false)
                 with { SnapshotId = pathfinderPage.SnapshotId };
             CachePlaylistMetadata(playlistId, pathfinderMetadata);
+            await _metadataCacheRepository.UpsertAsync(
+                "spotify-playlist-metadata",
+                playlistId,
+                JsonSerializer.Serialize(pathfinderMetadata with { TrackList = new List<SpotifyTrackSummary>() }, _cacheJsonOptions),
+                DateTimeOffset.UtcNow,
+                cancellationToken);
             return pathfinderMetadata with { TrackList = new List<SpotifyTrackSummary>() };
         }
 
@@ -972,6 +1046,24 @@ public sealed class SpotifyMetadataService
             return cached.Page;
         }
 
+        var persisted = await _metadataCacheRepository.TryGetAsync("spotify-playlist-page", cacheKey, cancellationToken);
+        if (persisted is not null && DateTimeOffset.UtcNow - persisted.FetchedUtc <= PlaylistPageCacheTtl)
+        {
+            try
+            {
+                var persistedPage = JsonSerializer.Deserialize<SpotifyPlaylistPage>(persisted.PayloadJson, _cacheJsonOptions);
+                if (persistedPage is { IsComplete: true })
+                {
+                    PlaylistPageCache[cacheKey] = (persisted.FetchedUtc, persistedPage);
+                    return persistedPage;
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogDebug(ex, "Invalid persisted Spotify playlist page for {CacheKey}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(cacheKey));
+            }
+        }
+
         PlaylistPageCache.TryRemove(cacheKey, out _);
         var request = PlaylistPageRequests.GetOrAdd(
             cacheKey,
@@ -983,8 +1075,15 @@ public sealed class SpotifyMetadataService
             var page = await request.Value.WaitAsync(cancellationToken);
             if (page.IsComplete)
             {
+                await InvalidatePlaylistPagesWhenSnapshotChangesAsync(playlistId, offset, page.SnapshotId, cancellationToken);
                 PlaylistPageCache[cacheKey] = (DateTimeOffset.UtcNow, page);
                 TrimTimestampCache(PlaylistPageCache, PlaylistTrackCacheLimit, PlaylistPageCacheTtl);
+                await _metadataCacheRepository.UpsertAsync(
+                    "spotify-playlist-page",
+                    cacheKey,
+                    JsonSerializer.Serialize(page, _cacheJsonOptions),
+                    DateTimeOffset.UtcNow,
+                    cancellationToken);
             }
             return page;
         }
@@ -995,6 +1094,47 @@ public sealed class SpotifyMetadataService
                 PlaylistPageRequests.TryRemove(cacheKey, out _);
             }
         }
+    }
+
+    private async Task InvalidatePlaylistPagesWhenSnapshotChangesAsync(
+        string playlistId,
+        int offset,
+        string? snapshotId,
+        CancellationToken cancellationToken)
+    {
+        if (offset != 0 || string.IsNullOrWhiteSpace(snapshotId))
+        {
+            return;
+        }
+
+        if (!PlaylistSnapshots.TryGetValue(playlistId, out var previousSnapshot))
+        {
+            var persisted = await _metadataCacheRepository.TryGetAsync("spotify-playlist-snapshot", playlistId, cancellationToken);
+            previousSnapshot = persisted?.PayloadJson;
+        }
+
+        if (!string.IsNullOrWhiteSpace(previousSnapshot)
+            && !string.Equals(previousSnapshot, snapshotId, StringComparison.Ordinal))
+        {
+            var pagePrefix = $"{playlistId}:";
+            foreach (var key in PlaylistPageCache.Keys.Where(key => key.StartsWith(pagePrefix, StringComparison.OrdinalIgnoreCase)))
+            {
+                PlaylistPageCache.TryRemove(key, out _);
+            }
+
+            await _metadataCacheRepository.ClearBySourcePrefixAsync(
+                "spotify-playlist-page",
+                pagePrefix,
+                cancellationToken);
+        }
+
+        PlaylistSnapshots[playlistId] = snapshotId;
+        await _metadataCacheRepository.UpsertAsync(
+            "spotify-playlist-snapshot",
+            playlistId,
+            snapshotId,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
     }
 
     private async Task<SpotifyPlaylistPage> FetchPathfinderPlaylistPageCoreAsync(
@@ -1102,17 +1242,6 @@ public sealed class SpotifyMetadataService
             }
 
             var hydrated = await HydrateTrackDetailsWithBlobAsync(tracks, cancellationToken);
-            var stillMissingIds = hydrated
-                .Where(IsPlaceholderTrackSummary)
-                .Select(track => track.Id)
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (stillMissingIds.Count > 0)
-            {
-                hydrated = await ApplyFallbackTrackHydrationAsync(hydrated, stillMissingIds, cancellationToken);
-            }
-
             CacheHydratedTracks(hydrated);
             return hydrated;
         }
@@ -1121,33 +1250,6 @@ public sealed class SpotifyMetadataService
             _logger.LogDebug(ex, "Librespot playlist page hydration failed.");
             return tracks;
         }
-    }
-
-    private async Task<List<SpotifyTrackSummary>> ApplyFallbackTrackHydrationAsync(
-        List<SpotifyTrackSummary> hydrated,
-        List<string> stillMissingIds,
-        CancellationToken cancellationToken)
-    {
-        var fallbackTracks = await _pathfinderMetadataClient.FetchTrackSummariesByIdsAsync(
-            stillMissingIds,
-            cancellationToken,
-            maxConcurrency: 8);
-        if (fallbackTracks.Count == 0)
-        {
-            return hydrated;
-        }
-
-        var fallbackById = fallbackTracks
-            .Where(track => !string.IsNullOrWhiteSpace(track.Id) && HasCoreTrackMetadata(track))
-            .ToDictionary(track => track.Id, StringComparer.OrdinalIgnoreCase);
-        if (fallbackById.Count == 0)
-        {
-            return hydrated;
-        }
-
-        return hydrated
-            .Select(track => fallbackById.TryGetValue(track.Id, out var fallbackTrack) ? fallbackTrack : track)
-            .ToList();
     }
 
     private static SpotifyTrackSummary CreatePlaceholderTrack(string id)
@@ -1186,10 +1288,45 @@ public sealed class SpotifyMetadataService
 
         if (missingIds.Count > 0)
         {
+            await LoadPersistedLibrespotTracksAsync(cachedTracks, missingIds, cancellationToken);
+            missingIds = ids.Where(id => !cachedTracks.ContainsKey(id)).ToList();
+        }
+
+        if (missingIds.Count > 0)
+        {
             await HydrateMissingLibrespotTracksAsync(cachedTracks, missingIds, cancellationToken);
         }
 
         return OrderLibrespotTracks(ids, cachedTracks);
+    }
+
+    private async Task LoadPersistedLibrespotTracksAsync(
+        Dictionary<string, SpotifyTrackSummary> cachedTracks,
+        IReadOnlyCollection<string> missingIds,
+        CancellationToken cancellationToken)
+    {
+        var persisted = await _metadataCacheRepository.TryGetManyAsync("spotify-track", missingIds, cancellationToken);
+        foreach (var pair in persisted)
+        {
+            if (!_metadataCacheRepository.IsFresh(pair.Value.FetchedUtc))
+            {
+                continue;
+            }
+
+            try
+            {
+                var track = JsonSerializer.Deserialize<SpotifyTrackSummary>(pair.Value.PayloadJson, _cacheJsonOptions);
+                if (track is not null && HasCoreTrackMetadata(track))
+                {
+                    cachedTracks[pair.Key] = track;
+                    CacheLibrespotTrack(track);
+                }
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogDebug(ex, "Invalid persisted Spotify track metadata for {TrackId}.", DeezSpoTag.Core.Security.LogSanitizer.OneLine(pair.Key));
+            }
+        }
     }
 
     private static List<string> NormalizeTrackIds(IReadOnlyList<string> trackIds) =>
@@ -1235,13 +1372,24 @@ public sealed class SpotifyMetadataService
             missingIds.Select(CreatePlaceholderTrackSummary).ToList(),
             cancellationToken);
         CacheResolvedTracks(cachedTracks, hydrated);
+        var persisted = hydrated
+            .Where(HasCoreTrackMetadata)
+            .ToDictionary(
+                track => track.Id,
+                track => JsonSerializer.Serialize(track, _cacheJsonOptions),
+                StringComparer.OrdinalIgnoreCase);
+        await _metadataCacheRepository.UpsertManyAsync(
+            "spotify-track",
+            persisted,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
     }
 
     private static void CacheResolvedTracks(
         Dictionary<string, SpotifyTrackSummary> cache,
         IEnumerable<SpotifyTrackSummary> tracks)
     {
-        foreach (var track in tracks)
+        foreach (var track in tracks.Where(HasCoreTrackMetadata))
         {
             cache[track.Id] = track;
             CacheLibrespotTrack(track);
@@ -1335,6 +1483,17 @@ public sealed class SpotifyMetadataService
             return cachedTracks.Select(track => track.Id).ToList();
         }
 
+        var persisted = await _metadataCacheRepository.TryGetAsync("spotify-playlist", playlistId, cancellationToken);
+        if (persisted is not null && DateTimeOffset.UtcNow - persisted.FetchedUtc <= PlaylistTrackCacheTtl)
+        {
+            var persistedPlaylist = ParseLibrespotPlaylistPayload(playlistId, persisted.PayloadJson);
+            if (persistedPlaylist is not null && persistedPlaylist.TrackIds.Count > 0)
+            {
+                CacheLibrespotPlaylistTrackIds(cacheKey, persistedPlaylist.TrackIds);
+                return persistedPlaylist.TrackIds;
+            }
+        }
+
         var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
         if (string.IsNullOrWhiteSpace(blobPath))
         {
@@ -1356,7 +1515,19 @@ public sealed class SpotifyMetadataService
             return new List<string>();
         }
 
-        var stubs = parsed.TrackIds
+        CacheLibrespotPlaylistTrackIds(cacheKey, parsed.TrackIds);
+        await _metadataCacheRepository.UpsertAsync(
+            "spotify-playlist",
+            playlistId,
+            librespotResult.PayloadJson,
+            DateTimeOffset.UtcNow,
+            cancellationToken);
+        return parsed.TrackIds;
+    }
+
+    private static void CacheLibrespotPlaylistTrackIds(string cacheKey, IReadOnlyList<string> trackIds)
+    {
+        var stubs = trackIds
             .Select(id => new SpotifyTrackSummary(
                 id,
                 string.Empty,
@@ -1368,7 +1539,6 @@ public sealed class SpotifyMetadataService
                 null))
             .ToList();
         CacheTrackList(cacheKey, LibrespotSource, stubs);
-        return parsed.TrackIds;
     }
 
     private static bool TryGetTrackCache(string key, out List<SpotifyTrackSummary> tracks)
@@ -1644,31 +1814,10 @@ public sealed class SpotifyMetadataService
         var librespotBlobPath = await TryResolveActiveLibrespotBlobPathAsync();
         if (!string.IsNullOrWhiteSpace(librespotBlobPath))
         {
-            var librespotHydrated = await HydrateTrackDetailsWithLibrespotAsync(
+            tracks = await HydrateTrackDetailsWithLibrespotAsync(
                 librespotBlobPath,
                 tracks,
                 cancellationToken);
-            if (librespotHydrated.Any(track =>
-                    !string.IsNullOrWhiteSpace(track.Isrc) || !string.IsNullOrWhiteSpace(track.Label)))
-            {
-                return librespotHydrated;
-            }
-        }
-
-        var context = await BuildLibrespotContextAsync(cancellationToken);
-        if (context is null)
-        {
-            _logger.LogWarning("Spotify blob auth unavailable: skipping track hydration.");
-            return tracks;
-        }
-
-        if (!string.IsNullOrWhiteSpace(context.BlobPath))
-        {
-            var librespotHydrated = await HydrateTrackDetailsWithLibrespotAsync(
-                context.BlobPath,
-                tracks,
-                cancellationToken);
-            return librespotHydrated;
         }
 
         return await HydrateTrackDetailsAsync(tracks, cancellationToken);
@@ -1745,6 +1894,17 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
+        var cacheType = includeTracks ? "spotify-librespot-album-tracks" : "spotify-librespot-album";
+        var persisted = await _metadataCacheRepository.TryGetAsync(cacheType, albumId, cancellationToken);
+        if (persisted is not null && _metadataCacheRepository.IsFresh(persisted.FetchedUtc))
+        {
+            var cachedAlbum = ParseLibrespotAlbum(albumId, persisted.PayloadJson);
+            if (cachedAlbum is not null)
+            {
+                return cachedAlbum;
+            }
+        }
+
         var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
         if (string.IsNullOrWhiteSpace(blobPath))
         {
@@ -1757,7 +1917,17 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        return ParseLibrespotAlbum(albumId, result.PayloadJson);
+        var parsed = ParseLibrespotAlbum(albumId, result.PayloadJson);
+        if (parsed is not null)
+        {
+            await _metadataCacheRepository.UpsertAsync(
+                cacheType,
+                albumId,
+                result.PayloadJson,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+        }
+        return parsed;
     }
 
     public async Task<SpotifyArtistFallbackMetadata?> FetchArtistFallbackWithLibrespotAsync(
@@ -1767,6 +1937,16 @@ public sealed class SpotifyMetadataService
         if (string.IsNullOrWhiteSpace(artistId))
         {
             return null;
+        }
+
+        var persisted = await _metadataCacheRepository.TryGetAsync("spotify-librespot-artist", artistId, cancellationToken);
+        if (persisted is not null && _metadataCacheRepository.IsFresh(persisted.FetchedUtc))
+        {
+            var cachedArtist = ParseLibrespotArtist(artistId, persisted.PayloadJson);
+            if (cachedArtist is not null)
+            {
+                return cachedArtist;
+            }
         }
 
         var blobPath = await TryResolveActiveLibrespotBlobPathAsync();
@@ -1781,65 +1961,17 @@ public sealed class SpotifyMetadataService
             return null;
         }
 
-        return ParseLibrespotArtist(artistId, result.PayloadJson);
-    }
-
-    private async Task<SearchContext?> BuildLibrespotContextAsync(CancellationToken cancellationToken)
-    {
-        var blobPath = await TryResolveActiveWebPlayerBlobPathAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(blobPath))
+        var parsed = ParseLibrespotArtist(artistId, result.PayloadJson);
+        if (parsed is not null)
         {
-            return null;
+            await _metadataCacheRepository.UpsertAsync(
+                "spotify-librespot-artist",
+                artistId,
+                result.PayloadJson,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
         }
-
-        // Try web player token first (uses blob cookies directly, no Librespot)
-        var webPlayerToken = await _blobService.GetWebPlayerTokenInfoAsync(blobPath, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(webPlayerToken?.AccessToken))
-        {
-            var market = await ResolveMarketAsync();
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation(
-                    "Spotify metadata auth ready: tokenLen={TokenLen} market={Market} source=webplayer",
-                    webPlayerToken.AccessToken.Length,
-                    market);
-            }
-            return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", blobPath);
-        }
-
-        // Fallback to Librespot if web player token fails
-        var tokenResult = await _blobService.GetWebApiAccessTokenAsync(blobPath, cancellationToken: cancellationToken);
-        if (string.IsNullOrWhiteSpace(tokenResult.AccessToken))
-        {
-            return null;
-        }
-
-        var fallbackMarket = await ResolveMarketAsync();
-        if (_logger.IsEnabled(LogLevel.Information))
-        {
-            _logger.LogInformation(
-                "Spotify metadata auth ready: tokenLen={TokenLen} market={Market} source=librespot",
-                tokenResult.AccessToken.Length,
-                fallbackMarket);
-        }
-        return new SearchContext(tokenResult.AccessToken, fallbackMarket, LibrespotSource, blobPath);
-    }
-
-
-    private async Task<string> ResolveMarketAsync()
-    {
-        try
-        {
-            var resolvedAccounts = await ResolveActiveSpotifyAccountsAsync();
-            var market = resolvedAccounts.UserAccount?.Region ?? resolvedAccounts.PlatformAccount?.Region;
-            return string.IsNullOrWhiteSpace(market) ? "US" : market;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to resolve Spotify market.");
-        }
-
-        return "US";
+        return parsed;
     }
 
     private async Task<string?> TryResolveActiveLibrespotBlobPathAsync()
@@ -1869,29 +2001,6 @@ public sealed class SpotifyMetadataService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogDebug(ex, "Failed to resolve Spotify librespot blob path.");
-            return null;
-        }
-    }
-
-    private async Task<string?> TryResolveActiveWebPlayerBlobPathAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var resolvedAccounts = await ResolveActiveSpotifyAccountsAsync();
-            var userBlobPath = resolvedAccounts.UserAccount?.WebPlayerBlobPath;
-            if (await IsValidWebPlayerBlobAsync(userBlobPath, cancellationToken))
-            {
-                return userBlobPath;
-            }
-
-            var platformBlobPath = NormalizeOptionalPath(resolvedAccounts.PlatformAccount?.WebPlayerBlobPath);
-            return await IsValidWebPlayerBlobAsync(platformBlobPath, cancellationToken)
-                ? platformBlobPath
-                : null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogDebug(ex, "Failed to resolve Spotify web-player blob path.");
             return null;
         }
     }
@@ -1929,11 +2038,6 @@ public sealed class SpotifyMetadataService
 
     private static string? NormalizeOptionalPath(string? path) =>
         string.IsNullOrWhiteSpace(path) ? null : path;
-
-    private async Task<bool> IsValidWebPlayerBlobAsync(string? blobPath, CancellationToken cancellationToken) =>
-        !string.IsNullOrWhiteSpace(blobPath)
-        && _blobService.BlobExists(blobPath)
-        && await _blobService.IsWebPlayerBlobAsync(blobPath, cancellationToken);
 
     private async Task<SpotifyUserAuthState?> TryLoadUserSpotifyStateAsync()
     {
@@ -2089,6 +2193,17 @@ public sealed class SpotifyMetadataService
         if (!string.IsNullOrWhiteSpace(batchResult.PayloadJson))
         {
             AppendLibrespotTrackResults(hydratedById, batchResult.PayloadJson);
+        }
+        if (!string.IsNullOrWhiteSpace(batchResult.Error))
+        {
+            var failedIds = batchResult.Failures is { Count: > 0 }
+                ? string.Join(",", batchResult.Failures.Select(failure => failure.Id))
+                : "batch";
+            _logger.LogWarning(
+                "Spotify librespot track metadata was {Status}: error={Error} failed={FailedIds}",
+                batchResult.IsPartial ? "partial" : "failed",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(batchResult.Error),
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(failedIds));
         }
     }
 
@@ -3081,10 +3196,12 @@ public sealed class SpotifyMetadataService
         {
             using var doc = JsonDocument.Parse(payloadJson);
             var root = doc.RootElement;
-            var attributes = root.TryGetProperty("attributes", out var attributesProp) ? attributesProp : default;
-            var (name, description, imageUrl) = ParsePlaylistAttributes(attributes);
-            var ownerName = TryGetString(root, "owner_username");
-            var snapshotId = TryGetString(root, "revision");
+            var name = TryGetString(root, "name");
+            var description = CleanSpotifyDescription(TryGetString(root, "description"));
+            var imageUrl = TryGetString(root, "image_url");
+            var ownerName = TryGetString(root, "owner", "display_name")
+                ?? TryGetString(root, "owner", "id");
+            var snapshotId = TryGetString(root, "snapshot_id");
             var totalTracks = TryReadInt32(root, "length");
             var trackIds = ParsePlaylistTrackIds(root);
 
@@ -3104,22 +3221,9 @@ public sealed class SpotifyMetadataService
         }
     }
 
-    private static (string? Name, string? Description, string? ImageUrl) ParsePlaylistAttributes(JsonElement attributes)
-    {
-        if (attributes.ValueKind != JsonValueKind.Object)
-        {
-            return (null, null, null);
-        }
-
-        return (
-            TryGetString(attributes, "name"),
-            CleanSpotifyDescription(TryGetString(attributes, "description")),
-            BuildImageUrlFromPicture(TryGetString(attributes, "picture")));
-    }
-
     private static List<string> ParsePlaylistTrackIds(JsonElement root)
     {
-        if (!TryGetNested(root, out var itemsProp, "contents", "items")
+        if (!TryGetNested(root, out var itemsProp, "tracks", "items")
             || itemsProp.ValueKind != JsonValueKind.Array)
         {
             return new List<string>();
@@ -3127,8 +3231,8 @@ public sealed class SpotifyMetadataService
 
         return itemsProp
             .EnumerateArray()
-            .Select(item => item.TryGetProperty("uri", out var uriProp) ? uriProp.GetString() : null)
-            .Select(uri => ExtractSpotifyIdFromUri(uri, TrackType))
+            .Select(item => TryGetString(item, "track", "id")
+                ?? ExtractSpotifyIdFromUri(TryGetString(item, "track", "uri"), TrackType))
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .ToList()!;
     }
@@ -3337,7 +3441,6 @@ public sealed class SpotifyMetadataService
         return null;
     }
 
-    private sealed record SearchContext(string AccessToken, string Market, string Source, string? BlobPath);
     private sealed record ParsedSpotifyUrl(string Type, string Id);
     private sealed record LibrespotPlaylistPayload(
         string PlaylistId,

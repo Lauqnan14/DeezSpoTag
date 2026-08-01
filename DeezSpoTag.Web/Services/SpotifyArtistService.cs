@@ -414,6 +414,10 @@ public sealed class SpotifyArtistService
             artistPage,
             staleCachedPayload,
             cancellationToken);
+        result = result with
+        {
+            TopTracks = await EnrichTopTracksWithIsrcsAsync(result.TopTracks, cancellationToken)
+        };
         result = await TryEnrichWithDeezerLinksAsync(result, artistName, includeDeezerLinking, localArtistId, cancellationToken);
         await PersistArtistPageResultAsync(spotifyId, artistName, result, cancellationToken);
         return result;

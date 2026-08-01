@@ -1599,12 +1599,8 @@ function renderHomeSectionEntry(entry, index, isChannelPage) {
 
 function filterHomeSectionsForRender(sections, options) {
     return sections.filter(section => {
-        if (options.isEpisodesYouMightLikeSection(section)) {
-            return false;
-        }
-        if (!options.isRecentlyPlayedSection(section)) {
-            return true;
-        }
+        if (options.isEpisodesYouMightLikeSection(section)) return false;
+        if (!options.isRecentlyPlayedSection(section)) return true;
         const itemCount = Array.isArray(section?.items) ? section.items.length : 0;
         return itemCount >= 4;
     });
@@ -1864,10 +1860,7 @@ function renderHomeSections(sections) {
         const title = normalizeSectionTitle(section?.title);
         return title === 'popular radio' || title === 'popular radios';
     };
-    const isRecentlyPlayedSection = (section) => {
-        const title = normalizeSectionTitle(section?.title);
-        return title === 'recently played';
-    };
+    const isRecentlyPlayedSection = (section) => normalizeSectionTitle(section?.title) === 'recently played';
     const isEpisodesYouMightLikeSection = (section) => {
         const title = normalizeSectionTitle(section?.title);
         return title === 'episodes you might like' || title === 'episode you might like';
@@ -2078,17 +2071,6 @@ function renderHomeSections(sections) {
     });
 
     const spaceAwareThreshold = 8;
-    const isSingleCardNewReleaseSection = (normalizedTitle) => {
-        if (!normalizedTitle) {
-            return false;
-        }
-        return normalizedTitle.startsWith('new release')
-            || normalizedTitle.startsWith('new releases')
-            || normalizedTitle === 'recommended new releases for you today'
-            || normalizedTitle.includes('nouveaut')
-            || normalizedTitle.includes('novedad');
-    };
-
     const computeSectionRenderMeta = (section) => computeHomeSectionRenderMeta(section, {
         normalizeTitle,
         isPopularRadioSection,
@@ -2098,6 +2080,15 @@ function renderHomeSections(sections) {
         popularRadioPreviewCount,
         spaceAwareThreshold
     });
+
+    const isSingleCardNewReleaseSection = (normalizedTitle) => {
+        if (!normalizedTitle) return false;
+        return normalizedTitle.startsWith('new release')
+            || normalizedTitle.startsWith('new releases')
+            || normalizedTitle === 'recommended new releases for you today'
+            || normalizedTitle.includes('nouveaut')
+            || normalizedTitle.includes('novedad');
+    };
 
     const sectionsToRender = buildHomeSectionsToRender(
         orderedSections,

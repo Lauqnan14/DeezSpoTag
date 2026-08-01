@@ -64,15 +64,14 @@ public sealed class ResourceLifetimeRegressionTests
     }
 
     [Fact]
-    public void SpotifyLibrespotTokenHelper_HasAnEnforcedTimeout()
+    public void SpotifyLibrespotWorker_HasAnEnforcedRequestTimeout()
     {
         var repoRoot = FindRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "SpotifyBlobService.cs"));
 
-        Assert.Contains(
-            "WaitForProcessExitAsync(process, LibrespotMetadataRequestTimeout, cancellationToken)",
-            source,
-            StringComparison.Ordinal);
+        Assert.Contains("timeoutSource.CancelAfter(timeout)", source, StringComparison.Ordinal);
+        Assert.Contains("ReadLineAsync(timeoutSource.Token)", source, StringComparison.Ordinal);
+        Assert.Contains("TryKillProcessTree(_process)", source, StringComparison.Ordinal);
     }
 
     [Fact]

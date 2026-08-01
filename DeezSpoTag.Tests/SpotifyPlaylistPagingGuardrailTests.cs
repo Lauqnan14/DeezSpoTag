@@ -74,6 +74,20 @@ public sealed class SpotifyPlaylistPagingGuardrailTests
         Assert.DoesNotContain("GetPathfinderPlaylistTracksAsync", metadata, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void PlaylistPages_ArePersistedAndInvalidatedBySnapshot()
+    {
+        var root = ResolveRepoRoot();
+        var metadata = File.ReadAllText(Path.Join(root, "DeezSpoTag.Web", "Services", "SpotifyMetadataService.cs"));
+        var repository = File.ReadAllText(Path.Join(root, "DeezSpoTag.Services", "Library", "SpotifyMetadataCacheRepository.cs"));
+
+        Assert.Contains("spotify-playlist-page", metadata, StringComparison.Ordinal);
+        Assert.Contains("spotify-playlist-snapshot", metadata, StringComparison.Ordinal);
+        Assert.Contains("InvalidatePlaylistPagesWhenSnapshotChangesAsync", metadata, StringComparison.Ordinal);
+        Assert.Contains("ClearBySourcePrefixAsync", metadata, StringComparison.Ordinal);
+        Assert.Contains("substr(source_id, 1, length($source_id_prefix))", repository, StringComparison.Ordinal);
+    }
+
     private static string ResolveRepoRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

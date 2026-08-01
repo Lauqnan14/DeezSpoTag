@@ -6770,7 +6770,7 @@ async function loadExternalArtistVisuals(artistName, artistId) {
         renderArtistVisualPicker(artistId);
 
         const refreshed = await fetchJsonOptional(
-            `/api/library/artists/${encodeURIComponent(artistId)}/artwork/refresh`,
+            `/api/library/artists/${encodeURIComponent(artistId)}/artwork/refresh?force=true`,
             { method: 'POST' });
         if (visuals.externalRequestId !== requestId) {
             return;

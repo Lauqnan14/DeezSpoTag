@@ -4,7 +4,6 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using DeezSpoTag.Services.Security;
 using DeezSpoTag.Services.Utils;
@@ -12,7 +11,7 @@ using Microsoft.AspNetCore.DataProtection;
 
 namespace DeezSpoTag.Web.Services;
 
-public sealed class SpotifyBlobService
+public sealed class SpotifyBlobService : IAsyncDisposable
 {
     private const string DefaultWebPlayerUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
     private const string ProtobufRuntimeEnv = "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION";
@@ -22,7 +21,6 @@ public sealed class SpotifyBlobService
     private const string PayloadField = "payload";
     private const string ErrorField = "error";
     private const string MissingBlobError = "missing_blob";
-    private const string HelperNotFoundError = "helper_not_found";
     private const string RequestFailedError = "request_failed";
     private const string UnknownError = "unknown_error";
     private const string MissingPayloadError = "missing_payload";
@@ -35,21 +33,14 @@ public sealed class SpotifyBlobService
     private const string SpotizerrPhoenixFolder = "spotizerr-phoenix";
     private const string ZeroconfAuthScript = "spotify_zeroconf_auth.py";
     private const int SpotifyConnectListenerPort = 4070;
-    private const string LibrespotTokenScript = "spotify_librespot_token.py";
-    private const string LibrespotPlaylistScript = "spotify_librespot_playlist.py";
-    private const string LibrespotTracksScript = "spotify_librespot_tracks.py";
-    private const string LibrespotSearchScript = "spotify_librespot_search.py";
-    private const string LibrespotAlbumScript = "spotify_librespot_album.py";
-    private const string LibrespotArtistScript = "spotify_librespot_artist.py";
-    private const string LibrespotPodcastScript = "spotify_librespot_podcast.py";
+    private const string LibrespotWorkerScript = "spotify_librespot_worker.py";
     private const string SpotifyOpenHost = "open.spotify.com";
     private const string SpotifyOpenTokenPath = "/api/token";
-    private const string CredentialsNotFoundError = "credentials_not_found";
     private const string AllRetriesFailedError = "all_retries_failed";
     private const string ProcessTimeoutError = "process_timeout";
     private const string WebPlayerProtectionPurpose = "DeezSpoTag.Spotify.WebPlayer";
     private const string LibrespotProtectionPurpose = "DeezSpoTag.Spotify.Librespot";
-    private static readonly TimeSpan LibrespotMetadataRequestTimeout = TimeSpan.FromSeconds(25);
+    private static readonly TimeSpan LibrespotMetadataRequestTimeout = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan[] WebApiRetryDelays =
     {
         TimeSpan.FromSeconds(2),
@@ -59,8 +50,6 @@ public sealed class SpotifyBlobService
     private static readonly HashSet<string> NonRetryableWebApiErrors = new(StringComparer.Ordinal)
     {
         MissingBlobError,
-        HelperNotFoundError,
-        CredentialsNotFoundError,
         InvalidLibrespotBlobError
     };
     private static readonly Uri SpotifyOpenReferrerUri = BuildSpotifyUri("/");
@@ -72,13 +61,15 @@ public sealed class SpotifyBlobService
     private readonly ILogger<SpotifyBlobService> _logger;
     private readonly ProtectedCredentialFileStore _webPlayerCredentialStore;
     private readonly ProtectedCredentialFileStore _librespotCredentialStore;
+    private readonly SemaphoreSlim _librespotWorkerLock = new(1, 1);
+    private readonly Dictionary<string, LibrespotWorkerProcess> _librespotWorkers = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> BlobGenerationLocks = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpotifyBlobGenerationStatus> BlobGenerationStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
     };
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Token, DateTimeOffset ExpiresAt)> TokenCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Token, DateTimeOffset ExpiresAt, string CredentialSignature)> TokenCache = new();
     public sealed class SpotifyBlobGenerationInProgressException : InvalidOperationException
     {
         public SpotifyBlobGenerationInProgressException(string accountName)
@@ -304,7 +295,10 @@ public sealed class SpotifyBlobService
             return new SpotifyAccessTokenResult(null, null, InvalidLibrespotBlobError);
         }
 
-        if (TokenCache.TryGetValue(blobPath, out var cached) && DateTimeOffset.UtcNow < cached.ExpiresAt)
+        var credentialSignature = GetCredentialFileSignature(blobPath);
+        if (TokenCache.TryGetValue(blobPath, out var cached)
+            && DateTimeOffset.UtcNow < cached.ExpiresAt
+            && string.Equals(cached.CredentialSignature, credentialSignature, StringComparison.Ordinal))
         {
             return new SpotifyAccessTokenResult(cached.Token, null, null);
         }
@@ -322,7 +316,7 @@ public sealed class SpotifyBlobService
             expiresAt = candidate.AddMinutes(-2);
         }
 
-        TokenCache[blobPath] = (result.AccessToken!, expiresAt);
+        TokenCache[blobPath] = (result.AccessToken!, expiresAt, credentialSignature);
         return result;
     }
 
@@ -477,12 +471,11 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
+            blobPath,
             "playlist",
-            ResolveLibrespotPlaylistScriptPath,
-            cancellationToken,
-            CredentialsArg, blobPath,
-            "--playlist-id", playlistId);
-        return new SpotifyLibrespotPlaylistResult(result.PayloadJson, result.Error);
+            new { playlist_id = playlistId },
+            cancellationToken);
+        return new SpotifyLibrespotPlaylistResult(result.PayloadJson, result.Error, result.IsPartial, result.Failures);
     }
 
     public async Task<SpotifyLibrespotTracksResult> GetLibrespotTracksAsync(
@@ -504,14 +497,12 @@ public sealed class SpotifyBlobService
             return new SpotifyLibrespotTracksResult(null, "invalid_track_ids");
         }
 
-        var ids = string.Join(",", trackIds);
         var result = await RequestLibrespotPayloadAsync(
+            blobPath,
             "tracks",
-            ResolveLibrespotTracksScriptPath,
-            cancellationToken,
-            CredentialsArg, blobPath,
-            "--track-ids", ids);
-        return new SpotifyLibrespotTracksResult(result.PayloadJson, result.Error);
+            new { track_ids = trackIds },
+            cancellationToken);
+        return new SpotifyLibrespotTracksResult(result.PayloadJson, result.Error, result.IsPartial, result.Failures);
     }
 
     public async Task<SpotifyLibrespotSearchResult> SearchLibrespotTracksAsync(
@@ -532,27 +523,12 @@ public sealed class SpotifyBlobService
         }
 
         var resolvedLimit = Math.Clamp(limit <= 0 ? 10 : limit, 1, 50);
-        var arguments = new List<string>
-        {
-            CredentialsArg,
-            blobPath,
-            "--query",
-            query.Trim(),
-            "--limit",
-            resolvedLimit.ToString(System.Globalization.CultureInfo.InvariantCulture)
-        };
-        if (!string.IsNullOrWhiteSpace(country))
-        {
-            arguments.Add("--country");
-            arguments.Add(country.Trim());
-        }
-
         var result = await RequestLibrespotPayloadAsync(
+            blobPath,
             "search",
-            ResolveLibrespotSearchScriptPath,
-            cancellationToken,
-            arguments.ToArray());
-        return new SpotifyLibrespotSearchResult(result.PayloadJson, result.Error);
+            new { query = query.Trim(), limit = resolvedLimit, country = country?.Trim() },
+            cancellationToken);
+        return new SpotifyLibrespotSearchResult(result.PayloadJson, result.Error, result.IsPartial, result.Failures);
     }
 
     public async Task<SpotifyLibrespotAlbumResult> GetLibrespotAlbumAsync(
@@ -571,22 +547,12 @@ public sealed class SpotifyBlobService
             return new SpotifyLibrespotAlbumResult(null, "invalid_album_id");
         }
 
-        var args = new List<string>
-        {
-            CredentialsArg, blobPath,
-            "--album-id", albumId.Trim()
-        };
-        if (includeTracks)
-        {
-            args.Add("--include-tracks");
-        }
-
         var result = await RequestLibrespotPayloadAsync(
+            blobPath,
             "album",
-            ResolveLibrespotAlbumScriptPath,
-            cancellationToken,
-            args.ToArray());
-        return new SpotifyLibrespotAlbumResult(result.PayloadJson, result.Error);
+            new { album_id = albumId.Trim(), include_tracks = includeTracks },
+            cancellationToken);
+        return new SpotifyLibrespotAlbumResult(result.PayloadJson, result.Error, result.IsPartial, result.Failures);
     }
 
     public async Task<SpotifyLibrespotArtistResult> GetLibrespotArtistAsync(
@@ -605,12 +571,11 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
+            blobPath,
             "artist",
-            ResolveLibrespotArtistScriptPath,
-            cancellationToken,
-            CredentialsArg, blobPath,
-            "--artist-id", artistId.Trim());
-        return new SpotifyLibrespotArtistResult(result.PayloadJson, result.Error);
+            new { artist_id = artistId.Trim() },
+            cancellationToken);
+        return new SpotifyLibrespotArtistResult(result.PayloadJson, result.Error, result.IsPartial, result.Failures);
     }
 
     public async Task<SpotifyLibrespotPodcastResult> GetLibrespotPodcastMetadataAsync(
@@ -641,67 +606,34 @@ public sealed class SpotifyBlobService
         }
 
         var result = await RequestLibrespotPayloadAsync(
-            "podcast",
-            ResolveLibrespotPodcastScriptPath,
-            cancellationToken,
-            CredentialsArg, blobPath,
-            "--type", normalizedType,
-            "--id", spotifyId.Trim());
-        return new SpotifyLibrespotPodcastResult(result.PayloadJson, result.Error);
+            blobPath,
+            normalizedType,
+            new { spotify_id = spotifyId.Trim() },
+            cancellationToken);
+        return new SpotifyLibrespotPodcastResult(result.PayloadJson, result.Error, result.IsPartial, result.Failures);
     }
 
     private async Task<LibrespotPayloadResult> RequestLibrespotPayloadAsync(
-        string helperName,
-        Func<string, string?> resolveScriptPath,
-        CancellationToken cancellationToken,
-        params string[] arguments)
+        string blobPath,
+        string operation,
+        object arguments,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var pythonExecutable = await EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
-            var repoRoot = ResolveRepoRoot();
-            var scriptPath = resolveScriptPath(repoRoot);
-            if (scriptPath == null)
+            var worker = await GetOrCreateLibrespotWorkerAsync(blobPath, cancellationToken);
+            if (worker is null)
             {
-                _logger.LogWarning("Spotify librespot {Helper} helper not found.", helperName);
-                return new LibrespotPayloadResult(null, HelperNotFoundError);
+                return new LibrespotPayloadResult(null, RequestFailedError, false, []);
             }
 
-            var tempCredentialPath = await CreateTemporaryPlaintextCredentialFileAsync(arguments, cancellationToken);
-            try
-            {
-                var effectiveArguments = ReplaceCredentialArgument(arguments, tempCredentialPath);
-                var executionResult = await RunPythonScriptAsync(
-                    pythonExecutable,
-                    scriptPath,
-                    LibrespotMetadataRequestTimeout,
-                    cancellationToken,
-                    effectiveArguments);
-
-                if (string.IsNullOrWhiteSpace(executionResult.StandardOutput))
-                {
-                    if (!string.IsNullOrWhiteSpace(executionResult.StandardError))
-                    {
-                        _logger.LogWarning(
-                            "Spotify librespot {Helper} request failed: {Error}",
-                            helperName,
-                            executionResult.StandardError);
-                    }
-
-                    return new LibrespotPayloadResult(null, RequestFailedError);
-                }
-
-                return ParseLibrespotPayloadResult(executionResult.StandardOutput);
-            }
-            finally
-            {
-                TryDeleteFile(tempCredentialPath);
-            }
+            return await worker.RequestAsync(operation, arguments, LibrespotMetadataRequestTimeout, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Spotify librespot {Helper} request failed.", helperName);
-            return new LibrespotPayloadResult(null, ExceptionError);
+            _logger.LogWarning(ex, "Spotify librespot {Operation} request failed.", operation);
+            await RemoveLibrespotWorkerAsync(blobPath);
+            return new LibrespotPayloadResult(null, ExceptionError, false, []);
         }
     }
 
@@ -710,18 +642,153 @@ public sealed class SpotifyBlobService
         using var doc = JsonDocument.Parse(stdout);
         var root = doc.RootElement;
         var ok = root.TryGetProperty("ok", out var okProp) && okProp.ValueKind == JsonValueKind.True;
-        if (!ok)
+        var partial = root.TryGetProperty("partial", out var partialProp) && partialProp.ValueKind == JsonValueKind.True;
+        if (!ok && !partial)
         {
             var error = root.TryGetProperty(ErrorField, out var errorProp) ? errorProp.GetString() : UnknownError;
-            return new LibrespotPayloadResult(null, error);
+            return new LibrespotPayloadResult(null, error, false, ReadLibrespotFailures(root));
         }
 
         if (!root.TryGetProperty(PayloadField, out var payloadProp))
         {
-            return new LibrespotPayloadResult(null, MissingPayloadError);
+            return new LibrespotPayloadResult(null, MissingPayloadError, false, ReadLibrespotFailures(root));
         }
 
-        return new LibrespotPayloadResult(payloadProp.GetRawText(), null);
+        var errorValue = root.TryGetProperty(ErrorField, out var resultError) ? resultError.GetString() : null;
+        return new LibrespotPayloadResult(payloadProp.GetRawText(), errorValue, partial, ReadLibrespotFailures(root));
+    }
+
+    private static List<SpotifyLibrespotItemFailure> ReadLibrespotFailures(JsonElement root)
+    {
+        if (!root.TryGetProperty("failures", out var failures) || failures.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return failures.EnumerateArray()
+            .Select(item => new SpotifyLibrespotItemFailure(
+                item.TryGetProperty("id", out var id) ? id.GetString() ?? string.Empty : string.Empty,
+                item.TryGetProperty(ErrorField, out var error) ? error.GetString() ?? UnknownError : UnknownError))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Id))
+            .ToList();
+    }
+
+    private async Task<LibrespotWorkerProcess?> GetOrCreateLibrespotWorkerAsync(
+        string blobPath,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(blobPath) || !File.Exists(blobPath))
+        {
+            return null;
+        }
+
+        var normalizedPath = Path.GetFullPath(blobPath);
+        var signature = GetCredentialFileSignature(normalizedPath);
+        await _librespotWorkerLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_librespotWorkers.TryGetValue(normalizedPath, out var current))
+            {
+                if (current.IsRunning && current.CredentialSignature == signature)
+                {
+                    return current;
+                }
+
+                _librespotWorkers.Remove(normalizedPath);
+                await current.DisposeAsync();
+            }
+
+            var pythonExecutable = await EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
+            var workerScript = ResolveToolFilePath(ResolveRepoRoot(), LibrespotWorkerScript);
+            if (workerScript is null)
+            {
+                _logger.LogWarning("Spotify librespot worker was not found.");
+                return null;
+            }
+
+            var workerDirectory = CreateAuthWorkingDirectory(
+                Path.Join(GetConfigRoot(), "spotify", "workers"),
+                GetConfigRoot());
+            var temporaryCredentials = await CreateTemporaryPlaintextCredentialFileAsync(
+                normalizedPath,
+                workerDirectory,
+                cancellationToken);
+            if (temporaryCredentials is null)
+            {
+                TryDeleteDirectory(workerDirectory);
+                return null;
+            }
+
+            try
+            {
+                var worker = await LibrespotWorkerProcess.StartAsync(
+                    pythonExecutable,
+                    workerScript,
+                    workerDirectory,
+                    temporaryCredentials,
+                    signature,
+                    _logger,
+                    LibrespotMetadataRequestTimeout,
+                    cancellationToken);
+                _librespotWorkers[normalizedPath] = worker;
+                return worker;
+            }
+            catch
+            {
+                TryDeleteFile(temporaryCredentials);
+                TryDeleteFile(Path.Join(workerDirectory, "credentials.json"));
+                TryDeleteDirectory(workerDirectory);
+                throw;
+            }
+        }
+        finally
+        {
+            _librespotWorkerLock.Release();
+        }
+    }
+
+    private async Task RemoveLibrespotWorkerAsync(string blobPath)
+    {
+        var normalizedPath = Path.GetFullPath(blobPath);
+        await _librespotWorkerLock.WaitAsync();
+        try
+        {
+            if (_librespotWorkers.Remove(normalizedPath, out var worker))
+            {
+                await worker.DisposeAsync();
+            }
+        }
+        finally
+        {
+            _librespotWorkerLock.Release();
+        }
+    }
+
+    private static string GetCredentialFileSignature(string path)
+    {
+        var info = new FileInfo(path);
+        return $"{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+    }
+
+    private async Task<string?> CreateTemporaryPlaintextCredentialFileAsync(
+        string credentialPath,
+        string targetDirectory,
+        CancellationToken cancellationToken)
+    {
+        var json = await ReadBlobTextAndMigrateAsync(credentialPath, cancellationToken);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        Directory.CreateDirectory(targetDirectory);
+        var tempPath = Path.Join(targetDirectory, "credentials.json");
+        await WriteTextAtomicallyAsync(tempPath, json, cancellationToken);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        return tempPath;
     }
 
     public async Task<SpotifyBlobPayload?> TryLoadBlobPayloadAsync(string blobPath, CancellationToken cancellationToken = default)
@@ -1197,62 +1264,6 @@ public sealed class SpotifyBlobService
         }
     }
 
-    private async Task<string?> CreateTemporaryPlaintextCredentialFileAsync(
-        IReadOnlyList<string> arguments,
-        CancellationToken cancellationToken)
-    {
-        var credentialPath = ResolveCredentialArgument(arguments);
-        if (string.IsNullOrWhiteSpace(credentialPath))
-        {
-            return null;
-        }
-
-        var json = await ReadBlobTextAndMigrateAsync(credentialPath, cancellationToken);
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return null;
-        }
-
-        var directory = Path.GetDirectoryName(credentialPath);
-        var tempRoot = string.IsNullOrWhiteSpace(directory) ? Path.GetTempPath() : directory;
-        var tempPath = Path.Join(tempRoot, $".spotify-credentials-{Guid.NewGuid():N}.json");
-        await WriteTextAtomicallyAsync(tempPath, json, cancellationToken);
-        return tempPath;
-    }
-
-    private static string? ResolveCredentialArgument(IReadOnlyList<string> arguments)
-    {
-        for (var i = 0; i < arguments.Count - 1; i++)
-        {
-            if (string.Equals(arguments[i], CredentialsArg, StringComparison.Ordinal))
-            {
-                return arguments[i + 1];
-            }
-        }
-
-        return null;
-    }
-
-    private static string[] ReplaceCredentialArgument(IReadOnlyList<string> arguments, string? temporaryCredentialPath)
-    {
-        var copy = arguments.ToArray();
-        if (string.IsNullOrWhiteSpace(temporaryCredentialPath))
-        {
-            return copy;
-        }
-
-        for (var i = 0; i < copy.Length - 1; i++)
-        {
-            if (string.Equals(copy[i], CredentialsArg, StringComparison.Ordinal))
-            {
-                copy[i + 1] = temporaryCredentialPath;
-                break;
-            }
-        }
-
-        return copy;
-    }
-
     private static void TryDeleteFile(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -1277,76 +1288,35 @@ public sealed class SpotifyBlobService
     {
         try
         {
-            var pythonExecutable = await EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
-            var repoRoot = ResolveRepoRoot();
-            var scriptPath = ResolveLibrespotTokenScriptPath(repoRoot);
-            if (scriptPath == null)
-            {
-                _logger.LogWarning("Spotify librespot token helper not found.");
-                return new SpotifyAccessTokenResult(null, null, HelperNotFoundError);
-            }
-
-            var arguments = new[]
-            {
-                CredentialsArg,
+            var result = await RequestLibrespotPayloadAsync(
                 blobPath,
-                "--scopes",
-                "playlist-read",
-                "playlist-read-private",
-                "user-library-read",
-                "user-read-private",
-                "user-read-email"
-            };
-            var tempCredentialPath = await CreateTemporaryPlaintextCredentialFileAsync(arguments, cancellationToken);
-            string stdout;
-            string stderr;
-            try
-            {
-                var startInfo = CreatePythonScriptStartInfo(
-                    pythonExecutable,
-                    scriptPath,
-                    null,
-                    ReplaceCredentialArgument(arguments, tempCredentialPath));
-
-                using var process = new Process { StartInfo = startInfo };
-                process.Start();
-                var processOutput = await WaitForProcessExitAsync(process, LibrespotMetadataRequestTimeout, cancellationToken);
-                stdout = processOutput.StandardOutput;
-                stderr = processOutput.StandardError;
-            }
-            finally
-            {
-                TryDeleteFile(tempCredentialPath);
-            }
-
-            if (string.IsNullOrWhiteSpace(stdout))
-            {
-                if (!string.IsNullOrWhiteSpace(stderr))
+                "token",
+                new
                 {
-                    _logger.LogWarning("Spotify librespot token request failed: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(stderr));
-                }
-                return new SpotifyAccessTokenResult(null, null, RequestFailedError);
+                    scopes = new[]
+                    {
+                        "playlist-read",
+                        "playlist-read-private",
+                        "user-library-read",
+                        "user-read-private",
+                        "user-read-email"
+                    }
+                },
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(result.PayloadJson))
+            {
+                return new SpotifyAccessTokenResult(null, null, result.Error ?? UnknownError);
             }
 
-            LibrespotTokenResult? parsed;
-            try
-            {
-                parsed = JsonSerializer.Deserialize<LibrespotTokenResult>(stdout, _jsonOptions);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Spotify librespot token parse failed.");
-                return new SpotifyAccessTokenResult(null, null, "parse_failed");
-            }
-
-            if (parsed == null || !parsed.Ok || string.IsNullOrWhiteSpace(parsed.AccessToken))
-            {
-                var error = parsed?.Error ?? UnknownError;
-                _logger.LogWarning("Spotify librespot token unavailable: {Error}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(error));
-                return new SpotifyAccessTokenResult(null, parsed?.ExpiresAtUnixMs, error);
-            }
-
-            return new SpotifyAccessTokenResult(parsed.AccessToken, parsed.ExpiresAtUnixMs, null);
+            using var document = JsonDocument.Parse(result.PayloadJson);
+            var root = document.RootElement;
+            var accessToken = root.TryGetProperty("access_token", out var token) ? token.GetString() : null;
+            long? expiresAt = root.TryGetProperty("expires_at_unix_ms", out var expiry) && expiry.TryGetInt64(out var parsedExpiry)
+                ? parsedExpiry
+                : null;
+            return string.IsNullOrWhiteSpace(accessToken)
+                ? new SpotifyAccessTokenResult(null, expiresAt, MissingPayloadError)
+                : new SpotifyAccessTokenResult(accessToken, expiresAt, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1393,27 +1363,6 @@ public sealed class SpotifyBlobService
 
     private string? ResolveSpotifyAuthVendorRoot(string repoRoot)
         => ResolveToolDirectoryPath(repoRoot, SpotifyLibrespotFolder, SpotizerrPhoenixFolder);
-
-    private string? ResolveLibrespotTokenScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotTokenScript);
-
-    private string? ResolveLibrespotPlaylistScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotPlaylistScript);
-
-    private string? ResolveLibrespotTracksScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotTracksScript);
-
-    private string? ResolveLibrespotSearchScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotSearchScript);
-
-    private string? ResolveLibrespotAlbumScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotAlbumScript);
-
-    private string? ResolveLibrespotArtistScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotArtistScript);
-
-    private string? ResolveLibrespotPodcastScriptPath(string repoRoot)
-        => ResolveToolFilePath(repoRoot, LibrespotPodcastScript);
 
     private string? ResolveToolFilePath(string repoRoot, params string[] relativeSegments)
         => EnumerateToolPathCandidates(repoRoot, relativeSegments).FirstOrDefault(File.Exists);
@@ -1599,6 +1548,12 @@ public sealed class SpotifyBlobService
         var sessionId = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
         var workingDirectory = Path.Join(authRoot, sessionId);
         Directory.CreateDirectory(workingDirectory);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                workingDirectory,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
         return workingDirectory;
     }
 
@@ -1749,23 +1704,6 @@ public sealed class SpotifyBlobService
         }
 
         return (true, processOutput.StandardOutput);
-    }
-
-    private static async Task<ProcessOutputResult> RunPythonScriptAsync(
-        string pythonExecutable,
-        string scriptPath,
-        TimeSpan timeout,
-        CancellationToken cancellationToken,
-        params string[] arguments)
-    {
-        var startInfo = CreatePythonScriptStartInfo(
-            pythonExecutable,
-            scriptPath,
-            null,
-            arguments);
-        using var process = new Process { StartInfo = startInfo };
-        process.Start();
-        return await WaitForProcessExitAsync(process, timeout, cancellationToken);
     }
 
     private static async Task<ProcessOutputResult> WaitForProcessExitAsync(
@@ -1939,13 +1877,198 @@ public sealed class SpotifyBlobService
         return fullPath;
     }
 
-    private sealed record LibrespotTokenResult(
-        [property: JsonPropertyName("ok")] bool Ok,
-        [property: JsonPropertyName("access_token")] string? AccessToken,
-        [property: JsonPropertyName("expires_at_unix_ms")] long? ExpiresAtUnixMs,
-        [property: JsonPropertyName(ErrorField)] string? Error);
-    private sealed record LibrespotPayloadResult(string? PayloadJson, string? Error);
+    private sealed record LibrespotPayloadResult(
+        string? PayloadJson,
+        string? Error,
+        bool IsPartial,
+        IReadOnlyList<SpotifyLibrespotItemFailure> Failures);
     private sealed record ProcessOutputResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private sealed class LibrespotWorkerProcess : IAsyncDisposable
+    {
+        private readonly Process _process;
+        private readonly SemaphoreSlim _requestLock = new(1, 1);
+        private readonly ILogger<SpotifyBlobService> _logger;
+        private readonly Task _stderrTask;
+        private readonly string _runtimeDirectory;
+
+        private LibrespotWorkerProcess(
+            Process process,
+            string credentialSignature,
+            string runtimeDirectory,
+            ILogger<SpotifyBlobService> logger)
+        {
+            _process = process;
+            CredentialSignature = credentialSignature;
+            _runtimeDirectory = runtimeDirectory;
+            _logger = logger;
+            _stderrTask = DrainStandardErrorAsync();
+        }
+
+        public string CredentialSignature { get; }
+        public bool IsRunning => !_process.HasExited;
+
+        public static async Task<LibrespotWorkerProcess> StartAsync(
+            string pythonExecutable,
+            string scriptPath,
+            string workingDirectory,
+            string credentialPath,
+            string credentialSignature,
+            ILogger<SpotifyBlobService> logger,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+            var startInfo = CreatePythonScriptStartInfo(
+                pythonExecutable,
+                scriptPath,
+                workingDirectory,
+                CredentialsArg,
+                credentialPath);
+            startInfo.RedirectStandardInput = true;
+            var process = new Process { StartInfo = startInfo };
+            process.Start();
+            var worker = new LibrespotWorkerProcess(process, credentialSignature, workingDirectory, logger);
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            try
+            {
+                var readyLine = await process.StandardOutput.ReadLineAsync(timeoutSource.Token);
+                if (string.IsNullOrWhiteSpace(readyLine))
+                {
+                    throw new InvalidOperationException("Spotify librespot worker exited before session initialization.");
+                }
+
+                using var ready = JsonDocument.Parse(readyLine);
+                if (!ready.RootElement.TryGetProperty("ready", out var readyValue)
+                    || readyValue.ValueKind != JsonValueKind.True)
+                {
+                    var error = ready.RootElement.TryGetProperty(ErrorField, out var errorValue)
+                        ? errorValue.GetString()
+                        : RequestFailedError;
+                    throw new InvalidOperationException($"Spotify librespot worker failed to start: {error}");
+                }
+
+                return worker;
+            }
+            catch
+            {
+                await worker.DisposeAsync();
+                throw;
+            }
+        }
+
+        public async Task<LibrespotPayloadResult> RequestAsync(
+            string operation,
+            object arguments,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+            await _requestLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (!IsRunning)
+                {
+                    throw new InvalidOperationException("Spotify librespot worker is not running.");
+                }
+
+                var requestId = Guid.NewGuid().ToString("N");
+                var request = JsonSerializer.Serialize(new { id = requestId, operation, arguments });
+                await _process.StandardInput.WriteLineAsync(request.AsMemory(), cancellationToken);
+                await _process.StandardInput.FlushAsync(cancellationToken);
+
+                using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutSource.CancelAfter(timeout);
+                string? response;
+                try
+                {
+                    response = await _process.StandardOutput.ReadLineAsync(timeoutSource.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    TryKillProcessTree(_process);
+                    throw new TimeoutException($"Spotify librespot {operation} request exceeded {timeout.TotalSeconds:0}s.");
+                }
+
+                if (string.IsNullOrWhiteSpace(response))
+                {
+                    throw new InvalidOperationException($"Spotify librespot {operation} worker returned no response.");
+                }
+
+                using (var document = JsonDocument.Parse(response))
+                {
+                    var root = document.RootElement;
+                    var responseId = root.TryGetProperty("id", out var id) ? id.GetString() : null;
+                    if (!string.Equals(responseId, requestId, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException("Spotify librespot worker response did not match its request.");
+                    }
+                }
+
+                return ParseLibrespotPayloadResult(response);
+            }
+            finally
+            {
+                _requestLock.Release();
+            }
+        }
+
+        private async Task DrainStandardErrorAsync()
+        {
+            while (await _process.StandardError.ReadLineAsync() is { } line)
+            {
+                if (!string.IsNullOrWhiteSpace(line) && _logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Spotify librespot worker: {Message}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(line));
+                }
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                _process.StandardInput.Close();
+                if (!_process.HasExited)
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                    try
+                    {
+                        await _process.WaitForExitAsync(timeout.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        TryKillProcessTree(_process);
+                        await _process.WaitForExitAsync(CancellationToken.None);
+                    }
+                }
+                await _stderrTask;
+            }
+            finally
+            {
+                _requestLock.Dispose();
+                _process.Dispose();
+                TryDeleteDirectory(_runtimeDirectory);
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _librespotWorkerLock.WaitAsync();
+        try
+        {
+            foreach (var worker in _librespotWorkers.Values)
+            {
+                await worker.DisposeAsync();
+            }
+            _librespotWorkers.Clear();
+        }
+        finally
+        {
+            _librespotWorkerLock.Release();
+            _librespotWorkerLock.Dispose();
+        }
+    }
 
     private static string NormalizeAccountLockKey(string blobDir, string accountName)
     {
@@ -1967,12 +2090,13 @@ public sealed class SpotifyBlobService
         string? Country,
         string? ClientId,
         string? Error);
-    public sealed record SpotifyLibrespotPlaylistResult(string? PayloadJson, string? Error);
-    public sealed record SpotifyLibrespotTracksResult(string? PayloadJson, string? Error);
-    public sealed record SpotifyLibrespotSearchResult(string? PayloadJson, string? Error);
-    public sealed record SpotifyLibrespotAlbumResult(string? PayloadJson, string? Error);
-    public sealed record SpotifyLibrespotArtistResult(string? PayloadJson, string? Error);
-    public sealed record SpotifyLibrespotPodcastResult(string? PayloadJson, string? Error);
+    public sealed record SpotifyLibrespotItemFailure(string Id, string Error);
+    public sealed record SpotifyLibrespotPlaylistResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
+    public sealed record SpotifyLibrespotTracksResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
+    public sealed record SpotifyLibrespotSearchResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
+    public sealed record SpotifyLibrespotAlbumResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
+    public sealed record SpotifyLibrespotArtistResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
+    public sealed record SpotifyLibrespotPodcastResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
 
     public HttpClient? CreateCookieClient(SpotifyBlobPayload payload)
     {

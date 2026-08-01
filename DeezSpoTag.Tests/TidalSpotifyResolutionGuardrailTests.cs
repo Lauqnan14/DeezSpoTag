@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Net;
 using System.Text.Json;
 using DeezSpoTag.Web.Services;
 using Xunit;
@@ -10,6 +11,24 @@ namespace DeezSpoTag.Tests;
 
 public sealed class TidalSpotifyResolutionGuardrailTests
 {
+    [Theory]
+    [InlineData(HttpStatusCode.RequestTimeout, true)]
+    [InlineData(HttpStatusCode.TooManyRequests, true)]
+    [InlineData(HttpStatusCode.BadGateway, true)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, true)]
+    [InlineData(HttpStatusCode.GatewayTimeout, true)]
+    [InlineData(HttpStatusCode.BadRequest, false)]
+    [InlineData(HttpStatusCode.Unauthorized, false)]
+    public void PathfinderRetry_OnlyClassifiesTransientResponses(HttpStatusCode status, bool expected)
+    {
+        var method = typeof(SpotifyPathfinderMetadataClient).GetMethod(
+            "IsTransientPathfinderStatus",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.Equal(expected, Assert.IsType<bool>(method!.Invoke(null, [status])));
+    }
+
     [Fact]
     public void DownloadIntentSpotifyIdentityResolution_DoesNotUseSongLink()
     {
@@ -72,7 +91,7 @@ public sealed class TidalSpotifyResolutionGuardrailTests
         Assert.Contains("SearchLibrespotTracksAsync", blobSource, StringComparison.Ordinal);
         Assert.DoesNotContain("api.spotify.com" + "/v1" + "/search", searchSource, StringComparison.Ordinal);
         Assert.False(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Services", "Download", "Spotify", "SpotifyIdResolver.cs")));
-        Assert.True(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Web", "Tools", "spotify_librespot_search.py")));
+        Assert.True(File.Exists(ResolveRepoCandidatePath("DeezSpoTag.Web", "Tools", "spotify_librespot_worker.py")));
     }
 
     [Fact]

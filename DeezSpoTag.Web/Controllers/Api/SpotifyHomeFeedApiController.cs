@@ -105,32 +105,14 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static readonly TimeSpan PopularRadioCacheTtl = TimeSpan.FromMinutes(20);
     private static readonly string[] PersonalSectionKeywords =
     {
-        "favorites",
-        "favourites",
-        "liked songs",
-        "your top playlists",
-        "your top playlist",
-        "your playlists",
-        "loved tracks",
-        "your library",
-        "your episodes",
-        "your shows"
+        "favorites", "favourites", "liked songs", "your top playlists", "your top playlist",
+        "your playlists", "loved tracks", "your library", "your episodes", "your shows"
     };
     private static readonly string[] PersonalItemKeywords =
     {
-        "liked songs",
-        "loved tracks",
-        "favorites",
-        "favourites",
-        "your library",
-        "your top playlists",
-        "your top playlist",
-        "your playlist",
-        "your playlists",
-        "your episodes",
-        "your shows",
-        "my playlist",
-        "my playlists"
+        "liked songs", "loved tracks", "favorites", "favourites", "your library",
+        "your top playlists", "your top playlist", "your playlist", "your playlists",
+        "your episodes", "your shows", "my playlist", "my playlists"
     };
     private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)
         => Regex.Replace(input, pattern, replacement, options, RegexTimeout);
@@ -716,7 +698,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             pathfinderEnabled = false,
             webplayerTitles = ExtractSectionTitles(homeFeed.WebplayerCount > 0 ? homeFeed.Sections : Array.Empty<object>()),
             pathfinderTitles = Array.Empty<string>(),
-            fallbackTitles = Array.Empty<string>(),
             finalTitles = ExtractSectionTitles(finalSections),
             webplayerDuplicates = FindDuplicateTitles(homeFeed.WebplayerCount > 0 ? homeFeed.Sections : Array.Empty<object>()),
             pathfinderDuplicates = Array.Empty<string>(),
@@ -984,9 +965,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             blobDoc);
     }
 
-    private static List<object> MergeMissingPopularRadioSection(
-        IReadOnlyList<object> primarySections,
-        IReadOnlyList<object> legacySections)
+    private static List<object> MergeMissingPopularRadioSection(IReadOnlyList<object> primarySections, IReadOnlyList<object> legacySections)
     {
         var merged = primarySections.ToList();
         if (ContainsSectionTitle(merged, PopularRadioTitle) || ContainsSectionTitle(merged, PopularRadiosTitle))
@@ -996,27 +975,16 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
         foreach (var section in legacySections)
         {
-            if (!TitleMatches(section, PopularRadioTitle) && !TitleMatches(section, PopularRadiosTitle))
+            if ((TitleMatches(section, PopularRadioTitle) || TitleMatches(section, PopularRadiosTitle)) &&
+                (TryGetAnonymousItems(section)?.Count ?? 0) > 0)
             {
-                continue;
+                merged.Add(section);
+                break;
             }
-
-            var items = TryGetAnonymousItems(section);
-            if (items == null || items.Count == 0)
-            {
-                continue;
-            }
-
-            merged.Add(section);
-            break;
         }
 
-        if (ContainsSectionTitle(merged, PopularRadioTitle) || ContainsSectionTitle(merged, PopularRadiosTitle))
-        {
-            return merged;
-        }
-
-        if (TryBuildPopularRadioSectionFromFanSections(primarySections) is { } synthesized)
+        if (!ContainsSectionTitle(merged, PopularRadioTitle) && !ContainsSectionTitle(merged, PopularRadiosTitle) &&
+            TryBuildPopularRadioSectionFromFanSections(primarySections) is { } synthesized)
         {
             merged.Add(synthesized);
         }
@@ -1319,108 +1287,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         {
             PopularRadioSectionCache = (DateTimeOffset.UtcNow, section);
         }
-    }
-
-    private static object? TryBuildPopularRadioSectionFromFanSections(IReadOnlyList<object> sections)
-    {
-        var radioItems = new List<object>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var section in sections)
-        {
-            var title = TryGetAnonymousTitle(section);
-            if (string.IsNullOrWhiteSpace(title) ||
-                !title.StartsWith("For fans of", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var items = TryGetAnonymousItems(section);
-            if (items == null || items.Count == 0)
-            {
-                continue;
-            }
-
-            foreach (var item in items)
-            {
-                TryAddPopularRadioCandidate(item, seen, radioItems);
-            }
-        }
-
-        if (radioItems.Count < 4)
-        {
-            return null;
-        }
-
-        return new
-        {
-            uri = "spotify:section:popular-radio-synth",
-            title = PopularRadioTitle,
-            items = radioItems.Take(20).ToList()
-        };
-    }
-
-    private static void TryAddPopularRadioCandidate(
-        object? item,
-        HashSet<string> seen,
-        List<object> radioItems)
-    {
-        if (!IsPopularRadioCandidateItem(item))
-        {
-            return;
-        }
-
-        var key = TryResolvePopularRadioCandidateKey(item);
-        if (!seen.Add(key))
-        {
-            return;
-        }
-
-        radioItems.Add(item!);
-    }
-
-    private static string TryResolvePopularRadioCandidateKey(object? item)
-    {
-        if (item is null)
-        {
-            return string.Empty;
-        }
-
-        var uri = TryGetAnonymousString(item, UriKey);
-        if (!string.IsNullOrWhiteSpace(uri))
-        {
-            return uri;
-        }
-
-        var itemType = TryGetAnonymousString(item, TypeKey) ?? string.Empty;
-        var itemId = TryGetAnonymousString(item, IdKey) ?? string.Empty;
-        return $"{itemType}:{itemId}";
-    }
-
-    private static bool IsPopularRadioCandidateItem(object? item)
-    {
-        if (item == null)
-        {
-            return false;
-        }
-
-        var itemType = TryGetAnonymousString(item, TypeKey) ?? string.Empty;
-        if (!itemType.Equals(PlaylistType, StringComparison.OrdinalIgnoreCase) &&
-            !itemType.Equals(StationType, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var name = TryGetAnonymousString(item, NameKey)
-                   ?? TryGetAnonymousString(item, TitleKey)
-                   ?? string.Empty;
-        if (name.Contains("radio", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var uri = TryGetAnonymousString(item, UriKey) ?? string.Empty;
-        return uri.StartsWith("spotify:station:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<object> AddTrendingSection(IReadOnlyList<object> sections, object? trendingSection)
@@ -2378,7 +2244,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return trendingFromUri;
         }
 
-        var browseDoc = await _pathfinderClient.FetchBrowseAllWithBlobAsync(cancellationToken);
+        var browseDoc = await _pathfinderClient.FetchBrowseAllAnonymousAsync(cancellationToken);
         if (browseDoc is null)
         {
             return null;
@@ -2395,7 +2261,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
 
     private async Task<object?> TryFetchTrendingSongsSectionByUriAsync(CancellationToken cancellationToken)
     {
-        var tracks = await _pathfinderClient.FetchBrowseSectionTrackSummariesWithBlobAsync(
+        var tracks = await _pathfinderClient.FetchBrowseSectionTrackSummariesAnonymousAsync(
             TrendingSongsSectionUri,
             0,
             20,
@@ -2524,7 +2390,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             return null;
         }
 
-        var pageDoc = await _pathfinderClient.FetchBrowsePageWithBlobAsync(pageUri, 0, 20, 0, 20, cancellationToken);
+        var pageDoc = await _pathfinderClient.FetchBrowsePageAnonymousAsync(pageUri, 0, 20, 0, 20, cancellationToken);
         if (pageDoc is null)
         {
             return null;
@@ -2843,6 +2709,30 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return result;
     }
 
+    private static object? TryBuildPopularRadioSectionFromFanSections(IReadOnlyList<object> sections)
+    {
+        var items = new List<object>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var section in sections)
+        {
+            var title = TryGetAnonymousTitle(section);
+            if (string.IsNullOrWhiteSpace(title) || !title.StartsWith("For fans of", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var item in TryGetAnonymousItems(section) ?? new List<object>())
+            {
+                var type = TryGetAnonymousString(item, TypeKey) ?? string.Empty;
+                var uri = TryGetAnonymousString(item, UriKey) ?? string.Empty;
+                var name = TryGetAnonymousString(item, NameKey) ?? TryGetAnonymousString(item, TitleKey) ?? string.Empty;
+                if ((type.Equals(PlaylistType, StringComparison.OrdinalIgnoreCase) || type.Equals(StationType, StringComparison.OrdinalIgnoreCase)) &&
+                    (name.Contains("radio", StringComparison.OrdinalIgnoreCase) || uri.StartsWith("spotify:station:", StringComparison.OrdinalIgnoreCase)) &&
+                    seen.Add(string.IsNullOrWhiteSpace(uri) ? $"{type}:{TryGetAnonymousString(item, IdKey)}" : uri))
+                {
+                    items.Add(item);
+                }
+            }
+        }
+        return items.Count < 4 ? null : new { uri = "spotify:section:popular-radio-synth", title = PopularRadioTitle, items = items.Take(20).ToList() };
+    }
+
     private static bool TryMapHomeSection(object section, out object mappedSection)
     {
         mappedSection = null!;
@@ -2915,7 +2805,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         {
             return null;
         }
-
         var coverUrl = TryGetAnonymousString(item, "coverUrl");
         var albumName = TryGetAnonymousString(item, "albumName") ?? TryGetAnonymousString(item, AlbumKey);
         var durationMs = TryGetAnonymousInt(item, "durationMs");
@@ -3049,47 +2938,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         return string.IsNullOrWhiteSpace(compact) ? null : compact;
     }
 
-    private static bool IsPersonalSpotifyHomeItem(
-        string? sectionTitle,
-        string? itemType,
-        string? name,
-        string? artists,
-        string? description,
-        string? uri)
-    {
-        if (ContainsAnyToken(sectionTitle, PersonalSectionKeywords))
-        {
-            return true;
-        }
-
-        var normalizedType = string.IsNullOrWhiteSpace(itemType)
-            ? string.Empty
-            : itemType.Trim().ToLowerInvariant();
-        if (normalizedType is PlaylistType or ShowType or EpisodeType or TrackType
-            && (ContainsAnyToken(name, PersonalItemKeywords)
-                || ContainsAnyToken(artists, PersonalItemKeywords)
-                || ContainsAnyToken(description, PersonalItemKeywords)
-                || ContainsAnyToken(uri, PersonalItemKeywords)))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool ContainsAnyToken(string? value, string[] tokens)
-    {
-        if (string.IsNullOrWhiteSpace(value) || tokens.Length == 0)
-        {
-            return false;
-        }
-
-        var normalized = value.Trim().ToLowerInvariant();
-        return tokens
-            .Where(token => !string.IsNullOrWhiteSpace(token))
-            .Any(normalized.Contains);
-    }
-
     private static List<string> ExtractSectionTitles(IEnumerable<object> sections)
     {
         return sections
@@ -3215,6 +3063,20 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         {
             // Best-effort delete only.
         }
+    }
+
+    private static bool IsPersonalSpotifyHomeItem(string sectionTitle, string itemType, string name, string? artists, string? description, string uri)
+    {
+        if (ContainsAnyToken(sectionTitle, PersonalSectionKeywords)) return true;
+        return !itemType.Equals(ArtistType, StringComparison.OrdinalIgnoreCase) &&
+               (ContainsAnyToken(name, PersonalItemKeywords) || ContainsAnyToken(artists, PersonalItemKeywords) ||
+                ContainsAnyToken(description, PersonalItemKeywords) || ContainsAnyToken(uri, PersonalItemKeywords));
+    }
+
+    private static bool ContainsAnyToken(string? value, string[] tokens)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        return tokens.Any(token => value.Contains(token, StringComparison.OrdinalIgnoreCase));
     }
 
     private static List<object>? TryGetAnonymousItems(object section)

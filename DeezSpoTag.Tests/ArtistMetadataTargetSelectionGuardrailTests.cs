@@ -288,7 +288,7 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("library-artist-images", cacheService);
         Assert.Contains("artist_artwork_cache", File.ReadAllText(Path.Combine(RepositoryRoot(), "DeezSpoTag.Services", "Library", "LibraryRepository.cs")));
         Assert.Contains("/artwork`", libraryScript);
-        Assert.Contains("/artwork/refresh", libraryScript);
+        Assert.Contains("/artwork/refresh?force=true", libraryScript);
         Assert.Contains("cachedPickerImages", libraryScript);
         Assert.Contains("mergeArtistVisualPickerResult", libraryScript);
         Assert.DoesNotContain("visuals.cachedPickerImages = []", libraryScript);
@@ -308,10 +308,11 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         var imageQueue = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "LibraryArtistImageQueueService.cs"));
         var search = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "DeezSpoTagSearchService.cs"));
 
-        foreach (var provider in new[] { "local", "spotify", "deezer", "apple", "itunes", "tidal", "qobuz", "lastfm" })
+        foreach (var provider in new[] { "local", "spotify", "deezer", "itunes", "tidal", "qobuz", "lastfm" })
         {
             Assert.Contains($"\"{provider}\"", catalog);
         }
+        Assert.DoesNotContain("ResolveAppleAsync", catalog);
 
         Assert.Contains("ArtistArtworkCatalogService _artistArtworkCatalog", updater);
         Assert.Contains("ArtistArtworkCatalogService _artworkCatalog", imageQueue);
@@ -322,6 +323,28 @@ public sealed class ArtistMetadataTargetSelectionGuardrailTests
         Assert.Contains("item is Newtonsoft.Json.Linq.JToken", search);
         Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistVisualCacheService.cs")));
         Assert.False(File.Exists(Path.Combine(root, "DeezSpoTag.Web", "Services", "SpotifyArtistImageCacheService.cs")));
+    }
+
+    [Fact]
+    public void ArtistVisualPicker_IncludesSpotifyProfileHeaderAndGallery()
+    {
+        var root = RepositoryRoot();
+        var catalog = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "ArtistArtworkCatalogService.cs"));
+
+        Assert.Contains("page.Artist.HeaderImageUrl", catalog);
+        Assert.Contains("page.Artist.Gallery", catalog);
+    }
+
+    [Fact]
+    public void ArtistTopTracks_AreLibrespotEnrichedBeforeDeezerLinking()
+    {
+        var root = RepositoryRoot();
+        var service = File.ReadAllText(Path.Combine(root, "DeezSpoTag.Web", "Services", "SpotifyArtistService.cs"));
+        var librespot = service.IndexOf("TopTracks = await EnrichTopTracksWithIsrcsAsync(result.TopTracks", StringComparison.Ordinal);
+        var deezer = service.IndexOf("result = await TryEnrichWithDeezerLinksAsync", StringComparison.Ordinal);
+
+        Assert.True(librespot >= 0);
+        Assert.True(deezer > librespot);
     }
 
     [Fact]

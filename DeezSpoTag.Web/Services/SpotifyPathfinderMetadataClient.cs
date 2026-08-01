@@ -15,7 +15,6 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
-using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Logging;
 
@@ -149,9 +148,11 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private const string SearchDesktopOperationName = "searchDesktop";
 
-    private const string MoreLikeThisPlaylistOperationName = "moreLikeThisPlaylist";
+    private const string PlaylistSectionOperationName = "playlistSection";
 
-    private const string MoreLikeThisPlaylistDefaultHash = "5973b2230ee523c2fc589bfc296fbac7c5b822c1cd9d8c92a2a1ebb4821e8c01";
+    private const string PlaylistSectionHash = "2615df403a9043c1d7d3094fbeb4c9653b07b11a33d8081fbd31f0f7959ff4a1";
+
+    private const string MoreLikeThisPlaylistSectionUri = "spotify:section:0JQ5DAob0LgAOAm50K90Od";
 
     private const string QueryTrackPageOperationName = "queryTrackPage";
 
@@ -315,7 +316,6 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private readonly ILogger<SpotifyPathfinderMetadataClient> _logger;
 
-    private readonly SpotifyMetadataCacheRepository _metadataCacheRepository;
 
     private readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 
@@ -351,14 +351,13 @@ public sealed class SpotifyPathfinderMetadataClient
         return string.IsNullOrEmpty(path) ? ($"{HttpsScheme}://{host}") : ($"{HttpsScheme}://{host}{path}");
     }
 
-    public SpotifyPathfinderMetadataClient(SpotifyBlobService blobService, PlatformAuthService platformAuthService, SpotifyUserAuthStore userAuthStore, ISpotifyUserContextAccessor userContext, IHttpClientFactory httpClientFactory, SpotifyMetadataCacheRepository metadataCacheRepository, ILogger<SpotifyPathfinderMetadataClient> logger)
+    public SpotifyPathfinderMetadataClient(SpotifyBlobService blobService, PlatformAuthService platformAuthService, SpotifyUserAuthStore userAuthStore, ISpotifyUserContextAccessor userContext, IHttpClientFactory httpClientFactory, ILogger<SpotifyPathfinderMetadataClient> logger)
     {
         _blobService = blobService;
         _platformAuthService = platformAuthService;
         _userAuthStore = userAuthStore;
         _userContext = userContext;
         _httpClientFactory = httpClientFactory;
-        _metadataCacheRepository = metadataCacheRepository;
         _logger = logger;
     }
 
@@ -1997,6 +1996,31 @@ public sealed class SpotifyPathfinderMetadataClient
         }
     }
 
+    private async Task<PathfinderAuthContext?> BuildAnonymousPathfinderAuthContextAsync(CancellationToken cancellationToken)
+    {
+        AnonymousWebPlayerToken? token = await GetAnonymousWebPlayerTokenAsync(cancellationToken);
+        if (token is null || string.IsNullOrWhiteSpace(token.AccessToken))
+        {
+            return null;
+        }
+
+        HttpClient client = _httpClientFactory.CreateClient();
+        WebPlayerConfig? config = await FetchPublicWebPlayerConfigAsync(client, cancellationToken);
+        if (string.IsNullOrWhiteSpace(config?.ClientVersion))
+        {
+            return null;
+        }
+
+        string clientId = string.IsNullOrWhiteSpace(config.ClientId)
+            ? WebPlayerClientIdFallback
+            : config.ClientId;
+        string deviceId = GenerateStableDeviceId("spotify-anonymous-web-player");
+        string? clientToken = await GetClientTokenAsync(client, clientId, config.ClientVersion, deviceId, cancellationToken);
+        return string.IsNullOrWhiteSpace(clientToken)
+            ? null
+            : new PathfinderAuthContext(token.AccessToken, clientToken, config.ClientVersion, deviceId);
+    }
+
     private async Task<AnonymousWebPlayerToken?> FetchAnonymousWebPlayerTokenAsync(CancellationToken cancellationToken)
     {
         var (totp, version) = SpotifyWebPlayerTotp.Generate();
@@ -2327,6 +2351,7 @@ public sealed class SpotifyPathfinderMetadataClient
             var (status, json) = await SendPathfinderRequestAsync(client, context, payloadJson, cancellationToken);
             if (status == HttpStatusCode.Unauthorized)
             {
+                InvalidateAuthContext();
                 PathfinderAuthContext? refreshed = await BuildAuthContextAsync(cancellationToken);
                 if (refreshed is not null)
                 {
@@ -2913,13 +2938,31 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
-        if (!TryResolveRecommendationOperation(contextType, out string operationName, out PersistedQueryOverride persistedQuery))
+        string operationName;
+        PersistedQueryOverride persistedQuery;
+        Dictionary<string, object?> variables;
+        if (string.Equals(contextType, PlaylistType, StringComparison.OrdinalIgnoreCase))
+        {
+            operationName = PlaylistSectionOperationName;
+            persistedQuery = new PersistedQueryOverride(1, PlaylistSectionHash, null);
+            variables = new Dictionary<string, object?>
+            {
+                ["sectionUri"] = MoreLikeThisPlaylistSectionUri,
+                ["playlistUri"] = contextUri
+            };
+        }
+        else if (TryResolveRecommendationOperation(contextType, out operationName, out persistedQuery))
+        {
+            int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);
+            variables = !string.IsNullOrWhiteSpace(persistedQuery.VariablesJson)
+                ? BuildRecommendationVariablesFromOverride(persistedQuery.VariablesJson, contextUri, contextType, resolvedLimit, context)
+                : BuildRecommendationVariables(contextUri, contextType, resolvedLimit, context);
+        }
+        else
         {
             _logger.LogWarning("Spotify recommendations missing Pathfinder override. contextType=ContextType");
             return null;
         }
-        int resolvedLimit = Math.Clamp((limit <= 0) ? 20 : limit, 1, 50);
-        Dictionary<string, object?> variables = ((!string.IsNullOrWhiteSpace(persistedQuery.VariablesJson)) ? BuildRecommendationVariablesFromOverride(persistedQuery.VariablesJson, contextUri, contextType, resolvedLimit, context) : BuildRecommendationVariables(contextUri, contextType, resolvedLimit, context));
         var payload = new
         {
             operationName = operationName,
@@ -2993,28 +3036,33 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static object BuildHomeFeedPayload(string? timeZone, PathfinderAuthContext context)
     {
-        string value = (string.IsNullOrWhiteSpace(timeZone) ? "America/New_York" : timeZone.Trim());
-        Dictionary<string, object?> dictionary = new Dictionary<string, object?>
+        string resolvedTimeZone = string.IsNullOrWhiteSpace(timeZone) ? "America/New_York" : timeZone.Trim();
+        Dictionary<string, object?> variables = new()
         {
-            ["timeZone"] = value,
+            ["timeZone"] = resolvedTimeZone,
             ["homeEndUserIntegration"] = IntegrationWebPlayer,
             ["facet"] = string.Empty,
             ["sectionItemsLimit"] = 10
         };
         if (!string.IsNullOrWhiteSpace(context.DeviceId))
         {
-            dictionary["sp_t"] = context.DeviceId;
+            variables["sp_t"] = context.DeviceId;
         }
+
+        PersistedQueryOverride persisted = GetPersistedQuery(
+            "home",
+            1,
+            "7fa05a3b71ee950cd63f5b738a0285f7c58b20a93e735ada5ad9a8d5e116d791");
         return new
         {
             operationName = "home",
-            variables = dictionary,
+            variables,
             extensions = new
             {
                 persistedQuery = new
                 {
-                    version = GetPersistedQuery("home", 1, "7fa05a3b71ee950cd63f5b738a0285f7c58b20a93e735ada5ad9a8d5e116d791").Version,
-                    sha256Hash = GetPersistedQuery("home", 1, "7fa05a3b71ee950cd63f5b738a0285f7c58b20a93e735ada5ad9a8d5e116d791").Sha256Hash
+                    version = persisted.Version,
+                    sha256Hash = persisted.Sha256Hash
                 }
             }
         };
@@ -3022,21 +3070,18 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private static object BuildHomeFeedLegacyPayload(string? timeZone)
     {
-        string timeZone2 = (string.IsNullOrWhiteSpace(timeZone) ? "America/New_York" : timeZone.Trim());
+        string resolvedTimeZone = string.IsNullOrWhiteSpace(timeZone) ? "America/New_York" : timeZone.Trim();
+        PersistedQueryOverride persisted = GetPersistedQuery(
+            "home_legacy",
+            1,
+            "3a67ee0ea6abad2ebad2e588a9aa130fc98d6b553f5b05ac6467503d02133bdc");
         return new
         {
             operationName = "home",
-            variables = new
-            {
-                timeZone = timeZone2
-            },
+            variables = new { timeZone = resolvedTimeZone },
             extensions = new
             {
-                persistedQuery = new
-                {
-                    version = GetPersistedQuery("home_legacy", 1, "3a67ee0ea6abad2ebad2e588a9aa130fc98d6b553f5b05ac6467503d02133bdc").Version,
-                    sha256Hash = GetPersistedQuery("home_legacy", 1, "3a67ee0ea6abad2ebad2e588a9aa130fc98d6b553f5b05ac6467503d02133bdc").Sha256Hash
-                }
+                persistedQuery = new { version = persisted.Version, sha256Hash = persisted.Sha256Hash }
             }
         };
     }
@@ -4189,16 +4234,6 @@ public sealed class SpotifyPathfinderMetadataClient
         operationName = string.Empty;
         persistedQuery = new PersistedQueryOverride(0, string.Empty, null);
         string? normalizedContext = contextType?.Trim().ToLowerInvariant();
-        if (string.Equals(normalizedContext, PlaylistType, StringComparison.OrdinalIgnoreCase))
-        {
-            PersistedQueryOverride persistedQuery2 = GetPersistedQuery(MoreLikeThisPlaylistOperationName, 1, MoreLikeThisPlaylistDefaultHash);
-            if (persistedQuery2.Version > 0 && !string.IsNullOrWhiteSpace(persistedQuery2.Sha256Hash))
-            {
-                operationName = MoreLikeThisPlaylistOperationName;
-                persistedQuery = persistedQuery2;
-                return true;
-            }
-        }
         var list = (from name2 in PathfinderOverrides.Keys.Where((string a) => !string.Equals(a, SearchSuggestionsOperationName, StringComparison.OrdinalIgnoreCase)).Where(IsRecommendationOperationName)
                     select new
                     {
@@ -4280,6 +4315,11 @@ public sealed class SpotifyPathfinderMetadataClient
         return await QueryWithBlobAuthContextAsync(BuildBrowseAllPayload(), "browseAll", cancellationToken);
     }
 
+    public async Task<JsonDocument?> FetchBrowseAllAnonymousAsync(CancellationToken cancellationToken)
+    {
+        return await QueryWithAnonymousAuthContextAsync(BuildBrowseAllPayload(), cancellationToken);
+    }
+
     public async Task<JsonDocument?> FetchBrowsePageAsync(string uri, int pageOffset, int pageLimit, int sectionOffset, int sectionLimit, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(uri))
@@ -4298,6 +4338,18 @@ public sealed class SpotifyPathfinderMetadataClient
         }
 
         return await QueryWithBlobAuthContextAsync(BuildBrowsePagePayload(uri, pageOffset, pageLimit, sectionOffset, sectionLimit), "browsePage", cancellationToken);
+    }
+
+    public async Task<JsonDocument?> FetchBrowsePageAnonymousAsync(string uri, int pageOffset, int pageLimit, int sectionOffset, int sectionLimit, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(uri))
+        {
+            return null;
+        }
+
+        return await QueryWithAnonymousAuthContextAsync(
+            BuildBrowsePagePayload(uri, pageOffset, pageLimit, sectionOffset, sectionLimit),
+            cancellationToken);
     }
 
     public async Task<JsonDocument?> FetchBrowseSectionAsync(string uri, int offset, int limit, CancellationToken cancellationToken)
@@ -4367,6 +4419,23 @@ public sealed class SpotifyPathfinderMetadataClient
         }
 
         return await QueryAsync(context, payload, cancellationToken);
+    }
+
+    private async Task<JsonDocument?> QueryWithAnonymousAuthContextAsync(object payload, CancellationToken cancellationToken)
+    {
+        PathfinderAuthContext? context = await BuildAnonymousPathfinderAuthContextAsync(cancellationToken);
+        if (context is null)
+        {
+            return null;
+        }
+
+        HttpClient client = _httpClientFactory.CreateClient();
+        string payloadJson = JsonSerializer.Serialize(payload, _jsonOptions);
+        string operationName = TryGetOperationName(payloadJson) ?? "(unknown)";
+        var (status, json) = await SendPathfinderRequestAsync(client, context, payloadJson, cancellationToken);
+        return ShouldReturnNullFromQueryResponse(status, json, operationName)
+            ? null
+            : JsonDocument.Parse(json!);
     }
 
     private static object BuildBrowseAllPayload()
@@ -4510,24 +4579,58 @@ public sealed class SpotifyPathfinderMetadataClient
         }
     }
 
+    public async Task<List<SpotifyTrackSummary>> FetchBrowseSectionTrackSummariesAnonymousAsync(string uri, int offset, int limit, CancellationToken cancellationToken)
+    {
+        int boundedOffset = Math.Max(0, offset);
+        int boundedLimit = Math.Clamp(limit <= 0 ? 50 : limit, 1, 200);
+        using JsonDocument? doc = await QueryWithAnonymousAuthContextAsync(
+            BuildBrowseSectionPayload(uri, boundedOffset, boundedLimit),
+            cancellationToken);
+        return doc is null
+            ? new List<SpotifyTrackSummary>()
+            : ParseBrowseSectionTracks(doc.RootElement, boundedLimit);
+    }
+
     private async Task<(HttpStatusCode Status, string? Json)> SendPathfinderRequestAsync(HttpClient client, PathfinderAuthContext context, string payloadJson, CancellationToken cancellationToken)
     {
         for (int attempt = 1; attempt <= 4; attempt++)
         {
-            using HttpRequestMessage request = CreatePathfinderRequest(context, payloadJson);
-            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
-            string? text = response.Content != null ? await response.Content.ReadAsStringAsync(cancellationToken) : null;
-            string? body = text;
-            if (response.StatusCode != HttpStatusCode.TooManyRequests || attempt == 4)
+            try
             {
-                return (Status: response.StatusCode, Json: body);
+                using HttpRequestMessage request = CreatePathfinderRequest(context, payloadJson);
+                using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
+                string? body = response.Content != null ? await response.Content.ReadAsStringAsync(cancellationToken) : null;
+                if (!IsTransientPathfinderStatus(response.StatusCode) || attempt == 4)
+                {
+                    return (Status: response.StatusCode, Json: body);
+                }
+
+                TimeSpan retryDelay = ResolveRetryDelay(response, attempt);
+                _logger.LogWarning(
+                    "Spotify Pathfinder transient response {Status}. Retrying in {DelaySeconds}s (attempt {Attempt}/{MaxAttempts}).",
+                    response.StatusCode,
+                    Math.Round(retryDelay.TotalSeconds, 1),
+                    attempt,
+                    4);
+                await Task.Delay(retryDelay, cancellationToken);
             }
-            TimeSpan retryDelay = ResolveRetryDelay(response, attempt);
-            _logger.LogWarning("Spotify Pathfinder request rate-limited (429). Retrying in {DelaySeconds}s (attempt {Attempt}/{MaxAttempts}).", Math.Round(retryDelay.TotalSeconds, 1), attempt, 4);
-            await Task.Delay(retryDelay, cancellationToken);
+            catch (HttpRequestException ex) when (attempt < 4)
+            {
+                var retryDelay = TimeSpan.FromMilliseconds(250 * Math.Pow(2, attempt - 1));
+                _logger.LogWarning(ex, "Spotify Pathfinder transport failed. Retrying in {DelaySeconds}s (attempt {Attempt}/{MaxAttempts}).", Math.Round(retryDelay.TotalSeconds, 1), attempt, 4);
+                await Task.Delay(retryDelay, cancellationToken);
+            }
         }
         return (Status: HttpStatusCode.TooManyRequests, Json: null);
     }
+
+    private static bool IsTransientPathfinderStatus(HttpStatusCode status)
+        => status is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
 
     private static HttpRequestMessage CreatePathfinderRequest(PathfinderAuthContext context, string payloadJson)
     {

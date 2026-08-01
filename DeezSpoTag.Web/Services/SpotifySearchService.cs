@@ -651,10 +651,10 @@ public sealed class SpotifySearchService
             return webPlayer;
         }
 
-        var fallback = await BuildLibrespotContextAsync(cancellationToken);
-        if (fallback is not null)
+        var librespot = await BuildLibrespotOnlyContextAsync(cancellationToken);
+        if (librespot is not null)
         {
-            return fallback;
+            return librespot;
         }
 
         _logger.LogDebug("Spotify search auth unavailable: no web-player or librespot token.");
@@ -729,53 +729,6 @@ public sealed class SpotifySearchService
             _logger.LogDebug(ex, "Failed to resolve Spotify web-player credentials.");
             return null;
         }
-    }
-
-    private async Task<SearchContext?> BuildLibrespotContextAsync(CancellationToken cancellationToken)
-    {
-        var webPlayerBlobPath = await TryResolveActiveWebPlayerBlobPathAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(webPlayerBlobPath))
-        {
-            return null;
-        }
-
-        // Try web player token first (uses blob cookies directly, no Librespot)
-        var webPlayerToken = await _blobService.GetWebPlayerTokenInfoAsync(webPlayerBlobPath, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(webPlayerToken?.AccessToken))
-        {
-            var market = await ResolveMarketAsync();
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug(
-                    "Spotify search auth ready: tokenLen={TokenLen} market={Market} source=webplayer",
-                    webPlayerToken.AccessToken.Length,
-                    market);
-            }
-            return new SearchContext(webPlayerToken.AccessToken, market, "webplayer", webPlayerBlobPath, null, null);
-        }
-
-        var librespotBlobPath = await TryResolveActiveLibrespotBlobPathAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(librespotBlobPath))
-        {
-            return null;
-        }
-
-        // Fallback to Librespot if web player token fails
-        var tokenResult = await _blobService.GetWebApiAccessTokenAsync(librespotBlobPath, cancellationToken: cancellationToken);
-        if (string.IsNullOrWhiteSpace(tokenResult.AccessToken))
-        {
-            return null;
-        }
-
-        var fallbackMarket = await ResolveMarketAsync();
-        if (_logger.IsEnabled(LogLevel.Debug))
-        {
-            _logger.LogDebug(
-                "Spotify search auth ready: tokenLen={TokenLen} market={Market} source=librespot",
-                tokenResult.AccessToken.Length,
-                fallbackMarket);
-        }
-        return new SearchContext(tokenResult.AccessToken, fallbackMarket, "librespot", librespotBlobPath, null, null);
     }
 
     private async Task<SearchContext?> BuildLibrespotOnlyContextAsync(CancellationToken cancellationToken)

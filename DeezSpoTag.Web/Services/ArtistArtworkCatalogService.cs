@@ -4,12 +4,10 @@ using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Core.Models.Deezer;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Integrations.Tidal;
-using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Metadata.Qobuz;
-using DeezSpoTag.Services.Settings;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp;
 
@@ -22,11 +20,9 @@ public sealed class ArtistArtworkCatalogService
     private readonly LibraryRepository _repository;
     private readonly SpotifyArtistService _spotify;
     private readonly DeezerClient _deezer;
-    private readonly AppleMusicCatalogService _apple;
     private readonly ITidalAccessTokenProvider _tidalTokens;
     private readonly QobuzArtistService _qobuz;
     private readonly LastFmArtistImageService _lastFm;
-    private readonly DeezSpoTagSettingsService _settings;
     private readonly IHttpClientFactory _httpClients;
     private readonly ILogger<ArtistArtworkCatalogService> _logger;
     private readonly string _cacheRoot;
@@ -35,11 +31,9 @@ public sealed class ArtistArtworkCatalogService
         LibraryRepository repository,
         SpotifyArtistService spotify,
         DeezerClient deezer,
-        AppleMusicCatalogService apple,
         ITidalAccessTokenProvider tidalTokens,
         QobuzArtistService qobuz,
         LastFmArtistImageService lastFm,
-        DeezSpoTagSettingsService settings,
         IHttpClientFactory httpClients,
         IWebHostEnvironment environment,
         ILogger<ArtistArtworkCatalogService> logger)
@@ -47,11 +41,9 @@ public sealed class ArtistArtworkCatalogService
         _repository = repository;
         _spotify = spotify;
         _deezer = deezer;
-        _apple = apple;
         _tidalTokens = tidalTokens;
         _qobuz = qobuz;
         _lastFm = lastFm;
-        _settings = settings;
         _httpClients = httpClients;
         _logger = logger;
         _cacheRoot = Path.Join(AppDataPaths.GetDataRoot(environment), "library-artist-images", "providers");
@@ -113,7 +105,6 @@ public sealed class ArtistArtworkCatalogService
         };
         if (Includes("spotify") && NeedsRefresh("spotify")) providers.Add(RunProviderAsync(artistId, "spotify", token => ResolveSpotifyAsync(artistId, artistName, token), cancellationToken));
         if (Includes("deezer") && NeedsRefresh("deezer")) providers.Add(RunProviderAsync(artistId, "deezer", token => ResolveDeezerAsync(artistId, artistName, token), cancellationToken));
-        if (Includes("apple") && NeedsRefresh("apple")) providers.Add(RunProviderAsync(artistId, "apple", token => ResolveAppleAsync(artistId, artistName, token), cancellationToken));
         if (Includes("itunes") && NeedsRefresh("itunes")) providers.Add(RunProviderAsync(artistId, "itunes", token => ResolveItunesAsync(artistName, token), cancellationToken));
         if (Includes("tidal") && NeedsRefresh("tidal")) providers.Add(RunProviderAsync(artistId, "tidal", token => ResolveTidalAsync(artistId, token), cancellationToken));
         if (Includes("qobuz") && NeedsRefresh("qobuz")) providers.Add(RunProviderAsync(artistId, "qobuz", token => ResolveQobuzAsync(artistId, token), cancellationToken));
@@ -181,8 +172,29 @@ public sealed class ArtistArtworkCatalogService
     {
         var page = await _spotify.GetArtistPageAsync(artistId, artistName, false, false, token);
         if (page?.Artist is null) return Array.Empty<RemoteCandidate>();
-        return page.Artist.Images.Where(x => !string.IsNullOrWhiteSpace(x.Url))
-            .Select(x => new RemoteCandidate("spotify", $"spotify:{x.Url}", x.Url!, x.Width, x.Height)).ToList();
+
+        var candidates = page.Artist.Images
+            .Where(image => !string.IsNullOrWhiteSpace(image.Url))
+            .Select(image => new RemoteCandidate("spotify", $"spotify:{image.Url}", image.Url!, image.Width, image.Height))
+            .ToList();
+        AddSpotifyCandidate(candidates, page.Artist.HeaderImageUrl);
+        foreach (var galleryUrl in page.Artist.Gallery)
+        {
+            AddSpotifyCandidate(candidates, galleryUrl);
+        }
+
+        return candidates
+            .GroupBy(candidate => candidate.Url, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static void AddSpotifyCandidate(List<RemoteCandidate> candidates, string? url)
+    {
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            candidates.Add(new RemoteCandidate("spotify", $"spotify:{url}", url, null, null));
+        }
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveDeezerAsync(long artistId, string artistName, CancellationToken token)
@@ -207,20 +219,6 @@ public sealed class ArtistArtworkCatalogService
             return new[] { new RemoteCandidate("deezer", $"deezer:{id}", url, null, null) };
         }
         return Array.Empty<RemoteCandidate>();
-    }
-
-    private async Task<IReadOnlyList<RemoteCandidate>> ResolveAppleAsync(long artistId, string artistName, CancellationToken token)
-    {
-        var settings = _settings.LoadSettings();
-        var stored = await _repository.GetArtistSourceIdAsync(artistId, "apple", token);
-        var size = AppleQueueHelpers.GetAppleArtworkSize(settings);
-        string? url = null;
-        if (!string.IsNullOrWhiteSpace(stored))
-        {
-            url = await AppleQueueHelpers.ResolveAppleArtistImageByIdAsync(_apple, stored, settings.AppleMusic?.Storefront ?? "us", size, token);
-        }
-        url ??= await AppleQueueHelpers.ResolveAppleArtistImageAsync(_apple, artistName, settings.AppleMusic?.Storefront ?? "us", size, token);
-        return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("apple", $"apple:{stored ?? url}", url, null, null) };
     }
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveItunesAsync(string artistName, CancellationToken token)

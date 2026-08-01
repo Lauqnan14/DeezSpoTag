@@ -1,21 +1,11 @@
 #!/usr/bin/env python3
 import importlib.util
-import json
 import os
 import pathlib
 import sys
 
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
-
-
-def write_result(ok, payload=None, error=None):
-    body = {"ok": ok}
-    if payload is not None:
-        body["payload"] = payload
-    if error is not None:
-        body["error"] = error
-    print(json.dumps(body))
 
 
 def resolve_credentials(credentials):
@@ -69,12 +59,6 @@ def close_if_possible(target):
     close = getattr(target, "close", None)
     if callable(close):
         close()
-
-
-def parse_csv_values(text):
-    if not text:
-        return []
-    return [item.strip() for item in text.split(",") if item.strip()]
 
 
 def is_valid_spotify_id(value):
