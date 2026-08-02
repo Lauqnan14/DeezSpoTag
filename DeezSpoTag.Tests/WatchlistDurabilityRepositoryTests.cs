@@ -589,6 +589,8 @@ WHERE id=@id;",
         Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, first.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
         Assert.Equal(new[] { "jellyfin", "navidrome", "plex" }, second.Select(static job => job.TargetService).Order(StringComparer.Ordinal).ToArray());
         Assert.All(first, static job => Assert.Equal("playlist", job.TrackId));
+        Assert.Equal("snapshot-1:plex-membership-v2", first.Single(static job => job.TargetService == "plex").SnapshotId);
+        Assert.All(first.Where(static job => job.TargetService != "plex"), static job => Assert.Equal("snapshot-1", job.SnapshotId));
         var claimed = await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "target-worker");
         Assert.Equal(3, claimed.Count);
     }
@@ -602,7 +604,7 @@ WHERE id=@id;",
         var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
             1, TimeSpan.FromMinutes(1), "revision-worker"));
 
-        Assert.Equal("snapshot-1", claimed.SnapshotId);
+        Assert.Equal("snapshot-1:plex-membership-v2", claimed.SnapshotId);
         Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
             claimed, "revision-worker"));
         Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
@@ -610,7 +612,7 @@ WHERE id=@id;",
 
         var changed = Assert.Single(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify", "revision-list", "snapshot-2"));
-        Assert.Equal("snapshot-2", changed.SnapshotId);
+        Assert.Equal("snapshot-2:plex-membership-v2", changed.SnapshotId);
     }
 
     [Fact]

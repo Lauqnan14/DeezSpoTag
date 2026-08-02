@@ -84,20 +84,27 @@ public sealed class LibraryRepositoryCoverageTests : IAsyncLifetime
             await connection.OpenAsync();
             await using var seed = connection.CreateCommand();
             seed.CommandText = @"
+PRAGMA foreign_keys=OFF;
 INSERT INTO media_server_track_metadata (track_id,service,target_item_id,updated_at_utc)
 VALUES (7001,'plex','plex-item','2026-08-01T00:00:00Z'),
-       (7001,'jellyfin','jellyfin-item','2026-08-01T00:00:00Z');";
+       (7001,'jellyfin','jellyfin-item','2026-08-01T00:00:00Z');
+INSERT INTO track_plex_metadata (track_id,plex_rating_key,updated_at_utc)
+VALUES (7001,'plex-item','2026-08-01T00:00:00Z');";
             await seed.ExecuteNonQueryAsync();
         }
 
-        await _repository.DeleteMediaServerTrackMetadataAsync("plex", [7001]);
+        await _repository.DeleteConfirmedMissingPlexTrackMetadataAsync([7001]);
 
         await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
         await verifyConnection.OpenAsync();
         await using var verify = verifyConnection.CreateCommand();
         verify.CommandText = @"
 SELECT service FROM media_server_track_metadata
-WHERE track_id=7001 ORDER BY service;";
+WHERE track_id=7001
+UNION ALL
+SELECT 'legacy:' || plex_rating_key FROM track_plex_metadata
+WHERE track_id=7001
+ORDER BY service;";
         await using var reader = await verify.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal("jellyfin", reader.GetString(0));

@@ -254,7 +254,7 @@ public sealed class PlaylistSyncService
             return BuildGeneratedTargetResult(PlexService, null, "Plex skipped: no target tracks resolved.", matchSummary);
         }
 
-        var playlistId = await _plexApiClient.CreateOrUpdatePlaylistAsync(
+        var upsert = await _plexApiClient.CreateOrUpdatePlaylistAsync(
             plex.Url,
             plex.Token,
             plex.MachineIdentifier,
@@ -263,7 +263,8 @@ public sealed class PlaylistSyncService
             options: new PlexApiClient.PlaylistUpsertOptions(
                 ExistingTitlePrefix: request.StableTitlePrefix),
             cancellationToken: cancellationToken);
-        if (string.IsNullOrWhiteSpace(playlistId))
+        var playlistId = upsert.PlaylistId;
+        if (string.IsNullOrWhiteSpace(playlistId) || !upsert.Complete)
         {
             return BuildGeneratedTargetResult(PlexService, null, "Plex failed to create or update playlist.", matchSummary);
         }
@@ -1234,6 +1235,9 @@ public sealed class PlaylistSyncService
 
         var partialResult = result with
         {
+            Success = services.Contains(PlexService, StringComparer.OrdinalIgnoreCase)
+                ? false
+                : result.Success,
             Message = string.Concat(
                 result.Message,
                 " ",
@@ -1802,17 +1806,7 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
-        {
-            await PersistPlexMembershipAsync(
-                playlist,
-                plex,
-                existingPlaylistId,
-                matchSummary.Memberships,
-                cancellationToken);
-        }
-
-        var playlistId = await _plexApiClient.CreateOrUpdatePlaylistAsync(
+        var upsert = await _plexApiClient.CreateOrUpdatePlaylistAsync(
             plex.Url,
             plex.Token,
             plex.MachineIdentifier,
@@ -1824,12 +1818,20 @@ public sealed class PlaylistSyncService
                     ? null
                     : existingPlaylistId.Trim()),
             cancellationToken: cancellationToken);
+        var playlistId = upsert.PlaylistId;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             return BuildFailedResult(
                 BuildSyncMessage("Failed to create or update Plex playlist.", matchSummary),
                 matchSummary);
         }
+
+        await PersistTargetPlaylistBindingAsync(
+            playlist,
+            preference,
+            PlexService,
+            playlistId,
+            cancellationToken);
 
         await _plexApiClient.UpdatePlaylistMetadataAsync(
             plex.Url,
@@ -1852,8 +1854,13 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMemberships.Count,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
         };
-        if (verifiedMemberships.Count != tracks.Count)
+        if (!upsert.Complete || verifiedMemberships.Count != tracks.Count)
         {
+            await InvalidateConfirmedMissingPlexIdentitiesAsync(
+                plex,
+                matchSummary.Memberships,
+                verifiedMemberships,
+                cancellationToken);
             return BuildPartialResult(
                 BuildSyncMessage("Plex playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
                 playlistId,
@@ -1885,7 +1892,6 @@ public sealed class PlaylistSyncService
                 verifiedMemberships.Count);
         }
 
-        await PersistTargetPlaylistBindingAsync(playlist, preference, PlexService, playlistId, cancellationToken);
         return BuildSuccessResult(
             BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
             playlistId,
@@ -2217,10 +2223,6 @@ public sealed class PlaylistSyncService
         var verified = expectedMemberships
             .Where(item => actualTargetIds.Contains(item.TargetItemId))
             .ToList();
-        await _libraryRepository.DeleteMediaServerTrackMetadataAsync(
-            PlexService,
-            expectedMemberships.Except(verified).Select(static item => item.LocalTrackId).ToList(),
-            cancellationToken);
         await _libraryRepository.ReplacePlaylistWatchTargetMembershipAsync(
             playlist.Source,
             playlist.SourceId,
@@ -2229,6 +2231,38 @@ public sealed class PlaylistSyncService
             verified,
             cancellationToken);
         return verified;
+    }
+
+    private async Task InvalidateConfirmedMissingPlexIdentitiesAsync(
+        PlexConnection plex,
+        IReadOnlyCollection<PlaylistWatchTargetMembership> expectedMemberships,
+        IReadOnlyCollection<PlaylistWatchTargetMembership> verifiedMemberships,
+        CancellationToken cancellationToken)
+    {
+        var verifiedLocalTrackIds = verifiedMemberships
+            .Select(static membership => membership.LocalTrackId)
+            .ToHashSet();
+        var confirmedMissingLocalTrackIds = new List<long>();
+        foreach (var membership in expectedMemberships.Where(membership =>
+                     !verifiedLocalTrackIds.Contains(membership.LocalTrackId)))
+        {
+            var availability = await _plexApiClient.CheckTrackAvailabilityAsync(
+                plex.Url,
+                plex.Token,
+                membership.TargetItemId,
+                cancellationToken);
+            if (availability == PlexItemAvailability.Missing)
+            {
+                confirmedMissingLocalTrackIds.Add(membership.LocalTrackId);
+            }
+        }
+
+        if (confirmedMissingLocalTrackIds.Count > 0)
+        {
+            await _libraryRepository.DeleteConfirmedMissingPlexTrackMetadataAsync(
+                confirmedMissingLocalTrackIds,
+                cancellationToken);
+        }
     }
 
     private async Task<List<PlaylistWatchTargetMembership>> PersistJellyfinMembershipAsync(

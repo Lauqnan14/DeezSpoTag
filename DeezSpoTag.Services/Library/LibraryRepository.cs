@@ -3820,6 +3820,30 @@ ON CONFLICT(track_id) DO UPDATE SET
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task DeleteConfirmedMissingPlexTrackMetadataAsync(
+        IReadOnlyCollection<long> trackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedTrackIds = trackIds.Where(static id => id > 0).Distinct().ToList();
+        if (normalizedTrackIds.Count == 0)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string sql = @"
+DELETE FROM track_plex_metadata
+WHERE track_id IN (SELECT CAST(value AS INTEGER) FROM json_each(@trackIdsJson));
+DELETE FROM media_server_track_metadata
+WHERE service='plex'
+  AND track_id IN (SELECT CAST(value AS INTEGER) FROM json_each(@trackIdsJson));";
+        await using var command = new SqliteCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(normalizedTrackIds));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyDictionary<long, string>> GetMediaServerItemIdsByTrackIdsAsync(
         string service,
         IReadOnlyList<long> trackIds,
@@ -11217,7 +11241,8 @@ LIMIT 1;", connection);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
 INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id)
-SELECT @source, @playlistId, 'playlist', lower(trim(configured.value)), 'pending', CURRENT_TIMESTAMP, @snapshotId
+SELECT @source, @playlistId, 'playlist', lower(trim(configured.value)), 'pending', CURRENT_TIMESTAMP,
+       CASE WHEN lower(trim(configured.value))='plex' THEN @plexSnapshotId ELSE @snapshotId END
 FROM playlist_watch_preferences preference,
      json_each(CASE
          WHEN json_valid(preference.sync_targets_json) AND json_array_length(preference.sync_targets_json) > 0
@@ -11230,7 +11255,9 @@ WHERE preference.source=@source AND preference.source_id=@playlistId
       SELECT 1 FROM playlist_watch_target_sync_state target
       WHERE target.source=@source AND target.source_id=@playlistId
         AND target.target_service=lower(trim(configured.value))
-        AND target.status='applied' AND target.applied_snapshot_id=@snapshotId)
+        AND target.status='applied'
+        AND target.applied_snapshot_id=CASE
+            WHEN lower(trim(configured.value))='plex' THEN @plexSnapshotId ELSE @snapshotId END)
 ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
  attempt_count=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
                     THEN watchlist_sync_job.attempt_count ELSE 0 END,
@@ -11252,6 +11279,7 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
         command.Parameters.AddWithValue("snapshotId", snapshotId);
+        command.Parameters.AddWithValue("plexSnapshotId", $"{snapshotId}:plex-membership-v2");
         var jobs = new List<WatchlistSyncJobDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))

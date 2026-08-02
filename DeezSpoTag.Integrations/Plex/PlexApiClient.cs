@@ -21,7 +21,7 @@ public class PlexApiClient
     private const string DurationAttributeName = "duration";
     private const string ThumbAttributeName = "thumb";
     private const string ParentThumbAttributeName = "parentThumb";
-    private const int PlaylistItemBatchSize = 50;
+    private const int MaximumPlaylistUriLength = 6000;
     private const int PlaylistItemsPageSize = 200;
     private const int HistoryPageSize = 200;
     private const int DefaultHistoryItemLimit = 200;
@@ -1666,6 +1666,7 @@ public class PlexApiClient
             tracks.Add(new PlexPlaylistTrack
             {
                 Id = track.Attribute(RatingKeyAttributeName)?.Value ?? string.Empty,
+                PlaylistItemId = track.Attribute("playlistItemID")?.Value ?? string.Empty,
                 Title = track.Attribute(TitleAttributeName)?.Value ?? string.Empty,
                 Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
                 Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
@@ -1743,6 +1744,45 @@ public class PlexApiClient
         }
     }
 
+    public async Task<PlexItemAvailability> CheckTrackAvailabilityAsync(
+        string serverUrl,
+        string token,
+        string ratingKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(ratingKey))
+        {
+            return PlexItemAvailability.Missing;
+        }
+
+        try
+        {
+            using var response = await _httpClient.GetAsync(
+                $"{serverUrl.TrimEnd('/')}/library/metadata/{Uri.EscapeDataString(ratingKey)}?X-Plex-Token={token}",
+                cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                return PlexItemAvailability.Present;
+            }
+
+            return response.StatusCode == HttpStatusCode.NotFound
+                ? PlexItemAvailability.Missing
+                : PlexItemAvailability.Unknown;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "Unable to validate Plex track identity {RatingKey}.",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(ratingKey));
+            return PlexItemAvailability.Unknown;
+        }
+    }
+
     public async Task<List<string>> GetSonicallySimilarRatingKeysAsync(
         string serverUrl,
         string token,
@@ -1793,7 +1833,7 @@ public class PlexApiClient
         string? ExistingPlaylistId = null);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist upsert retains explicit validation and branch flow for append/replace safety.")]
-    public async Task<string?> CreateOrUpdatePlaylistAsync(
+    public async Task<PlexPlaylistUpsertResult> CreateOrUpdatePlaylistAsync(
         string serverUrl,
         string token,
         string machineIdentifier,
@@ -1808,7 +1848,7 @@ public class PlexApiClient
             || string.IsNullOrWhiteSpace(machineIdentifier)
             || string.IsNullOrWhiteSpace(playlistName))
         {
-            return null;
+            return PlexPlaylistUpsertResult.Failed();
         }
 
         var normalizedServerUrl = serverUrl.Trim();
@@ -1822,7 +1862,7 @@ public class PlexApiClient
             .ToList();
         if (normalizedRatingKeys.Count == 0)
         {
-            return null;
+            return PlexPlaylistUpsertResult.Failed();
         }
 
         var existingTitlePrefix = options?.ExistingTitlePrefix;
@@ -1868,45 +1908,32 @@ public class PlexApiClient
                 cancellationToken);
         }
 
-        var updated = appendMissingOnly
-            ? await AppendMissingPlaylistItemsAsync(
-                normalizedServerUrl,
-                normalizedToken,
-                normalizedMachineIdentifier,
-                playlistId,
-                normalizedRatingKeys,
-                cancellationToken)
-            : await ReplacePlaylistItemsAsync(
-                normalizedServerUrl,
-                normalizedToken,
-                normalizedMachineIdentifier,
-                playlistId,
-                normalizedRatingKeys,
-                cancellationToken);
-        if (!updated)
-        {
-            return null;
-        }
-
-        var verified = await VerifyPlaylistItemsAsync(
+        var updated = await ReconcilePlaylistItemsAsync(
             normalizedServerUrl,
             normalizedToken,
+            normalizedMachineIdentifier,
             playlistId,
             normalizedRatingKeys,
-            requireExactOrder: !appendMissingOnly,
+            appendMissingOnly,
             cancellationToken);
-        return verified ? playlistId : null;
+        return new PlexPlaylistUpsertResult(playlistId, updated);
     }
 
-    private async Task<bool> AppendMissingPlaylistItemsAsync(
+    private async Task<bool> ReconcilePlaylistItemsAsync(
         string serverUrl,
         string token,
         string machineIdentifier,
         string playlistId,
         IReadOnlyList<string> normalizedRatingKeys,
+        bool appendMissingOnly,
         CancellationToken cancellationToken)
     {
-        var existingItems = await GetPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
+        var existingResult = await GetPlaylistItemsDetailedAsync(serverUrl, token, playlistId, cancellationToken);
+        if (!existingResult.Success)
+        {
+            return false;
+        }
+        var existingItems = existingResult.Tracks;
         var existingRatingKeys = existingItems
             .Select(item => item.Id)
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -1914,29 +1941,53 @@ public class PlexApiClient
         var pending = normalizedRatingKeys
             .Where(value => !string.IsNullOrWhiteSpace(value) && !existingRatingKeys.Contains(value))
             .ToList();
-        if (pending.Count == 0)
-        {
-            return true;
-        }
-
-        return await AddPlaylistItemsInBatchesAsync(serverUrl, token, machineIdentifier, playlistId, pending, cancellationToken);
-    }
-
-    private async Task<bool> ReplacePlaylistItemsAsync(
-        string serverUrl,
-        string token,
-        string machineIdentifier,
-        string playlistId,
-        IReadOnlyList<string> normalizedRatingKeys,
-        CancellationToken cancellationToken)
-    {
-        var cleared = await ClearPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken);
-        if (!cleared)
+        if (pending.Count > 0
+            && !await AddPlaylistItemsInRequestsAsync(
+                serverUrl,
+                token,
+                machineIdentifier,
+                playlistId,
+                pending,
+                cancellationToken))
         {
             return false;
         }
 
-        return await AddPlaylistItemsInBatchesAsync(serverUrl, token, machineIdentifier, playlistId, normalizedRatingKeys, cancellationToken);
+        if (appendMissingOnly)
+        {
+            return await VerifyPlaylistItemsAsync(
+                serverUrl,
+                token,
+                playlistId,
+                normalizedRatingKeys,
+                requireExactOrder: false,
+                cancellationToken);
+        }
+
+        var afterAddResult = await GetPlaylistItemsDetailedAsync(serverUrl, token, playlistId, cancellationToken);
+        if (!afterAddResult.Success)
+        {
+            return false;
+        }
+        var afterAdd = afterAddResult.Tracks;
+        var expectedSet = normalizedRatingKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var retained = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in afterAdd.Where(item =>
+                     !expectedSet.Contains(item.Id) || !retained.Add(item.Id)))
+        {
+            if (string.IsNullOrWhiteSpace(item.PlaylistItemId)
+                || !await RemovePlaylistItemAsync(serverUrl, token, playlistId, item.PlaylistItemId, cancellationToken))
+            {
+                return false;
+            }
+        }
+
+        return await ReorderPlaylistItemsAsync(
+            serverUrl,
+            token,
+            playlistId,
+            normalizedRatingKeys,
+            cancellationToken);
     }
 
     private static string? FindMatchingPlaylistId(
@@ -1950,7 +2001,7 @@ public class PlexApiClient
         return match?.Id;
     }
 
-    private async Task<string?> CreatePlaylistAsync(
+    private async Task<PlexPlaylistUpsertResult> CreatePlaylistAsync(
         string serverUrl,
         string token,
         string machineIdentifier,
@@ -1958,15 +2009,20 @@ public class PlexApiClient
         IReadOnlyList<string> ratingKeys,
         CancellationToken cancellationToken)
     {
-        var firstBatch = ratingKeys.Take(PlaylistItemBatchSize).ToList();
+        var requests = BuildPlaylistItemRequests(machineIdentifier, ratingKeys);
+        var firstRequest = requests.FirstOrDefault();
+        if (firstRequest == null)
+        {
+            return PlexPlaylistUpsertResult.Failed();
+        }
         var createUrl = $"{serverUrl.TrimEnd('/')}/playlists?X-Plex-Token={token}&type=audio&title={Uri.EscapeDataString(playlistName)}&smart=0";
-        var uri = BuildPlaylistUri(machineIdentifier, firstBatch);
+        var uri = BuildPlaylistUri(machineIdentifier, firstRequest);
         createUrl += $"&uri={Uri.EscapeDataString(uri)}";
         var response = await _httpClient.PostAsync(createUrl, null, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("Failed to create Plex playlist {PlaylistName}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistName), response.StatusCode);
-            return null;
+            return PlexPlaylistUpsertResult.Failed();
         }
 
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -1974,25 +2030,18 @@ public class PlexApiClient
         var playlistId = doc.Descendants("Playlist").FirstOrDefault()?.Attribute(RatingKeyAttributeName)?.Value;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
-            return null;
+            return PlexPlaylistUpsertResult.Failed();
         }
 
-        var remaining = ratingKeys.Skip(PlaylistItemBatchSize).ToList();
-        if (remaining.Count > 0
-            && !await AddPlaylistItemsInBatchesAsync(serverUrl, token, machineIdentifier, playlistId, remaining, cancellationToken))
-        {
-            return null;
-        }
-
-        return await VerifyPlaylistItemsAsync(
+        var complete = await ReconcilePlaylistItemsAsync(
             serverUrl,
             token,
+            machineIdentifier,
             playlistId,
             ratingKeys,
-            requireExactOrder: true,
-            cancellationToken)
-            ? playlistId
-            : null;
+            appendMissingOnly: false,
+            cancellationToken);
+        return new PlexPlaylistUpsertResult(playlistId, complete);
     }
 
     public async Task UpdatePlaylistMetadataAsync(
@@ -2201,16 +2250,6 @@ public class PlexApiClient
             SHA256.HashData(storedBytes));
     }
 
-    private async Task<bool> ClearPlaylistItemsAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken)
-    {
-        return await SendPlexRequestAsync(
-            HttpMethod.Delete,
-            $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}/items?X-Plex-Token={token}",
-            "clear playlist items",
-            playlistId,
-            cancellationToken);
-    }
-
     private async Task<bool> AddPlaylistItemsAsync(
         string serverUrl,
         string token,
@@ -2228,7 +2267,7 @@ public class PlexApiClient
             cancellationToken);
     }
 
-    private async Task<bool> AddPlaylistItemsInBatchesAsync(
+    private async Task<bool> AddPlaylistItemsInRequestsAsync(
         string serverUrl,
         string token,
         string machineIdentifier,
@@ -2236,19 +2275,109 @@ public class PlexApiClient
         IReadOnlyList<string> ratingKeys,
         CancellationToken cancellationToken)
     {
-        for (var index = 0; index < ratingKeys.Count; index += PlaylistItemBatchSize)
+        foreach (var requestKeys in BuildPlaylistItemRequests(machineIdentifier, ratingKeys))
         {
-            var batch = ratingKeys
-                .Skip(index)
-                .Take(Math.Min(PlaylistItemBatchSize, ratingKeys.Count - index))
-                .ToList();
-            if (!await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, batch, cancellationToken))
+            if (!await AddPlaylistItemsAsync(serverUrl, token, machineIdentifier, playlistId, requestKeys, cancellationToken))
             {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private static List<List<string>> BuildPlaylistItemRequests(
+        string machineIdentifier,
+        IReadOnlyList<string> ratingKeys)
+    {
+        var requests = new List<List<string>>();
+        var current = new List<string>();
+        foreach (var ratingKey in ratingKeys)
+        {
+            current.Add(ratingKey);
+            if (Uri.EscapeDataString(BuildPlaylistUri(machineIdentifier, current)).Length <= MaximumPlaylistUriLength)
+            {
+                continue;
+            }
+
+            current.RemoveAt(current.Count - 1);
+            if (current.Count > 0)
+            {
+                requests.Add(current);
+            }
+            current = [ratingKey];
+        }
+
+        if (current.Count > 0)
+        {
+            requests.Add(current);
+        }
+        return requests;
+    }
+
+    private async Task<bool> RemovePlaylistItemAsync(
+        string serverUrl,
+        string token,
+        string playlistId,
+        string playlistItemId,
+        CancellationToken cancellationToken)
+        => await SendPlexRequestAsync(
+            HttpMethod.Delete,
+            $"{serverUrl.TrimEnd('/')}/playlists/{Uri.EscapeDataString(playlistId)}/items/{Uri.EscapeDataString(playlistItemId)}?X-Plex-Token={token}",
+            "remove playlist item",
+            playlistId,
+            cancellationToken);
+
+    private async Task<bool> ReorderPlaylistItemsAsync(
+        string serverUrl,
+        string token,
+        string playlistId,
+        IReadOnlyList<string> expectedRatingKeys,
+        CancellationToken cancellationToken)
+    {
+        var itemsResult = await GetPlaylistItemsDetailedAsync(serverUrl, token, playlistId, cancellationToken);
+        if (!itemsResult.Success)
+        {
+            return false;
+        }
+        var items = itemsResult.Tracks;
+        if (items.Select(static item => item.Id).SequenceEqual(expectedRatingKeys, StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var byRatingKey = items
+            .Where(static item => !string.IsNullOrWhiteSpace(item.PlaylistItemId))
+            .GroupBy(static item => item.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
+        string? previousPlaylistItemId = null;
+        foreach (var ratingKey in expectedRatingKeys)
+        {
+            if (!byRatingKey.TryGetValue(ratingKey, out var item))
+            {
+                return false;
+            }
+
+            var after = previousPlaylistItemId ?? "0";
+            if (!await SendPlexRequestAsync(
+                    HttpMethod.Put,
+                    $"{serverUrl.TrimEnd('/')}/playlists/{Uri.EscapeDataString(playlistId)}/items/{Uri.EscapeDataString(item.PlaylistItemId)}/move?X-Plex-Token={token}&after={Uri.EscapeDataString(after)}",
+                    "move playlist item",
+                    playlistId,
+                    cancellationToken))
+            {
+                return false;
+            }
+            previousPlaylistItemId = item.PlaylistItemId;
+        }
+
+        return await VerifyPlaylistItemsAsync(
+            serverUrl,
+            token,
+            playlistId,
+            expectedRatingKeys,
+            requireExactOrder: true,
+            cancellationToken);
     }
 
     private async Task<bool> VerifyPlaylistItemsAsync(
@@ -2259,7 +2388,12 @@ public class PlexApiClient
         bool requireExactOrder,
         CancellationToken cancellationToken)
     {
-        var actualRatingKeys = (await GetPlaylistItemsAsync(serverUrl, token, playlistId, cancellationToken))
+        var actualResult = await GetPlaylistItemsDetailedAsync(serverUrl, token, playlistId, cancellationToken);
+        if (!actualResult.Success)
+        {
+            return false;
+        }
+        var actualRatingKeys = actualResult.Tracks
             .Select(static item => item.Id)
             .Where(static value => !string.IsNullOrWhiteSpace(value))
             .Select(static value => value.Trim())
@@ -2793,6 +2927,7 @@ public class PlexHistoryItem
 public class PlexPlaylistTrack
 {
     public string Id { get; set; } = "";
+    public string PlaylistItemId { get; set; } = "";
     public string Title { get; set; } = "";
     public string Artist { get; set; } = "";
     public string Album { get; set; } = "";
@@ -2800,6 +2935,18 @@ public class PlexPlaylistTrack
     public string? CoverUrl { get; set; }
     public string? StreamUrl { get; set; }
     public string? FilePath { get; set; }
+}
+
+public sealed record PlexPlaylistUpsertResult(string? PlaylistId, bool Complete)
+{
+    public static PlexPlaylistUpsertResult Failed() => new(null, false);
+}
+
+public enum PlexItemAvailability
+{
+    Unknown,
+    Present,
+    Missing
 }
 
 public sealed class PlexMediaItem

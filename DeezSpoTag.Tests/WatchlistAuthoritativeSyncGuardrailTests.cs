@@ -180,13 +180,16 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
     }
 
     [Fact]
-    public void TargetVerification_IsIndependentExactAndRepairsStaleIdentityMappings()
+    public void TargetVerification_IsIndependentAndPlexPlaylistOmissionsDoNotDeleteLibraryIdentities()
     {
         var service = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
         var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
 
         Assert.Equal(3, CountOccurrences(service, "verifiedMemberships.Count != tracks.Count"));
-        Assert.Equal(3, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));
+        Assert.Equal(2, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));
+        Assert.Contains("DeleteConfirmedMissingPlexTrackMetadataAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("CheckTrackAvailabilityAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("availability == PlexItemAvailability.Missing", service, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM media_server_track_metadata", repository, StringComparison.Ordinal);
         Assert.DoesNotContain("plex_track_metadata", repository, StringComparison.Ordinal);
         Assert.Contains("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
