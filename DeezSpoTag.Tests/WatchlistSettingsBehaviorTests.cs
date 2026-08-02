@@ -699,6 +699,48 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public async Task PlaylistVisualService_TreatsCachedStaticWebpAsStillArtworkForEveryTarget()
+    {
+        var service = new PlaylistVisualService(
+            new StubHttpClientFactory(),
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlaylistVisualService>.Instance);
+        var bytes = Convert.FromBase64String("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==");
+
+        await service.StoreUploadedVisualAsync(
+            "spotify", "static-webp", bytes, "image/webp", CancellationToken.None);
+
+        Assert.Null(service.GetStoredAnimatedVisual("spotify", "static-webp"));
+        Assert.NotNull(service.GetStoredStillVisual("spotify", "static-webp"));
+        Assert.NotNull(service.GetTargetArtworkRevision("spotify", "static-webp", "plex"));
+        Assert.NotNull(service.GetTargetArtworkRevision("spotify", "static-webp", "jellyfin"));
+        Assert.NotNull(service.GetTargetArtworkRevision("spotify", "static-webp", "navidrome"));
+    }
+
+    [Fact]
+    public async Task PlaylistVisualService_NormalizesLegacySpotifyArtworkHostBeforeCaching()
+    {
+        var image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+        var handler = new CapturingImageHandler(image);
+        var service = new PlaylistVisualService(
+            new StubHttpClientFactory(handler),
+            new StubWebHostEnvironment(_tempRoot),
+            NullLogger<PlaylistVisualService>.Instance);
+
+        var result = await service.InspectSourceArtworkAsync(
+            "spotify",
+            "legacy-cdn",
+            "Playlist",
+            "https://image-cdn-ak.spotifycdn.com/image/ab67706c0000d72ctest",
+            activateChangedArtwork: true,
+            authoritativeRemoval: false,
+            CancellationToken.None);
+
+        Assert.Equal("i.scdn.co", handler.RequestUri?.Host);
+        Assert.NotNull(result.Revision);
+    }
+
+    [Fact]
     public async Task PlaylistVisualService_ResolvesExactManagedVisualFileBeforeActiveFallback()
     {
         var service = new PlaylistVisualService(
@@ -1282,6 +1324,21 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         {
             var bytes = images[Math.Min(Interlocked.Increment(ref _index) - 1, images.Length - 1)];
             var content = new ByteArrayContent(bytes);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    private sealed class CapturingImageHandler(byte[] image) : HttpMessageHandler
+    {
+        public Uri? RequestUri { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUri = request.RequestUri;
+            var content = new ByteArrayContent(image);
             content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
         }

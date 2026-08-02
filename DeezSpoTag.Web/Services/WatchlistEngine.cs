@@ -304,6 +304,7 @@ internal sealed class WatchlistEngine
         var existingCandidateCache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
         var providerReadinessRevision = await BuildProviderReadinessRevisionAsync(source);
         var settings = _settingsService.LoadSettings();
+        var hasConfiguredPlaylistSyncTargets = HasConfiguredPlaylistSyncTargets(preference);
 
         var headSnapshot = await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
         var liveSnapshot = headSnapshot;
@@ -344,6 +345,46 @@ internal sealed class WatchlistEngine
                     DateTimeOffset.UtcNow,
                     artworkInspection.Revision),
                 cancellationToken);
+
+            var sourceArtworkAvailable = !string.IsNullOrWhiteSpace(currentPlaylist.ImageUrl);
+            if (preference?.UpdateArtwork == true
+                && hasConfiguredPlaylistSyncTargets
+                && sourceArtworkAvailable
+                && string.IsNullOrWhiteSpace(artworkInspection.Revision))
+            {
+                var artworkError = string.IsNullOrWhiteSpace(artworkInspection.Error)
+                    ? "The playlist artwork could not be cached."
+                    : artworkInspection.Error;
+                var retryMessage = $"Playlist artwork must be cached before initial target synchronization. {artworkError}";
+                var retryAt = DateTimeOffset.UtcNow.AddSeconds(
+                    Math.Max(1, settings.WatchDelayBetweenPlaylistsSeconds));
+                await UpdatePlaylistStateAsync(
+                    source,
+                    sourceId,
+                    liveTrackCount,
+                    liveSnapshot.SnapshotId,
+                    WatchlistPlaylistState.Backoff,
+                    retryMessage,
+                    retryAt,
+                    consecutiveFailures: null,
+                    cancellationToken);
+                return new PlaylistReconciliationResult(
+                    false,
+                    retryMessage,
+                    liveTrackCount,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    null,
+                    Deferred: true,
+                    FailureFingerprint: "playlist_artwork_cache_unavailable",
+                    FailureMessage: retryMessage,
+                    QueueStopReason: WatchQueueStopReason.TrackDeferred.ToString(),
+                    RemainingQueueableTracks: liveTrackCount);
+            }
         }
 
         var existingSnapshotId = NormalizeSnapshotId(existingCandidateCache?.SnapshotId);
@@ -614,7 +655,6 @@ internal sealed class WatchlistEngine
             candidates,
             cancellationToken);
 
-        var hasConfiguredPlaylistSyncTargets = HasConfiguredPlaylistSyncTargets(preference);
         var targetSyncScheduled = false;
         if (hasConfiguredPlaylistSyncTargets)
         {

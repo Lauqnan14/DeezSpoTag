@@ -198,6 +198,11 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         var engine = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
 
+        var cacheGate = engine.IndexOf("playlist_artwork_cache_unavailable", StringComparison.Ordinal);
+        var membershipScheduling = engine.IndexOf("EnqueueWatchlistPlaylistSyncJobsAsync", StringComparison.Ordinal);
+        Assert.True(cacheGate >= 0);
+        Assert.True(membershipScheduling > cacheGate);
+        Assert.Contains("Playlist artwork must be cached before initial target synchronization.", engine, StringComparison.Ordinal);
         Assert.Contains("IsPlaylistArtworkCurrentOnTargetAsync", engine, StringComparison.Ordinal);
         Assert.Contains("The target playlist artwork is missing or stale.", engine, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistArtworkSyncJobAsync", engine, StringComparison.Ordinal);

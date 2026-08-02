@@ -310,7 +310,9 @@ public sealed class PlaylistVisualService
         => GetStoredVisuals(source, sourceId)
             .FirstOrDefault(static visual =>
                 visual.ContentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase)
-                || visual.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase));
+                || visual.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase)
+                || visual.ContentType.Equals("image/webp", StringComparison.OrdinalIgnoreCase)
+                    && !IsManagedAnimatedVisualFile(visual.FilePath));
 
     public StoredPlaylistVisual? GetActiveStoredStillVisual(string source, string sourceId)
     {
@@ -341,8 +343,16 @@ public sealed class PlaylistVisualService
         => GetStoredVisuals(source, sourceId)
             .FirstOrDefault(static visual =>
                 visual.ContentType.Equals("image/webp", StringComparison.OrdinalIgnoreCase)
+                    && IsManagedAnimatedVisualFile(visual.FilePath)
                 || visual.ContentType.Equals("image/gif", StringComparison.OrdinalIgnoreCase)
                 || visual.ContentType.Equals("video/mp4", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsManagedAnimatedVisualFile(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        return fileName.Equals("cover.webp", StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals("cover_tall.webp", StringComparison.OrdinalIgnoreCase);
+    }
 
     public string? GetActiveArtworkRevision(string source, string sourceId)
     {
@@ -872,6 +882,16 @@ public sealed class PlaylistVisualService
             && !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
         {
             return false;
+        }
+
+        if (uri.Host.Equals("image-cdn-ak.spotifycdn.com", StringComparison.OrdinalIgnoreCase))
+        {
+            var builder = new UriBuilder(uri)
+            {
+                Host = "i.scdn.co",
+                Port = -1
+            };
+            uri = builder.Uri;
         }
 
         normalizedUri = uri.AbsoluteUri;
