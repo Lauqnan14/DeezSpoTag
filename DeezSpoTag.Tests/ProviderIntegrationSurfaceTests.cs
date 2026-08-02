@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Integrations.Qobuz;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -19,6 +20,32 @@ namespace DeezSpoTag.Tests;
 
 public sealed class ProviderIntegrationSurfaceTests
 {
+    [Theory]
+    [InlineData(401, "SESSION_INVALID", "gateway", "bootstrap_session", ZarzResponseDisposition.SessionInvalid)]
+    [InlineData(428, "VERIFY_REQUIRED", "gateway", "verify", ZarzResponseDisposition.VerificationRequired)]
+    [InlineData(403, "REQUEST_AUTH_INVALID", "gateway", "", ZarzResponseDisposition.RequestAuthenticationInvalid)]
+    [InlineData(401, "SESSION_INVALID", "provider", "bootstrap_session", ZarzResponseDisposition.None)]
+    [InlineData(403, "REQUEST_AUTH_INVALID", "gateway", "verify", ZarzResponseDisposition.None)]
+    public void ZarzSessionCoordinator_ClassifiesOnlyCanonicalGatewayContracts(
+        int statusCode,
+        string code,
+        string origin,
+        string action,
+        ZarzResponseDisposition expected)
+    {
+        var method = typeof(ZarzSignedSessionCoordinator).GetMethod(
+            "Classify",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var result = method!.Invoke(null, [
+            (HttpStatusCode)statusCode,
+            new ZarzErrorContract { Code = code, Origin = origin, Action = action }
+        ]);
+
+        Assert.Equal(expected, result);
+    }
+
     [Fact]
     public async Task QobuzBuildProviders_UsesEnabledRegistryProviders()
     {
@@ -27,6 +54,7 @@ public sealed class ProviderIntegrationSurfaceTests
             NullLogger<QobuzDownloadService>.Instance,
             Options.Create(new QobuzApiConfig()),
             credentialProvider: new StubQobuzCredentialProvider(),
+            zarzSessions: new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance),
             publicProviderRegistry: registry);
         var method = typeof(QobuzDownloadService).GetMethod("BuildPublicProvidersAsync", BindingFlags.NonPublic | BindingFlags.Instance);
 
@@ -91,6 +119,7 @@ public sealed class ProviderIntegrationSurfaceTests
             NullLogger<QobuzDownloadService>.Instance,
             Options.Create(new QobuzApiConfig()),
             credentialProvider: new StubQobuzCredentialProvider(authToken: authToken, appSecret: appSecret),
+            zarzSessions: new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance),
             publicProviderRegistry: new StubQobuzProviderRegistry());
         var method = typeof(QobuzDownloadService).GetMethod(
             "TryGetOfficialQobuzStreamUrlAsync",

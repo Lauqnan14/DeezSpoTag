@@ -1651,6 +1651,7 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Download.Queue.DownloadCancellationRegistry>(),
                 () => sp.GetRequiredService<DeezSpoTag.Web.Services.DownloadOrchestrationService>().MarkRetryQueued()));
         services.AddSingleton<DeezSpoTag.Web.Services.SystemStatsService>();
+        services.AddSingleton<DeezSpoTag.Services.Download.Shared.ZarzSignedSessionCoordinator>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();
         services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
         services.AddSingleton<DeezSpoTag.Services.Download.Amazon.IAmazonDownloadService, DeezSpoTag.Services.Download.Amazon.AmazonDownloadService>();

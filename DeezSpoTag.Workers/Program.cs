@@ -92,6 +92,7 @@ else
 }
 
 builder.Services.AddHostedService<DeezSpoTag.Services.Download.Shared.DeezSpoTagQueueBackgroundService>();
+builder.Services.AddSingleton<DeezSpoTag.Services.Download.Shared.ZarzSignedSessionCoordinator>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.IQobuzDownloadService, DeezSpoTag.Services.Download.Qobuz.QobuzDownloadService>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Qobuz.QobuzEngineProcessor>();
 builder.Services.AddSingleton<DeezSpoTag.Services.Download.Tidal.TidalDownloadService>();

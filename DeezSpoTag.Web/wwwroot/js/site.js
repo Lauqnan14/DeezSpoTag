@@ -896,6 +896,9 @@ globalThis.DeezSpoTag = {
         connection.on('deezerConnectionStateChanged', () => {
             this.loadConnectedPlatforms({ force: true, reason: 'deezer-state-event' });
         });
+        connection.on('publicDownloadSessionStateChanged', () => {
+            this.loadConnectedPlatforms({ force: true, reason: 'public-download-session-event' });
+        });
 
         connection.onreconnected(() => {
             this.loadConnectedPlatforms({ force: true, reason: 'signalr-reconnected' });

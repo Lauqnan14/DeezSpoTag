@@ -18,6 +18,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using DeezSpoTag.Integrations.Qobuz;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Utils;
 
 namespace DeezSpoTag.Services.Download.Qobuz;
@@ -52,7 +53,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string ZarzPlatform = "extension";
     private const string ZarzScheme = "ZARZ-HMAC-V1";
     private const int ZarzTimeWindowSeconds = 300;
-    private const string ZarzSessionFileName = "zarz-signed-session.json";
     private const string ApplicationJsonContentType = "application/json";
     private const string DownloadUrlUnavailableMessage = "Qobuz download URL not available";
     private const string FlacExtension = ".flac";
@@ -91,18 +91,19 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private readonly QobuzApiConfig _qobuzConfig;
     private readonly IQobuzCredentialProvider _credentialProvider;
     private readonly IQobuzPublicProviderRegistry _publicProviderRegistry;
-    private readonly string _zarzSessionPath;
-    private readonly SemaphoreSlim _zarzSessionGate = new(1, 1);
+    private readonly ZarzSignedSessionCoordinator _zarzSessions;
 
     public QobuzDownloadService(
         ILogger<QobuzDownloadService> logger,
         IOptions<QobuzApiConfig> qobuzOptions,
         IQobuzCredentialProvider credentialProvider,
+        ZarzSignedSessionCoordinator zarzSessions,
         IQobuzPublicProviderRegistry? publicProviderRegistry = null)
     {
         _logger = logger;
         _qobuzConfig = qobuzOptions.Value ?? new QobuzApiConfig();
         _credentialProvider = credentialProvider;
+        _zarzSessions = zarzSessions;
         _publicProviderRegistry = publicProviderRegistry
             ?? throw new ArgumentNullException(nameof(publicProviderRegistry));
         _apiClient = new HttpClient
@@ -116,7 +117,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             Timeout = TimeSpan.FromMinutes(5)
         };
         _downloadClient.DefaultRequestHeaders.UserAgent.ParseAdd(BrowserUserAgent);
-        _zarzSessionPath = Path.Join(DeezSpoTagDataRootResolver.Resolve(), "qobuz", ZarzSessionFileName);
     }
 
     public async Task<string> DownloadByUrlAsync(QobuzDownloadRequest request, CancellationToken cancellationToken)
@@ -868,9 +868,10 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         string path,
         byte[] body,
         IReadOnlyDictionary<string, string>? headers,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowSessionRetry = true)
     {
-        var session = await EnsureZarzSessionAsync(cancellationToken);
+        var session = await _zarzSessions.EnsureSessionAsync("qobuz", BootstrapZarzSessionAsync, cancellationToken);
         var uri = BuildZarzUri(path);
         var timestamp = DateTimeOffset.UtcNow;
         var timestampValue = timestamp.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
@@ -920,71 +921,35 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var response = await _apiClient.SendAsync(request, cancellationToken);
-        if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+        if (!response.IsSuccessStatusCode)
         {
-            await ClearZarzSessionAsync(cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            var disposition = await _zarzSessions.ProcessResponseAsync(
+                "qobuz", session, response.StatusCode, responseBody, cancellationToken);
+            if (allowSessionRetry && disposition is (ZarzResponseDisposition.SessionInvalid or ZarzResponseDisposition.RetryWithCurrentSession))
+            {
+                response.Dispose();
+                return await SendZarzSignedRequestAsync(method, path, body, headers, cancellationToken, false);
+            }
+            if (disposition == ZarzResponseDisposition.VerificationRequired)
+            {
+                response.Dispose();
+                throw new InvalidOperationException("Qobuz public download verification is required.");
+            }
+            if (disposition == ZarzResponseDisposition.SessionInvalid)
+            {
+                response.Dispose();
+                throw new InvalidOperationException("Qobuz public download session is invalid and must be renewed.");
+            }
         }
         return response;
     }
 
-    private async Task<ZarzSessionRecord> EnsureZarzSessionAsync(CancellationToken cancellationToken)
-    {
-        await _zarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            var session = await LoadZarzSessionNoLockAsync(cancellationToken);
-            if (session?.IsUsable == true)
-            {
-                return session;
-            }
+    public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
+        => _zarzSessions.HasUsableSessionAsync("qobuz", cancellationToken);
 
-            var verificationUrl = await BootstrapZarzSessionNoLockAsync(session?.InstallId, cancellationToken);
-            session = await LoadZarzSessionNoLockAsync(cancellationToken);
-            if (session?.IsUsable == true)
-            {
-                return session;
-            }
-
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(verificationUrl)
-                ? "Qobuz public download verification could not be completed automatically."
-                : "Qobuz public download verification requires an interactive challenge and cannot run automatically.");
-        }
-        finally
-        {
-            _zarzSessionGate.Release();
-        }
-    }
-
-    public async Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
-    {
-        await _zarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            return (await LoadZarzSessionNoLockAsync(cancellationToken))?.IsUsable == true;
-        }
-        finally
-        {
-            _zarzSessionGate.Release();
-        }
-    }
-
-    public async Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
-    {
-        await _zarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            var current = await LoadZarzSessionNoLockAsync(cancellationToken);
-            if (current?.IsUsable == true)
-            {
-                return null;
-            }
-            return await BootstrapZarzSessionNoLockAsync(current?.InstallId, cancellationToken);
-        }
-        finally
-        {
-            _zarzSessionGate.Release();
-        }
-    }
+    public Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
+        => _zarzSessions.BeginVerificationAsync("qobuz", BootstrapZarzSessionAsync, cancellationToken);
 
     public async Task CompletePublicDownloadVerificationAsync(string grant, CancellationToken cancellationToken)
     {
@@ -993,14 +958,14 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
             throw new ArgumentException("Qobuz public download grant is required.", nameof(grant));
         }
 
-        await _zarzSessionGate.WaitAsync(cancellationToken);
-        try
+        await _zarzSessions.CompleteVerificationAsync(
+            "qobuz",
+            grant.Trim(),
+            async (record, verificationGrant, token) =>
         {
-            var record = await LoadZarzSessionNoLockAsync(cancellationToken)
-                ?? throw new InvalidOperationException("Start Qobuz public download verification first.");
             var payload = JsonSerializer.Serialize(new
             {
-                grant = grant.Trim(),
+                grant = verificationGrant,
                 install_id = record.InstallId,
                 app_version = ZarzAppVersion,
                 platform = ZarzPlatform
@@ -1010,34 +975,31 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
                 Content = new StringContent(payload, Encoding.UTF8, ApplicationJsonContentType)
             };
             request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
-            using var response = await _apiClient.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _apiClient.SendAsync(request, token);
+            var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
             {
                 throw new InvalidOperationException(BuildZarzFailure("Qobuz session exchange", response, body));
             }
 
             var exchanged = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
-            record.SessionId = exchanged?.SessionId ?? string.Empty;
-            record.SessionSecret = exchanged?.SessionSecret ?? string.Empty;
-            record.ExpiresAt = ParseZarzExpiry(exchanged?.ExpiresAt);
-            if (!record.IsUsable)
+            return new ZarzSignedSession
             {
-                throw new InvalidOperationException("Qobuz session exchange did not return a usable session.");
-            }
-            await SaveZarzSessionNoLockAsync(record, cancellationToken);
-        }
-        finally
-        {
-            _zarzSessionGate.Release();
-        }
+                InstallId = record.InstallId,
+                SessionId = exchanged?.SessionId ?? string.Empty,
+                SessionSecret = exchanged?.SessionSecret ?? string.Empty,
+                ExpiresAt = ParseZarzExpiry(exchanged?.ExpiresAt)
+            };
+        }, cancellationToken);
     }
 
-    private async Task<string> BootstrapZarzSessionNoLockAsync(string? installId, CancellationToken cancellationToken)
+    private async Task<ZarzSessionBootstrapResult> BootstrapZarzSessionAsync(
+        ZarzSignedSession? current,
+        CancellationToken cancellationToken)
     {
-        installId = string.IsNullOrWhiteSpace(installId)
+        var installId = string.IsNullOrWhiteSpace(current?.InstallId)
             ? Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant()
-            : installId;
+            : current.InstallId;
         var builder = new UriBuilder(BuildZarzUri(ZarzBootstrapPath))
         {
             Query = string.Join('&', new Dictionary<string, string>
@@ -1058,72 +1020,23 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
         }
 
         var payload = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
-        var record = new ZarzSessionRecord
+        var record = new ZarzSignedSession
         {
             InstallId = installId,
             SessionId = payload?.SessionId ?? string.Empty,
             SessionSecret = payload?.SessionSecret ?? string.Empty,
             ExpiresAt = ParseZarzExpiry(payload?.ExpiresAt)
         };
-        await SaveZarzSessionNoLockAsync(record, cancellationToken);
-        if (record.IsUsable)
-        {
-            return string.Empty;
-        }
         var verificationUrl = FirstNonEmpty(payload?.AuthUrl, payload?.ChallengeUrl);
-        if (!string.IsNullOrWhiteSpace(verificationUrl))
+        if (string.IsNullOrWhiteSpace(verificationUrl) && !string.IsNullOrWhiteSpace(payload?.ChallengeId))
         {
-            return verificationUrl;
+            verificationUrl = BuildZarzChallengeUrl(payload.ChallengeId);
         }
-
-        return !string.IsNullOrWhiteSpace(payload?.ChallengeId)
-            ? BuildZarzChallengeUrl(payload.ChallengeId)
-            : throw new InvalidOperationException("Qobuz session bootstrap did not return a verification challenge.");
-    }
-
-    private async Task<ZarzSessionRecord?> LoadZarzSessionNoLockAsync(CancellationToken cancellationToken)
-    {
-        if (!IOFile.Exists(_zarzSessionPath))
+        if (!record.IsUsable && string.IsNullOrWhiteSpace(verificationUrl))
         {
-            return null;
+            throw new InvalidOperationException("Qobuz session bootstrap did not return a verification challenge.");
         }
-        try
-        {
-            return JsonSerializer.Deserialize<ZarzSessionRecord>(
-                await IOFile.ReadAllTextAsync(_zarzSessionPath, cancellationToken),
-                SerializerOptions);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to load Qobuz signed session.");
-            return null;
-        }
-    }
-
-    private async Task SaveZarzSessionNoLockAsync(ZarzSessionRecord record, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(_zarzSessionPath) ?? DeezSpoTagDataRootResolver.Resolve());
-        await IOFile.WriteAllTextAsync(_zarzSessionPath, JsonSerializer.Serialize(record, SerializerOptions), cancellationToken);
-        if (!OperatingSystem.IsWindows())
-        {
-            IOFile.SetUnixFileMode(_zarzSessionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
-    }
-
-    private async Task ClearZarzSessionAsync(CancellationToken cancellationToken)
-    {
-        await _zarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (IOFile.Exists(_zarzSessionPath))
-            {
-                IOFile.Delete(_zarzSessionPath);
-            }
-        }
-        finally
-        {
-            _zarzSessionGate.Release();
-        }
+        return new(record, verificationUrl);
     }
 
     private static Uri BuildZarzUri(string path) => new($"{ZarzBaseUrl.TrimEnd('/')}/{path.TrimStart('/')}");
@@ -1762,20 +1675,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
         [JsonPropertyName("artist")]
         public QobuzArtist? Artist { get; set; }
-    }
-
-    private sealed class ZarzSessionRecord
-    {
-        public string InstallId { get; set; } = string.Empty;
-        public string SessionId { get; set; } = string.Empty;
-        public string SessionSecret { get; set; } = string.Empty;
-        public DateTimeOffset? ExpiresAt { get; set; }
-
-        [JsonIgnore]
-        public bool IsUsable =>
-            !string.IsNullOrWhiteSpace(SessionId)
-            && !string.IsNullOrWhiteSpace(SessionSecret)
-            && (!ExpiresAt.HasValue || ExpiresAt.Value > DateTimeOffset.UtcNow.AddMinutes(1));
     }
 
     private sealed class ZarzBootstrapResponse

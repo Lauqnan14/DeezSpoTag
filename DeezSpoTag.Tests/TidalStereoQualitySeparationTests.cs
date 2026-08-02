@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Services.Download.Shared;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -170,7 +171,8 @@ public sealed class TidalStereoQualitySeparationTests
             var service = new TidalDownloadService(
                 NullLogger<TidalDownloadService>.Instance,
                 new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
-                new UnauthenticatedTidalAccessTokenProvider());
+                new UnauthenticatedTidalAccessTokenProvider(),
+                new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
             var method = typeof(TidalDownloadService).GetMethod(
                 "DownloadSegmentsAsync",
                 BindingFlags.Instance | BindingFlags.NonPublic);
@@ -382,7 +384,8 @@ public sealed class TidalStereoQualitySeparationTests
         var service = new TidalDownloadService(
             NullLogger<TidalDownloadService>.Instance,
             new TidalApiProviderSource(new EmptyTidalPublicProviderRegistry()),
-            new UnauthenticatedTidalAccessTokenProvider());
+            new UnauthenticatedTidalAccessTokenProvider(),
+            new ZarzSignedSessionCoordinator(NullLogger<ZarzSignedSessionCoordinator>.Instance));
         var method = typeof(TidalDownloadService).GetMethod(
             "DownloadSegmentsAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);

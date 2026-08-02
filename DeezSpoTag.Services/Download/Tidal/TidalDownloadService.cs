@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Services.Download.Shared;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -12,7 +13,6 @@ using System.Collections.Concurrent;
 using IOFile = System.IO.File;
 using Microsoft.Extensions.Logging;
 using DeezSpoTag.Services.Download;
-using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Core.Utils;
@@ -54,11 +54,9 @@ public sealed class TidalDownloadService
     private const string ZarzPlatform = "extension";
     private const string ZarzSchemeLabel = "ZARZ-HMAC-V1";
     private const int ZarzTimeWindowSeconds = 300;
-    private const string ZarzSessionFileName = "zarz-signed-session.json";
     private static readonly string[] PlaylistLineSeparators = { "\r\n", "\n" };
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
-    private static readonly SemaphoreSlim ZarzSessionGate = new(1, 1);
     private static readonly ConcurrentDictionary<long, CachedTidalTrack> TrackMetadataCache = new();
     private static readonly ConcurrentDictionary<string, CachedProviderManifest> ProviderManifestCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan TrackMetadataCacheLifetime = TimeSpan.FromHours(6);
@@ -76,7 +74,7 @@ public sealed class TidalDownloadService
     private readonly TidalApiProviderSource _providerSource;
     private readonly ITidalAccessTokenProvider _accessTokenProvider;
     private readonly TidalPublicDownloadProviderAdapterRegistry _publicProviderAdapters;
-    private readonly string _zarzSessionPath;
+    private readonly ZarzSignedSessionCoordinator _zarzSessions;
 
     public sealed record TidalResolvedTrack(
         string Url,
@@ -91,17 +89,18 @@ public sealed class TidalDownloadService
     public TidalDownloadService(
         ILogger<TidalDownloadService> logger,
         TidalApiProviderSource providerSource,
-        ITidalAccessTokenProvider accessTokenProvider)
+        ITidalAccessTokenProvider accessTokenProvider,
+        ZarzSignedSessionCoordinator zarzSessions)
     {
         _logger = logger;
         _providerSource = providerSource;
         _accessTokenProvider = accessTokenProvider;
+        _zarzSessions = zarzSessions;
         _publicProviderAdapters = new TidalPublicDownloadProviderAdapterRegistry(
             [new ZarzTidalPublicDownloadProviderAdapter(
                 (payload, trackId, token) => SendZarzDownloadJsonAsync(payload, trackId, token),
                 FetchProviderTextWithRetryAsync,
                 HasPublicDownloadSessionAsync)]);
-        _zarzSessionPath = Path.Join(DeezSpoTagDataRootResolver.Resolve(), "tidal", ZarzSessionFileName);
         _client = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(15)
@@ -1457,9 +1456,10 @@ public sealed class TidalDownloadService
         string path,
         byte[]? bodyBytes,
         IReadOnlyDictionary<string, string>? extraHeaders,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowSessionRetry = true)
     {
-        var session = await EnsureZarzSignedSessionAsync(cancellationToken);
+        var session = await _zarzSessions.EnsureSessionAsync("tidal", BootstrapZarzSignedSessionAsync, cancellationToken);
         var uri = BuildZarzSignedUri(path);
         var bytes = bodyBytes ?? Array.Empty<byte>();
         var timestamp = DateTimeOffset.UtcNow;
@@ -1509,73 +1509,36 @@ public sealed class TidalDownloadService
         }
 
         var response = await _client.SendAsync(request, cancellationToken);
-        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        if (!response.IsSuccessStatusCode)
         {
-            await ClearZarzSignedSessionAsync(cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            var disposition = await _zarzSessions.ProcessResponseAsync(
+                "tidal", session, response.StatusCode, responseBody, cancellationToken);
+            if (allowSessionRetry && disposition is (ZarzResponseDisposition.SessionInvalid or ZarzResponseDisposition.RetryWithCurrentSession))
+            {
+                response.Dispose();
+                return await SendZarzSignedRequestAsync(method, path, bodyBytes, extraHeaders, cancellationToken, false);
+            }
+            if (disposition == ZarzResponseDisposition.VerificationRequired)
+            {
+                response.Dispose();
+                throw new InvalidOperationException("Tidal public download verification is required.");
+            }
+            if (disposition == ZarzResponseDisposition.SessionInvalid)
+            {
+                response.Dispose();
+                throw new InvalidOperationException("Tidal public download session is invalid and must be renewed.");
+            }
         }
 
         return response;
     }
 
-    private async Task<ZarzSignedSessionRecord> EnsureZarzSignedSessionAsync(CancellationToken cancellationToken)
-    {
-        await ZarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            var existing = await LoadZarzSignedSessionNoLockAsync(cancellationToken);
-            if (existing?.IsUsable == true)
-            {
-                return existing;
-            }
+    public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
+        => _zarzSessions.HasUsableSessionAsync("tidal", cancellationToken);
 
-            var verificationUrl = await BootstrapZarzSignedSessionNoLockAsync(existing?.InstallId, cancellationToken);
-            existing = await LoadZarzSignedSessionNoLockAsync(cancellationToken);
-            if (existing?.IsUsable == true)
-            {
-                return existing;
-            }
-
-            throw new InvalidOperationException(string.IsNullOrWhiteSpace(verificationUrl)
-                ? "Tidal public download verification could not be completed automatically."
-                : "Tidal public download verification requires an interactive challenge and cannot run automatically.");
-        }
-        finally
-        {
-            ZarzSessionGate.Release();
-        }
-    }
-
-    public async Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
-    {
-        await ZarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            return (await LoadZarzSignedSessionNoLockAsync(cancellationToken))?.IsUsable == true;
-        }
-        finally
-        {
-            ZarzSessionGate.Release();
-        }
-    }
-
-    public async Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
-    {
-        await ZarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            var existing = await LoadZarzSignedSessionNoLockAsync(cancellationToken);
-            if (existing?.IsUsable == true)
-            {
-                return null;
-            }
-
-            return await BootstrapZarzSignedSessionNoLockAsync(existing?.InstallId, cancellationToken);
-        }
-        finally
-        {
-            ZarzSessionGate.Release();
-        }
-    }
+    public Task<string?> BeginPublicDownloadVerificationAsync(CancellationToken cancellationToken)
+        => _zarzSessions.BeginVerificationAsync("tidal", BootstrapZarzSignedSessionAsync, cancellationToken);
 
     public async Task CompletePublicDownloadVerificationAsync(
         string grant,
@@ -1586,11 +1549,11 @@ public sealed class TidalDownloadService
             throw new InvalidOperationException("Tidal public download verification grant is missing.");
         }
 
-        await ZarzSessionGate.WaitAsync(cancellationToken);
-        try
+        await _zarzSessions.CompleteVerificationAsync(
+            "tidal",
+            grant.Trim(),
+            async (record, verificationGrant, token) =>
         {
-            var record = await LoadZarzSignedSessionNoLockAsync(cancellationToken)
-                ?? throw new InvalidOperationException("Tidal public download verification was not started.");
             if (string.IsNullOrWhiteSpace(record.InstallId))
             {
                 throw new InvalidOperationException("Tidal public download install identity is missing.");
@@ -1599,7 +1562,7 @@ public sealed class TidalDownloadService
             var bodyBytes = JsonSerializer.SerializeToUtf8Bytes(
                 new
                 {
-                    grant = grant.Trim(),
+                    grant = verificationGrant,
                     install_id = record.InstallId,
                     app_version = ZarzAppVersion,
                     platform = ZarzPlatform
@@ -1612,80 +1575,29 @@ public sealed class TidalDownloadService
             request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
             request.Headers.TryAddWithoutValidation("User-Agent", $"SpotiFLAC-Mobile/{ZarzAppVersion}");
-            using var response = await _client.SendAsync(request, cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _client.SendAsync(request, token);
+            var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
             {
                 throw new InvalidOperationException(BuildZarzHttpFailureMessage("Tidal Zarz session exchange", response, body));
             }
 
             var exchanged = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
-            record.SessionId = exchanged?.SessionId ?? string.Empty;
-            record.SessionSecret = exchanged?.SessionSecret ?? string.Empty;
-            record.ExpiresAt = exchanged?.ExpiresAt;
-            if (!record.IsUsable)
+            return new ZarzSignedSession
             {
-                throw new InvalidOperationException("Tidal Zarz session exchange did not return a usable session.");
-            }
-
-            await SaveZarzSignedSessionNoLockAsync(record, cancellationToken);
-        }
-        finally
-        {
-            ZarzSessionGate.Release();
-        }
+                InstallId = record.InstallId,
+                SessionId = exchanged?.SessionId ?? string.Empty,
+                SessionSecret = exchanged?.SessionSecret ?? string.Empty,
+                ExpiresAt = exchanged?.ExpiresAt
+            };
+        }, cancellationToken);
     }
 
-    private async Task<ZarzSignedSessionRecord?> LoadZarzSignedSessionNoLockAsync(CancellationToken cancellationToken)
-    {
-        if (!IOFile.Exists(_zarzSessionPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            var json = await IOFile.ReadAllTextAsync(_zarzSessionPath, cancellationToken);
-            return JsonSerializer.Deserialize<ZarzSignedSessionRecord>(json, SerializerOptions);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            _logger.LogWarning(ex, "Failed to load Tidal Zarz signed session.");
-            return null;
-        }
-    }
-
-    private async Task SaveZarzSignedSessionNoLockAsync(ZarzSignedSessionRecord session, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(_zarzSessionPath) ?? DeezSpoTagDataRootResolver.Resolve());
-        await IOFile.WriteAllTextAsync(_zarzSessionPath, JsonSerializer.Serialize(session, SerializerOptions), cancellationToken);
-        if (!OperatingSystem.IsWindows())
-        {
-            IOFile.SetUnixFileMode(_zarzSessionPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
-    }
-
-    private async Task ClearZarzSignedSessionAsync(CancellationToken cancellationToken)
-    {
-        await ZarzSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (IOFile.Exists(_zarzSessionPath))
-            {
-                IOFile.Delete(_zarzSessionPath);
-            }
-        }
-        finally
-        {
-            ZarzSessionGate.Release();
-        }
-    }
-
-    private async Task<string?> BootstrapZarzSignedSessionNoLockAsync(
-        string? existingInstallId,
+    private async Task<ZarzSessionBootstrapResult> BootstrapZarzSignedSessionAsync(
+        ZarzSignedSession? current,
         CancellationToken cancellationToken)
     {
-        var installId = string.IsNullOrWhiteSpace(existingInstallId) ? Guid.NewGuid().ToString("N") : existingInstallId;
+        var installId = string.IsNullOrWhiteSpace(current?.InstallId) ? Guid.NewGuid().ToString("N") : current.InstallId;
         var builder = new UriBuilder(BuildZarzSignedUri(ZarzBootstrapPath))
         {
             Query = string.Join(
@@ -1707,29 +1619,24 @@ public sealed class TidalDownloadService
         }
 
         var payload = JsonSerializer.Deserialize<ZarzBootstrapResponse>(body, SerializerOptions);
-        var session = new ZarzSignedSessionRecord
+        var session = new ZarzSignedSession
         {
             InstallId = installId,
             SessionId = payload?.SessionId ?? string.Empty,
             SessionSecret = payload?.SessionSecret ?? string.Empty,
             ExpiresAt = payload?.ExpiresAt
         };
-        if (session.IsUsable)
-        {
-            await SaveZarzSignedSessionNoLockAsync(session, cancellationToken);
-            return null;
-        }
-
-        await SaveZarzSignedSessionNoLockAsync(session, cancellationToken);
         var verificationUrl = payload?.AuthUrl ?? payload?.ChallengeUrl;
         if (string.IsNullOrWhiteSpace(verificationUrl) && !string.IsNullOrWhiteSpace(payload?.ChallengeId))
         {
             verificationUrl = BuildZarzChallengeUrl(payload.ChallengeId);
         }
 
-        return !string.IsNullOrWhiteSpace(verificationUrl)
-            ? verificationUrl
-            : throw new InvalidOperationException("Tidal Zarz bootstrap did not return a verification challenge.");
+        if (!session.IsUsable && string.IsNullOrWhiteSpace(verificationUrl))
+        {
+            throw new InvalidOperationException("Tidal Zarz bootstrap did not return a verification challenge.");
+        }
+        return new(session, verificationUrl);
     }
 
     private static string BuildZarzChallengeUrl(string challengeId)
@@ -3670,27 +3577,6 @@ public sealed class TidalDownloadService
         HiRes = 3,
         MaxHiRes = 4,
         Atmos = 5
-    }
-
-    private sealed class ZarzSignedSessionRecord
-    {
-        [JsonPropertyName("install_id")]
-        public string InstallId { get; set; } = "";
-
-        [JsonPropertyName("session_id")]
-        public string SessionId { get; set; } = "";
-
-        [JsonPropertyName("session_secret")]
-        public string SessionSecret { get; set; } = "";
-
-        [JsonPropertyName("expires_at")]
-        public DateTimeOffset? ExpiresAt { get; set; }
-
-        [JsonIgnore]
-        public bool IsUsable
-            => !string.IsNullOrWhiteSpace(SessionId)
-                && !string.IsNullOrWhiteSpace(SessionSecret)
-                && (!ExpiresAt.HasValue || ExpiresAt.Value > DateTimeOffset.UtcNow.AddMinutes(1));
     }
 
     private sealed class ZarzBootstrapResponse
