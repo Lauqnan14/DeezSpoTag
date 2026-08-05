@@ -665,7 +665,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("GetTargetArtworkRevision", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("IsPlaylistWatchArtworkRevisionAppliedAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyArtworkToNewTargetAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyArtworkToNewTargetAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ScheduleArtworkForActiveRevisionAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistArtworkTargetSyncScheduler", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasPlaylistImageAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("GetQobuzSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetTidalSnapshotHeadAsync", watchSource, StringComparison.Ordinal);

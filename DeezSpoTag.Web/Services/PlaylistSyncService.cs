@@ -95,6 +95,7 @@ public sealed class PlaylistSyncService
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
     private readonly CrossDeviceSyncService? _crossDeviceSyncService;
+    private readonly WatchlistRunSignal? _runSignal;
     private readonly ILogger<PlaylistSyncService> _logger;
 
     public PlaylistSyncService(PlaylistSyncDependencies dependencies)
@@ -109,6 +110,7 @@ public sealed class PlaylistSyncService
         _playlistVisualService = dependencies.PlaylistVisualService;
         _mediaServerRefreshService = dependencies.MediaServerRefreshService;
         _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
+        _runSignal = dependencies.WatchlistRunSignal;
         _logger = dependencies.Logger;
     }
 
@@ -124,6 +126,7 @@ public sealed class PlaylistSyncService
         public required PlaylistVisualService PlaylistVisualService { get; init; }
         public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
         public CrossDeviceSyncService? CrossDeviceSyncService { get; init; }
+        public WatchlistRunSignal? WatchlistRunSignal { get; init; }
         public required ILogger<PlaylistSyncService> Logger { get; init; }
     }
 
@@ -1233,11 +1236,11 @@ public sealed class PlaylistSyncService
             return result;
         }
 
-        var partialResult = result with
+        // Membership of currently available tracks is complete. Remaining eligible
+        // tracks stay deferred for download; all targets share this success policy.
+        var deferredResult = result with
         {
-            Success = services.Contains(PlexService, StringComparer.OrdinalIgnoreCase)
-                ? false
-                : result.Success,
+            Success = true,
             Message = string.Concat(
                 result.Message,
                 " ",
@@ -1246,8 +1249,8 @@ public sealed class PlaylistSyncService
             SourceTracks = eligibleTracks.Count,
             MissingTracks = unavailableCount + result.MissingTracks
         };
-        await PublishWatchlistSyncUpdatedAsync(playlist, partialResult, cancellationToken);
-        return partialResult;
+        await PublishWatchlistSyncUpdatedAsync(playlist, deferredResult, cancellationToken);
+        return deferredResult;
     }
 
     private async Task<PlaylistSyncResult> SyncPlaylistToTargetsAsync(
@@ -1849,12 +1852,8 @@ public sealed class PlaylistSyncService
             cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
-        var verifiedSummary = matchSummary with
-        {
-            TargetMatches = verifiedMemberships.Count,
-            MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
-        };
-        if (!upsert.Complete || verifiedMemberships.Count != tracks.Count)
+        var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
+        if (!IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count, upsert.Complete))
         {
             await InvalidateConfirmedMissingPlexIdentitiesAsync(
                 plex,
@@ -1867,33 +1866,30 @@ public sealed class PlaylistSyncService
                 verifiedSummary,
                 verifiedMemberships.Count);
         }
-        var targetBindingChanged = !string.Equals(
-            storedPlaylistId,
+
+        await TryApplyOrScheduleMembershipArtworkAsync(
+            playlist,
+            preference,
+            PlexService,
             playlistId,
-            StringComparison.OrdinalIgnoreCase);
-        if (targetBindingChanged
-            && !await ApplyArtworkToNewTargetAsync(
+            storedPlaylistId,
+            () => SyncPlexPlaylistArtworkAsync(
+                plex,
                 playlist,
                 preference,
-                PlexService,
                 playlistId,
-                () => SyncPlexPlaylistArtworkAsync(
-                    plex,
-                    playlist,
-                    preference,
-                    playlistId,
-                    cancellationToken),
-                cancellationToken))
+                cancellationToken),
+            cancellationToken);
+
+        if (HasUnresolvedTargetIdentities(matchSummary))
         {
-            return BuildPartialResult(
-                BuildSyncMessage("Plex playlist tracks synced, but initial playlist artwork did not update.", verifiedSummary),
-                playlistId,
-                verifiedSummary,
-                verifiedMemberships.Count);
+            await RequestTargetLibraryRefreshAsync(PlexService, cancellationToken);
         }
 
         return BuildSuccessResult(
-            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
+            AppendDeferredTargetIdentityMessage(
+                BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
+                matchSummary),
             playlistId,
             verifiedSummary,
             verifiedMemberships.Count);
@@ -2001,6 +1997,8 @@ public sealed class PlaylistSyncService
             }
         }
 
+        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
+
         var metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
             jellyfin,
             playlist,
@@ -2014,13 +2012,10 @@ public sealed class PlaylistSyncService
             cancellationToken);
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
-        var verifiedSummary = matchSummary with
-        {
-            TargetIds = itemIds,
-            TargetMatches = verifiedMemberships.Count,
-            MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
-        };
-        if (verifiedMemberships.Count != tracks.Count)
+        var verifiedSummary = WithVerifiedMembershipCounts(
+            matchSummary with { TargetIds = itemIds },
+            verifiedMemberships.Count);
+        if (!IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count))
         {
             return BuildPartialResult(
                 BuildSyncMessage("Jellyfin playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
@@ -2028,46 +2023,37 @@ public sealed class PlaylistSyncService
                 verifiedSummary,
                 verifiedMemberships.Count);
         }
-        var targetBindingChanged = !string.Equals(
-            storedPlaylistId,
+
+        await TryApplyOrScheduleMembershipArtworkAsync(
+            playlist,
+            preference,
+            JellyfinService,
             playlistId,
-            StringComparison.OrdinalIgnoreCase);
-        if (targetBindingChanged
-            && !await ApplyArtworkToNewTargetAsync(
+            storedPlaylistId,
+            () => SyncJellyfinPlaylistArtworkAsync(
+                jellyfin,
                 playlist,
                 preference,
-                JellyfinService,
                 playlistId,
-                () => SyncJellyfinPlaylistArtworkAsync(
-                    jellyfin,
-                    playlist,
-                    preference,
-                    playlistId,
-                    cancellationToken),
-                cancellationToken))
+                cancellationToken),
+            cancellationToken);
+
+        if (HasUnresolvedTargetIdentities(matchSummary))
         {
-            return BuildPartialResult(
-                BuildSyncMessage("Jellyfin playlist tracks synced, but initial playlist artwork did not update.", verifiedSummary),
-                playlistId,
-                verifiedSummary,
-                verifiedMemberships.Count);
+            await RequestTargetLibraryRefreshAsync(JellyfinService, cancellationToken);
         }
 
-        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
+        var successMessage = AppendDeferredTargetIdentityMessage(
+            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
+            matchSummary);
         var fullSyncIssues = BuildJellyfinFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
         {
-            return BuildPartialResult(
-                BuildSyncMessage(
-                    $"Jellyfin playlist tracks synced ({modeLabel}), but {string.Join(" ", fullSyncIssues)}",
-                    verifiedSummary),
-                playlistId,
-                verifiedSummary,
-                verifiedMemberships.Count);
+            successMessage = string.Concat(successMessage, " ", string.Join(" ", fullSyncIssues));
         }
 
         return BuildSuccessResult(
-            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
+            successMessage,
             playlistId,
             verifiedSummary,
             verifiedMemberships.Count);
@@ -2135,6 +2121,8 @@ public sealed class PlaylistSyncService
                 matchSummary);
         }
 
+        await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
+
         var metadataSynced = await SyncNavidromePlaylistMetadataAsync(
             navidrome,
             playlist,
@@ -2146,12 +2134,8 @@ public sealed class PlaylistSyncService
             playlistId,
             navidromeMatches,
             cancellationToken);
-        var verifiedSummary = matchSummary with
-        {
-            TargetMatches = verifiedMemberships.Count,
-            MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMemberships.Count)
-        };
-        if (verifiedMemberships.Count != tracks.Count)
+        var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
+        if (!IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count))
         {
             return BuildPartialResult(
                 BuildSyncMessage("Navidrome playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
@@ -2159,47 +2143,38 @@ public sealed class PlaylistSyncService
                 verifiedSummary,
                 verifiedMemberships.Count);
         }
-        var targetBindingChanged = !string.Equals(
-            storedPlaylistId,
+
+        await TryApplyOrScheduleMembershipArtworkAsync(
+            playlist,
+            preference,
+            NavidromeService,
             playlistId,
-            StringComparison.OrdinalIgnoreCase);
-        if (targetBindingChanged
-            && !await ApplyArtworkToNewTargetAsync(
+            storedPlaylistId,
+            () => SyncNavidromePlaylistArtworkAsync(
+                navidrome,
                 playlist,
                 preference,
-                NavidromeService,
                 playlistId,
-                () => SyncNavidromePlaylistArtworkAsync(
-                    navidrome,
-                    playlist,
-                    preference,
-                    playlistId,
-                    cancellationToken),
-                cancellationToken))
+                cancellationToken),
+            cancellationToken);
+
+        if (HasUnresolvedTargetIdentities(matchSummary))
         {
-            return BuildPartialResult(
-                BuildSyncMessage("Navidrome playlist tracks synced, but initial playlist artwork did not update.", verifiedSummary),
-                playlistId,
-                verifiedSummary,
-                verifiedMemberships.Count);
+            await RequestTargetLibraryRefreshAsync(NavidromeService, cancellationToken);
         }
 
-        await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
         var modeLabel = appendMissingOnly ? "append" : "mirror";
+        var successMessage = AppendDeferredTargetIdentityMessage(
+            BuildSyncMessage($"Playlist synced to Navidrome ({modeLabel}).", verifiedSummary),
+            matchSummary);
         var fullSyncIssues = BuildNavidromeFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
         {
-            return BuildPartialResult(
-                BuildSyncMessage(
-                    $"Navidrome playlist tracks synced ({modeLabel}), but {string.Join(" ", fullSyncIssues)}",
-                    verifiedSummary),
-                playlistId,
-                verifiedSummary,
-                verifiedMemberships.Count);
+            successMessage = string.Concat(successMessage, " ", string.Join(" ", fullSyncIssues));
         }
 
         return BuildSuccessResult(
-            BuildSyncMessage($"Playlist synced to Navidrome ({modeLabel}).", verifiedSummary),
+            successMessage,
             playlistId,
             verifiedSummary,
             verifiedMemberships.Count);
@@ -2741,21 +2716,23 @@ public sealed class PlaylistSyncService
     }
 
     private static bool ShouldSyncPlaylistArtwork(PlaylistWatchPreferenceDto? preference)
-    {
-        return preference == null || preference.UpdateArtwork || preference.ReuseSavedArtwork;
-    }
+        => preference?.UpdateArtwork == true;
 
-    private async Task<bool> ApplyArtworkToNewTargetAsync(
+    /// <summary>
+    /// Best-effort art push after membership. Never fails membership: durable art jobs handle retries.
+    /// </summary>
+    private async Task TryApplyOrScheduleMembershipArtworkAsync(
         PlaylistWatchlistDto playlist,
         PlaylistWatchPreferenceDto? preference,
         string targetService,
         string targetPlaylistId,
+        string? previousPlaylistId,
         Func<Task<bool>> applyArtwork,
         CancellationToken cancellationToken)
     {
         if (!ShouldSyncPlaylistArtwork(preference))
         {
-            return true;
+            return;
         }
 
         var revision = _playlistVisualService.GetTargetArtworkRevision(
@@ -2764,7 +2741,22 @@ public sealed class PlaylistSyncService
             targetService);
         if (string.IsNullOrWhiteSpace(revision))
         {
-            return true;
+            return;
+        }
+
+        var bindingChanged = !string.Equals(
+            previousPlaylistId,
+            targetPlaylistId,
+            StringComparison.OrdinalIgnoreCase);
+        var alreadyApplied = await _libraryRepository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+            playlist.Source,
+            playlist.SourceId,
+            targetService,
+            revision,
+            cancellationToken);
+        if (!bindingChanged && alreadyApplied)
+        {
+            return;
         }
 
         var success = await applyArtwork();
@@ -2778,7 +2770,236 @@ public sealed class PlaylistSyncService
                 ? null
                 : $"Initial playlist artwork failed for target playlist {targetPlaylistId}.",
             cancellationToken);
-        return success;
+        if (!success)
+        {
+            await ScheduleArtworkForTargetAsync(
+                playlist.Source,
+                playlist.SourceId,
+                targetService,
+                cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Enqueues durable artwork jobs for the active cached revision (gated by UpdateArtwork).
+    /// </summary>
+    public async Task<int> ScheduleArtworkForActiveRevisionAsync(
+        string source,
+        string sourceId,
+        PlaylistWatchlistDto? playlist = null,
+        PlaylistWatchPreferenceDto? preference = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_libraryRepository.IsConfigured
+            || string.IsNullOrWhiteSpace(source)
+            || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return 0;
+        }
+
+        preference ??= await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+            source,
+            sourceId,
+            cancellationToken);
+        if (!ShouldSyncPlaylistArtwork(preference))
+        {
+            return 0;
+        }
+
+        var targets = await ResolveTargetServicesAsync(preference, cancellationToken);
+        if (targets.Count == 0)
+        {
+            return 0;
+        }
+
+        playlist ??= (await _libraryRepository.GetPlaylistWatchlistAsync(cancellationToken))
+            .FirstOrDefault(item =>
+                string.Equals(item.Source, source, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.SourceId, sourceId, StringComparison.OrdinalIgnoreCase));
+
+        var queued = 0;
+        foreach (var targetService in targets)
+        {
+            var revision = _playlistVisualService.GetTargetArtworkRevision(
+                source,
+                sourceId,
+                targetService);
+            if (string.IsNullOrWhiteSpace(revision))
+            {
+                continue;
+            }
+
+            var recordedApplied = await _libraryRepository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+                source,
+                sourceId,
+                targetService,
+                revision,
+                cancellationToken);
+            if (recordedApplied)
+            {
+                if (playlist is null)
+                {
+                    continue;
+                }
+
+                var targetCurrent = await IsPlaylistArtworkCurrentOnTargetAsync(
+                    playlist,
+                    preference,
+                    targetService,
+                    cancellationToken);
+                if (targetCurrent)
+                {
+                    continue;
+                }
+
+                await _libraryRepository.SetPlaylistWatchArtworkTargetStateAsync(
+                    source,
+                    sourceId,
+                    targetService,
+                    revision,
+                    false,
+                    "The target playlist artwork is missing or stale.",
+                    cancellationToken);
+            }
+
+            var job = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
+                source,
+                sourceId,
+                targetService,
+                revision,
+                cancellationToken);
+            if (job != null)
+            {
+                queued++;
+            }
+        }
+
+        if (queued > 0)
+        {
+            _runSignal?.Request(WatchlistWakeReason.TargetSync);
+        }
+
+        return queued;
+    }
+
+    public async Task ScheduleArtworkForTargetAsync(
+        string source,
+        string sourceId,
+        string targetService,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_libraryRepository.IsConfigured
+            || string.IsNullOrWhiteSpace(source)
+            || string.IsNullOrWhiteSpace(sourceId)
+            || string.IsNullOrWhiteSpace(targetService))
+        {
+            return;
+        }
+
+        var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+            source,
+            sourceId,
+            cancellationToken);
+        if (!ShouldSyncPlaylistArtwork(preference))
+        {
+            return;
+        }
+
+        var revision = _playlistVisualService.GetTargetArtworkRevision(
+            source,
+            sourceId,
+            targetService);
+        if (string.IsNullOrWhiteSpace(revision))
+        {
+            return;
+        }
+
+        if (await _libraryRepository.IsPlaylistWatchArtworkRevisionAppliedAsync(
+                source,
+                sourceId,
+                targetService,
+                revision,
+                cancellationToken))
+        {
+            return;
+        }
+
+        var job = await _libraryRepository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
+            source,
+            sourceId,
+            targetService,
+            revision,
+            cancellationToken);
+        if (job != null)
+        {
+            _runSignal?.Request(WatchlistWakeReason.TargetSync);
+        }
+    }
+
+    private async Task RequestTargetLibraryRefreshAsync(string targetService, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _mediaServerRefreshService.RefreshAsync(targetService, cancellationToken);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogDebug(
+                ex,
+                "Media-server refresh after unresolved {Target} playlist identities failed; membership already applied.",
+                targetService);
+        }
+    }
+
+    /// <summary>
+    /// Membership is complete when every resolved target identity we intended to write is present.
+    /// Local tracks without target-server identities are deferred, not a membership failure.
+    /// </summary>
+    internal static bool IsIntendedMembershipVerified(
+        int intendedMembershipCount,
+        int verifiedMembershipCount,
+        bool writeComplete = true)
+        => writeComplete && verifiedMembershipCount >= intendedMembershipCount;
+
+    private static bool IsIntendedMembershipVerified(
+        SyncMatchSummary matchSummary,
+        int verifiedMembershipCount,
+        bool writeComplete = true)
+        => IsIntendedMembershipVerified(
+            matchSummary.Memberships.Count,
+            verifiedMembershipCount,
+            writeComplete);
+
+    internal static bool HasUnresolvedTargetIdentities(int sourceTracks, int intendedMembershipCount)
+        => intendedMembershipCount < sourceTracks;
+
+    private static bool HasUnresolvedTargetIdentities(SyncMatchSummary matchSummary)
+        => HasUnresolvedTargetIdentities(matchSummary.SourceTracks, matchSummary.Memberships.Count);
+
+    private static SyncMatchSummary WithVerifiedMembershipCounts(
+        SyncMatchSummary matchSummary,
+        int verifiedMembershipCount)
+        => matchSummary with
+        {
+            TargetMatches = verifiedMembershipCount,
+            MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMembershipCount)
+        };
+
+    private static string AppendDeferredTargetIdentityMessage(
+        string message,
+        SyncMatchSummary matchSummary)
+    {
+        var unresolved = Math.Max(0, matchSummary.SourceTracks - matchSummary.Memberships.Count);
+        if (unresolved <= 0)
+        {
+            return message;
+        }
+
+        return string.Concat(
+            message,
+            " ",
+            unresolved.ToString(CultureInfo.InvariantCulture),
+            " track(s) still lack target-server identities and were deferred for library scan/retry.");
     }
 
     private async Task<bool> SyncPlexPlaylistArtworkAsync(
@@ -3382,9 +3603,13 @@ public sealed class PlaylistSyncService
                 mappedRatingKey);
         }
 
+        var filePath = await _libraryRepository.GetTrackPrimaryFilePathAsync(localTrackId, cancellationToken);
+        var identity = await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken);
+        var searchTrack = EnrichSearchTrackFromLocalIdentity(track, identity);
         var ratingKey = await ResolvePlexRatingKeyAsync(
             plex,
-            track,
+            searchTrack,
+            filePath,
             new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
             cancellationToken);
         if (string.IsNullOrWhiteSpace(ratingKey))
@@ -3401,6 +3626,17 @@ public sealed class PlaylistSyncService
             new[]
             {
                 new PlexTrackMetadataUpsertDto(localTrackId, ratingKey, DateTimeOffset.UtcNow)
+            },
+            cancellationToken);
+        await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
+            new[]
+            {
+                new MediaServerTrackMetadataUpsertDto(
+                    localTrackId,
+                    PlexService,
+                    ratingKey,
+                    filePath,
+                    DateTimeOffset.UtcNow)
             },
             cancellationToken);
         return new PlaylistTrackSyncReadiness(
@@ -3428,11 +3664,46 @@ public sealed class PlaylistSyncService
             return new PlaylistTrackSyncReadiness(false, true, JellyfinNotConfiguredMessage, JellyfinService, localTrackId);
         }
 
+        var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
+            JellyfinService,
+            new[] { localTrackId },
+            cancellationToken);
+        if (mapped.TryGetValue(localTrackId, out var cachedItemId)
+            && !string.IsNullOrWhiteSpace(cachedItemId))
+        {
+            return new PlaylistTrackSyncReadiness(
+                true,
+                false,
+                "Track is visible in Jellyfin metadata mapping.",
+                JellyfinService,
+                localTrackId,
+                cachedItemId);
+        }
+
+        var filePath = await _libraryRepository.GetTrackPrimaryFilePathAsync(localTrackId, cancellationToken);
+        var identity = await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken);
+        var searchTrack = EnrichSearchTrackFromLocalIdentity(track, identity);
         var itemId = await ResolveJellyfinItemIdAsync(
             jellyfin,
-            track,
+            searchTrack,
+            filePath,
             new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
             cancellationToken);
+        if (!string.IsNullOrWhiteSpace(itemId))
+        {
+            await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
+                new[]
+                {
+                    new MediaServerTrackMetadataUpsertDto(
+                        localTrackId,
+                        JellyfinService,
+                        itemId,
+                        filePath,
+                        DateTimeOffset.UtcNow)
+                },
+                cancellationToken);
+        }
+
         return string.IsNullOrWhiteSpace(itemId)
             ? new PlaylistTrackSyncReadiness(false, false, "Track is not visible in Jellyfin yet.", JellyfinService, localTrackId)
             : new PlaylistTrackSyncReadiness(true, false, "Track is visible in Jellyfin search.", JellyfinService, localTrackId, itemId);
@@ -3449,11 +3720,46 @@ public sealed class PlaylistSyncService
             return new PlaylistTrackSyncReadiness(false, true, configurationError.Message, NavidromeService, localTrackId);
         }
 
+        var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
+            NavidromeService,
+            new[] { localTrackId },
+            cancellationToken);
+        if (mapped.TryGetValue(localTrackId, out var cachedItemId)
+            && !string.IsNullOrWhiteSpace(cachedItemId))
+        {
+            return new PlaylistTrackSyncReadiness(
+                true,
+                false,
+                "Track is visible in Navidrome metadata mapping.",
+                NavidromeService,
+                localTrackId,
+                cachedItemId);
+        }
+
+        var filePath = await _libraryRepository.GetTrackPrimaryFilePathAsync(localTrackId, cancellationToken);
+        var identity = await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken);
+        var searchTrack = EnrichSearchTrackFromLocalIdentity(track, identity);
         var itemId = await ResolveNavidromeItemIdAsync(
             navidrome!,
-            track,
+            searchTrack,
+            filePath,
             new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
             cancellationToken);
+        if (!string.IsNullOrWhiteSpace(itemId))
+        {
+            await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
+                new[]
+                {
+                    new MediaServerTrackMetadataUpsertDto(
+                        localTrackId,
+                        NavidromeService,
+                        itemId,
+                        filePath,
+                        DateTimeOffset.UtcNow)
+                },
+                cancellationToken);
+        }
+
         return string.IsNullOrWhiteSpace(itemId)
             ? new PlaylistTrackSyncReadiness(false, false, "Track is not visible in Navidrome yet.", NavidromeService, localTrackId)
             : new PlaylistTrackSyncReadiness(true, false, "Track is visible in Navidrome search.", NavidromeService, localTrackId, itemId);
@@ -3466,6 +3772,7 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         var distinctTrackIds = orderedTrackIds.Where(id => id > 0).Distinct().ToList();
+        // Hub: DeezSpoTag local track id → cached Plex item id.
         var ratingKeyByTrackId = (await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
                 PlexService,
                 distinctTrackIds,
@@ -3497,21 +3804,38 @@ public sealed class PlaylistSyncService
             unresolvedSearchIndexes.Add(i);
         }
 
+        var hubContexts = await BuildLocalTrackHubContextsAsync(
+            tracks,
+            orderedTrackIds,
+            unresolvedSearchIndexes,
+            cancellationToken);
         var metadataUpdates = new List<PlexTrackMetadataUpsertDto>();
+        var mediaServerUpdates = new List<MediaServerTrackMetadataUpsertDto>();
         foreach (var index in unresolvedSearchIndexes)
         {
-            var track = tracks[index];
-            var resolved = await ResolvePlexRatingKeyAsync(plex, track, searchCache, cancellationToken);
+            var trackId = orderedTrackIds[index];
+            var hub = GetLocalTrackHubContext(hubContexts, trackId, tracks[index]);
+            var resolved = await ResolvePlexRatingKeyAsync(
+                plex,
+                hub.SearchTrack,
+                hub.FilePath,
+                searchCache,
+                cancellationToken);
             if (!string.IsNullOrWhiteSpace(resolved))
             {
                 ratingKeysByIndex[index] = resolved;
                 searchMatches++;
-                var trackId = orderedTrackIds[index];
                 if (trackId > 0)
                 {
                     metadataUpdates.Add(new PlexTrackMetadataUpsertDto(
                         trackId,
                         resolved,
+                        DateTimeOffset.UtcNow));
+                    mediaServerUpdates.Add(new MediaServerTrackMetadataUpsertDto(
+                        trackId,
+                        PlexService,
+                        resolved,
+                        hub.FilePath,
                         DateTimeOffset.UtcNow));
                 }
             }
@@ -3523,12 +3847,7 @@ public sealed class PlaylistSyncService
                 metadataUpdates,
                 cancellationToken);
             await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
-                metadataUpdates.Select(static item => new MediaServerTrackMetadataUpsertDto(
-                    item.TrackId,
-                    PlexService,
-                    item.PlexRatingKey,
-                    FilePath: null,
-                    UpdatedAtUtc: item.UpdatedAtUtc)).ToList(),
+                mediaServerUpdates,
                 cancellationToken);
         }
 
@@ -3560,6 +3879,7 @@ public sealed class PlaylistSyncService
     private async Task<string?> ResolvePlexRatingKeyAsync(
         PlexConnection plex,
         SyncTrackSummary track,
+        string? localFilePath,
         Dictionary<string, string?> cache,
         CancellationToken cancellationToken)
     {
@@ -3580,9 +3900,14 @@ public sealed class PlaylistSyncService
             query,
             cancellationToken);
 
-        var match = results.FirstOrDefault(result =>
-            IsTitleArtistMatch(track, result)
-            && IsDurationMatch(track.DurationMs, result.DurationMs));
+        var match = SelectBestMediaServerMatch(
+            results,
+            track,
+            localFilePath,
+            static result => result.FilePath,
+            static result => result.RatingKey,
+            IsTitleArtistMatch,
+            static (candidate, result) => IsDurationMatch(candidate.DurationMs, result.DurationMs));
 
         var ratingKey = match?.RatingKey;
         cache[query] = ratingKey;
@@ -3595,20 +3920,53 @@ public sealed class PlaylistSyncService
         IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
+        // Hub: DeezSpoTag local track id → cached Jellyfin item id.
         var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
             JellyfinService,
             orderedTrackIds.Where(static id => id > 0).Distinct().ToList(),
             cancellationToken);
         var itemIds = new List<PlaylistWatchTargetMembership>(tracks.Count);
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var unresolvedIndexes = new List<int>();
+        for (var index = 0; index < tracks.Count; index++)
+        {
+            var localTrackId = orderedTrackIds[index];
+            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out _))
+            {
+                continue;
+            }
+
+            unresolvedIndexes.Add(index);
+        }
+
+        var hubContexts = await BuildLocalTrackHubContextsAsync(
+            tracks,
+            orderedTrackIds,
+            unresolvedIndexes,
+            cancellationToken);
         var metadataUpdates = new List<MediaServerTrackMetadataUpsertDto>();
         for (var index = 0; index < tracks.Count; index++)
         {
             var track = tracks[index];
             var localTrackId = orderedTrackIds[index];
-            var resolved = localTrackId > 0 && mapped.TryGetValue(localTrackId, out var mappedItemId)
-                ? mappedItemId
-                : await ResolveJellyfinItemIdAsync(jellyfin, track, searchCache, cancellationToken);
+            string? resolved = null;
+            string? filePath = null;
+            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out var mappedItemId))
+            {
+                resolved = mappedItemId;
+            }
+            else
+            {
+                var hub = GetLocalTrackHubContext(hubContexts, localTrackId, track);
+                filePath = hub.FilePath;
+                resolved = await ResolveJellyfinItemIdAsync(
+                    jellyfin,
+                    hub.SearchTrack,
+                    hub.FilePath,
+                    searchCache,
+                    cancellationToken);
+            }
+
             if (!string.IsNullOrWhiteSpace(resolved) && orderedTrackIds[index] > 0)
             {
                 itemIds.Add(new PlaylistWatchTargetMembership(
@@ -3621,7 +3979,7 @@ public sealed class PlaylistSyncService
                         localTrackId,
                         JellyfinService,
                         resolved,
-                        null,
+                        filePath,
                         DateTimeOffset.UtcNow));
                 }
             }
@@ -3634,6 +3992,7 @@ public sealed class PlaylistSyncService
     private async Task<string?> ResolveJellyfinItemIdAsync(
         JellyfinConnection jellyfin,
         SyncTrackSummary track,
+        string? localFilePath,
         Dictionary<string, string?> cache,
         CancellationToken cancellationToken)
     {
@@ -3650,9 +4009,14 @@ public sealed class PlaylistSyncService
 
         var results = await SearchJellyfinTrackCandidatesAsync(jellyfin, track, query, cache, cancellationToken);
 
-        var match = results.FirstOrDefault(result =>
-            IsTitleArtistMatch(track, result)
-            && IsDurationMatch(track.DurationMs, result.DurationMs));
+        var match = SelectBestMediaServerMatch(
+            results,
+            track,
+            localFilePath,
+            static result => result.FilePath,
+            static result => result.Id,
+            IsTitleArtistMatch,
+            static (candidate, result) => IsDurationMatch(candidate.DurationMs, result.DurationMs));
 
         var itemId = match?.Id;
         cache[query] = itemId;
@@ -3705,20 +4069,53 @@ public sealed class PlaylistSyncService
         IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
+        // Hub: DeezSpoTag local track id → cached Navidrome item id.
         var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
             NavidromeService,
             orderedTrackIds.Where(static id => id > 0).Distinct().ToList(),
             cancellationToken);
         var itemIds = new List<PlaylistWatchTargetMembership>(tracks.Count);
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var unresolvedIndexes = new List<int>();
+        for (var index = 0; index < tracks.Count; index++)
+        {
+            var localTrackId = orderedTrackIds[index];
+            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out _))
+            {
+                continue;
+            }
+
+            unresolvedIndexes.Add(index);
+        }
+
+        var hubContexts = await BuildLocalTrackHubContextsAsync(
+            tracks,
+            orderedTrackIds,
+            unresolvedIndexes,
+            cancellationToken);
         var metadataUpdates = new List<MediaServerTrackMetadataUpsertDto>();
         for (var index = 0; index < tracks.Count; index++)
         {
             var track = tracks[index];
             var localTrackId = orderedTrackIds[index];
-            var resolved = localTrackId > 0 && mapped.TryGetValue(localTrackId, out var mappedItemId)
-                ? mappedItemId
-                : await ResolveNavidromeItemIdAsync(navidrome, track, searchCache, cancellationToken);
+            string? resolved = null;
+            string? filePath = null;
+            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out var mappedItemId))
+            {
+                resolved = mappedItemId;
+            }
+            else
+            {
+                var hub = GetLocalTrackHubContext(hubContexts, localTrackId, track);
+                filePath = hub.FilePath;
+                resolved = await ResolveNavidromeItemIdAsync(
+                    navidrome,
+                    hub.SearchTrack,
+                    hub.FilePath,
+                    searchCache,
+                    cancellationToken);
+            }
+
             if (!string.IsNullOrWhiteSpace(resolved) && orderedTrackIds[index] > 0)
             {
                 itemIds.Add(new PlaylistWatchTargetMembership(
@@ -3731,7 +4128,7 @@ public sealed class PlaylistSyncService
                         localTrackId,
                         NavidromeService,
                         resolved,
-                        null,
+                        filePath,
                         DateTimeOffset.UtcNow));
                 }
             }
@@ -3744,6 +4141,7 @@ public sealed class PlaylistSyncService
     private async Task<string?> ResolveNavidromeItemIdAsync(
         NavidromeConnection navidrome,
         SyncTrackSummary track,
+        string? localFilePath,
         Dictionary<string, string?> cache,
         CancellationToken cancellationToken)
     {
@@ -3759,12 +4157,175 @@ public sealed class PlaylistSyncService
         }
 
         var results = await SearchNavidromeTrackCandidatesAsync(navidrome, track, query, cache, cancellationToken);
-        var match = results.FirstOrDefault(result =>
-            IsTitleArtistMatch(track, result)
-            && IsDurationMatch(track.DurationMs, result.DurationMs));
+        var match = SelectBestMediaServerMatch(
+            results,
+            track,
+            localFilePath,
+            static result => result.FilePath,
+            static result => result.Id,
+            IsTitleArtistMatch,
+            static (candidate, result) => IsDurationMatch(candidate.DurationMs, result.DurationMs));
         var itemId = match?.Id;
         cache[query] = itemId;
         return itemId;
+    }
+
+    /// <summary>
+    /// DeezSpoTag local track id is the hub between media servers:
+    /// server A item id ↔ local track id ↔ server B item id.
+    /// For unresolved B mappings, resolve using the local track's file path and library tags.
+    /// </summary>
+    private sealed record LocalTrackHubContext(SyncTrackSummary SearchTrack, string? FilePath);
+
+    private async Task<IReadOnlyDictionary<long, LocalTrackHubContext>> BuildLocalTrackHubContextsAsync(
+        IReadOnlyList<SyncTrackSummary> tracks,
+        IReadOnlyList<long> orderedTrackIds,
+        IReadOnlyList<int> unresolvedIndexes,
+        CancellationToken cancellationToken)
+    {
+        var localIds = unresolvedIndexes
+            .Select(index => orderedTrackIds[index])
+            .Where(static id => id > 0)
+            .Distinct()
+            .ToList();
+        if (localIds.Count == 0)
+        {
+            return new Dictionary<long, LocalTrackHubContext>();
+        }
+
+        var paths = await _libraryRepository.GetTrackPrimaryFilePathsAsync(localIds, cancellationToken);
+        var contexts = new Dictionary<long, LocalTrackHubContext>();
+        foreach (var index in unresolvedIndexes)
+        {
+            var localTrackId = orderedTrackIds[index];
+            if (localTrackId <= 0 || contexts.ContainsKey(localTrackId))
+            {
+                continue;
+            }
+
+            var sourceTrack = tracks[index];
+            paths.TryGetValue(localTrackId, out var filePath);
+            var identity = await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken);
+            var searchTrack = EnrichSearchTrackFromLocalIdentity(sourceTrack, identity);
+            contexts[localTrackId] = new LocalTrackHubContext(searchTrack, filePath);
+        }
+
+        return contexts;
+    }
+
+    private static LocalTrackHubContext GetLocalTrackHubContext(
+        IReadOnlyDictionary<long, LocalTrackHubContext> contexts,
+        long localTrackId,
+        SyncTrackSummary fallback)
+        => localTrackId > 0 && contexts.TryGetValue(localTrackId, out var context)
+            ? context
+            : new LocalTrackHubContext(fallback, null);
+
+    private static SyncTrackSummary EnrichSearchTrackFromLocalIdentity(
+        SyncTrackSummary source,
+        LocalTrackIdentityDto? identity)
+    {
+        if (identity is null)
+        {
+            return source;
+        }
+
+        return new SyncTrackSummary(
+            source.SourceTrackId,
+            string.IsNullOrWhiteSpace(identity.Isrc) ? source.Isrc : identity.Isrc,
+            string.IsNullOrWhiteSpace(identity.Title) ? source.Name : identity.Title,
+            string.IsNullOrWhiteSpace(identity.Artist) ? source.Artists : identity.Artist,
+            string.IsNullOrWhiteSpace(identity.Album) ? source.Album : identity.Album,
+            source.ReleaseDate,
+            source.Explicit,
+            source.Genres,
+            identity.DurationMs ?? source.DurationMs,
+            source.IdentitySource,
+            source.IdentityTrackId);
+    }
+
+    private static TResult? SelectBestMediaServerMatch<TResult>(
+        IReadOnlyList<TResult> results,
+        SyncTrackSummary track,
+        string? localFilePath,
+        Func<TResult, string?> filePathSelector,
+        Func<TResult, string?> idSelector,
+        Func<SyncTrackSummary, TResult, bool> titleArtistMatch,
+        Func<SyncTrackSummary, TResult, bool> durationMatch)
+    {
+        if (results.Count == 0)
+        {
+            return default;
+        }
+
+        // Prefer the candidate whose path matches the DeezSpoTag-indexed file for this local track id.
+        if (!string.IsNullOrWhiteSpace(localFilePath))
+        {
+            var pathMatch = results.FirstOrDefault(result =>
+                !string.IsNullOrWhiteSpace(idSelector(result))
+                && MediaServerPathsReferToSameFile(localFilePath, filePathSelector(result)));
+            if (pathMatch is not null)
+            {
+                return pathMatch;
+            }
+        }
+
+        return results.FirstOrDefault(result =>
+            !string.IsNullOrWhiteSpace(idSelector(result))
+            && titleArtistMatch(track, result)
+            && durationMatch(track, result));
+    }
+
+    internal static bool MediaServerPathsReferToSameFile(string? localPath, string? serverPath)
+    {
+        if (string.IsNullOrWhiteSpace(localPath) || string.IsNullOrWhiteSpace(serverPath))
+        {
+            return false;
+        }
+
+        var left = NormalizeMediaServerPath(localPath);
+        var right = NormalizeMediaServerPath(serverPath);
+        if (left.Length == 0 || right.Length == 0)
+        {
+            return false;
+        }
+
+        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        // Tolerate different mount roots (/music/... vs /data/media/...) by matching trailing path.
+        var longer = left.Length >= right.Length ? left : right;
+        var shorter = left.Length >= right.Length ? right : left;
+        if (longer.EndsWith("/" + shorter.TrimStart('/'), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var leftFile = Path.GetFileName(left);
+        var rightFile = Path.GetFileName(right);
+        if (!string.Equals(leftFile, rightFile, StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(leftFile))
+        {
+            return false;
+        }
+
+        var leftParent = Path.GetFileName(Path.GetDirectoryName(left.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty);
+        var rightParent = Path.GetFileName(Path.GetDirectoryName(right.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty);
+        return !string.IsNullOrWhiteSpace(leftParent)
+               && string.Equals(leftParent, rightParent, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeMediaServerPath(string path)
+    {
+        var normalized = path.Trim().Replace('\\', '/');
+        while (normalized.Contains("//", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+        }
+
+        return normalized.TrimEnd('/');
     }
 
     private async Task<List<NavidromeAudioTrack>> SearchNavidromeTrackCandidatesAsync(

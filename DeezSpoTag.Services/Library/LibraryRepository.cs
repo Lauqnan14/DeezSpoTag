@@ -2186,35 +2186,64 @@ LIMIT 1;";
             return null;
         }
 
+        var paths = await GetTrackPrimaryFilePathsAsync(new[] { trackId }, cancellationToken);
+        return paths.TryGetValue(trackId, out var path) ? path : null;
+    }
+
+    /// <summary>
+    /// Batch primary audio paths for DeezSpoTag local track ids (media-server hub resolution).
+    /// </summary>
+    public async Task<IReadOnlyDictionary<long, string>> GetTrackPrimaryFilePathsAsync(
+        IReadOnlyCollection<long> trackIds,
+        CancellationToken cancellationToken = default)
+    {
+        var distinct = trackIds.Where(static id => id > 0).Distinct().ToList();
+        if (distinct.Count == 0)
+        {
+            return new Dictionary<long, string>();
+        }
+
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT af.path,
-       af.relative_path,
-       f.root_path
-FROM track_local tl
-JOIN audio_file af ON af.id = tl.audio_file_id
-LEFT JOIN folder f ON f.id = af.folder_id
-WHERE tl.track_id = @trackId
-ORDER BY af.quality_rank DESC NULLS LAST, af.size DESC, af.id DESC
-LIMIT 1;";
+WITH requested AS (
+    SELECT CAST(value AS INTEGER) AS track_id
+    FROM json_each(@trackIdsJson)
+),
+ranked AS (
+    SELECT tl.track_id,
+           af.path,
+           af.relative_path,
+           f.root_path,
+           ROW_NUMBER() OVER (
+               PARTITION BY tl.track_id
+               ORDER BY af.quality_rank DESC NULLS LAST, af.size DESC, af.id DESC
+           ) AS rn
+    FROM track_local tl
+    JOIN requested r ON r.track_id = tl.track_id
+    JOIN audio_file af ON af.id = tl.audio_file_id
+    LEFT JOIN folder f ON f.id = af.folder_id
+)
+SELECT track_id, path, relative_path, root_path
+FROM ranked
+WHERE rn = 1;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(TrackIdField, trackId);
+        command.Parameters.AddWithValue(TrackIdsJsonParameter, SerializeJsonArray(distinct));
+        var result = new Dictionary<long, string>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        while (await reader.ReadAsync(cancellationToken))
         {
-            return null;
+            var trackId = reader.GetInt64(0);
+            var path = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
+            var relativePath = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
+            var rootPath = await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3);
+            var resolved = BuildAbsolutePath(rootPath, relativePath, path);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                result[trackId] = resolved;
+            }
         }
 
-        var path = await reader.IsDBNullAsync(0, cancellationToken) ? null : reader.GetString(0);
-        var relativePath = await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1);
-        var rootPath = await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2);
-        var resolved = BuildAbsolutePath(rootPath, relativePath, path);
-        if (string.IsNullOrWhiteSpace(resolved))
-        {
-            return null;
-        }
-
-        return resolved;
+        return result;
     }
 
     public async Task<LocalTrackIdentityDto?> GetLocalTrackIdentityAsync(

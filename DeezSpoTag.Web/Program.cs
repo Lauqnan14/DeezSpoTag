@@ -1479,6 +1479,7 @@ public partial class Program
             services,
             StartupWorkerCategory.Deferred,
             "Durable media-server library refresh processing after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {
@@ -1492,11 +1493,11 @@ public partial class Program
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
+                WatchlistRunSignal = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunSignal>(),
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncService>>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistPopularSongsSyncService>();
-        services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
         services.AddScoped<DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators>(sp =>
             new DeezSpoTag.Web.Services.SpotifyHomeFeedCollaborators
             {
