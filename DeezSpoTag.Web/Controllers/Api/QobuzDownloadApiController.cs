@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Queue;
@@ -59,13 +60,30 @@ public sealed class QobuzDownloadApiController : ControllerBase
     [HttpPost("public-session/start")]
     public async Task<IActionResult> StartPublicSession(CancellationToken cancellationToken)
     {
-        var verificationUrl = await _qobuzDownloadService.BeginPublicDownloadVerificationAsync(cancellationToken);
-        return Ok(new
+        try
         {
-            authenticated = string.IsNullOrWhiteSpace(verificationUrl),
-            verificationUrl
-        });
+            var verificationUrl = await _qobuzDownloadService.BeginPublicDownloadVerificationAsync(
+                cancellationToken,
+                publicAppBaseUrl: BuildPublicAppBaseUrl());
+            return Ok(new
+            {
+                authenticated = string.IsNullOrWhiteSpace(verificationUrl),
+                verificationUrl
+            });
+        }
+        catch (ZarzSessionRateLimitException ex)
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                authenticated = false,
+                error = ex.Message,
+                retryAfterSeconds = ex.RetryAfterSeconds
+            });
+        }
     }
+
+    private string BuildPublicAppBaseUrl()
+        => $"{Request.Scheme}://{Request.Host}{Request.PathBase}".TrimEnd('/');
 
     [HttpPost("public-session/complete")]
     public async Task<IActionResult> CompletePublicSession(

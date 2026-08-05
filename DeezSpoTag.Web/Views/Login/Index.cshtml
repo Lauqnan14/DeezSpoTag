@@ -3832,28 +3832,73 @@ async function startPublicDownloadVerification(config) {
     }
 }
 
+function extractPublicDownloadGrant(payload) {
+    if (!payload) {
+        return null;
+    }
+
+    if (typeof payload === 'string') {
+        const trimmed = payload.trim();
+        if (!trimmed) {
+            return null;
+        }
+
+        try {
+            const asUrl = trimmed.includes('://')
+                ? new URL(trimmed)
+                : new URL(trimmed, 'spotiflac://session-grant');
+            const fromQuery = asUrl.searchParams.get('grant');
+            if (fromQuery) {
+                return fromQuery;
+            }
+        } catch {
+            // Fall through to regex.
+        }
+
+        const match = /(?:^|[?&#])grant=([^&\s#]+)/i.exec(trimmed);
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+
+    if (typeof payload === 'object') {
+        if (typeof payload.grant === 'string' && payload.grant.trim()) {
+            return payload.grant.trim();
+        }
+
+        if (typeof payload.url === 'string') {
+            return extractPublicDownloadGrant(payload.url);
+        }
+
+        if (typeof payload.href === 'string') {
+            return extractPublicDownloadGrant(payload.href);
+        }
+    }
+
+    return null;
+}
+
 function waitForPublicDownloadGrant(verificationWindow, config) {
     return new Promise((resolve, reject) => {
+        let settled = false;
         const timeout = window.setTimeout(() => {
             cleanup();
             reject(new Error(`${config.label} public download verification timed out.`));
         }, 5 * 60 * 1000);
         const closedPoll = window.setInterval(() => {
-            if (verificationWindow.closed) {
+            if (verificationWindow.closed && !settled) {
                 cleanup();
                 reject(new Error(`${config.label} public download verification was closed before completion.`));
             }
         }, 500);
 
         const cleanup = () => {
+            settled = true;
             window.clearTimeout(timeout);
             window.clearInterval(closedPoll);
             window.removeEventListener('message', onMessage);
         };
-        const onMessage = async event => {
-            if (event.origin !== 'https://api.zarz.moe'
-                || event.data?.type !== 'zarz_grant'
-                || !event.data?.grant) {
+
+        const completeWithGrant = async grant => {
+            if (settled || !grant) {
                 return;
             }
 
@@ -3863,19 +3908,40 @@ function waitForPublicDownloadGrant(verificationWindow, config) {
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: buildLoginApiHeaders(true),
-                    body: JSON.stringify({ grant: event.data.grant })
+                    body: JSON.stringify({ grant })
                 });
                 if (!response.ok) {
                     throw new Error(await getApiErrorMessage(response, `${config.label} public download verification failed`));
                 }
 
-                verificationWindow.close();
+                try {
+                    verificationWindow.close();
+                } catch {
+                    // Popup may already be closed by the grant callback page.
+                }
                 await reloadPublicDownloadSession(config.platformId);
                 showToast(`Public ${config.label} downloads verified.`, 'success');
                 resolve();
             } catch (error) {
                 reject(error);
             }
+        };
+
+        const onMessage = event => {
+            // Zarz may postMessage from api.zarz.moe; our HTTPS grant page posts from same origin.
+            const allowedOrigin = event.origin === 'https://api.zarz.moe'
+                || event.origin === window.location.origin;
+            if (!allowedOrigin) {
+                return;
+            }
+
+            const grant = extractPublicDownloadGrant(event.data)
+                || (event.data?.type === 'zarz_grant' ? extractPublicDownloadGrant(event.data.grant) : null);
+            if (!grant) {
+                return;
+            }
+
+            void completeWithGrant(grant);
         };
 
         window.addEventListener('message', onMessage);

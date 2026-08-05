@@ -47,6 +47,78 @@ public sealed class ProviderIntegrationSurfaceTests
     }
 
     [Fact]
+    public void ZarzSessionRateLimitException_ParsesRetryAfterFromGatewayBody()
+    {
+        var exception = ZarzSessionRateLimitException.TryCreate(
+            "Amazon session bootstrap",
+            HttpStatusCode.TooManyRequests,
+            """{"error":"Temporarily blocked. Please try again later.","retry_after":50239}""");
+
+        Assert.NotNull(exception);
+        Assert.Equal(50239, exception!.RetryAfterSeconds);
+        Assert.Contains("temporarily rate limited", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ZarzSignedSessionContract_MatchesSpotiflacChallengeAndBootstrapShape()
+    {
+        Assert.Equal("spotiflac://session-grant", ZarzSignedSessionContract.CallbackUrl);
+        Assert.Equal("extension", ZarzSignedSessionContract.Platform);
+        Assert.Equal("ZARZ-HMAC-V1", ZarzSignedSessionContract.SchemeLabel);
+
+        var bootstrap = ZarzSignedSessionContract.BuildBootstrapQuery("abc123", "tidal-web@1.1.0");
+        Assert.Contains("app_version=tidal-web%401.1.0", bootstrap, StringComparison.Ordinal);
+        Assert.Contains("install_id=abc123", bootstrap, StringComparison.Ordinal);
+        Assert.DoesNotContain("platform=", bootstrap, StringComparison.Ordinal);
+        Assert.DoesNotContain("callback_url=", bootstrap, StringComparison.Ordinal);
+
+        var mobileChallenge = ZarzSignedSessionContract.BuildChallengeUrl(
+            "https://api.zarz.moe/v2",
+            "/challenge",
+            "challenge-1",
+            "install-state");
+        Assert.Contains("id=challenge-1", mobileChallenge, StringComparison.Ordinal);
+        Assert.Contains("cb=", mobileChallenge, StringComparison.Ordinal);
+        Assert.Contains("cb_version%3Dv2grant", mobileChallenge, StringComparison.Ordinal);
+        Assert.Contains("state%3Dinstall-state", mobileChallenge, StringComparison.Ordinal);
+        Assert.Contains("spotiflac%3A%2F%2Fsession-grant", mobileChallenge, StringComparison.Ordinal);
+
+        var webChallenge = ZarzSignedSessionContract.BuildChallengeUrl(
+            "https://api.zarz.moe/v2",
+            "/challenge",
+            "challenge-1",
+            "install-state",
+            publicAppBaseUrl: "http://192.168.28.24:8668");
+        Assert.Contains("id=challenge-1", webChallenge, StringComparison.Ordinal);
+        Assert.Contains("session-grant", webChallenge, StringComparison.Ordinal);
+        Assert.Contains("192.168.28.24", webChallenge, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotiflac%3A%2F%2Fsession-grant", webChallenge, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ZarzEnginePorts_MatchSpotiflacSignedSessionContract()
+    {
+        var sources = new[]
+        {
+            ReadSource("DeezSpoTag.Services", "Download", "Amazon", "AmazonDownloadService.cs"),
+            ReadSource("DeezSpoTag.Services", "Download", "Qobuz", "QobuzDownloadService.cs"),
+            ReadSource("DeezSpoTag.Services", "Download", "Tidal", "TidalDownloadService.cs")
+        };
+
+        foreach (var source in sources)
+        {
+            Assert.Contains("ZarzSignedSessionContract.BuildBootstrapQuery", source, StringComparison.Ordinal);
+            Assert.Contains("ZarzSignedSessionContract.ResolveVerificationUrl", source, StringComparison.Ordinal);
+            Assert.Contains("ZarzSignedSessionContract.ExchangeGrantAsync", source, StringComparison.Ordinal);
+            Assert.Contains("ZarzSignedSessionContract.RefreshPath", source, StringComparison.Ordinal);
+            Assert.Contains("ZarzSignedSessionContract.CallbackUrl", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("https://api.zarz.moe/v2/session/callback", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("""["callback_url"] = ZarzCallbackUrl""", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("""["platform"] = ZarzPlatform""", source, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task QobuzBuildProviders_UsesEnabledRegistryProviders()
     {
         var registry = new StubQobuzProviderRegistry();
@@ -106,6 +178,19 @@ public sealed class ProviderIntegrationSurfaceTests
 
         public Task<QobuzOfficialCredentials> GetCredentialsAsync(CancellationToken cancellationToken)
             => Task.FromResult(Credentials);
+    }
+
+    private static string ReadSource(params string[] segments)
+    {
+        var directory = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null
+               && !System.IO.Directory.Exists(System.IO.Path.Combine(directory.FullName, "DeezSpoTag.Services")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        return System.IO.File.ReadAllText(System.IO.Path.Combine([directory!.FullName, .. segments]));
     }
 
     [Theory]

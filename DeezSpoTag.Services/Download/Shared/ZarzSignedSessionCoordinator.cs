@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -40,9 +41,16 @@ public sealed class ZarzSignedSessionCoordinator
         }
     }
 
+    public Task<ZarzSignedSession> EnsureSessionAsync(
+        string provider,
+        Func<ZarzSignedSession?, CancellationToken, Task<ZarzSessionBootstrapResult>> bootstrap,
+        CancellationToken cancellationToken)
+        => EnsureSessionAsync(provider, bootstrap, refresh: null, cancellationToken);
+
     public async Task<ZarzSignedSession> EnsureSessionAsync(
         string provider,
         Func<ZarzSignedSession?, CancellationToken, Task<ZarzSessionBootstrapResult>> bootstrap,
+        Func<ZarzSignedSession, CancellationToken, Task<ZarzSignedSession>>? refresh,
         CancellationToken cancellationToken)
     {
         var gate = GetGate(provider);
@@ -52,6 +60,33 @@ public sealed class ZarzSignedSessionCoordinator
             var current = await LoadNoLockAsync(provider, cancellationToken);
             if (current?.IsUsable == true)
             {
+                if (refresh is not null && current.NeedsRefresh)
+                {
+                    try
+                    {
+                        var refreshed = await refresh(current.Copy(), cancellationToken);
+                        if (refreshed.IsUsable)
+                        {
+                            refreshed.InstallId = string.IsNullOrWhiteSpace(refreshed.InstallId)
+                                ? current.InstallId
+                                : refreshed.InstallId;
+                            refreshed.Generation = current.Generation;
+                            refreshed.BlockedGeneration = null;
+                            refreshed.VerificationUrl = null;
+                            refreshed.ChallengeCreatedAtUtc = null;
+                            await SaveAndPublishNoLockAsync(provider, current, refreshed, cancellationToken);
+                            return refreshed.Copy();
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogDebug(
+                            ex,
+                            "{Provider} signed-session refresh failed; continuing with the current usable session.",
+                            provider);
+                    }
+                }
+
                 return current.Copy();
             }
 
@@ -121,6 +156,18 @@ public sealed class ZarzSignedSessionCoordinator
         {
             var current = await LoadNoLockAsync(provider, cancellationToken)
                 ?? throw new InvalidOperationException($"Start {DisplayName(provider)} public download verification first.");
+            var grantHash = ZarzSignedSessionContract.HashGrant(grant);
+            if (!string.IsNullOrWhiteSpace(current.CompletedGrantHash)
+                && string.Equals(current.CompletedGrantHash, grantHash, StringComparison.Ordinal)
+                && current.IsUsable)
+            {
+                current.BlockedGeneration = null;
+                current.VerificationUrl = null;
+                current.ChallengeCreatedAtUtc = null;
+                await SaveAndPublishNoLockAsync(provider, current, current, cancellationToken);
+                return;
+            }
+
             var exchanged = await exchange(current.Copy(), grant, cancellationToken);
             if (!exchanged.HasCredentials || exchanged.IsExpired)
             {
@@ -132,6 +179,7 @@ public sealed class ZarzSignedSessionCoordinator
             exchanged.BlockedGeneration = null;
             exchanged.VerificationUrl = null;
             exchanged.ChallengeCreatedAtUtc = null;
+            exchanged.CompletedGrantHash = grantHash;
             await SaveAndPublishNoLockAsync(provider, current, exchanged, cancellationToken);
         }
         finally
@@ -428,6 +476,9 @@ public sealed class ZarzSignedSession
     [JsonPropertyName("challenge_created_at_utc")]
     public DateTimeOffset? ChallengeCreatedAtUtc { get; set; }
 
+    [JsonPropertyName("completed_grant_hash")]
+    public string? CompletedGrantHash { get; set; }
+
     [JsonIgnore]
     public bool HasCredentials => !string.IsNullOrWhiteSpace(SessionId) && !string.IsNullOrWhiteSpace(SessionSecret);
 
@@ -440,12 +491,281 @@ public sealed class ZarzSignedSession
     [JsonIgnore]
     public bool IsUsable => HasCredentials && !IsExpired && !IsBlocked;
 
+    /// <summary>SpotiFLAC refreshes when expiry is within one hour.</summary>
+    [JsonIgnore]
+    public bool NeedsRefresh => IsUsable
+        && ExpiresAt.HasValue
+        && ExpiresAt.Value <= DateTimeOffset.UtcNow.Add(ZarzSignedSessionContract.RefreshSkew);
+
     public ZarzSignedSession Copy() => (ZarzSignedSession)MemberwiseClone();
 }
 
 public sealed record ZarzSessionBootstrapResult(ZarzSignedSession Session, string? VerificationUrl);
 
 public sealed record ZarzSessionStateChangedEventArgs(string Provider, bool IsUsable, bool VerificationRequired);
+
+public sealed class ZarzSessionRateLimitException : InvalidOperationException
+{
+    public ZarzSessionRateLimitException(string message, int? retryAfterSeconds = null)
+        : base(message)
+    {
+        RetryAfterSeconds = retryAfterSeconds;
+    }
+
+    public int? RetryAfterSeconds { get; }
+
+    public static ZarzSessionRateLimitException? TryCreate(
+        string operation,
+        HttpStatusCode statusCode,
+        string responseBody,
+        HttpResponseMessage? response = null)
+    {
+        if (statusCode != HttpStatusCode.TooManyRequests)
+        {
+            return null;
+        }
+
+        var retryAfter = ZarzSignedSessionContract.ReadRetryAfterSeconds(response, responseBody);
+        var suffix = retryAfter.HasValue ? $" Retry after {retryAfter.Value} seconds." : string.Empty;
+        return new($"{operation} is temporarily rate limited.{suffix}", retryAfter);
+    }
+}
+
+/// <summary>
+/// Shared SpotiFLAC-compatible signed-session request contract (Zarz gateway).
+/// </summary>
+public static class ZarzSignedSessionContract
+{
+    public const string CallbackUrl = "spotiflac://session-grant";
+    public const string Platform = "extension";
+    public const string SchemeLabel = "ZARZ-HMAC-V1";
+    public const string HeaderPrefix = "X-Zarz-";
+    public const string RefreshPath = "/session/refresh";
+    public const int TimeWindowSeconds = 300;
+    public const int ExchangeMaxAttempts = 3;
+    public static readonly TimeSpan RefreshSkew = TimeSpan.FromHours(1);
+    public static readonly TimeSpan MaxRetryAfter = TimeSpan.FromMinutes(5);
+
+    public static string BuildBootstrapQuery(string installId, string appVersion)
+        => string.Join(
+            '&',
+            new Dictionary<string, string>
+            {
+                ["app_version"] = appVersion,
+                ["install_id"] = installId
+            }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
+
+    /// <summary>
+    /// SpotiFLAC mobile deep-link callback (native intercept). Used when no public web base is available.
+    /// </summary>
+    public static string BuildSpotiflacGrantCallbackUrl(string state)
+        => new UriBuilder(CallbackUrl)
+        {
+            Query = string.Join(
+                '&',
+                new Dictionary<string, string>
+                {
+                    ["cb_version"] = "v2grant",
+                    ["state"] = state
+                }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
+        }.Uri.ToString();
+
+    /// <summary>
+    /// Same-origin HTTPS callback for DeezSpoTag web. The verification popup returns here with
+    /// <c>grant</c> so the opener can finish without a native <c>spotiflac://</c> handler.
+    /// </summary>
+    public static string BuildWebGrantCallbackUrl(string publicAppBaseUrl, string state)
+    {
+        var root = publicAppBaseUrl.Trim().TrimEnd('/');
+        var callback = new UriBuilder($"{root}/api/public-download/session-grant")
+        {
+            Query = string.Join(
+                '&',
+                new Dictionary<string, string>
+                {
+                    ["cb_version"] = "v2grant",
+                    ["state"] = state
+                }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
+        };
+        return callback.Uri.ToString();
+    }
+
+    public static string BuildChallengeUrl(
+        string baseUrl,
+        string challengePath,
+        string challengeId,
+        string state,
+        string? publicAppBaseUrl = null)
+    {
+        var callback = string.IsNullOrWhiteSpace(publicAppBaseUrl)
+            ? BuildSpotiflacGrantCallbackUrl(state)
+            : BuildWebGrantCallbackUrl(publicAppBaseUrl, state);
+
+        var challengeBase = new Uri(baseUrl.TrimEnd('/') + "/");
+        var challengeUri = new Uri(challengeBase, challengePath.TrimStart('/'));
+        var builder = new UriBuilder(challengeUri)
+        {
+            Query = string.Join(
+                '&',
+                new Dictionary<string, string>
+                {
+                    ["id"] = challengeId,
+                    ["cb"] = callback
+                }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
+        };
+        return builder.Uri.ToString();
+    }
+
+    public static string ResolveVerificationUrl(
+        string? authUrl,
+        string? challengeUrl,
+        string? challengeId,
+        string baseUrl,
+        string challengePath,
+        string state,
+        string? publicAppBaseUrl = null)
+    {
+        // Prefer challenge_id so we control the callback (web HTTPS vs spotiflac deep link).
+        if (!string.IsNullOrWhiteSpace(challengeId))
+        {
+            return BuildChallengeUrl(baseUrl, challengePath, challengeId.Trim(), state, publicAppBaseUrl);
+        }
+
+        if (!string.IsNullOrWhiteSpace(authUrl))
+        {
+            return authUrl.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(challengeUrl))
+        {
+            return challengeUrl.Trim();
+        }
+
+        return string.Empty;
+    }
+
+    public static string HashGrant(string grant)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(grant.Trim()));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    public static int? ReadRetryAfterSeconds(HttpResponseMessage? response, string? responseBody)
+    {
+        if (response?.Headers.RetryAfter?.Delta is TimeSpan delta && delta > TimeSpan.Zero)
+        {
+            return (int)Math.Ceiling(delta.TotalSeconds);
+        }
+
+        if (response?.Headers.RetryAfter?.Date is DateTimeOffset date)
+        {
+            var seconds = (int)Math.Ceiling((date - DateTimeOffset.UtcNow).TotalSeconds);
+            return seconds > 0 ? seconds : null;
+        }
+
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(responseBody);
+            if (document.RootElement.TryGetProperty("retry_after", out var retryAfter)
+                && retryAfter.TryGetInt32(out var value)
+                && value > 0)
+            {
+                return value;
+            }
+
+            if (document.RootElement.TryGetProperty("retry_after_seconds", out var retryAfterSeconds)
+                && retryAfterSeconds.TryGetInt32(out var seconds)
+                && seconds > 0)
+            {
+                return seconds;
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    public static async Task DelayForRetryAsync(int? retryAfterSeconds, CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromSeconds(Math.Max(1, retryAfterSeconds ?? 1));
+        if (delay > MaxRetryAfter)
+        {
+            delay = MaxRetryAfter;
+        }
+
+        await Task.Delay(delay, cancellationToken);
+    }
+
+    public static async Task<string> ExchangeGrantAsync(
+        HttpClient client,
+        Uri exchangeUri,
+        string userAgent,
+        string grant,
+        string installId,
+        string appVersion,
+        CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            grant,
+            install_id = installId,
+            app_version = appVersion,
+            platform = Platform
+        });
+        var bodyBytes = System.Text.Encoding.UTF8.GetBytes(payload);
+        string? lastBody = null;
+        HttpStatusCode lastStatus = 0;
+        for (var attempt = 1; attempt <= ExchangeMaxAttempts; attempt++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, exchangeUri)
+            {
+                Content = new ByteArrayContent(bodyBytes)
+            };
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            request.Headers.TryAddWithoutValidation("Accept", "application/json");
+            request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            using var response = await client.SendAsync(request, cancellationToken);
+            lastBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            lastStatus = response.StatusCode;
+            if (response.IsSuccessStatusCode)
+            {
+                return lastBody;
+            }
+
+            if (response.StatusCode == HttpStatusCode.TooManyRequests && attempt < ExchangeMaxAttempts)
+            {
+                var retryAfter = ReadRetryAfterSeconds(response, lastBody);
+                await DelayForRetryAsync(retryAfter, cancellationToken);
+                continue;
+            }
+
+            var rateLimit = ZarzSessionRateLimitException.TryCreate(
+                "session exchange",
+                response.StatusCode,
+                lastBody,
+                response);
+            if (rateLimit is not null)
+            {
+                throw rateLimit;
+            }
+
+            throw new InvalidOperationException(
+                $"session exchange failed: HTTP {(int)response.StatusCode}: {lastBody.Trim()}");
+        }
+
+        throw new InvalidOperationException(
+            $"session exchange failed: HTTP {(int)lastStatus}: {(lastBody ?? string.Empty).Trim()}");
+    }
+}
 
 public enum ZarzResponseDisposition
 {
