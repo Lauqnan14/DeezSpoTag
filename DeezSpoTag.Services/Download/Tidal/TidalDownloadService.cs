@@ -268,14 +268,15 @@ public sealed class TidalDownloadService
                 }
 
                 _logger.LogWarning(
-                    "Persisted Tidal identity {TrackId} rejected for {Title} - {Artist}: validation={Reason}, requestedQuality={Quality}, trackQuality={TrackQuality}, tags={Tags}",
+                    "Persisted Tidal identity {TrackId} rejected for {Title} - {Artist}: validation={Reason}, requestedQuality={Quality}, trackQuality={TrackQuality}, tags={Tags}, audioModes={AudioModes}",
                     persistedTrackId,
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(trackTitle),
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(artistName),
                     validation.Accepted ? "quality_mismatch" : validation.Reason,
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(requestedQuality),
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(persistedTrack.AudioQuality),
-                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.MediaMetadata?.Tags ?? [])));
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.MediaMetadata?.Tags ?? [])),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.AudioModes ?? [])));
             }
 
             var trackInfo = await SearchTrackByMetadataWithIsrcForQualityAsync(
@@ -778,9 +779,23 @@ public sealed class TidalDownloadService
     private static bool TidalTrackCanSatisfyQuality(TidalTrack track, string? requestedQuality)
     {
         var requested = TidalStereoQuality.Normalize(requestedQuality);
+        var isAtmosOnly = HasTidalAtmosMode(track);
         if (requested == TidalStereoQualityTier.DolbyAtmos)
         {
-            return HasTidalAtmosMode(track);
+            return isAtmosOnly;
+        }
+
+        // Tidal represents an Atmos master as a distinct track ID from its stereo
+        // counterpart, and tags it with the same quality-tier tags (e.g. HIRES_LOSSLESS)
+        // as its underlying encode, alongside audioModes=["DOLBY_ATMOS"]. Without this
+        // check, a track whose only playable mode is Atmos passes hasHiRes/hasLossless
+        // below on tags alone and gets accepted for a stereo request it can't actually
+        // satisfy -- the provider then returns Atmos content for a stereo/Hi-Res ask,
+        // which only gets caught later, at download time, by
+        // EnsureTidalManifestMatchesRequestedQuality.
+        if (isAtmosOnly)
+        {
+            return false;
         }
 
         var tags = track.MediaMetadata?.Tags ?? [];
@@ -2600,10 +2615,38 @@ public sealed class TidalDownloadService
 
     private static bool IsAtmosManifest(TidalManifestInfo manifest)
     {
+        // MimeType/Codecs alone are NOT sufficient: a live-captured genuine Tidal Atmos DASH
+        // manifest (track 360943742, 2026-08-07) carries mimeType="audio/mp4" and codecs="ec-3"
+        // -- neither contains an Atmos signal. The actual indicator on that manifest is the
+        // Representation's id="EAC3_JOC" attribute, which only shows up when scanning the raw
+        // manifest text. So RawText still has to be scanned -- but not verbatim: its
+        // CDN-signed segment/init URLs embed long, effectively-random signing tokens that can
+        // coincidentally contain "joc" as a substring, which previously misclassified a
+        // genuinely stereo manifest as Atmos (see regression test
+        // TidalManifestGate_IgnoresAtmosLookingSubstringInsideCdnSignedSegmentToken). Redact
+        // those URLs before scanning so structural signals (id="EAC3_JOC",
+        // <SupplementalProperty .../>, etc.) still match while opaque tokens cannot.
         return ContainsAtmosSignal(manifest.MimeType)
             || ContainsAtmosSignal(manifest.Codecs)
-            || ContainsAtmosSignal(manifest.RawText);
+            || ContainsAtmosSignal(RedactDashManifestUrls(manifest.RawText));
     }
+
+    private static string? RedactDashManifestUrls(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return rawText;
+        }
+
+        // Strips the value out of the two DASH attributes (and the BTS JSON "urls" array) known
+        // to carry CDN-signed segment/init URLs, leaving the rest of the manifest's structural
+        // markup intact for signal scanning.
+        var redacted = ReplaceWithTimeout(rawText, "(initialization|media|sourceURL)=\"[^\"]*\"", "$1=\"\"", RegexOptions.IgnoreCase);
+        return ReplaceWithTimeout(redacted, "\"urls\"\\s*:\\s*\\[[^\\]]*\\]", "\"urls\":[]", RegexOptions.IgnoreCase);
+    }
+
+    private static string ReplaceWithTimeout(string input, string pattern, string replacement, RegexOptions options = RegexOptions.None)
+        => Regex.Replace(input, pattern, replacement, options, RegexTimeout);
 
     private static bool ContainsAtmosSignal(string? value)
     {

@@ -336,6 +336,88 @@ public sealed class TidalStereoQualitySeparationTests
         method.Invoke(null, [candidate, requestedQuality, false]);
     }
 
+    // Regression coverage for a real production failure: track 328353593 ("Been looking for
+    // you" by EMDA), confirmed stereo via the provider's own response (audioMode="STEREO",
+    // codecs="flac"), was rejected with "provider returned Tidal Dolby Atmos" purely because
+    // its CDN-signed media segment token -- a long, effectively random base64 auth string --
+    // happened to contain the substring "joc". IsAtmosManifest scans the raw decoded manifest
+    // text for Atmos signals (see TidalManifestGate_DetectsGenuineAtmosManifestViaRepresentationId
+    // below for why it has to), but must redact the URL-bearing DASH attributes first so a
+    // token's coincidental substring can't trigger a false positive. A stereo manifest whose
+    // token happens to contain an Atmos-looking substring must still be accepted for a
+    // stereo/Hi-Res request.
+    [Fact]
+    public void TidalManifestGate_IgnoresAtmosLookingSubstringInsideCdnSignedSegmentToken()
+    {
+        var manifest = BuildDashManifestCandidateWithSegmentToken(
+            "audio/flac", "flac", 96000, 24, "abcJOCdef1234SignedTokenValue");
+
+        EnsureManifestMatchesRequest(manifest, "HI_RES");
+    }
+
+    // Regression coverage for the real Atmos manifest structure captured live from the Zarz
+    // provider for Tidal track 360943742 ("Espresso" by Sabrina Carpenter, a genuine Dolby Atmos
+    // release, captured 2026-08-07): mimeType="audio/mp4" and codecs="ec-3" carry NO Atmos
+    // signal at all -- the only indicator anywhere on that manifest is the DASH Representation's
+    // id="EAC3_JOC" attribute. An earlier version of this fix (removing RawText scanning
+    // entirely to fix the false positive above) would have made IsAtmosManifest return false for
+    // every genuine Atmos manifest, since neither MimeType nor Codecs ever carries the signal.
+    // IsAtmosManifest must still scan RawText (with URLs redacted) to catch this.
+    [Fact]
+    public void TidalManifestGate_DetectsGenuineAtmosManifestViaRepresentationId()
+    {
+        var manifest = BuildAtmosDashManifestCandidate();
+
+        Assert.True(InvokeIsAtmosManifest(manifest));
+    }
+
+    // Regression coverage for the resolution-time counterpart to the manifest-gate tests
+    // above: Tidal represents an Atmos master as a distinct track ID from its stereo
+    // counterpart, but tags it with the same quality-tier tags (e.g. HIRES_LOSSLESS) as its
+    // underlying encode. A track whose audioModes is ["DOLBY_ATMOS"] must never be accepted
+    // for a stereo/Hi-Res/Lossless request just because its tags look hi-res -- otherwise the
+    // Atmos ID gets persisted as the resolved identity, and the mismatch only surfaces later,
+    // at download time, once the provider actually returns Atmos content for a stereo ask.
+    [Theory]
+    [InlineData("DOLBY_ATMOS", "HIRES_LOSSLESS", "HI_RES", false)]
+    [InlineData("DOLBY_ATMOS", "HIRES_LOSSLESS", "HI_RES_LOSSLESS", false)]
+    [InlineData("DOLBY_ATMOS", "HIRES_LOSSLESS", "LOSSLESS", false)]
+    [InlineData("DOLBY_ATMOS", "LOSSLESS", "LOW", false)]
+    [InlineData("DOLBY_ATMOS", "HIRES_LOSSLESS", "DOLBY_ATMOS", true)]
+    [InlineData("DOLBY_ATMOS", "HIRES_LOSSLESS", "ATMOS", true)]
+    [InlineData("STEREO", "HIRES_LOSSLESS", "HI_RES", true)]
+    [InlineData("STEREO", "HIRES_LOSSLESS", "DOLBY_ATMOS", false)]
+    public void TidalTrackCanSatisfyQuality_NeverAcceptsAnAtmosOnlyTrackForAStereoRequest(
+        string audioMode,
+        string tag,
+        string requestedQuality,
+        bool expected)
+    {
+        var track = BuildTidalTrack(audioMode, tag);
+        var method = typeof(TidalDownloadService).GetMethod(
+            "TidalTrackCanSatisfyQuality",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var result = (bool)method.Invoke(null, [track, requestedQuality])!;
+
+        Assert.Equal(expected, result);
+    }
+
+    private static object BuildTidalTrack(string audioMode, string tag)
+    {
+        var trackType = typeof(TidalDownloadService).GetNestedType("TidalTrack", BindingFlags.NonPublic)!;
+        var json = $$"""
+            {
+                "id": 328353593,
+                "title": "Been looking for you",
+                "audioQuality": "LOSSLESS",
+                "audioModes": ["{{audioMode}}"],
+                "mediaMetadata": { "tags": ["{{tag}}"] }
+            }
+            """;
+        return System.Text.Json.JsonSerializer.Deserialize(json, trackType)!;
+    }
+
     private static string BuildDashManifestCandidate(
         string mimeType,
         string codec,
@@ -357,6 +439,56 @@ public sealed class TidalStereoQualitySeparationTests
             </MPD>
             """;
         return "MANIFEST:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest));
+    }
+
+    private static string BuildDashManifestCandidateWithSegmentToken(
+        string mimeType,
+        string codec,
+        int sampleRate,
+        int bitDepth,
+        string segmentToken)
+    {
+        var bitDepthAttribute = bitDepth > 0 ? $" bitDepth=\"{bitDepth}\"" : string.Empty;
+        var manifest = $"""
+            <MPD>
+              <Period>
+                <AdaptationSet mimeType="{mimeType}" contentType="audio">
+                  <Representation bandwidth="1000000" codecs="{codec}" audioSamplingRate="{sampleRate}"{bitDepthAttribute}>
+                    <SegmentTemplate initialization="https://media.example/init.mp4?token={segmentToken}" media="https://media.example/segment-$Number$.m4s?token={segmentToken}" startNumber="1">
+                      <SegmentTimeline><S d="1" /></SegmentTimeline>
+                    </SegmentTemplate>
+                  </Representation>
+                </AdaptationSet>
+              </Period>
+            </MPD>
+            """;
+        return "MANIFEST:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest));
+    }
+
+    // Mirrors the structure of the live Zarz Atmos DASH manifest captured for track 360943742:
+    // mimeType="audio/mp4", codecs="ec-3", and a Representation id="EAC3_JOC" -- the only
+    // Atmos-indicating attribute on the whole document -- alongside CDN-signed init/media URLs
+    // carrying an opaque, non-"joc" token (so this test can't accidentally pass for the wrong
+    // reason).
+    private static string BuildAtmosDashManifestCandidate()
+    {
+        const string manifest = """
+            <?xml version='1.0' encoding='UTF-8'?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period id="0"><AdaptationSet id="0" contentType="audio" mimeType="audio/mp4" lang="und" group="main" segmentAlignment="true"><Representation id="EAC3_JOC" codecs="ec-3" bandwidth="769208" audioSamplingRate="48000"><SegmentTemplate timescale="48000" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/abc123.mp4?token=1786133899~L21lZGlhdHJhY2tz" media="https://sp-ad-fa.audio.tidal.com/mediatracks/abc123/$Number$.mp4?token=1786133899~L21lZGlhdHJhY2tz" startNumber="1"><SegmentTimeline><S d="192000" r="42"/><S d="167424"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>
+            """;
+        return "MANIFEST:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(manifest));
+    }
+
+    private static bool InvokeIsAtmosManifest(string candidate)
+    {
+        var parseManifest = typeof(TidalDownloadService).GetMethod(
+            "ParseManifest",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        var manifest = parseManifest.Invoke(null, [candidate]);
+
+        var isAtmosManifest = typeof(TidalDownloadService).GetMethod(
+            "IsAtmosManifest",
+            BindingFlags.NonPublic | BindingFlags.Static)!;
+        return (bool)isAtmosManifest.Invoke(null, [manifest])!;
     }
 
     private static string FindRepoRoot()
