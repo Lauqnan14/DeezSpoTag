@@ -7392,31 +7392,21 @@ LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
    AND pws.source_id = pw.source_id
 LEFT JOIN (
-    SELECT track.source,
-           track.source_id,
-           COUNT(DISTINCT track.track_source_id) AS verified_sync_count
-    FROM playlist_watch_track track
-    JOIN playlist_watch_preferences preference
-      ON preference.source = track.source
-     AND preference.source_id = track.source_id
+    -- A track counts as verified-synced only once it has been confirmed on every currently
+    -- configured target, not just one of them -- see playlist_watch_track_sync_progress
+    -- (shared with GetPlaylistWatchTrackStatusesAsync so this logic is defined exactly once).
+    SELECT progress.source,
+           progress.source_id,
+           COUNT(DISTINCT progress.track_source_id) AS verified_sync_count
+    FROM playlist_watch_track_sync_progress progress
+    JOIN playlist_watch_track track
+      ON track.source = progress.source
+     AND track.source_id = progress.source_id
+     AND track.track_source_id = progress.track_source_id
     WHERE lower(COALESCE(track.identity_status, '')) <> 'review'
-      AND EXISTS (
-          SELECT 1
-          FROM playlist_watch_target_membership membership
-          JOIN json_each(CASE
-              WHEN json_valid(preference.sync_targets_json)
-                   AND json_array_length(preference.sync_targets_json) > 0
-                  THEN preference.sync_targets_json
-              ELSE json_array(preference.service)
-          END) configured
-            ON lower(membership.target_service) = lower(trim(configured.value))
-         WHERE membership.source = track.source
-           AND membership.source_id = track.source_id
-           AND membership.track_source_id = track.track_source_id
-           AND lower(membership.sync_status) = 'playlist_synced'
-           AND lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
-      )
-    GROUP BY track.source, track.source_id
+      AND progress.configured_target_count > 0
+      AND progress.verified_target_count >= progress.configured_target_count
+    GROUP BY progress.source, progress.source_id
 ) track_summary
     ON track_summary.source = pw.source
    AND track_summary.source_id = pw.source_id
@@ -9435,7 +9425,7 @@ WHERE source = @source AND source_id = @sourceId;";
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT track_source_id,
+SELECT playlist_watch_track.track_source_id,
        isrc,
        status,
        COALESCE(playlist_watch_track.updated_at, playlist_watch_track.created_at, '') AS updated_at,
@@ -9454,14 +9444,10 @@ SELECT track_source_id,
                AND m.source_id = playlist_watch_track.source_id
                AND m.track_source_id = playlist_watch_track.track_source_id
                AND lower(m.sync_status) = 'playlist_synced'),
-           (SELECT group_concat(lower(trim(configured.value)), ', ')
-              FROM json_each(CASE
-                  WHEN json_valid(preference.sync_targets_json)
-                       AND json_array_length(preference.sync_targets_json) > 0
-                      THEN preference.sync_targets_json
-                  ELSE json_array(preference.service)
-              END) configured
-             WHERE lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome'))) AS target_service,
+           (SELECT group_concat(cst.target, ', ')
+              FROM playlist_watch_configured_sync_targets cst
+             WHERE cst.source = playlist_watch_track.source
+               AND cst.source_id = playlist_watch_track.source_id)) AS target_service,
        (SELECT group_concat(m.target_playlist_id, ', ')
           FROM playlist_watch_target_membership m
          WHERE m.source = playlist_watch_track.source
@@ -9474,23 +9460,15 @@ SELECT track_source_id,
            AND m.source_id = playlist_watch_track.source_id
            AND m.track_source_id = playlist_watch_track.track_source_id
            AND lower(m.sync_status) = 'playlist_synced') AS target_item_id,
+       -- A track is only 'playlist_synced' once it has been verified on every currently
+       -- configured target for this playlist, not just one of them -- see
+       -- playlist_watch_track_sync_progress (shared with GetPlaylistWatchlistAsync so this
+       -- logic is defined exactly once).
        CASE
          WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
-         WHEN EXISTS (
-             SELECT 1
-             FROM playlist_watch_target_membership m
-             JOIN json_each(CASE
-              WHEN json_valid(preference.sync_targets_json)
-                   AND json_array_length(preference.sync_targets_json) > 0
-                  THEN preference.sync_targets_json
-              ELSE json_array(preference.service)
-              END) configured
-               ON lower(m.target_service) = lower(trim(configured.value))
-             WHERE m.source = playlist_watch_track.source
-               AND m.source_id = playlist_watch_track.source_id
-               AND m.track_source_id = playlist_watch_track.track_source_id
-               AND lower(m.sync_status) = 'playlist_synced'
-               AND lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')) THEN 'playlist_synced'
+         WHEN COALESCE(progress.configured_target_count, 0) > 0
+              AND COALESCE(progress.verified_target_count, 0) >= progress.configured_target_count
+         THEN 'playlist_synced'
          WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
          ELSE status
        END AS sync_status,
@@ -9499,13 +9477,14 @@ SELECT track_source_id,
        verified_at_utc,
        source_position
 FROM playlist_watch_track
-LEFT JOIN playlist_watch_preferences preference
-  ON preference.source = playlist_watch_track.source
- AND preference.source_id = playlist_watch_track.source_id
+LEFT JOIN playlist_watch_track_sync_progress progress
+  ON progress.source = playlist_watch_track.source
+ AND progress.source_id = playlist_watch_track.source_id
+ AND progress.track_source_id = playlist_watch_track.track_source_id
 WHERE playlist_watch_track.source = @source AND playlist_watch_track.source_id = @sourceId
 ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
          source_position,
-         track_source_id;";
+         playlist_watch_track.track_source_id;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);

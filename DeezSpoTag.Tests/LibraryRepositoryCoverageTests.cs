@@ -586,14 +586,18 @@ ORDER BY service;";
         var restartedRepository = new LibraryRepository(
             _configuration,
             NullLogger<LibraryRepository>.Instance);
+        // The playlist's configured sync targets are plex + jellyfin (see the preference
+        // upserted above). Only plex has confirmed membership at this point, so the track must
+        // NOT count as synced yet -- "synced" requires every configured target to confirm, not
+        // just one of them (regression coverage for the any-target undercounting bug).
         var summaryAfterRestart = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
-        Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
+        Assert.Equal(0, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(23, summaryAfterRestart.IncompleteTrackCount);
         var plexOnlyStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var plexOnlyTrack = Assert.Single(plexOnlyStatuses, status => status.TrackSourceId == "dz-song-1");
-        Assert.Equal("playlist_synced", plexOnlyTrack.SyncStatus);
+        Assert.Equal("waiting_for_target", plexOnlyTrack.SyncStatus);
         Assert.Equal("plex", plexOnlyTrack.TargetService);
         Assert.Equal("plex-track-1", plexOnlyTrack.TargetItemId);
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
@@ -602,11 +606,21 @@ ORDER BY service;";
             "jellyfin",
             "jellyfin-playlist-1",
             [new PlaylistWatchTargetMembership("dz-song-1", localTrackId, "jellyfin-track-1")]);
+        // Now both configured targets (plex + jellyfin) have confirmed membership, so the track
+        // counts as fully synced.
         summaryAfterRestart = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
         Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
         Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
+        var fullySyncedStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var fullySyncedTrack = Assert.Single(fullySyncedStatuses, status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("playlist_synced", fullySyncedTrack.SyncStatus);
+        Assert.Equal(
+            new[] { "jellyfin", "plex" },
+            (fullySyncedTrack.TargetService ?? string.Empty)
+                .Split(", ")
+                .OrderBy(value => value, StringComparer.Ordinal));
         Assert.Equal(2, summaryAfterRestart.IgnoredBlockedTrackCount);
         Assert.Equal(3, summaryAfterRestart.ReroutedTrackCount);
         await _repository.UpdatePlaylistWatchTrackVerificationAsync(
@@ -617,12 +631,17 @@ ORDER BY service;";
                 localTrackId,
                 "review",
                 "Identity mismatch."));
+        // ReplacePlaylistWatchTargetMembershipAsync replaces the *entire* membership snapshot for
+        // this (playlist, target) pair -- mirroring how a real sync attempt reports everything it
+        // just verified -- so dz-song-1's existing plex membership must be included here too, or
+        // it would be collaterally wiped and dz-song-1 would incorrectly drop out of sync.
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
             "plex",
             "plex-playlist-1",
             [
+                new PlaylistWatchTargetMembership("dz-song-1", localTrackId, "plex-track-1"),
                 new PlaylistWatchTargetMembership("dz-song-2", localTrackId, "plex-track-2")
             ]);
         var reviewStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");

@@ -469,6 +469,7 @@ CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id, track_source_id, target_service)
 );", cancellationToken);
+        await EnsurePlaylistWatchTargetSyncViewsAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS media_server_track_metadata (
     track_id BIGINT NOT NULL,
@@ -1053,6 +1054,68 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at
     {
         await using var command = new SqliteCommand(createSql, connection);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Single source of truth for "has this playlist watch track been verified on every one of
+    /// its playlist's currently-configured sync targets" -- both GetPlaylistWatchlistAsync (the
+    /// per-playlist synced/total badge) and GetPlaylistWatchTrackStatusesAsync (the per-track
+    /// sync_status used by the playlist detail view) read from these views instead of each
+    /// carrying their own copy of the target-matching logic. Views hold no data, so they are
+    /// dropped and recreated on every startup rather than guarded with IF NOT EXISTS -- that way
+    /// a future change to this logic only has to be made here and takes effect immediately,
+    /// instead of risking the two consumer queries drifting out of sync with each other again.
+    /// </summary>
+    private static async Task EnsurePlaylistWatchTargetSyncViewsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_sync_progress;", cancellationToken);
+        await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_configured_sync_targets;", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE VIEW playlist_watch_configured_sync_targets AS
+SELECT preference.source AS source,
+       preference.source_id AS source_id,
+       lower(trim(configured.value)) AS target
+FROM playlist_watch_preferences preference
+JOIN json_each(CASE
+    WHEN json_valid(preference.sync_targets_json)
+         AND json_array_length(preference.sync_targets_json) > 0
+        THEN preference.sync_targets_json
+    ELSE json_array(preference.service)
+END) configured
+  ON lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome');", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE VIEW playlist_watch_track_sync_progress AS
+SELECT track.source AS source,
+       track.source_id AS source_id,
+       track.track_source_id AS track_source_id,
+       COALESCE(target_counts.configured_target_count, 0) AS configured_target_count,
+       COALESCE(verified_counts.verified_target_count, 0) AS verified_target_count
+FROM playlist_watch_track track
+LEFT JOIN (
+    SELECT source, source_id, COUNT(DISTINCT target) AS configured_target_count
+    FROM playlist_watch_configured_sync_targets
+    GROUP BY source, source_id
+) target_counts
+  ON target_counts.source = track.source
+ AND target_counts.source_id = track.source_id
+LEFT JOIN (
+    SELECT membership.source AS source,
+           membership.source_id AS source_id,
+           membership.track_source_id AS track_source_id,
+           COUNT(DISTINCT lower(membership.target_service)) AS verified_target_count
+    FROM playlist_watch_target_membership membership
+    JOIN playlist_watch_configured_sync_targets configured
+      ON configured.source = membership.source
+     AND configured.source_id = membership.source_id
+     AND configured.target = lower(membership.target_service)
+    WHERE lower(membership.sync_status) = 'playlist_synced'
+    GROUP BY membership.source, membership.source_id, membership.track_source_id
+) verified_counts
+  ON verified_counts.source = track.source
+ AND verified_counts.source_id = track.source_id
+ AND verified_counts.track_source_id = track.track_source_id;", cancellationToken);
     }
 
     private static Task EnsureTrackValueTableAsync(
