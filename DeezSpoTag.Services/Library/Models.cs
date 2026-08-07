@@ -771,6 +771,17 @@ public sealed record WatchlistSourceCircuitStateDto(
     int FailureCount,
     DateTimeOffset UpdatedAt);
 
+// Mirrors WatchlistSourceCircuitStateDto but keyed by target media server (plex/jellyfin/
+// navidrome) instead of source -- so repeated failures against one down/flaky target back off
+// as a single unit instead of every playlist's sync job against it retrying independently.
+public sealed record WatchlistTargetCircuitStateDto(
+    string TargetService,
+    bool IsOpen,
+    DateTimeOffset? OpenUntilUtc,
+    string? Reason,
+    int FailureCount,
+    DateTimeOffset UpdatedAt);
+
 public sealed record PlaylistTrackCandidateCacheDto(
     string Source,
     string SourceId,

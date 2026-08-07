@@ -9,6 +9,19 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
+    // Backoff is 15 * 2^(attempt-1) capped at MaximumRetryDelay (10 min from attempt 7 on), so 10
+    // attempts is roughly 1-1.5h of accumulated retrying -- long enough to ride out a transient
+    // blip (target server restart, brief network issue) but short enough that a structurally
+    // unfixable failure (one track that will never verify, an oversized batch call) stops
+    // consuming a retry slot forever and instead surfaces as "blocked" for manual attention.
+    private const int MaxSyncAttempts = 10;
+    // Mirrors WatchlistRunCoordinator's per-source circuit breaker (SourceCircuitFailureThreshold
+    // / SourceCircuitCooldownSeconds), but keyed by target media server instead of playlist
+    // source: with up to 45 playlists x 3 targets, a single down/flaky target server would
+    // otherwise mean dozens of independent jobs all discovering that and retrying on their own
+    // schedules. A shared circuit lets them all back off together as one unit.
+    private const int TargetCircuitFailureThreshold = 5;
+    private const int TargetCircuitCooldownSeconds = 300;
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -339,6 +352,22 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return;
             }
 
+            var targetCircuit = await repository.GetWatchlistTargetCircuitStateAsync(job.TargetService, cancellationToken);
+            if (IsTargetCircuitOpen(targetCircuit))
+            {
+                // Defer without counting it as an attempt against this job -- the target itself
+                // is the problem, not this specific track/playlist, so it shouldn't burn down
+                // this job's own MaxSyncAttempts budget while the whole target is unavailable.
+                await repository.RetryWatchlistSyncJobAsync(
+                    job.Id,
+                    _leaseOwner,
+                    job.AttemptCount,
+                    targetCircuit!.OpenUntilUtc ?? DateTimeOffset.UtcNow.AddSeconds(TargetCircuitCooldownSeconds),
+                    $"{FormatTargetServiceLabel(job.TargetService)} sync is temporarily paused after repeated failures: {targetCircuit.Reason}",
+                    cancellationToken);
+                return;
+            }
+
             var request = new SyncRequest(
                 job.Id,
                 job.Source,
@@ -353,6 +382,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
+                    await ResetTargetCircuitAsync(repository, job.TargetService, targetCircuit, cancellationToken);
                     var completed = string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase)
                         ? await repository.CompleteWatchlistPlaylistSyncJobAsync(job, _leaseOwner, cancellationToken)
                         : await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
@@ -371,7 +401,27 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
                     return;
             }
+            await RecordTargetCircuitFailureAsync(repository, job.TargetService, targetCircuit, outcome.Message, cancellationToken);
             var attempt = job.AttemptCount + 1;
+            if (attempt >= MaxSyncAttempts)
+            {
+                await repository.BlockWatchlistSyncJobAsync(
+                    job.Id,
+                    _leaseOwner,
+                    $"Gave up after {attempt} attempts: {outcome.Message}",
+                    cancellationToken);
+                _logger.LogWarning(
+                    "Watchlist target sync job {JobId} ({Source}:{PlaylistId} track={TrackId} target={TargetService}) blocked after {Attempt} attempts. Last error: {LastError}",
+                    job.Id,
+                    job.Source,
+                    job.PlaylistId,
+                    job.TrackId,
+                    job.TargetService,
+                    attempt,
+                    outcome.Message);
+                return;
+            }
+
             var retryDelay = TimeSpan.FromSeconds(Math.Min(MaximumRetryDelay.TotalSeconds, 15 * Math.Pow(2, Math.Min(attempt - 1, 6))));
             await repository.RetryWatchlistSyncJobAsync(
                 job.Id,
@@ -387,6 +437,22 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            var unexpectedAttempt = job.AttemptCount + 1;
+            if (unexpectedAttempt >= MaxSyncAttempts)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Watchlist target sync job {JobId} blocked after {Attempt} unexpected failures.",
+                    job.Id,
+                    unexpectedAttempt);
+                await repository.BlockWatchlistSyncJobAsync(
+                    job.Id,
+                    _leaseOwner,
+                    $"Gave up after {unexpectedAttempt} attempts: {ex.Message}",
+                    cancellationToken);
+                return;
+            }
+
             _logger.LogWarning(
                 ex,
                 "Watchlist target sync job {JobId} failed unexpectedly; returning it to durable retry.",
@@ -394,7 +460,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             await repository.RetryWatchlistSyncJobAsync(
                 job.Id,
                 _leaseOwner,
-                job.AttemptCount + 1,
+                unexpectedAttempt,
                 DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
                 ex.Message,
                 cancellationToken);
@@ -727,6 +793,76 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             "navidrome" => "Navidrome",
             _ => target
         };
+
+    private static bool IsTargetCircuitOpen(WatchlistTargetCircuitStateDto? circuitState)
+    {
+        if (circuitState is not { IsOpen: true })
+        {
+            return false;
+        }
+
+        if (!circuitState.OpenUntilUtc.HasValue)
+        {
+            return true;
+        }
+
+        return DateTimeOffset.UtcNow < circuitState.OpenUntilUtc.Value;
+    }
+
+    private async Task RecordTargetCircuitFailureAsync(
+        LibraryRepository repository,
+        string targetService,
+        WatchlistTargetCircuitStateDto? existing,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        var failureCount = Math.Max(0, existing?.FailureCount ?? 0) + 1;
+        var isOpen = failureCount >= TargetCircuitFailureThreshold;
+        var openUntilUtc = isOpen
+            ? DateTimeOffset.UtcNow.AddSeconds(TargetCircuitCooldownSeconds)
+            : existing?.OpenUntilUtc;
+
+        await repository.UpsertWatchlistTargetCircuitStateAsync(
+            new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
+                targetService,
+                isOpen,
+                openUntilUtc,
+                reason,
+                failureCount),
+            cancellationToken);
+
+        if (isOpen && existing?.IsOpen != true && _logger.IsEnabled(LogLevel.Warning))
+        {
+            _logger.LogWarning(
+                "Watchlist target sync circuit opened for {TargetService} after {FailureCount} failures; pausing sync jobs against it for {CooldownSeconds}s. Last error: {LastError}",
+                FormatTargetServiceLabel(targetService),
+                failureCount,
+                TargetCircuitCooldownSeconds,
+                reason);
+        }
+    }
+
+    private static async Task ResetTargetCircuitAsync(
+        LibraryRepository repository,
+        string targetService,
+        WatchlistTargetCircuitStateDto? existing,
+        CancellationToken cancellationToken)
+    {
+        if (existing == null || (existing.FailureCount <= 0 && !existing.IsOpen))
+        {
+            // Already clean -- avoid a write on every single successful sync.
+            return;
+        }
+
+        await repository.UpsertWatchlistTargetCircuitStateAsync(
+            new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
+                targetService,
+                IsOpen: false,
+                OpenUntilUtc: null,
+                Reason: null,
+                FailureCount: 0),
+            cancellationToken);
+    }
 
     private sealed record SyncRequest(
         long JobId,

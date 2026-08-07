@@ -696,6 +696,7 @@ WHERE id=@id;",
         await ExecuteSqlAsync(@"
 INSERT INTO watchlist_scheduler_state(watch_type,active_source) VALUES('playlist','spotify');
 INSERT INTO watchlist_source_circuit_state(watch_type,source,is_open) VALUES('playlist','spotify',1);
+INSERT INTO watchlist_target_circuit_state(target_service,is_open) VALUES('jellyfin',1);
 INSERT INTO artist_watchlist(artist_id,spotify_id,artist_name) VALUES(99,'artist-99','Artist 99');
 INSERT INTO artist_watch_state(artist_id,current_phase) VALUES(99,'reconciling');");
 
@@ -707,8 +708,10 @@ INSERT INTO artist_watch_state(artist_id,current_phase) VALUES(99,'reconciling')
         Assert.Equal(1, cleanup.ClaimsDeleted);
         Assert.Equal(1, cleanup.SchedulerRowsDeleted);
         Assert.Equal(1, cleanup.SourceCircuitsDeleted);
+        Assert.Equal(1, cleanup.TargetCircuitsDeleted);
         Assert.Equal(1, cleanup.PlaylistStatesDeleted);
         Assert.Equal(1, cleanup.ArtistStatesDeleted);
+        Assert.Equal(0, await CountRowsAsync("watchlist_target_circuit_state"));
         Assert.Equal(0, await CountRowsAsync("watchlist_reconciliation_request"));
         Assert.Equal(0, await CountRowsAsync("watchlist_sync_job"));
         Assert.Equal(0, await CountRowsAsync("watchlist_finalization_outbox"));
@@ -721,6 +724,45 @@ INSERT INTO artist_watch_state(artist_id,current_phase) VALUES(99,'reconciling')
         Assert.Single(await _repository.GetPlaylistWatchlistAsync(), item => item.SourceId == "reset-list");
         Assert.NotNull(await _repository.GetPlaylistWatchPreferenceAsync("spotify", "reset-list"));
         Assert.NotNull(await _repository.GetPlaylistTrackCandidateCacheAsync("spotify", "reset-list"));
+    }
+
+    [Fact]
+    public async Task TargetCircuitState_RoundTripsAndIsKeyedByTargetServiceOnly()
+    {
+        Assert.Null(await _repository.GetWatchlistTargetCircuitStateAsync("jellyfin"));
+
+        await _repository.UpsertWatchlistTargetCircuitStateAsync(
+            new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
+                "Jellyfin",
+                IsOpen: true,
+                OpenUntilUtc: DateTimeOffset.UtcNow.AddMinutes(5),
+                Reason: "Failed to clear existing Jellyfin playlist items.",
+                FailureCount: 5));
+
+        var jellyfinState = await _repository.GetWatchlistTargetCircuitStateAsync("JELLYFIN");
+        Assert.NotNull(jellyfinState);
+        Assert.Equal("jellyfin", jellyfinState!.TargetService);
+        Assert.True(jellyfinState.IsOpen);
+        Assert.Equal(5, jellyfinState.FailureCount);
+        Assert.Equal("Failed to clear existing Jellyfin playlist items.", jellyfinState.Reason);
+
+        // A different target service is an independent circuit, unaffected by Jellyfin's state --
+        // this is the whole point: one down target shouldn't imply anything about the others.
+        Assert.Null(await _repository.GetWatchlistTargetCircuitStateAsync("plex"));
+
+        await _repository.UpsertWatchlistTargetCircuitStateAsync(
+            new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
+                "jellyfin",
+                IsOpen: false,
+                OpenUntilUtc: null,
+                Reason: null,
+                FailureCount: 0));
+
+        var resetState = await _repository.GetWatchlistTargetCircuitStateAsync("jellyfin");
+        Assert.NotNull(resetState);
+        Assert.False(resetState!.IsOpen);
+        Assert.Equal(0, resetState.FailureCount);
+        Assert.Null(resetState.Reason);
     }
 
     [Fact]
@@ -923,7 +965,7 @@ WHERE identifier='leased-list';", ("due", DateTimeOffset.UtcNow.AddMinutes(-1).T
         {
             "watchlist_reconciliation_request", "watchlist_sync_job", "watchlist_finalization_outbox",
             "playlist_watch_download_claim", "watchlist_scheduler_state", "watchlist_source_circuit_state",
-            "playlist_watch_state", "artist_watch_state", "artist_watchlist"
+            "watchlist_target_circuit_state", "playlist_watch_state", "artist_watch_state", "artist_watchlist"
         };
         Assert.Contains(table, allowed);
         await using var connection = new SqliteConnection($"Data Source={_dbPath}");

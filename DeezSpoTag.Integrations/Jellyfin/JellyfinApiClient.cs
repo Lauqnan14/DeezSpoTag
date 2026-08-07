@@ -792,24 +792,38 @@ public class JellyfinApiClient
             return false;
         }
 
-        var ids = string.Join(",",
-            entryIds
-                .Where(static value => !string.IsNullOrWhiteSpace(value))
-                .Select(static value => value.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase));
-
-        var query = new StringBuilder();
-        query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
-        query.Append($"?UserId={Uri.EscapeDataString(userId)}");
-        if (!string.IsNullOrWhiteSpace(ids))
+        var normalizedEntryIds = entryIds
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (normalizedEntryIds.Count == 0)
         {
-            query.Append($"&EntryIds={Uri.EscapeDataString(ids)}");
+            return true;
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Delete, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        return response.IsSuccessStatusCode;
+        // Chunk the same way AddPlaylistItemsAsync does -- a single DELETE carrying every entry
+        // ID for a large playlist (300+ tracks) produces a query string long enough that Jellyfin
+        // (or an intermediate proxy) rejects the request outright, which previously made clearing
+        // large playlists fail unconditionally.
+        for (var offset = 0; offset < normalizedEntryIds.Count; offset += PlaylistWriteBatchSize)
+        {
+            var ids = string.Join(",", normalizedEntryIds.Skip(offset).Take(PlaylistWriteBatchSize));
+            var query = new StringBuilder();
+            query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items");
+            query.Append($"?UserId={Uri.EscapeDataString(userId)}");
+            query.Append($"&EntryIds={Uri.EscapeDataString(ids)}");
+
+            using var request = new HttpRequestMessage(HttpMethod.Delete, BuildUrl(serverUrl, query.ToString()));
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public async Task<bool> UpdateItemPrimaryImageFromUrlAsync(

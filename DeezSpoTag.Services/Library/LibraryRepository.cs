@@ -192,6 +192,13 @@ public sealed class LibraryRepository
         string? Fingerprint,
         int FailureCount);
 
+    public sealed record WatchlistTargetCircuitStateUpsertInput(
+        string TargetService,
+        bool IsOpen,
+        DateTimeOffset? OpenUntilUtc,
+        string? Reason,
+        int FailureCount);
+
     public sealed record ArtistWatchPreferenceUpdateInput(
         long ArtistId,
         long? DestinationFolderId,
@@ -8677,6 +8684,83 @@ ON CONFLICT(watch_type, source) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<WatchlistTargetCircuitStateDto?> GetWatchlistTargetCircuitStateAsync(
+        string targetService,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(targetService))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT target_service,
+       is_open,
+       open_until_utc,
+       reason,
+       failure_count,
+       updated_at
+FROM watchlist_target_circuit_state
+WHERE target_service = @targetService
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new WatchlistTargetCircuitStateDto(
+            reader.GetString(0),
+            !await reader.IsDBNullAsync(1, cancellationToken) && reader.GetInt32(1) == 1,
+            await reader.IsDBNullAsync(2, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(2)),
+            await reader.IsDBNullAsync(3, cancellationToken) ? null : reader.GetString(3),
+            await reader.IsDBNullAsync(4, cancellationToken) ? 0 : reader.GetInt32(4),
+            await reader.IsDBNullAsync(5, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(5)));
+    }
+
+    public async Task UpsertWatchlistTargetCircuitStateAsync(
+        WatchlistTargetCircuitStateUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(input.TargetService))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO watchlist_target_circuit_state (
+    target_service,
+    is_open,
+    open_until_utc,
+    reason,
+    failure_count
+)
+VALUES (
+    @targetService,
+    @isOpen,
+    @openUntilUtc,
+    @reason,
+    @failureCount
+)
+ON CONFLICT(target_service) DO UPDATE SET
+    is_open = excluded.is_open,
+    open_until_utc = excluded.open_until_utc,
+    reason = excluded.reason,
+    failure_count = excluded.failure_count,
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("targetService", input.TargetService.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("isOpen", input.IsOpen ? 1 : 0);
+        command.Parameters.AddWithValue("openUntilUtc", input.OpenUntilUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("reason", (object?)input.Reason ?? DBNull.Value);
+        command.Parameters.AddWithValue("failureCount", Math.Max(0, input.FailureCount));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<PlaylistTrackCandidateCacheDto?> GetPlaylistTrackCandidateCacheAsync(
         string source,
         string sourceId,
@@ -11305,7 +11389,8 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         int SchedulerRowsDeleted,
         int SourceCircuitsDeleted,
         int PlaylistStatesDeleted,
-        int ArtistStatesDeleted);
+        int ArtistStatesDeleted,
+        int TargetCircuitsDeleted = 0);
 
     public async Task<WatchlistRuntimeCleanupResult> ClearWatchlistRuntimeAsync(
         CancellationToken cancellationToken = default)
@@ -11348,6 +11433,11 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
             transaction,
             "DELETE FROM watchlist_source_circuit_state;",
             cancellationToken);
+        var targetCircuitsDeleted = await ExecuteRuntimeCleanupAsync(
+            connection,
+            transaction,
+            "DELETE FROM watchlist_target_circuit_state;",
+            cancellationToken);
         var playlistStatesDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
             transaction,
@@ -11368,7 +11458,8 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
             schedulerRowsDeleted,
             sourceCircuitsDeleted,
             playlistStatesDeleted,
-            artistStatesDeleted);
+            artistStatesDeleted,
+            targetCircuitsDeleted);
     }
 
     private static async Task<int> ExecuteRuntimeCleanupAsync(

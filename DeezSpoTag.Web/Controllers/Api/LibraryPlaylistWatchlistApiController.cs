@@ -628,12 +628,32 @@ public partial class WatchlistApiController : ControllerBase
                 blockRules,
                 request.AtmosFolderId),
             cancellationToken);
-        if (saved != null && _watchlistCoordinator != null)
+        if (saved != null)
         {
-            await _watchlistCoordinator.TriggerPlaylistOnceAsync(
-                normalizedSource,
-                request.SourceId,
-                cancellationToken);
+            // Create the destination playlist container (name/description/artwork) on every
+            // newly-configured target immediately, instead of waiting for the first batch of
+            // tracks to download and the periodic reconciliation pass to happen to run.
+            var item = await FindWatchlistItemAsync(normalizedSource, request.SourceId, cancellationToken);
+            if (item != null)
+            {
+                try
+                {
+                    await _playlistSyncService.EnsureTargetPlaylistContainersAsync(item, saved, cancellationToken);
+                }
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                {
+                    // Best-effort -- the normal reconciliation/target-sync pipeline will retry
+                    // container creation on its own schedule if this attempt fails.
+                }
+            }
+
+            if (_watchlistCoordinator != null)
+            {
+                await _watchlistCoordinator.TriggerPlaylistOnceAsync(
+                    normalizedSource,
+                    request.SourceId,
+                    cancellationToken);
+            }
         }
         return saved;
     }
@@ -718,6 +738,7 @@ public partial class WatchlistApiController : ControllerBase
             claimsCleared = cleanup.ClaimsDeleted,
             schedulerRowsCleared = cleanup.SchedulerRowsDeleted,
             sourceCircuitsCleared = cleanup.SourceCircuitsDeleted,
+            targetCircuitsCleared = cleanup.TargetCircuitsDeleted,
             playlistStatesCleared = cleanup.PlaylistStatesDeleted,
             artistStatesCleared = cleanup.ArtistStatesDeleted,
             triggered = result.TriggerStatus is not WatchlistTriggerStatus.Disabled,

@@ -67,6 +67,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private readonly string _reconciliationLeaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
+    // Tracks when the source-refresh pass last actually ran, independent of *why* the coordinator
+    // woke up. GetNextWakeAsync picks whichever of "next hourly refresh" or "next due target-sync
+    // job" is sooner and returns only ONE wake reason -- if target-sync work keeps waking the
+    // coordinator sooner than the hourly mark (e.g. a large sync backlog), source refresh must
+    // still fire once it's actually overdue rather than being perpetually out-raced. See
+    // shouldRunSourceRefresh in RunOneWatchCycleAsync.
+    private DateTimeOffset _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
     private int _artistRoundRobinIndex;
     private readonly object _runtimeHealthGate = new();
     private readonly object _activeCycleGate = new();
@@ -131,7 +138,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var settingsService = scope.ServiceProvider.GetRequiredService<DeezSpoTagSettingsService>();
-        var settings = settingsService.LoadSettings();
+        return GetWatchInterval(settingsService.LoadSettings());
+    }
+
+    private static TimeSpan GetWatchInterval(DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
+    {
         var seconds = settings.WatchPollIntervalSeconds;
         if (seconds < 1)
         {
@@ -323,6 +334,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _artistRoundRobinIndex = 0;
             _lastDestinationRepairUtc = DateTimeOffset.MinValue;
             _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
+            _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
             UpdateRuntimeHealth(_ => new WatchlistRuntimeHealth(false, false, null, DateTimeOffset.UtcNow, null, 0));
 
             var triggerStatus = WatchlistTriggerStatus.Disabled;
@@ -436,17 +448,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                         || cleanup.ClaimsDeleted > 0
                         || cleanup.SchedulerRowsDeleted > 0
                         || cleanup.SourceCircuitsDeleted > 0
+                        || cleanup.TargetCircuitsDeleted > 0
                         || cleanup.PlaylistStatesDeleted > 0
                         || cleanup.ArtistStatesDeleted > 0))
                 {
                     _logger.LogInformation(
-                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, finalizationOutbox={FinalizationOutbox}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, playlistStates={PlaylistStates}, artistStates={ArtistStates}.",
+                        "Watchlist disabled cleanup applied: reconciliationRequests={ReconciliationRequests}, syncJobs={SyncJobs}, finalizationOutbox={FinalizationOutbox}, claims={Claims}, schedulerRows={SchedulerRows}, sourceCircuits={SourceCircuits}, targetCircuits={TargetCircuits}, playlistStates={PlaylistStates}, artistStates={ArtistStates}.",
                         cleanup.ReconciliationRequestsDeleted,
                         cleanup.SyncJobsDeleted,
                         cleanup.FinalizationOutboxDeleted,
                         cleanup.ClaimsDeleted,
                         cleanup.SchedulerRowsDeleted,
                         cleanup.SourceCircuitsDeleted,
+                        cleanup.TargetCircuitsDeleted,
                         cleanup.PlaylistStatesDeleted,
                         cleanup.ArtistStatesDeleted);
                 }
@@ -476,8 +490,18 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
             UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
 
+            // wakeReason.HasFlag(ScheduledRefresh) and pendingRequestCount > 0 are explicit
+            // signals (an actual scheduled tick, or someone requested a check) and always honored.
+            // sourceRefreshOverdue is an additional, independent guarantee: it's derived from a
+            // persisted "last completed" timestamp compared against the poll interval directly,
+            // so if GetNextWakeAsync's due-time race keeps returning TargetSync (busy sync
+            // backlog) instead of ScheduledRefresh, source discovery still can't be starved
+            // indefinitely -- this is a floor under the wake-reason race, not a replacement for it.
+            var watchInterval = GetWatchInterval(settings);
+            var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
             var shouldRunSourceRefresh =
                 wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
+                || sourceRefreshOverdue
                 || pendingRequestCount > 0;
             if (shouldRunSourceRefresh)
             {
@@ -500,6 +524,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                             queueAdmission,
                             reconciliationRequests,
                             stoppingToken);
+                        _lastSourceRefreshCompletedUtc = DateTimeOffset.UtcNow;
                     }
                     finally
                     {

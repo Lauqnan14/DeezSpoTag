@@ -1270,6 +1270,153 @@ public sealed class PlaylistSyncService
         return CombinePlaylistSyncTargetResults(results);
     }
 
+    /// <summary>
+    /// Creates (or verifies) the destination playlist container -- name, description, artwork --
+    /// on every one of the playlist's configured sync targets, independent of whether any track
+    /// has downloaded yet. Intended to be called synchronously right after a user saves monitored-
+    /// playlist settings, so the playlist appears on the target server(s) immediately instead of
+    /// only after the first batch of tracks finishes downloading and the normal membership-sync
+    /// pass happens to run (which previously would not create anything at all until at least one
+    /// track was locally available -- see SyncToPlexAsync/SyncToJellyfinAsync/SyncToNavidromeAsync's
+    /// "zero matched tracks" gate).
+    ///
+    /// Jellyfin and Navidrome playlists can be created with zero items, so this is genuinely
+    /// instant for those two. Plex's classic playlist-creation endpoint requires a seed item, so a
+    /// truly empty Plex playlist can't be created here -- that case is reported as deferred rather
+    /// than attempted, and Plex creation still happens via the normal membership-sync pass as soon
+    /// as the first track is available.
+    /// </summary>
+    public async Task<IReadOnlyList<PlaylistProvisioningOutcome>> EnsureTargetPlaylistContainersAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        var services = await ResolveTargetServicesAsync(preference, cancellationToken);
+        if (services.Count == 0)
+        {
+            return [];
+        }
+
+        var outcomes = new List<PlaylistProvisioningOutcome>(services.Count);
+        foreach (var service in services)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            outcomes.Add(service switch
+            {
+                JellyfinService => await EnsureJellyfinPlaylistContainerAsync(playlist, preference, cancellationToken),
+                NavidromeService => await EnsureNavidromePlaylistContainerAsync(playlist, preference, cancellationToken),
+                PlexService => new PlaylistProvisioningOutcome(
+                    PlexService,
+                    Created: false,
+                    PlaylistId: ResolveExistingTargetPlaylistId(preference, PlexService),
+                    Message: "Plex requires at least one track to create a playlist; it will be created automatically once the first track downloads."),
+                _ => new PlaylistProvisioningOutcome(service, false, null, "Unsupported playlist sync target.")
+            });
+        }
+
+        return outcomes;
+    }
+
+    private async Task<PlaylistProvisioningOutcome> EnsureJellyfinPlaylistContainerAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        var (jellyfin, configurationError) = await TryLoadConfiguredJellyfinAsync();
+        if (jellyfin == null)
+        {
+            return new PlaylistProvisioningOutcome(JellyfinService, false, null, configurationError?.Message ?? JellyfinNotConfiguredMessage);
+        }
+
+        var storedPlaylistId = ResolveExistingTargetPlaylistId(preference, JellyfinService);
+        var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(jellyfin, playlist, storedPlaylistId, cancellationToken);
+        var created = false;
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            playlistId = await _jellyfinApiClient.CreatePlaylistAsync(
+                jellyfin.Url,
+                jellyfin.ApiKey,
+                jellyfin.UserId,
+                ResolvePlaylistName(playlist),
+                itemIds: [],
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(playlistId))
+            {
+                return new PlaylistProvisioningOutcome(JellyfinService, false, null, "Failed to create Jellyfin playlist.");
+            }
+
+            created = true;
+        }
+
+        await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
+        var metadataSynced = await SyncJellyfinPlaylistMetadataAsync(jellyfin, playlist, playlistId, cancellationToken);
+        var artworkSynced = await SyncJellyfinPlaylistArtworkAsync(jellyfin, playlist, preference, playlistId, cancellationToken);
+        return new PlaylistProvisioningOutcome(
+            JellyfinService,
+            created,
+            playlistId,
+            BuildProvisioningMessage("Jellyfin", created, metadataSynced, artworkSynced));
+    }
+
+    private async Task<PlaylistProvisioningOutcome> EnsureNavidromePlaylistContainerAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        CancellationToken cancellationToken)
+    {
+        var (navidrome, configurationError) = await TryLoadConfiguredNavidromeAsync();
+        if (navidrome == null)
+        {
+            return new PlaylistProvisioningOutcome(NavidromeService, false, null, configurationError?.Message ?? NavidromeNotConfiguredMessage);
+        }
+
+        var storedPlaylistId = ResolveExistingTargetPlaylistId(preference, NavidromeService);
+        var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(navidrome, playlist, storedPlaylistId, cancellationToken);
+        var created = false;
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
+                navidrome.Url,
+                navidrome.Username,
+                navidrome.Password,
+                ResolvePlaylistName(playlist),
+                songIds: [],
+                existingPlaylistId: null,
+                appendMissingOnly: false,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(playlistId))
+            {
+                return new PlaylistProvisioningOutcome(NavidromeService, false, null, "Failed to create Navidrome playlist.");
+            }
+
+            created = true;
+        }
+
+        await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
+        var metadataSynced = await SyncNavidromePlaylistMetadataAsync(navidrome, playlist, playlistId, cancellationToken);
+        var artworkSynced = await SyncNavidromePlaylistArtworkAsync(navidrome, playlist, preference, playlistId, cancellationToken);
+        return new PlaylistProvisioningOutcome(
+            NavidromeService,
+            created,
+            playlistId,
+            BuildProvisioningMessage("Navidrome", created, metadataSynced, artworkSynced));
+    }
+
+    internal static string BuildProvisioningMessage(string targetLabel, bool created, bool metadataSynced, bool artworkSynced)
+    {
+        var message = created ? $"{targetLabel} playlist created." : $"{targetLabel} playlist already exists.";
+        if (!metadataSynced)
+        {
+            message = string.Concat(message, " Name/description did not verify.");
+        }
+
+        if (!artworkSynced)
+        {
+            message = string.Concat(message, " Artwork was not applied (no cached cover yet, or the update failed).");
+        }
+
+        return message;
+    }
+
     private async Task<PlaylistSyncResult> SyncPlaylistToTargetAsync(
         string service,
         PlaylistWatchlistDto playlist,
@@ -1853,18 +2000,25 @@ public sealed class PlaylistSyncService
 
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
-        if (!IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count, upsert.Complete))
+        var membershipVerified = IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count, upsert.Complete);
+        var acceptedWithExceptions = !membershipVerified
+            && upsert.Complete
+            && ShouldAcceptMembershipWithExceptions(matchSummary, verifiedMemberships.Count);
+        if (!membershipVerified)
         {
             await InvalidateConfirmedMissingPlexIdentitiesAsync(
                 plex,
                 matchSummary.Memberships,
                 verifiedMemberships,
                 cancellationToken);
-            return BuildPartialResult(
-                BuildSyncMessage("Plex playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
-                playlistId,
-                verifiedSummary,
-                verifiedMemberships.Count);
+            if (!acceptedWithExceptions)
+            {
+                return BuildPartialResult(
+                    BuildSyncMessage("Plex playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
+                    playlistId,
+                    verifiedSummary,
+                    verifiedMemberships.Count);
+            }
         }
 
         await TryApplyOrScheduleMembershipArtworkAsync(
@@ -1886,13 +2040,18 @@ public sealed class PlaylistSyncService
             await RequestTargetLibraryRefreshAsync(PlexService, cancellationToken);
         }
 
-        return BuildSuccessResult(
-            AppendDeferredTargetIdentityMessage(
-                BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
-                matchSummary),
-            playlistId,
-            verifiedSummary,
-            verifiedMemberships.Count);
+        var successMessage = AppendDeferredTargetIdentityMessage(
+            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
+            matchSummary);
+        if (acceptedWithExceptions)
+        {
+            successMessage = AppendAcceptedMembershipExceptionsMessage(
+                successMessage,
+                matchSummary.Memberships.Count,
+                verifiedMemberships.Count);
+        }
+
+        return BuildSuccessResult(successMessage, playlistId, verifiedSummary, verifiedMemberships.Count);
     }
 
     private async Task<PlaylistSyncResult> SyncToJellyfinAsync(
@@ -2015,7 +2174,10 @@ public sealed class PlaylistSyncService
         var verifiedSummary = WithVerifiedMembershipCounts(
             matchSummary with { TargetIds = itemIds },
             verifiedMemberships.Count);
-        if (!IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count))
+        var membershipVerified = IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count);
+        var acceptedWithExceptions = !membershipVerified
+            && ShouldAcceptMembershipWithExceptions(matchSummary, verifiedMemberships.Count);
+        if (!membershipVerified && !acceptedWithExceptions)
         {
             return BuildPartialResult(
                 BuildSyncMessage("Jellyfin playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
@@ -2046,6 +2208,14 @@ public sealed class PlaylistSyncService
         var successMessage = AppendDeferredTargetIdentityMessage(
             BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
             matchSummary);
+        if (acceptedWithExceptions)
+        {
+            successMessage = AppendAcceptedMembershipExceptionsMessage(
+                successMessage,
+                matchSummary.Memberships.Count,
+                verifiedMemberships.Count);
+        }
+
         var fullSyncIssues = BuildJellyfinFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
         {
@@ -2135,7 +2305,10 @@ public sealed class PlaylistSyncService
             navidromeMatches,
             cancellationToken);
         var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
-        if (!IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count))
+        var membershipVerified = IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count);
+        var acceptedWithExceptions = !membershipVerified
+            && ShouldAcceptMembershipWithExceptions(matchSummary, verifiedMemberships.Count);
+        if (!membershipVerified && !acceptedWithExceptions)
         {
             return BuildPartialResult(
                 BuildSyncMessage("Navidrome playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
@@ -2167,6 +2340,14 @@ public sealed class PlaylistSyncService
         var successMessage = AppendDeferredTargetIdentityMessage(
             BuildSyncMessage($"Playlist synced to Navidrome ({modeLabel}).", verifiedSummary),
             matchSummary);
+        if (acceptedWithExceptions)
+        {
+            successMessage = AppendAcceptedMembershipExceptionsMessage(
+                successMessage,
+                matchSummary.Memberships.Count,
+                verifiedMemberships.Count);
+        }
+
         var fullSyncIssues = BuildNavidromeFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
         {
@@ -2970,6 +3151,44 @@ public sealed class PlaylistSyncService
             verifiedMembershipCount,
             writeComplete);
 
+    // A playlist that is missing a small, likely-permanent handful of tracks (a title the target
+    // server will never confirm, a stale rating key) should not retry the entire membership sync
+    // forever over that gap -- it should be accepted as synced with a known exception. Tolerates
+    // whichever is looser: a small absolute count, or a high coverage ratio, so this doesn't mask
+    // a genuinely broken sync (e.g. only half a playlist matched).
+    internal const int MaxAcceptableMembershipExceptions = 2;
+    internal const double MinAcceptableMembershipCoverageRatio = 0.98;
+
+    internal static bool ShouldAcceptMembershipWithExceptions(
+        int intendedMembershipCount,
+        int verifiedMembershipCount)
+    {
+        if (intendedMembershipCount <= 0)
+        {
+            return false;
+        }
+
+        var missing = intendedMembershipCount - verifiedMembershipCount;
+        if (missing <= 0)
+        {
+            // Fully (or over-) verified -- IsIntendedMembershipVerified already covers this case.
+            return false;
+        }
+
+        if (missing <= MaxAcceptableMembershipExceptions)
+        {
+            return true;
+        }
+
+        return verifiedMembershipCount
+            >= (int)Math.Ceiling(intendedMembershipCount * MinAcceptableMembershipCoverageRatio);
+    }
+
+    private static bool ShouldAcceptMembershipWithExceptions(
+        SyncMatchSummary matchSummary,
+        int verifiedMembershipCount)
+        => ShouldAcceptMembershipWithExceptions(matchSummary.Memberships.Count, verifiedMembershipCount);
+
     internal static bool HasUnresolvedTargetIdentities(int sourceTracks, int intendedMembershipCount)
         => intendedMembershipCount < sourceTracks;
 
@@ -3000,6 +3219,24 @@ public sealed class PlaylistSyncService
             " ",
             unresolved.ToString(CultureInfo.InvariantCulture),
             " track(s) still lack target-server identities and were deferred for library scan/retry.");
+    }
+
+    private static string AppendAcceptedMembershipExceptionsMessage(
+        string message,
+        int intendedMembershipCount,
+        int verifiedMembershipCount)
+    {
+        var missing = Math.Max(0, intendedMembershipCount - verifiedMembershipCount);
+        if (missing <= 0)
+        {
+            return message;
+        }
+
+        return string.Concat(
+            message,
+            " Accepted as synced with ",
+            missing.ToString(CultureInfo.InvariantCulture),
+            " track(s) that did not verify and were left as a known exception rather than retried indefinitely.");
     }
 
     private async Task<bool> SyncPlexPlaylistArtworkAsync(
@@ -4648,3 +4885,11 @@ public sealed record PlaylistSyncResult(
     public static PlaylistSyncResult Failed(string message)
         => new(false, message);
 }
+
+/// <summary>Result of provisioning (or verifying) one target's playlist container -- see
+/// PlaylistSyncService.EnsureTargetPlaylistContainersAsync.</summary>
+public sealed record PlaylistProvisioningOutcome(
+    string TargetService,
+    bool Created,
+    string? PlaylistId,
+    string Message);
