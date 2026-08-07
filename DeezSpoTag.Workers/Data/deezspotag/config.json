@@ -186,7 +186,7 @@
   "appleMusic": {
     "mediaUserToken": "",
     "authorizationToken": "",
-    "storefront": "ke",
+    "storefront": "us",
     "preferAppleCovers": true,
     "preferredAudioProfile": "alac",
     "getM3u8Mode": "hires",
