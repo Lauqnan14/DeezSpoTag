@@ -312,67 +312,7 @@ public sealed class DownloadDedupeService
     }
 
     private static int? InferExistingFileLocalQualityRank(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var tagFile = global::TagLib.File.Create(path);
-            var properties = tagFile.Properties;
-            var bitsPerSample = properties.BitsPerSample;
-            var sampleRate = properties.AudioSampleRate;
-            var bitrate = properties.AudioBitrate;
-            var codecText = string.Join(' ', properties.Codecs.Select(codec => codec.Description));
-            var extensionRank = InferLocalQualityRankFromExtension(path);
-            return InferLocalQualityRankFromAudioProperties(bitsPerSample, sampleRate, bitrate, codecText)
-                ?? extensionRank;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return InferLocalQualityRankFromExtension(path);
-        }
-    }
-
-    private static int? InferLocalQualityRankFromAudioProperties(
-        int bitsPerSample,
-        int sampleRate,
-        int bitrate,
-        string codecText)
-    {
-        if (bitsPerSample >= 24 || sampleRate > 48000)
-        {
-            return 4;
-        }
-
-        if (bitsPerSample >= 16
-            || codecText.Contains("flac", StringComparison.OrdinalIgnoreCase)
-            || codecText.Contains("alac", StringComparison.OrdinalIgnoreCase)
-            || codecText.Contains("lossless", StringComparison.OrdinalIgnoreCase)
-            || codecText.Contains("pcm", StringComparison.OrdinalIgnoreCase))
-        {
-            return 3;
-        }
-
-        if (bitrate >= 256)
-        {
-            return 2;
-        }
-
-        return bitrate > 0 ? 1 : null;
-    }
-
-    private static int? InferLocalQualityRankFromExtension(string path)
-    {
-        return Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".flac" or ".alac" or ".wav" or ".aiff" or ".aif" => 3,
-            ".mp3" or ".m4a" or ".aac" or ".ogg" or ".opus" => 2,
-            _ => null
-        };
-    }
+        => AudioFileQualityRanker.EstimateRankForFile(path);
 
     private async Task<LibraryRepository.LocalTrackIdentityResult> ResolveLocalLibraryIdentityAsync(
         DownloadDedupeRequest request,

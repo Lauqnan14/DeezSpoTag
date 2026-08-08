@@ -144,22 +144,6 @@ public class DuplicateCleanerService
         ".flac", ".wav", ".aiff", ".aif", ".alac", ".m4a", ".m4b", ".aac", ".mp3", ".wma", ".ogg", ".opus"
     };
 
-    private static readonly Dictionary<string, int> QualityRanks = new(StringComparer.OrdinalIgnoreCase)
-    {
-        [".flac"] = 1,
-        [".wav"] = 1,
-        [".aiff"] = 1,
-        [".aif"] = 1,
-        [".alac"] = 1,
-        [".opus"] = 2,
-        [".ogg"] = 2,
-        [".m4a"] = 3,
-        [".m4b"] = 3,
-        [".aac"] = 3,
-        [".mp3"] = 4,
-        [".wma"] = 4
-    };
-
     private static readonly HashSet<string> WeakIdentityTokens = new(StringComparer.Ordinal)
     {
         string.Empty,
@@ -445,6 +429,7 @@ public class DuplicateCleanerService
         int? trackNumber = null;
         int? discNumber = null;
         int? durationMs = null;
+        int? qualityRank = null;
 
         try
         {
@@ -464,6 +449,7 @@ public class DuplicateCleanerService
             durationMs = tagFile.Properties.Duration.TotalMilliseconds > 0
                 ? (int)Math.Round(tagFile.Properties.Duration.TotalMilliseconds)
                 : null;
+            qualityRank = AudioFileQualityRanker.EstimateRank(AudioFileQualityRanker.ReadFacts(tagFile, path));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -489,7 +475,7 @@ public class DuplicateCleanerService
             BaseName: Normalize(baseName),
             Extension: extension,
             FileSize: fileInfo.Exists ? fileInfo.Length : 0,
-            QualityRank: ResolveQualityRank(extension),
+            QualityRank: qualityRank ?? AudioFileQualityRanker.EstimateRankFromExtension(path) ?? 0,
             Isrc: isrc,
             Title: title,
             Album: album,
@@ -802,7 +788,7 @@ public class DuplicateCleanerService
     private static int PickBest(IReadOnlyList<int> cluster, IReadOnlyList<DuplicateCandidate> candidates)
     {
         return cluster
-            .OrderBy(index => candidates[index].QualityRank)
+            .OrderByDescending(index => candidates[index].QualityRank)
             .ThenByDescending(index => candidates[index].FileSize)
             .ThenByDescending(index => ComputeMetadataScore(candidates[index]))
             .First();
@@ -811,7 +797,7 @@ public class DuplicateCleanerService
     private static int PickLowestQuality(IReadOnlyList<int> cluster, IReadOnlyList<DuplicateCandidate> candidates)
     {
         return cluster
-            .OrderByDescending(index => candidates[index].QualityRank)
+            .OrderBy(index => candidates[index].QualityRank)
             .ThenBy(index => candidates[index].FileSize)
             .ThenBy(index => ComputeMetadataScore(candidates[index]))
             .First();
@@ -862,9 +848,6 @@ public class DuplicateCleanerService
     {
         return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
     }
-
-    private static int ResolveQualityRank(string extension)
-        => QualityRanks.TryGetValue(extension, out var rank) ? rank : int.MaxValue;
 
     private static int ComputeMetadataScore(DuplicateCandidate candidate)
     {

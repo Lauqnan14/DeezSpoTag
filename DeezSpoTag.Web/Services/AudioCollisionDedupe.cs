@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Services.Library;
 using TagLib;
 using IOFile = System.IO.File;
 
@@ -76,6 +77,13 @@ internal static class AudioCollisionDedupe
             return false;
         }
 
+        var existingRank = existingIdentity.QualityRank;
+        var incomingRank = incomingIdentity.QualityRank;
+        if (existingRank != incomingRank && (existingRank.HasValue || incomingRank.HasValue))
+        {
+            return (incomingRank ?? 0) > (existingRank ?? 0);
+        }
+
         return ComputeMetadataScore(incomingIdentity) > ComputeMetadataScore(existingIdentity);
     }
 
@@ -110,7 +118,8 @@ internal static class AudioCollisionDedupe
                 tag.Disc > 0 ? (int)tag.Disc : null,
                 file.Properties.Duration.TotalMilliseconds > 0
                     ? (int)Math.Round(file.Properties.Duration.TotalMilliseconds)
-                    : null);
+                    : null,
+                AudioFileQualityRanker.EstimateRank(AudioFileQualityRanker.ReadFacts(file, path)));
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -388,5 +397,6 @@ internal static class AudioCollisionDedupe
         IReadOnlyList<string> AlbumArtists,
         int? TrackNumber,
         int? DiscNumber,
-        int? DurationMs);
+        int? DurationMs,
+        int? QualityRank = null);
 }
