@@ -438,7 +438,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
 
         Assert.Contains("autotag-enhancement-feature", viewSource, StringComparison.Ordinal);
         Assert.Contains("autotag-current-batch", viewSource, StringComparison.Ordinal);
-        Assert.Contains("runAllEnhancementWorkflows", autoTagViewSource, StringComparison.Ordinal);
+        Assert.Contains("runSelectedEnhancementSections", autoTagViewSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementGroupId", serviceSource, StringComparison.Ordinal);
         Assert.Contains("private const int EnhancementBatchSize = 40", workflowSource, StringComparison.Ordinal);
         Assert.Contains("GetEnabledEnhancementFeatures", orchestrationSource, StringComparison.Ordinal);

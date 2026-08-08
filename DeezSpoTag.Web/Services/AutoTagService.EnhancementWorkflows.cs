@@ -66,7 +66,11 @@ public partial class AutoTagService
         }
 
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
-        var scopedFolders = ResolveEnhancementJobFolders(job, enhancementRoot, enabledFolders);
+        var scopedFolders = ResolveEnhancementJobFolders(
+            job,
+            enhancementRoot,
+            enabledFolders,
+            AutoTagLiterals.EnhancementFeatureQualityChecks);
         if (scopedFolders.Count == 0)
         {
             throw new InvalidOperationException("Enhancement could not resolve an enabled music folder scope.");
@@ -95,15 +99,18 @@ public partial class AutoTagService
         return (string.IsNullOrWhiteSpace(job.EnhancementFeature)
                 || string.Equals(job.EnhancementFeature, AutoTagLiterals.EnhancementFeatureQualityChecks, StringComparison.OrdinalIgnoreCase))
             && enhancementRoot["qualityChecks"] is JsonObject qualityChecks
+            && ReadBool(qualityChecks, EnabledField) == true
             && ReadBool(qualityChecks, "flagMissingTags") == true;
     }
 
     private static List<FolderDto> ResolveEnhancementJobFolders(
         AutoTagJob job,
         JsonObject enhancementRoot,
-        IReadOnlyList<FolderDto> enabledFolders)
+        IReadOnlyList<FolderDto> enabledFolders,
+        string? featureOverride = null)
     {
-        JsonObject? section = job.EnhancementFeature switch
+        var feature = string.IsNullOrWhiteSpace(featureOverride) ? job.EnhancementFeature : featureOverride;
+        JsonObject? section = feature switch
         {
             AutoTagLiterals.EnhancementFeatureGapFill => enhancementRoot["gapFilling"] as JsonObject,
             AutoTagLiterals.EnhancementFeatureFolderUniformity => enhancementRoot["folderUniformity"] as JsonObject,
@@ -575,7 +582,7 @@ public partial class AutoTagService
 
     private static string BuildFolderUniformityBatchSummary(AutoTagLibraryOrganizer.AutoTagOrganizerReport report)
     {
-        return $"moved folders {report.MovedFolders}; moved files {report.MovedFiles}; "
+        return $"moved files {report.MovedFiles}; "
             + $"moved sidecars {report.MovedSidecars}; replaced duplicates {report.ReplacedDuplicates}; "
             + $"quarantined duplicates {report.QuarantinedDuplicates}; conflicts {report.SkippedConflicts}";
     }

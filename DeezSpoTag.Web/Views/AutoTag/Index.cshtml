@@ -870,31 +870,6 @@
                 </div>
             </div>
 
-            <div class="download-section enhancement-settings-panel folder-settings-panel mb-4">
-                <section class="playlist-settings-section">
-                    <div class="playlist-settings-section-title">Enhancement Run Workflows</div>
-                    <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="enableFolderUniformityWorkflow" />
-                            <label for="enableFolderUniformityWorkflow">Folder Uniformity</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="enableQualityChecksWorkflow" />
-                            <label for="enableQualityChecksWorkflow">Quality Checks</label>
-                        </div>
-                        <div class="checkbox-group">
-                            <input type="checkbox" id="enableCoverMaintenanceWorkflow" />
-                            <label for="enableCoverMaintenanceWorkflow">Library Cover Maintenance</label>
-                        </div>
-                    </div>
-                    <span class="helper">Choose which maintenance workflows run automatically when an enhancement run starts.</span>
-                    <div class="enhancement-action-row">
-                        <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runAllEnhancementWorkflows">Run Enabled Workflows</button>
-                    </div>
-                    <span class="helper" id="enhancementRunAllStatus"></span>
-                </section>
-            </div>
-
             <!-- Gap Filling -->
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
@@ -976,6 +951,39 @@
                             <div class="checkbox-group">
                                 <input type="checkbox" id="removeEmptyFolders" checked />
                                 <label for="removeEmptyFolders">Remove empty folders after reorganization</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="mergeNoAudioArtistFolders" checked />
+                                <label for="mergeNoAudioArtistFolders">
+                                    Merge leftover artist folders that contain no audio
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Folds artist-name variant folders with no music left in them into the matching artist folder."
+                                          aria-label="Folds artist-name variant folders with no music left in them into the matching artist folder.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="reconcileOrphanArtistFolders" checked />
+                                <label for="reconcileOrphanArtistFolders">
+                                    Reconcile orphaned combined-artist folders
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Repairs leftover &quot;Artist A &amp; Artist B&quot; folders after primary-artist reorganization."
+                                          aria-label="Repairs leftover combined-artist folders after primary-artist reorganization.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="quarantineNoAudioDirectories" />
+                                <label for="quarantineNoAudioDirectories">
+                                    Quarantine folders that contain files but no audio
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Moves every subfolder holding files but no audio into the duplicates folder. This includes scans, booklets and artwork-only folders, so it is off by default."
+                                          aria-label="Moves every subfolder holding files but no audio into the duplicates folder. This includes scans, booklets and artwork-only folders, so it is off by default.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="resolveSameTrackQualityConflicts" checked />
@@ -1266,6 +1274,72 @@
                 </div>
             </div>
 
+
+            <div class="download-section enhancement-settings-panel folder-settings-panel mb-4">
+                <section class="playlist-settings-section">
+                    <div class="playlist-settings-section-title">
+                        Enhancement Run Workflows
+                        <span class="autotag-tooltip-icon ms-1"
+                              title="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below."
+                              aria-label="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below.">
+                            <i class="fas fa-question-circle"></i>
+                        </span>
+                    </div>
+                    <div class="download-grid download-grid-4 enhancement-checkbox-grid">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="runScope-tag-gap-fill" />
+                            <label for="runScope-tag-gap-fill">
+                                Gap Filling
+                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-tag-gap-fill"
+                                      title="Nothing is enabled or configured in this section, so it will not run."
+                                      aria-label="Nothing is enabled or configured in this section, so it will not run.">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableFolderUniformityWorkflow" />
+                            <label for="enableFolderUniformityWorkflow">
+                                Folder Uniformity
+                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-folder-uniformity"
+                                      title="Nothing is enabled or configured in this section, so it will not run."
+                                      aria-label="Nothing is enabled or configured in this section, so it will not run.">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableQualityChecksWorkflow" />
+                            <label for="enableQualityChecksWorkflow">
+                                Quality Checks
+                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-quality-checks"
+                                      title="Nothing is enabled or configured in this section, so it will not run."
+                                      aria-label="Nothing is enabled or configured in this section, so it will not run.">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="enableCoverMaintenanceWorkflow" />
+                            <label for="enableCoverMaintenanceWorkflow">
+                                Library Cover Maintenance
+                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-cover-maintenance"
+                                      title="Nothing is enabled or configured in this section, so it will not run."
+                                      aria-label="Nothing is enabled or configured in this section, so it will not run.">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="enhancement-action-row">
+                        <div class="enhancement-action-buttons">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runSelectedEnhancementSections">Run Enabled Workflows</button>
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runSelectedEnhancementSectionsRecent">Run on Recent Downloads</button>
+                        </div>
+                    </div>
+                    <span class="helper" id="enhancementRunAllStatus"></span>
+                </section>
+            </div>
         </div>
 
         <!-- ==================== TAB 6: PLATFORMS ==================== -->

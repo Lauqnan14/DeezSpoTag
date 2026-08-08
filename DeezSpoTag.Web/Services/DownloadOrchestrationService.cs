@@ -2375,42 +2375,32 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             var enhancementGroupId = Guid.NewGuid().ToString("N");
-            foreach (var feature in enabledFeatures)
+            var featureSummary = string.Join(", ", enabledFeatures);
+            cancellationToken.ThrowIfCancellationRequested();
+            var featureConfig = BuildEnhancementFeatureConfig(enhancementConfig, enabledFeatures, target.FolderId);
+            enhancementJob = await _autoTagService.StartJob(
+                target.RootPath,
+                featureConfig,
+                new AutoTagService.StartJobOptions(
+                    Trigger: AutoTagLiterals.ScheduleTrigger,
+                    ProfileId: enhancementProfile.Id,
+                    ProfileName: enhancementProfile.Name,
+                    RunIntent: AutoTagLiterals.RunIntentEnhancementOnly,
+                    EnhancementFeature: enabledFeatures.Count == 1 ? enabledFeatures[0] : null,
+                    EnhancementGroupId: enhancementGroupId));
+            if (enhancementJob == null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var featureConfig = BuildEnhancementFeatureConfig(enhancementConfig, feature, target.FolderId);
-                enhancementJob = await _autoTagService.StartJob(
-                    target.RootPath,
-                    featureConfig,
-                    new AutoTagService.StartJobOptions(
-                        Trigger: AutoTagLiterals.ScheduleTrigger,
-                        ProfileId: enhancementProfile.Id,
-                        ProfileName: enhancementProfile.Name,
-                        RunIntent: AutoTagLiterals.RunIntentEnhancementOnly,
-                        EnhancementFeature: feature,
-                        EnhancementGroupId: enhancementGroupId));
-                if (enhancementJob == null)
-                {
-                    _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                        DateTimeOffset.UtcNow,
-                        "info",
-                        $"Automation: enhancement section {feature} skipped for {target.RootPath} because downloads are active."));
-                    return new EnhancementTargetRunResult(attemptedJobs.Count > 0, false);
-                }
-
-                attemptedJobs.Add(enhancementJob);
-                MarkEnhancementStageStarted(enhancementJob);
-                await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
-                MarkEnhancementStageFinished();
-
-                if ((string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(enhancementJob.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(enhancementJob.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase))
-                    && _enhancementPauseRequested)
-                {
-                    break;
-                }
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: enhancement sections {featureSummary} skipped for {target.RootPath} because downloads are active."));
+                return new EnhancementTargetRunResult(attemptedJobs.Count > 0, false);
             }
+
+            attemptedJobs.Add(enhancementJob);
+            MarkEnhancementStageStarted(enhancementJob);
+            await WaitForJobCompletionAsync(enhancementJob, cancellationToken);
+            MarkEnhancementStageFinished();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2929,7 +2919,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private static string BuildEnhancementFeatureConfig(
         string configJson,
-        string selectedFeature,
+        IReadOnlyCollection<string> selectedFeatures,
         string folderId)
     {
         if (JsonNode.Parse(configJson) is not JsonObject root)
@@ -2937,30 +2927,31 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             throw new InvalidOperationException("Enhancement profile config is invalid.");
         }
 
+        var selected = new HashSet<string>(selectedFeatures, StringComparer.OrdinalIgnoreCase);
         var enhancementRoot = root[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
         root[AutoTagLiterals.EnhancementStage] = enhancementRoot;
         SetEnhancementSectionState(
             enhancementRoot,
             "folderUniformity",
-            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureFolderUniformity, StringComparison.OrdinalIgnoreCase),
+            selected.Contains(AutoTagLiterals.EnhancementFeatureFolderUniformity),
             folderId);
         SetEnhancementSectionState(
             enhancementRoot,
             "coverMaintenance",
-            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureCoverMaintenance, StringComparison.OrdinalIgnoreCase),
+            selected.Contains(AutoTagLiterals.EnhancementFeatureCoverMaintenance),
             folderId);
         SetEnhancementSectionState(
             enhancementRoot,
             "qualityChecks",
-            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureQualityChecks, StringComparison.OrdinalIgnoreCase),
+            selected.Contains(AutoTagLiterals.EnhancementFeatureQualityChecks),
             folderId);
         SetEnhancementSectionState(
             enhancementRoot,
             "gapFilling",
-            string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureGapFill, StringComparison.OrdinalIgnoreCase),
+            selected.Contains(AutoTagLiterals.EnhancementFeatureGapFill),
             folderId);
 
-        if (!string.Equals(selectedFeature, AutoTagLiterals.EnhancementFeatureGapFill, StringComparison.OrdinalIgnoreCase))
+        if (!selected.Contains(AutoTagLiterals.EnhancementFeatureGapFill))
         {
             root["gapFillTags"] = new JsonArray();
         }

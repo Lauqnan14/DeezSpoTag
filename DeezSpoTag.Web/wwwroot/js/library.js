@@ -3399,111 +3399,6 @@ globalThis.applyAutoTagProfileLibrarySettings = async function applyAutoTagProfi
     return applyAutoTagProfileLibrarySettingsSnapshot(snapshot, options);
 };
 
-async function startFolderEnhancement(folder, profileReference) {
-    const rootPath = (folder?.rootPath || '').trim();
-    if (!rootPath) {
-        throw new Error('Folder path is missing.');
-    }
-
-    const desiredQuality = String(folder?.desiredQuality || '').trim().toUpperCase();
-    if (desiredQuality === 'VIDEO' || desiredQuality === 'PODCAST') {
-        throw new Error('Podcasts and videos do not use AutoTag enhancement profiles.');
-    }
-
-    const resolvedProfileReference = (profileReference || '').trim();
-    if (!resolvedProfileReference) {
-        throw new Error('Select an AutoTag profile for this folder first.');
-    }
-
-    const profiles = await fetchJson('/api/tagging/profiles');
-    const list = Array.isArray(profiles) ? profiles : [];
-    const profile = list.find((item) => {
-        const name = (item?.name || '').trim();
-        const id = (item?.id || '').trim();
-        return normalizeProfileReference(id) === normalizeProfileReference(resolvedProfileReference)
-            || normalizeProfileReference(name) === normalizeProfileReference(resolvedProfileReference);
-    });
-
-    if (!profile) {
-        throw new Error(`Profile "${resolvedProfileReference}" was not found.`);
-    }
-
-    const resolvedProfileName = (profile?.name || resolvedProfileReference).trim();
-    const response = await fetchJson('/api/autotag/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            path: rootPath,
-            profileId: String(profile?.id || resolvedProfileReference || '').trim() || null,
-            runIntent: 'enhancement_only'
-        })
-    });
-
-    const jobId = response?.jobId ? String(response.jobId) : '';
-    const status = String(response?.status || '').trim().toLowerCase();
-    if (!jobId || status !== 'running') {
-        const statusSuffix = status ? ` (${status})` : '';
-        throw new Error(response?.error || `AutoTag did not start${statusSuffix}.`);
-    }
-
-    return { jobId, profileName: resolvedProfileName };
-}
-
-function setFolderEnhancementButtonState(button, state) {
-    if (!button) {
-        return;
-    }
-
-    const icon = button.querySelector('i');
-    if (!button.dataset.originalTitle) {
-        button.dataset.originalTitle = button.getAttribute('title') || 'Run enhancement now';
-    }
-
-    if (state === 'running') {
-        button.disabled = true;
-        button.setAttribute('title', 'Enhancement running');
-        if (icon) {
-            icon.className = 'fas fa-spinner fa-spin';
-        }
-        return;
-    }
-
-    button.disabled = false;
-    button.setAttribute('title', button.dataset.originalTitle || 'Run enhancement now');
-    if (icon) {
-        icon.className = 'fas fa-magic';
-    }
-}
-
-async function monitorFolderEnhancementJob(button, folder, started) {
-    const jobId = String(started?.jobId || '').trim();
-    if (!jobId) {
-        setFolderEnhancementButtonState(button, 'idle');
-        return;
-    }
-
-    setFolderEnhancementButtonState(button, 'running');
-    try {
-        while (true) {
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-            const job = await fetchJson(`/api/autotag/jobs/${encodeURIComponent(jobId)}?includeLogs=false&includeStatusHistory=false`);
-            const status = String(job?.status || '').trim().toLowerCase();
-            if (status === 'running' || status === 'queued' || status === 'tagging') {
-                continue;
-            }
-
-            if (status && status !== 'completed') {
-                showToast(`Enhancement ${status} for ${folder.displayName}: ${job?.error || 'check AutoTag history for details'}`, true);
-            }
-            break;
-        }
-    } catch (error) {
-        showToast(`Enhancement status check failed: ${error?.message || error}`, true);
-    } finally {
-        setFolderEnhancementButtonState(button, 'idle');
-    }
-}
-
 async function loadFolders() {
     const includeDisabled = !!document.getElementById('foldersContainer');
     const folders = await fetchJson(includeDisabled
@@ -9820,30 +9715,6 @@ function bindFolderDurationSelection(wrapper, folder, folderIdKey, getCurrentPro
     });
 }
 
-function bindFolderEnhanceAction(enhanceButton, wrapper, folder) {
-    if (!enhanceButton) {
-        return;
-    }
-    if (getFolderStoredContentMode(folder) !== 'music') {
-        enhanceButton.disabled = true;
-        enhanceButton.title = 'Podcasts and videos do not use AutoTag enhancement profiles.';
-        return;
-    }
-    enhanceButton.addEventListener('click', async () => {
-        const profileSelectRef = wrapper.querySelector('[data-folder-profile]');
-        const selectedProfile = profileSelectRef ? profileSelectRef.value : '';
-        setFolderEnhancementButtonState(enhanceButton, 'running');
-        try {
-            const started = await startFolderEnhancement(folder, selectedProfile);
-            showToast(`Enhancement started for ${folder.displayName} (${started.profileName}). Job ${started.jobId}.`);
-            await monitorFolderEnhancementJob(enhanceButton, folder, started);
-        } catch (error) {
-            showToast(`Failed to start enhancement: ${error?.message || error}`, true);
-            setFolderEnhancementButtonState(enhanceButton, 'idle');
-        }
-    });
-}
-
 function getFolderDestinationModeValue(destinationFlags) {
     if (destinationFlags.isAtmosDestination) {
         return 'dest:atmos';
@@ -10017,10 +9888,6 @@ function buildFolderRowMarkup(folder, viewModel, conversionModeValue) {
                     </label>
                 </span>
                 <span class="actions">
-                    <button class="action-btn action-btn-sm folder-action" data-enhance title="${viewModel.supportsAutoTagEnhancement ? 'Run enhancement now' : 'Podcasts and videos do not use AutoTag enhancement profiles.'}" ${viewModel.supportsAutoTagEnhancement && viewModel.currentLibraryEnabled && viewModel.currentAutoTagEnabled ? '' : 'disabled'}>
-                        <i class="fas fa-magic" aria-hidden="true"></i>
-                        <span class="visually-hidden">Enhance</span>
-                    </button>
                     <button class="action-btn action-btn-sm folder-action" data-edit title="Edit folder">
                         <i class="fas fa-pen" aria-hidden="true"></i>
                         <span class="visually-hidden">Edit</span>
@@ -10220,7 +10087,6 @@ function renderFolders() {
 
         bindFolderCombinedToggle(wrapper, folder, viewModel.canEnableAutoTag);
         const aliasContainer = wrapper.querySelector('.alias-container');
-        const enhanceButton = wrapper.querySelector('[data-enhance]');
         wrapper.querySelector('[data-edit]').addEventListener('click', () => updateFolder(folder.id));
         wrapper.querySelector('[data-delete]').addEventListener('click', () => deleteFolder(folder.id));
         wrapper.querySelector('[data-aliases]').addEventListener('click', () => toggleAliases(folder.id, aliasContainer));
@@ -10614,7 +10480,6 @@ function renderFolders() {
             currentSchedule
         );
         bindFolderDurationSelection(wrapper, folder, folderIdKey, () => currentProfile);
-        bindFolderEnhanceAction(enhanceButton, wrapper, folder);
 
         container.appendChild(wrapper);
     });

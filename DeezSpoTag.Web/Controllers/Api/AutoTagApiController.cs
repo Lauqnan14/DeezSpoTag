@@ -106,11 +106,15 @@ public class AutoTagJobsController : ControllerBase
         }
 
         var selectedFeatures = NormalizeEnhancementFeatures(request.Features);
-        if (selectedFeatures.Count != 1)
+        if (selectedFeatures.Count < 1)
         {
-            return BadRequest("Select exactly one enhancement section per job.");
+            return BadRequest("Select at least one enhancement section.");
         }
         var isManualEnrichment = selectedFeatures.Contains(AutoTagLiterals.EnhancementFeatureManualEnrichment);
+        if (isManualEnrichment && selectedFeatures.Count > 1)
+        {
+            return BadRequest("Manual enrichment must run as its own job.");
+        }
 
         var folders = await AutoTagFolderScopeHelper.ResolveLibraryFoldersAsync(
             _libraryRepository,
@@ -201,7 +205,7 @@ public class AutoTagJobsController : ControllerBase
                 ProfileName: selectedProfile.Name,
                 RunIntent: runIntent,
                 FolderStructureOverride: selectedProfile.FolderStructure,
-                EnhancementFeature: selectedFeatures.SingleOrDefault(),
+                EnhancementFeature: selectedFeatures.Count == 1 ? selectedFeatures.Single() : null,
                 EnhancementGroupId: request.GroupId));
         return CreateStartJobResponse(job);
     }

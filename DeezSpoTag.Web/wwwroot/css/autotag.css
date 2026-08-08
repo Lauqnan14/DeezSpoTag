@@ -320,6 +320,18 @@
     white-space: nowrap;
 }
 
+.enhancement-action-buttons {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.enhancement-action-buttons .enhancement-action-btn {
+    margin-left: 0;
+}
+
 .autotag-coming-soon {
     border: 1px dashed var(--border-secondary);
     background: rgba(255, 255, 255, 0.02);
@@ -1957,6 +1969,10 @@ body.autotag-col-resizing * {
     display: inline-flex;
     align-items: center;
     cursor: help;
+}
+
+.autotag-tooltip-warning {
+    color: var(--warning, #f0ad4e);
 }
 
 .platforms-list {

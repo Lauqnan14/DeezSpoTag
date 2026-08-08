@@ -31,30 +31,41 @@ public sealed class ManualEnhancementStartContractTests
     }
 
     [Fact]
-    public void LibraryManualEnhancementClient_RequiresRunningStatusFromStartResponse()
+    public void EnhancementRunClient_FailsWhenTheStartResponseIsNotOk()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library.js"));
-        var startFunction = ExtractFunction(source, "async function startFolderEnhancement");
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var startFunction = ExtractFunction(source, "async function startCentralEnhancementFeature");
 
-        Assert.Contains("status !== 'running'", startFunction, StringComparison.Ordinal);
-        Assert.Contains("response?.error", startFunction, StringComparison.Ordinal);
-        Assert.DoesNotContain("gapFillTags", startFunction, StringComparison.Ordinal);
+        Assert.Contains("if (!response.ok)", startFunction, StringComparison.Ordinal);
+        Assert.Contains("payload?.error", startFunction, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void LibraryManualEnhancementClient_KeepsButtonInRunningStateUntilJobStops()
+    public void EnhancementRunClient_PollsUntilTheJobStopsAndReleasesTheButton()
     {
         var repoRoot = FindRepoRoot();
-        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library.js"));
-        var monitorFunction = ExtractFunction(source, "async function monitorFolderEnhancementJob");
-        var bindFunction = ExtractFunction(source, "function bindFolderEnhanceAction");
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var pollFunction = ExtractFunction(source, "async function pollCentralEnhancementJob");
+        var runFunction = ExtractFunction(source, "async function runEnhancementSections");
 
-        Assert.Contains("setFolderEnhancementButtonState(button, 'running')", monitorFunction, StringComparison.Ordinal);
-        Assert.Contains("/api/autotag/jobs/", monitorFunction, StringComparison.Ordinal);
-        Assert.Contains("status === 'running'", monitorFunction, StringComparison.Ordinal);
-        Assert.Contains("setFolderEnhancementButtonState(button, 'idle')", monitorFunction, StringComparison.Ordinal);
-        Assert.Contains("await monitorFolderEnhancementJob(enhanceButton, folder, started)", bindFunction, StringComparison.Ordinal);
+        Assert.Contains("/api/autotag/jobs/", pollFunction, StringComparison.Ordinal);
+        Assert.Contains("\"queued\", \"running\", \"tagging\"", pollFunction, StringComparison.Ordinal);
+        Assert.Contains("button.disabled = true;", runFunction, StringComparison.Ordinal);
+        Assert.Contains("finally", runFunction, StringComparison.Ordinal);
+        Assert.Contains("button.disabled = false;", runFunction, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementRunClient_DoesNotWaitOnASingleWorkflowWhenSeveralSectionsRun()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var startFunction = ExtractFunction(source, "async function startCentralEnhancementFeature");
+        var pollFunction = ExtractFunction(source, "async function pollCentralEnhancementJob");
+
+        Assert.Contains("features.length === 1 ? features[0] : null", startFunction, StringComparison.Ordinal);
+        Assert.Contains("if (!expectedName && ![\"queued\", \"running\", \"tagging\"].includes(status))", pollFunction, StringComparison.Ordinal);
     }
 
     [Fact]
