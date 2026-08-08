@@ -24,6 +24,9 @@ public sealed class AutoTagOrganizerOptions
     public bool MoveMisplacedFiles { get; set; } = true;
     public bool RenameFilesToTemplate { get; set; } = true;
     public bool RemoveEmptyFolders { get; set; } = true;
+    public bool MergeNoAudioArtistFolders { get; set; } = true;
+    public bool ReconcileOrphanArtistFolders { get; set; } = true;
+    public bool QuarantineNoAudioDirectories { get; set; }
     public bool MergeIntoExistingDestinationFolders { get; set; } = true;
     public bool ResolveSameTrackQualityConflicts { get; set; } = true;
     public bool KeepBothOnUnresolvedConflicts { get; set; } = true;
