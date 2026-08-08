@@ -22,6 +22,10 @@ public sealed class ShazamRecognitionService : IDisposable
     private static readonly TimeSpan RuntimeBootstrapCooldown = TimeSpan.FromMinutes(3);
     private static readonly int[] AudioOnlySignatureRetryWindowsSeconds = [10, 18];
     private static readonly TimeSpan RecognizerProcessTimeout = TimeSpan.FromSeconds(15);
+    // Leaves room for interpreter startup and for the script to print its error JSON
+    // before the process timeout above kills it.
+    private const int RecognizerScriptTimeoutSeconds = 12;
+    private const int RecognizerScriptMaxRetries = 3;
     private const string ToolsDirectory = "Tools";
     private const string ShazamPortDirectory = "shazam_port";
     private static readonly string[] BashExecutableCandidates =
@@ -39,8 +43,8 @@ public sealed class ShazamRecognitionService : IDisposable
     private readonly ILogger<ShazamRecognitionService> _logger;
     private readonly SemaphoreSlim _recognizerGate = new(2, 2);
     private readonly ConcurrentDictionary<int, Process> _activeRecognizerProcesses = new();
-    private readonly object _runtimeProbeGate = new();
-    private RecognizerRuntimeProbe? _runtimeProbe;
+    private readonly SemaphoreSlim _runtimeProbeGate = new(1, 1);
+    private volatile RecognizerRuntimeProbe? _runtimeProbe;
     private DateTimeOffset _runtimeProbeCheckedAtUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastBootstrapAttemptUtc = DateTimeOffset.MinValue;
     private string? _lastProbeErrorLogged;
@@ -56,32 +60,57 @@ public sealed class ShazamRecognitionService : IDisposable
         _logger = logger;
     }
 
-    public bool IsAvailable => GetRuntimeProbe().IsAvailable;
+    // An unprobed runtime reads as available on purpose. Probing spawns processes and can
+    // trigger a dependency bootstrap, so a user request must never be what pays for it; a
+    // genuinely broken runtime still surfaces a precise error from the recognizer run.
+    private static readonly RecognizerRuntimeProbe UnknownProbe = new(true, null);
 
-    public string? AvailabilityError => GetRuntimeProbe().Error;
+    public bool IsAvailable => (_runtimeProbe ?? UnknownProbe).IsAvailable;
 
-    private RecognizerRuntimeProbe GetRuntimeProbe(bool forceRefresh = false)
+    public string? AvailabilityError => (_runtimeProbe ?? UnknownProbe).Error;
+
+    /// <summary>
+    /// True when the cached probe is missing or past its time to live. Driven by the
+    /// background probe worker, never by a request.
+    /// </summary>
+    public bool IsRuntimeProbeStale(DateTimeOffset nowUtc)
     {
-        lock (_runtimeProbeGate)
+        var probe = _runtimeProbe;
+        if (probe == null)
+        {
+            return true;
+        }
+
+        var ttl = probe.IsAvailable
+            ? RuntimeProbeSuccessCacheTtl
+            : RuntimeProbeFailureRetryTtl;
+        return nowUtc - _runtimeProbeCheckedAtUtc >= ttl;
+    }
+
+    /// <summary>
+    /// Re-probes the recognizer runtime, bootstrapping dependencies if the script allows it.
+    /// Intended to be called only from the background probe worker.
+    /// </summary>
+    public async Task RefreshRuntimeProbeAsync(CancellationToken cancellationToken)
+    {
+        // Skip rather than queue: a probe already running produces the same answer.
+        if (!await _runtimeProbeGate.WaitAsync(0, cancellationToken))
+        {
+            return;
+        }
+
+        try
         {
             var now = DateTimeOffset.UtcNow;
-            if (!forceRefresh && _runtimeProbe != null)
-            {
-                var ttl = _runtimeProbe.IsAvailable
-                    ? RuntimeProbeSuccessCacheTtl
-                    : RuntimeProbeFailureRetryTtl;
-                if (now - _runtimeProbeCheckedAtUtc < ttl)
-                {
-                    return _runtimeProbe;
-                }
-            }
-
             var previous = _runtimeProbe;
-            var refreshed = ProbeRecognizerRuntime(now);
+            var refreshed = await ProbeRecognizerRuntimeAsync(now, cancellationToken);
             _runtimeProbe = refreshed;
             _runtimeProbeCheckedAtUtc = now;
             LogRuntimeProbeTransition(previous, refreshed);
-            return refreshed;
+        }
+        finally
+        {
+            _runtimeProbeGate.Release();
         }
     }
 
@@ -180,6 +209,27 @@ public sealed class ShazamRecognitionService : IDisposable
         {
             Outcome = ShazamRecognitionOutcome.NoMatch
         };
+    }
+
+    /// <summary>
+    /// Single-window audio-only recognition for the interactive live-capture path.
+    /// Async throughout so a request thread is never parked waiting on the recognizer
+    /// subprocess while holding one of the two recognizer gate slots.
+    /// </summary>
+    public async Task<ShazamRecognitionAttempt> RecognizeAudioOnlyAsync(
+        string filePath,
+        int signatureWindowSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var invalidInputAttempt = BuildInvalidInputAttempt(filePath);
+        if (invalidInputAttempt != null)
+        {
+            return invalidInputAttempt;
+        }
+
+        return await RecognizeAudioOnlyWithDetailsAsync(filePath, signatureWindowSeconds, cancellationToken);
     }
 
     private async Task<ShazamRecognitionAttempt> RecognizeAudioOnlyWithDetailsAsync(
@@ -650,8 +700,11 @@ public sealed class ShazamRecognitionService : IDisposable
         CancellationToken cancellationToken)
     {
         var scriptPath = GetRecognizerScriptPath();
-        var runtimeProbe = GetRuntimeProbe();
-        if (!runtimeProbe.IsAvailable)
+
+        // Only a probe that positively failed short-circuits. An absent probe means the
+        // background worker has not run yet, and blocking a capture on it would reintroduce
+        // exactly the request-path stall this avoids.
+        if (_runtimeProbe is { IsAvailable: false } runtimeProbe)
         {
             return new PortedRecognizerExecution
             {
@@ -779,6 +832,7 @@ public sealed class ShazamRecognitionService : IDisposable
         }
         _activeRecognizerProcesses.Clear();
         _recognizerGate.Dispose();
+        _runtimeProbeGate.Dispose();
     }
 
     private ProcessStartInfo CreateRecognizerProcessStartInfo(
@@ -803,6 +857,15 @@ public sealed class ShazamRecognitionService : IDisposable
             startInfo.ArgumentList.Add("--signature-seconds");
             startInfo.ArgumentList.Add(Math.Clamp(signatureWindowSeconds.Value, 3, 20).ToString());
         }
+
+        // Give the script a deadline strictly inside RecognizerProcessTimeout so it can
+        // report a clean timeout itself. Without this it kept its own 25s default, which
+        // the 15s kill always beat, turning every slow lookup into "recognizer failed"
+        // instead of an honest no-match.
+        startInfo.ArgumentList.Add("--timeout");
+        startInfo.ArgumentList.Add(RecognizerScriptTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--max-retries");
+        startInfo.ArgumentList.Add(RecognizerScriptMaxRetries.ToString(CultureInfo.InvariantCulture));
         startInfo.Environment["PYTHONUNBUFFERED"] = "1";
         return startInfo;
     }
@@ -826,7 +889,9 @@ public sealed class ShazamRecognitionService : IDisposable
         }
     }
 
-    private RecognizerRuntimeProbe ProbeRecognizerRuntime(DateTimeOffset nowUtc)
+    private async Task<RecognizerRuntimeProbe> ProbeRecognizerRuntimeAsync(
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
     {
         var scriptPath = GetRecognizerScriptPath();
         if (!File.Exists(scriptPath))
@@ -834,7 +899,8 @@ public sealed class ShazamRecognitionService : IDisposable
             return new RecognizerRuntimeProbe(false, $"Shazam recognizer script not found at '{scriptPath}'.");
         }
 
-        if (TryProbeRecognizerRuntime(out var probe))
+        var probe = await TryProbeRecognizerRuntimeAsync(cancellationToken);
+        if (probe.IsAvailable)
         {
             return probe;
         }
@@ -844,7 +910,8 @@ public sealed class ShazamRecognitionService : IDisposable
             return probe;
         }
 
-        if (!TryBootstrapShazamRuntime(out var bootstrapError))
+        var bootstrapError = await TryBootstrapShazamRuntimeAsync(cancellationToken);
+        if (bootstrapError != null)
         {
             return new RecognizerRuntimeProbe(
                 false,
@@ -854,7 +921,8 @@ public sealed class ShazamRecognitionService : IDisposable
                     "Modern Shazam runtime dependencies are unavailable."));
         }
 
-        if (TryProbeRecognizerRuntime(out var postBootstrapProbe))
+        var postBootstrapProbe = await TryProbeRecognizerRuntimeAsync(cancellationToken);
+        if (postBootstrapProbe.IsAvailable)
         {
             return postBootstrapProbe;
         }
@@ -867,28 +935,31 @@ public sealed class ShazamRecognitionService : IDisposable
                 "Modern Shazam runtime dependencies are unavailable."));
     }
 
-    private bool TryProbeRecognizerRuntime(out RecognizerRuntimeProbe probe)
+    private async Task<RecognizerRuntimeProbe> TryProbeRecognizerRuntimeAsync(CancellationToken cancellationToken)
     {
         var pythonExecutable = ResolvePythonExecutable();
-        if (!CanRunProcess(pythonExecutable, "--version", out var pythonError))
+        var pythonError = await RunProbeProcessAsync(pythonExecutable, "--version", cancellationToken: cancellationToken);
+        if (pythonError != null)
         {
-            probe = new RecognizerRuntimeProbe(
+            return new RecognizerRuntimeProbe(
                 false,
                 FirstNonEmpty(pythonError, $"Failed to start Shazam recognizer with '{pythonExecutable}'."));
-            return false;
         }
 
         var runtimeImportCheckArgs = "-c \"import shazamio; import shazamio_core; from aiohttp_retry import ExponentialRetry; from shazamio import HTTPClient, SearchParams, Shazam\"";
-        if (!CanRunProcess(pythonExecutable, runtimeImportCheckArgs, out var runtimeImportError, useShellArgumentParsing: true))
+        var runtimeImportError = await RunProbeProcessAsync(
+            pythonExecutable,
+            runtimeImportCheckArgs,
+            useShellArgumentParsing: true,
+            cancellationToken: cancellationToken);
+        if (runtimeImportError != null)
         {
-            probe = new RecognizerRuntimeProbe(
+            return new RecognizerRuntimeProbe(
                 false,
                 FirstNonEmpty(runtimeImportError, "Modern Shazam runtime dependencies are unavailable."));
-            return false;
         }
 
-        probe = new RecognizerRuntimeProbe(true, null);
-        return true;
+        return new RecognizerRuntimeProbe(true, null);
     }
 
     private bool ShouldAttemptRuntimeBootstrap(DateTimeOffset nowUtc)
@@ -902,28 +973,28 @@ public sealed class ShazamRecognitionService : IDisposable
         return File.Exists(setupScriptPath);
     }
 
-    private bool TryBootstrapShazamRuntime(out string? error)
+    /// <summary>
+    /// Runs the dependency bootstrap. Returns null on success, otherwise the failure reason.
+    /// </summary>
+    private async Task<string?> TryBootstrapShazamRuntimeAsync(CancellationToken cancellationToken)
     {
         _lastBootstrapAttemptUtc = DateTimeOffset.UtcNow;
         var setupScriptPath = GetRuntimeSetupScriptPath();
         if (!File.Exists(setupScriptPath))
         {
-            error = $"Shazam runtime bootstrap script not found at '{setupScriptPath}'.";
-            return false;
+            return $"Shazam runtime bootstrap script not found at '{setupScriptPath}'.";
         }
 
         if (OperatingSystem.IsWindows())
         {
-            error = "Automatic Shazam runtime bootstrap is only supported on Unix-like hosts.";
-            return false;
+            return "Automatic Shazam runtime bootstrap is only supported on Unix-like hosts.";
         }
 
         var bootstrapPython = ResolveBootstrapPythonExecutable();
         var bashExecutable = ResolveBashExecutable();
         if (string.IsNullOrWhiteSpace(bashExecutable))
         {
-            error = "Unable to locate bash executable in expected system paths.";
-            return false;
+            return "Unable to locate bash executable in expected system paths.";
         }
         var startInfo = new ProcessStartInfo
         {
@@ -945,37 +1016,45 @@ public sealed class ShazamRecognitionService : IDisposable
         {
             using var process = new Process { StartInfo = startInfo };
             process.Start();
-            if (!process.WaitForExit(BootstrapTimeoutMs))
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-                {
-                    // best effort
-                    error = "Timed out while bootstrapping Shazam runtime dependencies.";
-                    return false;
-                }
 
-                error = "Timed out while bootstrapping Shazam runtime dependencies.";
-                return false;
+            // pip writes far more than a pipe buffer holds. Draining both streams before
+            // waiting is what stops the child from blocking on a full pipe and never exiting.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(BootstrapTimeoutMs);
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                TryTerminateRecognizerProcess(process);
+                return "Timed out while bootstrapping Shazam runtime dependencies.";
+            }
+            catch (OperationCanceledException)
+            {
+                TryTerminateRecognizerProcess(process);
+                throw;
             }
 
-            var stdout = process.StandardOutput.ReadToEnd().Trim();
-            var stderr = process.StandardError.ReadToEnd().Trim();
+            var stdout = (await stdoutTask).Trim();
+            var stderr = (await stderrTask).Trim();
             if (process.ExitCode != 0)
             {
-                error = FirstNonEmpty(
+                return FirstNonEmpty(
                     stderr,
                     stdout,
                     $"Shazam runtime bootstrap exited with code {process.ExitCode}.");
-                return false;
             }
 
             _logger.LogInformation("Shazam runtime bootstrap completed successfully.");
-            error = null;
-            return true;
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -984,8 +1063,7 @@ public sealed class ShazamRecognitionService : IDisposable
                 _logger.LogDebug(ex, "Failed to execute Shazam runtime bootstrap script.");
             }
 
-            error = $"Failed to execute Shazam runtime bootstrap script. {ex.Message}";
-            return false;
+            return $"Failed to execute Shazam runtime bootstrap script. {ex.Message}";
         }
     }
 
@@ -1017,7 +1095,14 @@ public sealed class ShazamRecognitionService : IDisposable
         return "python3";
     }
 
-    private bool CanRunProcess(string fileName, string arguments, out string? error, bool useShellArgumentParsing = false)
+    /// <summary>
+    /// Runs a probe command. Returns null when it exited cleanly, otherwise the reason.
+    /// </summary>
+    private async Task<string?> RunProbeProcessAsync(
+        string fileName,
+        string arguments,
+        bool useShellArgumentParsing = false,
+        CancellationToken cancellationToken = default)
     {
         try
         {
@@ -1040,33 +1125,42 @@ public sealed class ShazamRecognitionService : IDisposable
             }
 
             process.Start();
-            if (!process.WaitForExit(ProbeProcessTimeoutMs))
-            {
-                try
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-                {
-                    // best effort
-                    error = $"Command '{fileName} {arguments}' timed out.";
-                    return false;
-                }
 
-                error = $"Command '{fileName} {arguments}' timed out.";
-                return false;
+            // Drain before waiting so a chatty probe cannot deadlock on a full pipe.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(ProbeProcessTimeoutMs);
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
             }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                TryTerminateRecognizerProcess(process);
+                return $"Command '{fileName} {arguments}' timed out.";
+            }
+            catch (OperationCanceledException)
+            {
+                TryTerminateRecognizerProcess(process);
+                throw;
+            }
+
+            await stdoutTask;
+            var stderr = (await stderrTask).Trim();
             if (process.ExitCode == 0)
             {
-                error = null;
-                return true;
+                return null;
             }
 
-            var stderr = process.StandardError.ReadToEnd().Trim();
-            error = string.IsNullOrWhiteSpace(stderr)
+            return string.IsNullOrWhiteSpace(stderr)
                 ? $"Command '{fileName} {arguments}' exited with code {process.ExitCode}."
                 : stderr;
-            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
@@ -1074,8 +1168,7 @@ public sealed class ShazamRecognitionService : IDisposable
             {
                 _logger.LogDebug(ex, "Failed probing Shazam recognizer dependency {FileName} {Arguments}.", fileName, arguments);
             }
-            error = ex.Message;
-            return false;
+            return ex.Message;
         }
     }
 

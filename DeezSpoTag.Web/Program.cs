@@ -1312,6 +1312,16 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.ShazamRecognitionService>();
         services.AddHttpClient<DeezSpoTag.Web.Services.ShazamDiscoveryService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.ShazamEnrichmentQueueService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.ShazamEnrichmentQueueService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Shazam live-capture result enrichment after HTTP readiness.");
+        services.AddSingleton<DeezSpoTag.Web.Services.ShazamRecognizerProbeHostedService>();
+        AddDeferredHostedService<DeezSpoTag.Web.Services.ShazamRecognizerProbeHostedService>(
+            services,
+            StartupWorkerCategory.Deferred,
+            "Shazam recognizer runtime availability probe after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.MusicBrainzPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.ShazamPlatform>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.IAutoTagPlatform, DeezSpoTag.Web.Services.AutoTag.BandcampPlatform>();

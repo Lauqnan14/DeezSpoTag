@@ -33,8 +33,10 @@ if [[ ! -x "${venv_dir}/bin/pip" ]]; then
   "${venv_python}" -m ensurepip --upgrade
 fi
 
-"${venv_python}" -m pip install --no-cache-dir --upgrade pip
-"${venv_python}" -m pip install --no-cache-dir -r "${requirements_file}"
+# --quiet keeps the output small: this script is driven by the host with both pipes
+# redirected, and pip's default progress output is enough to matter there.
+"${venv_python}" -m pip install --quiet --no-cache-dir --upgrade pip
+"${venv_python}" -m pip install --quiet --no-cache-dir -r "${requirements_file}"
 
 echo "Shazam runtime ready:"
 echo "  ${venv_python}"

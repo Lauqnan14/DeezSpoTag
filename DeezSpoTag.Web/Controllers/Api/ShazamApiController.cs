@@ -1,6 +1,5 @@
 using DeezSpoTag.Web.Services;
 using DeezSpoTag.Services.Settings;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DeezSpoTag.Web.Controllers.Api;
@@ -15,25 +14,21 @@ public sealed class ShazamRecognitionApiController : ControllerBase
     private const string FinalCaptureAttempt = "final";
 
     private const long MaxUploadBytes = 128 * 1024 * 1024;
-    private static readonly TimeSpan LogoResultCacheDuration = TimeSpan.FromMinutes(15);
 
     private readonly ShazamRecognitionService _recognitionService;
-    private readonly ShazamDiscoveryService _discoveryService;
+    private readonly ShazamEnrichmentQueueService _enrichmentQueue;
     private readonly DeezSpoTagSettingsService _settingsService;
-    private readonly IMemoryCache _memoryCache;
     private readonly ILogger<ShazamRecognitionApiController> _logger;
 
     public ShazamRecognitionApiController(
         ShazamRecognitionService recognitionService,
-        ShazamDiscoveryService discoveryService,
+        ShazamEnrichmentQueueService enrichmentQueue,
         DeezSpoTagSettingsService settingsService,
-        IMemoryCache memoryCache,
         ILogger<ShazamRecognitionApiController> logger)
     {
         _recognitionService = recognitionService;
-        _discoveryService = discoveryService;
+        _enrichmentQueue = enrichmentQueue;
         _settingsService = settingsService;
-        _memoryCache = memoryCache;
         _logger = logger;
     }
 
@@ -57,7 +52,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             return NotFound(new { available = false });
         }
 
-        return _memoryCache.TryGetValue(BuildLogoResultCacheKey(sanitizedClientRequestId), out object? payload)
+        return _enrichmentQueue.TryGetResult(sanitizedClientRequestId, out var payload)
             ? Ok(payload)
             : NotFound(new { available = false });
     }
@@ -150,10 +145,11 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 signatureWindowSeconds);
         }
 
-        var attempt = _recognitionService.RecognizeWithDetails(
+        // Async so waiting on the recognizer subprocess does not park a thread-pool thread
+        // for the length of the lookup while also holding one of its two gate slots.
+        var attempt = await _recognitionService.RecognizeAudioOnlyAsync(
             tempPath,
             signatureWindowSeconds,
-            ShazamRecognitionService.RecognitionMode.AudioOnly,
             cancellationToken);
         if (!attempt.Matched)
         {
@@ -184,53 +180,47 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 attempt.Recognition?.TrackId);
         }
 
-        try
+        // The match is already known, so answer now. Track/related/search lookups each spawn
+        // a discovery process; running them inline kept the capture overlay spinning for
+        // seconds after the answer was in hand. They are published to the result cache
+        // instead, which the results page collects by client request id.
+        var recognition = attempt.Recognition!;
+        var query = BuildQuery(recognition);
+        var matchPayload = new ShazamLogoMatchPayload(
+            Recognition: recognition,
+            Query: query,
+            Track: null,
+            Related: Array.Empty<ShazamTrackCard>(),
+            SearchResults: Array.Empty<ShazamTrackCard>(),
+            CapturePhase: capturePhase,
+            CaptureAttempt: captureAttempt,
+            LogoSessionId: logoSessionId,
+            ClientRequestId: clientRequestId);
+
+        // Cache before enqueuing. The worker writes to the same cache entry, so queuing
+        // first would let a fast enrichment publish its result and then have this pending
+        // payload overwrite it.
+        var payload = BuildPendingMatchPayload(matchPayload, enrichmentQueued: true);
+        CacheLogoResult(clientRequestId, payload);
+
+        if (!_enrichmentQueue.TryEnqueue(new ShazamEnrichmentRequest(
+                Recognition: recognition,
+                Query: query,
+                CapturePhase: capturePhase,
+                CaptureAttempt: captureAttempt,
+                LogoSessionId: logoSessionId,
+                ClientRequestId: clientRequestId)))
         {
-            var payload = await BuildMatchPayloadAsync(
-                attempt.Recognition!,
-                capturePhase,
-                captureAttempt,
-                logoSessionId,
-                clientRequestId,
-                cancellationToken);
+            _logger.LogWarning(
+                "Shazam enrichment could not be queued for clientRequestId={ClientRequestId}; returning the recognition alone.",
+                clientRequestId);
+
+            // Nothing is running, so replacing the entry here cannot race the worker.
+            payload = BuildPendingMatchPayload(matchPayload, enrichmentQueued: false);
             CacheLogoResult(clientRequestId, payload);
-            return Ok(payload);
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(ex, "Shazam enrichment failed after a successful recognition match.");
-            return StatusCode(StatusCodes.Status502BadGateway, new
-            {
-                matched = true,
-                capturePhase,
-                captureAttempt,
-                logoSessionId,
-                clientRequestId,
-                reason = "enrichment_failed",
-                recognition = new
-                {
-                    title = attempt.Recognition!.Title,
-                    artist = attempt.Recognition.Artist,
-                    artists = attempt.Recognition.Artists,
-                    isrc = attempt.Recognition.Isrc,
-                    durationMs = attempt.Recognition.DurationMs,
-                    trackId = attempt.Recognition.TrackId,
-                    url = attempt.Recognition.Url,
-                    genre = attempt.Recognition.Genre,
-                    album = attempt.Recognition.Album,
-                    label = attempt.Recognition.Label,
-                    releaseDate = attempt.Recognition.ReleaseDate,
-                    artworkUrl = attempt.Recognition.ArtworkUrl,
-                    artworkHqUrl = attempt.Recognition.ArtworkHqUrl,
-                    key = attempt.Recognition.Key
-                },
-                error = "Shazam recognized the audio, but result enrichment failed."
-            });
-        }
+
+        return Ok(payload);
     }
 
     private static string NormalizeCapturePhase(string? capturePhase)
@@ -398,58 +388,45 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         };
     }
 
-    private async Task<object> BuildMatchPayloadAsync(
-        ShazamRecognitionInfo recognition,
-        string capturePhase,
-        string captureAttempt,
-        string logoSessionId,
-        string clientRequestId,
-        CancellationToken cancellationToken)
-    {
-        var trackId = recognition.TrackId;
-        var query = BuildQuery(recognition);
-
-        ShazamTrackCard? track = null;
-        IReadOnlyList<ShazamTrackCard> related = Array.Empty<ShazamTrackCard>();
-        var searchTask = SafeSearchTracksAsync(query, cancellationToken);
-        if (!string.IsNullOrWhiteSpace(trackId))
-        {
-            var trackTask = SafeGetTrackAsync(trackId, cancellationToken);
-            var relatedTask = SafeGetRelatedTracksAsync(trackId, cancellationToken);
-            await Task.WhenAll(trackTask, relatedTask, searchTask);
-            track = await trackTask;
-            related = await relatedTask;
-        }
-
-        var searchResults = await searchTask;
-
-        return BuildMatchPayload(
-            new ShazamLogoMatchPayload(
-                Recognition: recognition,
-                Query: query,
-                Track: track,
-                Related: related,
-                SearchResults: searchResults,
-                CapturePhase: capturePhase,
-                CaptureAttempt: captureAttempt,
-                LogoSessionId: logoSessionId,
-                ClientRequestId: clientRequestId));
-    }
-
-    private static object BuildMatchPayload(ShazamLogoMatchPayload payload)
+    /// <summary>
+    /// Builds the fully enriched payload. Called by the enrichment worker once the discovery
+    /// lookups complete; the wire contract lives here because this controller owns it.
+    /// </summary>
+    internal static object BuildMatchPayload(ShazamLogoMatchPayload payload)
     {
         var relatedList = payload.Related ?? Array.Empty<ShazamTrackCard>();
         var searchList = payload.SearchResults ?? Array.Empty<ShazamTrackCard>();
         var similarList = MergeSimilarCards(relatedList, searchList, payload.Track, payload.Recognition);
 
-        return BuildMatchPayloadObject(payload, relatedList, searchList, similarList);
+        return BuildMatchPayloadObject(payload, relatedList, searchList, similarList, enrichmentPending: false, reason: null);
+    }
+
+    /// <summary>
+    /// Builds the immediate response: the match is known, the discovery sections are not.
+    /// </summary>
+    private static object BuildPendingMatchPayload(ShazamLogoMatchPayload payload, bool enrichmentQueued)
+    {
+        var empty = Array.Empty<ShazamTrackCard>();
+        var similarList = new List<ShazamTrackCard>();
+
+        if (enrichmentQueued)
+        {
+            return BuildMatchPayloadObject(payload, empty, empty, similarList, enrichmentPending: true, reason: null);
+        }
+
+        // Nothing will ever populate the discovery sections, so the client should render
+        // what it has instead of polling for an enrichment that is not coming.
+        const string reason = "enrichment_failed";
+        return BuildMatchPayloadObject(payload, empty, empty, similarList, enrichmentPending: false, reason: reason);
     }
 
     private static object BuildMatchPayloadObject(
         ShazamLogoMatchPayload payload,
         IReadOnlyList<ShazamTrackCard> relatedList,
         IReadOnlyList<ShazamTrackCard> searchList,
-        List<ShazamTrackCard> similarList)
+        List<ShazamTrackCard> similarList,
+        bool enrichmentPending,
+        string? reason)
     {
         var recognition = payload.Recognition;
         return new
@@ -459,6 +436,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             captureAttempt = payload.CaptureAttempt,
             logoSessionId = payload.LogoSessionId,
             clientRequestId = payload.ClientRequestId,
+            reason,
             recognition = new
             {
                 title = recognition.Title,
@@ -483,7 +461,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
                 trackResolved = payload.Track != null,
                 relatedCount = relatedList.Count,
                 searchResultCount = searchList.Count,
-                similarCount = similarList.Count
+                similarCount = similarList.Count,
+                // Tells the results page whether to poll the result cache for the
+                // discovery sections or render what it already has as final.
+                pending = enrichmentPending
             },
             related = relatedList,
             similar = similarList,
@@ -491,7 +472,7 @@ public sealed class ShazamRecognitionApiController : ControllerBase
         };
     }
 
-    private sealed record ShazamLogoMatchPayload(
+    internal sealed record ShazamLogoMatchPayload(
         ShazamRecognitionInfo Recognition,
         string? Query,
         ShazamTrackCard? Track,
@@ -581,82 +562,10 @@ public sealed class ShazamRecognitionApiController : ControllerBase
             : $"ta:{normalizedTitle}|{normalizedArtist}";
     }
 
+    // The enrichment worker overwrites this entry once the discovery lookups land, so both
+    // writers go through the same store to keep key and expiry in one place.
     private void CacheLogoResult(string clientRequestId, object payload)
-    {
-        if (string.Equals(clientRequestId, "none", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        _memoryCache.Set(
-            BuildLogoResultCacheKey(clientRequestId),
-            payload,
-            new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = LogoResultCacheDuration,
-                SlidingExpiration = TimeSpan.FromMinutes(5),
-                Size = 1
-            });
-    }
-
-    private static string BuildLogoResultCacheKey(string clientRequestId)
-        => $"shazam:logo-result:{clientRequestId}";
-
-    private async Task<IReadOnlyList<ShazamTrackCard>> SafeSearchTracksAsync(string? query, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-        {
-            return Array.Empty<ShazamTrackCard>();
-        }
-
-        try
-        {
-            return await _discoveryService.SearchTracksAsync(query, limit: 20, offset: 0, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(ex, "Shazam search lookup failed for query '{Query}'.", query);
-            return Array.Empty<ShazamTrackCard>();
-        }
-    }
-
-    private async Task<ShazamTrackCard?> SafeGetTrackAsync(string trackId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _discoveryService.GetTrackAsync(trackId, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(ex, "Shazam track enrichment lookup failed for trackId {TrackId}.", trackId);
-            return null;
-        }
-    }
-
-    private async Task<IReadOnlyList<ShazamTrackCard>> SafeGetRelatedTracksAsync(string trackId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await _discoveryService.GetRelatedTracksAsync(trackId, limit: 20, offset: 0, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-        {
-            _logger.LogWarning(ex, "Shazam related-track lookup failed for trackId {TrackId}.", trackId);
-            return Array.Empty<ShazamTrackCard>();
-        }
-    }
+        => _enrichmentQueue.StoreResult(clientRequestId, payload);
 
     private static string? BuildQuery(ShazamRecognitionInfo info)
     {

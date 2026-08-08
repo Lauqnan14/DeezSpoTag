@@ -274,6 +274,40 @@
         }
     };
 
+    const ENRICHMENT_POLL_ATTEMPTS = 5;
+    const ENRICHMENT_POLL_INTERVAL_MS = 700;
+
+    // Recognition answers as soon as the track is identified; the track/related/search
+    // lookups are published to the result cache by a background worker afterwards.
+    const isEnrichmentPending = (payload) => payload?.enrichment?.pending === true;
+
+    const delay = (ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+
+    const awaitEnrichedLogoResult = async () => {
+        if (!requestId) {
+            return null;
+        }
+
+        let payload = null;
+        for (let attempt = 0; attempt < ENRICHMENT_POLL_ATTEMPTS; attempt += 1) {
+            if (attempt > 0) {
+                await delay(ENRICHMENT_POLL_INTERVAL_MS);
+            }
+
+            const next = await fetchLogoResultPayload();
+            if (next) {
+                payload = next;
+                // Not pending means the worker either published its lookups or reported
+                // that it never will, so there is nothing left to wait for.
+                if (!isEnrichmentPending(next)) {
+                    return payload;
+                }
+            }
+        }
+
+        return payload;
+    };
+
     const applyLogoPayload = (payload) => {
         const validation = validateShazamPayload(payload);
         if (!validation) {
@@ -426,8 +460,19 @@
 
             const livePayload = readLiveCapturePayload();
             let appliedPayload = applyLogoPayload(livePayload);
+
+            // Paint the matched track before waiting on enrichment: the identification is
+            // the answer the user asked for, and the discovery sections fill in after.
+            if (appliedPayload?.match && isEnrichmentPending(livePayload)) {
+                renderPayload(appliedPayload.match, [], []);
+                setStatus('Shazam match found. Loading similar tracks...');
+            }
+
+            let enrichmentSettled = true;
             if (!appliedPayload || appliedPayload.similar.length === 0) {
-                appliedPayload = applyLogoPayload(await fetchLogoResultPayload()) || appliedPayload;
+                const enriched = await awaitEnrichedLogoResult();
+                enrichmentSettled = !isEnrichmentPending(enriched || livePayload);
+                appliedPayload = applyLogoPayload(enriched) || appliedPayload;
             }
 
             if (appliedPayload) {
@@ -440,8 +485,10 @@
 
             effectiveTrackId = normalizeText(effectiveTrackId || match?.id);
 
+            // Also rehydrate when enrichment never landed inside the poll budget, otherwise a
+            // slow worker would leave the discovery sections permanently empty.
             const needsRehydrate =
-                !appliedPayload
+                (!appliedPayload || !enrichmentSettled)
                 && (
                 (!match || !match.artworkUrl)
                 || similar.length === 0

@@ -33,11 +33,21 @@
     let captureSessionId = 0;
     let activeLogoSession = null;
     let activeEarlyAttemptController = null;
+    let activeRecognitionController = null;
     let overlay = null;
     let fallbackInput = null;
 
     const EARLY_ATTEMPT_SECONDS = 5;
     const EARLY_ATTEMPT_MIN_FINAL_GAP_SECONDS = 2;
+
+    const CAPTURE_BLOCK_SIZE = 4096;
+    // Shazam fingerprints are computed at 16 kHz mono; a context at that rate makes the
+    // browser resample with a proper anti-aliasing filter and shrinks the upload.
+    const TARGET_SAMPLE_RATE = 16000;
+    const RECOGNITION_REQUEST_TIMEOUT_MS = 20000;
+    // document.currentScript is only valid while this module is being evaluated.
+    const captureWorkletUrl = document.currentScript?.dataset?.captureWorkletSrc
+        || '/js/shazam-capture-processor.js';
 
     logo.setAttribute('role', 'button');
     logo.setAttribute('tabindex', '0');
@@ -397,10 +407,9 @@
 
         const cancel = overlay.querySelector('#shzCaptureCancel');
         if (cancel) {
+            // Cancel stays live during 'searching' too: without it a stalled lookup left
+            // the overlay unrecoverable short of a page reload.
             cancel.addEventListener('click', () => {
-                if (state === 'searching') {
-                    return;
-                }
                 void cancelCapture();
             });
         }
@@ -548,7 +557,18 @@
             } catch {
                 // ignored
             }
-            processor.onaudioprocess = null;
+
+            if (processor.port) {
+                processor.port.onmessage = null;
+                try {
+                    processor.port.close();
+                } catch {
+                    // ignored
+                }
+            } else {
+                processor.onaudioprocess = null;
+            }
+
             processor = null;
         }
 
@@ -584,31 +604,6 @@
         return merged;
     };
 
-    const resampleMono = (samples, sourceRate, targetRate) => {
-        const from = Number(sourceRate) || 44100;
-        const to = Number(targetRate) || 16000;
-        if (!samples || samples.length === 0) {
-            return new Float32Array(0);
-        }
-
-        if (from === to) {
-            return samples;
-        }
-
-        const ratio = from / to;
-        const targetLength = Math.max(1, Math.floor(samples.length / ratio));
-        const output = new Float32Array(targetLength);
-        for (let i = 0; i < targetLength; i += 1) {
-            const sourceIndex = i * ratio;
-            const left = Math.floor(sourceIndex);
-            const right = Math.min(left + 1, samples.length - 1);
-            const frac = sourceIndex - left;
-            output[i] = (samples[left] * (1 - frac)) + (samples[right] * frac);
-        }
-
-        return output;
-    };
-
     const floatToPcm16 = (samples) => {
         const pcm = new Int16Array(samples.length);
         for (let i = 0; i < samples.length; i += 1) {
@@ -618,11 +613,14 @@
         return pcm;
     };
 
-    const encodeWavBlob = (floatChunks, sr, targetRate = 16000) => {
+    // The recognizer (shazamio_core) converts to mono/16 kHz itself using a properly filtered
+    // resampler. Encoding at the captured rate avoids the aliasing that naive client-side
+    // decimation folds into the 0-8 kHz band the fingerprint peaks are drawn from.
+    const encodeWavBlob = (floatChunks, sr) => {
         const merged = flattenFloatChunks(floatChunks);
-        const resampled = resampleMono(merged, sr, targetRate);
-        const pcm = floatToPcm16(resampled);
-        const wavRate = Math.max(8000, Math.min(48000, Number(targetRate) || 16000));
+        const pcm = floatToPcm16(merged);
+        const capturedRate = Math.round(Number(sr));
+        const wavRate = Number.isFinite(capturedRate) && capturedRate > 0 ? capturedRate : 44100;
 
         const buffer = new ArrayBuffer(44 + pcm.length * 2);
         const view = new DataView(buffer);
@@ -654,6 +652,65 @@
         }
 
         return new Blob([buffer], { type: 'audio/wav' });
+    };
+
+    // Conservative floors: a real music capture clears these by a wide margin, so they only
+    // reject samples that cannot possibly fingerprint (dead mic, muted input, hard clipping).
+    const SILENCE_PEAK_THRESHOLD = 0.005;
+    const SILENCE_RMS_THRESHOLD = 0.0015;
+    const CLIPPING_RATIO_THRESHOLD = 0.02;
+
+    const measureCaptureLevel = (floatChunks) => {
+        let count = 0;
+        let sum = 0;
+        let sumSquares = 0;
+        let peak = 0;
+        let clipped = 0;
+
+        for (const chunk of floatChunks) {
+            for (let i = 0; i < chunk.length; i += 1) {
+                const value = chunk[i];
+                const magnitude = Math.abs(value);
+                sum += value;
+                sumSquares += value * value;
+                if (magnitude > peak) {
+                    peak = magnitude;
+                }
+                if (magnitude >= 0.999) {
+                    clipped += 1;
+                }
+                count += 1;
+            }
+        }
+
+        if (count === 0) {
+            return { rms: 0, peak: 0, clippedRatio: 0, dcOffset: 0 };
+        }
+
+        return {
+            rms: Math.sqrt(sumSquares / count),
+            peak,
+            clippedRatio: clipped / count,
+            dcOffset: Math.abs(sum / count)
+        };
+    };
+
+    const describeUnusableSample = (floatChunks) => {
+        const level = measureCaptureLevel(floatChunks);
+
+        if (level.peak < SILENCE_PEAK_THRESHOLD || level.rms < SILENCE_RMS_THRESHOLD) {
+            return { reason: 'silent', level };
+        }
+
+        if (level.clippedRatio > CLIPPING_RATIO_THRESHOLD) {
+            return { reason: 'clipped', level };
+        }
+
+        if (level.dcOffset > level.rms * 0.5) {
+            return { reason: 'dc_offset', level };
+        }
+
+        return null;
     };
 
     const persistPayloadForResults = (payload) => {
@@ -750,6 +807,35 @@
         return `${Date.now().toString(36)}-${performance.now().toString(36).replace('.', '')}`;
     };
 
+    // Composes a caller-supplied signal with a hard timeout. AbortSignal.any is too new to
+    // rely on for the browsers this capture path already falls back for.
+    const createRequestSignal = (externalSignal) => {
+        const controller = new AbortController();
+        const timer = globalThis.setTimeout(
+            () => controller.abort(new DOMException('Shazam request timed out.', 'TimeoutError')),
+            RECOGNITION_REQUEST_TIMEOUT_MS
+        );
+
+        const abortFromExternal = () => controller.abort(externalSignal.reason);
+        if (externalSignal) {
+            if (externalSignal.aborted) {
+                abortFromExternal();
+            } else {
+                externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+            }
+        }
+
+        return {
+            signal: controller.signal,
+            dispose: () => {
+                globalThis.clearTimeout(timer);
+                externalSignal?.removeEventListener('abort', abortFromExternal);
+            }
+        };
+    };
+
+    const isTimeoutError = (error) => error?.name === 'TimeoutError';
+
     const performRecognitionRequest = async (audioBlob, filename = 'capture.wav', options = {}) => {
         const resolvedName = filename;
         const phase = String(options?.phase || 'file').trim() || 'file';
@@ -787,19 +873,25 @@
             headers.set('X-CSRF-TOKEN', csrfToken);
         }
 
-        const response = await fetch('/api/shazam/recognize-mic', {
-            method: 'POST',
-            body: form,
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers,
-            signal: options?.signal
-        });
-
+        const request = createRequestSignal(options?.signal);
+        let response;
         let payload = null;
-        const contentType = response.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-            payload = await response.json();
+        try {
+            response = await fetch('/api/shazam/recognize-mic', {
+                method: 'POST',
+                body: form,
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers,
+                signal: request.signal
+            });
+
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                payload = await response.json();
+            }
+        } finally {
+            request.dispose();
         }
 
         if (!response.ok) {
@@ -847,8 +939,12 @@
     const runRecognitionFromBlob = async (audioBlob, filename, options = {}) => {
         setState('searching');
 
+        activeRecognitionController = new AbortController();
         try {
-            const { response, payload } = await performRecognitionRequest(audioBlob, filename, options);
+            const { response, payload } = await performRecognitionRequest(audioBlob, filename, {
+                ...options,
+                signal: activeRecognitionController.signal
+            });
             if (!response.ok) {
                 notifyShazamApiFailure(payload, response.status);
                 return;
@@ -869,10 +965,9 @@
             persistPayloadForResults(payload);
             navigateToResults(payload);
         } catch (error) {
-            console.error('Shazam recognition failed', error);
-            setState('error');
-            notify('Shazam lookup failed. Please try again.', 'error');
-            globalThis.setTimeout(() => setState('idle'), 1500);
+            handleRecognitionRequestError(error);
+        } finally {
+            activeRecognitionController = null;
         }
     };
 
@@ -899,7 +994,7 @@
             return false;
         }
 
-        const wav = encodeWavBlob(chunks, capturedRate, 16000);
+        const wav = encodeWavBlob(chunks, capturedRate);
         const { response, payload } = await performRecognitionRequest(wav, 'capture.wav', {
             phase: 'logo',
             attempt: phase,
@@ -975,6 +1070,15 @@
                 return;
             }
 
+            // The first seconds of a capture carry mic gain settle and the tap transient.
+            // An unusable sample cannot match, and a match drawn from one would navigate
+            // away on the least trustworthy audio of the session.
+            const unusable = describeUnusableSample(earlyChunks);
+            if (unusable) {
+                console.debug('Shazam early attempt skipped.', unusable);
+                return;
+            }
+
             await runLogoRecognitionAttempt(sessionId, 'early', earlyChunks, sampleRate, {
                 silentNoMatch: true,
                 signal: activeEarlyAttemptController.signal
@@ -1017,6 +1121,15 @@
     };
 
     const cancelCapture = async () => {
+        if (activeRecognitionController) {
+            activeRecognitionController.abort();
+            activeRecognitionController = null;
+        }
+
+        // Invalidate the session so a response that lands after the abort cannot navigate.
+        captureSessionId += 1;
+        activeLogoSession = null;
+
         await releaseAudio();
         setState('idle');
     };
@@ -1100,18 +1213,71 @@
             }
         });
 
-        audioContext = new AudioContextCtor();
+        audioContext = createAudioContext();
         await ensureAudioContextRunning(audioContext);
         sampleRate = audioContext.sampleRate || 44100;
         sourceNode = audioContext.createMediaStreamSource(stream);
-        processor = audioContext.createScriptProcessor(4096, 1, 1);
-        processor.onaudioprocess = onAudioProcessCapture;
+        processor = await createCaptureNode(audioContext);
         sourceNode.connect(processor);
+        // Both node types only get pulled while they reach a destination. The worklet
+        // writes nothing to its output, and render quanta are zero-filled, so this is
+        // silence rather than a microphone feedback loop.
         processor.connect(audioContext.destination);
         await ensureAudioContextRunning(audioContext);
         if (audioContext.state !== 'running') {
             throw new Error(`AudioContext is ${audioContext.state}.`);
         }
+    }
+
+    function createAudioContext() {
+        try {
+            const context = new AudioContextCtor({ sampleRate: TARGET_SAMPLE_RATE });
+            if (context.sampleRate === TARGET_SAMPLE_RATE) {
+                return context;
+            }
+
+            // The browser ignored the hint; drop this context and keep the device rate,
+            // which the recognizer downsamples correctly on its own.
+            context.close().catch(() => {
+                // Nothing to do; the context is being discarded either way.
+            });
+        } catch {
+            // Older browsers reject the options bag outright.
+        }
+
+        return new AudioContextCtor();
+    }
+
+    async function createCaptureNode(context) {
+        if (context.audioWorklet && typeof context.audioWorklet.addModule === 'function' && globalThis.AudioWorkletNode) {
+            try {
+                await context.audioWorklet.addModule(captureWorkletUrl);
+                const node = new globalThis.AudioWorkletNode(context, 'shazam-capture-processor', {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    channelCount: 1,
+                    channelCountMode: 'explicit',
+                    processorOptions: { blockSize: CAPTURE_BLOCK_SIZE }
+                });
+                node.port.onmessage = (event) => onCaptureSamples(event.data);
+                return node;
+            } catch (error) {
+                console.debug('Shazam AudioWorklet unavailable; falling back to ScriptProcessorNode.', error);
+            }
+        }
+
+        const fallback = context.createScriptProcessor(CAPTURE_BLOCK_SIZE, 1, 1);
+        fallback.onaudioprocess = onAudioProcessCapture;
+        return fallback;
+    }
+
+    function onCaptureSamples(samples) {
+        if (state !== 'listening' || !(samples instanceof Float32Array) || samples.length === 0) {
+            return;
+        }
+
+        // The worklet transferred ownership of the buffer, so no defensive copy is needed.
+        buffers.push(samples);
     }
 
     async function ensureAudioContextRunning(context) {
@@ -1154,7 +1320,51 @@
             return;
         }
 
-        await runLogoRecognitionAttempt(sessionId, 'final', capturedChunks, capturedRate);
+        // Fail fast with an accurate cause rather than spending a round trip to be told
+        // "no match" for audio that could never have fingerprinted.
+        const unusable = describeUnusableSample(capturedChunks);
+        if (unusable) {
+            console.debug('Shazam final attempt rejected before upload.', unusable);
+            setState('error');
+            notify(
+                unusable.reason === 'clipped'
+                    ? 'The microphone input was too loud and distorted to identify. Move away from the speaker and retry.'
+                    : 'The microphone captured almost no sound. Check the input level or mic permissions and retry.',
+                'warning'
+            );
+            globalThis.setTimeout(() => setState('idle'), 2200);
+            return;
+        }
+
+        activeRecognitionController = new AbortController();
+        try {
+            await runLogoRecognitionAttempt(sessionId, 'final', capturedChunks, capturedRate, {
+                signal: activeRecognitionController.signal
+            });
+        } catch (error) {
+            handleRecognitionRequestError(error);
+        } finally {
+            activeRecognitionController = null;
+        }
+    };
+
+    const handleRecognitionRequestError = (error) => {
+        if (error?.name === 'AbortError') {
+            // User cancelled; cancelCapture already restored the idle state.
+            return;
+        }
+
+        if (isTimeoutError(error)) {
+            setState('error');
+            notify('Shazam took too long to respond. Please try again.', 'warning');
+            globalThis.setTimeout(() => setState('idle'), 1500);
+            return;
+        }
+
+        console.error('Shazam recognition failed', error);
+        setState('error');
+        notify('Shazam lookup failed. Please try again.', 'error');
+        globalThis.setTimeout(() => setState('idle'), 1500);
     };
 
     const setupHandlers = () => {

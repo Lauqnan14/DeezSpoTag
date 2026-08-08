@@ -49,6 +49,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default="en-US")
     parser.add_argument("--country", default="US")
     parser.add_argument("--timeout", type=int, default=25)
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=6,
+        help="HTTP retry attempts. Keep low for interactive capture so the whole "
+             "recognition fits inside the caller's process timeout.",
+    )
     parser.add_argument("--signature-seconds", type=int, default=10)
     return parser.parse_args()
 
@@ -56,14 +63,17 @@ def parse_args() -> argparse.Namespace:
 async def recognize_async(args: argparse.Namespace) -> Dict[str, Any]:
     signature_seconds = max(3, min(20, int(args.signature_seconds)))
     timeout_seconds = max(5, int(args.timeout))
+    max_retries = max(1, min(12, int(args.max_retries)))
 
     shazam = Shazam(
         language=args.language,
         endpoint_country=args.country,
         http_client=HTTPClient(
             retry_options=ExponentialRetry(
-                attempts=12,
-                max_timeout=min(timeout_seconds * 2, 120),
+                # Cap the backoff below the overall deadline: a sleep longer than the
+                # budget can only ever end in a timeout, never in a result.
+                attempts=max_retries,
+                max_timeout=max(1, timeout_seconds // 2),
                 statuses={429, 500, 502, 503, 504},
             ),
         ),

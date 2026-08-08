@@ -1003,7 +1003,8 @@
     @await Html.PartialAsync("_CommonFooterScripts")
     @if (!_isLoginPage)
     {
-        <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/shazam-listen.js")"></script>
+        <script src="@AssetUrl.Versioned(ViewContext, Url, "~/js/shazam-listen.js")"
+                data-capture-worklet-src="@AssetUrl.Versioned(ViewContext, Url, "~/js/shazam-capture-processor.js")"></script>
     }
     @if (!_isLoginPage && !_isHomeIndexPage)
     {
