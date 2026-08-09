@@ -52,7 +52,6 @@ public sealed class TidalDownloadService
     private const string ZarzExchangePath = "/session/exchange";
     private const string ZarzAppVersion = "tidal-web@1.1.0";
     private const string ZarzPlatform = ZarzSignedSessionContract.Platform;
-    private const string ZarzCallbackUrl = ZarzSignedSessionContract.CallbackUrl;
     private const string ZarzSchemeLabel = ZarzSignedSessionContract.SchemeLabel;
     private const string ZarzRefreshPath = ZarzSignedSessionContract.RefreshPath;
     private const int ZarzTimeWindowSeconds = ZarzSignedSessionContract.TimeWindowSeconds;

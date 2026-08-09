@@ -53,7 +53,6 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
     private const string ZarzExchangePath = "/session/exchange";
     private const string ZarzAppVersion = "qobuz-web@1.1.0";
     private const string ZarzPlatform = ZarzSignedSessionContract.Platform;
-    private const string ZarzCallbackUrl = ZarzSignedSessionContract.CallbackUrl;
     private const string ZarzScheme = ZarzSignedSessionContract.SchemeLabel;
     private const string ZarzRefreshPath = ZarzSignedSessionContract.RefreshPath;
     private const int ZarzTimeWindowSeconds = ZarzSignedSessionContract.TimeWindowSeconds;

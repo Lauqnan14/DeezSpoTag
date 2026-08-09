@@ -127,11 +127,6 @@ public sealed class ZarzSignedSessionCoordinator
                 return null;
             }
 
-            if (HasFreshChallenge(current))
-            {
-                return current!.VerificationUrl;
-            }
-
             var result = await bootstrap(current?.Copy(), cancellationToken);
             var updated = NormalizeReplacement(current, result.Session);
             ApplyChallenge(updated, result.VerificationUrl);
@@ -536,7 +531,6 @@ public sealed class ZarzSessionRateLimitException : InvalidOperationException
 /// </summary>
 public static class ZarzSignedSessionContract
 {
-    public const string CallbackUrl = "spotiflac://session-grant";
     public const string Platform = "extension";
     public const string SchemeLabel = "ZARZ-HMAC-V1";
     public const string HeaderPrefix = "X-Zarz-";
@@ -556,23 +550,8 @@ public static class ZarzSignedSessionContract
             }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
 
     /// <summary>
-    /// SpotiFLAC mobile deep-link callback (native intercept). Used when no public web base is available.
-    /// </summary>
-    public static string BuildSpotiflacGrantCallbackUrl(string state)
-        => new UriBuilder(CallbackUrl)
-        {
-            Query = string.Join(
-                '&',
-                new Dictionary<string, string>
-                {
-                    ["cb_version"] = "v2grant",
-                    ["state"] = state
-                }.Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"))
-        }.Uri.ToString();
-
-    /// <summary>
     /// Same-origin HTTPS callback for DeezSpoTag web. The verification popup returns here with
-    /// <c>grant</c> so the opener can finish without a native <c>spotiflac://</c> handler.
+    /// <c>grant</c> so the opener can finish the public-download session.
     /// </summary>
     public static string BuildWebGrantCallbackUrl(string publicAppBaseUrl, string state)
     {
@@ -595,11 +574,14 @@ public static class ZarzSignedSessionContract
         string challengePath,
         string challengeId,
         string state,
-        string? publicAppBaseUrl = null)
+        string publicAppBaseUrl)
     {
-        var callback = string.IsNullOrWhiteSpace(publicAppBaseUrl)
-            ? BuildSpotiflacGrantCallbackUrl(state)
-            : BuildWebGrantCallbackUrl(publicAppBaseUrl, state);
+        if (string.IsNullOrWhiteSpace(publicAppBaseUrl))
+        {
+            return string.Empty;
+        }
+
+        var callback = BuildWebGrantCallbackUrl(publicAppBaseUrl, state);
 
         var challengeBase = new Uri(baseUrl.TrimEnd('/') + "/");
         var challengeUri = new Uri(challengeBase, challengePath.TrimStart('/'));
@@ -625,10 +607,12 @@ public static class ZarzSignedSessionContract
         string state,
         string? publicAppBaseUrl = null)
     {
-        // Prefer challenge_id so we control the callback (web HTTPS vs spotiflac deep link).
+        // Prefer challenge_id so DeezSpoTag controls the same-origin HTTPS callback.
         if (!string.IsNullOrWhiteSpace(challengeId))
         {
-            return BuildChallengeUrl(baseUrl, challengePath, challengeId.Trim(), state, publicAppBaseUrl);
+            return string.IsNullOrWhiteSpace(publicAppBaseUrl)
+                ? string.Empty
+                : BuildChallengeUrl(baseUrl, challengePath, challengeId.Trim(), state, publicAppBaseUrl);
         }
 
         if (!string.IsNullOrWhiteSpace(authUrl))

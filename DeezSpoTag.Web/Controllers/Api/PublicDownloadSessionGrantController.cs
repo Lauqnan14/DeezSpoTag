@@ -5,8 +5,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 
 /// <summary>
 /// HTTPS return target for Zarz public-download verification when running as a web app.
-/// SpotiFLAC Mobile intercepts <c>spotiflac://session-grant</c>; browsers cannot, so the
-/// challenge <c>cb</c> points here and the page hands the grant back to the Login opener.
+/// The challenge <c>cb</c> points here and the page hands the grant back to the Login opener.
 /// </summary>
 [ApiController]
 [AllowAnonymous]
@@ -43,11 +42,11 @@ public sealed class PublicDownloadSessionGrantController : ControllerBase
                   function readGrant() {
                     try {
                       var params = new URLSearchParams(window.location.search || '');
-                      var grant = params.get('grant');
+                      var grant = params.get('grant') || params.get('code');
                       if (grant) return grant;
                       if (window.location.hash) {
                         var hashParams = new URLSearchParams(String(window.location.hash).replace(/^#/, ''));
-                        grant = hashParams.get('grant');
+                        grant = hashParams.get('grant') || hashParams.get('code');
                         if (grant) return grant;
                       }
                     } catch (e) {
@@ -59,26 +58,58 @@ public sealed class PublicDownloadSessionGrantController : ControllerBase
                   var grant = readGrant();
                   var status = document.getElementById('status');
                   if (!grant) {
-                    if (status) status.textContent = 'No grant was returned. You can close this window and try again.';
+                    if (status) status.textContent = 'No verification grant was returned. You can close this window and try again.';
                     return;
                   }
 
-                  try {
-                    if (window.opener && !window.opener.closed) {
-                      window.opener.postMessage({ type: 'zarz_grant', grant: grant }, window.location.origin);
-                      if (status) status.textContent = 'Verified. You can close this window.';
-                    } else if (status) {
-                      status.textContent = 'Verified. Return to the Login tab if it did not update.';
+                  var acknowledged = false;
+                  var attempts = 0;
+                  var maxAttempts = 40;
+
+                  function closeAfterAcknowledgement() {
+                    try {
+                      window.close();
+                    } catch (e) {
+                      // Popup may already be closed by the browser.
                     }
-                  } catch (e) {
-                    if (status) status.textContent = 'Verified, but the opener could not be notified. Close this window and retry if needed.';
                   }
 
-                  try {
-                    window.close();
-                  } catch (e) {
-                    // Popup may already be closed by the browser.
+                  function notifyOpener() {
+                    if (acknowledged) return;
+                    attempts += 1;
+
+                    try {
+                      if (window.opener && !window.opener.closed) {
+                        window.opener.postMessage({ type: 'zarz_grant', grant: grant }, window.location.origin);
+                        if (status) status.textContent = 'Verification complete. Returning to DeezSpoTag…';
+                      } else if (status) {
+                        status.textContent = 'Verified. Return to the Login tab if it did not update.';
+                      }
+                    } catch (e) {
+                      if (status) status.textContent = 'Verified, but the opener could not be notified. Close this window and retry if needed.';
+                    }
+
+                    if (attempts >= maxAttempts && status) {
+                      status.textContent = 'Verified. Return to the Login tab if it did not update.';
+                    }
                   }
+
+                  window.addEventListener('message', function (event) {
+                    if (event.origin !== window.location.origin) return;
+                    var data = event.data || {};
+                    if (data.type !== 'zarz_grant_ack') return;
+                    acknowledged = true;
+                    closeAfterAcknowledgement();
+                  });
+
+                  notifyOpener();
+                  var retryTimer = window.setInterval(function () {
+                    if (acknowledged || attempts >= maxAttempts) {
+                      window.clearInterval(retryTimer);
+                      return;
+                    }
+                    notifyOpener();
+                  }, 250);
                 })();
               </script>
             </body>

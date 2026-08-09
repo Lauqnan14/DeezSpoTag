@@ -60,9 +60,8 @@ public sealed class ProviderIntegrationSurfaceTests
     }
 
     [Fact]
-    public void ZarzSignedSessionContract_MatchesSpotiflacChallengeAndBootstrapShape()
+    public void ZarzSignedSessionContract_UsesOnlyDeezSpoTagWebCallbackForVerification()
     {
-        Assert.Equal("spotiflac://session-grant", ZarzSignedSessionContract.CallbackUrl);
         Assert.Equal("extension", ZarzSignedSessionContract.Platform);
         Assert.Equal("ZARZ-HMAC-V1", ZarzSignedSessionContract.SchemeLabel);
 
@@ -72,31 +71,28 @@ public sealed class ProviderIntegrationSurfaceTests
         Assert.DoesNotContain("platform=", bootstrap, StringComparison.Ordinal);
         Assert.DoesNotContain("callback_url=", bootstrap, StringComparison.Ordinal);
 
-        var mobileChallenge = ZarzSignedSessionContract.BuildChallengeUrl(
+        var challengeWithoutWebCallback = ZarzSignedSessionContract.BuildChallengeUrl(
             "https://api.zarz.moe/v2",
             "/challenge",
             "challenge-1",
-            "install-state");
-        Assert.Contains("id=challenge-1", mobileChallenge, StringComparison.Ordinal);
-        Assert.Contains("cb=", mobileChallenge, StringComparison.Ordinal);
-        Assert.Contains("cb_version%3Dv2grant", mobileChallenge, StringComparison.Ordinal);
-        Assert.Contains("state%3Dinstall-state", mobileChallenge, StringComparison.Ordinal);
-        Assert.Contains("spotiflac%3A%2F%2Fsession-grant", mobileChallenge, StringComparison.Ordinal);
+            "install-state",
+            publicAppBaseUrl: string.Empty);
+        Assert.Equal(string.Empty, challengeWithoutWebCallback);
 
         var webChallenge = ZarzSignedSessionContract.BuildChallengeUrl(
             "https://api.zarz.moe/v2",
             "/challenge",
             "challenge-1",
             "install-state",
-            publicAppBaseUrl: "http://192.168.28.24:8668");
+            publicAppBaseUrl: "https://deezspotag.example.test");
         Assert.Contains("id=challenge-1", webChallenge, StringComparison.Ordinal);
         Assert.Contains("session-grant", webChallenge, StringComparison.Ordinal);
-        Assert.Contains("192.168.28.24", webChallenge, StringComparison.Ordinal);
-        Assert.DoesNotContain("spotiflac%3A%2F%2Fsession-grant", webChallenge, StringComparison.Ordinal);
+        Assert.Contains("deezspotag.example.test", webChallenge, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotiflac", webChallenge, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void ZarzEnginePorts_MatchSpotiflacSignedSessionContract()
+    public void ZarzEnginePorts_UseSharedWebVerificationContract()
     {
         var sources = new[]
         {
@@ -111,11 +107,50 @@ public sealed class ProviderIntegrationSurfaceTests
             Assert.Contains("ZarzSignedSessionContract.ResolveVerificationUrl", source, StringComparison.Ordinal);
             Assert.Contains("ZarzSignedSessionContract.ExchangeGrantAsync", source, StringComparison.Ordinal);
             Assert.Contains("ZarzSignedSessionContract.RefreshPath", source, StringComparison.Ordinal);
-            Assert.Contains("ZarzSignedSessionContract.CallbackUrl", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("spotiflac://session-grant", source, StringComparison.Ordinal);
             Assert.DoesNotContain("https://api.zarz.moe/v2/session/callback", source, StringComparison.Ordinal);
             Assert.DoesNotContain("""["callback_url"] = ZarzCallbackUrl""", source, StringComparison.Ordinal);
             Assert.DoesNotContain("""["platform"] = ZarzPlatform""", source, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public void PublicDownloadVerificationScript_AcceptsSameOriginCallbackAndZarzChallengeGrantMessages()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Views", "Login", "Index.cshtml");
+
+        Assert.Contains("payload.type !== 'zarz_grant'", source, StringComparison.Ordinal);
+        Assert.Contains("const isCallbackOrigin = event.origin === window.location.origin", source, StringComparison.Ordinal);
+        Assert.Contains("event.origin === 'https://api.zarz.moe'", source, StringComparison.Ordinal);
+        Assert.Contains("typeof payload.code === 'string'", source, StringComparison.Ordinal);
+        Assert.Contains("grantReceived = true", source, StringComparison.Ordinal);
+        Assert.Contains("type: 'zarz_grant_ack'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotiflac://session-grant", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("payload.url", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("payload.href", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PublicDownloadGrantCallback_RetriesUntilLoginAcknowledgesGrant()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "PublicDownloadSessionGrantController.cs");
+
+        Assert.Contains("params.get('grant') || params.get('code')", source, StringComparison.Ordinal);
+        Assert.Contains("hashParams.get('grant') || hashParams.get('code')", source, StringComparison.Ordinal);
+        Assert.Contains("window.opener.postMessage({ type: 'zarz_grant', grant: grant }, window.location.origin)", source, StringComparison.Ordinal);
+        Assert.Contains("data.type !== 'zarz_grant_ack'", source, StringComparison.Ordinal);
+        Assert.Contains("window.setInterval", source, StringComparison.Ordinal);
+        Assert.Contains("closeAfterAcknowledgement", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("spotiflac://session-grant", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PublicDownloadVerificationStart_DoesNotReuseSingleUseChallengeUrls()
+    {
+        var source = ReadSource("DeezSpoTag.Services", "Download", "Shared", "ZarzSignedSessionCoordinator.cs");
+
+        Assert.Contains("public async Task<string?> BeginVerificationAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("return current!.VerificationUrl;", source, StringComparison.Ordinal);
     }
 
     [Fact]

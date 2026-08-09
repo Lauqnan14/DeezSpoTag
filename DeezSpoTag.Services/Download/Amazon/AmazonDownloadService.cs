@@ -26,7 +26,6 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     private const string ZarzExchangePath = "/session/exchange";
     private const string ZarzAppVersion = "amzn@2.2.0";
     private const string ZarzPlatform = ZarzSignedSessionContract.Platform;
-    private const string ZarzCallbackUrl = ZarzSignedSessionContract.CallbackUrl;
     private const string ZarzScheme = ZarzSignedSessionContract.SchemeLabel;
     private const string ZarzRefreshPath = ZarzSignedSessionContract.RefreshPath;
     private const int ZarzTimeWindowSeconds = ZarzSignedSessionContract.TimeWindowSeconds;
