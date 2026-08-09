@@ -2518,7 +2518,7 @@ public static class AppleQueueHelpers
                 {
                     logger.LogInformation(
                         "Animated artwork {Output} is {ActualBytes} bytes after the smallest encode step and still exceeds the {BudgetBytes} byte budget.",
-                        Path.GetFileName(outputPath),
+                        LogSanitizer.OneLine(Path.GetFileName(outputPath)),
                         bestLength,
                         maxSizeBytes);
                 }
@@ -2592,7 +2592,7 @@ public static class AppleQueueHelpers
                 "ffmpeg animated artwork encode failed for {Format} at width {MaxWidth}: {Error}",
                 format,
                 rung.MaxWidth,
-                stderr.Trim());
+                LogSanitizer.OneLine(stderr.Trim()));
             return 0;
         }
 
