@@ -20,7 +20,8 @@ public sealed record DownloadProfileRuntimeOverrides(
     string? ArtistImageTemplate,
     string? LocalArtworkFormat,
     bool? EmbedMaxQualityCover,
-    int? JpegImageQuality);
+    int? JpegImageQuality,
+    int? AnimatedArtworkMaxSizeMb = null);
 
 public interface IDownloadTagSettingsResolver
 {

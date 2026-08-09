@@ -12005,6 +12005,47 @@ LIMIT 1;";
         return result is null or DBNull ? null : Convert.ToString(result);
     }
 
+    public async Task<long?> FindArtistIdBySourceIdAsync(string source, string sourceId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT artist_id
+FROM artist_source
+WHERE source = @source
+  AND source_id = @sourceId
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, source.Trim());
+        command.Parameters.AddWithValue("sourceId", sourceId.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToInt64(result);
+    }
+
+    public async Task<long?> FindArtistIdByNameAsync(string name, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id
+FROM artist
+WHERE name = @name COLLATE NOCASE
+ORDER BY id
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("name", name.Trim());
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : Convert.ToInt64(result);
+    }
+
     public async Task<IReadOnlySet<long>> GetArtistIdsWithSourceAsync(string source, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(source))

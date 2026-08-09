@@ -97,6 +97,9 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static readonly object BrowseCategoriesLock = new();
     private static (DateTimeOffset Stamp, List<object> Categories)? BrowseCategoriesCache;
     private static readonly object FeedCacheLock = new();
+    private static readonly object TrendingBackfillLock = new();
+    private static readonly TimeSpan TrendingBackfillCooldown = TimeSpan.FromMinutes(5);
+    private static DateTimeOffset TrendingBackfillRetryAfterUtc = DateTimeOffset.MinValue;
     private static readonly Dictionary<string, (DateTimeOffset Stamp, string Greeting, List<object> Sections)> HomeFeedCache
         = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object PopularRadioCacheLock = new();
@@ -332,13 +335,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
             var parsed = ParseBrowseCategories(doc);
             var categories = MapBrowseCategories(parsed);
 
-            if (categories.Count == 0 && TryBuildBrowseCategoriesFallback("Using last known browse cache (empty response).", out var emptyFallback))
-            {
-                return Ok(emptyFallback);
-            }
-
             StoreBrowseCategoriesCache(categories);
-            TryPersistBrowseCategoriesCache(categories);
             if (debug)
             {
                 return Ok(BuildBrowseCategoriesDebugResponse(categories, doc));
@@ -348,21 +345,12 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Spotify browse categories fetch failed.");
-            if (TryBuildBrowseCategoriesFallback("Using last known browse cache (browse failed).", out var failedFallback))
-            {
-                return Ok(failedFallback);
-            }
             return Ok(BuildBrowseCategoriesErrorResponse(ex, debug));
         }
     }
 
     private static object BuildUnavailableBrowseCategoriesResponse(bool debug)
     {
-        if (TryBuildBrowseCategoriesFallback("Using last known browse cache (auth unavailable).", out var unavailableFallback))
-        {
-            return unavailableFallback;
-        }
-
         return debug
             ? new
             {
@@ -647,6 +635,14 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
     }
 
+    public static bool HasCachedHomeFeed()
+    {
+        lock (FeedCacheLock)
+        {
+            return HomeFeedCache.Count > 0;
+        }
+    }
+
     private static bool TryGetFreshHomeFeedCache(
         string cacheKey,
         TimeSpan maxAge,
@@ -722,24 +718,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         }
 
         categories = new List<object>();
-        return false;
-    }
-
-    private static bool TryBuildBrowseCategoriesFallback(string warning, out object response)
-    {
-        if (TryLoadPersistedBrowseCategoriesCache(out var categories))
-        {
-            response = new
-            {
-                success = true,
-                categories,
-                cached = true,
-                warning
-            };
-            return true;
-        }
-
-        response = null!;
         return false;
     }
 
@@ -1307,7 +1285,7 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         List<object> sections,
         CancellationToken cancellationToken)
     {
-        if (ContainsSectionTitle(sections, TrendingSongsTitle))
+        if (ContainsSectionTitle(sections, TrendingSongsTitle) || IsTrendingBackfillCoolingDown())
         {
             return sections.ToList();
         }
@@ -1316,9 +1294,27 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
         if (updated.Count != sections.Count)
         {
             StoreHomeFeedCache(cacheKey, greeting, updated);
+            return updated;
         }
 
+        StartTrendingBackfillCooldown();
         return updated;
+    }
+
+    private static bool IsTrendingBackfillCoolingDown()
+    {
+        lock (TrendingBackfillLock)
+        {
+            return DateTimeOffset.UtcNow < TrendingBackfillRetryAfterUtc;
+        }
+    }
+
+    private static void StartTrendingBackfillCooldown()
+    {
+        lock (TrendingBackfillLock)
+        {
+            TrendingBackfillRetryAfterUtc = DateTimeOffset.UtcNow.Add(TrendingBackfillCooldown);
+        }
     }
 
     private static string? ResolveBrowseCategoryId(string? id, string? uri)
@@ -3005,17 +3001,6 @@ public sealed class SpotifyHomeFeedApiController : ControllerBase
     private static string ResolveHomeFeedCacheRoot()
     {
         return AppDataPathResolver.ResolveDataRootOrDefault(AppDataPathResolver.GetDefaultWorkersDataDir());
-    }
-
-    private static void TryPersistBrowseCategoriesCache(List<object> categories)
-    {
-        // Runtime cache only. Persisted JSON browse caches are intentionally disabled.
-    }
-
-    private static bool TryLoadPersistedBrowseCategoriesCache(out List<object> categories)
-    {
-        categories = new List<object>();
-        return false;
     }
 
     private static void TryDeleteHomeFeedCache()

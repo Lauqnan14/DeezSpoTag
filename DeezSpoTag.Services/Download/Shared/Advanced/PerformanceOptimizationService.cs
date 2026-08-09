@@ -386,6 +386,7 @@ public class PerformanceOptimizationService : IDisposable
             SaveArtworkArtist = baseSettings.SaveArtworkArtist,
             ArtistImageTemplate = baseSettings.ArtistImageTemplate,
             JpegImageQuality = baseSettings.JpegImageQuality,
+            AnimatedArtworkMaxSizeMb = baseSettings.AnimatedArtworkMaxSizeMb,
             DateFormat = baseSettings.DateFormat,
             AlbumVariousArtists = baseSettings.AlbumVariousArtists,
             RemoveAlbumVersion = baseSettings.RemoveAlbumVersion,

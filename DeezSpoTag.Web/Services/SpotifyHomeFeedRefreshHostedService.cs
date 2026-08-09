@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Runtime;
+using DeezSpoTag.Web.Controllers.Api;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -41,6 +42,7 @@ public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
             return;
         }
 
+        var coldCacheWarmed = false;
         while (!stoppingToken.IsCancellationRequested)
         {
             TimeSpan delay;
@@ -57,31 +59,43 @@ public sealed class SpotifyHomeFeedRefreshHostedService : BackgroundService
                 else
                 {
                     delay = TimeSpan.FromHours(Math.Clamp(settings.SpotifyHomeFeedAutoRefreshHours, 2, 24));
-                    if (await _repository.TryClaimBackgroundJobAsync(
-                            "spotify-home-feed-refresh",
-                            delay,
-                            DateTimeOffset.UtcNow,
-                            stoppingToken))
+                    var claimed = await _repository.TryClaimBackgroundJobAsync(
+                        "spotify-home-feed-refresh",
+                        delay,
+                        DateTimeOffset.UtcNow,
+                        stoppingToken);
+                    var warmColdCache = !claimed
+                        && !coldCacheWarmed
+                        && !SpotifyHomeFeedApiController.HasCachedHomeFeed();
+                    if (claimed || warmColdCache)
                     {
+                        coldCacheWarmed = true;
                         var refreshService = scope.ServiceProvider.GetRequiredService<SpotifyHomeFeedRuntimeService>();
                         try
                         {
                             await _workCoordinator.RunHeavyWorkAsync(
                                 token => refreshService.RefreshAsync(timeZone: null, token),
                                 stoppingToken);
-                            await _repository.CompleteBackgroundJobAsync(
-                                "spotify-home-feed-refresh",
-                                delay,
-                                DateTimeOffset.UtcNow,
-                                stoppingToken);
+                            if (claimed)
+                            {
+                                await _repository.CompleteBackgroundJobAsync(
+                                    "spotify-home-feed-refresh",
+                                    delay,
+                                    DateTimeOffset.UtcNow,
+                                    stoppingToken);
+                            }
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException)
                         {
-                            await _repository.FailBackgroundJobAsync(
-                                "spotify-home-feed-refresh",
-                                TimeSpan.FromMinutes(15),
-                                DateTimeOffset.UtcNow,
-                                CancellationToken.None);
+                            if (claimed)
+                            {
+                                await _repository.FailBackgroundJobAsync(
+                                    "spotify-home-feed-refresh",
+                                    TimeSpan.FromMinutes(15),
+                                    DateTimeOffset.UtcNow,
+                                    CancellationToken.None);
+                            }
+
                             throw new InvalidOperationException("Spotify home feed refresh failed.", ex);
                         }
                     }

@@ -98,7 +98,7 @@ namespace DeezSpoTag.Web.Controllers
         private static readonly TimeSpan TracklistCacheFallbackWindow = TimeSpan.FromDays(7);
         private static readonly object HomeCacheLock = new();
         private static readonly Dictionary<string, (DateTimeOffset Stamp, object Payload)> HomeCache = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan HomeCacheTtl = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan HomeCacheTtl = TimeSpan.FromMinutes(20);
         private static readonly string[] PersonalHomeSectionKeywords =
         {
             "playlists you love",
@@ -4586,6 +4586,12 @@ namespace DeezSpoTag.Web.Controllers
             return null;
         }
 
+        private static string? BuildDeezerHomeItemImage(string source, ArtworkLookupRequest request)
+            => string.Equals(source, DeezerSource, StringComparison.OrdinalIgnoreCase)
+               && !string.IsNullOrWhiteSpace(request.DeezerMd5)
+                ? BuildDeezerImage(request.DeezerType, request.DeezerMd5)
+                : null;
+
         private static string? BuildDeezerImage(string type, string? hash)
         {
             if (string.IsNullOrWhiteSpace(hash))
@@ -5521,9 +5527,20 @@ namespace DeezSpoTag.Web.Controllers
                 md5,
                 imageType ?? CoverImageType,
                 string.Equals(state.Type, ArtistType, StringComparison.OrdinalIgnoreCase));
-            return state.ImageOverride ?? (imageRequest.IsArtist
+            var deezerImage = BuildDeezerHomeItemImage(state.Source, imageRequest);
+            if (!string.IsNullOrWhiteSpace(state.ImageOverride))
+            {
+                return state.ImageOverride;
+            }
+
+            if (!string.IsNullOrWhiteSpace(deezerImage))
+            {
+                return deezerImage;
+            }
+
+            return imageRequest.IsArtist
                 ? await ResolveArtworkUrlAsync(imageRequest, cancellationToken)
-                : await ResolveArtworkUrlForSourceAsync(state.Source, imageRequest, cancellationToken));
+                : await ResolveArtworkUrlForSourceAsync(state.Source, imageRequest, cancellationToken);
         }
 
         private static string[] ExtractHomeItemFilterOptionIds(JObject item)

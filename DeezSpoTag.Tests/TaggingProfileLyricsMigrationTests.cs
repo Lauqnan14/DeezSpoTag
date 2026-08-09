@@ -116,7 +116,7 @@ public sealed class TaggingProfileLyricsMigrationTests
         var firstLoad = Assert.Single(await service.LoadAsync());
         Assert.False(firstLoad.Technical.SaveLyrics);
         Assert.True(firstLoad.Technical.SyncedLyrics);
-        Assert.Equal("lrc,elrc,ttml", firstLoad.Technical.LrcFormat);
+        Assert.Equal("lrc,ttml", firstLoad.Technical.LrcFormat);
         Assert.Contains("ttml-lyrics", firstLoad.Technical.LrcType, StringComparison.Ordinal);
         Assert.Equal(
             "musixmatch,apple,lrclib,deezer,spotify,youlyplus,betterlyrics",

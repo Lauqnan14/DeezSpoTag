@@ -101,14 +101,14 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
-    public void NormalizeLyricsFormat_MapsKnownValuesAndDefaultsToRichLyrics()
+    public void NormalizeLyricsFormat_MapsKnownValuesAndDefaultsToBoth()
     {
         Assert.Equal("lrc", InvokeStatic<string>("NormalizeLyricsFormat", "LRC"));
-        Assert.Equal("elrc", InvokeStatic<string>("NormalizeLyricsFormat", "elrc"));
+        Assert.Equal("lrc", InvokeStatic<string>("NormalizeLyricsFormat", "elrc"));
         Assert.Equal("ttml", InvokeStatic<string>("NormalizeLyricsFormat", " ttml "));
-        Assert.Equal("richlyrics", InvokeStatic<string>("NormalizeLyricsFormat", "both"));
-        Assert.Equal("richlyrics", InvokeStatic<string>("NormalizeLyricsFormat", "richlyrics"));
-        Assert.Equal("richlyrics", InvokeStatic<string>("NormalizeLyricsFormat", "unknown"));
+        Assert.Equal("both", InvokeStatic<string>("NormalizeLyricsFormat", "both"));
+        Assert.Equal("both", InvokeStatic<string>("NormalizeLyricsFormat", "richlyrics"));
+        Assert.Equal("both", InvokeStatic<string>("NormalizeLyricsFormat", "unknown"));
     }
 
     [Fact]

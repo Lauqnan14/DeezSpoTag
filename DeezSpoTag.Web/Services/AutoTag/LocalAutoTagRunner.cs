@@ -2320,6 +2320,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             settings.EmbedMaxQualityCover = config.EmbedMaxQualityCover.Value;
         }
 
+        if (config.AnimatedArtworkMaxSizeMb.HasValue)
+        {
+            settings.AnimatedArtworkMaxSizeMb = Math.Clamp(config.AnimatedArtworkMaxSizeMb.Value, 1, 200);
+        }
+
         if (config.JpegImageQuality.HasValue)
         {
             settings.JpegImageQuality = Math.Clamp(config.JpegImageQuality.Value, 1, 100);
@@ -2628,7 +2633,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     Logger = _logger,
                     CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AppleAlbumId) ? null : "album",
                     CollectionId = appleIdentity?.AppleAlbumId,
-                    OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
+                    OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
+                    MaxSizeMb = AppleQueueHelpers.ResolveAnimatedArtworkMaxSizeMb(settings)
                 },
                 token);
 
@@ -2925,6 +2931,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             SyncedLyrics = allowsSyncedBySettings && (wantsSynced || wantsTtml),
             SaveLyrics = allowsUnsyncedBySettings && shouldFetchUnsyncedPayload,
             SynthesizeLrcFromTtml = baseSettings.SynthesizeLrcFromTtml,
+            PreferEnhancedLrc = baseSettings.PreferEnhancedLrc,
             LyricsFallbackEnabled = baseSettings.LyricsFallbackEnabled,
             LyricsFallbackOrder = string.IsNullOrWhiteSpace(baseSettings.LyricsFallbackOrder)
                 ? string.Join(",", LyricsProviderRegistry.DefaultOrder)
@@ -3158,11 +3165,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static string NormalizeLyricsFormat(string? raw)
     {
         var formats = ParseLyricsFormatSelection(raw);
-        if (formats.Contains("lrc") && formats.Contains("elrc") && formats.Contains("ttml"))
-        {
-            return "richlyrics";
-        }
-
         if (formats.Contains("lrc") && formats.Contains("ttml"))
         {
             return "both";
@@ -3171,11 +3173,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (formats.Contains("ttml"))
         {
             return "ttml";
-        }
-
-        if (formats.Contains("elrc"))
-        {
-            return "elrc";
         }
 
         return "lrc";
@@ -3195,7 +3192,6 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (selected.Count == 0)
         {
             selected.Add("lrc");
-            selected.Add("elrc");
             selected.Add("ttml");
         }
 
@@ -3209,17 +3205,17 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             "standard-lrc" => ["lrc"],
             "synced" => ["lrc"],
             "synced-lyrics" => ["lrc"],
-            "elrc" => ["elrc"],
-            "enhanced-lrc" => ["elrc"],
-            "enhanced-synchronized-lyrics" => ["elrc"],
+            "elrc" => ["lrc"],
+            "enhanced-lrc" => ["lrc"],
+            "enhanced-synchronized-lyrics" => ["lrc"],
             "ttml" => ["ttml"],
-            "both" => ["lrc", "elrc", "ttml"],
-            "richlyrics" => ["lrc", "elrc", "ttml"],
-            "rich-lyrics" => ["lrc", "elrc", "ttml"],
-            "lyrics" => ["lrc", "elrc", "ttml"],
+            "both" => ["lrc", "ttml"],
+            "richlyrics" => ["lrc", "ttml"],
+            "rich-lyrics" => ["lrc", "ttml"],
+            "lyrics" => ["lrc", "ttml"],
             "lrc+ttml" => ["lrc", "ttml"],
             "ttml+lrc" => ["lrc", "ttml"],
-            "all" => ["lrc", "elrc", "ttml"],
+            "all" => ["lrc", "ttml"],
             _ => []
         };
 
@@ -3748,6 +3744,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         builder.Append("lyricsType=").Append(NormalizeCacheToken(settings.LrcType)).Append(';');
         builder.Append("lyricsFormat=").Append(NormalizeCacheToken(settings.LrcFormat)).Append(';');
         builder.Append("lyricsSynthesizeLrcFromTtml=").Append(settings.SynthesizeLrcFromTtml).Append(';');
+        builder.Append("lyricsPreferEnhancedLrc=").Append(settings.PreferEnhancedLrc).Append(';');
         builder.Append("beatportReleaseMeta=").Append(normalizedTags.Any(tag => tag is "albumartist" or "tracktotal")).Append(';');
         builder.Append("traxsourceExtend=").Append(normalizedTags.Any(tag => tag is "albumart" or AlbumTag or "catalognumber" or "releaseid" or "albumartist" or "tracknumber" or "tracktotal")).Append(';');
         builder.Append("traxsourceAlbumMeta=").Append(normalizedTags.Any(tag => tag is "catalognumber" or "tracknumber" or "albumart" or "tracktotal" or "albumartist")).Append(';');
@@ -4069,6 +4066,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             OrganizeSidecarsIntoTemplateFolders = raw.OrganizeSidecarsIntoTemplateFolders,
             EmbedMaxQualityCover = raw.EmbedMaxQualityCover,
             JpegImageQuality = raw.JpegImageQuality,
+            AnimatedArtworkMaxSizeMb = raw.AnimatedArtworkMaxSizeMb,
             Technical = raw.Technical,
             ProfileId = raw.ProfileId,
             ProfileName = raw.ProfileName,
@@ -6797,14 +6795,14 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var wroteLrcSidecar = false;
         var wroteTtmlSidecar = false;
-        var sidecarLrcLines = ResolveLrcSidecarLines(context.SourceTrack, context.FilePath);
+        var sidecarLrcLines = ResolveLrcSidecarLines(context.SourceTrack, context.FilePath, context.Settings.PreferEnhancedLrc);
         if (context.AllowsLyricsBySettings
             && context.AllowsLrcByFormat
             && (context.AllowsSyncedType || context.AllowsUnsyncedType)
             && sidecarLrcLines.Count > 0)
         {
             var lrcPath = BuildLyricsSidecarPath(context, ".lrc");
-            if (!IOFile.Exists(lrcPath))
+            if (!IOFile.Exists(lrcPath) || ShouldUpgradeLrcSidecarToWordTiming(context, lrcPath, sidecarLrcLines))
             {
                 await IOFile.WriteAllLinesAsync(lrcPath, sidecarLrcLines, token);
                 wroteLrcSidecar = true;
@@ -6826,6 +6824,26 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return new LyricsSidecarWriteResult(wroteLrcSidecar, wroteTtmlSidecar);
+    }
+
+    private static bool ShouldUpgradeLrcSidecarToWordTiming(
+        TagWriteExecutionContext context,
+        string lrcPath,
+        IReadOnlyList<string> sidecarLrcLines)
+    {
+        if (!context.Settings.PreferEnhancedLrc || !LrcContent.IsWordSynchronized(sidecarLrcLines))
+        {
+            return false;
+        }
+
+        try
+        {
+            return !LrcContent.IsWordSynchronized(IOFile.ReadAllLines(lrcPath));
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
     }
 
     private static string BuildLyricsSidecarPath(TagWriteExecutionContext context, string extension)
@@ -8515,21 +8533,23 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         return true;
     }
 
-    private static IReadOnlyList<string> ResolveLrcSidecarLines(AutoTagTrack sourceTrack, string filePath)
+    private static IReadOnlyList<string> ResolveLrcSidecarLines(AutoTagTrack sourceTrack, string filePath, bool preferEnhancedLrc)
     {
+        var syncedPayload = ResolveLyricsPayloadLines(sourceTrack, SyncedLyricsTag);
+        var payloadUsable = syncedPayload.Count > 0 && HasLrcSidecarSourceFormat(sourceTrack);
+
         var existingLrc = ResolveExistingLrcSidecar(filePath);
         if (existingLrc.Count > 0)
         {
-            return existingLrc;
+            return preferEnhancedLrc
+                && payloadUsable
+                && LrcContent.IsWordSynchronized(syncedPayload)
+                && !LrcContent.IsWordSynchronized(existingLrc)
+                ? syncedPayload
+                : existingLrc;
         }
 
-        var syncedPayload = ResolveLyricsPayloadLines(sourceTrack, SyncedLyricsTag);
-        if (syncedPayload.Count > 0 && HasLrcSidecarSourceFormat(sourceTrack))
-        {
-            return syncedPayload;
-        }
-
-        return Array.Empty<string>();
+        return payloadUsable ? syncedPayload : Array.Empty<string>();
     }
 
     private static bool HasLrcSidecarSourceFormat(AutoTagTrack sourceTrack)
@@ -10179,6 +10199,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool? OrganizeSidecarsIntoTemplateFolders { get; set; }
         public bool? EmbedMaxQualityCover { get; set; }
         public int? JpegImageQuality { get; set; }
+
+        public int? AnimatedArtworkMaxSizeMb { get; set; }
         public TechnicalTagSettings? Technical { get; set; }
         public string? ProfileId { get; set; }
         public string? ProfileName { get; set; }

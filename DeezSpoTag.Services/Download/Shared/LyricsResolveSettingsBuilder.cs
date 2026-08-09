@@ -24,6 +24,7 @@ internal static class LyricsResolveSettingsBuilder
                 settings.LrcType),
             LrcFormat = settings.LrcFormat,
             SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml,
+            PreferEnhancedLrc = settings.PreferEnhancedLrc,
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = settings.LyricsFallbackOrder,
             DeezerCountry = settings.DeezerCountry,

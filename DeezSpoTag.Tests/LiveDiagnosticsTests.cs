@@ -468,7 +468,7 @@ public sealed class LiveDiagnosticsTests
         settings.LyricsFallbackEnabled = true;
         settings.LyricsFallbackOrder = "musixmatch";
         settings.LrcType = "lyrics,syllable-lyrics";
-        settings.LrcFormat = "elrc";
+        settings.LrcFormat = "lrc";
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
 
         var track = new Track
@@ -482,9 +482,9 @@ public sealed class LiveDiagnosticsTests
 
         Assert.True(lyrics?.IsSynced() == true, $"Musixmatch did not return synced lyrics: {lyrics?.ErrorMessage}");
         Assert.Equal(LyricsSourceFormat.ProviderSyncedJson, lyrics!.SyncedLyricsSourceFormat);
-        Assert.True(lyrics.HasEnhancedSynchronizedLyrics(), "Musixmatch did not return richsync word timing eligible for .elrc creation.");
+        Assert.True(lyrics.HasEnhancedSynchronizedLyrics(), "Musixmatch did not return richsync word timing eligible for enhanced LRC creation.");
 
-        await AssertLrcSidecarSavedAsync(service, lyrics, track, settings, timeout.Token, expectElrc: true);
+        await AssertLrcSidecarSavedAsync(service, lyrics, track, settings, timeout.Token, expectWordTiming: true);
     }
 
     [Theory]
@@ -509,7 +509,7 @@ public sealed class LiveDiagnosticsTests
         settings.LyricsFallbackEnabled = true;
         settings.LyricsFallbackOrder = providerName;
         settings.LrcType = "lyrics,syllable-lyrics,ttml-lyrics";
-        settings.LrcFormat = "elrc,ttml";
+        settings.LrcFormat = "lrc,ttml";
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var track = new Track
         {
@@ -713,7 +713,7 @@ public sealed class LiveDiagnosticsTests
         Track track,
         DeezSpoTagSettings settings,
         CancellationToken cancellationToken,
-        bool expectElrc = false)
+        bool expectWordTiming = false)
     {
         var directory = CreateLiveLyricsDirectory();
         try
@@ -721,18 +721,15 @@ public sealed class LiveDiagnosticsTests
             await service.SaveLyricsAsync(lyrics, track, BuildLyricsPaths(directory), settings, cancellationToken);
 
             var lrcPath = Path.Join(directory, "track.lrc");
-            if (expectElrc)
+            Assert.False(File.Exists(Path.Join(directory, "track.elrc")), "Live test unexpectedly wrote a legacy .elrc sidecar.");
+            Assert.True(File.Exists(lrcPath), "Timed provider JSON was resolved but no .lrc sidecar was saved.");
+            var lines = await File.ReadAllLinesAsync(lrcPath, cancellationToken);
+            if (expectWordTiming)
             {
-                Assert.False(File.Exists(lrcPath), "ELRC-only live test unexpectedly wrote a standard .lrc sidecar.");
-                var elrcPath = Path.Join(directory, "track.elrc");
-                Assert.True(File.Exists(elrcPath), "Musixmatch richsync was resolved but no .elrc sidecar was saved.");
-                var elrcLines = await File.ReadAllLinesAsync(elrcPath, cancellationToken);
-                Assert.Contains(elrcLines, line => Regex.IsMatch(line, @"^\[\d{2}:\d{2}\.\d{2}\]<\d{2}:\d{2}\.\d{3}>.+"));
+                Assert.Contains(lines, line => Regex.IsMatch(line, @"^\[\d{2}:\d{2}\.\d{2}\]<\d{2}:\d{2}\.\d{3}>.+"));
             }
             else
             {
-                Assert.True(File.Exists(lrcPath), "Timed provider JSON was resolved but no .lrc sidecar was saved.");
-                var lines = await File.ReadAllLinesAsync(lrcPath, cancellationToken);
                 Assert.Contains(lines, line => Regex.IsMatch(line, @"^\[\d{2}:\d{2}\.\d{2}\].+"));
             }
             Assert.False(File.Exists(Path.Join(directory, "track.ttml")), "LRC-only live test unexpectedly wrote a TTML sidecar.");

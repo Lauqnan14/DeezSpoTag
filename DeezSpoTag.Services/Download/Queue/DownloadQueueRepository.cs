@@ -1789,7 +1789,7 @@ WHERE queue_uuid = @queueUuid;";
             }
 
             var rebasedFiles = new Dictionary<string, string>(state.FilesByFormat, StringComparer.OrdinalIgnoreCase);
-            foreach (var format in new[] { "ttml", "elrc", "lrc", "txt" })
+            foreach (var format in new[] { "ttml", "lrc", "txt" })
             {
                 rebasedFiles.TryGetValue(format, out var source);
                 var destination = ResolveFinalLyricsDestination(destinations, format, source);
@@ -3083,7 +3083,6 @@ WHERE json_valid(payload)
             else if (normalized is "both" or "richlyrics" or "rich-lyrics")
             {
                 formats.Add("lrc");
-                formats.Add("elrc");
                 formats.Add("txt");
                 formats.Add("ttml");
             }
@@ -3107,7 +3106,6 @@ WHERE json_valid(payload)
             var format = Path.GetExtension(path ?? string.Empty).ToLowerInvariant() switch
             {
                 ".ttml" => "ttml",
-                ".elrc" => "elrc",
                 ".lrc" => "lrc",
                 ".txt" => "txt",
                 _ => string.Empty

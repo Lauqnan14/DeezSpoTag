@@ -443,14 +443,14 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Theory]
-    [InlineData("lyrics", "richlyrics")]
+    [InlineData("lyrics", "both")]
     [InlineData("lrc", "lrc")]
-    [InlineData("elrc", "elrc")]
+    [InlineData("elrc", "lrc")]
     [InlineData("ttml", "ttml")]
     [InlineData("lrc+ttml", "both")]
-    [InlineData("both", "richlyrics")]
-    [InlineData("richlyrics", "richlyrics")]
-    [InlineData("unknown-format", "richlyrics")]
+    [InlineData("both", "both")]
+    [InlineData("richlyrics", "both")]
+    [InlineData("unknown-format", "both")]
     public void NormalizeLyricsOutputFormat_NormalizesExpectedValues(string value, string expected)
     {
         var actual = InvokeStatic<string>("NormalizeLyricsOutputFormat", value);
@@ -975,7 +975,7 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
-    public async Task SaveLyricsAsync_EnhancedSynchronizedLyrics_WritesElrcOnly()
+    public async Task SaveLyricsAsync_EnhancedSynchronizedLyrics_WritesWordTimingIntoLrc()
     {
         var service = CreateUninitializedLyricsService();
         var directory = CreateLyricsTestDirectory();
@@ -1008,12 +1008,12 @@ public sealed class LyricsServicePrivateHelpersTests
 
             await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
-            Assert.True(File.Exists(Path.Join(directory, "track.elrc")));
-            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.elrc")));
+            Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
             Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
             Assert.False(File.Exists(Path.Join(directory, "track.txt")));
-            var elrc = await File.ReadAllTextAsync(Path.Join(directory, "track.elrc"));
-            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", elrc);
+            var lrc = await File.ReadAllTextAsync(Path.Join(directory, "track.lrc"));
+            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", lrc);
         }
         finally
         {
@@ -1022,7 +1022,137 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
-    public async Task SaveLyricsAsync_AllRichFormats_WritesLrcElrcAndTtml()
+    public async Task SaveLyricsAsync_PreferEnhancedLrcDisabled_WritesLineLevelLrc()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = false
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics =
+                [
+                    new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                    {
+                        Words =
+                        [
+                            new SynchronizedLyricWord("Oh", 1000, 1300),
+                            new SynchronizedLyricWord(" ", 1300, 1301),
+                            new SynchronizedLyricWord("yeah", 1400, 2500)
+                        ]
+                    }
+                ],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
+                UnsyncedLyrics = "Plain"
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.False(File.Exists(Path.Join(directory, "track.elrc")));
+            Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
+            var lrc = await File.ReadAllTextAsync(Path.Join(directory, "track.lrc"));
+            Assert.Contains("[00:01.00]Oh yeah", lrc);
+            Assert.DoesNotContain("<00:01.000>", lrc);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_UpgradesLineLevelLrcToWordTiming_EvenWhenOverwriteDisabled()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var lrcPath = Path.Join(directory, "track.lrc");
+            await File.WriteAllTextAsync(lrcPath, "[00:01.00]Oh yeah\n");
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = true,
+                OverwriteFile = "n"
+            };
+
+            await service.SaveLyricsAsync(
+                CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            var lrc = await File.ReadAllTextAsync(lrcPath);
+            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", lrc);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_KeepsExistingWordSyncedLrc_WhenOverwriteDisabled()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var lrcPath = Path.Join(directory, "track.lrc");
+            const string existing = "[00:09.00]<00:09.000>Kept <00:09.400>as-is\n";
+            await File.WriteAllTextAsync(lrcPath, existing);
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = true,
+                OverwriteFile = "n"
+            };
+
+            await service.SaveLyricsAsync(
+                CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.Equal(existing, await File.ReadAllTextAsync(lrcPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static LyricsSource CreateEnhancedTestLyrics()
+        => new()
+        {
+            SyncedLyrics =
+            [
+                new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                {
+                    Words =
+                    [
+                        new SynchronizedLyricWord("Oh", 1000, 1300),
+                        new SynchronizedLyricWord(" ", 1300, 1301),
+                        new SynchronizedLyricWord("yeah", 1400, 2500)
+                    ]
+                }
+            ],
+            SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
+            UnsyncedLyrics = "Plain"
+        };
+
+    [Fact]
+    public async Task SaveLyricsAsync_AllRichFormats_WritesEnhancedLrcAndTtml()
     {
         var service = CreateUninitializedLyricsService();
         var directory = CreateLyricsTestDirectory();
@@ -1059,15 +1189,12 @@ public sealed class LyricsServicePrivateHelpersTests
             await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
 
             Assert.True(File.Exists(Path.Join(directory, "track.lrc")));
-            Assert.True(File.Exists(Path.Join(directory, "track.elrc")));
+            Assert.False(File.Exists(Path.Join(directory, "track.elrc")));
             Assert.True(File.Exists(Path.Join(directory, "track.ttml")));
             Assert.False(File.Exists(Path.Join(directory, "track.txt")));
             var lrc = await File.ReadAllTextAsync(Path.Join(directory, "track.lrc"));
-            var elrc = await File.ReadAllTextAsync(Path.Join(directory, "track.elrc"));
             var ttml = await File.ReadAllTextAsync(Path.Join(directory, "track.ttml"));
-            Assert.Contains("[00:01.00]Oh yeah", lrc);
-            Assert.DoesNotContain("<00:01.000>", lrc);
-            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", elrc);
+            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", lrc);
             Assert.Contains("<span", ttml);
         }
         finally

@@ -14,8 +14,8 @@ public sealed class LyricsArtifactStateTests
     [Theory]
     [InlineData("lrc", "lrc")]
     [InlineData("ttml", "ttml")]
-    [InlineData("both", "ttml,elrc,lrc")]
-    [InlineData("richlyrics", "ttml,elrc,lrc")]
+    [InlineData("both", "ttml,lrc")]
+    [InlineData("richlyrics", "ttml,lrc")]
     public void DescribeResolutionPlan_UsesRequestedRichFormats(string format, string expected)
     {
         var plan = LyricsService.DescribeResolutionPlan(new DeezSpoTagSettings
@@ -110,17 +110,16 @@ public sealed class LyricsArtifactStateTests
     [Fact]
     public void ApplyDownloadedFiles_RecordsEveryRichLyricsFormat()
     {
-        var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["ttml", "elrc", "lrc"], ["musixmatch"], false));
+        var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["ttml", "lrc"], ["musixmatch"], false));
 
         state.ApplyDownloadedFiles(new Dictionary<string, string>
         {
             ["ttml"] = "/music/track.ttml",
-            ["elrc"] = "/music/track.elrc",
             ["lrc"] = "/music/track.lrc"
         });
 
-        Assert.Equal(["ttml", "elrc", "lrc"], state.DownloadedFormats);
-        Assert.Equal("/music/track.elrc", state.FilesByFormat["elrc"]);
+        Assert.Equal(["ttml", "lrc"], state.DownloadedFormats);
+        Assert.Equal("/music/track.lrc", state.FilesByFormat["lrc"]);
         Assert.Equal("completed", state.Status);
     }
 
@@ -193,15 +192,15 @@ public sealed class LyricsArtifactStateTests
     [Fact]
     public void Fetching_InvalidatesMissingArtifactsSoRetryRefetchesLyrics()
     {
-        var plan = new LyricsResolutionPlan(["elrc"], ["musixmatch"], false);
+        var plan = new LyricsResolutionPlan(["lrc"], ["musixmatch"], false);
         var previous = new LyricsArtifactState
         {
             Status = "completed",
-            ResolvedFormats = ["elrc"],
-            DownloadedFormats = ["elrc"],
+            ResolvedFormats = ["lrc"],
+            DownloadedFormats = ["lrc"],
             FilesByFormat = new Dictionary<string, string>
             {
-                ["elrc"] = Path.Join(Path.GetTempPath(), Path.GetRandomFileName() + ".elrc")
+                ["lrc"] = Path.Join(Path.GetTempPath(), Path.GetRandomFileName() + ".lrc")
             }
         };
 
@@ -227,7 +226,7 @@ public sealed class LyricsArtifactStateTests
             original.ApplyDownloadedFiles(new Dictionary<string, string> { ["lrc"] = path });
 
             var changed = LyricsArtifactState.Fetching(
-                new LyricsResolutionPlan(["elrc"], ["musixmatch"], false),
+                new LyricsResolutionPlan(["ttml"], ["musixmatch"], false),
                 original);
 
             Assert.Empty(changed.FilesByFormat);

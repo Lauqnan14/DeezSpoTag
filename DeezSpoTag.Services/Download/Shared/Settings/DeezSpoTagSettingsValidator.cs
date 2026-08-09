@@ -99,6 +99,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.SyncedLyrics, (v) => settings.SyncedLyrics = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SynthesizeLrcFromTtml),
                 () => settings.SynthesizeLrcFromTtml, (v) => settings.SynthesizeLrcFromTtml = v);
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.PreferEnhancedLrc),
+                () => settings.PreferEnhancedLrc, (v) => settings.PreferEnhancedLrc = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LyricsFallbackEnabled),
                 () => settings.LyricsFallbackEnabled, (v) => settings.LyricsFallbackEnabled = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.ArtworkFallbackEnabled),
@@ -113,6 +115,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.SaveAnimatedArtwork, (v) => settings.SaveAnimatedArtwork = v);
             changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkFormats),
                 () => settings.AnimatedArtworkFormats, (v) => settings.AnimatedArtworkFormats = v);
+            changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkMaxSizeMb),
+                () => settings.AnimatedArtworkMaxSizeMb, (v) => settings.AnimatedArtworkMaxSizeMb = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.AlbumVariousArtists),
                 () => settings.AlbumVariousArtists, (v) => settings.AlbumVariousArtists = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveAlbumVersion),
@@ -346,6 +350,13 @@ public class DeezSpoTagSettingsValidator
                     return 1;
                 }
                 break;
+            case nameof(settings.AnimatedArtworkMaxSizeMb):
+                if (currentValue < 1 || currentValue > 200)
+                {
+                    setter(defaultSettings.AnimatedArtworkMaxSizeMb);
+                    return 1;
+                }
+                break;
         }
 
         return 0;
@@ -505,6 +516,7 @@ public class DeezSpoTagSettingsValidator
             PlaylistFilenameTemplate = "playlist",
             SyncedLyrics = true,
             SynthesizeLrcFromTtml = false,
+            PreferEnhancedLrc = true,
             LyricsFallbackEnabled = true,
             LyricsFallbackOrder = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics",
             ArtworkFallbackEnabled = true,
@@ -534,6 +546,7 @@ public class DeezSpoTagSettingsValidator
             LrcFormat = "richlyrics",
             SaveAnimatedArtwork = true,
             AnimatedArtworkFormats = "mp4",
+            AnimatedArtworkMaxSizeMb = 10,
             LimitMax = 200,
             DlAlbumcoverForPlaylist = true,
             GetM3u8FromDevice = true,

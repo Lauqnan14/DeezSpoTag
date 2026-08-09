@@ -220,8 +220,20 @@ public sealed class TidalSpotifyResolutionGuardrailTests
 
         Assert.DoesNotContain("_spotifyHomeFeedRuntimeService", controller, StringComparison.Ordinal);
         Assert.Contains("renderHomeSectionsWithLazyImages(sections);", home, StringComparison.Ordinal);
-        Assert.Contains("void loadSpotifyHomeEnhancements(sections, requestId, refreshEnabled);", home, StringComparison.Ordinal);
+        Assert.Contains("void applySpotifyHomeEnhancements(spotifyPending, sections, requestId);", home, StringComparison.Ordinal);
         Assert.Contains("Promise.allSettled", home, StringComparison.Ordinal);
+
+        var spotifyKickoff = home.IndexOf(
+            "const spotifyPending = channel ? null : fetchSpotifyHomeEnhancements(refreshEnabled);",
+            StringComparison.Ordinal);
+        var baseAwait = home.IndexOf(
+            "const sections = await fetchHomeSections(channel, refreshEnabled);",
+            StringComparison.Ordinal);
+        Assert.True(spotifyKickoff > 0);
+        Assert.True(baseAwait > 0);
+        Assert.True(
+            spotifyKickoff < baseAwait,
+            "Spotify home requests must start before the base home fetch is awaited.");
     }
 
     [Fact]

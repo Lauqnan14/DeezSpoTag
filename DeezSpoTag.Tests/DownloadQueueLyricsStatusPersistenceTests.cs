@@ -115,14 +115,14 @@ public sealed class DownloadQueueLyricsArtifactPersistenceTests
         await using var context = await CreateContextAsync();
         var queueUuid = "lyrics-rebuild-1";
         await context.QueueRepository.EnqueueAsync(CreateQueueItem(queueUuid), CancellationToken.None);
-        var source = Path.Join(context.TempRoot, "staging", "renamed-track.elrc");
-        var destination = Path.Join(context.TempRoot, "library", "Artist", "Album", "01 - Track.elrc");
+        var source = Path.Join(context.TempRoot, "staging", "renamed-track.lrc");
+        var destination = Path.Join(context.TempRoot, "library", "Artist", "Album", "01 - Track.lrc");
         await context.QueueRepository.UpdateLyricsArtifactsAsync(queueUuid, new LyricsArtifactState
         {
             Revision = 40,
             Status = "resolved",
-            RequestedFormats = ["elrc"],
-            ResolvedFormats = ["elrc"]
+            RequestedFormats = ["lrc"],
+            ResolvedFormats = ["lrc"]
         }, CancellationToken.None);
 
         await context.QueueRepository.UpdateFinalDestinationsAsync(
@@ -133,8 +133,8 @@ public sealed class DownloadQueueLyricsArtifactPersistenceTests
         using var payload = JsonDocument.Parse((await context.GetPayloadAsync(queueUuid))!);
         var artifacts = payload.RootElement.GetProperty("lyricsArtifacts");
         Assert.Equal("completed", artifacts.GetProperty("status").GetString());
-        Assert.Equal(["elrc"], artifacts.GetProperty("downloadedFormats").EnumerateArray().Select(value => value.GetString()));
-        Assert.Equal(destination, artifacts.GetProperty("filesByFormat").GetProperty("elrc").GetString());
+        Assert.Equal(["lrc"], artifacts.GetProperty("downloadedFormats").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(destination, artifacts.GetProperty("filesByFormat").GetProperty("lrc").GetString());
     }
 
     private static Task<TestContext> CreateContextAsync()

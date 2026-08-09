@@ -1593,6 +1593,7 @@ let tracklistIsVideoView = false;
 let tracklistMultiQualityEnabled = false;
 let atmosDestinationPrefilled = false;
 let spotifyPageSize = 50;
+const spotifyBackgroundPageSize = 100;
 let spotifyLazyState = null;
 let spotifyMatchState = null;
 let spotifyMatchCompletion = null;
@@ -3081,7 +3082,6 @@ async function loadSpotifyPlaylistTracklist(spotifyUrl) {
     };
     updateSpotifyNotice();
 
-    await loadSpotifyPlaylistTracksPage();
     const ignoredTracksPromise = loadIgnoredTracks()
         .catch(() => {
             ignoredTrackIds = new Set();
@@ -3090,8 +3090,9 @@ async function loadSpotifyPlaylistTracklist(spotifyUrl) {
             applyIgnoredTrackState();
             bindIgnoreButtons();
         });
-    await ignoredTracksPromise;
+    await loadSpotifyPlaylistTracksPage();
     scheduleSpotifyNextPage();
+    await ignoredTracksPromise;
 }
 
 async function loadSpotifyPlaylistTracksPage() {
@@ -3147,6 +3148,7 @@ async function loadSpotifyPlaylistTracksPage() {
         spotifyLazyState.total = typeof payload.total === 'number' ? payload.total : spotifyLazyState.total;
         spotifyLazyState.loaded = spotifyLazyState.offset;
         spotifyLazyState.hasMore = !!payload.hasMore;
+        spotifyLazyState.limit = spotifyBackgroundPageSize;
 
         if (!spotifyLazyState.hasMore && spotifyLazyState.loaded === 0) {
             setTracksEmptyMessage('No tracks available');

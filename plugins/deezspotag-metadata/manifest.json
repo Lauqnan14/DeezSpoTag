@@ -1,0 +1,58 @@
+{
+  "name": "deezspotag-metadata",
+  "author": "madmetal7",
+  "version": "1.0.0",
+  "description": "Serves artist biographies and top songs from a DeezSpoTag instance. Intended for libraries that MusicBrainz and Last.fm do not cover.",
+  "website": "https://github.com/madmetal7/DeezSpoTag.Web",
+  "capabilities": ["MetadataAgent"],
+  "permissions": {
+    "config": {},
+    "http": {
+      "reason": "Reads artist biographies and top songs from the configured DeezSpoTag server.",
+      "requiredHosts": ["*"],
+      "allowLocalNetwork": true
+    },
+    "cache": {
+      "reason": "Caches responses so repeated artist page views do not re-query DeezSpoTag."
+    }
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "required": ["baseUrl", "apiToken"],
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "title": "DeezSpoTag base URL",
+          "description": "Must be reachable from the Navidrome container.",
+          "default": "http://localhost:8668"
+        },
+        "apiToken": {
+          "type": "string",
+          "title": "DeezSpoTag API token",
+          "description": "Matches ApiToken in DeezSpoTag settings, or the DEEZSPOTAG_API_TOKEN env var."
+        },
+        "preferredBiographySource": {
+          "type": "string",
+          "title": "Preferred biography source",
+          "description": "spotify, deezer, apple or lastfm. Falls back to any available source.",
+          "default": ""
+        },
+        "cacheTtlSeconds": {
+          "type": "integer",
+          "title": "Cache TTL (seconds)",
+          "default": 86400
+        }
+      }
+    },
+    "uiSchema": {
+      "type": "VerticalLayout",
+      "elements": [
+        { "type": "Control", "scope": "#/properties/baseUrl" },
+        { "type": "Control", "scope": "#/properties/apiToken", "options": { "format": "password" } },
+        { "type": "Control", "scope": "#/properties/preferredBiographySource" },
+        { "type": "Control", "scope": "#/properties/cacheTtlSeconds" }
+      ]
+    }
+  }
+}

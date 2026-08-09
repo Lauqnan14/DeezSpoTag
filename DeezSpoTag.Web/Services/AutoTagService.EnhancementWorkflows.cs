@@ -756,6 +756,7 @@ public partial class AutoTagService
                 AppleStorefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
                 AnimatedArtworkMaxResolution: settings.Video?.AppleMusicVideoMaxResolution ?? 2160,
                 AnimatedArtworkFormats: AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
+                AnimatedArtworkMaxSizeMb: AppleQueueHelpers.ResolveAnimatedArtworkMaxSizeMb(settings),
                 EnabledSources: enabledSources,
                 CoverImageTemplate: settings.CoverImageTemplate,
                 RenameExistingAnimatedArtwork: renameExistingAnimatedArtwork,

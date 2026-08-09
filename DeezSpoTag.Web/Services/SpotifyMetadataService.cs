@@ -133,7 +133,8 @@ public sealed class SpotifyMetadataService
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyUrlMetadata Data)> PlaylistMetadataCache = new();
     private static readonly TimeSpan PlaylistTrackCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, PlaylistTrackCache> PlaylistTrackCache = new();
-    private static readonly TimeSpan PlaylistPageCacheTtl = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan PlaylistPageCacheTtl = TimeSpan.FromHours(6);
+    private static readonly TimeSpan PlaylistFirstPageCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, SpotifyPlaylistPage Page)> PlaylistPageCache = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<Task<SpotifyPlaylistPage>>> PlaylistPageRequests = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> PlaylistSnapshots = new(StringComparer.OrdinalIgnoreCase);
@@ -1037,6 +1038,9 @@ public sealed class SpotifyMetadataService
             cancellationToken);
     }
 
+    private static TimeSpan ResolvePlaylistPageCacheTtl(int offset)
+        => offset == 0 ? PlaylistFirstPageCacheTtl : PlaylistPageCacheTtl;
+
     private async Task<SpotifyPlaylistPage> FetchPathfinderPlaylistPageAsync(
         string playlistId,
         int offset,
@@ -1044,14 +1048,15 @@ public sealed class SpotifyMetadataService
         CancellationToken cancellationToken)
     {
         var cacheKey = $"{playlistId}:{offset}:{limit}";
+        var pageCacheTtl = ResolvePlaylistPageCacheTtl(offset);
         if (PlaylistPageCache.TryGetValue(cacheKey, out var cached)
-            && DateTimeOffset.UtcNow - cached.Stamp <= PlaylistPageCacheTtl)
+            && DateTimeOffset.UtcNow - cached.Stamp <= pageCacheTtl)
         {
             return cached.Page;
         }
 
         var persisted = await _metadataCacheRepository.TryGetAsync("spotify-playlist-page", cacheKey, cancellationToken);
-        if (persisted is not null && DateTimeOffset.UtcNow - persisted.FetchedUtc <= PlaylistPageCacheTtl)
+        if (persisted is not null && DateTimeOffset.UtcNow - persisted.FetchedUtc <= pageCacheTtl)
         {
             try
             {

@@ -1771,7 +1771,7 @@ public class TrackDownloader
                 return;
             }
 
-            ApplyLyricsForTagging(track, tagSettings, lyrics);
+            ApplyLyricsForTagging(track, tagSettings, lyrics, settings.PreferEnhancedLrc);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1800,7 +1800,7 @@ public class TrackDownloader
         return (!tagSettings.Lyrics || hasUnsynced) && (!tagSettings.SyncedLyrics || hasSynced);
     }
 
-    private static void ApplyLyricsForTagging(Track track, TagSettings tagSettings, LyricsBase lyrics)
+    private static void ApplyLyricsForTagging(Track track, TagSettings tagSettings, LyricsBase lyrics, bool preferEnhancedLrc)
     {
         track.Lyrics ??= new Lyrics(track.LyricsId ?? "0");
 
@@ -1814,7 +1814,12 @@ public class TrackDownloader
             return;
         }
 
-        track.Lyrics.Sync = lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title);
+        var enhancedSync = preferEnhancedLrc
+            ? lyrics.GenerateEnhancedLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title)
+            : string.Empty;
+        track.Lyrics.Sync = string.IsNullOrEmpty(enhancedSync)
+            ? lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title)
+            : enhancedSync;
         var syncedLines = lyrics.SyncedLyrics?
             .Where(line => line != null && line.IsValid())
             .Select(line => new SyncLyric

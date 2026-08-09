@@ -1248,6 +1248,8 @@ async function loadHomeData() {
         const refresh = urlParams.get('refresh');
         const refreshEnabled = refresh === '1' || refresh === 'true' || refresh === 'yes';
 
+        const spotifyPending = channel ? null : fetchSpotifyHomeEnhancements(refreshEnabled);
+
         const sections = await fetchHomeSections(channel, refreshEnabled);
         if (requestId !== homeLoadRequestSeq) {
             return;
@@ -1256,8 +1258,8 @@ async function loadHomeData() {
 
         spotifyHomeCategories = [];
         renderHomeSectionsWithLazyImages(sections);
-        if (!channel) {
-            void loadSpotifyHomeEnhancements(sections, requestId, refreshEnabled);
+        if (spotifyPending) {
+            void applySpotifyHomeEnhancements(spotifyPending, sections, requestId);
         }
     } catch (error) {
         console.error('Error loading home data:', error);
@@ -1301,7 +1303,7 @@ function mapSpotifyHomeCategories(categories) {
     }).filter(Boolean);
 }
 
-async function loadSpotifyHomeEnhancements(baseSections, requestId, refreshEnabled) {
+function fetchSpotifyHomeEnhancements(refreshEnabled) {
     const sectionsUrl = new URL('/api/spotify/home-feed/sections', globalThis.location.origin);
     sectionsUrl.searchParams.set('timeZone', getBrowserTimeZone());
     const browseUrl = new URL('/api/spotify/home-feed/browse', globalThis.location.origin);
@@ -1309,10 +1311,14 @@ async function loadSpotifyHomeEnhancements(baseSections, requestId, refreshEnabl
         browseUrl.searchParams.set('refresh', 'true');
     }
 
-    const [sectionsResult, categoriesResult] = await Promise.allSettled([
+    return Promise.allSettled([
         fetchSpotifyHomeJson(sectionsUrl.toString()),
         fetchSpotifyHomeJson(browseUrl.toString())
     ]);
+}
+
+async function applySpotifyHomeEnhancements(pending, baseSections, requestId) {
+    const [sectionsResult, categoriesResult] = await pending;
     if (requestId !== homeLoadRequestSeq) {
         return;
     }

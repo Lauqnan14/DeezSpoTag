@@ -161,10 +161,8 @@ public sealed class LyricsArtifactState
     private void SuppressPlainWhenRichExists()
     {
         var hasRich = ResolvedFormats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
-            || ResolvedFormats.Contains("elrc", StringComparer.OrdinalIgnoreCase)
             || ResolvedFormats.Contains("lrc", StringComparer.OrdinalIgnoreCase)
             || DownloadedFormats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
-            || DownloadedFormats.Contains("elrc", StringComparer.OrdinalIgnoreCase)
             || DownloadedFormats.Contains("lrc", StringComparer.OrdinalIgnoreCase);
         if (!hasRich)
         {
@@ -179,7 +177,7 @@ public sealed class LyricsArtifactState
     }
 
     private static bool IsSupportedFormat(string format)
-        => format.Trim().ToLowerInvariant() is "ttml" or "elrc" or "lrc" or "txt";
+        => format.Trim().ToLowerInvariant() is "ttml" or "lrc" or "txt";
 
     private static Dictionary<string, string> VerifyExistingFiles(
         IReadOnlyDictionary<string, string>? filesByFormat,
@@ -259,7 +257,7 @@ public sealed class LyricsArtifactState
 
     private static List<string> NormalizeFormats(IEnumerable<string> formats)
         => formats.Select(static value => value.Trim().ToLowerInvariant())
-            .Where(static value => value is "ttml" or "elrc" or "lrc" or "txt")
+            .Where(static value => value is "ttml" or "lrc" or "txt")
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 

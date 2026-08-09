@@ -87,6 +87,11 @@ public partial class Program
         ApplyLocalRuntimeParityEnvironment();
 
         var builder = WebApplication.CreateBuilder(args);
+        builder.Logging.AddConsole(options =>
+        {
+            options.QueueFullMode = Microsoft.Extensions.Logging.Console.ConsoleLoggerQueueFullMode.DropWrite;
+            options.MaxQueueLength = 8192;
+        });
         var startupState = new DeezSpoTag.Web.Services.StartupStateService();
         builder.Services.AddSingleton(startupState);
         builder.Services.AddSingleton<DeezSpoTag.Web.Services.StartupWorkerRegistry>();
@@ -522,7 +527,7 @@ public partial class Program
         });
         services.AddRazorPages();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryPinUnlockService>();
-        services.AddHttpClient();
+        services.AddHttpClient(Options.DefaultName, client => client.Timeout = TimeSpan.FromSeconds(20));
         services.AddAntiforgery(options =>
         {
             options.HeaderName = "X-CSRF-TOKEN";

@@ -251,6 +251,11 @@ public static class DownloadEngineSettingsHelper
         {
             settings.JpegImageQuality = Math.Clamp(overrides.JpegImageQuality.Value, 1, 100);
         }
+
+        if (overrides.AnimatedArtworkMaxSizeMb.HasValue)
+        {
+            settings.AnimatedArtworkMaxSizeMb = Math.Clamp(overrides.AnimatedArtworkMaxSizeMb.Value, 1, 200);
+        }
     }
 
     private static string? NormalizeLocalArtworkFormat(string? raw)
