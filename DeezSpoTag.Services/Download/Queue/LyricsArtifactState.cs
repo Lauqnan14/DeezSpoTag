@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using System.Security.Cryptography;
 using System.Text;
+using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Download.Utils;
 
 namespace DeezSpoTag.Services.Download.Queue;
@@ -43,6 +44,9 @@ public sealed class LyricsArtifactState
     [JsonPropertyName("filesByFormat")]
     public Dictionary<string, string> FilesByFormat { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    [JsonPropertyName("lrcTiming")]
+    public string? LrcTiming { get; set; }
+
     [JsonPropertyName("fileHashesByFormat")]
     public Dictionary<string, string> FileHashesByFormat { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -76,6 +80,7 @@ public sealed class LyricsArtifactState
                 .Where(pair => verifiedFormats.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
                 .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
             FilesByFormat = verifiedFiles,
+            LrcTiming = verifiedFiles.ContainsKey("lrc") ? previous?.LrcTiming : null,
             FileHashesByFormat = verifiedFiles
                 .Select(pair => new
                 {
@@ -148,8 +153,29 @@ public sealed class LyricsArtifactState
                 ResolvedFormats.Add(format);
             }
         }
+        LrcTiming = ResolveLrcTiming();
         SuppressPlainWhenRichExists();
         Status = ResolvedFormats.Count > 0 ? "completed" : Status;
+    }
+
+    private string? ResolveLrcTiming()
+    {
+        if (!FilesByFormat.TryGetValue("lrc", out var lrcPath) || string.IsNullOrWhiteSpace(lrcPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var path = DownloadPathResolver.ResolveIoPath(lrcPath);
+            return File.Exists(path) && LrcContent.IsWordSynchronized(File.ReadAllText(path))
+                ? "word"
+                : "line";
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return null;
+        }
     }
 
     public bool HasLyricsArtifacts()

@@ -150,6 +150,7 @@ public class LyricsService
     {
         public string? Arl { get; set; }
         public string? TtmlFallback { get; set; }
+        public LyricsSourceFormat TtmlFallbackSourceFormat { get; set; } = LyricsSourceFormat.Unknown;
         public LyricsBase? ResolvedLyrics { get; set; }
         public bool DeezerAttempted { get; set; }
         public bool DeezerMissingAuth { get; set; }
@@ -246,7 +247,7 @@ public class LyricsService
             if (!string.IsNullOrWhiteSpace(state.TtmlFallback) && string.IsNullOrWhiteSpace(state.ResolvedLyrics.TtmlLyrics))
             {
                 state.ResolvedLyrics.TtmlLyrics = state.TtmlFallback;
-                state.ResolvedLyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
+                state.ResolvedLyrics.TtmlLyricsSourceFormat = state.TtmlFallbackSourceFormat;
             }
 
             if (ShouldReturnResolvedLyrics(state, outputRequirements, requireAllRequestedRichLyrics: false))
@@ -260,7 +261,7 @@ public class LyricsService
             var lyrics = new LyricsSource
             {
                 TtmlLyrics = state.TtmlFallback,
-                TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+                TtmlLyricsSourceFormat = state.TtmlFallbackSourceFormat
             };
             state.ResolvedLyrics = lyrics;
             return BuildResolutionResult(state, plan, outputRequirements, null);
@@ -622,15 +623,18 @@ public class LyricsService
             state.SourcesByFormat.TryAdd("txt", provider);
         }
 
-        if (DeezSpoTag.Services.Apple.AppleLyricsService.IsWordSyncedTtml(providerLyrics.TtmlLyrics))
+        if (DeezSpoTag.Services.Apple.AppleLyricsService.IsWordSyncedTtml(providerLyrics.TtmlLyrics)
+            && OutranksTtml(providerLyrics.TtmlLyricsSourceFormat, state.TtmlFallback, state.TtmlFallbackSourceFormat))
         {
             state.TtmlFallback = providerLyrics.TtmlLyrics;
+            state.TtmlFallbackSourceFormat = providerLyrics.TtmlLyricsSourceFormat;
         }
 
-        if (!string.IsNullOrWhiteSpace(state.TtmlFallback) && string.IsNullOrWhiteSpace(providerLyrics.TtmlLyrics))
+        if (!string.IsNullOrWhiteSpace(state.TtmlFallback)
+            && OutranksTtml(state.TtmlFallbackSourceFormat, providerLyrics.TtmlLyrics, providerLyrics.TtmlLyricsSourceFormat))
         {
             providerLyrics.TtmlLyrics = state.TtmlFallback;
-            providerLyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
+            providerLyrics.TtmlLyricsSourceFormat = state.TtmlFallbackSourceFormat;
         }
 
         if (state.ResolvedLyrics == null)
@@ -684,7 +688,8 @@ public class LyricsService
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(target.TtmlLyrics) && !string.IsNullOrWhiteSpace(candidate.TtmlLyrics))
+        if (!string.IsNullOrWhiteSpace(candidate.TtmlLyrics)
+            && OutranksTtml(candidate.TtmlLyricsSourceFormat, target.TtmlLyrics, target.TtmlLyricsSourceFormat))
         {
             target.TtmlLyrics = candidate.TtmlLyrics;
             target.TtmlLyricsSourceFormat = candidate.TtmlLyricsSourceFormat;
@@ -720,6 +725,27 @@ public class LyricsService
             target.Copyright = candidate.Copyright;
         }
     }
+
+    private static bool OutranksTtml(
+        LyricsSourceFormat candidateFormat,
+        string? existingTtml,
+        LyricsSourceFormat existingFormat)
+    {
+        if (string.IsNullOrWhiteSpace(existingTtml))
+        {
+            return true;
+        }
+
+        return RankTtmlSourceFormat(candidateFormat) > RankTtmlSourceFormat(existingFormat);
+    }
+
+    private static int RankTtmlSourceFormat(LyricsSourceFormat format)
+        => format switch
+        {
+            LyricsSourceFormat.DownloadedTtml => 2,
+            LyricsSourceFormat.SynthesizedFromWordTimings => 1,
+            _ => 0
+        };
 
     private static bool HasLyricsLines(List<SynchronizedLyric>? lyricsLines)
     {
@@ -1523,7 +1549,7 @@ public class LyricsService
                     && ParseLyricsOutputFormats(settings.LrcFormat).Contains("ttml"))
                 {
                     result.TtmlLyrics = BuildWordSynchronizedTtml(result.SyncedLyrics);
-                    result.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
+                    result.TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings;
                 }
             }
         }
@@ -1803,7 +1829,7 @@ public class LyricsService
             if (ResolveOutputRequirements(settings).WantsTtmlLyrics)
             {
                 output.TtmlLyrics = BuildWordSynchronizedTtml(richsyncLines);
-                output.TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml;
+                output.TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings;
             }
             return output;
         }
@@ -3415,6 +3441,30 @@ public class LyricsService
         }
     }
 
+    private static bool ShouldReplaceExistingTtml(string path, string? incomingTtml)
+    {
+        try
+        {
+            if (!System.IO.File.Exists(path))
+            {
+                return true;
+            }
+
+            var existing = System.IO.File.ReadAllText(path);
+            if (!AppleLyricsService.IsWordSyncedTtml(existing))
+            {
+                return true;
+            }
+
+            return AppleLyricsService.IsAppleNativeTtml(incomingTtml)
+                && !AppleLyricsService.IsAppleNativeTtml(existing);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
+    }
+
     private static bool IsExistingLrcWordSynchronized(string path)
     {
         try
@@ -3540,7 +3590,10 @@ public class LyricsService
 
         try
         {
-            if (!overwriteSidecar && state.HadExistingTtml)
+            var upgradesToWordTiming = state.HadExistingTtml
+                && ShouldReplaceExistingTtml(state.TtmlPath, lyrics.TtmlLyrics);
+
+            if (!overwriteSidecar && state.HadExistingTtml && !upgradesToWordTiming)
             {
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
@@ -3551,7 +3604,11 @@ public class LyricsService
                 await System.IO.File.WriteAllTextAsync(state.TtmlPath, lyrics.TtmlLyrics!, cancellationToken);
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
-                    _logger.LogInformation("Successfully saved TTML lyrics to {TtmlPath}", state.TtmlPath);                }
+                    _logger.LogInformation(
+                        "Successfully saved TTML lyrics to {TtmlPath}{Upgrade}",
+                        state.TtmlPath,
+                        upgradesToWordTiming ? " (upgraded from line-level timing)" : string.Empty);
+                }
             }
             state.SavedLyrics = true;
             state.SavedTtml = true;

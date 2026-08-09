@@ -1132,6 +1132,144 @@ public sealed class LyricsServicePrivateHelpersTests
         }
     }
 
+    [Fact]
+    public async Task SaveLyricsAsync_UpgradesLineTimedTtmlToWordTiming_EvenWhenOverwriteDisabled()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var ttmlPath = Path.Join(directory, "track.ttml");
+            await File.WriteAllTextAsync(ttmlPath, LineTimedTtml);
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "ttml-lyrics",
+                LrcFormat = "ttml",
+                OverwriteFile = "n"
+            };
+
+            await service.SaveLyricsAsync(
+                CreateWordTimedTtmlLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            var ttml = await File.ReadAllTextAsync(ttmlPath);
+            Assert.True(AppleLyricsService.IsWordSyncedTtml(ttml));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_KeepsExistingWordTimedTtml_WhenOverwriteDisabled()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var ttmlPath = Path.Join(directory, "track.ttml");
+            var existing = WordTimedTtml.Replace("Oh", "Kept", StringComparison.Ordinal);
+            await File.WriteAllTextAsync(ttmlPath, existing);
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "ttml-lyrics",
+                LrcFormat = "ttml",
+                OverwriteFile = "n"
+            };
+
+            await service.SaveLyricsAsync(
+                CreateWordTimedTtmlLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.Equal(existing, await File.ReadAllTextAsync(ttmlPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_ReplacesSynthesizedTtmlWithAppleNativeTtml()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var ttmlPath = Path.Join(directory, "track.ttml");
+            await File.WriteAllTextAsync(ttmlPath, SynthesizedWordTimedTtml);
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "ttml-lyrics",
+                LrcFormat = "ttml",
+                OverwriteFile = "n"
+            };
+
+            await service.SaveLyricsAsync(
+                CreateWordTimedTtmlLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.True(AppleLyricsService.IsAppleNativeTtml(await File.ReadAllTextAsync(ttmlPath)));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TtmlDetection_SeparatesAppleNativeFromSynthesized()
+    {
+        Assert.True(AppleLyricsService.IsWordSyncedTtml(SynthesizedWordTimedTtml));
+        Assert.False(AppleLyricsService.IsAppleNativeTtml(SynthesizedWordTimedTtml));
+        Assert.True(AppleLyricsService.IsAppleNativeTtml(WordTimedTtml));
+    }
+
+    [Theory]
+    [InlineData(LyricsSourceFormat.SynthesizedFromWordTimings, LyricsSourceFormat.DownloadedTtml, true)]
+    [InlineData(LyricsSourceFormat.DownloadedTtml, LyricsSourceFormat.SynthesizedFromWordTimings, false)]
+    [InlineData(LyricsSourceFormat.DownloadedTtml, LyricsSourceFormat.DownloadedTtml, false)]
+    public void MergeLyricsData_PrefersNativeTtmlOverSynthesized(
+        LyricsSourceFormat targetFormat,
+        LyricsSourceFormat candidateFormat,
+        bool expectReplacement)
+    {
+        var target = new LyricsSource { TtmlLyrics = "<tt>target</tt>", TtmlLyricsSourceFormat = targetFormat };
+        var candidate = new LyricsSource { TtmlLyrics = "<tt>candidate</tt>", TtmlLyricsSourceFormat = candidateFormat };
+
+        GetStaticMethod("MergeLyricsData").Invoke(null, [target, candidate]);
+
+        Assert.Equal(expectReplacement ? "<tt>candidate</tt>" : "<tt>target</tt>", target.TtmlLyrics);
+    }
+
+    private const string SynthesizedWordTimedTtml =
+        "<tt xmlns=\"http://www.w3.org/ns/ttml\" timing=\"Word\"><body><div>"
+        + "<p begin=\"1.0\" end=\"3.0\"><span begin=\"1.0\" end=\"1.3\">Oh</span>"
+        + "<span begin=\"1.4\" end=\"2.5\">yeah</span></p></div></body></tt>";
+
+    private const string LineTimedTtml =
+        "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\"><body><div>"
+        + "<p begin=\"1.0\" end=\"3.0\">Oh yeah</p></div></body></tt>";
+
+    private const string WordTimedTtml =
+        "<tt xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" itunes:timing=\"Word\"><body><div>"
+        + "<p begin=\"1.0\" end=\"3.0\"><span begin=\"1.0\" end=\"1.3\">Oh</span>"
+        + "<span begin=\"1.4\" end=\"2.5\">yeah</span></p></div></body></tt>";
+
+    private static LyricsSource CreateWordTimedTtmlLyrics()
+        => new()
+        {
+            TtmlLyrics = WordTimedTtml,
+            TtmlLyricsSourceFormat = LyricsSourceFormat.DownloadedTtml
+        };
+
     private static LyricsSource CreateEnhancedTestLyrics()
         => new()
         {

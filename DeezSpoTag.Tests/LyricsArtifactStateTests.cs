@@ -107,6 +107,38 @@ public sealed class LyricsArtifactStateTests
         Assert.False(state.FilesByFormat.ContainsKey("txt"));
     }
 
+    [Theory]
+    [InlineData("[00:01.00]<00:01.000>Oh <00:01.400>yeah", "word")]
+    [InlineData("[00:01.00]Oh yeah", "line")]
+    public void ApplyDownloadedFiles_RecordsLrcTimingPrecision(string lrcBody, string expectedTiming)
+    {
+        var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-lrc-timing-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var lrcPath = Path.Join(tempRoot, "track.lrc");
+            File.WriteAllText(lrcPath, lrcBody);
+
+            var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["lrc"], ["musixmatch"], false));
+            state.ApplyDownloadedFiles(new Dictionary<string, string> { ["lrc"] = lrcPath });
+
+            Assert.Equal(expectedTiming, state.LrcTiming);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApplyDownloadedFiles_ClearsLrcTimingWhenNoLrcWasWritten()
+    {
+        var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["ttml"], ["apple"], false));
+        state.ApplyDownloadedFiles(new Dictionary<string, string> { ["ttml"] = "/music/track.ttml" });
+
+        Assert.Null(state.LrcTiming);
+    }
+
     [Fact]
     public void ApplyDownloadedFiles_RecordsEveryRichLyricsFormat()
     {

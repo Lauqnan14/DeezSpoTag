@@ -431,6 +431,18 @@ public sealed class AppleLyricsService
     public static bool IsLineSyncedTtml(string? ttml)
         => ClassifyTtml(ttml) == AppleTtmlTimingKind.Line;
 
+    public static bool IsAppleNativeTtml(string? ttml)
+    {
+        if (!TryReadTtmlDocument(ttml, out var document))
+        {
+            return false;
+        }
+
+        return document.Root!.Attributes()
+            .Any(attribute => attribute.IsNamespaceDeclaration
+                && attribute.Value.Contains("music.apple.com/lyric-ttml", StringComparison.OrdinalIgnoreCase));
+    }
+
     public static AppleTtmlTimingKind ClassifyTtml(string? ttml)
     {
         if (!TryReadTtmlDocument(ttml, out var document))

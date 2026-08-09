@@ -6816,7 +6816,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             && AppleLyricsService.IsWordSyncedTtml(sidecarTtml))
         {
             var ttmlPath = BuildLyricsSidecarPath(context, TtmlExtension);
-            if (!IOFile.Exists(ttmlPath))
+            if (!IOFile.Exists(ttmlPath) || ShouldUpgradeTtmlSidecarToWordTiming(ttmlPath, sidecarTtml))
             {
                 await IOFile.WriteAllTextAsync(ttmlPath, sidecarTtml, token);
                 wroteTtmlSidecar = true;
@@ -6824,6 +6824,25 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return new LyricsSidecarWriteResult(wroteLrcSidecar, wroteTtmlSidecar);
+    }
+
+    private static bool ShouldUpgradeTtmlSidecarToWordTiming(string ttmlPath, string? incomingTtml)
+    {
+        try
+        {
+            var existing = IOFile.ReadAllText(ttmlPath);
+            if (!AppleLyricsService.IsWordSyncedTtml(existing))
+            {
+                return true;
+            }
+
+            return AppleLyricsService.IsAppleNativeTtml(incomingTtml)
+                && !AppleLyricsService.IsAppleNativeTtml(existing);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
     }
 
     private static bool ShouldUpgradeLrcSidecarToWordTiming(
