@@ -61,9 +61,11 @@ public class DeezSpoTagSettings
 
     // Lyrics preference + fallback
     public bool SynthesizeLrcFromTtml { get; set; } = false;
+    public bool PreferEnhancedLrc { get; set; } = true;
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics";
     public int LyricsProviderRegistryVersion { get; set; }
+    public int LyricsFormatSchemaVersion { get; set; }
     public bool NormalizeGenreTags { get; set; } = false;
     public List<string> GenreTagBlockList { get; set; } = new() { "other", "others", "Worldwide" };
     public List<GenreTagAliasRule> GenreTagAliasRules { get; set; } = new()
@@ -155,6 +157,7 @@ public class DeezSpoTagSettings
     public string LrcFormat { get; set; } = "both";
     public bool SaveAnimatedArtwork { get; set; } = true;
     public string AnimatedArtworkFormats { get; set; } = "mp4";
+    public int AnimatedArtworkMaxSizeMb { get; set; } = 10;
     public int LimitMax { get; set; } = 200;
     public bool DlAlbumcoverForPlaylist { get; set; } = true;
     public bool GetM3u8FromDevice { get; set; } = true;

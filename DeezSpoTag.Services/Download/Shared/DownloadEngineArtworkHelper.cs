@@ -17,6 +17,10 @@ public static class DownloadEngineArtworkHelper
     private const string AppleProvider = "apple";
     private const string DeezerProvider = "deezer";
     private const string SpotifyProvider = "spotify";
+    private const int ArtistArtworkCacheLimit = 2048;
+    private static readonly TimeSpan ArtistArtworkHitTtl = TimeSpan.FromHours(6);
+    private static readonly TimeSpan ArtistArtworkMissTtl = TimeSpan.FromMinutes(30);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, ArtistArtworkResolution? Resolution)> ArtistArtworkCache = new(StringComparer.OrdinalIgnoreCase);
 
     public sealed record StandardAudioCoverResolveRequest(
         DeezSpoTagSettings Settings,
@@ -263,21 +267,89 @@ public static class DownloadEngineArtworkHelper
         CancellationToken cancellationToken)
     {
         var fallbackOrder = ArtworkFallbackHelper.ResolveArtistOrder(request.Settings);
+        var cacheKey = BuildArtistArtworkCacheKey(request, fallbackOrder);
+        if (TryGetCachedArtistArtwork(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
         foreach (var source in fallbackOrder)
         {
             var resolution = await TryResolveArtistImageBySourceAsync(source, request, cancellationToken);
             if (resolution != null)
             {
-                request.Logger.LogInformation(
+                request.Logger.LogDebug(
                     "Artist artwork resolved from {Provider} using {ResolutionMethod} for {Artist}",
                     resolution.Provider,
                     resolution.ResolutionMethod,
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.Artist));
+                StoreArtistArtwork(cacheKey, resolution);
                 return resolution;
             }
         }
 
+        StoreArtistArtwork(cacheKey, null);
         return null;
+    }
+
+    private static string? BuildArtistArtworkCacheKey(
+        ArtistImageResolveRequest request,
+        IEnumerable<string> fallbackOrder)
+    {
+        if (string.IsNullOrWhiteSpace(request.Artist))
+        {
+            return null;
+        }
+
+        return string.Join(
+            '|',
+            request.Artist.Trim().ToLowerInvariant(),
+            request.AppleArtistId ?? request.AppleId ?? string.Empty,
+            request.DeezerArtistId ?? request.DeezerId ?? string.Empty,
+            request.SpotifyArtistId ?? request.SpotifyId ?? string.Empty,
+            string.Join(',', fallbackOrder));
+    }
+
+    private static bool TryGetCachedArtistArtwork(string? cacheKey, out ArtistArtworkResolution? resolution)
+    {
+        resolution = null;
+        if (cacheKey == null || !ArtistArtworkCache.TryGetValue(cacheKey, out var entry))
+        {
+            return false;
+        }
+
+        var ttl = entry.Resolution == null ? ArtistArtworkMissTtl : ArtistArtworkHitTtl;
+        if (DateTimeOffset.UtcNow - entry.Stamp > ttl)
+        {
+            ArtistArtworkCache.TryRemove(cacheKey, out _);
+            return false;
+        }
+
+        resolution = entry.Resolution;
+        return true;
+    }
+
+    private static void StoreArtistArtwork(string? cacheKey, ArtistArtworkResolution? resolution)
+    {
+        if (cacheKey == null)
+        {
+            return;
+        }
+
+        ArtistArtworkCache[cacheKey] = (DateTimeOffset.UtcNow, resolution);
+        if (ArtistArtworkCache.Count <= ArtistArtworkCacheLimit)
+        {
+            return;
+        }
+
+        foreach (var stale in ArtistArtworkCache
+            .OrderBy(pair => pair.Value.Stamp)
+            .Take(ArtistArtworkCache.Count - ArtistArtworkCacheLimit)
+            .Select(pair => pair.Key)
+            .ToList())
+        {
+            ArtistArtworkCache.TryRemove(stale, out _);
+        }
     }
 
     private static Task<ArtistArtworkResolution?> TryResolveArtistImageBySourceAsync(

@@ -43,7 +43,7 @@ public class DeezSpoTagSettingsService : ISettingsService
     private static readonly IReadOnlyList<string> CanonicalLyricsProviders =
         DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder;
     private static readonly string[] CanonicalLyricsTypes = { "lyrics", SyllableLyricsType, TtmlLyricsType, UnsyncedLyricsType };
-    private static readonly string[] CanonicalLyricsFormats = { "lrc", "elrc", "ttml" };
+    private static readonly string[] CanonicalLyricsFormats = { "lrc", "ttml" };
     private static readonly JsonSerializerOptions SettingsDeserializeOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -67,6 +67,9 @@ public class DeezSpoTagSettingsService : ISettingsService
     private TaggingProfile? _cachedDefaultProfile;
     private DateTime? _lastLoggedWriteUtc;
     private string? _lastFixSignature;
+    private string? _cachedSettingsJson;
+    private DateTime _cachedSettingsWriteUtc;
+    private long _cachedSettingsLength = -1;
     private readonly HashSet<string> _loggedFixFields = new(StringComparer.OrdinalIgnoreCase);
 
     public DeezSpoTagSettingsService(ILogger<DeezSpoTagSettingsService> logger)
@@ -287,16 +290,43 @@ public class DeezSpoTagSettingsService : ISettingsService
     {
         try
         {
-            var json = File.ReadAllText(_settingsFilePath);
+            var json = ReadSettingsJsonCached();
             return JsonSerializer.Deserialize<DeezSpoTagSettings>(json, SettingsDeserializeOptions) ?? GetStaticDefaultSettings();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error parsing settings file, resetting to defaults");
+            InvalidateSettingsJsonCache();
             var defaultSettings = GetStaticDefaultSettings();
             SaveSettingsLocked(defaultSettings);
             return defaultSettings;
         }
+    }
+
+    private string ReadSettingsJsonCached()
+    {
+        var info = new FileInfo(_settingsFilePath);
+        var writeUtc = info.LastWriteTimeUtc;
+        var length = info.Length;
+        if (_cachedSettingsJson != null
+            && _cachedSettingsLength == length
+            && _cachedSettingsWriteUtc == writeUtc)
+        {
+            return _cachedSettingsJson;
+        }
+
+        var json = File.ReadAllText(_settingsFilePath);
+        _cachedSettingsJson = json;
+        _cachedSettingsWriteUtc = writeUtc;
+        _cachedSettingsLength = length;
+        return json;
+    }
+
+    private void InvalidateSettingsJsonCache()
+    {
+        _cachedSettingsJson = null;
+        _cachedSettingsLength = -1;
+        _cachedSettingsWriteUtc = default;
     }
 
     private bool ApplyAppleMusicPlatformAuthOverlay(DeezSpoTagSettings settings)
@@ -564,7 +594,11 @@ public class DeezSpoTagSettingsService : ISettingsService
         var tmpPath = _settingsFilePath + ".tmp";
         File.WriteAllText(tmpPath, json);
         File.Move(tmpPath, _settingsFilePath, overwrite: true);
-        _lastLoggedWriteUtc = File.GetLastWriteTimeUtc(_settingsFilePath);
+        var savedInfo = new FileInfo(_settingsFilePath);
+        _cachedSettingsJson = json;
+        _cachedSettingsWriteUtc = savedInfo.LastWriteTimeUtc;
+        _cachedSettingsLength = savedInfo.Length;
+        _lastLoggedWriteUtc = savedInfo.LastWriteTimeUtc;
 
         _logger.LogInformation("Settings saved successfully");
     }
@@ -1046,6 +1080,18 @@ public class DeezSpoTagSettingsService : ISettingsService
             normalized => settings.LrcType = normalized,
             fixes,
             nameof(settings.LrcType));
+
+        if (settings.LyricsFormatSchemaVersion < 1)
+        {
+            var preferred = LyricsFormatSelectionImpliesEnhanced(settings.LrcFormat);
+            if (settings.PreferEnhancedLrc != preferred)
+            {
+                settings.PreferEnhancedLrc = preferred;
+                fixes.Mark(nameof(settings.PreferEnhancedLrc));
+            }
+            settings.LyricsFormatSchemaVersion = 1;
+            fixes.Mark(nameof(settings.LyricsFormatSchemaVersion));
+        }
 
         NormalizeLyricsSetting(
             settings.LrcFormat,
@@ -1735,11 +1781,37 @@ public class DeezSpoTagSettingsService : ISettingsService
         if (parsed.Count == 0)
         {
             parsed.Add("lrc");
-            parsed.Add("elrc");
             parsed.Add("ttml");
         }
 
         return string.Join(",", parsed);
+    }
+
+    private static bool LyricsFormatSelectionImpliesEnhanced(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        foreach (var token in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (token.Trim().ToLowerInvariant())
+            {
+                case "elrc":
+                case "enhanced-lrc":
+                case "enhanced-synchronized-lyrics":
+                case "enhanced-synchronised-lyrics":
+                case "both":
+                case "richlyrics":
+                case "rich-lyrics":
+                case "lyrics":
+                case "all":
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static IReadOnlyList<string> NormalizeLyricsFormatToken(string? token)
@@ -1751,16 +1823,17 @@ public class DeezSpoTagSettingsService : ISettingsService
             "standard-lrc" => ["lrc"],
             "synced" => ["lrc"],
             "synced-lyrics" => ["lrc"],
-            "enhanced-lrc" => ["elrc"],
-            "enhanced-synchronized-lyrics" => ["elrc"],
-            "enhanced-synchronised-lyrics" => ["elrc"],
-            "both" => ["lrc", "elrc", "ttml"],
-            "richlyrics" => ["lrc", "elrc", "ttml"],
-            "rich-lyrics" => ["lrc", "elrc", "ttml"],
-            "lyrics" => ["lrc", "elrc", "ttml"],
+            "elrc" => ["lrc"],
+            "enhanced-lrc" => ["lrc"],
+            "enhanced-synchronized-lyrics" => ["lrc"],
+            "enhanced-synchronised-lyrics" => ["lrc"],
+            "both" => ["lrc", "ttml"],
+            "richlyrics" => ["lrc", "ttml"],
+            "rich-lyrics" => ["lrc", "ttml"],
+            "lyrics" => ["lrc", "ttml"],
             "lrc+ttml" => ["lrc", "ttml"],
             "ttml+lrc" => ["lrc", "ttml"],
-            "all" => ["lrc", "elrc", "ttml"],
+            "all" => ["lrc", "ttml"],
             _ => []
         };
     }

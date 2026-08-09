@@ -351,7 +351,6 @@
     ];
     const LYRICS_FORMAT_OPTIONS = [
         { value: "lrc", label: "Standard synchronized lyrics (.lrc)" },
-        { value: "elrc", label: "Enhanced Synced Lyrics (.elrc)" },
         { value: "ttml", label: "TTML lyrics (.ttml)" }
     ];
 
@@ -5628,13 +5627,13 @@
             .forEach((token) => {
                 let values = [];
                 if (token === "both" || token === "richlyrics" || token === "rich-lyrics" || token === "lyrics" || token === "all") {
-                    values = ["lrc", "elrc", "ttml"];
+                    values = ["lrc", "ttml"];
                 } else if (token === "lrc+ttml" || token === "ttml+lrc") {
                     values = ["lrc", "ttml"];
                 } else if (token === "lrc" || token === "standard-lrc" || token === "synced" || token === "synced-lyrics") {
                     values = ["lrc"];
                 } else if (token === "elrc" || token === "enhanced-lrc" || token === "enhanced-synchronized-lyrics") {
-                    values = ["elrc"];
+                    values = ["lrc"];
                 } else if (token === "ttml") {
                     values = ["ttml"];
                 }
@@ -5785,6 +5784,8 @@
         const synthesizeLrcFromTtmlGroup = document.getElementById("synthesizeLrcFromTtmlGroup");
         const lrcFormat = document.getElementById("lrcFormat");
         const synthesizeLrcFromTtml = document.getElementById("synthesizeLrcFromTtml");
+        const preferEnhancedLrcGroup = document.getElementById("preferEnhancedLrcGroup");
+        const preferEnhancedLrc = document.getElementById("preferEnhancedLrc");
         if (!embedLyricsFormatGroup) {
             return;
         }
@@ -5807,6 +5808,13 @@
         }
         if (synthesizeLrcFromTtml) {
             synthesizeLrcFromTtml.disabled = !canSynthesizeLrc;
+        }
+        const canPreferEnhancedLrc = show && document.getElementById("lyrics-format-lrc")?.checked === true;
+        if (preferEnhancedLrcGroup) {
+            preferEnhancedLrcGroup.style.display = canPreferEnhancedLrc ? "" : "none";
+        }
+        if (preferEnhancedLrc) {
+            preferEnhancedLrc.disabled = !canPreferEnhancedLrc;
         }
     }
 
@@ -6005,6 +6013,7 @@
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
         applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "richlyrics"));
         applyFieldCheckedWhenBoolean("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
+        applyFieldCheckedWhenBoolean("preferEnhancedLrc", technical.preferEnhancedLrc ?? true);
         applyFieldCheckedWhenBoolean("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
         applyFieldValueIfPresent("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
         applyFieldCheckedWhenBoolean("artworkFallbackEnabled", technical.artworkFallbackEnabled);
@@ -6105,6 +6114,10 @@
         tags.coverDescriptionUTF8 = getChecked("coverDescriptionUTF8", tags.coverDescriptionUTF8 ?? false);
         settings.tags = tags;
         settings.jpegImageQuality = getNumber("jpegImageQuality", settings.jpegImageQuality ?? 90);
+        settings.animatedArtworkMaxSizeMb = getNumber(
+            "animatedArtworkMaxSizeMb",
+            settings.animatedArtworkMaxSizeMb ?? 10
+        );
 
         return settings;
     }
@@ -6139,6 +6152,7 @@
         technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
         technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "richlyrics"));
         technical.synthesizeLrcFromTtml = getChecked("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
+        technical.preferEnhancedLrc = getChecked("preferEnhancedLrc", technical.preferEnhancedLrc ?? true);
         technical.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled ?? true);
         technical.lyricsFallbackOrder = resolveSavedFallbackOrder({
             fallbackEnabled: technical.lyricsFallbackEnabled,
@@ -6232,6 +6246,12 @@
                 1,
                 100
             ),
+            animatedArtworkMaxSizeMb: getInputNumber(
+                "animatedArtworkMaxSizeMb",
+                getBaseNumber("animatedArtworkMaxSizeMb", 10, 1, 200),
+                1,
+                200
+            ),
             recentDownloadWindowDays: getInputNumber(
                 "enhancementRecentDownloadWindowDays",
                 getBaseNumber("recentDownloadWindowDays", DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS, 0, 3650),
@@ -6265,6 +6285,13 @@
             const parsedQuality = Number.parseInt(String(source.jpegImageQuality), 10);
             if (Number.isFinite(parsedQuality)) {
                 applyFieldValueIfPresent("jpegImageQuality", Math.min(100, Math.max(1, parsedQuality)));
+            }
+        }
+
+        if (source.animatedArtworkMaxSizeMb !== undefined && source.animatedArtworkMaxSizeMb !== null) {
+            const parsedMaxSize = Number.parseInt(String(source.animatedArtworkMaxSizeMb), 10);
+            if (Number.isFinite(parsedMaxSize)) {
+                applyFieldValueIfPresent("animatedArtworkMaxSizeMb", Math.min(200, Math.max(1, parsedMaxSize)));
             }
         }
 

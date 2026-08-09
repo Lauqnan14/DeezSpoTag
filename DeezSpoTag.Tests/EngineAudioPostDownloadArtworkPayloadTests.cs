@@ -84,12 +84,12 @@ public sealed class EngineAudioPostDownloadArtworkPayloadTests : IDisposable
     {
         var albumPath = Path.Join(_tempRoot, "Artist", "Album");
         var outputPath = Path.Join(albumPath, "01 - Final Track.flac");
-        var prefetchedLyricsPath = Path.Join(_tempRoot, "staging", "provider-name.elrc");
+        var prefetchedLyricsPath = Path.Join(_tempRoot, "staging", "provider-name.lrc");
         var payload = new QobuzQueueItem
         {
             LyricsArtifacts = new LyricsArtifactState
             {
-                FilesByFormat = new Dictionary<string, string> { ["elrc"] = prefetchedLyricsPath }
+                FilesByFormat = new Dictionary<string, string> { ["lrc"] = prefetchedLyricsPath }
             }
         };
 

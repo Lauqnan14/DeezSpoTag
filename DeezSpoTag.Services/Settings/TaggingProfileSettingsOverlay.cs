@@ -35,6 +35,7 @@ public static class TaggingProfileSettingsOverlay
         settings.LrcType = technical.LrcType ?? "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
         settings.LrcFormat = technical.LrcFormat ?? "richlyrics";
         settings.SynthesizeLrcFromTtml = technical.SynthesizeLrcFromTtml;
+        settings.PreferEnhancedLrc = technical.PreferEnhancedLrc;
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
         settings.LyricsFallbackOrder = technical.LyricsFallbackOrder ?? string.Join(",", LyricsProviderRegistry.DefaultOrder);
         settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;

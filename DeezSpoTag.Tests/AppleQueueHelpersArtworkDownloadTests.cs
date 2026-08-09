@@ -171,6 +171,7 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
             source,
             outputBase,
             new[] { "mp4", "webp", "gif" },
+            (long)AppleQueueHelpers.DefaultAnimatedArtworkMaxSizeMb * 1024 * 1024,
             NullLogger.Instance,
             CancellationToken.None
         }));

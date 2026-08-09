@@ -285,7 +285,8 @@ public sealed class CoverLibraryMaintenanceService
             OutputDir = albumDir,
             Logger = _logger,
             OutputFormats = request.AnimatedArtworkFormats,
-            RenameExistingArtwork = request.RenameExistingAnimatedArtwork
+            RenameExistingArtwork = request.RenameExistingAnimatedArtwork,
+            MaxSizeMb = request.AnimatedArtworkMaxSizeMb
         };
         var existingPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
             saveRequest,
@@ -320,7 +321,8 @@ public sealed class CoverLibraryMaintenanceService
                 CollectionType = string.IsNullOrWhiteSpace(resolvedIdentity.AppleAlbumId) ? null : "album",
                 CollectionId = resolvedIdentity.AppleAlbumId,
                 OutputFormats = request.AnimatedArtworkFormats,
-                RenameExistingArtwork = request.RenameExistingAnimatedArtwork
+                RenameExistingArtwork = request.RenameExistingAnimatedArtwork,
+                MaxSizeMb = request.AnimatedArtworkMaxSizeMb
             },
             cancellationToken);
         if (animatedResult.Paths.Count > 0)
@@ -843,6 +845,7 @@ public sealed record CoverLibraryMaintenanceRequest(
     bool QueueAnimatedArtwork = false,
     string AppleStorefront = "us",
     int AnimatedArtworkMaxResolution = 2160,
+    int AnimatedArtworkMaxSizeMb = 10,
     IReadOnlyCollection<string>? AnimatedArtworkFormats = null,
     IReadOnlyCollection<CoverSourceName>? EnabledSources = null,
     string CoverImageTemplate = "cover",

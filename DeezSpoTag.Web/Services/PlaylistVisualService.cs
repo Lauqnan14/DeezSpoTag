@@ -406,6 +406,7 @@ public sealed class PlaylistVisualService
                     OutputDir = visualDir,
                     OutputFormats = new[] { "webp" },
                     RenameExistingArtwork = true,
+                    MaxSizeMb = AppleQueueHelpers.DefaultAnimatedArtworkMaxSizeMb,
                     Logger = _logger
                 },
                 cancellationToken);

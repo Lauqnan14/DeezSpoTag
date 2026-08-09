@@ -1669,7 +1669,7 @@
 
                     <div class="download-section">
                         <div class="download-section-title">Encoding</div>
-                        <div class="download-grid download-grid-2 technical-checkbox-grid">
+                        <div class="download-grid download-grid-3 technical-checkbox-grid">
                             <div class="checkbox-group">
                                 <input type="checkbox" id="coverDescriptionUTF8" />
                                 <label for="coverDescriptionUTF8">Cover description UTF-8</label>
@@ -1677,6 +1677,15 @@
                             <div class="form-group">
                                 <label for="jpegImageQuality">JPEG image quality</label>
                                 <input type="number" id="jpegImageQuality" value="90" min="1" max="100" />
+                            </div>
+                            <div class="form-group" id="animatedArtworkMaxSizeMbGroup">
+                                <label for="animatedArtworkMaxSizeMb">
+                                    Animated artwork max size (MB)
+                                    <span class="autotag-tooltip-icon ms-1" title="WebP and GIF are re-encoded at progressively lower resolution and quality until they fit this budget. MP4 is saved as-is." aria-label="WebP and GIF are re-encoded at progressively lower resolution and quality until they fit this budget. MP4 is saved as-is.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="number" id="animatedArtworkMaxSizeMb" value="10" min="1" max="200" />
                             </div>
                         </div>
                     </div>
@@ -1791,7 +1800,7 @@
                             <div class="form-group" id="embedLyricsFormatGroup" style="display: none;">
                                 <label for="lrcFormat">
                                     Lyrics output
-                                    <span class="autotag-tooltip-icon ms-1" title="Select one or more sidecars. Standard synchronized lyrics write .lrc, Enhanced Synced Lyrics writes .elrc, and TTML writes .ttml." aria-label="Select one or more sidecars. Standard synchronized lyrics write .lrc, Enhanced Synced Lyrics writes .elrc, and TTML writes .ttml.">
+                                    <span class="autotag-tooltip-icon ms-1" title="Select one or more sidecars. Synchronized lyrics write .lrc and TTML writes .ttml." aria-label="Select one or more sidecars. Synchronized lyrics write .lrc and TTML writes .ttml.">
                                         <i class="fas fa-question-circle"></i>
                                     </span>
                                 </label>
@@ -1801,12 +1810,17 @@
                                         <label for="lyrics-format-lrc">Standard synchronized lyrics (.lrc)</label>
                                     </div>
                                     <div class="checkbox-group">
-                                        <input type="checkbox" id="lyrics-format-elrc" data-value="elrc" />
-                                        <label for="lyrics-format-elrc">Enhanced Synced Lyrics (.elrc)</label>
-                                    </div>
-                                    <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-format-ttml" data-value="ttml" checked />
                                         <label for="lyrics-format-ttml">TTML lyrics (.ttml)</label>
+                                    </div>
+                                    <div class="checkbox-group" id="preferEnhancedLrcGroup">
+                                        <input type="checkbox" id="preferEnhancedLrc" checked />
+                                        <label for="preferEnhancedLrc">
+                                            Enhanced Synced Lyrics
+                                            <span class="autotag-tooltip-icon ms-1" title="Writes word-level (Enhanced LRC) timing into the .lrc file whenever the provider supplies it, falling back to line-level timing otherwise. Turn this off to always write plain line-level timing." aria-label="Writes word-level (Enhanced LRC) timing into the .lrc file whenever the provider supplies it, falling back to line-level timing otherwise. Turn this off to always write plain line-level timing.">
+                                                <i class="fas fa-question-circle"></i>
+                                            </span>
+                                        </label>
                                     </div>
                                     <div class="checkbox-group" id="synthesizeLrcFromTtmlGroup" style="display: none;">
                                         <input type="checkbox" id="synthesizeLrcFromTtml" />
@@ -1818,7 +1832,7 @@
                                         </label>
                                     </div>
                                 </div>
-                                <input type="hidden" id="lrcFormat" value="lrc,elrc,ttml" />
+                                <input type="hidden" id="lrcFormat" value="lrc,ttml" />
                             </div>
                         </div>
                     </div>

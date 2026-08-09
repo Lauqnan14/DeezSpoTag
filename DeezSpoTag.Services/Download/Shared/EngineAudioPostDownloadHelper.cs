@@ -2662,7 +2662,8 @@ public static partial class EngineAudioPostDownloadHelper
             Logger = execution.Request.Logger,
             CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AlbumId) ? null : AlbumType,
             CollectionId = appleIdentity?.AlbumId,
-            OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings)
+            OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
+            MaxSizeMb = AppleQueueHelpers.ResolveAnimatedArtworkMaxSizeMb(settings)
         };
 
         var existingAnimatedPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(

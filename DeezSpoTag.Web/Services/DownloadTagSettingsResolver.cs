@@ -124,7 +124,8 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             ArtistImageTemplate: ReadStringValue(data, "artistImageTemplate"),
             LocalArtworkFormat: ReadStringValue(data, "localArtworkFormat"),
             EmbedMaxQualityCover: ReadBooleanValue(data, "embedMaxQualityCover"),
-            JpegImageQuality: ReadIntValue(data, "jpegImageQuality"));
+            JpegImageQuality: ReadIntValue(data, "jpegImageQuality"),
+            AnimatedArtworkMaxSizeMb: ReadIntValue(data, "animatedArtworkMaxSizeMb"));
 
         var hasAnyValue =
             !string.IsNullOrWhiteSpace(runtime.TracknameTemplate)
@@ -137,7 +138,8 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             || !string.IsNullOrWhiteSpace(runtime.ArtistImageTemplate)
             || !string.IsNullOrWhiteSpace(runtime.LocalArtworkFormat)
             || runtime.EmbedMaxQualityCover.HasValue
-            || runtime.JpegImageQuality.HasValue;
+            || runtime.JpegImageQuality.HasValue
+            || runtime.AnimatedArtworkMaxSizeMb.HasValue;
 
         return hasAnyValue ? runtime : null;
     }

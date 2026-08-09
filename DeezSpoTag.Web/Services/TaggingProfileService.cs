@@ -400,6 +400,7 @@ public sealed class TaggingProfileService
         }
         technical.LyricsFallbackOrder = string.Join(",", providers);
 
+        technical.PreferEnhancedLrc = LyricsFormatSelectionImpliesEnhanced(technical.LrcFormat);
         var formats = NormalizeLyricsFormats(technical.LrcFormat);
         technical.LrcFormat = string.Join(",", formats);
         var types = SplitNormalized(technical.LrcType);
@@ -425,6 +426,21 @@ public sealed class TaggingProfileService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+    private static bool LyricsFormatSelectionImpliesEnhanced(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        return SplitNormalized(value).Any(static token => token switch
+        {
+            "elrc" or "enhanced-lrc" or "enhanced-synchronized-lyrics" or "enhanced-synchronised-lyrics" => true,
+            "both" or "richlyrics" or "rich-lyrics" or "lyrics" or "all" => true,
+            _ => false
+        });
+    }
+
     private static List<string> NormalizeLyricsFormats(string? value)
     {
         var formats = new List<string>();
@@ -432,12 +448,12 @@ public sealed class TaggingProfileService
         {
             var expanded = token switch
             {
-                "both" or "richlyrics" or "rich-lyrics" or "lyrics" => new[] { "lrc", "elrc", "ttml" },
+                "both" or "richlyrics" or "rich-lyrics" or "lyrics" => new[] { "lrc", "ttml" },
                 "lrc+ttml" or "ttml+lrc" => new[] { "lrc", "ttml" },
-                "enhanced-lrc" or "enhanced-synchronized-lyrics" => new[] { "elrc" },
+                "elrc" or "enhanced-lrc" or "enhanced-synchronized-lyrics" => new[] { "lrc" },
                 _ => new[] { token }
             };
-            foreach (var format in expanded.Where(static format => format is "lrc" or "elrc" or "ttml"))
+            foreach (var format in expanded.Where(static format => format is "lrc" or "ttml"))
             {
                 if (!formats.Contains(format, StringComparer.OrdinalIgnoreCase))
                 {
@@ -447,7 +463,7 @@ public sealed class TaggingProfileService
         }
         if (formats.Count == 0)
         {
-            formats.AddRange(["lrc", "elrc", "ttml"]);
+            formats.AddRange(["lrc", "ttml"]);
         }
         return formats;
     }
