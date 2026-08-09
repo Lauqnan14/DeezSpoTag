@@ -3311,7 +3311,7 @@
                                     <button id="metadata-update-button" class="action-btn action-btn-sm" type="button">Begin Update</button>
                                     <button id="metadata-save-settings-button" class="action-btn action-btn-sm" type="button">Save Settings</button>
                                     <button id="metadata-refresh-cache-button" class="action-btn action-btn-sm" type="button">Refresh Cache</button>
-                                    <button id="metadata-cancel-button" class="action-btn action-btn-sm" type="button" disabled>Cancel Scan</button>
+                                    <button id="metadata-cancel-button" class="action-btn action-btn-sm" type="button">Cancel</button>
                                 </div>
                             </div>
 
@@ -4094,6 +4094,27 @@ function applyLibraryScanProgress(status, phaseLabel, progressLabel, progressBar
     }
 }
 
+function pickMetadataStatus(automationStatus) {
+    const cache = automationStatus?.cacheRefresh;
+    const target = automationStatus?.targetUpdate;
+    const active = String(automationStatus?.activeOperation || '');
+    if (active === 'cache-refresh') {
+        return cache;
+    }
+    if (active) {
+        return target;
+    }
+    if (cache?.running) {
+        return cache;
+    }
+    if (target?.running) {
+        return target;
+    }
+    const cacheFinished = Date.parse(cache?.completedAtUtc || '') || 0;
+    const targetFinished = Date.parse(target?.completedAtUtc || '') || 0;
+    return cacheFinished > targetFinished ? cache : target;
+}
+
 function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressBar) {
     if (!status) {
         return;
@@ -4115,15 +4136,19 @@ function applyMetadataUpdaterStatus(status, phaseLabel, progressLabel, progressB
         .join(', ');
 
     if (phaseLabel) {
-        if (running && currentArtist) {
-            phaseLabel.textContent = `${phase} · ${currentArtist}`;
+        if (currentArtist) {
+            phaseLabel.textContent = `Current Artist: ${currentArtist}`;
+        } else if (running) {
+            phaseLabel.textContent = `Current Artist: ${phase}`;
         } else {
-            phaseLabel.textContent = phase;
+            phaseLabel.textContent = phase || 'Not running';
         }
     }
 
     if (progressLabel) {
-        if (total > 0) {
+        if (!running && message) {
+            progressLabel.textContent = message;
+        } else if (total > 0) {
             const skippedText = skipReasonText ? `${skipped} skipped: ${skipReasonText}` : `${skipped} skipped`;
             progressLabel.textContent = `${processed} / ${total} artists (${succeeded} success, ${failed} failed, ${skippedText})`;
         } else if (message) {
@@ -4313,10 +4338,22 @@ function initMetadataUpdater() {
         });
     }
     if (cancelButton) {
-        cancelButton.addEventListener('click', () => {
-            notifyActivity('Metadata updater cancellation is not available yet.', 'warning');
+        cancelButton.addEventListener('click', async () => {
+            await runActivityButtonAction(cancelButton, async () => {
+                try {
+                    const response = await activityFetch('/api/library/artist-metadata/cancel', { method: 'POST' });
+                    const payload = await response.json().catch(() => null);
+                    if (!response.ok) {
+                        throw new Error(payload?.error || payload?.message || `Request failed (${response.status})`);
+                    }
+                    notifyActivity(payload?.cancelled
+                        ? 'Metadata updater cancellation requested.'
+                        : 'No metadata operation is running.', payload?.cancelled ? 'info' : 'warning');
+                } catch (error) {
+                    notifyActivity(`Metadata cancellation failed: ${error?.message || error}`, 'error');
+                }
+            });
         });
-        cancelButton.disabled = true;
     }
 
     if (targetContainer) {
@@ -4652,6 +4689,7 @@ async function refreshLibraryScanAndMetadataStatus() {
     const metadataProgressBar = document.getElementById('metadata-progress-bar');
     const metadataUpdate = document.getElementById('metadata-update-button');
     const metadataRefresh = document.getElementById('metadata-refresh-cache-button');
+    const metadataCancel = document.getElementById('metadata-cancel-button');
     let metadataRunning = null;
 
     try {
@@ -4675,9 +4713,7 @@ async function refreshLibraryScanAndMetadataStatus() {
         const metadataResponse = await activityFetch('/api/library/artist-metadata/status');
         if (metadataResponse.ok) {
             const automationStatus = await metadataResponse.json();
-            const metadataStatus = automationStatus?.activeOperation === 'cache-refresh'
-                ? automationStatus?.cacheRefresh
-                : automationStatus?.targetUpdate;
+            const metadataStatus = pickMetadataStatus(automationStatus);
             metadataRunning = Boolean(automationStatus?.activeOperation || metadataStatus?.running);
             applyMetadataUpdaterStatus(metadataStatus || {}, metadataPhase, metadataProgressLabel, metadataProgressBar);
             if (metadataUpdate) {
@@ -4685,6 +4721,9 @@ async function refreshLibraryScanAndMetadataStatus() {
             }
             if (metadataRefresh) {
                 metadataRefresh.disabled = metadataRunning;
+            }
+            if (metadataCancel) {
+                metadataCancel.disabled = !metadataRunning;
             }
         }
     } catch {

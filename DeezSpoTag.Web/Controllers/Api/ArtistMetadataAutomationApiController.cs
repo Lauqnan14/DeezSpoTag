@@ -25,6 +25,10 @@ public sealed class ArtistMetadataAutomationApiController(
         return Ok(new { queued, status = coordinator.GetStatus() });
     }
 
+    [HttpPost("cancel")]
+    public IActionResult Cancel()
+        => Ok(new { cancelled = coordinator.Cancel(), status = coordinator.GetStatus() });
+
     [HttpPost("targets/update")]
     public async Task<IActionResult> UpdateTargets(
         [FromBody] MetadataUpdaterRunRequest? request,

@@ -61,6 +61,13 @@ public sealed class ArtistMetadataCacheRefreshService
         ArtistMetadataCacheRefreshRequest request,
         IProgress<ArtistMetadataOperationProgress>? progress,
         CancellationToken cancellationToken)
+        => await RefreshAsync(request, progress, completedArtistIds: null, cancellationToken);
+
+    public async Task<ArtistMetadataCacheRefreshResult> RefreshAsync(
+        ArtistMetadataCacheRefreshRequest request,
+        IProgress<ArtistMetadataOperationProgress>? progress,
+        IReadOnlySet<long>? completedArtistIds,
+        CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
         {
@@ -70,6 +77,7 @@ public sealed class ArtistMetadataCacheRefreshService
         var artists = (await _repository.GetArtistsAsync("all", request.FolderId, cancellationToken))
             .Where(artist => artist.Id > 0 && !string.IsNullOrWhiteSpace(artist.Name))
             .Where(artist => !request.ArtistId.HasValue || artist.Id == request.ArtistId.Value)
+            .Where(artist => completedArtistIds is null || !completedArtistIds.Contains(artist.Id))
             .ToList();
         var succeeded = 0;
         var failed = 0;
@@ -77,7 +85,8 @@ public sealed class ArtistMetadataCacheRefreshService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var artist = artists[index];
-            progress?.Report(new ArtistMetadataOperationProgress(index + 1, artists.Count, artist.Name));
+            progress?.Report(new ArtistMetadataOperationProgress(
+                index + 1, artists.Count, artist.Name, null, succeeded, failed));
             try
             {
                 await RefreshArtistAsync(
@@ -87,10 +96,14 @@ public sealed class ArtistMetadataCacheRefreshService
                     request.IncludePopularSongs,
                     cancellationToken);
                 succeeded++;
+                progress?.Report(new ArtistMetadataOperationProgress(
+                    index + 1, artists.Count, artist.Name, artist.Id, succeeded, failed));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 failed++;
+                progress?.Report(new ArtistMetadataOperationProgress(
+                    index + 1, artists.Count, artist.Name, artist.Id, succeeded, failed));
                 _logger.LogWarning(ex, "Artist metadata cache refresh failed for artist {ArtistId}.", artist.Id);
             }
         }
@@ -129,14 +142,17 @@ public sealed class ArtistMetadataCacheRefreshService
         IReadOnlyList<BiographyProvider> requestedProviders = selectedProvider.HasValue
             ? [selectedProvider.Value]
             : BiographyProviders;
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var resolved = await Task.WhenAll(requestedProviders
+            .Select(provider => ResolveBiographyAsync(provider, artistId, artistName, cancellationToken)));
         var biographies = new List<(BiographyProvider Provider, string Biography)>();
-        foreach (var provider in requestedProviders)
+        for (var index = 0; index < requestedProviders.Count; index++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var biography = await ResolveBiographyAsync(provider, artistId, artistName, cancellationToken);
+            var biography = SanitizeBiography(resolved[index]);
             if (!string.IsNullOrWhiteSpace(biography))
             {
-                biographies.Add((provider, SanitizeBiography(biography)!));
+                biographies.Add((requestedProviders[index], biography!));
             }
         }
 
@@ -331,4 +347,4 @@ public sealed record ArtistMetadataCacheRefreshRequest(
     string? Source,
     bool IncludePopularSongs = false);
 public sealed record ArtistMetadataCacheRefreshResult(int Total, int Succeeded, int Failed, string? Error);
-public sealed record ArtistMetadataOperationProgress(int Processed, int Total, string? CurrentArtist);
+public sealed record ArtistMetadataOperationProgress(int Processed, int Total, string? CurrentArtist, long? CompletedArtistId = null, int Succeeded = 0, int Failed = 0);

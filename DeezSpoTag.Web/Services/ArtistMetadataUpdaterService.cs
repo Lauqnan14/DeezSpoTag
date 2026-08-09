@@ -135,9 +135,17 @@ public sealed partial class ArtistMetadataUpdaterService
         await SaveStateAsync(state, cancellationToken);
     }
 
+    public Task<bool> RunAndWaitAsync(
+        MetadataUpdaterRunRequest request,
+        bool isAutomatic,
+        CancellationToken cancellationToken)
+        => RunAndWaitAsync(request, isAutomatic, progress: null, completedArtistIds: null, cancellationToken);
+
     public async Task<bool> RunAndWaitAsync(
         MetadataUpdaterRunRequest request,
         bool isAutomatic,
+        IProgress<ArtistMetadataOperationProgress>? progress,
+        IReadOnlySet<long>? completedArtistIds,
         CancellationToken cancellationToken)
     {
         Task run;
@@ -149,7 +157,12 @@ public sealed partial class ArtistMetadataUpdaterService
                 return false;
             }
             run = _workCoordinator.RunHeavyWorkAsync(
-                token => RunInternalAsync(request ?? new MetadataUpdaterRunRequest(), isAutomatic, token),
+                token => RunInternalAsync(
+                    request ?? new MetadataUpdaterRunRequest(),
+                    isAutomatic,
+                    progress,
+                    completedArtistIds,
+                    token),
                 cancellationToken);
             _activeRun = run;
         }
@@ -165,6 +178,8 @@ public sealed partial class ArtistMetadataUpdaterService
     private async Task RunInternalAsync(
         MetadataUpdaterRunRequest request,
         bool isAutomatic,
+        IProgress<ArtistMetadataOperationProgress>? progress,
+        IReadOnlySet<long>? completedArtistIds,
         CancellationToken cancellationToken)
     {
         var startedAtUtc = DateTimeOffset.UtcNow;
@@ -191,6 +206,11 @@ public sealed partial class ArtistMetadataUpdaterService
             foreach (var tracked in allCandidates)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (completedArtistIds is not null && completedArtistIds.Contains(tracked.ArtistId))
+                {
+                    continue;
+                }
+
                 counters.ProcessedArtists++;
                 UpdateProgressStatus(tracked.ArtistName, counters);
 
@@ -203,6 +223,11 @@ public sealed partial class ArtistMetadataUpdaterService
                 counters.Apply(outcome);
                 UpdateCounterStatus(counters);
                 await SaveStateAsync(state, cancellationToken);
+                progress?.Report(new ArtistMetadataOperationProgress(
+                    counters.ProcessedArtists,
+                    counters.TotalArtists,
+                    tracked.ArtistName,
+                    tracked.ArtistId));
             }
 
             UpdateStatus(_status with
@@ -655,7 +680,7 @@ public sealed partial class ArtistMetadataUpdaterService
         {
             ProcessedArtists = counters.ProcessedArtists,
             CurrentArtist = artistName,
-            Phase = $"Updating {artistName}"
+            Phase = "Updating artists"
         });
     }
 

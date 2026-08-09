@@ -5,6 +5,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
 {
     private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(30);
+    private const int CheckpointSaveEvery = 25;
     private readonly ArtistMetadataCacheRefreshService _cacheRefresh;
     private readonly ArtistMetadataUpdaterService _targetUpdate;
     private readonly UserPreferencesStore _preferences;
@@ -15,6 +16,10 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     private readonly string _legacyStatePath;
     private ArtistMetadataAutomationStatus _status = ArtistMetadataAutomationStatus.Idle();
     private Task? _activeOperation;
+    private CancellationTokenSource? _activeCts;
+    private CancellationToken _shutdownToken = CancellationToken.None;
+    private ArtistMetadataActiveRun? _checkpoint;
+    private int _sinceCheckpointSave;
 
     public ArtistMetadataAutomationCoordinator(
         ArtistMetadataCacheRefreshService cacheRefresh,
@@ -39,35 +44,134 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         }
     }
 
+    public bool Cancel()
+    {
+        var cts = _activeCts;
+        if (cts is null || cts.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        try
+        {
+            cts.Cancel();
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
     public Task<bool> EnqueueCacheRefreshAsync(ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken)
         => EnqueueAsync(
             "cache-refresh",
             async token => string.IsNullOrWhiteSpace(
                 (await RunCacheRefreshAsync(request, automatic: false, token)).Error),
-            cancellationToken);
+            cancellationToken,
+            resuming: null,
+            cacheRequest: request);
 
     public Task<bool> EnqueueTargetUpdateAsync(MetadataUpdaterRunRequest request, CancellationToken cancellationToken)
-        => EnqueueAsync("target-update", token => RunTargetUpdateAsync(request, automatic: false, token), cancellationToken);
+        => EnqueueAsync(
+            "target-update",
+            token => RunTargetUpdateAsync(request, automatic: false, token),
+            cancellationToken,
+            resuming: null,
+            targetRequest: request);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _shutdownToken = stoppingToken;
+        try
+        {
+            await ResumeInterruptedRunAsync(stoppingToken);
+        }
+        catch (OperationCanceledException ex)
+        {
+            _logger.LogWarning(ex, "Artist metadata resume was cancelled.");
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Artist metadata resume failed.");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await RunScheduledOperationsAsync(stoppingToken);
+                await Task.Delay(PollInterval, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning(ex, "Artist metadata schedule evaluation was cancelled unexpectedly.");
+                if (!await DelayOrStopAsync(stoppingToken))
+                {
+                    break;
+                }
+            }
+            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
                 _logger.LogWarning(ex, "Artist metadata schedule evaluation failed.");
+                if (!await DelayOrStopAsync(stoppingToken))
+                {
+                    break;
+                }
             }
-
-            await Task.Delay(PollInterval, stoppingToken);
         }
+    }
+
+    private static async Task<bool> DelayOrStopAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await Task.Delay(PollInterval, stoppingToken);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private async Task ResumeInterruptedRunAsync(CancellationToken cancellationToken)
+    {
+        var state = await LoadStateAsync(cancellationToken);
+        var run = state.ActiveRun;
+        if (run is null)
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "Resuming interrupted artist metadata {Operation} ({Completed} artist(s) already done).",
+            run.Operation,
+            run.CompletedArtistIds.Count);
+
+        var preferences = await _preferences.LoadAsync();
+        if (string.Equals(run.Operation, "cache-refresh", StringComparison.Ordinal))
+        {
+            var cacheRequest = run.CacheRequest ?? BuildCacheRequest(preferences);
+            await EnqueueAsync(
+                "cache-refresh",
+                async token => string.IsNullOrWhiteSpace(
+                    (await RunCacheRefreshAsync(cacheRequest, run.Automatic, token)).Error),
+                cancellationToken,
+                resuming: run);
+            return;
+        }
+
+        var targetRequest = run.TargetRequest ?? BuildTargetRequest(preferences);
+        await EnqueueAsync(
+            "target-update",
+            token => RunTargetUpdateAsync(targetRequest, run.Automatic, token),
+            cancellationToken,
+            resuming: run);
     }
 
     private async Task RunScheduledOperationsAsync(CancellationToken cancellationToken)
@@ -88,45 +192,64 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             return;
         }
 
-        if (!await _operationGate.WaitAsync(0, cancellationToken))
+        if (cacheDue)
+        {
+            var cacheRequest = BuildCacheRequest(preferences);
+            if (await EnqueueAsync(
+                    "cache-refresh",
+                    async token => string.IsNullOrWhiteSpace(
+                        (await RunCacheRefreshAsync(cacheRequest, automatic: true, token)).Error),
+                    cancellationToken,
+                    cacheRequest: cacheRequest,
+                    automatic: true))
+            {
+                await WaitForActiveOperationAsync();
+            }
+        }
+
+        if (updateDue)
+        {
+            var targetRequest = BuildTargetRequest(preferences);
+            if (await EnqueueAsync(
+                    "target-update",
+                    token => RunTargetUpdateAsync(targetRequest, automatic: true, token),
+                    cancellationToken,
+                    targetRequest: targetRequest,
+                    automatic: true))
+            {
+                await WaitForActiveOperationAsync();
+            }
+        }
+
+        UpdateScheduleStatus(await LoadStateAsync(cancellationToken), preferences, DateTimeOffset.UtcNow);
+    }
+
+    private async Task WaitForActiveOperationAsync()
+    {
+        var active = _activeOperation;
+        if (active is null)
         {
             return;
         }
 
         try
         {
-            if (cacheDue)
-            {
-                var result = await RunCacheRefreshAsync(BuildCacheRequest(preferences), automatic: true, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(result.Error))
-                {
-                    return;
-                }
-                state.LastCacheRefreshUtc = DateTimeOffset.UtcNow;
-                await SaveStateAsync(state, cancellationToken);
-            }
-
-            if (updateDue)
-            {
-                var ran = await RunTargetUpdateAsync(BuildTargetRequest(preferences), automatic: true, cancellationToken);
-                if (ran)
-                {
-                    state.LastTargetUpdateUtc = DateTimeOffset.UtcNow;
-                    await SaveStateAsync(state, cancellationToken);
-                }
-            }
+            await active;
         }
-        finally
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _operationGate.Release();
-            UpdateScheduleStatus(state, preferences, DateTimeOffset.UtcNow);
+            _logger.LogDebug(ex, "Artist metadata operation ended with an error.");
         }
     }
 
     private async Task<bool> EnqueueAsync(
         string operation,
         Func<CancellationToken, Task<bool>> run,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArtistMetadataActiveRun? resuming = null,
+        ArtistMetadataCacheRefreshRequest? cacheRequest = null,
+        MetadataUpdaterRunRequest? targetRequest = null,
+        bool automatic = false)
     {
         if (!await _operationGate.WaitAsync(0, cancellationToken))
         {
@@ -145,7 +268,16 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             {
                 _status = _status with { ActiveOperation = operation };
             }
-            _activeOperation = RunManualOperationAsync(operation, run);
+            _activeCts = CancellationTokenSource.CreateLinkedTokenSource(_shutdownToken);
+            _checkpoint = resuming ?? new ArtistMetadataActiveRun
+            {
+                Operation = operation,
+                Automatic = automatic,
+                StartedAtUtc = DateTimeOffset.UtcNow,
+                CacheRequest = cacheRequest,
+                TargetRequest = targetRequest
+            };
+            _activeOperation = RunManualOperationAsync(operation, run, _activeCts);
             return true;
         }
         catch
@@ -157,11 +289,13 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
 
     private async Task RunManualOperationAsync(
         string operation,
-        Func<CancellationToken, Task<bool>> run)
+        Func<CancellationToken, Task<bool>> run,
+        CancellationTokenSource cts)
     {
         try
         {
-            var completed = await run(CancellationToken.None);
+            await PersistCheckpointAsync(force: true);
+            var completed = await run(cts.Token);
             if (!completed)
             {
                 return;
@@ -176,17 +310,76 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             {
                 state.LastTargetUpdateUtc = DateTimeOffset.UtcNow;
             }
+            state.ActiveRun = null;
             await SaveStateAsync(state, CancellationToken.None);
             var preferences = await _preferences.LoadAsync();
             UpdateScheduleStatus(state, preferences, DateTimeOffset.UtcNow);
         }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Artist metadata {Operation} was cancelled.", operation);
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            _logger.LogWarning(ex, "Artist metadata {Operation} failed.", operation);
+            RecordOperationFailure(operation, ex.Message);
+        }
         finally
         {
+            _checkpoint = null;
+            _activeCts = null;
+            cts.Dispose();
             _operationGate.Release();
             lock (_statusLock)
             {
                 _status = _status with { ActiveOperation = null };
             }
+        }
+    }
+
+    private void RecordOperationFailure(string operation, string message)
+    {
+        lock (_statusLock)
+        {
+            _status = operation == "cache-refresh"
+                ? _status with
+                {
+                    CacheRefresh = _status.CacheRefresh with
+                    {
+                        Running = false,
+                        Phase = "Cache refresh failed",
+                        Message = message,
+                        CurrentArtist = null,
+                        CompletedAtUtc = DateTimeOffset.UtcNow
+                    }
+                }
+                : _status;
+        }
+    }
+
+    private async Task PersistCheckpointAsync(bool force)
+    {
+        var checkpoint = _checkpoint;
+        if (checkpoint is null)
+        {
+            return;
+        }
+
+        if (!force && ++_sinceCheckpointSave < CheckpointSaveEvery)
+        {
+            return;
+        }
+
+        _sinceCheckpointSave = 0;
+        try
+        {
+            var state = await LoadStateAsync(CancellationToken.None);
+            state.ActiveRun = checkpoint;
+            await SaveStateAsync(state, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Artist metadata checkpoint save failed.");
         }
     }
 
@@ -197,13 +390,15 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     {
         UpdateCacheStatus(new ArtistMetadataCacheStatus(true, automatic, "Refreshing artist metadata cache", null, 0, 0, null, DateTimeOffset.UtcNow, null));
         var progress = new Progress<ArtistMetadataOperationProgress>(value =>
-            UpdateCacheStatus(GetStatus().CacheRefresh with
-            {
-                ProcessedArtists = value.Processed,
-                TotalArtists = value.Total,
-                CurrentArtist = value.CurrentArtist
-            }));
-        var result = await _cacheRefresh.RefreshAsync(request, progress, cancellationToken);
+        {
+            UpdateCacheProgress(value);
+            NoteArtistCompleted(value.CompletedArtistId);
+        });
+        var result = await _cacheRefresh.RefreshAsync(
+            request,
+            progress,
+            CheckpointCompletedIds(),
+            cancellationToken);
         UpdateCacheStatus(GetStatus().CacheRefresh with
         {
             Running = false,
@@ -211,6 +406,8 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             Message = result.Error ?? $"{result.Succeeded} succeeded, {result.Failed} failed.",
             ProcessedArtists = result.Total,
             TotalArtists = result.Total,
+            SuccessfulArtists = result.Succeeded,
+            FailedArtists = result.Failed,
             CurrentArtist = null,
             CompletedAtUtc = DateTimeOffset.UtcNow
         });
@@ -226,7 +423,55 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         {
             _status = _status with { ActiveOperation = "target-update" };
         }
-        return await _targetUpdate.RunAndWaitAsync(request, automatic, cancellationToken);
+        var progress = new Progress<ArtistMetadataOperationProgress>(value => NoteArtistCompleted(value.CompletedArtistId));
+        return await _targetUpdate.RunAndWaitAsync(
+            request,
+            automatic,
+            progress,
+            CheckpointCompletedIds(),
+            cancellationToken);
+    }
+
+    private void UpdateCacheProgress(ArtistMetadataOperationProgress value)
+    {
+        lock (_statusLock)
+        {
+            if (!_status.CacheRefresh.Running)
+            {
+                return;
+            }
+
+            _status = _status with
+            {
+                CacheRefresh = _status.CacheRefresh with
+                {
+                    ProcessedArtists = value.Processed,
+                    TotalArtists = value.Total,
+                    CurrentArtist = value.CurrentArtist,
+                    SuccessfulArtists = value.Succeeded,
+                    FailedArtists = value.Failed
+                }
+            };
+        }
+    }
+
+    private IReadOnlySet<long>? CheckpointCompletedIds()
+    {
+        var checkpoint = _checkpoint;
+        return checkpoint is { CompletedArtistIds.Count: > 0 }
+            ? checkpoint.CompletedArtistIds.ToHashSet()
+            : null;
+    }
+
+    private void NoteArtistCompleted(long? artistId)
+    {
+        if (artistId is not > 0 || _checkpoint is not { } checkpoint)
+        {
+            return;
+        }
+
+        checkpoint.CompletedArtistIds.Add(artistId.Value);
+        _ = PersistCheckpointAsync(force: false);
     }
 
     private void UpdateCacheStatus(ArtistMetadataCacheStatus status)
@@ -338,9 +583,20 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
 
 public sealed class ArtistMetadataAutomationState
 {
-    public int Version { get; set; } = 2;
+    public int Version { get; set; } = 3;
     public DateTimeOffset? LastCacheRefreshUtc { get; set; }
     public DateTimeOffset? LastTargetUpdateUtc { get; set; }
+    public ArtistMetadataActiveRun? ActiveRun { get; set; }
+}
+
+public sealed class ArtistMetadataActiveRun
+{
+    public string Operation { get; set; } = string.Empty;
+    public bool Automatic { get; set; }
+    public DateTimeOffset StartedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public ArtistMetadataCacheRefreshRequest? CacheRequest { get; set; }
+    public MetadataUpdaterRunRequest? TargetRequest { get; set; }
+    public List<long> CompletedArtistIds { get; set; } = new();
 }
 
 public sealed record ArtistMetadataAutomationStatus(
@@ -365,7 +621,9 @@ public sealed record ArtistMetadataCacheStatus(
     int TotalArtists,
     string? CurrentArtist,
     DateTimeOffset? StartedAtUtc,
-    DateTimeOffset? CompletedAtUtc)
+    DateTimeOffset? CompletedAtUtc,
+    int SuccessfulArtists = 0,
+    int FailedArtists = 0)
 {
     public static ArtistMetadataCacheStatus Idle() => new(false, false, "Idle", null, 0, 0, null, null, null);
 }
