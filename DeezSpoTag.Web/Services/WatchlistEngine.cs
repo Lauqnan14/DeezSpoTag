@@ -4855,7 +4855,13 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 "no_match",
                 "no_source_match",
                 "metadata_unresolved",
-                "source_unavailable_for_track"
+                "source_unavailable_for_track",
+                "region_blocked",
+                "region_restricted",
+                "geo_blocked",
+                "geo_restricted",
+                "market_restricted",
+                "content_not_available_in_region"
             }))
         {
             return true;
@@ -4865,6 +4871,21 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         if (string.IsNullOrWhiteSpace(message))
         {
             return false;
+        }
+
+        if (message.Contains("not available in your", StringComparison.Ordinal)
+            || message.Contains("not available in this region", StringComparison.Ordinal)
+            || message.Contains("not available in the region", StringComparison.Ordinal)
+            || message.Contains("region blocked", StringComparison.Ordinal)
+            || message.Contains("region-blocked", StringComparison.Ordinal)
+            || message.Contains("geo blocked", StringComparison.Ordinal)
+            || message.Contains("geo-blocked", StringComparison.Ordinal)
+            || message.Contains("geo restricted", StringComparison.Ordinal)
+            || message.Contains("geo-restricted", StringComparison.Ordinal)
+            || message.Contains("blocked in your country", StringComparison.Ordinal)
+            || message.Contains("not available in your country", StringComparison.Ordinal))
+        {
+            return true;
         }
 
         if (message.Contains("credentials", StringComparison.Ordinal)

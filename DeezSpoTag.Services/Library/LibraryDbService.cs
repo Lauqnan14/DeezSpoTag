@@ -661,6 +661,7 @@ CREATE TABLE IF NOT EXISTS watchlist_target_circuit_state (
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "download_discography_enabled", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "ignore_rules_json", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "artist_watch_state", "apple_next_offset", IntegerType, cancellationToken);
+        await EnsureColumnAsync(connection, "artist_watch_state", "tidal_next_offset", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, "artist_watch_state", "deezer_next_offset", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, "artist_watch_state", "last_run_status", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "artist_watch_state", "last_run_message", TextType, cancellationToken);

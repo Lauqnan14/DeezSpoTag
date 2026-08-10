@@ -1488,7 +1488,9 @@ public partial class Program
                 sp.GetRequiredService<DeezSpoTag.Services.Apple.AppleMusicCatalogService>(),
                 sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerClient>(),
                 sp.GetRequiredService<DeezSpoTag.Services.Metadata.Qobuz.QobuzArtistService>(),
-                sp.GetRequiredService<DeezSpoTag.Integrations.Qobuz.IQobuzApiClient>()));
+                sp.GetRequiredService<DeezSpoTag.Integrations.Qobuz.IQobuzApiClient>(),
+                sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
+                sp.GetRequiredService<IHttpClientFactory>()));
         services.AddSingleton<DeezSpoTag.Web.Services.ArtistWatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>();
         services.AddSingleton<DeezSpoTag.Web.Services.MediaServerRefreshOutboxService>();

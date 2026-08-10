@@ -58,7 +58,8 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
                 && string.IsNullOrWhiteSpace(credentials.RefreshToken))
             {
                 _cachedAccessToken = credentials.AccessToken;
-                _cachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10);
+                _cachedAccessTokenExpiresUtc = ReadJwtExpiry(credentials.AccessToken)
+                    ?? DateTimeOffset.UtcNow.AddMinutes(1);
                 return _cachedAccessToken;
             }
 
@@ -126,9 +127,35 @@ public sealed class TidalAccessTokenProvider : ITidalAccessTokenProvider
         _cachedAccessTokenExpiresUtc = DateTimeOffset.MinValue;
     }
 
+    private static DateTimeOffset? ReadJwtExpiry(string token)
+    {
+        var segments = token.Split('.');
+        if (segments.Length < 2)
+        {
+            return null;
+        }
+
+        try
+        {
+            var payload = segments[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + ((4 - (payload.Length % 4)) % 4), '=');
+            using var doc = JsonDocument.Parse(Convert.FromBase64String(payload));
+            if (!doc.RootElement.TryGetProperty("exp", out var exp) || !exp.TryGetInt64(out var seconds))
+            {
+                return null;
+            }
+
+            return DateTimeOffset.FromUnixTimeSeconds(seconds);
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            return null;
+        }
+    }
+
     private bool IsCachedTokenValid()
         => !string.IsNullOrWhiteSpace(_cachedAccessToken)
-           && _cachedAccessTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(30);
+           && _cachedAccessTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(60);
 
     private static (string ClientId, string PartnerKey) DecodePartnerCredentials()
     {

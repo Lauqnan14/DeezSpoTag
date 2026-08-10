@@ -6856,7 +6856,14 @@ SELECT w.artist_id,
            WHERE s.artist_id = w.artist_id
              AND s.source = 'qobuz'
            LIMIT 1
-       ) AS qobuz_id
+       ) AS qobuz_id,
+       (
+           SELECT source_id
+           FROM artist_source s
+           WHERE s.artist_id = w.artist_id
+             AND s.source = 'tidal'
+           LIMIT 1
+       ) AS tidal_id
 FROM artist_watchlist w
 LEFT JOIN artist a ON a.id = w.artist_id
 LEFT JOIN artist_watch_state ws ON ws.artist_id = w.artist_id
@@ -6935,7 +6942,14 @@ SELECT w.artist_id,
            WHERE s.artist_id = w.artist_id
              AND s.source = 'qobuz'
            LIMIT 1
-       ) AS qobuz_id
+       ) AS qobuz_id,
+       (
+           SELECT source_id
+           FROM artist_source s
+           WHERE s.artist_id = w.artist_id
+             AND s.source = 'tidal'
+           LIMIT 1
+       ) AS tidal_id
 FROM artist_watchlist w
 LEFT JOIN artist a ON a.id = w.artist_id
 WHERE w.artist_id = @artistId
@@ -6984,7 +6998,8 @@ LIMIT 1;";
             await ReadStringAsync(reader, 15 + offset, cancellationToken),
             await ReadBooleanAsync(reader, 16 + offset, cancellationToken),
             ignoreRulesJson is null ? null : JsonSerializer.Deserialize<List<PlaylistTrackBlockRule>>(ignoreRulesJson),
-            await ReadStringAsync(reader, 18 + offset, cancellationToken));
+            await ReadStringAsync(reader, 18 + offset, cancellationToken),
+            await ReadStringAsync(reader, 19 + offset, cancellationToken));
     }
 
     private static async Task<string?> ReadStringAsync(SqliteDataReader reader, int ordinal, CancellationToken cancellationToken)
@@ -7122,7 +7137,8 @@ SELECT artist_id,
        heartbeat_utc,
        deadline_utc,
        apple_next_offset,
-       deezer_next_offset
+       deezer_next_offset,
+       tidal_next_offset
 FROM artist_watch_state
 WHERE artist_id = @artistId
 LIMIT 1;";
@@ -7150,7 +7166,8 @@ LIMIT 1;";
             await reader.IsDBNullAsync(10, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(10)),
             await reader.IsDBNullAsync(11, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(11)),
             await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetInt32(12),
-            await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13));
+            await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13),
+            await reader.IsDBNullAsync(14, cancellationToken) ? null : reader.GetInt32(14));
     }
 
     public async Task UpsertArtistWatchSourceOffsetAsync(
@@ -7163,6 +7180,7 @@ LIMIT 1;";
         {
             "apple" => "apple_next_offset",
             "deezer" => "deezer_next_offset",
+            "tidal" => "tidal_next_offset",
             _ => null
         };
         if (column == null)

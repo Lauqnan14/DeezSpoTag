@@ -639,7 +639,8 @@ public sealed record WatchlistArtistDto(
     string? TopSongsSyncMode = null,
     bool? DownloadDiscographyEnabled = null,
     IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null,
-    string? QobuzId = null);
+    string? QobuzId = null,
+    string? TidalId = null);
 
 public sealed record PlaylistWatchlistDto(
     long Id,
@@ -962,7 +963,8 @@ public sealed record ArtistWatchStateDto(
     DateTimeOffset? HeartbeatUtc = null,
     DateTimeOffset? DeadlineUtc = null,
     int? AppleNextOffset = null,
-    int? DeezerNextOffset = null);
+    int? DeezerNextOffset = null,
+    int? TidalNextOffset = null);
 
 public sealed record ArtistWatchAlbumInsert(string Source, string AlbumSourceId);
 

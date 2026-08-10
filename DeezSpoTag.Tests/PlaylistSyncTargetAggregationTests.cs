@@ -249,6 +249,9 @@ public sealed class PlaylistSyncTargetAggregationTests
         Assert.Contains("await CheckAppleArtistAsync(", service, StringComparison.Ordinal);
         Assert.Contains("await CheckDeezerArtistAsync(", service, StringComparison.Ordinal);
         Assert.Contains("await CheckQobuzArtistAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("await CheckTidalArtistAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("api.tidal.com/v1/artists/", service, StringComparison.Ordinal);
+        Assert.Contains("BuildTidalAlbumIntents", service, StringComparison.Ordinal);
         Assert.Contains("BuildQobuzAlbumIntents", service, StringComparison.Ordinal);
         Assert.Contains("QueueWatchIntentsWithOutcomeAsync", service, StringComparison.Ordinal);
     }
@@ -261,6 +264,34 @@ public sealed class PlaylistSyncTargetAggregationTests
 
         Assert.Contains("BuildQueueSourceLabel(platformLabel", engine, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildQueueSourceLabel(\"Apple Music\", options.CollectionType", engine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalArtistWatchUsesTheSameEndpointShapeTheAppAlreadyProves()
+    {
+        var service = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistWatchService.cs"));
+        var controller = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Controllers", "ApiController.cs"));
+
+        Assert.Contains("api.tidal.com/v1/artists/", controller, StringComparison.Ordinal);
+        Assert.Contains("EPSANDSINGLES", controller, StringComparison.Ordinal);
+        Assert.Contains("api.tidal.com/v1/artists/", service, StringComparison.Ordinal);
+        Assert.Contains("TidalEpsAndSinglesFilter", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveTidalReleaseFilters", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TidalArtistWatchHonoursTheWatchedAlbumGroups()
+    {
+        var service = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistWatchService.cs"));
+        var start = service.IndexOf("ResolveTidalReleaseFilters(IReadOnlyCollection<string> albumGroups)", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = service[start..(start + 700)];
+
+        Assert.Contains("ShouldIncludeAlbumGroup(AlbumGroup, albumGroups)", body, StringComparison.Ordinal);
+        Assert.Contains("ShouldIncludeAlbumGroup(SingleGroup, albumGroups)", body, StringComparison.Ordinal);
     }
 
     private static string ReadPlaylistSyncSource()

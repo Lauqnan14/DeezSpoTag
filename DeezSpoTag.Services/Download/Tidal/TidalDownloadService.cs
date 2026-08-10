@@ -60,6 +60,7 @@ public sealed class TidalDownloadService
     private static readonly SemaphoreSlim ProviderResolutionGate = new(MaxConcurrentProviderResolutions, MaxConcurrentProviderResolutions);
     private static readonly ConcurrentDictionary<long, CachedTidalTrack> TrackMetadataCache = new();
     private static readonly ConcurrentDictionary<string, CachedProviderManifest> ProviderManifestCache = new(StringComparer.Ordinal);
+    private static readonly TimeSpan UnknownManifestExpiryTtl = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan TrackMetadataCacheLifetime = TimeSpan.FromHours(6);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -2953,7 +2954,7 @@ public sealed class TidalDownloadService
         }
         if (availableProviders.Count == 0)
         {
-            throw new InvalidOperationException("No Tidal download provider is currently available.");
+            throw new InvalidOperationException(DescribeUnavailableProviders(providers));
         }
 
         Exception? lastFailure = null;
@@ -2974,9 +2975,9 @@ public sealed class TidalDownloadService
                     ProviderManifestCache.TryRemove(manifestCacheKey, out _);
                     manifest = await FetchManifestFromProviderAsync(provider, trackId, quality, cancellationToken);
                     if (!string.IsNullOrWhiteSpace(manifest)
-                        && TryResolveManifestExpiry(manifest, out var expiresAtUtc))
+                        && ResolveManifestCacheExpiry(manifest) is { } cacheExpiry)
                     {
-                        ProviderManifestCache[manifestCacheKey] = new CachedProviderManifest(manifest, expiresAtUtc);
+                        ProviderManifestCache[manifestCacheKey] = new CachedProviderManifest(manifest, cacheExpiry);
                     }
                 }
                 stopwatch.Stop();
@@ -3021,6 +3022,18 @@ public sealed class TidalDownloadService
     private static string BuildProviderManifestCacheKey(string providerId, long trackId, string quality)
         => $"{providerId.Trim().ToLowerInvariant()}:{trackId}:{NormalizeTidalDownloadQuality(quality)}";
 
+    internal static DateTimeOffset? ResolveManifestCacheExpiry(string manifest)
+    {
+        if (TryResolveManifestExpiry(manifest, out var expiresAtUtc))
+        {
+            return expiresAtUtc;
+        }
+
+        return TryDecodeManifest(manifest).Length == 0
+            ? null
+            : DateTimeOffset.UtcNow.Add(UnknownManifestExpiryTtl);
+    }
+
     private static bool TryResolveManifestExpiry(string manifest, out DateTimeOffset expiresAtUtc)
     {
         expiresAtUtc = default;
@@ -3056,17 +3069,51 @@ public sealed class TidalDownloadService
         return expiresAtUtc > DateTimeOffset.UtcNow.AddSeconds(15);
     }
 
+    private static HttpRequestMessage BuildBearerRequest(Uri uri, string accessToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        return request;
+    }
+
+    private async Task<HttpResponseMessage> SendAuthenticatedTidalRequestAsync(
+        Func<string, HttpRequestMessage> requestFactory,
+        CancellationToken cancellationToken)
+    {
+        var token = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            throw new InvalidOperationException("The authenticated Tidal session did not provide an access token.");
+        }
+
+        using (var request = requestFactory(token))
+        {
+            var response = await _client.SendAsync(request, cancellationToken);
+            if (response.StatusCode != HttpStatusCode.Unauthorized)
+            {
+                return response;
+            }
+
+            response.Dispose();
+        }
+
+        _accessTokenProvider.Invalidate();
+        var refreshed = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(refreshed))
+        {
+            throw new InvalidOperationException("The authenticated Tidal session did not provide an access token.");
+        }
+
+        using var retryRequest = requestFactory(refreshed);
+        return await _client.SendAsync(retryRequest, cancellationToken);
+    }
+
     private async Task<string> FetchManifestFromAuthenticatedApiAsync(
         long trackId,
         string quality,
         CancellationToken cancellationToken)
     {
-        var token = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
         var countryCode = await _accessTokenProvider.GetCountryCodeAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            throw new InvalidOperationException("The authenticated Tidal session did not provide an access token.");
-        }
 
         var normalizedQuality = NormalizeTidalDownloadQuality(quality);
         var builder = new UriBuilder(Uri.UriSchemeHttps, "api.tidal.com")
@@ -3083,9 +3130,9 @@ public sealed class TidalDownloadService
                 }.Select(pair => $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"))
         };
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, builder.Uri);
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        using var response = await _client.SendAsync(request, cancellationToken);
+        using var response = await SendAuthenticatedTidalRequestAsync(
+            accessToken => BuildBearerRequest(builder.Uri, accessToken),
+            cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
@@ -3109,11 +3156,10 @@ public sealed class TidalDownloadService
 
     private async Task<string> GetVideoStreamUrlAsync(long videoId, int maxResolution, CancellationToken cancellationToken)
     {
-        var token = await _accessTokenProvider.GetAccessTokenAsync(cancellationToken);
         var url = $"https://api.tidal.com/v1/videos/{videoId}/playbackinfo?videoquality=HIGH&playbackmode=STREAM&assetpresentation=FULL";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        using var response = await _client.SendAsync(request, cancellationToken);
+        using var response = await SendAuthenticatedTidalRequestAsync(
+            accessToken => BuildBearerRequest(new Uri(url), accessToken),
+            cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"Tidal video playback info failed with status {(int)response.StatusCode}.");
@@ -3320,6 +3366,25 @@ public sealed class TidalDownloadService
         {
             await progressCallback(100, 0);
         }
+    }
+
+    private static string DescribeUnavailableProviders(IReadOnlyList<TidalPublicProvider> providers)
+    {
+        var coolingDown = providers.Where(IsProviderCoolingDown).ToList();
+        if (coolingDown.Count == 0)
+        {
+            return "No Tidal download provider is currently available.";
+        }
+
+        var soonest = coolingDown.Min(provider => provider.CooldownUntil!.Value);
+        var reason = coolingDown
+            .Select(provider => provider.FailureMessage)
+            .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message))
+            ?.Trim()
+            ?? "Provider is unavailable.";
+        var names = string.Join(", ", coolingDown.Select(provider => provider.DisplayName));
+        return $"No Tidal download provider is currently available: {names} cooling down until "
+            + $"{soonest.ToUniversalTime():HH:mm:ss} UTC ({reason})";
     }
 
     private static bool IsProviderCoolingDown(TidalPublicProvider provider)

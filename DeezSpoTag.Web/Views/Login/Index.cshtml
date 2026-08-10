@@ -3512,7 +3512,13 @@ function createPublicApiProviderRow(config, provider, sessionValid, checking, mu
     controls.className = 'public-api-provider-row__controls';
     const enabled = provider?.enabled === true;
     const providerStatus = String(provider?.status || 'unknown').toLowerCase();
-    const healthStatus = checking && enabled ? 'checking' : providerStatus === 'disabled' ? 'unknown' : providerStatus;
+    const healthStatus = checking && enabled
+        ? 'checking'
+        : providerStatus === 'disabled'
+            ? 'unknown'
+            : isPublicApiProviderCoolingDown(provider)
+                ? resolvePublicApiCooldownHealth(provider)
+                : providerStatus;
     const badges = document.createElement('div');
     badges.className = 'public-api-provider-badges';
     badges.append(
@@ -3573,6 +3579,18 @@ function formatPublicApiProviderHealth(status) {
     return labels[status] || status.replaceAll('_', ' ');
 }
 
+function isPublicApiProviderCoolingDown(provider) {
+    const cooldownUntil = provider?.cooldownUntil ? new Date(provider.cooldownUntil) : null;
+    return cooldownUntil instanceof Date
+        && !Number.isNaN(cooldownUntil.valueOf())
+        && cooldownUntil.getTime() > Date.now();
+}
+
+function resolvePublicApiCooldownHealth(provider) {
+    const category = String(provider?.failureCategory || '').trim().toLowerCase();
+    return ['rate_limited', 'captcha_required', 'degraded'].includes(category) ? category : 'degraded';
+}
+
 function formatPublicApiProviderDetail(provider) {
     const parts = [];
     if (Number.isFinite(provider?.responseTimeMs)) {
@@ -3581,8 +3599,13 @@ function formatPublicApiProviderDetail(provider) {
     if (provider?.lastCheckedAt) {
         parts.push(`checked ${new Date(provider.lastCheckedAt).toLocaleString()}`);
     }
-    if (provider?.failureMessage && String(provider?.status || '').toLowerCase() !== 'online') {
+    const cooldownUntil = provider?.cooldownUntil ? new Date(provider.cooldownUntil) : null;
+    const coolingDown = isPublicApiProviderCoolingDown(provider);
+    if (provider?.failureMessage && (coolingDown || String(provider?.status || '').toLowerCase() !== 'online')) {
         parts.push(provider.failureMessage);
+    }
+    if (coolingDown) {
+        parts.push(`unavailable until ${cooldownUntil.toLocaleTimeString()}`);
     }
     return parts.join(' | ') || 'Not checked yet';
 }

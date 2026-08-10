@@ -1,9 +1,11 @@
 using System.Collections.Generic;
 using System.Globalization;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Integrations.Deezer;
 using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -20,7 +22,9 @@ public sealed class ArtistWatchPlatformDependencies
         AppleMusicCatalogService appleCatalogService,
         DeezerClient deezerClient,
         QobuzArtistService qobuzArtistService,
-        IQobuzApiClient qobuzApiClient)
+        IQobuzApiClient qobuzApiClient,
+        ITidalAccessTokenProvider tidalTokens,
+        IHttpClientFactory httpClientFactory)
     {
         SpotifyArtistService = spotifyArtistService;
         SpotifyMetadataService = spotifyMetadataService;
@@ -28,6 +32,8 @@ public sealed class ArtistWatchPlatformDependencies
         DeezerClient = deezerClient;
         QobuzArtistService = qobuzArtistService;
         QobuzApiClient = qobuzApiClient;
+        TidalTokens = tidalTokens;
+        HttpClientFactory = httpClientFactory;
     }
 
     public SpotifyArtistService SpotifyArtistService { get; }
@@ -36,6 +42,8 @@ public sealed class ArtistWatchPlatformDependencies
     public DeezerClient DeezerClient { get; }
     public QobuzArtistService QobuzArtistService { get; }
     public IQobuzApiClient QobuzApiClient { get; }
+    public ITidalAccessTokenProvider TidalTokens { get; }
+    public IHttpClientFactory HttpClientFactory { get; }
 }
 
 public sealed class ArtistWatchService
@@ -57,6 +65,9 @@ public sealed class ArtistWatchService
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
     private const string QobuzSource = "qobuz";
+    private const string TidalSource = "tidal";
+    private const string TidalAlbumsFilter = "albums";
+    private const string TidalEpsAndSinglesFilter = "EPSANDSINGLES";
     private const string SpotifyTopTrackWatchIdPrefix = "top-track:";
     private static readonly IReadOnlyList<string> DefaultArtistAlbumGroups = new[] { AlbumGroup, SingleGroup };
     internal const int MaxReleasesPerArtistLimit = 100;
@@ -68,6 +79,8 @@ public sealed class ArtistWatchService
     private readonly DeezerClient _deezerClient;
     private readonly QobuzArtistService _qobuzArtistService;
     private readonly IQobuzApiClient _qobuzApiClient;
+    private readonly ITidalAccessTokenProvider _tidalTokens;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly WatchlistQueueService _watchlistQueue;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly WatchlistHistoryService _watchlistHistory;
@@ -89,6 +102,8 @@ public sealed class ArtistWatchService
         _deezerClient = platformDependencies.DeezerClient;
         _qobuzArtistService = platformDependencies.QobuzArtistService;
         _qobuzApiClient = platformDependencies.QobuzApiClient;
+        _tidalTokens = platformDependencies.TidalTokens;
+        _httpClientFactory = platformDependencies.HttpClientFactory;
         _watchlistQueue = watchlistQueue;
         _settingsService = settingsService;
         _watchlistHistory = watchlistHistory ?? new WatchlistHistoryService(libraryRepository, activitiesRealtime);
@@ -120,6 +135,7 @@ public sealed class ArtistWatchService
         await CheckAppleArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckDeezerArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckQobuzArtistAsync(artist, settings, cancellationToken);
+        await CheckTidalArtistAsync(artist, settings, albumGroups, cancellationToken);
         await TouchArtistWatchStateAsync(artist, cancellationToken);
     }
 
@@ -669,6 +685,263 @@ public sealed class ArtistWatchService
                 Artist = artist.ArtistName,
                 Album = albumName,
                 Isrc = track.ISRC ?? string.Empty
+            });
+        }
+
+        return intents;
+    }
+
+    private async Task CheckTidalArtistAsync(
+        WatchlistArtistDto artist,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        IReadOnlyCollection<string> albumGroups,
+        CancellationToken cancellationToken)
+    {
+        var tidalId = await ResolveArtistSourceIdAsync(artist.ArtistId, TidalSource, artist.TidalId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(tidalId))
+        {
+            return;
+        }
+
+        var limit = Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit);
+        var state = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
+        var offset = ResolveSourcePagingOffset(artist, state?.TidalNextOffset);
+        var existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, TidalSource, cancellationToken);
+        var insertedAlbums = new List<ArtistWatchAlbumInsert>();
+        var maxReturned = 0;
+        foreach (var filter in ResolveTidalReleaseFilters(albumGroups))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var albumsDocument = await TryGetTidalArtistAlbumsAsync(artist, tidalId, filter, limit, offset, cancellationToken);
+            if (albumsDocument is null
+                || !albumsDocument.RootElement.TryGetProperty("items", out var items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            var returned = 0;
+            foreach (var album in items.EnumerateArray())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                returned++;
+                var albumId = ResolveTidalAlbumId(album);
+                if (string.IsNullOrWhiteSpace(albumId) || existing.Contains(albumId))
+                {
+                    continue;
+                }
+
+                var queuedAlbumId = await ProcessTidalAlbumAsync(artist, album, albumId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(queuedAlbumId))
+                {
+                    insertedAlbums.Add(new ArtistWatchAlbumInsert(TidalSource, queuedAlbumId));
+                }
+            }
+
+            maxReturned = Math.Max(maxReturned, returned);
+        }
+
+        await PersistArtistWatchAlbumsAsync(artist.ArtistId, insertedAlbums, cancellationToken);
+        await _libraryRepository.UpsertArtistWatchSourceOffsetAsync(
+            artist.ArtistId,
+            TidalSource,
+            ResolveNextSourceOffset(artist, offset, maxReturned, limit),
+            cancellationToken);
+    }
+
+    private static IReadOnlyList<string> ResolveTidalReleaseFilters(IReadOnlyCollection<string> albumGroups)
+    {
+        var filters = new List<string>(2);
+        if (ShouldIncludeAlbumGroup(AlbumGroup, albumGroups))
+        {
+            filters.Add(TidalAlbumsFilter);
+        }
+
+        if (ShouldIncludeAlbumGroup(SingleGroup, albumGroups))
+        {
+            filters.Add(TidalEpsAndSinglesFilter);
+        }
+
+        return filters.Count > 0 ? filters : new List<string> { TidalAlbumsFilter };
+    }
+
+    private async Task<JsonDocument?> TryGetTidalArtistAlbumsAsync(
+        WatchlistArtistDto artist,
+        string tidalId,
+        string filter,
+        int limit,
+        int offset,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var token = await _tidalTokens.GetAccessTokenAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return null;
+            }
+
+            var country = await _tidalTokens.GetCountryCodeAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(country))
+            {
+                country = "US";
+            }
+
+            var filterQuery = string.Equals(filter, TidalAlbumsFilter, StringComparison.OrdinalIgnoreCase)
+                ? string.Empty
+                : $"&filter={Uri.EscapeDataString(filter)}";
+            var url = $"https://api.tidal.com/v1/artists/{Uri.EscapeDataString(tidalId)}/albums"
+                + $"?countryCode={Uri.EscapeDataString(country)}{filterQuery}"
+                + $"&limit={limit.ToString(CultureInfo.InvariantCulture)}"
+                + $"&offset={offset.ToString(CultureInfo.InvariantCulture)}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Tidal artist watch fetch failed for {ArtistId}:{TidalId}", artist.ArtistId, tidalId);
+            }
+            return null;
+        }
+    }
+
+    private static string? ResolveTidalAlbumId(JsonElement album)
+    {
+        if (!album.TryGetProperty("id", out var idElement))
+        {
+            return null;
+        }
+
+        return idElement.ValueKind switch
+        {
+            JsonValueKind.Number => idElement.GetRawText(),
+            JsonValueKind.String => idElement.GetString()?.Trim(),
+            _ => null
+        };
+    }
+
+    private async Task<string?> ProcessTidalAlbumAsync(
+        WatchlistArtistDto artist,
+        JsonElement album,
+        string albumId,
+        CancellationToken cancellationToken)
+    {
+        using var tracksDocument = await TryGetTidalAlbumTracksAsync(artist, albumId, cancellationToken);
+        if (tracksDocument is null
+            || !tracksDocument.RootElement.TryGetProperty("items", out var trackItems)
+            || trackItems.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var albumName = album.TryGetProperty("title", out var titleElement)
+            && titleElement.ValueKind == JsonValueKind.String
+                ? titleElement.GetString() ?? albumId
+                : albumId;
+        var intents = BuildTidalAlbumIntents(trackItems, artist, albumName);
+        if (intents.Count == 0)
+        {
+            return null;
+        }
+
+        var outcome = await _watchlistQueue.QueueWatchIntentsWithOutcomeAsync(
+            intents,
+            BuildArtistQueueOptions(artist, albumName, AlbumGroup),
+            "Tidal",
+            cancellationToken);
+        if (outcome.Queued > 0)
+        {
+            await AddArtistAlbumWatchHistoryAsync(
+                artist.ArtistId,
+                TidalSource,
+                albumId,
+                albumName,
+                outcome.Queued,
+                artist.ArtistName,
+                AlbumGroup,
+                cancellationToken);
+        }
+
+        return outcome.IsSettled ? albumId : null;
+    }
+
+    private async Task<JsonDocument?> TryGetTidalAlbumTracksAsync(
+        WatchlistArtistDto artist,
+        string albumId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var token = await _tidalTokens.GetAccessTokenAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return null;
+            }
+
+            var country = await _tidalTokens.GetCountryCodeAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(country))
+            {
+                country = "US";
+            }
+
+            var url = $"https://api.tidal.com/v1/albums/{Uri.EscapeDataString(albumId)}/tracks"
+                + $"?countryCode={Uri.EscapeDataString(country)}&limit=100";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            using var response = await _httpClientFactory.CreateClient().SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Tidal album track fetch failed for {ArtistId}:{AlbumId}", artist.ArtistId, albumId);
+            }
+            return null;
+        }
+    }
+
+    private static List<DownloadIntent> BuildTidalAlbumIntents(
+        JsonElement trackItems,
+        WatchlistArtistDto artist,
+        string albumName)
+    {
+        var intents = new List<DownloadIntent>();
+        foreach (var track in trackItems.EnumerateArray())
+        {
+            var trackId = ResolveTidalAlbumId(track);
+            if (string.IsNullOrWhiteSpace(trackId))
+            {
+                continue;
+            }
+
+            intents.Add(new DownloadIntent
+            {
+                TidalId = trackId,
+                SourceUrl = $"https://tidal.com/browse/track/{trackId}",
+                SourceService = TidalSource,
+                Title = track.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String
+                    ? t.GetString() ?? string.Empty
+                    : string.Empty,
+                Artist = artist.ArtistName,
+                Album = albumName,
+                Isrc = track.TryGetProperty("isrc", out var i) && i.ValueKind == JsonValueKind.String
+                    ? i.GetString() ?? string.Empty
+                    : string.Empty
             });
         }
 

@@ -1007,7 +1007,7 @@ public class PlatformAuthApiController : ControllerBase
         return new QobuzProviderSummary(
             online,
             online ? onlineCount : 0,
-            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid),
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid, enabledProviders.Any(IsCoolingDown)),
             sessionValid,
             providers);
     }
@@ -1029,7 +1029,7 @@ public class PlatformAuthApiController : ControllerBase
         return new TidalProviderSummary(
             online,
             online ? onlineCount : 0,
-            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid),
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid, enabledProviders.Any(IsCoolingDown)),
             sessionValid,
             providers);
     }
@@ -1055,20 +1055,34 @@ public class PlatformAuthApiController : ControllerBase
         => provider.Status == "online"
            && (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow);
 
-    private static string ResolvePublicApiStatus(int enabledProviderCount, bool online, bool allChecked, bool sessionValid)
+    private static string ResolvePublicApiStatus(
+        int enabledProviderCount,
+        bool online,
+        bool allChecked,
+        bool sessionValid,
+        bool anyCoolingDown = false)
     {
         if (online)
         {
             return "online";
         }
 
-        if (enabledProviderCount > 0 && !sessionValid)
+        if (enabledProviderCount > 0 && (!sessionValid || anyCoolingDown))
         {
             return "offline";
         }
 
         return enabledProviderCount > 0 && allChecked ? "offline" : "unknown";
     }
+
+    private static bool IsCoolingDown(QobuzProviderView provider)
+        => provider.CooldownUntil.HasValue && provider.CooldownUntil.Value > DateTimeOffset.UtcNow;
+
+    private static bool IsCoolingDown(TidalProviderView provider)
+        => provider.CooldownUntil.HasValue && provider.CooldownUntil.Value > DateTimeOffset.UtcNow;
+
+    private static bool IsCoolingDown(AmazonProviderView provider)
+        => provider.CooldownUntil.HasValue && provider.CooldownUntil.Value > DateTimeOffset.UtcNow;
 
     private static string? ResolveSubmittedSecret(string? submitted, string? existing)
         => string.IsNullOrWhiteSpace(submitted) ? existing : submitted.Trim();
@@ -1248,7 +1262,7 @@ public class PlatformAuthApiController : ControllerBase
         return new AmazonProviderSummary(
             online,
             online ? onlineCount : 0,
-            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid),
+            ResolvePublicApiStatus(enabledProviders.Length, online, enabledProviders.All(IsChecked), sessionValid, enabledProviders.Any(IsCoolingDown)),
             sessionValid,
             providers);
     }
