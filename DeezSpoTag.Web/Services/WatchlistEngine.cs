@@ -219,8 +219,10 @@ internal sealed class WatchlistEngine
         DeezSpoTagSettingsService settingsService,
         IServiceProvider serviceProvider,
         ILocalTrackAmbiguityResolver localIdentityResolver,
-        ILogger<WatchlistEngine> logger)
+        ILogger<WatchlistEngine> logger,
+        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null)
     {
+        _notifications = notifications ?? DeezSpoTag.Services.Download.Shared.Models.NullNotificationSink.Instance;
         _libraryRepository = libraryRepository;
         _spotifyMetadataService = platformServices.SpotifyMetadataService;
         _spotifyPathfinderMetadataClient = platformServices.SpotifyPathfinderMetadataClient;
@@ -4142,6 +4144,64 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     }
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Queue orchestration keeps guardrails and accounting in one flow to preserve strict enqueue semantics.")]
+    private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
+
+    internal sealed record WatchContentNotification(
+        string Kind,
+        string Title,
+        string Body,
+        string DedupeKey,
+        string EntityType,
+        string EntityId);
+
+    internal static WatchContentNotification? BuildWatchContentNotification(
+        int queuedCount,
+        string? sourceLabel,
+        string? watchlistPlaylistId)
+    {
+        if (queuedCount <= 0)
+        {
+            return null;
+        }
+
+        var isPlaylist = !string.IsNullOrWhiteSpace(watchlistPlaylistId);
+        var label = string.IsNullOrWhiteSpace(sourceLabel)
+            ? (isPlaylist ? "Watched playlist" : "Watched artist")
+            : sourceLabel.Trim();
+        var kind = isPlaylist ? "playlist_updated" : "artist_new_release";
+        var entityId = isPlaylist ? watchlistPlaylistId!.Trim() : label;
+        var track = queuedCount == 1 ? "track" : "tracks";
+
+        return new WatchContentNotification(
+            kind,
+            isPlaylist ? $"New in playlist: {label}" : $"New release: {label}",
+            $"{queuedCount} {track} queued for download.",
+            $"{kind}:{entityId.ToLowerInvariant()}",
+            isPlaylist ? "playlist" : "artist",
+            entityId);
+    }
+
+    private void NotifyWatchContentQueued(QueueWatchOptions options, int queuedCount)
+    {
+        var notification = BuildWatchContentNotification(
+            queuedCount,
+            options.SourceLabel,
+            options.WatchlistPlaylistId);
+        if (notification is null)
+        {
+            return;
+        }
+
+        _notifications.Raise(
+            notification.Kind,
+            notification.Title,
+            notification.Body,
+            "Info",
+            notification.DedupeKey,
+            notification.EntityType,
+            notification.EntityId);
+    }
+
     private async Task<QueueWatchResult> QueueWatchIntentTracksAsync(
         IReadOnlyCollection<WatchIntentTrack> tracks,
         long? destinationFolderId,
@@ -4290,6 +4350,8 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         {
             stopReason = ResolveCompletedStopReason(failedCount, queuedCount);
         }
+
+        NotifyWatchContentQueued(options, queuedCount);
 
         return new QueueWatchResult(
             queuedCount,

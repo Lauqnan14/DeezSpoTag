@@ -1274,7 +1274,8 @@ public partial class Program
                 MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
                 UserPreferencesStore = sp.GetRequiredService<DeezSpoTag.Web.Services.UserPreferencesStore>(),
                 ActivitiesRealtime = sp.GetRequiredService<DeezSpoTag.Web.Services.ActivitiesRealtimeService>(),
-                DownloadEvents = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>()
+                DownloadEvents = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.IDeezSpoTagListener>(),
+                Notifications = sp.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.INotificationSink>()
             });
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators>(sp =>
             new DeezSpoTag.Web.Services.AutoTag.LocalAutoTagRunner.LocalAutoTagRunnerCollaborators
@@ -1383,6 +1384,12 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.TagSettingsMigrationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadVerificationService>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagDefaultsStore>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Notifications.NotificationStore>();
+        services.AddSingleton<DeezSpoTag.Web.Services.Notifications.NotificationService>();
+        services.AddHostedService(provider =>
+            provider.GetRequiredService<DeezSpoTag.Web.Services.Notifications.NotificationService>());
+        services.AddSingleton<DeezSpoTag.Services.Download.Shared.Models.INotificationSink>(provider =>
+            provider.GetRequiredService<DeezSpoTag.Web.Services.Notifications.NotificationService>());
         services.AddSingleton<DeezSpoTag.Web.Services.UserPreferencesStore>();
         services.AddSingleton<DeezSpoTag.Web.Services.AutoTagLibraryOrganizer>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistFinalizationService>();
@@ -1413,7 +1420,8 @@ public partial class Program
                 TidalAccessTokenProvider = sp.GetRequiredService<DeezSpoTag.Integrations.Tidal.ITidalAccessTokenProvider>(),
                 SoulseekConnectionService = sp.GetRequiredService<DeezSpoTag.Web.Services.SoulseekConnectionService>(),
                 DeezerSessionManager = sp.GetRequiredService<DeezSpoTag.Integrations.Deezer.DeezerSessionManager>(),
-                LoginStorage = sp.GetRequiredService<DeezSpoTag.Services.Authentication.ILoginStorageService>()
+                LoginStorage = sp.GetRequiredService<DeezSpoTag.Services.Authentication.ILoginStorageService>(),
+                Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Controllers.Api.PlatformAuthApiController>>()
             });
         services.AddSingleton<DeezSpoTag.Integrations.Amazon.IAmazonPublicProviderRegistry, DeezSpoTag.Web.Services.AmazonPublicProviderRegistry>();
         services.AddSingleton<DeezSpoTag.Integrations.Qobuz.IQobuzCredentialProvider, DeezSpoTag.Web.Services.PlatformAuthQobuzCredentialProvider>();

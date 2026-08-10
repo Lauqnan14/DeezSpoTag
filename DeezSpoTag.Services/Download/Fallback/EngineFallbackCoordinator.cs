@@ -21,6 +21,7 @@ public sealed class EngineFallbackCoordinator
     private readonly DeezerIsrcResolver _deezerIsrcResolver;
     private readonly EngineFallbackSearchService _fallbackSearchService;
     private readonly IActivityLogWriter _activityLog;
+    private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
     private sealed record FallbackAdvanceRequest(
         string QueueUuid,
         string CurrentEngine,
@@ -77,13 +78,15 @@ public sealed class EngineFallbackCoordinator
         DeezSpoTagSettingsService settingsService,
         DeezerIsrcResolver deezerIsrcResolver,
         EngineFallbackSearchService fallbackSearchService,
-        IActivityLogWriter activityLog)
+        IActivityLogWriter activityLog,
+        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null)
     {
         _queueRepository = queueRepository;
         _settingsService = settingsService;
         _deezerIsrcResolver = deezerIsrcResolver;
         _fallbackSearchService = fallbackSearchService;
         _activityLog = activityLog;
+        _notifications = notifications ?? DeezSpoTag.Services.Download.Shared.Models.NullNotificationSink.Instance;
     }
 
     public Task<bool> TryAdvanceAsync<TPayload>(
@@ -385,6 +388,34 @@ public sealed class EngineFallbackCoordinator
             : 0;
         _activityLog.Warn(
             $"Fallback exhausted: {request.QueueUuid} after {request.CurrentEngine}; recorded attempts={attemptCount}");
+        NotifyDownloadFailed(request, payloadForSerialization, attemptCount);
+    }
+
+    private void NotifyDownloadFailed(
+        FallbackAdvanceRequest request,
+        object payloadForSerialization,
+        int attemptCount)
+    {
+        var title = "Download failed";
+        var detail = $"All enabled sources were tried after {request.CurrentEngine} ({attemptCount} attempt(s)).";
+        if (payloadForSerialization is EngineQueueItemBase payload)
+        {
+            var artist = string.IsNullOrWhiteSpace(payload.Artist) ? null : payload.Artist.Trim();
+            var track = string.IsNullOrWhiteSpace(payload.Title) ? null : payload.Title.Trim();
+            if (track is not null)
+            {
+                title = artist is null ? $"Download failed: {track}" : $"Download failed: {artist} - {track}";
+            }
+        }
+
+        _notifications.Raise(
+            "download_failed",
+            title,
+            detail,
+            "Warning",
+            $"download_failed:{request.QueueUuid}",
+            "download",
+            request.QueueUuid);
     }
 
     private static void AddFallbackAttempt(

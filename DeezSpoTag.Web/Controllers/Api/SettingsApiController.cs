@@ -270,6 +270,24 @@ namespace DeezSpoTag.Web.Controllers.Api
             return Task.FromResult(ResetSettings());
         }
 
+        [HttpGet("settings/api-token")]
+        [EnableRateLimiting("AuthEndpoints")]
+        public IActionResult GetApiToken()
+        {
+            try
+            {
+                var settings = _settingsService.LoadSettings();
+                return string.IsNullOrWhiteSpace(settings.ApiToken)
+                    ? NotFound(new { error = "No API token has been generated yet." })
+                    : Ok(new { token = settings.ApiToken });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Error reading API token");
+                return StatusCode(500, new { error = "Failed to read API token." });
+            }
+        }
+
         [HttpPost("settings/api-token")]
         [EnableRateLimiting("AuthEndpoints")]
         public IActionResult RegenerateApiToken()

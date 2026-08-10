@@ -303,6 +303,7 @@ public partial class AutoTagService
     private readonly UserPreferencesStore _userPreferencesStore;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly IDeezSpoTagListener _downloadEvents;
+    private readonly INotificationSink _notifications;
     private readonly string _jobsDir;
     private readonly string _historyDir;
     private readonly string _workersHistoryDir;
@@ -542,6 +543,7 @@ public partial class AutoTagService
         public required UserPreferencesStore UserPreferencesStore { get; init; }
         public required ActivitiesRealtimeService ActivitiesRealtime { get; init; }
         public required IDeezSpoTagListener DownloadEvents { get; init; }
+        public INotificationSink? Notifications { get; init; }
     }
 
     public event Action<AutoTagJob>? JobCompleted;
@@ -574,6 +576,7 @@ public partial class AutoTagService
         _userPreferencesStore = collaborators.UserPreferencesStore;
         _activitiesRealtime = collaborators.ActivitiesRealtime;
         _downloadEvents = collaborators.DownloadEvents;
+        _notifications = collaborators.Notifications ?? NullNotificationSink.Instance;
         var configuration = collaborators.Configuration;
         var appDataRoot = AppDataPaths.GetDataRoot(env);
         var autoTagRoot = Path.Join(appDataRoot, AutoTagFolderName);
@@ -2091,6 +2094,7 @@ public partial class AutoTagService
             AppendActivityLog(
                 job.Id,
                 BuildStopActivityLog(stopStatus, normalizedStopReason));
+            NotifyRunStopped(job, stopStatus, normalizedStopReason);
             return true;
         }
 
@@ -2102,6 +2106,24 @@ public partial class AutoTagService
         }
 
         return false;
+    }
+
+    private void NotifyRunStopped(AutoTagJob job, string stopStatus, string stopReason)
+    {
+        if (!string.Equals(stopStatus, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(stopStatus, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _notifications.Raise(
+            "run_paused",
+            $"{(IsEnhancementRunIntent(job.RunIntent) ? "Enhancement" : "AutoTag")} run {stopStatus}",
+            job.Error ?? BuildStopError(job, stopReason),
+            "Warning",
+            $"run_paused:{job.Id}",
+            "job",
+            job.Id);
     }
 
     private static string ResolveStopStatus(AutoTagJob job, string stopReason)

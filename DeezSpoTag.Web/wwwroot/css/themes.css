@@ -1029,6 +1029,110 @@ textarea::placeholder {
 .theme-swatch[data-theme="amoled-inverse"] { background: linear-gradient(135deg, #ffffff 0%, #ffffff 48%, #000000 52%, #000000 100%); }
 
 /* Connected platforms */
+.notification-event-list {
+    margin-bottom: 12px;
+}
+
+.settings-section--toggle-style .switch-row.notification-event-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 120px 120px;
+    align-items: center;
+    gap: 0;
+}
+
+.notification-event-item .checkbox-group {
+    margin-bottom: 0;
+    gap: 8px;
+}
+
+.notifications-badge {
+    margin-left: auto;
+    min-width: 20px;
+    padding: 0 6px;
+    border-radius: 10px;
+    background: var(--danger-color, #ff3860);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: center;
+}
+
+.notifications-panel {
+    margin: 4px 12px 8px;
+    border: 1px solid var(--border-color, #1f2a44);
+    border-radius: 8px;
+    background: var(--bg-darker, #0b1220);
+    max-height: 320px;
+    display: flex;
+    flex-direction: column;
+}
+
+.notifications-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color, #1f2a44);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.notifications-mark-all {
+    background: none;
+    border: none;
+    color: var(--text-muted, #94a3b8);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.notifications-mark-all:hover {
+    color: var(--text-color, #e2e8f0);
+}
+
+.notifications-panel-list {
+    overflow-y: auto;
+}
+
+.notifications-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color, #1f2a44);
+    font-size: 12px;
+}
+
+.notifications-item:last-child {
+    border-bottom: none;
+}
+
+.notifications-item--unread {
+    border-left: 3px solid #60a5fa;
+}
+
+.notifications-item--warning {
+    border-left-color: var(--warning-color, #f5c542);
+}
+
+.notifications-item--actionrequired {
+    border-left-color: var(--danger-color, #ff3860);
+}
+
+.notifications-item-title {
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.notifications-item-body,
+.notifications-empty {
+    color: var(--text-muted, #94a3b8);
+}
+
+.notifications-empty {
+    padding: 12px;
+    font-size: 12px;
+    text-align: center;
+}
+
 .connected-platforms {
     padding: 6px 16px 4px;
 }

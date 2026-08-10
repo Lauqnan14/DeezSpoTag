@@ -893,6 +893,25 @@
                 </div>
                 <span class="menu-text">About</span>
             </a>
+            <a href="#" class="menu-item" id="notificationsToggle" data-tooltip="Notifications" role="button" aria-expanded="false" aria-controls="notificationsPanel">
+                <div class="menu-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
+                </div>
+                <span class="menu-text">Notifications</span>
+                <span class="notifications-badge" id="notificationsBadge" hidden>0</span>
+            </a>
+            <div class="notifications-panel" id="notificationsPanel" hidden>
+                <div class="notifications-panel-header">
+                    <span>Notifications</span>
+                    <button type="button" class="notifications-mark-all" id="notificationsMarkAll">Mark all read</button>
+                </div>
+                <div class="notifications-panel-list" id="notificationsList">
+                    <div class="notifications-empty">Loading...</div>
+                </div>
+            </div>
             <div class="connected-platforms">
                 <div class="connected-platforms-title">
                     <span class="connected-platforms-title-icon" aria-hidden="true">

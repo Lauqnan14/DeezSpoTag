@@ -187,6 +187,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         WriteIndented = true
     };
 
+    private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
     private readonly DownloadQueueRepository _queueRepository;
     private readonly LibraryRepository _libraryRepository;
     private readonly AutoTagService _autoTagService;
@@ -248,6 +249,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         IWebHostEnvironment env,
         ILogger<DownloadOrchestrationService> logger)
     {
+        _notifications = serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.INotificationSink>();
         _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
         _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
         _autoTagService = serviceProvider.GetRequiredService<AutoTagService>();
@@ -1139,6 +1141,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             DateTimeOffset.UtcNow,
             "info",
             $"Automation: resuming paused enhancement for folder(s): {string.Join(", ", resumeFolderIds)}."));
+        _notifications.Raise(
+            "run_resumed",
+            "Enhancement run resumed",
+            $"The download pipeline settled; resuming enhancement for folder(s) {string.Join(", ", resumeFolderIds)}.",
+            "Info",
+            $"run_resumed:{string.Join(",", resumeFolderIds)}",
+            "folder",
+            resumeFolderIds.FirstOrDefault());
 
         var pausedAgain = await RunEnhancementStageAsync(
             forceRunEvenIfNotDue: true,

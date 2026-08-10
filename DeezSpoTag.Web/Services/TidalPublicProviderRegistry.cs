@@ -24,10 +24,12 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
         IWebHostEnvironment environment,
         IDataProtectionProvider dataProtectionProvider,
         ILogger<TidalPublicProviderRegistry> logger,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _notifications = notifications ?? DeezSpoTag.Services.Download.Shared.Models.NullNotificationSink.Instance;
         _store = new ProtectedCredentialFileStore(dataProtectionProvider, ProtectionPurpose);
         _path = Path.Join(AppDataPaths.GetDataRoot(environment), "autotag", FileName);
     }
@@ -83,6 +85,25 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
     public Task RecordFailureAsync(string endpoint, string category, long responseTimeMs, DateTimeOffset? cooldownUntil, CancellationToken cancellationToken)
         => UpdateDownloadOutcomeAsync(endpoint, category, cooldownUntil, cancellationToken);
 
+    private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
+
+    private void NotifyProviderUnhealthy(ProviderState provider)
+    {
+        if (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow)
+        {
+            return;
+        }
+
+        _notifications.Raise(
+            "provider_unhealthy",
+            $"Tidal provider {provider.DisplayName} is unavailable",
+            $"{ResolveFailureMessage(provider.FailureCategory)} Downloads route around it until {provider.CooldownUntil.Value.ToUniversalTime():HH:mm:ss} UTC.",
+            "Warning",
+            $"provider_unhealthy:tidal:{provider.Id}",
+            "provider",
+            provider.Id);
+    }
+
     private async Task UpdateDownloadOutcomeAsync(
         string endpoint,
         string? category,
@@ -106,6 +127,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             provider.FailureMessage = ResolveFailureMessage(category);
             provider.CooldownUntil = cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
+            NotifyProviderUnhealthy(provider);
         }
         finally
         {

@@ -38,8 +38,10 @@ public sealed class WatchlistPublicApiReadinessService
         ITidalPublicProviderRegistry tidalProviders,
         IAmazonDownloadService amazonDownloads,
         IQobuzDownloadService qobuzDownloads,
-        TidalDownloadService tidalDownloads)
+        TidalDownloadService tidalDownloads,
+        DeezSpoTag.Services.Download.Shared.Models.INotificationSink? notifications = null)
     {
+        _notifications = notifications ?? DeezSpoTag.Services.Download.Shared.Models.NullNotificationSink.Instance;
         _settingsService = settingsService;
         _amazonProviders = amazonProviders;
         _qobuzProviders = qobuzProviders;
@@ -100,8 +102,10 @@ public sealed class WatchlistPublicApiReadinessService
             return false;
         }
 
-        var sessionValid = providers.Any(static provider => provider.RequiresVerification)
+        var requiresVerification = providers.Any(static provider => provider.RequiresVerification);
+        var sessionValid = requiresVerification
                            && await _amazonDownloads.HasPublicDownloadSessionAsync(cancellationToken);
+        NotifyVerificationRequired("Amazon Music", requiresVerification, sessionValid);
         return providers.Any(provider => IsProviderUsable(
             provider.Enabled,
             provider.Status,
@@ -120,8 +124,10 @@ public sealed class WatchlistPublicApiReadinessService
             return false;
         }
 
-        var sessionValid = providers.Any(static provider => provider.RequiresVerification)
+        var requiresVerification = providers.Any(static provider => provider.RequiresVerification);
+        var sessionValid = requiresVerification
                            && await _qobuzDownloads.HasPublicDownloadSessionAsync(cancellationToken);
+        NotifyVerificationRequired("Qobuz", requiresVerification, sessionValid);
         return providers.Any(provider => IsProviderUsable(
             provider.Enabled,
             provider.Status,
@@ -140,13 +146,34 @@ public sealed class WatchlistPublicApiReadinessService
             return false;
         }
 
-        var sessionValid = providers.Any(static provider => provider.RequiresVerification)
+        var requiresVerification = providers.Any(static provider => provider.RequiresVerification);
+        var sessionValid = requiresVerification
                            && await _tidalDownloads.HasPublicDownloadSessionAsync(cancellationToken);
+        NotifyVerificationRequired("Tidal", requiresVerification, sessionValid);
         return providers.Any(provider => IsProviderUsable(
             provider.Enabled,
             provider.Status,
             provider.RequiresVerification,
             sessionValid));
+    }
+
+    private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
+
+    private void NotifyVerificationRequired(string platform, bool anyRequiresVerification, bool sessionValid)
+    {
+        if (!anyRequiresVerification || sessionValid)
+        {
+            return;
+        }
+
+        _notifications.Raise(
+            "verification_required",
+            $"{platform} public API needs verification",
+            $"Downloads and watchlist runs using the {platform} public API are blocked until the session is verified in Settings.",
+            "ActionRequired",
+            $"verification_required:{platform.ToLowerInvariant()}",
+            "platform",
+            platform.ToLowerInvariant());
     }
 
     internal static bool IsProviderUsable(

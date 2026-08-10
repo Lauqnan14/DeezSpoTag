@@ -1617,6 +1617,72 @@
             </div>
         </div>
 
+        <div class="settings-section" id="api-access-settings">
+            <div class="settings-header">
+                <span class="material-icons">vpn_key</span>
+                API Access
+            </div>
+            <div class="settings-content">
+                <p class="secondary-text">
+                    Used by the Navidrome metadata plugin and other API clients. The token is generated automatically and never needs to be typed.
+                </p>
+                <div class="server-library-pin-controls">
+                    <label for="apiTokenInput" class="server-library-pin-label">API Token</label>
+                    <input type="password" id="apiTokenInput" value="••••••••••••••••" readonly autocomplete="off">
+                    <button type="button" class="action-btn action-btn-sm" id="revealApiTokenBtn">
+                        <span class="material-icons">visibility</span>
+                        <span>Reveal</span>
+                    </button>
+                    <button type="button" class="action-btn action-btn-sm" id="copyApiTokenBtn">
+                        <span class="material-icons">content_copy</span>
+                        <span>Copy</span>
+                    </button>
+                    <button type="button" class="action-btn action-btn-sm" id="regenerateApiTokenBtn">
+                        <span class="material-icons">autorenew</span>
+                        <span>Regenerate</span>
+                    </button>
+                </div>
+                <div id="apiTokenStatus" class="server-library-pin-status">Loading API token status...</div>
+                <p class="secondary-text">
+                    Remote clients must set <code>DEEZSPOTAG_ALLOW_REMOTE_API_TOKEN=1</code>. Without it the token is only accepted from trusted-local addresses, so a Navidrome container on a separate network will be rejected.
+                </p>
+            </div>
+        </div>
+
+        <div class="settings-section settings-section--toggle-style" id="notification-settings">
+            <div class="settings-header">
+                <span class="material-icons">notifications</span>
+                Notifications
+            </div>
+            <div class="settings-content">
+                <p class="secondary-text">
+                    Choose where each event is delivered. In-app notifications appear in the sidebar; webhook posts JSON to the URL below and works with ntfy, Apprise, Gotify and Discord.
+                </p>
+                <div id="notificationEventRows" class="notification-event-list">Loading notification preferences...</div>
+                <div class="server-library-pin-controls">
+                    <label for="notificationWebhookUrl" class="server-library-pin-label">Webhook URL</label>
+                    <input type="password" id="notificationWebhookUrl" placeholder="https://ntfy.sh/your-topic" autocomplete="off">
+                    <button type="button" class="action-btn action-btn-sm" id="testNotificationWebhookBtn">
+                        <span class="material-icons">send</span>
+                        <span>Test</span>
+                    </button>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="notificationRetentionDays">Retention (days)</label>
+                        <input type="number" id="notificationRetentionDays" min="1" max="365" value="30">
+                    </div>
+                </div>
+                <div class="btn-group">
+                    <button type="button" class="action-btn action-btn-sm" id="saveNotificationPreferencesBtn">
+                        <span class="material-icons">save</span>
+                        <span>Save Notification Settings</span>
+                    </button>
+                </div>
+                <div id="notificationPreferencesStatus" class="server-library-pin-status"></div>
+            </div>
+        </div>
+
         <div class="settings-section" id="login-tab-settings">
             <div class="settings-header">
                 <span class="material-icons">login</span>
@@ -1724,6 +1790,8 @@ document.addEventListener('DOMContentLoaded', function() {
     initializeSettingsTooltips();
     bindMediaServerLibraryPinActions();
     bindMediaServerLibraryActions();
+    bindApiTokenActions();
+    void initNotificationPreferences();
 });
 
 function createSettingsTooltipIcon(message) {
@@ -3797,6 +3865,236 @@ function queueMediaServerLibraryAutoSave() {
             }
         }
     }, 450);
+}
+
+const API_TOKEN_MASK = '\u2022'.repeat(16);
+
+async function fetchApiTokenValue() {
+    const response = await fetch('/api/settings/api-token');
+    if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || `Failed to read API token (HTTP ${response.status}).`);
+    }
+    const payload = await response.json();
+    if (!payload?.token) {
+        throw new Error('No API token has been generated yet.');
+    }
+    return payload.token;
+}
+
+function setApiTokenRevealed(input, button, token) {
+    input.type = 'text';
+    input.value = token;
+    button.querySelector('.material-icons').textContent = 'visibility_off';
+    button.querySelector('span:last-child').textContent = 'Hide';
+}
+
+function setApiTokenMasked(input, button) {
+    input.type = 'password';
+    input.value = API_TOKEN_MASK;
+    button.querySelector('.material-icons').textContent = 'visibility';
+    button.querySelector('span:last-child').textContent = 'Reveal';
+}
+
+const NOTIFICATION_EVENT_LABELS = {
+    verification_required: 'Public API requires verification',
+    artist_new_release: 'Monitored artist has a new release',
+    playlist_updated: 'Monitored playlist changed',
+    download_failed: 'Download failed after all sources',
+    provider_unhealthy: 'Public API provider unhealthy',
+    run_paused: 'Run paused or interrupted',
+    run_resumed: 'Run resumed',
+    run_completed: 'Run completed'
+};
+
+function renderNotificationEventRows(events) {
+    const container = document.getElementById('notificationEventRows');
+    if (!container) {
+        return;
+    }
+
+    container.innerHTML = Object.keys(NOTIFICATION_EVENT_LABELS).map((kind) => {
+        const value = events?.[kind] || { inApp: true, webhook: false };
+        return `<div class="switch-row notification-event-item" data-kind="${kind}">
+            <span class="switch-label">${NOTIFICATION_EVENT_LABELS[kind]}</span>
+            <div class="checkbox-group">
+                <input type="checkbox" id="notify-${kind}-in-app" data-channel="inApp" ${value.inApp ? 'checked' : ''}>
+                <label for="notify-${kind}-in-app">In-app</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="notify-${kind}-webhook" data-channel="webhook" ${value.webhook ? 'checked' : ''}>
+                <label for="notify-${kind}-webhook">Webhook</label>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function collectNotificationEventRows() {
+    const events = {};
+    document.querySelectorAll('#notificationEventRows .notification-event-item').forEach((row) => {
+        const kind = row.dataset.kind;
+        if (!kind) {
+            return;
+        }
+        events[kind] = {
+            inApp: row.querySelector('input[data-channel="inApp"]')?.checked === true,
+            webhook: row.querySelector('input[data-channel="webhook"]')?.checked === true
+        };
+    });
+    return events;
+}
+
+async function initNotificationPreferences() {
+    const container = document.getElementById('notificationEventRows');
+    const saveButton = document.getElementById('saveNotificationPreferencesBtn');
+    const testButton = document.getElementById('testNotificationWebhookBtn');
+    const retention = document.getElementById('notificationRetentionDays');
+    const webhookUrl = document.getElementById('notificationWebhookUrl');
+    const status = document.getElementById('notificationPreferencesStatus');
+    if (!container || !saveButton) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/notifications/preferences');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        renderNotificationEventRows(payload?.events);
+        if (retention) {
+            retention.value = payload?.retentionDays ?? 30;
+        }
+        if (webhookUrl && payload?.hasWebhookUrl) {
+            webhookUrl.placeholder = 'Saved - enter a new URL to replace it';
+        }
+        if (status) {
+            status.textContent = payload?.hasWebhookUrl
+                ? 'Webhook configured.'
+                : 'No webhook configured. In-app notifications are still delivered.';
+        }
+    } catch (error) {
+        container.textContent = 'Failed to load notification preferences.';
+        return;
+    }
+
+    saveButton.addEventListener('click', async () => {
+        try {
+            saveButton.disabled = true;
+            const body = {
+                events: collectNotificationEventRows(),
+                retentionDays: Number(retention?.value) || 30
+            };
+            if (webhookUrl?.value.trim()) {
+                body.webhookUrl = webhookUrl.value.trim();
+            }
+            const response = await fetch('/api/notifications/preferences', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            if (webhookUrl) {
+                webhookUrl.value = '';
+            }
+            showToast('Notification settings saved.', 'success');
+        } catch (error) {
+            showToast('Failed to save notification settings.', 'error');
+        } finally {
+            saveButton.disabled = false;
+        }
+    });
+
+    if (testButton) {
+        testButton.addEventListener('click', async () => {
+            try {
+                testButton.disabled = true;
+                const response = await fetch('/api/notifications/webhook-test', { method: 'POST' });
+                const payload = await response.json().catch(() => null);
+                if (!response.ok) {
+                    throw new Error(payload?.error || `HTTP ${response.status}`);
+                }
+                showToast('Test notification delivered.', 'success');
+            } catch (error) {
+                showToast(error?.message || 'Webhook test failed.', 'error');
+            } finally {
+                testButton.disabled = false;
+            }
+        });
+    }
+}
+
+function bindApiTokenActions() {
+    const input = document.getElementById('apiTokenInput');
+    const revealButton = document.getElementById('revealApiTokenBtn');
+    const copyButton = document.getElementById('copyApiTokenBtn');
+    const regenerateButton = document.getElementById('regenerateApiTokenBtn');
+    const status = document.getElementById('apiTokenStatus');
+    if (!input || !revealButton || !copyButton || !regenerateButton || revealButton.dataset.bound === 'true') {
+        return;
+    }
+
+    revealButton.dataset.bound = 'true';
+    setApiTokenMasked(input, revealButton);
+    if (status) {
+        status.textContent = 'Token is configured. Reveal or copy it to configure an API client.';
+    }
+
+    revealButton.addEventListener('click', async () => {
+        if (input.type === 'text') {
+            setApiTokenMasked(input, revealButton);
+            return;
+        }
+
+        try {
+            revealButton.disabled = true;
+            setApiTokenRevealed(input, revealButton, await fetchApiTokenValue());
+        } catch (error) {
+            showToast(error?.message || 'Failed to read API token.', 'error');
+        } finally {
+            revealButton.disabled = false;
+        }
+    });
+
+    copyButton.addEventListener('click', async () => {
+        try {
+            copyButton.disabled = true;
+            const token = input.type === 'text' ? input.value : await fetchApiTokenValue();
+            await navigator.clipboard.writeText(token);
+            showToast('API token copied to clipboard.', 'success');
+        } catch (error) {
+            showToast(error?.message || 'Failed to copy API token.', 'error');
+        } finally {
+            copyButton.disabled = false;
+        }
+    });
+
+    regenerateButton.addEventListener('click', async () => {
+        if (!confirm('Regenerate the API token? Existing clients using the current token will stop working until they are updated.')) {
+            return;
+        }
+
+        try {
+            regenerateButton.disabled = true;
+            const response = await fetch('/api/settings/api-token', { method: 'POST' });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null);
+                throw new Error(payload?.error || `Failed to regenerate API token (HTTP ${response.status}).`);
+            }
+            const payload = await response.json();
+            setApiTokenRevealed(input, revealButton, payload.token);
+            if (status) {
+                status.textContent = 'Token regenerated. Update every API client with the new value.';
+            }
+            showToast('API token regenerated.', 'success');
+        } catch (error) {
+            showToast(error?.message || 'Failed to regenerate API token.', 'error');
+        } finally {
+            regenerateButton.disabled = false;
+        }
+    });
 }
 
 function bindMediaServerLibraryActions() {

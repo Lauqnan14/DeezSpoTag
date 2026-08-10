@@ -2241,3 +2241,102 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
+(function initNotificationsPanel() {
+    const SEVERITY_CLASS = {
+        info: 'notifications-item--info',
+        warning: 'notifications-item--warning',
+        actionrequired: 'notifications-item--actionrequired'
+    };
+
+    function escapeText(value) {
+        const span = document.createElement('span');
+        span.textContent = String(value ?? '');
+        return span.innerHTML;
+    }
+
+    function renderNotifications(payload) {
+        const list = document.getElementById('notificationsList');
+        const badge = document.getElementById('notificationsBadge');
+        if (!list) {
+            return;
+        }
+
+        const unread = Number(payload?.unreadCount || 0);
+        if (badge) {
+            badge.hidden = unread <= 0;
+            badge.textContent = unread > 99 ? '99+' : String(unread);
+        }
+
+        const items = Array.isArray(payload?.notifications) ? payload.notifications : [];
+        if (items.length === 0) {
+            list.innerHTML = '<div class="notifications-empty">Nothing to report.</div>';
+            return;
+        }
+
+        list.innerHTML = items.map((item) => {
+            const severity = String(item?.severity || 'info').toLowerCase();
+            const classes = ['notifications-item'];
+            if (!item?.isRead) {
+                classes.push('notifications-item--unread');
+            }
+            classes.push(SEVERITY_CLASS[severity] || SEVERITY_CLASS.info);
+            const count = Number(item?.occurrenceCount || 1);
+            const suffix = count > 1 ? ` (${count}x)` : '';
+            return `<div class="${classes.join(' ')}" data-notification-id="${escapeText(item?.id)}">
+                <div class="notifications-item-title">${escapeText(item?.title)}${suffix}</div>
+                <div class="notifications-item-body">${escapeText(item?.body)}</div>
+            </div>`;
+        }).join('');
+    }
+
+    async function loadNotifications() {
+        try {
+            const response = await fetch('/api/notifications?limit=25');
+            if (!response.ok) {
+                return;
+            }
+            renderNotifications(await response.json());
+        } catch (error) {
+            console.warn('Failed to load notifications', error);
+        }
+    }
+
+    async function markAllRead() {
+        try {
+            await fetch('/api/notifications/read-all', { method: 'POST' });
+            await loadNotifications();
+        } catch (error) {
+            console.warn('Failed to mark notifications read', error);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const toggle = document.getElementById('notificationsToggle');
+        const panel = document.getElementById('notificationsPanel');
+        const markAll = document.getElementById('notificationsMarkAll');
+        if (!toggle || !panel) {
+            return;
+        }
+
+        toggle.addEventListener('click', async (event) => {
+            event.preventDefault();
+            const open = panel.hidden;
+            panel.hidden = !open;
+            toggle.setAttribute('aria-expanded', String(open));
+            if (open) {
+                await loadNotifications();
+            }
+        });
+
+        if (markAll) {
+            markAll.addEventListener('click', (event) => {
+                event.preventDefault();
+                void markAllRead();
+            });
+        }
+
+        void loadNotifications();
+        window.DeezSpoTagNotifications = { refresh: loadNotifications };
+    });
+})();

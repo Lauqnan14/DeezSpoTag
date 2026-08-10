@@ -6791,6 +6791,16 @@ function initQueueRealtimeEvents() {
             setTaskActivity(taskId, message);
         }
     });
+    connection.on('notificationRaised', () => {
+        try {
+            if (typeof window.DeezSpoTagNotifications?.refresh === 'function') {
+                void window.DeezSpoTagNotifications.refresh();
+            }
+        } catch (error) {
+            console.warn('Failed refreshing notifications', error);
+        }
+    });
+
     connection.on('toastNotification', (payload) => {
         const message = String(payload?.message || '').trim();
         if (!message || !window.DeezSpoTag?.showNotification) {
