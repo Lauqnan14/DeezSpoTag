@@ -10,6 +10,7 @@ namespace DeezSpoTag.Services.Download.Shared;
 public sealed class ZarzSignedSessionCoordinator
 {
     private static readonly TimeSpan PendingChallengeLifetime = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan SessionStageTimeout = TimeSpan.FromSeconds(30);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -26,6 +27,19 @@ public sealed class ZarzSignedSessionCoordinator
     }
 
     public event EventHandler<ZarzSessionStateChangedEventArgs>? StateChanged;
+
+    public async Task<bool> PeekUsableSessionAsync(string provider, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await LoadNoLockAsync(provider, cancellationToken))?.IsUsable == true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "{Provider} signed-session peek failed.", provider);
+            return false;
+        }
+    }
 
     public async Task<bool> HasUsableSessionAsync(string provider, CancellationToken cancellationToken)
     {
@@ -54,51 +68,105 @@ public sealed class ZarzSignedSessionCoordinator
         CancellationToken cancellationToken)
     {
         var gate = GetGate(provider);
+        ZarzSignedSession? observed;
+        bool shouldRefresh;
+
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var current = await LoadNoLockAsync(provider, cancellationToken);
-            if (current?.IsUsable == true)
+            observed = await LoadNoLockAsync(provider, cancellationToken);
+            if (observed?.IsUsable == true)
             {
-                if (refresh is not null && current.NeedsRefresh)
+                shouldRefresh = refresh is not null && observed.NeedsRefresh;
+                if (!shouldRefresh)
                 {
-                    try
+                    return observed.Copy();
+                }
+            }
+            else
+            {
+                shouldRefresh = false;
+                if (observed?.IsBlocked == true && HasFreshChallenge(observed))
+                {
+                    throw VerificationRequired(provider);
+                }
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        if (shouldRefresh && observed is not null)
+        {
+            ZarzSignedSession? refreshed = null;
+            try
+            {
+                refreshed = await RunBoundedAsync(
+                    provider,
+                    "refresh",
+                    token => refresh!(observed.Copy(), token),
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "{Provider} signed-session refresh failed; continuing with the current usable session.",
+                    provider);
+            }
+
+            if (refreshed?.IsUsable == true)
+            {
+                await gate.WaitAsync(cancellationToken);
+                try
+                {
+                    var latest = await LoadNoLockAsync(provider, cancellationToken);
+                    if (latest is null || latest.Generation == observed.Generation)
                     {
-                        var refreshed = await refresh(current.Copy(), cancellationToken);
-                        if (refreshed.IsUsable)
-                        {
-                            refreshed.InstallId = string.IsNullOrWhiteSpace(refreshed.InstallId)
-                                ? current.InstallId
-                                : refreshed.InstallId;
-                            refreshed.Generation = current.Generation;
-                            refreshed.BlockedGeneration = null;
-                            refreshed.VerificationUrl = null;
-                            refreshed.ChallengeCreatedAtUtc = null;
-                            await SaveAndPublishNoLockAsync(provider, current, refreshed, cancellationToken);
-                            return refreshed.Copy();
-                        }
+                        refreshed.InstallId = string.IsNullOrWhiteSpace(refreshed.InstallId)
+                            ? observed.InstallId
+                            : refreshed.InstallId;
+                        refreshed.Generation = observed.Generation;
+                        refreshed.BlockedGeneration = null;
+                        refreshed.VerificationUrl = null;
+                        refreshed.ChallengeCreatedAtUtc = null;
+                        await SaveAndPublishNoLockAsync(provider, latest ?? observed, refreshed, cancellationToken);
+                        return refreshed.Copy();
                     }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
+
+                    if (latest.IsUsable)
                     {
-                        _logger.LogDebug(
-                            ex,
-                            "{Provider} signed-session refresh failed; continuing with the current usable session.",
-                            provider);
+                        return latest.Copy();
                     }
                 }
-
-                return current.Copy();
+                finally
+                {
+                    gate.Release();
+                }
             }
 
-            if (current?.IsBlocked == true && HasFreshChallenge(current))
+            return observed.Copy();
+        }
+
+        var result = await RunBoundedAsync(
+            provider,
+            "bootstrap",
+            token => bootstrap(observed?.Copy(), token),
+            cancellationToken);
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var latest = await LoadNoLockAsync(provider, cancellationToken);
+            if (latest?.IsUsable == true)
             {
-                throw VerificationRequired(provider);
+                return latest.Copy();
             }
 
-            var result = await bootstrap(current?.Copy(), cancellationToken);
-            var updated = NormalizeReplacement(current, result.Session);
+            var updated = NormalizeReplacement(latest ?? observed, result.Session);
             ApplyChallenge(updated, result.VerificationUrl);
-            await SaveAndPublishNoLockAsync(provider, current, updated, cancellationToken);
+            await SaveAndPublishNoLockAsync(provider, latest ?? observed, updated, cancellationToken);
             if (updated.IsUsable)
             {
                 return updated.Copy();
@@ -112,25 +180,69 @@ public sealed class ZarzSignedSessionCoordinator
         }
     }
 
+    private async Task<T> RunBoundedAsync<T>(
+        string provider,
+        string stage,
+        Func<CancellationToken, Task<T>> work,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(SessionStageTimeout);
+        try
+        {
+            return await work(timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "{Provider} signed-session {Stage} exceeded {TimeoutSeconds}s and was abandoned.",
+                provider,
+                stage,
+                SessionStageTimeout.TotalSeconds);
+            throw new TimeoutException($"{provider} signed-session {stage} timed out.");
+        }
+    }
+
     public async Task<string?> BeginVerificationAsync(
         string provider,
         Func<ZarzSignedSession?, CancellationToken, Task<ZarzSessionBootstrapResult>> bootstrap,
         CancellationToken cancellationToken)
     {
         var gate = GetGate(provider);
+        ZarzSignedSession? observed;
+
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var current = await LoadNoLockAsync(provider, cancellationToken);
-            if (current?.IsUsable == true)
+            observed = await LoadNoLockAsync(provider, cancellationToken);
+            if (observed?.IsUsable == true)
+            {
+                return null;
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        var result = await RunBoundedAsync(
+            provider,
+            "verification bootstrap",
+            token => bootstrap(observed?.Copy(), token),
+            cancellationToken);
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var latest = await LoadNoLockAsync(provider, cancellationToken);
+            if (latest?.IsUsable == true)
             {
                 return null;
             }
 
-            var result = await bootstrap(current?.Copy(), cancellationToken);
-            var updated = NormalizeReplacement(current, result.Session);
+            var updated = NormalizeReplacement(latest ?? observed, result.Session);
             ApplyChallenge(updated, result.VerificationUrl);
-            await SaveAndPublishNoLockAsync(provider, current, updated, cancellationToken);
+            await SaveAndPublishNoLockAsync(provider, latest ?? observed, updated, cancellationToken);
             return updated.IsUsable ? null : updated.VerificationUrl;
         }
         finally
@@ -146,12 +258,14 @@ public sealed class ZarzSignedSessionCoordinator
         CancellationToken cancellationToken)
     {
         var gate = GetGate(provider);
+        ZarzSignedSession current;
+        var grantHash = ZarzSignedSessionContract.HashGrant(grant);
+
         await gate.WaitAsync(cancellationToken);
         try
         {
-            var current = await LoadNoLockAsync(provider, cancellationToken)
+            current = await LoadNoLockAsync(provider, cancellationToken)
                 ?? throw new InvalidOperationException($"Start {DisplayName(provider)} public download verification first.");
-            var grantHash = ZarzSignedSessionContract.HashGrant(grant);
             if (!string.IsNullOrWhiteSpace(current.CompletedGrantHash)
                 && string.Equals(current.CompletedGrantHash, grantHash, StringComparison.Ordinal)
                 && current.IsUsable)
@@ -162,20 +276,41 @@ public sealed class ZarzSignedSessionCoordinator
                 await SaveAndPublishNoLockAsync(provider, current, current, cancellationToken);
                 return;
             }
+        }
+        finally
+        {
+            gate.Release();
+        }
 
-            var exchanged = await exchange(current.Copy(), grant, cancellationToken);
-            if (!exchanged.HasCredentials || exchanged.IsExpired)
+        var exchanged = await RunBoundedAsync(
+            provider,
+            "verification exchange",
+            token => exchange(current.Copy(), grant, token),
+            cancellationToken);
+        if (!exchanged.HasCredentials || exchanged.IsExpired)
+        {
+            throw new InvalidOperationException($"{DisplayName(provider)} session exchange did not return a usable session.");
+        }
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var latest = await LoadNoLockAsync(provider, cancellationToken);
+            if (latest is not null
+                && latest.Generation != current.Generation
+                && latest.IsUsable)
             {
-                throw new InvalidOperationException($"{DisplayName(provider)} session exchange did not return a usable session.");
+                return;
             }
 
-            exchanged.InstallId = string.IsNullOrWhiteSpace(exchanged.InstallId) ? current.InstallId : exchanged.InstallId;
-            exchanged.Generation = Math.Max(current.Generation + 1, exchanged.Generation);
+            var previous = latest ?? current;
+            exchanged.InstallId = string.IsNullOrWhiteSpace(exchanged.InstallId) ? previous.InstallId : exchanged.InstallId;
+            exchanged.Generation = Math.Max(previous.Generation + 1, exchanged.Generation);
             exchanged.BlockedGeneration = null;
             exchanged.VerificationUrl = null;
             exchanged.ChallengeCreatedAtUtc = null;
             exchanged.CompletedGrantHash = grantHash;
-            await SaveAndPublishNoLockAsync(provider, current, exchanged, cancellationToken);
+            await SaveAndPublishNoLockAsync(provider, previous, exchanged, cancellationToken);
         }
         finally
         {

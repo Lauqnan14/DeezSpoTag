@@ -192,13 +192,44 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
 
         payload.QobuzResolvedQuality = request.Quality;
         payload.Quality = request.Quality;
-        await QueueHelperUtils.UpdatePayloadAsync(_queueRepository, next.QueueUuid, payload, cancellationToken: itemToken);
+        await DownloadAcquisitionStageWriter.RecordAsync(
+            _queueRepository,
+            next.QueueUuid,
+            payload,
+            DownloadAcquisitionStages.ResolvingQuality,
+            EngineName,
+            itemToken);
         request.SelectedQualityCallback = selectedQuality =>
             SyncResolvedQualityAsync(next.QueueUuid, payload, selectedQuality, itemToken);
+        var stageAdvancedToTransfer = false;
+        var innerProgressReporter = progressReporter;
+        progressReporter = async (completed, total) =>
+        {
+            if (!stageAdvancedToTransfer)
+            {
+                stageAdvancedToTransfer = true;
+                await DownloadAcquisitionStageWriter.RecordAsync(
+                    _queueRepository,
+                    next.QueueUuid,
+                    payload,
+                    DownloadAcquisitionStages.DownloadingAudio,
+                    EngineName,
+                    itemToken);
+            }
+
+            await innerProgressReporter(completed, total);
+        };
 
         var sourceSelection = ResolveQobuzSource(payload);
         await QueuePrefetchAsync(next.QueueUuid, context, payload, settings);
 
+        await DownloadAcquisitionStageWriter.RecordAsync(
+            _queueRepository,
+            next.QueueUuid,
+            payload,
+            DownloadAcquisitionStages.ResolvingProviderSession,
+            EngineName,
+            itemToken);
         var outputPath = await DownloadOnceAsync(
             payload,
             request,
@@ -206,6 +237,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             resolvedIsrc,
             sourceSelection,
             progressReporter,
+            itemToken);
+        await DownloadAcquisitionStageWriter.RecordAsync(
+            _queueRepository,
+            next.QueueUuid,
+            payload,
+            DownloadAcquisitionStages.ValidatingAudio,
+            EngineName,
             itemToken);
         await DeliveredAudioQualityGuard.EnsurePlanStepSatisfiedAsync(
             payload,
@@ -219,6 +257,13 @@ public sealed class QobuzEngineProcessor : IQueueEngineProcessor
             next.QueueUuid,
             payload,
             outputPath,
+            itemToken);
+        await DownloadAcquisitionStageWriter.RecordAsync(
+            _queueRepository,
+            next.QueueUuid,
+            payload,
+            DownloadAcquisitionStages.Finalizing,
+            EngineName,
             itemToken);
         if (!await TryFinalizeAcquiredAudioAsync(next.QueueUuid, context, payload, outputPath, settings, itemToken))
         {

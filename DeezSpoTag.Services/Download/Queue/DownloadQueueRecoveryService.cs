@@ -33,6 +33,115 @@ public sealed class DownloadQueueRecoveryService
             DownloadQueueRecoveryPolicy.OrphanedRunningThreshold,
             recoverOrphanedOnly: true,
             cancellationToken);
+
+        await RecoverStalledAcquisitionsAsync(cancellationToken);
+    }
+
+    private async Task RecoverStalledAcquisitionsAsync(CancellationToken cancellationToken)
+    {
+        var candidates = await _queueRepository.GetRunningTasksOlderThanAsync(
+            DownloadQueueRecoveryPolicy.AcquisitionStageLease,
+            cancellationToken);
+        foreach (var item in candidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(item.QueueUuid)
+                || !TryReadStalledAcquisition(item, out var provider, out var stage))
+            {
+                continue;
+            }
+
+            if (!await _queueRepository.TryClaimStaleRunningAsync(
+                    item.QueueUuid,
+                    DownloadQueueRecoveryPolicy.AcquisitionStageLease,
+                    cancellationToken))
+            {
+                continue;
+            }
+
+            var engine = NormalizeEngineName(item.Engine);
+            var message = DownloadQueueRecoveryPolicy.BuildAcquisitionStallMessage(engine, provider, stage);
+            _logger.LogWarning(
+                "Recovering stalled acquisition {QueueUuid}: engine={Engine} provider={Provider} stage={Stage} with no audio transfer since {UpdatedAt}",
+                item.QueueUuid,
+                engine,
+                provider,
+                stage,
+                item.UpdatedAt);
+            if (_cancellationRegistry.IsActive(item.QueueUuid) && _cancellationRegistry.MarkTimedOut(item.QueueUuid))
+            {
+                _cancellationRegistry.Cancel(item.QueueUuid);
+                _runtime.ActivityLog.Warn($"Download acquisition stalled (engine={engine}): {item.QueueUuid} {message}");
+                _runtime.Listener.Send("updateQueue", new
+                {
+                    uuid = item.QueueUuid,
+                    error = message
+                });
+                continue;
+            }
+
+            await MarkFailedAndRetryAsync(item.QueueUuid, engine, message);
+        }
+    }
+
+    private static bool TryReadStalledAcquisition(DownloadQueueItem item, out string? provider, out string? stage)
+    {
+        provider = null;
+        stage = null;
+        if (string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            var snapshot = System.Text.Json.JsonSerializer.Deserialize<AcquisitionSnapshot>(item.PayloadJson);
+            if (snapshot is null
+                || snapshot.AudioAcquired
+                || snapshot.Progress > 0
+                || snapshot.Downloaded > 0
+                || snapshot.TotalSize > 0
+                || !string.IsNullOrWhiteSpace(snapshot.FilePath)
+                || string.IsNullOrWhiteSpace(snapshot.AcquisitionStage)
+                || !snapshot.AcquisitionStageUpdatedUtc.HasValue)
+            {
+                return false;
+            }
+
+            if (string.Equals(
+                    snapshot.AcquisitionStage,
+                    Shared.DownloadAcquisitionStages.DownloadingAudio,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (DateTimeOffset.UtcNow - snapshot.AcquisitionStageUpdatedUtc.Value
+                <= DownloadQueueRecoveryPolicy.AcquisitionStageLease)
+            {
+                return false;
+            }
+
+            provider = snapshot.AcquisitionProvider;
+            stage = snapshot.AcquisitionStage;
+            return true;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
+
+    private sealed record AcquisitionSnapshot
+    {
+        public bool AudioAcquired { get; init; }
+        public double Progress { get; init; }
+        public int Downloaded { get; init; }
+        public double TotalSize { get; init; }
+        public string? FilePath { get; init; }
+        public string? AcquisitionStage { get; init; }
+        public string? AcquisitionProvider { get; init; }
+        public DateTimeOffset? AcquisitionStageUpdatedUtc { get; init; }
     }
 
     private async Task RecoverRunningItemsOlderThanAsync(

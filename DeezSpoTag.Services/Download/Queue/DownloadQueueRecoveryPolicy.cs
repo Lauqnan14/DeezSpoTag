@@ -5,6 +5,15 @@ public static class DownloadQueueRecoveryPolicy
     public static readonly TimeSpan RunningStallThreshold = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan OrphanedRunningThreshold = TimeSpan.FromMinutes(1);
     public static readonly TimeSpan PostDownloadPendingLease = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan AcquisitionStageLease = TimeSpan.FromMinutes(5);
+
+    public static string BuildAcquisitionStallMessage(string engine, string? provider, string? stage)
+    {
+        var normalizedEngine = Normalize(engine) is { Length: > 0 } value ? value : "download";
+        var normalizedProvider = string.IsNullOrWhiteSpace(provider) ? normalizedEngine : provider.Trim();
+        var normalizedStage = string.IsNullOrWhiteSpace(stage) ? "provider session" : stage.Trim().Replace('_', ' ');
+        return $"{normalizedProvider} timed out during {normalizedStage} before any audio transfer started.";
+    }
 
     public static bool IsWatchlistClaimOwnedByQueue(DownloadQueueItem? item, DateTimeOffset nowUtc)
     {

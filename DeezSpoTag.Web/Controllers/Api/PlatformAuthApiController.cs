@@ -45,6 +45,7 @@ public sealed class PlatformAuthApiDependencies
     public required SoulseekConnectionService SoulseekConnectionService { get; init; }
     public required DeezerSessionManager DeezerSessionManager { get; init; }
     public required ILoginStorageService LoginStorage { get; init; }
+    public required ILogger<PlatformAuthApiController> Logger { get; init; }
 }
 
 public sealed class BoomplayLoginRequest
@@ -82,6 +83,7 @@ public class PlatformAuthApiController : ControllerBase
     private readonly SoulseekConnectionService _soulseekConnectionService;
     private readonly DeezerSessionManager _deezerSessionManager;
     private readonly ILoginStorageService _loginStorage;
+    private readonly ILogger<PlatformAuthApiController> _logger;
     public PlatformAuthApiController(PlatformAuthApiDependencies dependencies)
     {
         _authService = dependencies.AuthService;
@@ -101,6 +103,7 @@ public class PlatformAuthApiController : ControllerBase
         _soulseekConnectionService = dependencies.SoulseekConnectionService;
         _deezerSessionManager = dependencies.DeezerSessionManager;
         _loginStorage = dependencies.LoginStorage;
+        _logger = dependencies.Logger;
     }
 
     [HttpGet]
@@ -164,7 +167,7 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        return Ok(await GetPublicAmazonProvidersAsync(cancellationToken));
+        return Ok(await GetPublicAmazonProvidersAsync(cancellationToken, liveSession: false));
     }
 
     [HttpPut("amazonmusic/providers/{providerId}/enabled")]
@@ -189,8 +192,11 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
-        return Ok(await GetPublicAmazonProvidersAsync(cancellationToken));
+        await RunProviderStageAsync(
+            "amazon",
+            token => _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(token),
+            cancellationToken);
+        return Ok(await GetPublicAmazonProvidersAsync(cancellationToken, liveSession: true));
     }
 
     private static bool HasSpotifyRuntimeCredentials(SpotifyConfig? spotify)
@@ -222,7 +228,7 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        return Ok(await GetPublicTidalProvidersAsync(cancellationToken));
+        return Ok(await GetPublicTidalProvidersAsync(cancellationToken, liveSession: false));
     }
 
     [HttpPut("tidal/providers/{providerId}/enabled")]
@@ -244,8 +250,11 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
-        return Ok(await GetPublicTidalProvidersAsync(cancellationToken));
+        await RunProviderStageAsync(
+            "tidal",
+            token => _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(token),
+            cancellationToken);
+        return Ok(await GetPublicTidalProvidersAsync(cancellationToken, liveSession: true));
     }
 
     [HttpGet("qobuz/providers")]
@@ -253,7 +262,7 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
+        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken, liveSession: false));
     }
 
     [HttpPut("qobuz/providers/{providerId}/enabled")]
@@ -278,8 +287,11 @@ public class PlatformAuthApiController : ControllerBase
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
-        await _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken);
-        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken));
+        await RunProviderStageAsync(
+            "qobuz",
+            token => _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(token),
+            cancellationToken);
+        return Ok(await GetPublicQobuzProvidersAsync(cancellationToken, liveSession: true));
     }
 
     [HttpGet("qobuz/account")]
@@ -311,14 +323,40 @@ public class PlatformAuthApiController : ControllerBase
         if (check)
         {
             await Task.WhenAll(
-                _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
-                _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken),
-                _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(cancellationToken));
+                RunProviderStageAsync(
+                    "qobuz",
+                    token => _qobuzPublicProviderRegistry.CheckEnabledProvidersAsync(token),
+                    cancellationToken),
+                RunProviderStageAsync(
+                    "amazon",
+                    token => _amazonPublicProviderRegistry.CheckEnabledProvidersAsync(token),
+                    cancellationToken),
+                RunProviderStageAsync(
+                    "tidal",
+                    token => _tidalPublicProviderRegistry.CheckEnabledProvidersAsync(token),
+                    cancellationToken));
         }
 
-        var qobuz = await GetPublicQobuzProvidersAsync(cancellationToken);
-        var amazon = await GetPublicAmazonProvidersAsync(cancellationToken);
-        var tidal = await GetPublicTidalProvidersAsync(cancellationToken);
+        var qobuzTask = ResolveProviderStatusAsync(
+            "qobuz",
+            token => GetPublicQobuzProvidersAsync(token, liveSession: check),
+            summary => (summary.Status, summary.OnlineCount),
+            cancellationToken);
+        var amazonTask = ResolveProviderStatusAsync(
+            "amazon",
+            token => GetPublicAmazonProvidersAsync(token, liveSession: check),
+            summary => (summary.Status, summary.OnlineCount),
+            cancellationToken);
+        var tidalTask = ResolveProviderStatusAsync(
+            "tidal",
+            token => GetPublicTidalProvidersAsync(token, liveSession: check),
+            summary => (summary.Status, summary.OnlineCount),
+            cancellationToken);
+
+        await Task.WhenAll(qobuzTask, amazonTask, tidalTask);
+        var qobuz = qobuzTask.Result;
+        var amazon = amazonTask.Result;
+        var tidal = tidalTask.Result;
         return Ok(new
         {
             qobuz = new { status = qobuz.Status, onlineCount = qobuz.OnlineCount },
@@ -997,12 +1035,71 @@ public class PlatformAuthApiController : ControllerBase
         };
     }
 
-    private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken)
+
+    private static readonly TimeSpan PublicProviderStatusTimeout = TimeSpan.FromSeconds(4);
+
+    private async Task<(string Status, int OnlineCount)> ResolveProviderStatusAsync<TSummary>(
+        string provider,
+        Func<CancellationToken, Task<TSummary>> load,
+        Func<TSummary, (string Status, int OnlineCount)> project,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(PublicProviderStatusTimeout);
+        try
+        {
+            return project(await load(timeout.Token));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Public provider status for {Provider} timed out after {TimeoutSeconds}s; reporting it as degraded.",
+                provider,
+                PublicProviderStatusTimeout.TotalSeconds);
+            return (PublicApiDegradedStatus, 0);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Public provider status for {Provider} failed; reporting it as degraded.", provider);
+            return (PublicApiDegradedStatus, 0);
+        }
+    }
+
+    private async Task RunProviderStageAsync(
+        string provider,
+        Func<CancellationToken, Task> stage,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(PublicProviderCheckTimeout);
+        try
+        {
+            await stage(timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Public provider check for {Provider} timed out after {TimeoutSeconds}s.",
+                provider,
+                PublicProviderCheckTimeout.TotalSeconds);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Public provider check for {Provider} failed.", provider);
+        }
+    }
+
+    private static readonly TimeSpan PublicProviderCheckTimeout = TimeSpan.FromSeconds(20);
+    private const string PublicApiDegradedStatus = "degraded";
+
+    private async Task<QobuzProviderSummary> GetPublicQobuzProvidersAsync(CancellationToken cancellationToken, bool liveSession = false)
     {
         var providers = (await _qobuzPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
         var onlineCount = enabledProviders.Count(IsDownloadAvailable);
-        var sessionValid = await _qobuzDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
+        var sessionValid = liveSession
+            ? await _qobuzDownloadService.HasPublicDownloadSessionAsync(cancellationToken)
+            : await _qobuzDownloadService.PeekPublicDownloadSessionAsync(cancellationToken);
         var online = onlineCount > 0 && sessionValid;
         return new QobuzProviderSummary(
             online,
@@ -1019,12 +1116,14 @@ public class PlatformAuthApiController : ControllerBase
     private sealed record QobuzProviderSummary(bool Online, int OnlineCount, string Status, bool SessionValid, QobuzProviderView[] Providers);
     private sealed record QobuzProviderView(string Id, string Name, bool Enabled, string Status, DateTimeOffset? LastCheckedAt, DateTimeOffset? LastSuccessAt, string? FailureCategory, string? FailureMessage, long? ResponseTimeMs, DateTimeOffset? CooldownUntil);
 
-    private async Task<TidalProviderSummary> GetPublicTidalProvidersAsync(CancellationToken cancellationToken)
+    private async Task<TidalProviderSummary> GetPublicTidalProvidersAsync(CancellationToken cancellationToken, bool liveSession = false)
     {
         var providers = (await _tidalPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicTidalProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
         var onlineCount = enabledProviders.Count(IsDownloadAvailable);
-        var sessionValid = await _tidalDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
+        var sessionValid = liveSession
+            ? await _tidalDownloadService.HasPublicDownloadSessionAsync(cancellationToken)
+            : await _tidalDownloadService.PeekPublicDownloadSessionAsync(cancellationToken);
         var online = onlineCount > 0 && sessionValid;
         return new TidalProviderSummary(
             online,
@@ -1252,12 +1351,14 @@ public class PlatformAuthApiController : ControllerBase
             or "boomplay";
     }
 
-    private async Task<AmazonProviderSummary> GetPublicAmazonProvidersAsync(CancellationToken cancellationToken)
+    private async Task<AmazonProviderSummary> GetPublicAmazonProvidersAsync(CancellationToken cancellationToken, bool liveSession = false)
     {
         var providers = (await _amazonPublicProviderRegistry.GetProvidersAsync(cancellationToken)).Select(ToPublicAmazonProvider).ToArray();
         var enabledProviders = providers.Where(static provider => provider.Enabled).ToArray();
         var onlineCount = enabledProviders.Count(IsDownloadAvailable);
-        var sessionValid = await _amazonDownloadService.HasPublicDownloadSessionAsync(cancellationToken);
+        var sessionValid = liveSession
+            ? await _amazonDownloadService.HasPublicDownloadSessionAsync(cancellationToken)
+            : await _amazonDownloadService.PeekPublicDownloadSessionAsync(cancellationToken);
         var online = onlineCount > 0 && sessionValid;
         return new AmazonProviderSummary(
             online,

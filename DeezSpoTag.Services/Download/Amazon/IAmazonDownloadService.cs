@@ -3,6 +3,7 @@ namespace DeezSpoTag.Services.Download.Amazon;
 public interface IAmazonDownloadService
 {
     Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken);
+    Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken);
     Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null);

@@ -26,6 +26,7 @@ namespace DeezSpoTag.Services.Download.Qobuz;
 public interface IQobuzDownloadService
 {
     Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken);
+    Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken);
     Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null);
@@ -963,6 +964,9 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
         => _zarzSessions.HasUsableSessionAsync("qobuz", cancellationToken);
+
+    public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken)
+        => _zarzSessions.PeekUsableSessionAsync("qobuz", cancellationToken);
 
     public Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,

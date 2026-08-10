@@ -101,6 +101,10 @@ public abstract class EngineQueueItemBase : MusicKeyAudioFeaturesBase
     public string AcquiredDeliveredQuality { get; set; } = "";
     public string AcquiredEngine { get; set; } = "";
     public long AcquiredFileSizeBytes { get; set; }
+    public string AcquisitionStage { get; set; } = "";
+    public string AcquisitionProvider { get; set; } = "";
+    public string AcquisitionFailureReason { get; set; } = "";
+    public DateTimeOffset? AcquisitionStageUpdatedUtc { get; set; }
     public string FinalizationStage { get; set; } = "";
     public string FinalizationError { get; set; } = "";
     public string FinalizationInnerError { get; set; } = "";

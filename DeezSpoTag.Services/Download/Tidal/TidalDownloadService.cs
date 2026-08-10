@@ -1566,6 +1566,9 @@ public sealed class TidalDownloadService
     public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
         => _zarzSessions.HasUsableSessionAsync("tidal", cancellationToken);
 
+    public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken)
+        => _zarzSessions.PeekUsableSessionAsync("tidal", cancellationToken);
+
     public Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null)

@@ -372,6 +372,9 @@ public sealed class AmazonDownloadService : IAmazonDownloadService
     public Task<bool> HasPublicDownloadSessionAsync(CancellationToken cancellationToken)
         => _zarzSessions.HasUsableSessionAsync("amazon", cancellationToken);
 
+    public Task<bool> PeekPublicDownloadSessionAsync(CancellationToken cancellationToken)
+        => _zarzSessions.PeekUsableSessionAsync("amazon", cancellationToken);
+
     public Task<string?> BeginPublicDownloadVerificationAsync(
         CancellationToken cancellationToken,
         string? publicAppBaseUrl = null)
