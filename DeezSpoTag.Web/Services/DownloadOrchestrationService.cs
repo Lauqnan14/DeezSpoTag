@@ -1274,11 +1274,16 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             await _queueRepository.MarkMoveFailedAsync(item.QueueUuid, cancellationToken);
-            await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusInterrupted, cancellationToken);
+            await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusNotRequired, cancellationToken);
+            var unrecoverableMarker = BuildCompletionMarker(item);
+            if (!string.IsNullOrWhiteSpace(unrecoverableMarker))
+            {
+                closedMarkers[unrecoverableMarker] = item.UpdatedAt;
+            }
             _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                 DateTimeOffset.UtcNow,
                 ErrorLogLevel,
-                $"Automation: completed download {item.QueueUuid} lost its staging artifact before enrichment/finalization and has no verified library destination."));
+                $"Automation: completed download {item.QueueUuid} lost its staging artifact before enrichment/finalization and has no verified library destination; closing it so the pipeline can settle."));
         }
 
         if (closedMarkers.Count > 0)
@@ -2150,6 +2155,14 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private async Task<bool> HasPendingPostDownloadEnrichmentAsync(CancellationToken cancellationToken)
     {
         var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken);
+        if (pendingItems.Count > 0 && TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _))
+        {
+            pendingItems = await CloseCompletedItemsWithoutStagingFilesAsync(
+                pendingItems,
+                downloadRootPath,
+                cancellationToken);
+        }
+
         return pendingItems.Count > 0;
     }
 

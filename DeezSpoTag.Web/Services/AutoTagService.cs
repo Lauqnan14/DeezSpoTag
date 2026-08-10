@@ -2071,6 +2071,14 @@ public partial class AutoTagService
             _jobs[id] = job;
         }
 
+        var normalizedStopReason = NormalizeStopReason(stopReason);
+        var stopStatus = ResolveStopStatus(job, normalizedStopReason);
+        var previousStatus = job.Status;
+        var previousError = job.Error;
+        job.Status = stopStatus;
+        job.Error = BuildStopError(job, normalizedStopReason);
+        SaveJob(job);
+
         var stopped = await _autoTagRunner.StopAsync(id, CancellationToken.None);
         if (_jobCancellationSources.TryGetValue(id, out var cancellation))
         {
@@ -2080,17 +2088,20 @@ public partial class AutoTagService
 
         if (stopped)
         {
-            var stopStatus = ResolveStopStatus(job, NormalizeStopReason(stopReason));
-            job.Status = stopStatus;
-            var normalizedStopReason = NormalizeStopReason(stopReason);
-            job.Error = BuildStopError(job, normalizedStopReason);
-            SaveJob(job);
             AppendActivityLog(
                 job.Id,
                 BuildStopActivityLog(stopStatus, normalizedStopReason));
+            return true;
         }
 
-        return stopped;
+        if (string.Equals(job.Status, stopStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            job.Status = previousStatus;
+            job.Error = previousError;
+            SaveJob(job);
+        }
+
+        return false;
     }
 
     private static string ResolveStopStatus(AutoTagJob job, string stopReason)
