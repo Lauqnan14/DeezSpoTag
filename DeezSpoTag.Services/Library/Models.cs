@@ -638,7 +638,8 @@ public sealed record WatchlistArtistDto(
     string? DownloadVariantMode = null,
     string? TopSongsSyncMode = null,
     bool? DownloadDiscographyEnabled = null,
-    IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null);
+    IReadOnlyList<PlaylistTrackBlockRule>? IgnoreRules = null,
+    string? QobuzId = null);
 
 public sealed record PlaylistWatchlistDto(
     long Id,

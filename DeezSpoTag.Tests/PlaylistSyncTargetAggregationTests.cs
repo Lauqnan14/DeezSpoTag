@@ -223,6 +223,46 @@ public sealed class PlaylistSyncTargetAggregationTests
         Assert.Contains("\"deezer_next_offset\"", schema, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void WatchIntentIdentityCoversEveryPlatformIdOnTheIntent()
+    {
+        var engine = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var start = engine.IndexOf("ResolveIntentTrackId(DownloadIntent intent)", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = engine[start..(start + 1200)];
+
+        Assert.Contains("intent.SpotifyId", body, StringComparison.Ordinal);
+        Assert.Contains("intent.DeezerId", body, StringComparison.Ordinal);
+        Assert.Contains("intent.AppleId", body, StringComparison.Ordinal);
+        Assert.Contains("intent.QobuzId", body, StringComparison.Ordinal);
+        Assert.Contains("intent.TidalId", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtistWatchCoversQobuzAlongsideTheOtherPlatforms()
+    {
+        var service = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistWatchService.cs"));
+
+        Assert.Contains("await CheckSpotifyArtistAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("await CheckAppleArtistAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("await CheckDeezerArtistAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("await CheckQobuzArtistAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("BuildQobuzAlbumIntents", service, StringComparison.Ordinal);
+        Assert.Contains("QueueWatchIntentsWithOutcomeAsync", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void IntentQueueLabelsThePlatformItCameFrom()
+    {
+        var engine = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+
+        Assert.Contains("BuildQueueSourceLabel(platformLabel", engine, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildQueueSourceLabel(\"Apple Music\", options.CollectionType", engine, StringComparison.Ordinal);
+    }
+
     private static string ReadPlaylistSyncSource()
         => File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
 

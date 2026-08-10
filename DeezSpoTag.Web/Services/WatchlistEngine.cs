@@ -3718,9 +3718,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return (await QueueAppleWatchIntentsWithOutcomeAsync(intents, options, cancellationToken)).Queued;
     }
 
-    public async Task<ArtistWatchQueueOutcome> QueueAppleWatchIntentsWithOutcomeAsync(
+    public Task<ArtistWatchQueueOutcome> QueueAppleWatchIntentsWithOutcomeAsync(
         IReadOnlyCollection<DownloadIntent> intents,
         ArtistWatchQueueOptions options,
+        CancellationToken cancellationToken)
+        => QueueWatchIntentsWithOutcomeAsync(intents, options, "Apple Music", cancellationToken);
+
+    public async Task<ArtistWatchQueueOutcome> QueueWatchIntentsWithOutcomeAsync(
+        IReadOnlyCollection<DownloadIntent> intents,
+        ArtistWatchQueueOptions options,
+        string platformLabel,
         CancellationToken cancellationToken)
     {
         if (intents.Count == 0)
@@ -3743,7 +3750,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             .Select(static track => track!)
             .ToList();
 
-        var sourceLabel = BuildQueueSourceLabel("Apple Music", options.CollectionType, options.CollectionName);
+        var sourceLabel = BuildQueueSourceLabel(platformLabel, options.CollectionType, options.CollectionName);
         var result = await QueueWatchIntentTracksAsync(
             watchTracks,
             options.DestinationFolderId,
@@ -5102,6 +5109,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             return intent.AppleId.Trim();
         }
 
+        if (!string.IsNullOrWhiteSpace(intent.QobuzId))
+        {
+            return intent.QobuzId.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(intent.TidalId))
+        {
+            return intent.TidalId.Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(intent.SourceUrl))
         {
             return intent.SourceUrl.Trim();
@@ -5478,6 +5495,13 @@ public sealed class WatchlistQueueService
         ArtistWatchQueueOptions options,
         CancellationToken cancellationToken)
         => _engine.QueueAppleWatchIntentsWithOutcomeAsync(intents, options, cancellationToken);
+
+    public Task<ArtistWatchQueueOutcome> QueueWatchIntentsWithOutcomeAsync(
+        IReadOnlyCollection<DownloadIntent> intents,
+        ArtistWatchQueueOptions options,
+        string platformLabel,
+        CancellationToken cancellationToken)
+        => _engine.QueueWatchIntentsWithOutcomeAsync(intents, options, platformLabel, cancellationToken);
 }
 
 public static class WatchlistSelectionPolicy

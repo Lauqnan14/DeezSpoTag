@@ -1,6 +1,10 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.Json;
+using DeezSpoTag.Core.Models.Qobuz;
 using DeezSpoTag.Integrations.Deezer;
+using DeezSpoTag.Integrations.Qobuz;
+using DeezSpoTag.Services.Metadata.Qobuz;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Library;
@@ -14,18 +18,24 @@ public sealed class ArtistWatchPlatformDependencies
         SpotifyArtistService spotifyArtistService,
         SpotifyMetadataService spotifyMetadataService,
         AppleMusicCatalogService appleCatalogService,
-        DeezerClient deezerClient)
+        DeezerClient deezerClient,
+        QobuzArtistService qobuzArtistService,
+        IQobuzApiClient qobuzApiClient)
     {
         SpotifyArtistService = spotifyArtistService;
         SpotifyMetadataService = spotifyMetadataService;
         AppleCatalogService = appleCatalogService;
         DeezerClient = deezerClient;
+        QobuzArtistService = qobuzArtistService;
+        QobuzApiClient = qobuzApiClient;
     }
 
     public SpotifyArtistService SpotifyArtistService { get; }
     public SpotifyMetadataService SpotifyMetadataService { get; }
     public AppleMusicCatalogService AppleCatalogService { get; }
     public DeezerClient DeezerClient { get; }
+    public QobuzArtistService QobuzArtistService { get; }
+    public IQobuzApiClient QobuzApiClient { get; }
 }
 
 public sealed class ArtistWatchService
@@ -46,6 +56,7 @@ public sealed class ArtistWatchService
     private const string AppleSource = "apple";
     private const string DeezerSource = "deezer";
     private const string SpotifySource = "spotify";
+    private const string QobuzSource = "qobuz";
     private const string SpotifyTopTrackWatchIdPrefix = "top-track:";
     private static readonly IReadOnlyList<string> DefaultArtistAlbumGroups = new[] { AlbumGroup, SingleGroup };
     internal const int MaxReleasesPerArtistLimit = 100;
@@ -55,6 +66,8 @@ public sealed class ArtistWatchService
     private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly AppleMusicCatalogService _appleCatalogService;
     private readonly DeezerClient _deezerClient;
+    private readonly QobuzArtistService _qobuzArtistService;
+    private readonly IQobuzApiClient _qobuzApiClient;
     private readonly WatchlistQueueService _watchlistQueue;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly WatchlistHistoryService _watchlistHistory;
@@ -74,6 +87,8 @@ public sealed class ArtistWatchService
         _spotifyMetadataService = platformDependencies.SpotifyMetadataService;
         _appleCatalogService = platformDependencies.AppleCatalogService;
         _deezerClient = platformDependencies.DeezerClient;
+        _qobuzArtistService = platformDependencies.QobuzArtistService;
+        _qobuzApiClient = platformDependencies.QobuzApiClient;
         _watchlistQueue = watchlistQueue;
         _settingsService = settingsService;
         _watchlistHistory = watchlistHistory ?? new WatchlistHistoryService(libraryRepository, activitiesRealtime);
@@ -104,6 +119,7 @@ public sealed class ArtistWatchService
         await CheckSpotifyArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckAppleArtistAsync(artist, settings, albumGroups, cancellationToken);
         await CheckDeezerArtistAsync(artist, settings, albumGroups, cancellationToken);
+        await CheckQobuzArtistAsync(artist, settings, cancellationToken);
         await TouchArtistWatchStateAsync(artist, cancellationToken);
     }
 
@@ -504,6 +520,159 @@ public sealed class ArtistWatchService
             DeezerSource,
             ResolveNextSourceOffset(artist, deezerOffset, discography.Data.Count, deezerPageSize),
             cancellationToken);
+    }
+
+    private async Task CheckQobuzArtistAsync(
+        WatchlistArtistDto artist,
+        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        CancellationToken cancellationToken)
+    {
+        var qobuzId = await ResolveArtistSourceIdAsync(artist.ArtistId, QobuzSource, artist.QobuzId, cancellationToken);
+        if (string.IsNullOrWhiteSpace(qobuzId)
+            || !int.TryParse(qobuzId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericQobuzId))
+        {
+            return;
+        }
+
+        QobuzArtist? qobuzArtist;
+        try
+        {
+            qobuzArtist = await _qobuzArtistService.GetArtistWithDiscographyAsync(
+                numericQobuzId,
+                string.Empty,
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz artist watch fetch failed for {ArtistId}:{QobuzId}", artist.ArtistId, numericQobuzId);
+            }
+            return;
+        }
+
+        var albums = qobuzArtist?.Albums?.Items;
+        if (albums is null || albums.Count == 0)
+        {
+            return;
+        }
+
+        var existing = await _libraryRepository.GetArtistWatchAlbumIdsAsync(artist.ArtistId, QobuzSource, cancellationToken);
+        var insertedAlbums = new List<ArtistWatchAlbumInsert>();
+        var limit = Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit);
+        var processed = 0;
+        foreach (var album in albums)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (processed >= limit)
+            {
+                break;
+            }
+
+            var albumId = ResolveQobuzAlbumId(album);
+            if (string.IsNullOrWhiteSpace(albumId) || existing.Contains(albumId))
+            {
+                continue;
+            }
+
+            processed++;
+            var queuedAlbumId = await ProcessQobuzAlbumAsync(artist, album, albumId, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(queuedAlbumId))
+            {
+                insertedAlbums.Add(new ArtistWatchAlbumInsert(QobuzSource, queuedAlbumId));
+            }
+        }
+
+        await PersistArtistWatchAlbumsAsync(artist.ArtistId, insertedAlbums, cancellationToken);
+    }
+
+    private static string? ResolveQobuzAlbumId(QobuzAlbum album)
+    {
+        if (!string.IsNullOrWhiteSpace(album.Id))
+        {
+            return album.Id.Trim();
+        }
+
+        return album.QobuzId > 0
+            ? album.QobuzId.ToString(CultureInfo.InvariantCulture)
+            : null;
+    }
+
+    private async Task<string?> ProcessQobuzAlbumAsync(
+        WatchlistArtistDto artist,
+        QobuzAlbum album,
+        string albumId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(album.Url))
+        {
+            return null;
+        }
+
+        List<QobuzTrack> tracks;
+        try
+        {
+            tracks = await _qobuzApiClient.GetAlbumPageTracksAsync(album.Url, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Qobuz album track fetch failed for {AlbumId}", albumId);
+            }
+            return null;
+        }
+
+        var albumName = string.IsNullOrWhiteSpace(album.Title) ? albumId : album.Title!.Trim();
+        var intents = BuildQobuzAlbumIntents(tracks, artist, albumName);
+        if (intents.Count == 0)
+        {
+            return null;
+        }
+
+        var outcome = await _watchlistQueue.QueueWatchIntentsWithOutcomeAsync(
+            intents,
+            BuildArtistQueueOptions(artist, albumName, AlbumGroup),
+            "Qobuz",
+            cancellationToken);
+        if (outcome.Queued > 0)
+        {
+            await AddArtistAlbumWatchHistoryAsync(
+                artist.ArtistId,
+                QobuzSource,
+                albumId,
+                albumName,
+                outcome.Queued,
+                artist.ArtistName,
+                AlbumGroup,
+                cancellationToken);
+        }
+
+        return outcome.IsSettled ? albumId : null;
+    }
+
+    private static List<DownloadIntent> BuildQobuzAlbumIntents(
+        IReadOnlyCollection<QobuzTrack> tracks,
+        WatchlistArtistDto artist,
+        string albumName)
+    {
+        var intents = new List<DownloadIntent>(tracks.Count);
+        foreach (var track in tracks.Where(static track => track.Id > 0))
+        {
+            var trackId = track.Id.ToString(CultureInfo.InvariantCulture);
+            intents.Add(new DownloadIntent
+            {
+                QobuzId = trackId,
+                SourceUrl = $"https://open.qobuz.com/track/{trackId}",
+                SourceService = QobuzSource,
+                Title = track.Title ?? string.Empty,
+                Artist = artist.ArtistName,
+                Album = albumName,
+                Isrc = track.ISRC ?? string.Empty
+            });
+        }
+
+        return intents;
     }
 
     private async Task<string?> ResolveArtistSourceIdAsync(
