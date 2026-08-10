@@ -106,6 +106,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private const string FlacExtension = ".flac";
     private const string TtmlExtension = ".ttml";
     private const string ShazamPlatform = "shazam";
+    private const string LyricsPlatform = "lyrics";
     private const string UnknownArtist = "Unknown Artist";
     private const string MultiArtistSeparatorDefault = "default";
     private const string MultiArtistSeparatorNothing = "nothing";
@@ -2051,6 +2052,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         IReadOnlyCollection<SupportedTag>? writtenTags = null,
         IReadOnlyCollection<SupportedTag>? missingTags = null)
     {
+        var isLyricsPlatform = string.Equals(context.Platform, LyricsPlatform, StringComparison.OrdinalIgnoreCase);
         context.StatusCallback(new TaggingStatusWrap
         {
             Platform = context.Platform,
@@ -2076,8 +2078,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 RetainedTags = (tagPlan?.Retained.AsEnumerable() ?? Enumerable.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
                 MissingTags = (missingTags?.AsEnumerable() ?? tagPlan?.Eligible.AsEnumerable() ?? Enumerable.Empty<SupportedTag>()).Select(ToTagKey).OrderBy(tag => tag, StringComparer.Ordinal).ToList(),
                 ReviewReason = review?.Reason ?? message,
-                SourceTitle = review?.SourceTitle,
-                SourceArtist = review?.SourceArtist,
+                LyricsBadges = isLyricsPlatform
+                    ? ResolveLyricsTimingBadges(context.File, context.Plan.Config, context.Plan.Settings)
+                    : new List<string>(),
+                LyricsCoverUrl = isLyricsPlatform ? ResolveLyricsRowCoverUrl(context.File) : null,
+                SourceTitle = isLyricsPlatform
+                    ? (match?.Track.Title ?? review?.SourceTitle)
+                    : review?.SourceTitle,
+                SourceArtist = isLyricsPlatform
+                    ? (match?.Track.Artists.FirstOrDefault() ?? review?.SourceArtist)
+                    : review?.SourceArtist,
                 SourceIsrc = review?.SourceIsrc,
                 SourceDurationSeconds = review?.SourceDurationSeconds,
                 CandidateTitle = review?.CandidateTitle,
@@ -3106,6 +3116,119 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         };
     }
 
+    private static bool LyricsSidecarsSatisfyPreference(
+        string filePath,
+        AutoTagRunnerConfig config,
+        DeezSpoTagSettings settings)
+    {
+        var flags = ApplyLyricsPreferenceGate(
+            settings,
+            new LyricsRequestFlags(
+                HasAnyTags(config, SyncedLyricsTag),
+                HasAnyTags(config, UnsyncedLyricsTag),
+                HasAnyTags(config, TtmlLyricsTag)));
+
+        if (flags.WantsTtml)
+        {
+            var ttmlPath = Path.ChangeExtension(filePath, TtmlExtension);
+            if (!IOFile.Exists(ttmlPath) || !AppleLyricsService.IsWordSyncedTtml(ReadFileOrEmpty(ttmlPath)))
+            {
+                return false;
+            }
+        }
+
+        if (flags.WantsSynced)
+        {
+            var lrcPath = Path.ChangeExtension(filePath, ".lrc");
+            if (!IOFile.Exists(lrcPath))
+            {
+                return false;
+            }
+            if (settings.PreferEnhancedLrc && !LrcContent.IsWordSynchronized(ReadFileOrEmpty(lrcPath)))
+            {
+                return false;
+            }
+        }
+
+        if (flags.WantsUnsynced && !flags.WantsSynced && !flags.WantsTtml
+            && !IOFile.Exists(Path.ChangeExtension(filePath, ".txt")))
+        {
+            return false;
+        }
+
+        return flags.WantsSynced || flags.WantsUnsynced || flags.WantsTtml;
+    }
+
+    private static string ReadFileOrEmpty(string path)
+    {
+        try
+        {
+            return IOFile.Exists(path) ? IOFile.ReadAllText(path) : string.Empty;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return string.Empty;
+        }
+    }
+
+    private static List<string> ResolveLyricsTimingBadges(string filePath, AutoTagRunnerConfig config, DeezSpoTagSettings settings)
+    {
+        var flags = ApplyLyricsPreferenceGate(
+            settings,
+            new LyricsRequestFlags(
+                HasAnyTags(config, SyncedLyricsTag),
+                HasAnyTags(config, UnsyncedLyricsTag),
+                HasAnyTags(config, TtmlLyricsTag)));
+        var badges = new List<string>();
+
+        if (flags.WantsTtml)
+        {
+            var ttmlPath = Path.ChangeExtension(filePath, TtmlExtension);
+            if (IOFile.Exists(ttmlPath) && AppleLyricsService.IsWordSyncedTtml(ReadFileOrEmpty(ttmlPath)))
+            {
+                badges.Add("time-synced");
+            }
+        }
+
+        if (flags.WantsSynced)
+        {
+            var lrcPath = Path.ChangeExtension(filePath, ".lrc");
+            if (IOFile.Exists(lrcPath))
+            {
+                badges.Add(LrcContent.IsWordSynchronized(ReadFileOrEmpty(lrcPath))
+                    ? "enhanced-synchronized"
+                    : "synced");
+            }
+        }
+
+        if (badges.Count == 0 && flags.WantsUnsynced && IOFile.Exists(Path.ChangeExtension(filePath, ".txt")))
+        {
+            badges.Add("unsynced");
+        }
+
+        return badges;
+    }
+
+    private static string? ResolveLyricsRowCoverUrl(string filePath)
+    {
+        var directory = Path.GetDirectoryName(filePath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            return null;
+        }
+
+        foreach (var name in new[] { "cover.jpg", "cover.png", "folder.jpg", "folder.png" })
+        {
+            var candidate = Path.Join(directory, name);
+            if (IOFile.Exists(candidate))
+            {
+                return $"/api/library/image?path={Uri.EscapeDataString(candidate)}&size=240";
+            }
+        }
+
+        return null;
+    }
+
     private static bool ShouldRequestAnyLyrics(AutoTagRunnerConfig config, DeezSpoTagSettings settings)
     {
         var requestFlags = ApplyLyricsPreferenceGate(
@@ -3304,14 +3427,34 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static List<string> BuildEffectivePlatforms(AutoTagRunnerConfig config)
     {
-        return config.Platforms
+        var platforms = config.Platforms
             .Select(platform => platform?.Trim())
             .Where(platform => !string.IsNullOrWhiteSpace(platform))
-            .Where(platform => IsManualEnrichment(config) || !IsLyricsOnlyPlatform(platform!))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(platform => platform!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        var tagPlatforms = platforms.Where(platform => !IsLyricsOnlyPlatform(platform)).ToList();
+        if (!IsManualEnrichment(config))
+        {
+            return tagPlatforms;
+        }
+
+        if (platforms.Any(IsLyricsOnlyPlatform))
+        {
+            tagPlatforms.Add(LyricsPlatform);
+        }
+
+        return tagPlatforms;
     }
+
+    private static List<string> ResolveLyricsProviderOrder(AutoTagRunnerConfig config)
+        => config.Platforms
+            .Select(platform => platform?.Trim())
+            .Where(platform => !string.IsNullOrWhiteSpace(platform) && IsLyricsOnlyPlatform(platform!))
+            .Select(platform => platform!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static bool IsLyricsOnlyPlatform(string platform)
         => LyricsProviderRegistry.TryGet(platform, out var provider)
@@ -3319,13 +3462,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private Dictionary<string, HashSet<SupportedTag>> BuildPlatformSupportedTags()
     {
-        return (_platformRegistry?.DescribeAll() ?? Array.Empty<AutoTagPlatformDescriptor>())
+        var map = (_platformRegistry?.DescribeAll() ?? Array.Empty<AutoTagPlatformDescriptor>())
             .Where(descriptor => !string.IsNullOrWhiteSpace(descriptor.Id))
             .GroupBy(descriptor => descriptor.Id.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
                 group => group.SelectMany(descriptor => descriptor.SupportedTags).ToHashSet(),
                 StringComparer.OrdinalIgnoreCase);
+        map[LyricsPlatform] = new HashSet<SupportedTag>
+        {
+            SupportedTag.SyncedLyrics,
+            SupportedTag.UnsyncedLyrics,
+            SupportedTag.TtmlLyrics
+        };
+        return map;
     }
 
     private sealed class PlatformMatchContext
@@ -3346,16 +3496,15 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     {
         var enableLyrics = context.IsManualEnrichment
             && ShouldRequestAnyLyrics(context.Config, context.Settings);
-        var hasLyricsSidecar = enableLyrics && GetLyricsSidecarState(context.FilePath).HasAny;
+        var hasLyricsSidecar = enableLyrics && LyricsSidecarsSatisfyPreference(context.FilePath, context.Config, context.Settings);
         var beatportReleaseMeta = HasAnyTags(context.Config, AlbumArtistTag, TrackTotalTag);
         var traxsourceExtend = HasAnyTags(context.Config, AlbumArtTag, AlbumTag, CatalogNumberTag, ReleaseIdTag, AlbumArtistTag, TrackNumberTag, TrackTotalTag);
         var traxsourceAlbumMeta = HasAnyTags(context.Config, CatalogNumberTag, TrackNumberTag, AlbumArtTag, TrackTotalTag, AlbumArtistTag);
         var discogsNeedsLabelCatalog = HasAnyTags(context.Config, LabelTag, CatalogNumberTag);
-        if (LyricsProviderRegistry.TryGet(platform, out var lyricsProvider)
-            && lyricsProvider.IsLyricsOnly)
+        if (string.Equals(platform, LyricsPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return await MatchLyricsProviderAsync(
-                lyricsProvider.Id,
+                string.Join(",", ResolveLyricsProviderOrder(context.Config)),
                 info,
                 context,
                 enableLyrics,

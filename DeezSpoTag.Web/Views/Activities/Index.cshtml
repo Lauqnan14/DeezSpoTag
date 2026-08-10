@@ -905,6 +905,122 @@
     border: 1px solid #60a5fa;
 }
 
+.autotag-lyrics-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.autotag-lyrics-list .lyrics-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    border: 1px solid var(--border-color, #1f2a44);
+    border-radius: 10px;
+    background: var(--bg-darker, #0b1220);
+}
+
+.autotag-lyrics-list .lyrics-row-index {
+    flex: 0 0 auto;
+    min-width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    border: 1px solid #3b82f6;
+    color: #60a5fa;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.autotag-lyrics-list .lyrics-row-art {
+    flex: 0 0 auto;
+    width: 56px;
+    height: 56px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: rgba(148, 163, 184, 0.12);
+}
+
+.autotag-lyrics-list .lyrics-row-art-empty {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(148, 163, 184, 0.7);
+}
+
+.autotag-lyrics-list .lyrics-row-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.autotag-lyrics-list .lyrics-row-title {
+    color: #22d3ee;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.autotag-lyrics-list .lyrics-row-artist {
+    color: var(--text-muted, #94a3b8);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.autotag-lyrics-list .lyrics-row-badges {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.autotag-lyrics-list .lyrics-row-badges .badge {
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+.autotag-lyrics-list .badge-lyrics-synced {
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    border: 1px solid #10b981;
+}
+
+.autotag-lyrics-list .badge-lyrics-timesynced {
+    background: rgba(34, 211, 238, 0.2);
+    color: #22d3ee;
+    border: 1px solid #22d3ee;
+}
+
+.autotag-lyrics-list .badge-lyrics-enhanced {
+    background: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+    border: 1px solid #60a5fa;
+}
+
+.autotag-lyrics-list .badge-lyrics-unsynced {
+    background: rgba(249, 115, 22, 0.2);
+    color: #f97316;
+    border: 1px solid #f97316;
+}
+
+@@media (max-width: 768px) {
+    .autotag-lyrics-list .lyrics-row {
+        flex-wrap: wrap;
+    }
+
+    .autotag-lyrics-list .lyrics-row-badges {
+        width: 100%;
+        justify-content: flex-start;
+    }
+}
+
 .downloads-tab .badge-lyrics-unsynced {
     background: rgba(249, 115, 22, 0.2);
     color: #f97316;
@@ -3396,6 +3512,20 @@
                         </div>
                         <div class="autotag-history-main">
                             <div class="autotag-run-detail-card">
+                                <div class="autotag-view-toggle btn-group btn-group-sm mb-3" role="group" aria-label="Switch between tag and lyrics results">
+                                    <button type="button" class="btn btn-outline-secondary active" data-view="tags">
+                                        <i class="fas fa-tags me-1"></i>Tags
+                                    </button>
+                                    <button type="button" class="btn btn-outline-secondary" data-view="lyrics">
+                                        <i class="fas fa-align-left me-1"></i>Lyrics <span class="badge bg-secondary ms-1" id="autotag-lyrics-count">0</span>
+                                    </button>
+                                </div>
+                                <div id="autotag-lyrics-panel" style="display: none;">
+                                    <div class="autotag-lyrics-list" id="autotag-lyrics-list">
+                                        <div class="autotag-run-empty">Select a run to load lyrics results.</div>
+                                    </div>
+                                </div>
+                                <div id="autotag-tags-panel">
                                 <div class="autotag-filter-toolbar mb-3">
                                     <span class="me-2 text-muted">Filter:</span>
                                     <div class="btn-group btn-group-sm" aria-label="Filter archived status history">
@@ -3434,6 +3564,7 @@
                                             </tr>
                                         </tbody>
                                     </table>
+                                </div>
                                 </div>
                             </div>
                         </div>

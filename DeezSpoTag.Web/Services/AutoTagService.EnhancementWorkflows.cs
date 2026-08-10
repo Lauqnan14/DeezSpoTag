@@ -162,6 +162,11 @@ public partial class AutoTagService
         SaveJob(job);
     }
 
+    private static string? BuildLyricsCoverUrl(string? coverPath)
+        => string.IsNullOrWhiteSpace(coverPath)
+            ? null
+            : $"/api/library/image?path={Uri.EscapeDataString(coverPath)}&size=240";
+
     private void RecordEnhancementItemStatus(
         AutoTagJob job,
         string feature,
@@ -173,7 +178,8 @@ public partial class AutoTagService
         int currentBatch,
         int batchCount,
         int batchProcessed,
-        int batchSize)
+        int batchSize,
+        LyricsRefreshTrackResult? lyrics = null)
     {
         SetEnhancementPhase(job, feature, processed, total, currentBatch, batchCount, batchProcessed, batchSize);
         var update = new TaggingStatusWrap
@@ -186,7 +192,12 @@ public partial class AutoTagService
             {
                 Status = status,
                 Path = path,
-                Message = message
+                Message = message,
+                SourceTitle = lyrics?.Title,
+                SourceArtist = lyrics?.ArtistName,
+                LyricsTrackId = lyrics?.TrackId,
+                LyricsCoverUrl = BuildLyricsCoverUrl(lyrics?.CoverPath),
+                LyricsBadges = lyrics?.TimingBadges.ToList() ?? new List<string>()
             }
         };
         job.LastStatus = update;
@@ -1207,7 +1218,8 @@ public partial class AutoTagService
                     batchIndex + 1,
                     batchCount,
                     itemIndex + 1,
-                    batch.Count);
+                    batch.Count,
+                    result);
             }
 
             await ApplyProfileTemplatesToFilesAsync(

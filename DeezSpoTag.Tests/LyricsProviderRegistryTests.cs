@@ -143,7 +143,7 @@ public sealed class LyricsProviderRegistryTests
         Assert.Contains("_downloadLyricsService.ResolveLyricsAsync", runner, StringComparison.Ordinal);
         Assert.DoesNotContain("_appleLyricsService.ResolveLyricsAsync", runner, StringComparison.Ordinal);
         Assert.DoesNotContain("PopulateAppleLyricsAsync", runner, StringComparison.Ordinal);
-        Assert.Contains("lyricsProvider.IsLyricsOnly", runner, StringComparison.Ordinal);
+        Assert.Contains("provider.IsLyricsOnly", runner, StringComparison.Ordinal);
         Assert.DoesNotContain("case \"youlyplus\"", runner, StringComparison.Ordinal);
         Assert.DoesNotContain("case \"betterlyrics\"", runner, StringComparison.Ordinal);
         Assert.Contains("ResolveAutomaticDownloadEnrichmentRequestedTags", stages, StringComparison.Ordinal);

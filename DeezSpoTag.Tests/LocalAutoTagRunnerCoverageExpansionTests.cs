@@ -361,7 +361,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
-    public void BuildEffectivePlatforms_RetainsLyricsOnlyPlatformsForManualEnrichment()
+    public void BuildEffectivePlatforms_CollapsesLyricsProvidersIntoOnePassForManualEnrichment()
     {
         var config = CreateRunnerConfig(
             platforms: new List<string> { "deezer", "musixmatch", "lrclib" },
@@ -370,7 +370,20 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
 
         var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
 
-        Assert.Equal(new[] { "deezer", "musixmatch", "lrclib" }, platforms);
+        Assert.Equal(new[] { "deezer", "lyrics" }, platforms);
+    }
+
+    [Fact]
+    public void ResolveLyricsProviderOrder_PreservesConfiguredFallbackChain()
+    {
+        var config = CreateRunnerConfig(
+            platforms: new List<string> { "deezer", "musixmatch", "lrclib" },
+            manualReleasePreference: "album",
+            manualDestinationFolderId: 1);
+
+        var providers = InvokeStatic<List<string>>("ResolveLyricsProviderOrder", config);
+
+        Assert.Equal(new[] { "musixmatch", "lrclib" }, providers);
     }
 
     [Fact]

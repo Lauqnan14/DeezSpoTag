@@ -4,6 +4,7 @@ using System.Threading.Channels;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Runtime;
 using DeezSpoTag.Services.Settings;
@@ -228,9 +229,57 @@ public sealed class LyricsRefreshQueueService : BackgroundService
             .OrderBy(format => format, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var embeddedUpdated = File.GetLastWriteTimeUtc(info.FilePath) > audioModifiedBefore;
-        return formats.Count > 0 || embeddedUpdated
+        var result = formats.Count > 0 || embeddedUpdated
             ? LyricsRefreshTrackResult.Completed(trackId, info.FilePath, formats, embeddedUpdated)
             : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics were returned by the enabled providers.");
+        return result with
+        {
+            Title = info.Title,
+            ArtistName = info.ArtistName,
+            CoverPath = info.CoverPath,
+            TimingBadges = ResolveTimingBadges(savedLyrics.FilesByFormat)
+        };
+    }
+
+    private static IReadOnlyList<string> ResolveTimingBadges(IReadOnlyDictionary<string, string> filesByFormat)
+    {
+        var badges = new List<string>();
+        if (filesByFormat.TryGetValue("ttml", out var ttmlPath) && TryReadFile(ttmlPath, out var ttml)
+            && AppleLyricsService.IsWordSyncedTtml(ttml))
+        {
+            badges.Add("time-synced");
+        }
+
+        if (filesByFormat.TryGetValue("lrc", out var lrcPath) && TryReadFile(lrcPath, out var lrc))
+        {
+            badges.Add(LrcContent.IsWordSynchronized(lrc) ? "enhanced-synchronized" : "synced");
+        }
+
+        if (badges.Count == 0 && filesByFormat.ContainsKey("txt"))
+        {
+            badges.Add("unsynced");
+        }
+
+        return badges;
+    }
+
+    private static bool TryReadFile(string path, out string content)
+    {
+        content = string.Empty;
+        try
+        {
+            var resolved = DownloadPathResolver.ResolveIoPath(path);
+            if (!File.Exists(resolved))
+            {
+                return false;
+            }
+            content = File.ReadAllText(resolved);
+            return true;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return false;
+        }
     }
 
     private static Track BuildTrack(TrackAudioInfoDto info, TrackSourceLinksDto? links)
@@ -459,6 +508,11 @@ public sealed record LyricsRefreshTrackResult(
     IReadOnlyList<string> SidecarFormats,
     string Message)
 {
+    public string? Title { get; init; }
+    public string? ArtistName { get; init; }
+    public string? CoverPath { get; init; }
+    public IReadOnlyList<string> TimingBadges { get; init; } = Array.Empty<string>();
+
     public static LyricsRefreshTrackResult Completed(
         long trackId,
         string filePath,

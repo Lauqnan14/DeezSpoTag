@@ -209,6 +209,9 @@ public class TaggingStatus
     public string? ReviewReportPath { get; set; }
     public string? SourceTitle { get; set; }
     public string? SourceArtist { get; set; }
+    public long? LyricsTrackId { get; set; }
+    public string? LyricsCoverUrl { get; set; }
+    public List<string> LyricsBadges { get; set; } = new();
     public string? SourceIsrc { get; set; }
     public double? SourceDurationSeconds { get; set; }
     public string? CandidateTitle { get; set; }

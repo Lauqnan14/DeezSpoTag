@@ -24,6 +24,8 @@
     const state = {
         currentFilter: "all",
         historyStatus: [],
+        historyView: "tags",
+        lyricsAutoSwitched: false,
         liveJobId: null,
         liveJobPath: null,
         liveJobSummary: null,
@@ -165,7 +167,19 @@
         }
     }
 
+    function autoSwitchOnLyricsStart(job) {
+        const platform = String(job?.lastStatus?.platform || job?.currentPhase || "").toLowerCase();
+        const isLyrics = platform.includes("lyrics");
+        if (isLyrics && !state.lyricsAutoSwitched) {
+            state.lyricsAutoSwitched = true;
+            setHistoryView("lyrics");
+        } else if (!isLyrics) {
+            state.lyricsAutoSwitched = false;
+        }
+    }
+
     function updateEnhancementMetadata(job) {
+        autoSwitchOnLyricsStart(job);
         setText("autotag-enhancement-feature", formatEnhancementFeature(job?.enhancementFeature || job?.runIntent));
         setText("autotag-current-phase", formatEnhancementFeature(job?.currentPhase));
         const batchCount = Number(job?.batchCount || 0);
@@ -517,7 +531,10 @@
             return;
         }
 
-        let filteredRows = Array.isArray(state.historyStatus) ? state.historyStatus : [];
+        const allRows = Array.isArray(state.historyStatus) ? state.historyStatus : [];
+        renderLyricsCards(allRows.filter(isLyricsHistoryRow));
+
+        let filteredRows = allRows.filter((entry) => !isLyricsHistoryRow(entry));
         if (state.currentFilter !== "all") {
             filteredRows = filteredRows.filter((entry) => {
                 const result = String(entry?.status?.status?.status || "").toLowerCase();
@@ -575,6 +592,83 @@
                 <td data-label="Diff">${diffButton}</td>
             </tr>`;
         }).join("");
+    }
+
+    function isLyricsHistoryRow(entry) {
+        return String(entry?.status?.platform || "").toLowerCase().includes("lyrics");
+    }
+
+    function lyricsBadgeMarkup(kind) {
+        const normalized = String(kind || "").toLowerCase();
+        const cls = normalized === "time-synced"
+            ? "badge-lyrics-timesynced"
+            : normalized === "enhanced-synchronized"
+                ? "badge-lyrics-enhanced"
+                : normalized === "synced"
+                    ? "badge-lyrics-synced"
+                    : "badge-lyrics-unsynced";
+        const text = normalized === "time-synced"
+            ? "Time-Synced"
+            : normalized === "enhanced-synchronized"
+                ? "Enhanced Synced Lyrics"
+                : `${normalized} lyrics`;
+        return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
+    }
+
+    function renderLyricsCards(rows) {
+        const container = el("autotag-lyrics-list");
+        if (!container) {
+            return;
+        }
+
+        setText("autotag-lyrics-count", String(rows.length));
+        if (!state.selectedRunId) {
+            container.innerHTML = `<div class="autotag-run-empty">${escapeHtml(state.runSelectionMessage || "Select a run to load lyrics results.")}</div>`;
+            return;
+        }
+        if (!rows.length) {
+            container.innerHTML = '<div class="autotag-run-empty">No lyrics were processed in this run.</div>';
+            return;
+        }
+
+        container.innerHTML = rows.map((entry, index) => {
+            const inner = entry?.status?.status || {};
+            const title = inner.sourceTitle || toFileName(inner.path) || "Unknown title";
+            const artist = inner.sourceArtist || "";
+            const cover = inner.lyricsCoverUrl || "";
+            const badges = Array.isArray(inner.lyricsBadges) ? inner.lyricsBadges : [];
+            const art = cover
+                ? `<img class="lyrics-row-art" src="${escapeHtml(cover)}" alt="" loading="lazy" />`
+                : '<div class="lyrics-row-art lyrics-row-art-empty"><i class="fas fa-music"></i></div>';
+            const artistHtml = artist ? `<div class="lyrics-row-artist">${escapeHtml(artist)}</div>` : "";
+            const badgeHtml = badges.length
+                ? badges.map(lyricsBadgeMarkup).join("")
+                : '<span class="badge badge-lyrics-unsynced">No lyrics</span>';
+            return `<div class="lyrics-row" title="${escapeHtml(inner.path || "")}">
+                <div class="lyrics-row-index">${index + 1}</div>
+                ${art}
+                <div class="lyrics-row-main">
+                    <div class="lyrics-row-title">${escapeHtml(title)}</div>
+                    ${artistHtml}
+                </div>
+                <div class="lyrics-row-badges">${badgeHtml}</div>
+            </div>`;
+        }).join("");
+    }
+
+    function setHistoryView(view) {
+        state.historyView = view === "lyrics" ? "lyrics" : "tags";
+        document.querySelectorAll(".autotag-view-toggle button[data-view]").forEach((btn) => {
+            btn.classList.toggle("active", btn.dataset.view === state.historyView);
+        });
+        const tagsPanel = el("autotag-tags-panel");
+        const lyricsPanel = el("autotag-lyrics-panel");
+        if (tagsPanel) {
+            tagsPanel.style.display = state.historyView === "tags" ? "" : "none";
+        }
+        if (lyricsPanel) {
+            lyricsPanel.style.display = state.historyView === "lyrics" ? "" : "none";
+        }
     }
 
     function setFilter(filter) {
@@ -1260,6 +1354,10 @@
         document.querySelectorAll(".autotag-filter-toolbar button[data-filter]").forEach((btn) => {
             btn.addEventListener("click", () => setFilter(btn.dataset.filter || "all"));
         });
+        document.querySelectorAll(".autotag-view-toggle button[data-view]").forEach((btn) => {
+            btn.addEventListener("click", () => setHistoryView(btn.dataset.view || "tags"));
+        });
+        setHistoryView(state.historyView);
     }
 
     function bindDiffActions() {
