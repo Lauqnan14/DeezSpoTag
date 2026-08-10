@@ -20,6 +20,7 @@ data through the normal agent chain — so it surfaces in `getArtistInfo2` and
 |---|---|
 | `GetArtistBiography` | The gap this plugin exists to close. |
 | `GetArtistTopSongs` | Promotes top songs from a sibling playlist to the native artist page. |
+| `GetSimilarArtists` | Spotify related artists, resolved to local artist IDs where the library already knows them. |
 
 ## Background art
 
@@ -42,8 +43,9 @@ NAVIDROME_PLUGIN_DIR=/data/navidrome/plugins make install
 ```
 
 Verified with Go 1.25.0 and TinyGo 0.41.1 (LLVM 20.1.1), producing a ~1.28 MB
-`plugin.wasm` exporting `nd_get_artist_biography` and `nd_get_artist_top_songs`.
-The PDK emits export wrappers for all eleven MetadataAgent methods; the nine this
+`plugin.wasm` exporting `nd_get_artist_biography`, `nd_get_artist_top_songs` and
+`nd_get_similar_artists`.
+The PDK emits export wrappers for all eleven MetadataAgent methods; the eight this
 plugin does not implement return `NotImplementedCode` (-2), which the host treats
 as "skip this agent" rather than an error.
 
@@ -105,4 +107,11 @@ instead of caching an empty result.
 ```
 GET /api/metadata-agent/artist/biography ?id=&name=&preferredSource=
 GET /api/metadata-agent/artist/top-songs ?id=&name=&count=
+GET /api/metadata-agent/artist/similar   ?id=&name=&count=
 ```
+
+`artist/similar` currently serves **Spotify related artists only**, read from the
+cached Spotify artist page. Each entry carries a `source` field so additional
+providers can be merged in later without changing the response shape. Where a
+related artist already exists locally and has a `navidrome` source id, that id is
+returned so Navidrome links straight to it instead of name-matching.

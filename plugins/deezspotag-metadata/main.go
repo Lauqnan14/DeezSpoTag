@@ -128,6 +128,37 @@ func (p *plugin) GetArtistTopSongs(req metadata.TopSongsRequest) (*metadata.TopS
 	return &metadata.TopSongsResponse{Songs: songs}, nil
 }
 
+func (p *plugin) GetSimilarArtists(req metadata.SimilarArtistsRequest) (*metadata.SimilarArtistsResponse, error) {
+	q := artistQuery(req.ID, req.Name)
+	if req.Limit > 0 {
+		q.Set("count", strconv.Itoa(int(req.Limit)))
+	}
+
+	var out struct {
+		Artists []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"artists"`
+	}
+	ok, err := fetch("/api/metadata-agent/artist/similar", q, &out)
+	if err != nil || !ok || len(out.Artists) == 0 {
+		return nil, err
+	}
+
+	artists := make([]types.ArtistRef, 0, len(out.Artists))
+	for _, a := range out.Artists {
+		name := strings.TrimSpace(a.Name)
+		if name == "" {
+			continue
+		}
+		artists = append(artists, types.ArtistRef{ID: strings.TrimSpace(a.ID), Name: name})
+	}
+	if len(artists) == 0 {
+		return nil, nil
+	}
+	return &metadata.SimilarArtistsResponse{Artists: artists}, nil
+}
+
 func init() { metadata.Register(&plugin{}) }
 
 func main() {}

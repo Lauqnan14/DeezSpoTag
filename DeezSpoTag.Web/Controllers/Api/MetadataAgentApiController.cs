@@ -15,6 +15,7 @@ public sealed partial class MetadataAgentApiController(
     private const string NavidromeSource = "navidrome";
     private const string SpotifySource = "spotify";
     private const int MaxTopSongs = 100;
+    private const int MaxSimilarArtists = 100;
 
     [HttpGet("artist/biography")]
     public async Task<IActionResult> Biography(
@@ -132,6 +133,90 @@ public sealed partial class MetadataAgentApiController(
         }
 
         return songs.Count == 0 ? NoContent() : Ok(new { songs });
+    }
+
+    [HttpGet("artist/similar")]
+    public async Task<IActionResult> SimilarArtists(
+        [FromQuery] string? id,
+        [FromQuery] string? name,
+        [FromQuery] int count,
+        CancellationToken cancellationToken)
+    {
+        var artistId = await ResolveArtistIdAsync(id, name, cancellationToken);
+        if (artistId is null)
+        {
+            return NoContent();
+        }
+
+        var spotifyId = await libraryRepository.GetArtistSourceIdAsync(
+            artistId.Value,
+            SpotifySource,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(spotifyId))
+        {
+            return NoContent();
+        }
+
+        var artistPage = await spotifyArtistService.TryGetCachedArtistPageAsync(
+            spotifyId,
+            name?.Trim() ?? string.Empty,
+            allowStale: true,
+            cancellationToken);
+        if (artistPage?.RelatedArtists is not { Count: > 0 })
+        {
+            return NoContent();
+        }
+
+        var limit = count <= 0 ? MaxSimilarArtists : Math.Min(count, MaxSimilarArtists);
+        var artists = new List<object>(limit);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var related in artistPage.RelatedArtists)
+        {
+            if (artists.Count >= limit)
+            {
+                break;
+            }
+
+            var relatedName = related.Name?.Trim();
+            if (string.IsNullOrWhiteSpace(relatedName) || !seen.Add(relatedName))
+            {
+                continue;
+            }
+
+            artists.Add(new
+            {
+                id = await ResolveNavidromeArtistIdAsync(related.Id, cancellationToken),
+                name = relatedName,
+                source = SpotifySource
+            });
+        }
+
+        return artists.Count == 0 ? NoContent() : Ok(new { artists });
+    }
+
+    private async Task<string?> ResolveNavidromeArtistIdAsync(
+        string? spotifyArtistId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(spotifyArtistId))
+        {
+            return null;
+        }
+
+        var localArtistId = await libraryRepository.FindArtistIdBySourceIdAsync(
+            SpotifySource,
+            spotifyArtistId.Trim(),
+            cancellationToken);
+        if (localArtistId is null)
+        {
+            return null;
+        }
+
+        var navidromeId = await libraryRepository.GetArtistSourceIdAsync(
+            localArtistId.Value,
+            NavidromeSource,
+            cancellationToken);
+        return string.IsNullOrWhiteSpace(navidromeId) ? null : navidromeId;
     }
 
     private async Task<long?> ResolveArtistIdAsync(string? navidromeId, string? name, CancellationToken cancellationToken)
