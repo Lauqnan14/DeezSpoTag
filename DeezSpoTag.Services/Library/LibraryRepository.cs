@@ -7105,7 +7105,9 @@ SELECT artist_id,
        consecutive_failures,
        current_phase,
        heartbeat_utc,
-       deadline_utc
+       deadline_utc,
+       apple_next_offset,
+       deezer_next_offset
 FROM artist_watch_state
 WHERE artist_id = @artistId
 LIMIT 1;";
@@ -7131,7 +7133,39 @@ LIMIT 1;";
             await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetInt32(8),
             await reader.IsDBNullAsync(9, cancellationToken) ? null : reader.GetString(9),
             await reader.IsDBNullAsync(10, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(10)),
-            await reader.IsDBNullAsync(11, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(11)));
+            await reader.IsDBNullAsync(11, cancellationToken) ? null : ParseDateTimeOffsetInvariant(reader.GetString(11)),
+            await reader.IsDBNullAsync(12, cancellationToken) ? null : reader.GetInt32(12),
+            await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetInt32(13));
+    }
+
+    public async Task UpsertArtistWatchSourceOffsetAsync(
+        long artistId,
+        string source,
+        int? nextOffset,
+        CancellationToken cancellationToken = default)
+    {
+        var column = source?.Trim().ToLowerInvariant() switch
+        {
+            "apple" => "apple_next_offset",
+            "deezer" => "deezer_next_offset",
+            _ => null
+        };
+        if (column == null)
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        var sql = $@"
+INSERT INTO artist_watch_state (artist_id, {column})
+VALUES (@artistId, @nextOffset)
+ON CONFLICT(artist_id) DO UPDATE SET
+    {column} = excluded.{column},
+    updated_at = CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        command.Parameters.AddWithValue("nextOffset", (object?)nextOffset ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task UpsertArtistWatchStateAsync(

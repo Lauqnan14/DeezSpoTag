@@ -370,11 +370,15 @@ public sealed class ArtistWatchService
             settings.AppleMusic?.MediaUserToken,
             cancellationToken);
 
+        var appleState = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
+        var applePageSize = Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit);
+        var appleOffset = ResolveSourcePagingOffset(artist, appleState?.AppleNextOffset);
         using var artistAlbumsDoc = await TryGetAppleArtistAlbumsAsync(
             artist,
             appleId,
             storefront,
             settings,
+            appleOffset,
             cancellationToken);
         if (artistAlbumsDoc is null
             || !TryGetDataArray(artistAlbumsDoc.RootElement, out var data))
@@ -402,6 +406,31 @@ public sealed class ArtistWatchService
         }
 
         await PersistArtistWatchAlbumsAsync(artist.ArtistId, insertedAlbums, cancellationToken);
+        await _libraryRepository.UpsertArtistWatchSourceOffsetAsync(
+            artist.ArtistId,
+            AppleSource,
+            ResolveNextSourceOffset(artist, appleOffset, data.GetArrayLength(), applePageSize),
+            cancellationToken);
+    }
+
+    private static int ResolveSourcePagingOffset(WatchlistArtistDto artist, int? storedOffset)
+        => ResolveDownloadsEntireDiscography(artist) ? Math.Max(0, storedOffset ?? 0) : 0;
+
+    private static bool ResolveDownloadsEntireDiscography(WatchlistArtistDto artist)
+        => artist.DownloadDiscographyEnabled ?? !(artist.LatestReleasesOnly ?? false);
+
+    private static int ResolveNextSourceOffset(
+        WatchlistArtistDto artist,
+        int offset,
+        int returnedCount,
+        int pageSize)
+    {
+        if (!ResolveDownloadsEntireDiscography(artist) || returnedCount < pageSize)
+        {
+            return 0;
+        }
+
+        return offset + returnedCount;
     }
 
     private async Task<List<DownloadIntent>> BuildAppleAlbumIntentsAsync(
@@ -438,9 +467,17 @@ public sealed class ArtistWatchService
             return;
         }
 
-        var discography = await TryGetDeezerDiscographyAsync(artist, deezerId, settings, cancellationToken);
+        var deezerState = await _libraryRepository.GetArtistWatchStateAsync(artist.ArtistId, cancellationToken);
+        var deezerPageSize = Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit);
+        var deezerOffset = ResolveSourcePagingOffset(artist, deezerState?.DeezerNextOffset);
+        var discography = await TryGetDeezerDiscographyAsync(artist, deezerId, settings, deezerOffset, cancellationToken);
         if (discography is null || discography.Data.Count == 0)
         {
+            await _libraryRepository.UpsertArtistWatchSourceOffsetAsync(
+                artist.ArtistId,
+                DeezerSource,
+                0,
+                cancellationToken);
             return;
         }
 
@@ -462,6 +499,11 @@ public sealed class ArtistWatchService
         }
 
         await PersistArtistWatchAlbumsAsync(artist.ArtistId, insertedAlbums, cancellationToken);
+        await _libraryRepository.UpsertArtistWatchSourceOffsetAsync(
+            artist.ArtistId,
+            DeezerSource,
+            ResolveNextSourceOffset(artist, deezerOffset, discography.Data.Count, deezerPageSize),
+            cancellationToken);
     }
 
     private async Task<string?> ResolveArtistSourceIdAsync(
@@ -483,6 +525,7 @@ public sealed class ArtistWatchService
         string appleId,
         string storefront,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        int offset,
         CancellationToken cancellationToken)
     {
         try
@@ -492,7 +535,7 @@ public sealed class ArtistWatchService
                 storefront,
                 "en-US",
                 Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit),
-                0,
+                offset,
                 cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -581,6 +624,7 @@ public sealed class ArtistWatchService
         WatchlistArtistDto artist,
         string deezerId,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
+        int offset,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -588,7 +632,7 @@ public sealed class ArtistWatchService
         {
             return await _deezerClient.GetArtistDiscographyAsync(
                 deezerId,
-                index: 0,
+                index: offset,
                 limit: Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

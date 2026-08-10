@@ -196,6 +196,33 @@ public sealed class PlaylistSyncTargetAggregationTests
         return (string?)method!.Invoke(null, new object?[] { appleUrl });
     }
 
+    [Fact]
+    public void AppleAndDeezerArtistWatchPageThroughTheDiscography()
+    {
+        var service = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "ArtistWatchService.cs"));
+
+        Assert.DoesNotContain("                Math.Clamp(settings.WatchMaxReleasesPerArtist, 1, MaxReleasesPerArtistLimit),\n                0,", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("index: 0,", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveSourcePagingOffset(artist, appleState?.AppleNextOffset)", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveSourcePagingOffset(artist, deezerState?.DeezerNextOffset)", service, StringComparison.Ordinal);
+        Assert.Contains("UpsertArtistWatchSourceOffsetAsync", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ArtistPagingOffsetsAreStoredPerSource()
+    {
+        var repository = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var schema = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Services", "Library", "LibraryDbService.cs"));
+
+        Assert.Contains("\"apple\" => \"apple_next_offset\"", repository, StringComparison.Ordinal);
+        Assert.Contains("\"deezer\" => \"deezer_next_offset\"", repository, StringComparison.Ordinal);
+        Assert.Contains("\"apple_next_offset\"", schema, StringComparison.Ordinal);
+        Assert.Contains("\"deezer_next_offset\"", schema, StringComparison.Ordinal);
+    }
+
     private static string ReadPlaylistSyncSource()
         => File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
 

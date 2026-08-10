@@ -959,7 +959,9 @@ public sealed record ArtistWatchStateDto(
     int? ConsecutiveFailures = null,
     string? CurrentPhase = null,
     DateTimeOffset? HeartbeatUtc = null,
-    DateTimeOffset? DeadlineUtc = null);
+    DateTimeOffset? DeadlineUtc = null,
+    int? AppleNextOffset = null,
+    int? DeezerNextOffset = null);
 
 public sealed record ArtistWatchAlbumInsert(string Source, string AlbumSourceId);
 
