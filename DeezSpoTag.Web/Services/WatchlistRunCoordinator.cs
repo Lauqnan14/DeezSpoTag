@@ -54,6 +54,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private const string ArtistKind = "artist";
     private const string PlaylistKind = "playlist";
     private const string PlaylistWatchType = "playlist";
+    private const string ArtistWatchType = "artist";
     private const int SourceCircuitFailureThreshold = 2;
     private const int SourceCircuitCooldownSeconds = 300;
     private readonly IServiceProvider _serviceProvider;
@@ -286,7 +287,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             activeSourceId: null,
             activeStartedUtc: null,
             lastProgressUtc: DateTimeOffset.UtcNow,
-            zeroQueueStreak: 0,
             cancellationToken);
     }
 
@@ -564,7 +564,22 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(cancellationToken);
-        var expiredTargetJobsRecovered = await repository.RepairWatchlistSyncBacklogAsync(cancellationToken);
+        var expiredTargetJobsRecovered = await repository.RepairWatchlistSyncBacklogAsync(
+            WatchlistPostDownloadSyncService.MaxSyncAttempts,
+            cancellationToken);
+        var drift = await repository.DetectWatchlistStateDriftAsync(
+            WatchlistPostDownloadSyncService.MaxSyncAttempts,
+            cancellationToken);
+        if (drift.HasDrift && _logger.IsEnabled(LogLevel.Warning))
+        {
+            _logger.LogWarning(
+                "Watchlist state drift detected: appliedWithoutMembership={AppliedWithoutMembership}, membershipWithoutApplied={MembershipWithoutApplied}, orphanedMembership={OrphanedMembership}, membershipForUnconfiguredTarget={MembershipForUnconfiguredTarget}, blockedBelowAttemptCap={BlockedBelowAttemptCap}",
+                drift.AppliedWithoutMembership,
+                drift.MembershipWithoutApplied,
+                drift.OrphanedMembership,
+                drift.MembershipForUnconfiguredTarget,
+                drift.BlockedBelowAttemptCap);
+        }
         var recoveredClaims = await scope.ServiceProvider
             .GetRequiredService<PlaylistWatchReconciler>()
             .RecoverInvalidPendingWatchClaimsAsync(cancellationToken);
@@ -1069,7 +1084,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     activeSourceId: null,
                     activeStartedUtc: null,
                     lastProgressUtc: DateTimeOffset.UtcNow,
-                    zeroQueueStreak: 0,
                     stoppingToken);
                 continue;
             }
@@ -1088,7 +1102,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     activeSourceId: null,
                     activeStartedUtc: null,
                     lastProgressUtc: DateTimeOffset.UtcNow,
-                    zeroQueueStreak: 0,
                     stoppingToken);
                 continue;
             }
@@ -1104,6 +1117,17 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     FailureCount: 0),
                 stoppingToken);
 
+        }
+
+        if (processed > 0)
+        {
+            await SaveSchedulerStateAsync(
+                repository,
+                activeSource: null,
+                activeSourceId: null,
+                activeStartedUtc: null,
+                lastProgressUtc: DateTimeOffset.UtcNow,
+                stoppingToken);
         }
 
         var elapsedMs = (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds;
@@ -1164,10 +1188,36 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 continue;
             }
 
+            var artistRepository = serviceProvider.GetService<LibraryRepository>();
+            if (artistRepository?.IsConfigured == true)
+            {
+                var artistCircuit = await artistRepository.GetWatchlistSourceCircuitStateAsync(
+                    ArtistWatchType,
+                    item.Source,
+                    stoppingToken);
+                if (artistCircuit is { } openArtistCircuit && IsCircuitOpen(openArtistCircuit))
+                {
+                    continue;
+                }
+            }
+
             var execution = await TryProcessItemAsync(item, settings, serviceProvider, stoppingToken);
             if (execution.Outcome == WatchItemRunOutcome.Success && item.Artist != null)
             {
                 processedArtistIds.Add(item.Artist.ArtistId);
+            }
+
+            if (execution.Outcome == WatchItemRunOutcome.Failure
+                && execution.SystemicFailure
+                && artistRepository?.IsConfigured == true)
+            {
+                await OpenSourceCircuitAsync(
+                    artistRepository,
+                    item.Source,
+                    fingerprint: "artist_watch_systemic_failure",
+                    reason: execution.FailureMessage,
+                    stoppingToken,
+                    ArtistWatchType);
             }
         }
 
@@ -1500,7 +1550,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         string? activeSourceId,
         DateTimeOffset? activeStartedUtc,
         DateTimeOffset? lastProgressUtc,
-        int zeroQueueStreak,
         CancellationToken cancellationToken)
     {
         await repository.UpsertWatchlistSchedulerStateAsync(
@@ -1509,8 +1558,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 activeSource,
                 activeSourceId,
                 activeStartedUtc,
-                lastProgressUtc,
-                zeroQueueStreak),
+                lastProgressUtc),
             cancellationToken);
     }
 
@@ -1534,9 +1582,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         string source,
         string? fingerprint,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string watchType = PlaylistWatchType)
     {
-        var existing = await repository.GetWatchlistSourceCircuitStateAsync(PlaylistWatchType, source, cancellationToken);
+        var existing = await repository.GetWatchlistSourceCircuitStateAsync(watchType, source, cancellationToken);
         var failureCount = Math.Max(0, existing?.FailureCount ?? 0) + 1;
         var isOpen = failureCount >= SourceCircuitFailureThreshold;
         var openUntilUtc = isOpen
@@ -1545,7 +1594,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         await repository.UpsertWatchlistSourceCircuitStateAsync(
             new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
-                PlaylistWatchType,
+                watchType,
                 source,
                 isOpen,
                 openUntilUtc,

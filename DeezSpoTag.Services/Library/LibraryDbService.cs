@@ -205,6 +205,8 @@ public sealed class LibraryDbService
 
     private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
+        await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_sync_progress;", cancellationToken);
+        await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_configured_sync_targets;", cancellationToken);
         await EnsureColumnAsync(connection, PlayHistoryTable, "folder_id", BigIntType, cancellationToken);
         var playHistoryRebuilt = await MigratePlayHistoryIdentityAsync(connection, cancellationToken);
         await EnsureIndexAsync(connection, "idx_play_history_library", PlayHistoryTable, LibraryIdColumn, unique: false, cancellationToken);
@@ -469,7 +471,6 @@ CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id, track_source_id, target_service)
 );", cancellationToken);
-        await EnsurePlaylistWatchTargetSyncViewsAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS media_server_track_metadata (
     track_id BIGINT NOT NULL,
@@ -925,6 +926,7 @@ CREATE TABLE IF NOT EXISTS track_other_tag (
     PRIMARY KEY (track_id, tag_key, tag_value)
 );", cancellationToken);
 
+        await EnsurePlaylistWatchTargetSyncViewsAsync(connection, cancellationToken);
     }
 
     private static async Task<bool> MigratePlayHistoryIdentityAsync(
@@ -1094,7 +1096,16 @@ JOIN json_each(CASE
         THEN preference.sync_targets_json
     ELSE json_array(preference.service)
 END) configured
-  ON lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome');", cancellationToken);
+  ON lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM watchlist_sync_job blocked_job
+    WHERE blocked_job.source = preference.source
+      AND blocked_job.playlist_id = preference.source_id
+      AND lower(blocked_job.target_service) = lower(trim(configured.value))
+      AND lower(blocked_job.track_id) = 'playlist'
+      AND lower(blocked_job.status) = 'blocked'
+);", cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE VIEW playlist_watch_track_sync_progress AS
 SELECT track.source AS source,

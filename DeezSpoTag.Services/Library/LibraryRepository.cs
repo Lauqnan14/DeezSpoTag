@@ -180,8 +180,7 @@ public sealed class LibraryRepository
         string? ActiveSource,
         string? ActiveSourceId,
         DateTimeOffset? ActiveStartedUtc,
-        DateTimeOffset? LastProgressUtc,
-        int ZeroQueueStreak);
+        DateTimeOffset? LastProgressUtc);
 
     public sealed record WatchlistSourceCircuitStateUpsertInput(
         string WatchType,
@@ -7941,15 +7940,15 @@ WHERE preference.source=@source AND preference.source_id=@playlistId
         AND target.status='applied' AND target.applied_revision=@revision)
 ON CONFLICT(source,playlist_id,track_id,target_service) DO UPDATE SET
  status=CASE
-   WHEN lower(watchlist_sync_job.status) IN ('processing','retry')
+   WHEN lower(watchlist_sync_job.status) IN ('processing','retry','blocked')
    THEN watchlist_sync_job.status ELSE 'pending' END,
  next_attempt_utc=CASE
-   WHEN lower(watchlist_sync_job.status) IN ('processing','retry')
+   WHEN lower(watchlist_sync_job.status) IN ('processing','retry','blocked')
    THEN watchlist_sync_job.next_attempt_utc ELSE CURRENT_TIMESTAMP END,
  lease_owner=CASE WHEN lower(watchlist_sync_job.status)='processing' THEN watchlist_sync_job.lease_owner ELSE NULL END,
  lease_until_utc=CASE WHEN lower(watchlist_sync_job.status)='processing' THEN watchlist_sync_job.lease_until_utc ELSE NULL END,
  last_error=CASE
-   WHEN lower(watchlist_sync_job.status) IN ('processing','retry')
+   WHEN lower(watchlist_sync_job.status) IN ('processing','retry','blocked')
    THEN watchlist_sync_job.last_error ELSE NULL END,
  updated_at=CURRENT_TIMESTAMP
 RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
@@ -8518,7 +8517,6 @@ SELECT watch_type,
        active_source_id,
        active_started_utc,
        last_progress_utc,
-       zero_queue_streak,
        updated_at
 FROM watchlist_scheduler_state
 WHERE watch_type = @watchType
@@ -8537,8 +8535,7 @@ LIMIT 1;";
             await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
             await reader.IsDBNullAsync(3, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(3)),
             await reader.IsDBNullAsync(4, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(4)),
-            await reader.IsDBNullAsync(5, cancellationToken) ? 0 : reader.GetInt32(5),
-            await reader.IsDBNullAsync(6, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(6)));
+            await reader.IsDBNullAsync(5, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(5)));
     }
 
     public async Task UpsertWatchlistSchedulerStateAsync(
@@ -8565,23 +8562,20 @@ INSERT INTO watchlist_scheduler_state (
     active_source,
     active_source_id,
     active_started_utc,
-    last_progress_utc,
-    zero_queue_streak
+    last_progress_utc
 )
 VALUES (
     @watchType,
     @activeSource,
     @activeSourceId,
     @activeStartedUtc,
-    @lastProgressUtc,
-    @zeroQueueStreak
+    @lastProgressUtc
 )
 ON CONFLICT(watch_type) DO UPDATE SET
     active_source = excluded.active_source,
     active_source_id = excluded.active_source_id,
     active_started_utc = excluded.active_started_utc,
     last_progress_utc = excluded.last_progress_utc,
-    zero_queue_streak = excluded.zero_queue_streak,
     updated_at = CURRENT_TIMESTAMP;";
         await using var command = new SqliteCommand(sql, connection);
         command.Parameters.AddWithValue("watchType", normalizedWatchType);
@@ -8589,7 +8583,6 @@ ON CONFLICT(watch_type) DO UPDATE SET
         command.Parameters.AddWithValue("activeSourceId", (object?)activeSourceId ?? DBNull.Value);
         command.Parameters.AddWithValue("activeStartedUtc", input.ActiveStartedUtc?.ToString("O") ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("lastProgressUtc", input.LastProgressUtc?.ToString("O") ?? (object)DBNull.Value);
-        command.Parameters.AddWithValue("zeroQueueStreak", Math.Max(0, input.ZeroQueueStreak));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -9559,7 +9552,13 @@ SELECT playlist_watch_track.track_source_id,
        redirect_track_source_id,
        redirect_reason,
        verified_at_utc,
-       source_position
+       source_position,
+       (SELECT group_concat(m.target_service, ', ')
+          FROM playlist_watch_target_membership m
+         WHERE m.source = playlist_watch_track.source
+           AND m.source_id = playlist_watch_track.source_id
+           AND m.track_source_id = playlist_watch_track.track_source_id
+           AND lower(m.sync_status) = 'playlist_synced') AS synced_target_service
 FROM playlist_watch_track
 LEFT JOIN playlist_watch_track_sync_progress progress
   ON progress.source = playlist_watch_track.source
@@ -9604,6 +9603,7 @@ ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
             var redirectReason = await reader.IsDBNullAsync(17, cancellationToken) ? null : reader.GetString(17);
             var verifiedAt = ReadNullableDateTimeOffset(reader, 18, cancellationToken);
             int? sourcePosition = await reader.IsDBNullAsync(19, cancellationToken) ? null : reader.GetInt32(19);
+            var syncedTargetServices = await reader.IsDBNullAsync(20, cancellationToken) ? null : reader.GetString(20);
             statuses.Add(new PlaylistWatchTrackStatusDto(
                 trackSourceId,
                 isrc,
@@ -9624,7 +9624,8 @@ ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
                 redirectTrackSourceId,
                 redirectReason,
                 verifiedAt,
-                sourcePosition));
+                sourcePosition,
+                syncedTargetServices));
         }
 
         return statuses;
@@ -11576,11 +11577,84 @@ FROM (
             : ParseDateTimeOffsetInvariant(text);
     }
 
+    public async Task<WatchlistStateDriftReport> DetectWatchlistStateDriftAsync(
+        int maxSyncAttempts,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT
+    (SELECT COUNT(*)
+       FROM playlist_watch_target_sync_state state
+      WHERE lower(state.status) = 'applied'
+        AND NOT EXISTS (
+            SELECT 1 FROM playlist_watch_target_membership m
+             WHERE m.source = state.source
+               AND m.source_id = state.source_id
+               AND lower(m.target_service) = lower(state.target_service))) AS applied_without_membership,
+    (SELECT COUNT(*)
+       FROM (SELECT DISTINCT m.source, m.source_id, lower(m.target_service) AS target_service
+               FROM playlist_watch_target_membership m
+              WHERE lower(m.sync_status) = 'playlist_synced') verified
+      WHERE NOT EXISTS (
+            SELECT 1 FROM playlist_watch_target_sync_state state
+             WHERE state.source = verified.source
+               AND state.source_id = verified.source_id
+               AND lower(state.target_service) = verified.target_service
+               AND lower(state.status) = 'applied')) AS membership_without_applied,
+    (SELECT COUNT(*)
+       FROM playlist_watch_target_membership m
+      WHERE NOT EXISTS (
+            SELECT 1 FROM playlist_watch_track t
+             WHERE t.source = m.source
+               AND t.source_id = m.source_id
+               AND t.track_source_id = m.track_source_id)) AS orphaned_membership,
+    (SELECT COUNT(*)
+       FROM playlist_watch_target_membership m
+      WHERE NOT EXISTS (
+            SELECT 1 FROM playlist_watch_configured_sync_targets cst
+             WHERE cst.source = m.source
+               AND cst.source_id = m.source_id
+               AND cst.target = lower(m.target_service))) AS membership_for_unconfigured_target,
+    (SELECT COUNT(*)
+       FROM watchlist_sync_job job
+      WHERE lower(job.status) = 'blocked'
+        AND job.attempt_count < @maxAttempts) AS blocked_below_attempt_cap;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("maxAttempts", Math.Max(1, maxSyncAttempts));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new WatchlistStateDriftReport(0, 0, 0, 0, 0);
+        }
+
+        return new WatchlistStateDriftReport(
+            reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetInt32(2),
+            reader.GetInt32(3),
+            reader.GetInt32(4));
+    }
+
     public async Task<int> RepairWatchlistSyncBacklogAsync(
+        int maxSyncAttempts,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var clampLegacyAttempts = new SqliteCommand(@"
+UPDATE watchlist_sync_job
+SET attempt_count=0,
+    status='retry',
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    updated_at=CURRENT_TIMESTAMP
+WHERE attempt_count >= @maxSyncAttempts
+  AND lower(status)='blocked';", connection, transaction);
+        clampLegacyAttempts.Parameters.AddWithValue("maxSyncAttempts", Math.Max(1, maxSyncAttempts));
+        var clamped = await clampLegacyAttempts.ExecuteNonQueryAsync(cancellationToken);
+
         await using var recover = new SqliteCommand(@"
 UPDATE watchlist_sync_job
 SET status='retry',
@@ -11613,7 +11687,7 @@ WHERE NOT EXISTS (
 );", connection, transaction);
         repaired += await removeObsolete.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return repaired;
+        return repaired + clamped;
     }
 
     private static async Task<WatchlistSyncJobDto> ReadWatchlistSyncJobAsync(

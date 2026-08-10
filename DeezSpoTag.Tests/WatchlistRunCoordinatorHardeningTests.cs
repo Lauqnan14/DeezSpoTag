@@ -334,8 +334,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 "unsupported",
                 "pl-circuit-2",
                 DateTimeOffset.UtcNow,
-                null,
-                0),
+                null),
             CancellationToken.None);
         await _repository.UpsertWatchlistSourceCircuitStateAsync(
             new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
@@ -394,8 +393,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 "unsupported",
                 "pl-stale-focus-target",
                 DateTimeOffset.UtcNow.AddHours(-2),
-                null,
-                0),
+                null),
             CancellationToken.None);
 
         var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
@@ -425,8 +423,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 "unsupported",
                 "pl-explicit-focus-target",
                 DateTimeOffset.UtcNow,
-                null,
-                0),
+                null),
             CancellationToken.None);
 
         var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
@@ -486,8 +483,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 "unsupported",
                 "pl-runtime-1",
                 DateTimeOffset.UtcNow.AddMinutes(-1),
-                DateTimeOffset.UtcNow,
-                1),
+                DateTimeOffset.UtcNow),
             CancellationToken.None);
         await _repository.UpsertWatchlistSourceCircuitStateAsync(
             new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(

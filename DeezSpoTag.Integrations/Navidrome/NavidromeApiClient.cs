@@ -440,12 +440,34 @@ public sealed class NavidromeApiClient
             return createdPlaylistId;
         }
 
+        var existingEntries = await GetPlaylistEntriesAsync(serverUrl, username, password, playlistId, cancellationToken);
+        var removalIndexes = new List<int>();
         if (appendMissingOnly)
         {
-            var currentIds = (await GetPlaylistEntriesAsync(serverUrl, username, password, playlistId, cancellationToken))
+            var currentIds = existingEntries
                 .Select(static entry => entry.ItemId)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             targetIds = targetIds.Where(id => !currentIds.Contains(id)).ToList();
+        }
+        else
+        {
+            var expected = targetIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var retained = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var index = 0; index < existingEntries.Count; index++)
+            {
+                var itemId = existingEntries[index].ItemId;
+                if (string.IsNullOrWhiteSpace(itemId) || !expected.Contains(itemId) || !retained.Add(itemId))
+                {
+                    removalIndexes.Add(index);
+                }
+            }
+
+            targetIds = targetIds.Where(id => !retained.Contains(id)).ToList();
+        }
+
+        if (removalIndexes.Count == 0 && targetIds.Count == 0)
+        {
+            return playlistId;
         }
 
         var firstUpdateBatch = targetIds.Take(PlaylistWriteBatchSize).ToList();
@@ -453,10 +475,8 @@ public sealed class NavidromeApiClient
             serverUrl,
             username,
             password,
-            appendMissingOnly ? "updatePlaylist" : "createPlaylist",
-            appendMissingOnly
-                ? BuildPlaylistUpdateParameters(playlistId, playlistName, firstUpdateBatch, playlistComment)
-                : BuildPlaylistParameters(playlistId, playlistName, firstUpdateBatch, playlistComment),
+            "updatePlaylist",
+            BuildPlaylistUpdateParameters(playlistId, playlistName, firstUpdateBatch, playlistComment, removalIndexes),
             cancellationToken);
         if (update?.SubsonicResponse?.Status is not "ok")
         {
@@ -944,7 +964,8 @@ public sealed class NavidromeApiClient
         string playlistId,
         string playlistName,
         IReadOnlyCollection<string> songIdsToAdd,
-        string? playlistComment = null)
+        string? playlistComment = null,
+        IReadOnlyCollection<int>? songIndexesToRemove = null)
     {
         var parameters = new List<KeyValuePair<string, string?>>
         {
@@ -952,6 +973,15 @@ public sealed class NavidromeApiClient
             new("name", playlistName),
             new("comment", playlistComment)
         };
+        if (songIndexesToRemove is { Count: > 0 })
+        {
+            parameters.AddRange(songIndexesToRemove
+                .OrderByDescending(static index => index)
+                .Select(static index => new KeyValuePair<string, string?>(
+                    "songIndexToRemove",
+                    index.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        }
+
         parameters.AddRange(songIdsToAdd.Select(static id => new KeyValuePair<string, string?>("songIdToAdd", id)));
         return parameters;
     }

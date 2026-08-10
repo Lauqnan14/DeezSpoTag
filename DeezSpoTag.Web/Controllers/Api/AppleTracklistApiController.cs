@@ -169,7 +169,8 @@ public sealed class AppleTracklistApiController : ControllerBase
                 AppleSource,
                 playlistId,
                 cancellationToken);
-            persistedStorefront = playlist?.SourceStorefront;
+            persistedStorefront = ResolveStorefrontFromAppleUrl(playlist?.SourceUrl)
+                ?? playlist?.SourceStorefront;
         }
 
         return ResolveStorefrontPrecedence(

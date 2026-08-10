@@ -84,18 +84,18 @@ public sealed class NavidromeApiClientPlaylistTests
             CancellationToken.None);
 
         Assert.Equal("playlist-1", playlistId);
-        var replace = Assert.Single(
+        Assert.DoesNotContain(
             handler.RequestedUrls,
             url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
-        Assert.Equal(100, GetQueryValues(replace, "songId").Count);
         var appendRequests = handler.RequestedUrls
             .Where(url => url.Contains("/rest/updatePlaylist.view?", StringComparison.Ordinal))
             .ToList();
-        Assert.Equal(2, appendRequests.Count);
+        Assert.Equal(3, appendRequests.Count);
         Assert.Equal(100, GetQueryValues(appendRequests[0], "songIdToAdd").Count);
-        Assert.Equal(50, GetQueryValues(appendRequests[1], "songIdToAdd").Count);
-        Assert.Equal("track-101", GetQueryValues(appendRequests[0], "songIdToAdd")[0]);
-        Assert.Equal("track-250", GetQueryValues(appendRequests[1], "songIdToAdd")[^1]);
+        Assert.Equal(100, GetQueryValues(appendRequests[1], "songIdToAdd").Count);
+        Assert.Equal(50, GetQueryValues(appendRequests[2], "songIdToAdd").Count);
+        Assert.Equal("track-1", GetQueryValues(appendRequests[0], "songIdToAdd")[0]);
+        Assert.Equal("track-250", GetQueryValues(appendRequests[2], "songIdToAdd")[^1]);
     }
 
     [Fact]

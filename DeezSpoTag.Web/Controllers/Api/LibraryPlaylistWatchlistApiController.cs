@@ -182,6 +182,29 @@ public partial class WatchlistApiController : ControllerBase
             });
         }
 
+        var drift = await _repository.DetectWatchlistStateDriftAsync(
+            WatchlistPostDownloadSyncService.MaxSyncAttempts,
+            cancellationToken);
+        var targetCircuits = new List<object>();
+        foreach (var target in new[] { "plex", "jellyfin", "navidrome" })
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var targetCircuit = await _repository.GetWatchlistTargetCircuitStateAsync(target, cancellationToken);
+            if (targetCircuit == null)
+            {
+                continue;
+            }
+
+            targetCircuits.Add(new
+            {
+                targetService = targetCircuit.TargetService,
+                isOpen = targetCircuit.IsOpen,
+                openUntilUtc = targetCircuit.OpenUntilUtc,
+                reason = targetCircuit.Reason,
+                failureCount = targetCircuit.FailureCount
+            });
+        }
+
         return Ok(new
         {
             scheduler = scheduler == null
@@ -192,10 +215,20 @@ public partial class WatchlistApiController : ControllerBase
                     activeSource = scheduler.ActiveSource,
                     activeSourceId = scheduler.ActiveSourceId,
                     activeStartedUtc = scheduler.ActiveStartedUtc,
-                    lastProgressUtc = scheduler.LastProgressUtc,
-                    zeroQueueStreak = scheduler.ZeroQueueStreak
+                    lastProgressUtc = scheduler.LastProgressUtc
                 },
             circuits,
+            targetCircuits,
+            stateDrift = new
+            {
+                hasDrift = drift.HasDrift,
+                total = drift.Total,
+                appliedWithoutMembership = drift.AppliedWithoutMembership,
+                membershipWithoutApplied = drift.MembershipWithoutApplied,
+                orphanedMembership = drift.OrphanedMembership,
+                membershipForUnconfiguredTarget = drift.MembershipForUnconfiguredTarget,
+                blockedBelowAttemptCap = drift.BlockedBelowAttemptCap
+            },
             runtime,
             claims = new
             {
@@ -383,6 +416,11 @@ public partial class WatchlistApiController : ControllerBase
             if (string.IsNullOrWhiteSpace(sourceStorefront))
             {
                 return BadRequest("Apple playlist storefront is required.");
+            }
+
+            if (string.IsNullOrWhiteSpace(sourceUrl))
+            {
+                sourceUrl = $"https://music.apple.com/{sourceStorefront}/playlist/{Uri.EscapeDataString(normalizedSourceId)}";
             }
         }
         else
@@ -1434,6 +1472,7 @@ public partial class WatchlistApiController : ControllerBase
                     "playlist_synced",
                     StringComparison.OrdinalIgnoreCase),
                 TargetService = persistedStatus?.TargetService ?? string.Empty,
+                SyncedTargetServices = persistedStatus?.SyncedTargetServices ?? string.Empty,
                 TargetItemId = persistedStatus?.TargetItemId ?? string.Empty,
                 IdentityStatus = persistedStatus?.IdentityStatus ?? string.Empty,
                 RedirectTrackSourceId = persistedStatus?.RedirectTrackSourceId ?? string.Empty,

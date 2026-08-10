@@ -661,7 +661,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("GetStoredVisualFromManagedUrl", navidromeArtworkBody, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveJellyfinVisual", navidromeArtworkBody, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistArtworkToTargetAsync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("request.TrackId.StartsWith(\"artwork:\"", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("IsArtworkJob(request.TrackId)", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("GetTargetArtworkRevision", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("IsPlaylistWatchArtworkRevisionAppliedAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", postDownloadSource, StringComparison.Ordinal);

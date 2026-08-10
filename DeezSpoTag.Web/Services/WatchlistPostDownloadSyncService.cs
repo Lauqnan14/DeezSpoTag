@@ -14,7 +14,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     // blip (target server restart, brief network issue) but short enough that a structurally
     // unfixable failure (one track that will never verify, an oversized batch call) stops
     // consuming a retry slot forever and instead surfaces as "blocked" for manual attention.
-    private const int MaxSyncAttempts = 10;
+    internal const int MaxSyncAttempts = 10;
     // Mirrors WatchlistRunCoordinator's per-source circuit breaker (SourceCircuitFailureThreshold
     // / SourceCircuitCooldownSeconds), but keyed by target media server instead of playlist
     // source: with up to 45 playlists x 3 targets, a single down/flaky target server would
@@ -22,6 +22,8 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     // schedules. A shared circuit lets them all back off together as one unit.
     private const int TargetCircuitFailureThreshold = 5;
     private const int TargetCircuitCooldownSeconds = 300;
+    private const string PlaylistJobTrackId = "playlist";
+    private const string ArtworkJobTrackIdPrefix = "artwork:";
     private readonly WatchlistRunSignal _coordinatorSignal;
     private readonly IServiceProvider _serviceProvider;
     private readonly DeezSpoTagSettingsService _settingsService;
@@ -383,7 +385,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             {
                 case SyncAttemptOutcomeKind.Completed:
                     await ResetTargetCircuitAsync(repository, job.TargetService, targetCircuit, cancellationToken);
-                    var completed = string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase)
+                    var completed = IsPlaylistJob(job.TrackId)
                         ? await repository.CompleteWatchlistPlaylistSyncJobAsync(job, _leaseOwner, cancellationToken)
                         : await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
                     if (completed)
@@ -401,7 +403,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
                     return;
             }
-            await RecordTargetCircuitFailureAsync(repository, job.TargetService, targetCircuit, outcome.Message, cancellationToken);
+            if (!IsArtworkJob(job.TrackId))
+            {
+                await RecordTargetCircuitFailureAsync(repository, job.TargetService, targetCircuit, outcome.Message, cancellationToken);
+            }
+
             var attempt = job.AttemptCount + 1;
             if (attempt >= MaxSyncAttempts)
             {
@@ -484,7 +490,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         WatchlistSyncJobDto completedJob,
         CancellationToken cancellationToken)
     {
-        if (!string.Equals(completedJob.TrackId, "playlist", StringComparison.OrdinalIgnoreCase))
+        if (!IsPlaylistJob(completedJob.TrackId))
         {
             return;
         }
@@ -493,7 +499,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 completedJob.Source,
                 completedJob.PlaylistId,
                 cancellationToken))
-            .Any(static job => string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase));
+            .Any(static job => IsPlaylistJob(job.TrackId));
         if (remainingInitialJobs)
         {
             return;
@@ -566,9 +572,9 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return SyncAttemptOutcome.Obsolete("Target server is no longer selected.");
             }
 
-            if (request.TrackId.StartsWith("artwork:", StringComparison.OrdinalIgnoreCase))
+            if (IsArtworkJob(request.TrackId))
             {
-                var revision = request.TrackId["artwork:".Length..].Trim();
+                var revision = request.TrackId[ArtworkJobTrackIdPrefix.Length..].Trim();
                 var activeRevision = scope.ServiceProvider.GetRequiredService<PlaylistVisualService>()
                     .GetTargetArtworkRevision(
                         playlist.Source,
@@ -689,12 +695,22 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             return false;
         }
 
+        if (HasNoTargetCoverage(syncResult))
+        {
+            return true;
+        }
+
         return string.Equals(syncResult.Message, "Playlist not available.", StringComparison.OrdinalIgnoreCase)
             || string.Equals(syncResult.Message, "No target server selected.", StringComparison.OrdinalIgnoreCase)
             || string.Equals(syncResult.Message, "Playlist sync target is disabled.", StringComparison.OrdinalIgnoreCase)
             || string.Equals(syncResult.Message, "Unsupported playlist sync target.", StringComparison.OrdinalIgnoreCase)
             || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool HasNoTargetCoverage(PlaylistSyncResult syncResult)
+        => syncResult.TargetMatches == 0
+            && syncResult.LocalMatches > 0
+            && syncResult.SourceTracks > 0;
 
     private static bool IsConfiguredTarget(PlaylistWatchPreferenceDto preference, string targetService)
     {
@@ -808,6 +824,12 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
         return DateTimeOffset.UtcNow < circuitState.OpenUntilUtc.Value;
     }
+
+    private static bool IsArtworkJob(string? trackId)
+        => trackId?.StartsWith(ArtworkJobTrackIdPrefix, StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsPlaylistJob(string? trackId)
+        => string.Equals(trackId, PlaylistJobTrackId, StringComparison.OrdinalIgnoreCase);
 
     private async Task RecordTargetCircuitFailureAsync(
         LibraryRepository repository,

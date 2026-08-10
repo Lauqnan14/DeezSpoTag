@@ -758,7 +758,6 @@ public sealed record WatchlistSchedulerStateDto(
     string? ActiveSourceId,
     DateTimeOffset? ActiveStartedUtc,
     DateTimeOffset? LastProgressUtc,
-    int ZeroQueueStreak,
     DateTimeOffset UpdatedAt);
 
 public sealed record WatchlistSourceCircuitStateDto(
@@ -829,7 +828,8 @@ public sealed record PlaylistWatchTrackStatusDto(
     string? RedirectTrackSourceId = null,
     string? RedirectReason = null,
     DateTimeOffset? VerifiedAtUtc = null,
-    int? SourcePosition = null);
+    int? SourcePosition = null,
+    string? SyncedTargetServices = null);
 
 public sealed record PlaylistWatchTrackVerification(
     string TrackSourceId,
@@ -1075,3 +1075,18 @@ public sealed record LocalScanFileState(
     long Size,
     DateTime LastWriteUtc,
     LocalTrackScanDto Scan);
+
+public sealed record WatchlistStateDriftReport(
+    int AppliedWithoutMembership,
+    int MembershipWithoutApplied,
+    int OrphanedMembership,
+    int MembershipForUnconfiguredTarget,
+    int BlockedBelowAttemptCap)
+{
+    public int Total => AppliedWithoutMembership
+        + MembershipWithoutApplied
+        + OrphanedMembership
+        + MembershipForUnconfiguredTarget;
+
+    public bool HasDrift => Total > 0;
+}

@@ -2673,34 +2673,57 @@ public sealed class PlaylistSyncService
         List<JellyfinPlaylistEntry> entries,
         CancellationToken cancellationToken)
     {
-        if (entries.Count > 0)
+        var expected = itemIds
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var retained = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var staleEntryIds = new List<string>();
+        foreach (var entry in entries)
         {
-            var cleared = await _jellyfinApiClient.RemovePlaylistEntriesAsync(
+            if (string.IsNullOrWhiteSpace(entry.PlaylistEntryId))
+            {
+                continue;
+            }
+
+            if (!expected.Contains(entry.ItemId) || !retained.Add(entry.ItemId))
+            {
+                staleEntryIds.Add(entry.PlaylistEntryId);
+            }
+        }
+
+        var pending = itemIds
+            .Where(trackId => !string.IsNullOrWhiteSpace(trackId) && !retained.Contains(trackId))
+            .ToList();
+        if (staleEntryIds.Count == 0 && pending.Count == 0)
+        {
+            return (true, null, 0);
+        }
+
+        if (staleEntryIds.Count > 0
+            && !await _jellyfinApiClient.RemovePlaylistEntriesAsync(
                 url,
                 apiKey,
                 userId,
                 playlistId,
-                entries.Select(static entry => entry.PlaylistEntryId).ToList(),
-                cancellationToken);
-            if (!cleared)
-            {
-                return (false, "Failed to clear existing Jellyfin playlist items.", 0);
-            }
+                staleEntryIds,
+                cancellationToken))
+        {
+            return (false, "Failed to remove stale Jellyfin playlist items.", 0);
         }
 
-        var added = await _jellyfinApiClient.AddPlaylistItemsAsync(
-            url,
-            apiKey,
-            userId,
-            playlistId,
-            itemIds,
-            cancellationToken);
-        if (!added)
+        if (pending.Count > 0
+            && !await _jellyfinApiClient.AddPlaylistItemsAsync(
+                url,
+                apiKey,
+                userId,
+                playlistId,
+                pending,
+                cancellationToken))
         {
             return (false, "Failed to add tracks to Jellyfin playlist.", 0);
         }
 
-        return (true, null, itemIds.Count);
+        return (true, null, pending.Count);
     }
 
     private async Task<PlaylistSyncResult> SyncPlexPlaylistArtworkOnlyAsync(
