@@ -724,11 +724,6 @@ public class AutoTagLibraryOrganizer
         if (IsMissingCoreTags(tag))
         {
             var missingTagsResult = TryBuildTrackFromMissingCoreTags(context, out var missingTagTrack, out var missingTagDownloadType);
-            if (missingTagsResult == MissingCoreTrackBuildResult.Skip)
-            {
-                return null;
-            }
-
             if (missingTagsResult == MissingCoreTrackBuildResult.RouteToUntagged)
             {
                 return BuildUntaggedMovePlanItem(
@@ -769,8 +764,7 @@ public class AutoTagLibraryOrganizer
     private enum MissingCoreTrackBuildResult
     {
         Built,
-        RouteToUntagged,
-        Skip
+        RouteToUntagged
     }
 
     private MissingCoreTrackBuildResult TryBuildTrackFromMissingCoreTags(
@@ -788,16 +782,15 @@ public class AutoTagLibraryOrganizer
                 context.UsePrimaryArtistFolders,
                 context.Settings.Tags?.MultiArtistSeparator,
                 context.Log);
-            if (shazamTrack is null)
+            if (shazamTrack is not null)
             {
-                context.Log?.Invoke($"organizer left untagged file in place after Shazam produced no usable match: {context.FullPath}");
-                return MissingCoreTrackBuildResult.Skip;
+                track = shazamTrack;
+                downloadType = IsSingleTrackDownload(track) ? DownloadTypeTrack : DownloadTypeAlbum;
+                context.Log?.Invoke($"organizer inferred core tags from Shazam: {context.FullPath}");
+                return MissingCoreTrackBuildResult.Built;
             }
 
-            track = shazamTrack;
-            downloadType = IsSingleTrackDownload(track) ? DownloadTypeTrack : DownloadTypeAlbum;
-            context.Log?.Invoke($"organizer inferred core tags from Shazam: {context.FullPath}");
-            return MissingCoreTrackBuildResult.Built;
+            context.Log?.Invoke($"organizer falling back to path inference after Shazam produced no usable match: {context.FullPath}");
         }
 
         var fallbackTrack = BuildTrackFromPathFallback(
