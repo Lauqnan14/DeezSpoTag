@@ -105,5 +105,9 @@ DeezSpoTag.Workers/Data/deezspotag/config.json
 
 # Local scan/temp work directories
 .tmp-pip-audit-venv/
+.codeql-db/
+.codeql-db-local/
+codeql-db-*/
 codeql-db-csharp-fresh/
 codeql-db-csharp/
+src.code-workspace

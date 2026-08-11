@@ -4559,11 +4559,21 @@ function initSpotifyCacheControls(artistId) {
     refreshButton.addEventListener('click', async () => {
         cachePanel.classList.add('is-open');
         const statusEl = document.getElementById('spotify-cache-status');
+        const labelEl = refreshButton.querySelector('span');
+        const previousLabel = labelEl?.textContent || 'Update Cache';
+        refreshButton.disabled = true;
+        refreshButton.setAttribute('aria-busy', 'true');
+        if (labelEl) {
+            labelEl.textContent = 'Updating...';
+        }
+        if (statusEl) {
+            statusEl.textContent = 'Source cache: updating';
+        }
         try {
             await fetchJson(`/api/library/artists/${encodeURIComponent(artistId)}/external-cache/refresh`, { method: 'POST' });
             showToast('Artist source cache refreshed.', false);
             if (statusEl) {
-                statusEl.textContent = 'Source refresh: completed';
+                statusEl.textContent = 'Source cache: completed';
             }
             await loadSpotifyArtist(artistId, false, false);
             const appleIdData = await fetchJsonOptional(`/api/library/artists/${encodeURIComponent(artistId)}/apple-id`);
@@ -4578,7 +4588,13 @@ function initSpotifyCacheControls(artistId) {
         } catch (error) {
             showToast(`Artist source cache refresh failed: ${error?.message || error}`, true);
             if (statusEl) {
-                statusEl.textContent = 'Source refresh: failed';
+                statusEl.textContent = 'Source cache: failed';
+            }
+        } finally {
+            refreshButton.disabled = false;
+            refreshButton.removeAttribute('aria-busy');
+            if (labelEl) {
+                labelEl.textContent = previousLabel;
             }
         }
     });

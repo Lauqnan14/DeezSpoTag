@@ -4072,7 +4072,19 @@ function bindApiTokenActions() {
     });
 
     regenerateButton.addEventListener('click', async () => {
-        if (!confirm('Regenerate the API token? Existing clients using the current token will stop working until they are updated.')) {
+        if (!window.DeezSpoTag?.ui?.confirm) {
+            showToast('App dialog system is unavailable.', 'error');
+            return;
+        }
+
+        const confirmed = await window.DeezSpoTag.ui.confirm(
+            'Regenerate the API token? Existing clients using the current token will stop working until they are updated.',
+            {
+                title: 'Regenerate API Token',
+                okText: 'Regenerate',
+                cancelText: 'Cancel'
+            });
+        if (!confirmed) {
             return;
         }
 
