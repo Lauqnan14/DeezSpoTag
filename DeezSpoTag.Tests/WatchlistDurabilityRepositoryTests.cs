@@ -616,6 +616,105 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task RepairWatchlistSyncBacklog_ReopensAppliedTargetWhenLocalTracksLackMembership()
+    {
+        await AddPlaylistWithTargetsAsync("partial-target-list", ["plex"]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "partial-target-list",
+            [
+                new PlaylistWatchTrackInsert("track-1", "ISRC00000001"),
+                new PlaylistWatchTrackInsert("track-2", "ISRC00000002")
+            ]);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "partial-target-list",
+            new PlaylistWatchTrackVerification("track-1", 101, "identity_verified"));
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "partial-target-list",
+            new PlaylistWatchTrackVerification("track-2", 102, "identity_verified"));
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "partial-target-list",
+            "plex",
+            "plex-playlist",
+            [new PlaylistWatchTargetMembership("track-1", 101, "plex-track-1")]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "partial-target-list",
+            "snapshot-1");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "repair-worker"));
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(claimed, "repair-worker"));
+        Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
+
+        var repaired = await _repository.RepairWatchlistSyncBacklogAsync(10);
+
+        Assert.True(repaired > 0);
+        var reopened = Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
+        Assert.Equal("plex", reopened.TargetService);
+        Assert.Equal("playlist", reopened.TrackId);
+        Assert.Equal("pending", reopened.Status);
+        Assert.Equal("snapshot-1:plex-membership-v2", reopened.SnapshotId);
+    }
+
+    [Fact]
+    public async Task RepairWatchlistSyncBacklog_ReopensBlockedJobsBelowAttemptCap()
+    {
+        await AddPlaylistWithTargetsAsync("blocked-before-cap-list", ["plex"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "blocked-before-cap-list",
+            "snapshot-1");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "blocked-worker"));
+        Assert.True(await _repository.BlockWatchlistSyncJobAsync(
+            claimed.Id,
+            "blocked-worker",
+            "Temporary Plex failure."));
+        await ExecuteSqlAsync(
+            "UPDATE watchlist_sync_job SET attempt_count=3 WHERE id=@id;",
+            ("id", claimed.Id));
+
+        var repaired = await _repository.RepairWatchlistSyncBacklogAsync(10);
+
+        Assert.True(repaired > 0);
+        var reopened = Assert.Single(await _repository.GetWatchlistSyncJobsAsync(
+            "spotify",
+            "blocked-before-cap-list"));
+        Assert.Equal("retry", reopened.Status);
+        Assert.Equal(3, reopened.AttemptCount);
+        Assert.Null(reopened.LeaseOwner);
+    }
+
+    [Fact]
+    public async Task CloseExpiredWatchlistTargetCircuits_ClosesExpiredCircuit()
+    {
+        await _repository.UpsertWatchlistTargetCircuitStateAsync(
+            new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
+                "plex",
+                IsOpen: true,
+                OpenUntilUtc: DateTimeOffset.UtcNow.AddMinutes(-1),
+                Reason: "Expired Plex pause.",
+                FailureCount: 5));
+
+        var closed = await _repository.CloseExpiredWatchlistTargetCircuitsAsync();
+
+        Assert.Equal(1, closed);
+        var circuit = await _repository.GetWatchlistTargetCircuitStateAsync("plex");
+        Assert.NotNull(circuit);
+        Assert.False(circuit.IsOpen);
+        Assert.Null(circuit.OpenUntilUtc);
+        Assert.Null(circuit.Reason);
+        Assert.Equal(0, circuit.FailureCount);
+    }
+
+    [Fact]
     public async Task PlaylistSyncWork_ExcludesAttemptedTargetAndLeavesSiblingTargetsClaimable()
     {
         await AddPlaylistWithTargetsAsync("isolated-list", ["plex", "jellyfin", "navidrome"]);

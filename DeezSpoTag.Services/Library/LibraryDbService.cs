@@ -1099,16 +1099,7 @@ JOIN json_each(CASE
         THEN preference.sync_targets_json
     ELSE json_array(preference.service)
 END) configured
-  ON lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome')
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM watchlist_sync_job blocked_job
-    WHERE blocked_job.source = preference.source
-      AND blocked_job.playlist_id = preference.source_id
-      AND lower(blocked_job.target_service) = lower(trim(configured.value))
-      AND lower(blocked_job.track_id) = 'playlist'
-      AND lower(blocked_job.status) = 'blocked'
-);", cancellationToken);
+  ON lower(trim(configured.value)) IN ('plex', 'jellyfin', 'navidrome');", cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE VIEW playlist_watch_track_sync_progress AS
 SELECT track.source AS source,

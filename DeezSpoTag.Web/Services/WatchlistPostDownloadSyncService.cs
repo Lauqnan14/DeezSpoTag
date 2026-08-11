@@ -8,6 +8,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan TargetSyncJobTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     // Backoff is 15 * 2^(attempt-1) capped at MaximumRetryDelay (10 min from attempt 7 on), so 10
     // attempts is roughly 1-1.5h of accumulated retrying -- long enough to ride out a transient
@@ -340,9 +341,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     {
         using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
+        using var jobTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        jobTimeout.CancelAfter(TargetSyncJobTimeout);
         try
         {
-            if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, cancellationToken))
+            if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, jobTimeout.Token))
             {
                 await repository.RetryWatchlistSyncJobAsync(
                     job.Id,
@@ -354,7 +357,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return;
             }
 
-            var targetCircuit = await repository.GetWatchlistTargetCircuitStateAsync(job.TargetService, cancellationToken);
+            var targetCircuit = await repository.GetWatchlistTargetCircuitStateAsync(job.TargetService, jobTimeout.Token);
             if (IsTargetCircuitOpen(targetCircuit))
             {
                 // Defer without counting it as an attempt against this job -- the target itself
@@ -380,7 +383,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             var outcome = await TrySyncOnceAsync(
                 request,
                 job.AttemptCount + 1,
-                cancellationToken);
+                jobTimeout.Token);
             switch (outcome.Kind)
             {
                 case SyncAttemptOutcomeKind.Completed:
@@ -440,6 +443,28 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException) when (jobTimeout.IsCancellationRequested)
+        {
+            var timedOutAttempt = job.AttemptCount + 1;
+            var message = $"{FormatTargetServiceLabel(job.TargetService)} target sync timed out after {TargetSyncJobTimeout.TotalSeconds:0}s.";
+            if (timedOutAttempt >= MaxSyncAttempts)
+            {
+                await repository.BlockWatchlistSyncJobAsync(
+                    job.Id,
+                    _leaseOwner,
+                    $"Gave up after {timedOutAttempt} attempts: {message}",
+                    cancellationToken);
+                return;
+            }
+
+            await repository.RetryWatchlistSyncJobAsync(
+                job.Id,
+                _leaseOwner,
+                timedOutAttempt,
+                DateTimeOffset.UtcNow + TimeSpan.FromMinutes(1),
+                message,
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

@@ -188,11 +188,15 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         var service = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
         var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
 
-        // Success is based on the intended (resolved) membership set, not every local track.
-        Assert.DoesNotContain("verifiedMemberships.Count != tracks.Count", service, StringComparison.Ordinal);
+        Assert.Contains("ResolvePersistedAvailableTrackRowsAsync", service, StringComparison.Ordinal);
+        Assert.Contains("matchSummary.SourceTracks", service, StringComparison.Ordinal);
         Assert.Contains("IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count", service, StringComparison.Ordinal);
-        Assert.Equal(2, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));
-        Assert.Contains("DeleteConfirmedMissingPlexTrackMetadataAsync(", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldAcceptMembershipWithExceptions", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("AppendDeferredTargetIdentityMessage", service, StringComparison.Ordinal);
+        Assert.Equal(3, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));
+        Assert.DoesNotContain("DeleteConfirmedMissingPlexTrackMetadataAsync(", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPlexRatingKeysByTrackIdsAsync(", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertPlexTrackMetadataAsync(", service, StringComparison.Ordinal);
         Assert.Contains("CheckTrackAvailabilityAsync(", service, StringComparison.Ordinal);
         Assert.Contains("availability == PlexItemAvailability.Missing", service, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM media_server_track_metadata", repository, StringComparison.Ordinal);

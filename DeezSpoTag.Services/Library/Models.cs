@@ -831,7 +831,8 @@ public sealed record PlaylistWatchTrackStatusDto(
     string? RedirectReason = null,
     DateTimeOffset? VerifiedAtUtc = null,
     int? SourcePosition = null,
-    string? SyncedTargetServices = null);
+    string? SyncedTargetServices = null,
+    string? MissingTargetServices = null);
 
 public sealed record PlaylistWatchTrackVerification(
     string TrackSourceId,

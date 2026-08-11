@@ -182,6 +182,7 @@ public partial class WatchlistApiController : ControllerBase
             });
         }
 
+        await _repository.CloseExpiredWatchlistTargetCircuitsAsync(cancellationToken);
         var drift = await _repository.DetectWatchlistStateDriftAsync(
             WatchlistPostDownloadSyncService.MaxSyncAttempts,
             cancellationToken);
@@ -1473,6 +1474,7 @@ public partial class WatchlistApiController : ControllerBase
                     StringComparison.OrdinalIgnoreCase),
                 TargetService = persistedStatus?.TargetService ?? string.Empty,
                 SyncedTargetServices = persistedStatus?.SyncedTargetServices ?? string.Empty,
+                MissingTargetServices = persistedStatus?.MissingTargetServices ?? string.Empty,
                 TargetItemId = persistedStatus?.TargetItemId ?? string.Empty,
                 IdentityStatus = persistedStatus?.IdentityStatus ?? string.Empty,
                 RedirectTrackSourceId = persistedStatus?.RedirectTrackSourceId ?? string.Empty,
@@ -1585,9 +1587,12 @@ public partial class WatchlistApiController : ControllerBase
 
         if (syncStatus is "target_visible" or "waiting_for_target")
         {
+            var missingTargets = string.IsNullOrWhiteSpace(status?.MissingTargetServices)
+                ? status?.TargetService
+                : status.MissingTargetServices;
             return new PlaylistTrackLocationStatus(
                 "waiting_for_target",
-                $"Waiting for {status?.TargetService ?? "target"}",
+                $"Waiting for {missingTargets ?? "target"}",
                 "Available locally but not verified in the target playlist.");
         }
 

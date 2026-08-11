@@ -199,14 +199,14 @@ public sealed class PlaylistSyncService
 
         if (!string.IsNullOrWhiteSpace(request.ImageUrl))
         {
-            await _playlistVisualService.ResolveManagedVisualUrlAsync(
+            await _playlistVisualService.InspectSourceArtworkAsync(
                 SpotifySource,
                 playlistId,
                 playlistName,
                 request.ImageUrl,
-                reuseSavedArtwork: false,
-                cancellationToken,
-                forceRefresh: true);
+                activateChangedArtwork: true,
+                authoritativeRemoval: false,
+                cancellationToken);
         }
 
         var preference = new PlaylistWatchPreferenceDto(
@@ -1776,9 +1776,10 @@ public sealed class PlaylistSyncService
             .ToDictionary(static group => group.Key, static group => group.First().LocalTrackId, StringComparer.OrdinalIgnoreCase);
         var targetIdBySourceId = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        if (string.Equals(service, PlexService, StringComparison.OrdinalIgnoreCase) && availableTrackRows.Count > 0)
+        if (!string.IsNullOrWhiteSpace(service) && availableTrackRows.Count > 0)
         {
-            var ratingKeys = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
+            var targetIds = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
+                service,
                 availableTrackRows
                     .Select(static row => row.LocalTrackId)
                     .Where(static id => id > 0)
@@ -1788,10 +1789,10 @@ public sealed class PlaylistSyncService
             foreach (var row in availableTrackRows)
             {
                 if (!string.IsNullOrWhiteSpace(row.Track.SourceTrackId)
-                    && ratingKeys.TryGetValue(row.LocalTrackId, out var ratingKey)
-                    && !string.IsNullOrWhiteSpace(ratingKey))
+                    && targetIds.TryGetValue(row.LocalTrackId, out var targetId)
+                    && !string.IsNullOrWhiteSpace(targetId))
                 {
-                    targetIdBySourceId[row.Track.SourceTrackId] = ratingKey;
+                    targetIdBySourceId[row.Track.SourceTrackId] = targetId;
                 }
             }
         }
@@ -2193,9 +2194,6 @@ public sealed class PlaylistSyncService
         var modeLabel = appendMissingOnly ? "append" : "mirror";
         var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
         var membershipVerified = IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count, upsert.Complete);
-        var acceptedWithExceptions = !membershipVerified
-            && upsert.Complete
-            && ShouldAcceptMembershipWithExceptions(matchSummary, verifiedMemberships.Count);
         if (!membershipVerified)
         {
             await InvalidateConfirmedMissingPlexIdentitiesAsync(
@@ -2203,14 +2201,16 @@ public sealed class PlaylistSyncService
                 matchSummary.Memberships,
                 verifiedMemberships,
                 cancellationToken);
-            if (!acceptedWithExceptions)
+            if (HasUnresolvedTargetIdentities(matchSummary))
             {
-                return BuildPartialResult(
-                    BuildSyncMessage("Plex playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
-                    playlistId,
-                    verifiedSummary,
-                    verifiedMemberships.Count);
+                await RequestTargetLibraryRefreshAsync(PlexService, cancellationToken);
             }
+
+            return BuildPartialResult(
+                BuildSyncMessage("Plex playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
+                playlistId,
+                verifiedSummary,
+                verifiedMemberships.Count);
         }
 
         await TryApplyOrScheduleMembershipArtworkAsync(
@@ -2227,21 +2227,7 @@ public sealed class PlaylistSyncService
                 cancellationToken),
             cancellationToken);
 
-        if (HasUnresolvedTargetIdentities(matchSummary))
-        {
-            await RequestTargetLibraryRefreshAsync(PlexService, cancellationToken);
-        }
-
-        var successMessage = AppendDeferredTargetIdentityMessage(
-            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
-            matchSummary);
-        if (acceptedWithExceptions)
-        {
-            successMessage = AppendAcceptedMembershipExceptionsMessage(
-                successMessage,
-                matchSummary.Memberships.Count,
-                verifiedMemberships.Count);
-        }
+        var successMessage = BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary);
 
         return BuildSuccessResult(successMessage, playlistId, verifiedSummary, verifiedMemberships.Count);
     }
@@ -2370,10 +2356,13 @@ public sealed class PlaylistSyncService
             matchSummary with { TargetIds = itemIds },
             verifiedMemberships.Count);
         var membershipVerified = IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count);
-        var acceptedWithExceptions = !membershipVerified
-            && ShouldAcceptMembershipWithExceptions(matchSummary, verifiedMemberships.Count);
-        if (!membershipVerified && !acceptedWithExceptions)
+        if (!membershipVerified)
         {
+            if (HasUnresolvedTargetIdentities(matchSummary))
+            {
+                await RequestTargetLibraryRefreshAsync(JellyfinService, cancellationToken);
+            }
+
             return BuildPartialResult(
                 BuildSyncMessage("Jellyfin playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
                 playlistId,
@@ -2395,21 +2384,7 @@ public sealed class PlaylistSyncService
                 cancellationToken),
             cancellationToken);
 
-        if (HasUnresolvedTargetIdentities(matchSummary))
-        {
-            await RequestTargetLibraryRefreshAsync(JellyfinService, cancellationToken);
-        }
-
-        var successMessage = AppendDeferredTargetIdentityMessage(
-            BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary),
-            matchSummary);
-        if (acceptedWithExceptions)
-        {
-            successMessage = AppendAcceptedMembershipExceptionsMessage(
-                successMessage,
-                matchSummary.Memberships.Count,
-                verifiedMemberships.Count);
-        }
+        var successMessage = BuildSyncMessage($"Playlist synced ({modeLabel}).", verifiedSummary);
 
         var fullSyncIssues = BuildJellyfinFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
@@ -2501,10 +2476,13 @@ public sealed class PlaylistSyncService
             cancellationToken);
         var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
         var membershipVerified = IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count);
-        var acceptedWithExceptions = !membershipVerified
-            && ShouldAcceptMembershipWithExceptions(matchSummary, verifiedMemberships.Count);
-        if (!membershipVerified && !acceptedWithExceptions)
+        if (!membershipVerified)
         {
+            if (HasUnresolvedTargetIdentities(matchSummary))
+            {
+                await RequestTargetLibraryRefreshAsync(NavidromeService, cancellationToken);
+            }
+
             return BuildPartialResult(
                 BuildSyncMessage("Navidrome playlist verification is incomplete; unresolved target identities will be refreshed and retried.", verifiedSummary),
                 playlistId,
@@ -2526,22 +2504,8 @@ public sealed class PlaylistSyncService
                 cancellationToken),
             cancellationToken);
 
-        if (HasUnresolvedTargetIdentities(matchSummary))
-        {
-            await RequestTargetLibraryRefreshAsync(NavidromeService, cancellationToken);
-        }
-
         var modeLabel = appendMissingOnly ? "append" : "mirror";
-        var successMessage = AppendDeferredTargetIdentityMessage(
-            BuildSyncMessage($"Playlist synced to Navidrome ({modeLabel}).", verifiedSummary),
-            matchSummary);
-        if (acceptedWithExceptions)
-        {
-            successMessage = AppendAcceptedMembershipExceptionsMessage(
-                successMessage,
-                matchSummary.Memberships.Count,
-                verifiedMemberships.Count);
-        }
+        var successMessage = BuildSyncMessage($"Playlist synced to Navidrome ({modeLabel}).", verifiedSummary);
 
         var fullSyncIssues = BuildNavidromeFullSyncIssues(metadataSynced);
         if (fullSyncIssues.Count > 0)
@@ -2610,7 +2574,8 @@ public sealed class PlaylistSyncService
 
         if (confirmedMissingLocalTrackIds.Count > 0)
         {
-            await _libraryRepository.DeleteConfirmedMissingPlexTrackMetadataAsync(
+            await _libraryRepository.DeleteMediaServerTrackMetadataAsync(
+                PlexService,
                 confirmedMissingLocalTrackIds,
                 cancellationToken);
         }
@@ -3350,62 +3315,20 @@ public sealed class PlaylistSyncService
         }
     }
 
-    /// <summary>
-    /// Membership is complete when every resolved target identity we intended to write is present.
-    /// Local tracks without target-server identities are deferred, not a membership failure.
-    /// </summary>
     internal static bool IsIntendedMembershipVerified(
-        int intendedMembershipCount,
+        int localTrackCount,
         int verifiedMembershipCount,
         bool writeComplete = true)
-        => writeComplete && verifiedMembershipCount >= intendedMembershipCount;
+        => writeComplete && verifiedMembershipCount >= localTrackCount;
 
     private static bool IsIntendedMembershipVerified(
         SyncMatchSummary matchSummary,
         int verifiedMembershipCount,
         bool writeComplete = true)
         => IsIntendedMembershipVerified(
-            matchSummary.Memberships.Count,
+            matchSummary.SourceTracks,
             verifiedMembershipCount,
             writeComplete);
-
-    // A playlist that is missing a small, likely-permanent handful of tracks (a title the target
-    // server will never confirm, a stale rating key) should not retry the entire membership sync
-    // forever over that gap -- it should be accepted as synced with a known exception. Tolerates
-    // whichever is looser: a small absolute count, or a high coverage ratio, so this doesn't mask
-    // a genuinely broken sync (e.g. only half a playlist matched).
-    internal const int MaxAcceptableMembershipExceptions = 2;
-    internal const double MinAcceptableMembershipCoverageRatio = 0.98;
-
-    internal static bool ShouldAcceptMembershipWithExceptions(
-        int intendedMembershipCount,
-        int verifiedMembershipCount)
-    {
-        if (intendedMembershipCount <= 0)
-        {
-            return false;
-        }
-
-        var missing = intendedMembershipCount - verifiedMembershipCount;
-        if (missing <= 0)
-        {
-            // Fully (or over-) verified -- IsIntendedMembershipVerified already covers this case.
-            return false;
-        }
-
-        if (missing <= MaxAcceptableMembershipExceptions)
-        {
-            return true;
-        }
-
-        return verifiedMembershipCount
-            >= (int)Math.Ceiling(intendedMembershipCount * MinAcceptableMembershipCoverageRatio);
-    }
-
-    private static bool ShouldAcceptMembershipWithExceptions(
-        SyncMatchSummary matchSummary,
-        int verifiedMembershipCount)
-        => ShouldAcceptMembershipWithExceptions(matchSummary.Memberships.Count, verifiedMembershipCount);
 
     internal static bool HasUnresolvedTargetIdentities(int sourceTracks, int intendedMembershipCount)
         => intendedMembershipCount < sourceTracks;
@@ -3421,41 +3344,6 @@ public sealed class PlaylistSyncService
             TargetMatches = verifiedMembershipCount,
             MissingTracks = Math.Max(0, matchSummary.SourceTracks - verifiedMembershipCount)
         };
-
-    private static string AppendDeferredTargetIdentityMessage(
-        string message,
-        SyncMatchSummary matchSummary)
-    {
-        var unresolved = Math.Max(0, matchSummary.SourceTracks - matchSummary.Memberships.Count);
-        if (unresolved <= 0)
-        {
-            return message;
-        }
-
-        return string.Concat(
-            message,
-            " ",
-            unresolved.ToString(CultureInfo.InvariantCulture),
-            " track(s) still lack target-server identities and were deferred for library scan/retry.");
-    }
-
-    private static string AppendAcceptedMembershipExceptionsMessage(
-        string message,
-        int intendedMembershipCount,
-        int verifiedMembershipCount)
-    {
-        var missing = Math.Max(0, intendedMembershipCount - verifiedMembershipCount);
-        if (missing <= 0)
-        {
-            return message;
-        }
-
-        return string.Concat(
-            message,
-            " Accepted as synced with ",
-            missing.ToString(CultureInfo.InvariantCulture),
-            " track(s) that did not verify and were left as a known exception rather than retried indefinitely.");
-    }
 
     private async Task<bool> SyncPlexPlaylistArtworkAsync(
         PlexConnection plex,
@@ -4043,7 +3931,8 @@ public sealed class PlaylistSyncService
             return new PlaylistTrackSyncReadiness(false, true, PlexNotConfiguredMessage, PlexService, localTrackId);
         }
 
-        var mapped = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
+        var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
+            PlexService,
             new[] { localTrackId },
             cancellationToken);
         if (mapped.TryGetValue(localTrackId, out var mappedRatingKey)
@@ -4077,12 +3966,6 @@ public sealed class PlaylistSyncService
                 localTrackId);
         }
 
-        await _libraryRepository.UpsertPlexTrackMetadataAsync(
-            new[]
-            {
-                new PlexTrackMetadataUpsertDto(localTrackId, ratingKey, DateTimeOffset.UtcNow)
-            },
-            cancellationToken);
         await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
             new[]
             {
@@ -4233,13 +4116,6 @@ public sealed class PlaylistSyncService
                 distinctTrackIds,
                 cancellationToken))
             .ToDictionary(static pair => pair.Key, static pair => pair.Value);
-        var legacyRatingKeys = await _libraryRepository.GetPlexRatingKeysByTrackIdsAsync(
-            distinctTrackIds,
-            cancellationToken);
-        foreach (var (trackId, ratingKey) in legacyRatingKeys)
-        {
-            ratingKeyByTrackId.TryAdd(trackId, ratingKey);
-        }
 
         var ratingKeysByIndex = new string?[tracks.Count];
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -4264,7 +4140,6 @@ public sealed class PlaylistSyncService
             orderedTrackIds,
             unresolvedSearchIndexes,
             cancellationToken);
-        var metadataUpdates = new List<PlexTrackMetadataUpsertDto>();
         var mediaServerUpdates = new List<MediaServerTrackMetadataUpsertDto>();
         foreach (var index in unresolvedSearchIndexes)
         {
@@ -4282,10 +4157,6 @@ public sealed class PlaylistSyncService
                 searchMatches++;
                 if (trackId > 0)
                 {
-                    metadataUpdates.Add(new PlexTrackMetadataUpsertDto(
-                        trackId,
-                        resolved,
-                        DateTimeOffset.UtcNow));
                     mediaServerUpdates.Add(new MediaServerTrackMetadataUpsertDto(
                         trackId,
                         PlexService,
@@ -4296,11 +4167,8 @@ public sealed class PlaylistSyncService
             }
         }
 
-        if (metadataUpdates.Count > 0)
+        if (mediaServerUpdates.Count > 0)
         {
-            await _libraryRepository.UpsertPlexTrackMetadataAsync(
-                metadataUpdates,
-                cancellationToken);
             await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
                 mediaServerUpdates,
                 cancellationToken);

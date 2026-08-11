@@ -8781,6 +8781,23 @@ LIMIT 1;";
             await reader.IsDBNullAsync(5, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(5)));
     }
 
+    public async Task<int> CloseExpiredWatchlistTargetCircuitsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE watchlist_target_circuit_state
+SET is_open=0,
+    open_until_utc=NULL,
+    reason=NULL,
+    failure_count=0,
+    updated_at=CURRENT_TIMESTAMP
+WHERE is_open=1
+  AND open_until_utc IS NOT NULL
+  AND datetime(open_until_utc) <= datetime('now');", connection);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task UpsertWatchlistTargetCircuitStateAsync(
         WatchlistTargetCircuitStateUpsertInput input,
         CancellationToken cancellationToken = default)
@@ -9625,7 +9642,19 @@ SELECT playlist_watch_track.track_source_id,
          WHERE m.source = playlist_watch_track.source
            AND m.source_id = playlist_watch_track.source_id
            AND m.track_source_id = playlist_watch_track.track_source_id
-           AND lower(m.sync_status) = 'playlist_synced') AS synced_target_service
+           AND lower(m.sync_status) = 'playlist_synced') AS synced_target_service,
+       (SELECT group_concat(cst.target, ', ')
+          FROM playlist_watch_configured_sync_targets cst
+         WHERE cst.source = playlist_watch_track.source
+           AND cst.source_id = playlist_watch_track.source_id
+           AND NOT EXISTS (
+               SELECT 1
+                 FROM playlist_watch_target_membership m
+                WHERE m.source = playlist_watch_track.source
+                  AND m.source_id = playlist_watch_track.source_id
+                  AND m.track_source_id = playlist_watch_track.track_source_id
+                  AND lower(m.target_service) = cst.target
+                  AND lower(m.sync_status) = 'playlist_synced')) AS missing_target_service
 FROM playlist_watch_track
 LEFT JOIN playlist_watch_track_sync_progress progress
   ON progress.source = playlist_watch_track.source
@@ -9671,6 +9700,7 @@ ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
             var verifiedAt = ReadNullableDateTimeOffset(reader, 18, cancellationToken);
             int? sourcePosition = await reader.IsDBNullAsync(19, cancellationToken) ? null : reader.GetInt32(19);
             var syncedTargetServices = await reader.IsDBNullAsync(20, cancellationToken) ? null : reader.GetString(20);
+            var missingTargetServices = await reader.IsDBNullAsync(21, cancellationToken) ? null : reader.GetString(21);
             statuses.Add(new PlaylistWatchTrackStatusDto(
                 trackSourceId,
                 isrc,
@@ -9692,7 +9722,8 @@ ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
                 redirectReason,
                 verifiedAt,
                 sourcePosition,
-                syncedTargetServices));
+                syncedTargetServices,
+                missingTargetServices));
         }
 
         return statuses;
@@ -11709,18 +11740,18 @@ SELECT
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        await using var clampLegacyAttempts = new SqliteCommand(@"
+        await using var reopenBlockedBelowCap = new SqliteCommand(@"
 UPDATE watchlist_sync_job
-SET attempt_count=0,
-    status='retry',
+SET status='retry',
     lease_owner=NULL,
     lease_until_utc=NULL,
     next_attempt_utc=CURRENT_TIMESTAMP,
+    last_error=COALESCE(last_error, 'Recovered blocked target synchronization job before retry cap.'),
     updated_at=CURRENT_TIMESTAMP
-WHERE attempt_count >= @maxSyncAttempts
+WHERE attempt_count < @maxSyncAttempts
   AND lower(status)='blocked';", connection, transaction);
-        clampLegacyAttempts.Parameters.AddWithValue("maxSyncAttempts", Math.Max(1, maxSyncAttempts));
-        var clamped = await clampLegacyAttempts.ExecuteNonQueryAsync(cancellationToken);
+        reopenBlockedBelowCap.Parameters.AddWithValue("maxSyncAttempts", Math.Max(1, maxSyncAttempts));
+        var reopenedBlocked = await reopenBlockedBelowCap.ExecuteNonQueryAsync(cancellationToken);
 
         await using var recover = new SqliteCommand(@"
 UPDATE watchlist_sync_job
@@ -11753,8 +11784,76 @@ WHERE NOT EXISTS (
       AND playlist.source_id=watchlist_sync_job.playlist_id
 );", connection, transaction);
         repaired += await removeObsolete.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var reopenIncompleteApplied = new SqliteCommand(@"
+UPDATE playlist_watch_target_sync_state AS state
+SET status='pending',
+    last_error='Target sync state reopened because locally available tracks are not verified on this target.',
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(state.status)='applied'
+  AND EXISTS (
+      SELECT 1
+      FROM playlist_watch_configured_sync_targets configured
+      WHERE configured.source=state.source
+        AND configured.source_id=state.source_id
+        AND configured.target=lower(state.target_service))
+  AND EXISTS (
+      SELECT 1
+      FROM playlist_watch_track track
+      WHERE track.source=state.source
+        AND track.source_id=state.source_id
+        AND track.local_track_id IS NOT NULL
+        AND lower(COALESCE(track.identity_status, '')) <> 'review'
+        AND NOT EXISTS (
+            SELECT 1
+            FROM playlist_watch_target_membership membership
+            WHERE membership.source=track.source
+              AND membership.source_id=track.source_id
+              AND membership.track_source_id=track.track_source_id
+              AND lower(membership.target_service)=lower(state.target_service)
+              AND lower(membership.sync_status)='playlist_synced'));", connection, transaction);
+        repaired += await reopenIncompleteApplied.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var enqueueReopened = new SqliteCommand(@"
+INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id, last_error)
+SELECT state.source,
+       state.source_id,
+       'playlist',
+       lower(state.target_service),
+       'pending',
+       CURRENT_TIMESTAMP,
+       state.applied_snapshot_id,
+       state.last_error
+FROM playlist_watch_target_sync_state state
+WHERE lower(state.status)='pending'
+  AND state.applied_snapshot_id IS NOT NULL
+  AND state.last_error='Target sync state reopened because locally available tracks are not verified on this target.'
+  AND EXISTS (
+      SELECT 1
+      FROM playlist_watch_track track
+      WHERE track.source=state.source
+        AND track.source_id=state.source_id
+        AND track.local_track_id IS NOT NULL
+        AND lower(COALESCE(track.identity_status, '')) <> 'review'
+        AND NOT EXISTS (
+            SELECT 1
+            FROM playlist_watch_target_membership membership
+            WHERE membership.source=track.source
+              AND membership.source_id=track.source_id
+              AND membership.track_source_id=track.track_source_id
+              AND lower(membership.target_service)=lower(state.target_service)
+              AND lower(membership.sync_status)='playlist_synced'))
+ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
+    status='pending',
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    last_error=excluded.last_error,
+    snapshot_id=excluded.snapshot_id,
+    updated_at=CURRENT_TIMESTAMP;", connection, transaction);
+        repaired += await enqueueReopened.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return repaired + clamped;
+        return repaired + reopenedBlocked;
     }
 
     private static async Task<WatchlistSyncJobDto> ReadWatchlistSyncJobAsync(

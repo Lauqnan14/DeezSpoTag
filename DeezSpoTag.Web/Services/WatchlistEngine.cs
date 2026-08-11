@@ -669,7 +669,7 @@ internal sealed class WatchlistEngine
             }
         }
         // Safety-net art scheduling after membership jobs (covers revision already cached earlier).
-        await SchedulePlaylistArtworkTargetSyncAsync(
+        var artworkJobsScheduled = await SchedulePlaylistArtworkTargetSyncAsync(
             source,
             sourceId,
             currentPlaylist,
@@ -689,8 +689,8 @@ internal sealed class WatchlistEngine
             sourceId,
             liveTrackCount,
             liveSnapshot.SnapshotId,
-            targetSyncScheduled
-                ? WatchlistPlaylistState.MediaSyncWaiting
+            targetSyncScheduled || artworkJobsScheduled > 0
+                ? WatchlistPlaylistState.WaitingForTargetSync
                 : syncRequestAccepted
                     ? WatchlistPlaylistState.MediaSyncCompleted
                     : WatchlistPlaylistState.MediaSyncBlocked,
@@ -877,7 +877,7 @@ internal sealed class WatchlistEngine
                 rule.ConditionValue)));
     }
 
-    private async Task SchedulePlaylistArtworkTargetSyncAsync(
+    private async Task<int> SchedulePlaylistArtworkTargetSyncAsync(
         string source,
         string sourceId,
         PlaylistWatchlistDto playlist,
@@ -887,16 +887,16 @@ internal sealed class WatchlistEngine
         if (preference?.UpdateArtwork != true
             || !HasConfiguredPlaylistSyncTargets(preference))
         {
-            return;
+            return 0;
         }
 
         var playlistSync = _serviceProvider.GetService<PlaylistSyncService>();
         if (playlistSync is null)
         {
-            return;
+            return 0;
         }
 
-        await playlistSync.ScheduleArtworkForActiveRevisionAsync(
+        return await playlistSync.ScheduleArtworkForActiveRevisionAsync(
             source,
             sourceId,
             playlist,

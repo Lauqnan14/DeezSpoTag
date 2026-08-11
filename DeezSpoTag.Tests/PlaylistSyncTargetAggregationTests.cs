@@ -67,12 +67,19 @@ public sealed class PlaylistSyncTargetAggregationTests
     }
 
     [Fact]
-    public void DeadTargetsAreExcludedFromTheVerifiedTargetDenominator()
+    public void BlockedJobsDoNotChangeConfiguredTargetDenominator()
     {
         var schema = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Services", "Library", "LibraryDbService.cs"));
+        var viewStart = schema.IndexOf("CREATE VIEW playlist_watch_configured_sync_targets AS", StringComparison.Ordinal);
+        Assert.True(viewStart > 0);
+        var viewEnd = schema.IndexOf("CREATE VIEW playlist_watch_track_sync_progress AS", viewStart, StringComparison.Ordinal);
+        Assert.True(viewEnd > viewStart);
+        var view = schema[viewStart..viewEnd];
 
-        Assert.Contains("FROM watchlist_sync_job blocked_job", schema, StringComparison.Ordinal);
-        Assert.Contains("AND lower(blocked_job.status) = 'blocked'", schema, StringComparison.Ordinal);
+        Assert.Contains("playlist_watch_preferences preference", view, StringComparison.Ordinal);
+        Assert.Contains("json_each", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("watchlist_sync_job", view, StringComparison.Ordinal);
+        Assert.DoesNotContain("blocked", view, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -95,7 +102,10 @@ public sealed class PlaylistSyncTargetAggregationTests
         var controller = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Controllers", "Api", "LibraryPlaylistWatchlistApiController.cs"));
 
         Assert.Contains("AS synced_target_service", repository, StringComparison.Ordinal);
+        Assert.Contains("AS missing_target_service", repository, StringComparison.Ordinal);
         Assert.Contains("SyncedTargetServices = persistedStatus?.SyncedTargetServices", controller, StringComparison.Ordinal);
+        Assert.Contains("MissingTargetServices = persistedStatus?.MissingTargetServices", controller, StringComparison.Ordinal);
+        Assert.Contains("status?.MissingTargetServices", controller, StringComparison.Ordinal);
     }
 
     [Fact]

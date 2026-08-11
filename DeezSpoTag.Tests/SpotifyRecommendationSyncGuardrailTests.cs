@@ -30,7 +30,8 @@ public sealed class SpotifyRecommendationSyncGuardrailTests
         Assert.Contains("SyncSpotifyRecommendationPlaylistToNavidromeAsync", service, StringComparison.Ordinal);
         Assert.Contains("LoadTracksForSyncAsync(playlist, trackCandidates: null, cancellationToken)", service, StringComparison.Ordinal);
         Assert.Contains("SyncPlaylistToTargetAsync(\n            NavidromeService,", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
-        Assert.Contains("ResolveManagedVisualUrlAsync(\n                SpotifySource,", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
+        Assert.Contains("InspectSourceArtworkAsync(\n                SpotifySource,", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveManagedVisualUrlAsync", service, StringComparison.Ordinal);
     }
 
     private static string ReadSource(params string[] relativeParts)

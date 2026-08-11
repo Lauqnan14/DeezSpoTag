@@ -332,9 +332,11 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.DoesNotContain("PlexSequentialSearchFallbackLimit", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Skipped sequential Plex search", source, StringComparison.Ordinal);
+        Assert.Contains("GetMediaServerItemIdsByTrackIdsAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("foreach (var index in unresolvedSearchIndexes)", methodBody, StringComparison.Ordinal);
         Assert.Contains("ResolvePlexRatingKeyAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("UpsertPlexTrackMetadataAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("UpsertMediaServerTrackMetadataAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertPlexTrackMetadataAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]

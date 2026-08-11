@@ -131,9 +131,14 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
         Assert.DoesNotContain("No playlist sync targets configured", hostedSource, StringComparison.Ordinal);
         Assert.True(
-            hostedSource.IndexOf("ProcessTargetSyncWorkAsync(", StringComparison.Ordinal)
+            hostedSource.IndexOf("RunTargetSyncPhaseAsync(coordinatorWork", StringComparison.Ordinal)
             < hostedSource.IndexOf("RunWatchCycleCoreAsync(", StringComparison.Ordinal),
             "Target synchronization must start independently before source reconciliation can delay it.");
+        Assert.True(
+            hostedSource.LastIndexOf("RunTargetSyncPhaseAsync(coordinatorWork", StringComparison.Ordinal)
+            > hostedSource.IndexOf("RunWatchCycleCoreAsync(", StringComparison.Ordinal),
+            "Target synchronization must run again after source reconciliation schedules fresh jobs.");
+        Assert.Contains("TargetSyncJobTimeout", postDownloadSource, StringComparison.Ordinal);
     }
 
     [Fact]

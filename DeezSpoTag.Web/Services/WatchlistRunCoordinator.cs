@@ -55,6 +55,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private const string PlaylistKind = "playlist";
     private const string PlaylistWatchType = "playlist";
     private const string ArtistWatchType = "artist";
+    private const int TargetSyncPhaseJobLimit = 15;
+    private const int SourceRefreshPhaseItemLimit = 5;
     private const int SourceCircuitFailureThreshold = 2;
     private const int SourceCircuitCooldownSeconds = 300;
     private readonly IServiceProvider _serviceProvider;
@@ -482,76 +484,77 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         {
             await coordinatorWork.ProcessFinalizationWorkAsync(finalizationLimit: 25, stoppingToken);
         }
-        var targetSyncTask = coordinatorWork?.ProcessTargetSyncWorkAsync(
-            syncJobLimit: 15,
-            stoppingToken) ?? Task.CompletedTask;
-        try
-        {
-            var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
-            UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
+        await RunTargetSyncPhaseAsync(coordinatorWork, TargetSyncPhaseJobLimit, stoppingToken);
 
-            // wakeReason.HasFlag(ScheduledRefresh) and pendingRequestCount > 0 are explicit
-            // signals (an actual scheduled tick, or someone requested a check) and always honored.
-            // sourceRefreshOverdue is an additional, independent guarantee: it's derived from a
-            // persisted "last completed" timestamp compared against the poll interval directly,
-            // so if GetNextWakeAsync's due-time race keeps returning TargetSync (busy sync
-            // backlog) instead of ScheduledRefresh, source discovery still can't be starved
-            // indefinitely -- this is a floor under the wake-reason race, not a replacement for it.
-            var watchInterval = GetWatchInterval(settings);
-            var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
-            var shouldRunSourceRefresh =
-                wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
-                || sourceRefreshOverdue
-                || pendingRequestCount > 0;
-            if (shouldRunSourceRefresh)
+        var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
+        UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
+
+        var watchInterval = GetWatchInterval(settings);
+        var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
+        var shouldRunSourceRefresh =
+            wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
+            || sourceRefreshOverdue
+            || pendingRequestCount > 0;
+        if (shouldRunSourceRefresh)
+        {
+            var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
+            var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
+            try
             {
-                var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
-                var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
+                var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
+                    1000,
+                    TimeSpan.FromMinutes(15),
+                    _reconciliationLeaseOwner,
+                    stoppingToken);
+                using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
                 try
                 {
-                    var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
-                        1000,
-                        TimeSpan.FromMinutes(15),
-                        _reconciliationLeaseOwner,
+                    await RunWatchCycleCoreAsync(
+                        scope.ServiceProvider,
+                        settings,
+                        queueAdmission,
+                        reconciliationRequests,
+                        SourceRefreshPhaseItemLimit,
                         stoppingToken);
-                    using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                    var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
-                    try
-                    {
-                        await RunWatchCycleCoreAsync(
-                            scope.ServiceProvider,
-                            settings,
-                            queueAdmission,
-                            reconciliationRequests,
-                            stoppingToken);
-                        _lastSourceRefreshCompletedUtc = DateTimeOffset.UtcNow;
-                    }
-                    finally
-                    {
-                        leaseRenewalCancellation.Cancel();
-                        try
-                        {
-                            await leaseRenewal;
-                        }
-                        catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
-                        {
-                            // Expected after the claimed reconciliation batch leaves processing.
-                        }
-                    }
+                    _lastSourceRefreshCompletedUtc = DateTimeOffset.UtcNow;
                 }
                 finally
                 {
-                    if (queueAdmissionToken != 0)
+                    leaseRenewalCancellation.Cancel();
+                    try
                     {
-                        queueAdmission.EndRun(queueAdmissionToken);
+                        await leaseRenewal;
+                    }
+                    catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+                    {
+                        // Expected after the claimed reconciliation batch leaves processing.
                     }
                 }
             }
+            finally
+            {
+                if (queueAdmissionToken != 0)
+                {
+                    queueAdmission.EndRun(queueAdmissionToken);
+                }
+            }
         }
-        finally
+
+        await RunTargetSyncPhaseAsync(coordinatorWork, TargetSyncPhaseJobLimit, stoppingToken);
+    }
+
+    private async Task RunTargetSyncPhaseAsync(
+        WatchlistPostDownloadSyncService? coordinatorWork,
+        int syncJobLimit,
+        CancellationToken stoppingToken)
+    {
+        if (coordinatorWork == null)
         {
-            await targetSyncTask;
+            return;
         }
+
+        await coordinatorWork.ProcessTargetSyncWorkAsync(syncJobLimit, stoppingToken);
     }
 
     private async Task RecoverCoordinatorStateAsync(CancellationToken cancellationToken)
@@ -564,6 +567,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(cancellationToken);
+        var expiredTargetCircuitsClosed = await repository.CloseExpiredWatchlistTargetCircuitsAsync(cancellationToken);
         var expiredTargetJobsRecovered = await repository.RepairWatchlistSyncBacklogAsync(
             WatchlistPostDownloadSyncService.MaxSyncAttempts,
             cancellationToken);
@@ -600,8 +604,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 "Recovered {Count} expired or obsolete Watchlist target synchronization job(s).",
                 expiredTargetJobsRecovered);
         }
+        if (expiredTargetCircuitsClosed > 0)
+        {
+            _logger.LogInformation(
+                "Closed {Count} expired Watchlist target synchronization circuit(s).",
+                expiredTargetCircuitsClosed);
+        }
 
-        if (staleWorkRecovered > 0 || expiredTargetJobsRecovered > 0 || recoveredClaims > 0)
+        if (staleWorkRecovered > 0 || expiredTargetJobsRecovered > 0 || expiredTargetCircuitsClosed > 0 || recoveredClaims > 0)
         {
             _runSignal.Request(WatchlistWakeReason.TargetSync | WatchlistWakeReason.Reconciliation);
         }
@@ -693,6 +703,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         WatchlistQueueAdmissionService queueAdmission,
         IReadOnlyList<WatchlistReconciliationRequestDto> reconciliationRequests,
+        int sourceRefreshLimit,
         CancellationToken stoppingToken)
     {
         var repository = serviceProvider.GetRequiredService<LibraryRepository>();
@@ -763,6 +774,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 repository,
                 serviceProvider,
                 requestedPlaylistKeys,
+                sourceRefreshLimit,
                 stoppingToken);
             await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
                 reconciliationRequests,
@@ -781,6 +793,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             repository,
             serviceProvider,
             requestedPlaylistKeys,
+            sourceRefreshLimit,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
@@ -980,6 +993,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         LibraryRepository repository,
         IServiceProvider serviceProvider,
         IReadOnlySet<string> requestedPlaylistKeys,
+        int maxProcessedItems,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
@@ -1001,9 +1015,17 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var skippedByBackoff = 0;
         var skippedByDelayWindow = 0;
         var skippedByLockBusy = 0;
+        var stoppedAtPhaseLimit = false;
+        var processLimit = Math.Max(1, maxProcessedItems);
         foreach (var activeItem in scheduledItems)
         {
             stoppingToken.ThrowIfCancellationRequested();
+            if (processed >= processLimit)
+            {
+                stoppedAtPhaseLimit = true;
+                break;
+            }
+
             var sourceCircuit = await repository.GetWatchlistSourceCircuitStateAsync(
                 PlaylistWatchType,
                 activeItem.Source,
@@ -1129,12 +1151,21 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 lastProgressUtc: DateTimeOffset.UtcNow,
                 stoppingToken);
         }
+        if (stoppedAtPhaseLimit)
+        {
+            await repository.EnqueueWatchlistReconciliationRequestAsync(
+                "all",
+                string.Empty,
+                string.Empty,
+                stoppingToken);
+            _runSignal.Request(WatchlistWakeReason.Reconciliation | WatchlistWakeReason.TargetSync);
+        }
 
         var elapsedMs = (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds;
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, elapsedMs={ElapsedMs:0}",
+                "Watchlist playlist run summary: total={TotalItems}, processed={Processed}, ok={Succeeded}, failed={Failed}, skipBackoff={SkippedBackoff}, skipCooldown={SkippedCooldown}, skipLock={SkippedLock}, phaseLimitReached={PhaseLimitReached}, elapsedMs={ElapsedMs:0}",
                 playlistItems.Count,
                 processed,
                 succeeded,
@@ -1142,6 +1173,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 skippedByBackoff,
                 skippedByDelayWindow,
                 skippedByLockBusy,
+                stoppedAtPhaseLimit,
                 elapsedMs);
         }
 
