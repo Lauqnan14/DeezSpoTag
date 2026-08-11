@@ -2283,9 +2283,17 @@ document.addEventListener('DOMContentLoaded', () => {
             classes.push(SEVERITY_CLASS[severity] || SEVERITY_CLASS.info);
             const count = Number(item?.occurrenceCount || 1);
             const suffix = count > 1 ? ` (${count}x)` : '';
+            const actions = item?.isRead
+                ? ''
+                : `<button type="button" class="notifications-item-action" data-notification-read="${escapeText(item?.id)}">Mark read</button>`;
+            const clear = `<button type="button" class="notifications-item-action" data-notification-clear="${escapeText(item?.id)}">Clear</button>`;
+            const link = item?.link
+                ? `<a class="notifications-item-action" href="${escapeText(item.link)}">Open</a>`
+                : '';
             return `<div class="${classes.join(' ')}" data-notification-id="${escapeText(item?.id)}">
                 <div class="notifications-item-title">${escapeText(item?.title)}${suffix}</div>
                 <div class="notifications-item-body">${escapeText(item?.body)}</div>
+                <div class="notifications-item-actions">${link}${actions}${clear}</div>
             </div>`;
         }).join('');
     }
@@ -2299,6 +2307,35 @@ document.addEventListener('DOMContentLoaded', () => {
             renderNotifications(await response.json());
         } catch (error) {
             console.warn('Failed to load notifications', error);
+        }
+    }
+
+    async function markRead(id) {
+        if (!id) {
+            return;
+        }
+        try {
+            await fetch('/api/notifications/read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: [id] })
+            });
+            await loadNotifications();
+        } catch (error) {
+            console.warn('Failed to mark notification read', error);
+        }
+    }
+
+    async function clearNotifications(ids) {
+        try {
+            await fetch('/api/notifications/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(ids ? { ids } : {})
+            });
+            await loadNotifications();
+        } catch (error) {
+            console.warn('Failed to clear notifications', error);
         }
     }
 
@@ -2334,6 +2371,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 event.preventDefault();
                 void markAllRead();
             });
+        }
+
+        const list = document.getElementById('notificationsList');
+        if (list) {
+            list.addEventListener('click', (event) => {
+                const readButton = event.target.closest('[data-notification-read]');
+                if (readButton) {
+                    event.preventDefault();
+                    void markRead(readButton.dataset.notificationRead);
+                    return;
+                }
+
+                const clearButton = event.target.closest('[data-notification-clear]');
+                if (clearButton) {
+                    event.preventDefault();
+                    void clearNotifications([clearButton.dataset.notificationClear]);
+                }
+            });
+
+        const clearAll = document.getElementById('notificationsClearAll');
+        if (clearAll) {
+            clearAll.addEventListener('click', (event) => {
+                event.preventDefault();
+                void clearNotifications(null);
+            });
+        }
         }
 
         void loadNotifications();

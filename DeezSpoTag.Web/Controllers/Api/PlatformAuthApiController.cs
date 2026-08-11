@@ -243,6 +243,11 @@ public class PlatformAuthApiController : ControllerBase
         }
 
         var updated = await _tidalPublicProviderRegistry.SetEnabledAsync(providerId, enabled, cancellationToken);
+        if (updated is not null && _tidalPublicProviderRegistry is TidalPublicProviderRegistry registry)
+        {
+            registry.NotifyProviderManuallyResolved(providerId);
+        }
+
         return updated is null ? NotFound("Unknown Tidal provider.") : Ok(ToPublicTidalProvider(updated));
     }
 

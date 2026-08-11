@@ -20,6 +20,7 @@ public static class NotificationKinds
     public const string RunPaused = "run_paused";
     public const string RunResumed = "run_resumed";
     public const string RunCompleted = "run_completed";
+    public const string ProviderRecovered = "provider_recovered";
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -30,7 +31,8 @@ public static class NotificationKinds
         ProviderUnhealthy,
         RunPaused,
         RunResumed,
-        RunCompleted
+        RunCompleted,
+        ProviderRecovered
     ];
 
     public static bool IsKnown(string? kind)
@@ -53,9 +55,18 @@ public sealed record NotificationEntry
     public DateTimeOffset CreatedUtc { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset LastSeenUtc { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset? ReadUtc { get; init; }
+    public DateTimeOffset? ResolvedUtc { get; init; }
+    public bool ManuallyResolved { get; init; }
 
     [JsonIgnore]
     public bool IsRead => ReadUtc.HasValue;
+
+    /// <summary>
+    /// An incident stays open until the condition clears, the user acts on it, or the user reviews
+    /// it. Repeats of an open incident are counted, never re-announced.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsOpen => !ResolvedUtc.HasValue;
 }
 
 public sealed record NotificationRequest(

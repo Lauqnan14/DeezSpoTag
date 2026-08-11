@@ -87,6 +87,27 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
 
     private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
 
+    private void NotifyProviderRecovered(ProviderState provider, string status, bool activeCooldown)
+    {
+        if (activeCooldown || !string.Equals(status, "online", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _notifications.Resolve(
+            $"provider_unhealthy:tidal:{provider.Id}",
+            manuallyResolved: false,
+            $"Tidal provider {provider.DisplayName} is back online",
+            "Downloads can use it again. No action was needed.");
+    }
+
+    /// <summary>
+    /// The user acted on the provider themselves, so the incident closes without announcing a
+    /// recovery they already know about.
+    /// </summary>
+    public void NotifyProviderManuallyResolved(string providerId)
+        => _notifications.Resolve($"provider_unhealthy:tidal:{providerId}", manuallyResolved: true);
+
     private void NotifyProviderUnhealthy(ProviderState provider)
     {
         if (!provider.CooldownUntil.HasValue || provider.CooldownUntil.Value <= DateTimeOffset.UtcNow)
@@ -168,6 +189,7 @@ public sealed class TidalPublicProviderRegistry : ITidalPublicProviderRegistry
             provider.ResponseTimeMs = Math.Max(0, responseTimeMs);
             provider.CooldownUntil = activeCooldown ? provider.CooldownUntil : cooldownUntil;
             await SaveNoLockAsync(state, cancellationToken);
+            NotifyProviderRecovered(provider, status, activeCooldown);
         }
         finally
         {

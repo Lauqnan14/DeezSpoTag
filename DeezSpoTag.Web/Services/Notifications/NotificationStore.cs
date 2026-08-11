@@ -90,7 +90,48 @@ public sealed class NotificationStore
         }
     }
 
-    public async Task<NotificationEntry> AddOrCoalesceAsync(NotificationRequest request, int retentionDays)
+    public sealed record AddResult(NotificationEntry Entry, bool IsNewIncident);
+
+    public sealed record ResolveResult(bool HadOpenIncident, bool ManuallyResolved);
+
+    /// <summary>
+    /// Closes any open incident for the key. Manual resolution records that the user acted, so a
+    /// later recovery is not announced back to them.
+    /// </summary>
+    public async Task<ResolveResult> ResolveIncidentAsync(string dedupeKey, bool manuallyResolved)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var entries = ReadEntries();
+            var now = DateTimeOffset.UtcNow;
+            var closed = 0;
+            for (var index = 0; index < entries.Count; index++)
+            {
+                var entry = entries[index];
+                if (!entry.IsOpen || !string.Equals(entry.DedupeKey, dedupeKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                entries[index] = entry with { ResolvedUtc = now, ManuallyResolved = manuallyResolved };
+                closed++;
+            }
+
+            if (closed > 0)
+            {
+                await WriteEntriesAsync(entries);
+            }
+
+            return new ResolveResult(closed > 0, manuallyResolved);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<AddResult> AddOrCoalesceAsync(NotificationRequest request, int retentionDays)
     {
         await _gate.WaitAsync();
         try
@@ -101,11 +142,14 @@ public sealed class NotificationStore
                 : request.DedupeKey.Trim();
             var now = DateTimeOffset.UtcNow;
 
+            // Coalesce against the open incident, not the unread flag: a condition that keeps
+            // failing must not re-announce itself just because the user cleared the last alert.
             var existing = entries.FirstOrDefault(entry =>
                 string.Equals(entry.DedupeKey, dedupeKey, StringComparison.OrdinalIgnoreCase)
-                && !entry.IsRead);
+                && entry.IsOpen);
 
             NotificationEntry result;
+            var isNewIncident = existing is null;
             if (existing is not null)
             {
                 result = existing with
@@ -138,7 +182,7 @@ public sealed class NotificationStore
             }
 
             await WriteEntriesAsync(Prune(entries, retentionDays));
-            return result;
+            return new AddResult(result, isNewIncident);
         }
         finally
         {
@@ -162,7 +206,12 @@ public sealed class NotificationStore
                     continue;
                 }
 
-                entries[index] = entry with { ReadUtc = now };
+                entries[index] = entry with
+                {
+                    ReadUtc = now,
+                    ResolvedUtc = entry.ResolvedUtc ?? now,
+                    ManuallyResolved = entry.ManuallyResolved
+                };
                 changed++;
             }
 
@@ -172,6 +221,45 @@ public sealed class NotificationStore
             }
 
             return changed;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<int> RemoveAsync(IReadOnlyCollection<string> ids)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var entries = ReadEntries();
+            var removed = entries.RemoveAll(entry => ids.Contains(entry.Id, StringComparer.OrdinalIgnoreCase));
+            if (removed > 0)
+            {
+                await WriteEntriesAsync(entries);
+            }
+
+            return removed;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<int> ClearAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var removed = ReadEntries().Count;
+            if (removed > 0)
+            {
+                await WriteEntriesAsync([]);
+            }
+
+            return removed;
         }
         finally
         {
@@ -194,7 +282,11 @@ public sealed class NotificationStore
                     continue;
                 }
 
-                entries[index] = entries[index] with { ReadUtc = now };
+                entries[index] = entries[index] with
+                {
+                    ReadUtc = now,
+                    ResolvedUtc = entries[index].ResolvedUtc ?? now
+                };
                 changed++;
             }
 

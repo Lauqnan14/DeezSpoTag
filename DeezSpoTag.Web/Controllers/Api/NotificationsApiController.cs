@@ -69,6 +69,15 @@ public sealed class NotificationsApiController : ControllerBase
     public async Task<IActionResult> MarkAllRead()
         => Ok(new { updated = await _store.MarkAllReadAsync(), unreadCount = 0 });
 
+    [HttpPost("clear")]
+    public async Task<IActionResult> Clear([FromBody] MarkReadRequest? request)
+    {
+        var removed = request?.Ids is { Count: > 0 }
+            ? await _store.RemoveAsync(request.Ids)
+            : await _store.ClearAsync();
+        return Ok(new { removed, unreadCount = await _store.GetUnreadCountAsync() });
+    }
+
     [HttpGet("preferences")]
     public async Task<IActionResult> GetPreferences()
     {

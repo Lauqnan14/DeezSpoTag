@@ -7,6 +7,24 @@ namespace DeezSpoTag.Web.Services.Notifications;
 
 public sealed class NotificationService : BackgroundService, INotificationSink
 {
+    void INotificationSink.Resolve(string dedupeKey, bool manuallyResolved, string? recoveryTitle, string? recoveryBody)
+    {
+        if (string.IsNullOrWhiteSpace(dedupeKey))
+        {
+            return;
+        }
+
+        var recovery = string.IsNullOrWhiteSpace(recoveryTitle)
+            ? null
+            : new NotificationRequest(
+                NotificationKinds.ProviderRecovered,
+                recoveryTitle,
+                recoveryBody ?? string.Empty,
+                NotificationSeverity.Info,
+                $"{dedupeKey}:recovered");
+        _queue.Writer.TryWrite(new NotificationWork(null, dedupeKey.Trim(), manuallyResolved, recovery));
+    }
+
     void INotificationSink.Raise(
         string kind,
         string title,
@@ -35,8 +53,14 @@ public sealed class NotificationService : BackgroundService, INotificationSink
         TimeSpan.FromSeconds(30)
     ];
 
-    private readonly Channel<NotificationRequest> _queue =
-        Channel.CreateBounded<NotificationRequest>(new BoundedChannelOptions(500)
+    private sealed record NotificationWork(
+        NotificationRequest? Raise,
+        string? ResolveKey,
+        bool ManuallyResolved,
+        NotificationRequest? Recovery);
+
+    private readonly Channel<NotificationWork> _queue =
+        Channel.CreateBounded<NotificationWork>(new BoundedChannelOptions(500)
         {
             FullMode = BoundedChannelFullMode.DropOldest
         });
@@ -65,7 +89,25 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             return;
         }
 
-        _queue.Writer.TryWrite(request);
+        _queue.Writer.TryWrite(new NotificationWork(request, null, false, null));
+    }
+
+    /// <summary>
+    /// Closes an open incident. When the condition cleared on its own the recovery is announced;
+    /// when the user acted on it themselves it is closed silently.
+    /// </summary>
+    public async Task ResolveIncidentAsync(
+        string dedupeKey,
+        bool manuallyResolved,
+        NotificationRequest? recovery = null)
+    {
+        var result = await _store.ResolveIncidentAsync(dedupeKey, manuallyResolved);
+        if (!result.HadOpenIncident || manuallyResolved || recovery is null)
+        {
+            return;
+        }
+
+        Raise(recovery);
     }
 
     public async Task<bool> SendWebhookTestAsync(string url, CancellationToken cancellationToken)
@@ -83,11 +125,18 @@ public sealed class NotificationService : BackgroundService, INotificationSink
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var request in _queue.Reader.ReadAllAsync(stoppingToken))
+        await foreach (var work in _queue.Reader.ReadAllAsync(stoppingToken))
         {
             try
             {
-                await DispatchAsync(request, stoppingToken);
+                if (work.ResolveKey is not null)
+                {
+                    await ResolveIncidentAsync(work.ResolveKey, work.ManuallyResolved, work.Recovery);
+                }
+                else if (work.Raise is not null)
+                {
+                    await DispatchAsync(work.Raise, stoppingToken);
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -95,7 +144,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Failed dispatching {Kind} notification.", request.Kind);
+                _logger.LogWarning(ex, "Failed dispatching {Kind} notification.", work.Raise?.Kind ?? "resolve");
             }
         }
     }
@@ -109,7 +158,13 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             return;
         }
 
-        var entry = await _store.AddOrCoalesceAsync(request, preferences.RetentionDays);
+        var added = await _store.AddOrCoalesceAsync(request, preferences.RetentionDays);
+        var entry = added.Entry;
+        if (!added.IsNewIncident)
+        {
+            // Same incident still open: counted, never re-announced.
+            return;
+        }
 
         if (channels.InApp)
         {

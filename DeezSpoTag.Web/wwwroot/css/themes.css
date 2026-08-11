@@ -1079,6 +1079,11 @@ textarea::placeholder {
     font-weight: 600;
 }
 
+.notifications-panel-actions {
+    display: flex;
+    gap: 10px;
+}
+
 .notifications-mark-all {
     background: none;
     border: none;
@@ -1120,6 +1125,26 @@ textarea::placeholder {
 .notifications-item-title {
     font-weight: 600;
     margin-bottom: 2px;
+}
+
+.notifications-item-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+}
+
+.notifications-item-action {
+    background: none;
+    border: none;
+    padding: 0;
+    color: #60a5fa;
+    cursor: pointer;
+    font-size: 11px;
+    text-decoration: none;
+}
+
+.notifications-item-action:hover {
+    text-decoration: underline;
 }
 
 .notifications-item-body,

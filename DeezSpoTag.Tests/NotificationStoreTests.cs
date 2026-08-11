@@ -73,7 +73,7 @@ public sealed class NotificationStoreTests : IDisposable
 
         var entries = await _store.GetAsync();
         Assert.Single(entries);
-        Assert.Equal(3, third.OccurrenceCount);
+        Assert.Equal(3, third.Entry.OccurrenceCount);
         Assert.Equal(1, await _store.GetUnreadCountAsync());
     }
 
@@ -81,13 +81,14 @@ public sealed class NotificationStoreTests : IDisposable
     public async Task AddOrCoalesce_StartsANewEntry_AfterTheEarlierOneWasRead()
     {
         var first = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
-        await _store.MarkReadAsync([first.Id]);
+        await _store.MarkReadAsync([first.Entry.Id]);
 
         await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
 
         var entries = await _store.GetAsync();
         Assert.Equal(2, entries.Count);
         Assert.Equal(1, await _store.GetUnreadCountAsync());
+        Assert.Single(entries, entry => entry.IsOpen);
     }
 
     [Fact]
@@ -107,6 +108,69 @@ public sealed class NotificationStoreTests : IDisposable
 
         Assert.Equal(2, await _store.MarkAllReadAsync());
         Assert.Equal(0, await _store.GetUnreadCountAsync());
+    }
+
+    [Fact]
+    public async Task OnlyTheFirstRaiseOpensAnIncident()
+    {
+        var first = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+        var second = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+
+        Assert.True(first.IsNewIncident);
+        Assert.False(second.IsNewIncident);
+    }
+
+    [Fact]
+    public async Task RepeatsAreStillSuppressedAfterTheAlertWasRead()
+    {
+        var first = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+        await _store.MarkReadAsync([first.Entry.Id]);
+
+        var afterRead = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+
+        Assert.True(afterRead.IsNewIncident);
+    }
+
+    [Fact]
+    public async Task ResolvingClosesTheIncidentSoALaterFailureOpensANewOne()
+    {
+        await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+        var resolved = await _store.ResolveIncidentAsync("provider_unhealthy:zarz", manuallyResolved: false);
+
+        Assert.True(resolved.HadOpenIncident);
+
+        var reopened = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+        Assert.True(reopened.IsNewIncident);
+    }
+
+    [Fact]
+    public async Task ResolvingWithNoOpenIncidentReportsNothingToAnnounce()
+    {
+        var resolved = await _store.ResolveIncidentAsync("provider_unhealthy:never-failed", manuallyResolved: false);
+
+        Assert.False(resolved.HadOpenIncident);
+    }
+
+    [Fact]
+    public async Task ManualResolutionIsRecordedOnTheIncident()
+    {
+        await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+        await _store.ResolveIncidentAsync("provider_unhealthy:zarz", manuallyResolved: true);
+
+        var entry = Assert.Single(await _store.GetAsync());
+        Assert.True(entry.ManuallyResolved);
+        Assert.False(entry.IsOpen);
+    }
+
+    [Fact]
+    public async Task ReadingClosesTheIncidentWithoutClaimingTheUserFixedIt()
+    {
+        var first = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+        await _store.MarkReadAsync([first.Entry.Id]);
+
+        var entry = Assert.Single(await _store.GetAsync());
+        Assert.False(entry.IsOpen);
+        Assert.False(entry.ManuallyResolved);
     }
 
     [Fact]
