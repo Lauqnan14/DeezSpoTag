@@ -80,11 +80,17 @@ public class TagSettings
     [JsonPropertyName("releaseStatus")]
     public bool ReleaseStatus { get; set; } = false;
 
+    [JsonPropertyName("releaseType")]
+    public bool ReleaseType { get; set; } = false;
+
     [JsonPropertyName("releaseCountry")]
     public bool ReleaseCountry { get; set; } = false;
 
     [JsonPropertyName("media")]
     public bool Media { get; set; } = false;
+
+    [JsonPropertyName("catalogNumber")]
+    public bool CatalogNumber { get; set; } = false;
 
     // Technical information
     [JsonPropertyName("length")]
@@ -129,6 +135,15 @@ public class TagSettings
     [JsonPropertyName("replayGain")]
     public bool ReplayGain { get; set; } = false;
 
+    [JsonPropertyName("style")]
+    public bool Style { get; set; } = false;
+
+    [JsonPropertyName("mood")]
+    public bool Mood { get; set; } = false;
+
+    [JsonPropertyName("activity")]
+    public bool Activity { get; set; } = false;
+
     // Label and copyright
     [JsonPropertyName("label")]
     public bool Label { get; set; } = true;
@@ -142,6 +157,9 @@ public class TagSettings
 
     [JsonPropertyName("tagSyncedLyrics")]
     public bool SyncedLyrics { get; set; } = false;
+
+    [JsonPropertyName("ttmlLyrics")]
+    public bool TtmlLyrics { get; set; } = false;
 
     // Credits
     [JsonPropertyName("composer")]
@@ -158,6 +176,27 @@ public class TagSettings
 
     [JsonPropertyName("description")]
     public bool Description { get; set; } = false;
+
+    [JsonPropertyName("remixer")]
+    public bool Remixer { get; set; } = false;
+
+    [JsonPropertyName("version")]
+    public bool Version { get; set; } = false;
+
+    [JsonPropertyName("language")]
+    public bool Language { get; set; } = false;
+
+    [JsonPropertyName("otherTags")]
+    public bool OtherTags { get; set; } = false;
+
+    [JsonPropertyName("metaTags")]
+    public bool MetaTags { get; set; } = false;
+
+    [JsonPropertyName("releaseDate")]
+    public bool ReleaseDate { get; set; } = false;
+
+    [JsonPropertyName("publishDate")]
+    public bool PublishDate { get; set; } = false;
 
     // Source and rating
     [JsonPropertyName("source")]

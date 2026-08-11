@@ -294,16 +294,22 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                && !settings.RecordingId
                && !settings.ArtistId
                && !settings.AlbumArtistId
-               && !settings.ReleaseGroupId
-               && !settings.AlbumId
-               && !settings.ReleaseStatus
-               && !settings.ReleaseCountry
-               && !settings.Media
-               && !settings.Bpm
-               && !settings.Length
-               && !settings.ReplayGain
-               && !settings.Danceability
-               && !settings.Energy
+	               && !settings.ReleaseGroupId
+	               && !settings.AlbumId
+	               && !settings.ReleaseStatus
+	               && !settings.ReleaseType
+	               && !settings.ReleaseCountry
+	               && !settings.Media
+	               && !settings.CatalogNumber
+	               && !settings.Bpm
+	               && !settings.Key
+	               && !settings.Length
+	               && !settings.ReplayGain
+	               && !settings.Style
+	               && !settings.Mood
+	               && !settings.Activity
+	               && !settings.Danceability
+	               && !settings.Energy
                && !settings.Valence
                && !settings.Acousticness
                && !settings.Instrumentalness
@@ -313,15 +319,23 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
                && !settings.TimeSignature
                && !settings.Liveness
                && !settings.Label
-               && !settings.Copyright
-               && !settings.Lyrics
-               && !settings.SyncedLyrics
-               && !settings.Composer
-               && !settings.Lyricist
-               && !settings.InvolvedPeople
-               && !settings.Publisher
-               && !settings.Description
-               && !settings.Source
+	               && !settings.Copyright
+	               && !settings.Lyrics
+	               && !settings.SyncedLyrics
+	               && !settings.TtmlLyrics
+	               && !settings.Composer
+	               && !settings.Lyricist
+	               && !settings.InvolvedPeople
+	               && !settings.Publisher
+	               && !settings.Description
+	               && !settings.Remixer
+	               && !settings.Version
+	               && !settings.Language
+	               && !settings.OtherTags
+	               && !settings.MetaTags
+	               && !settings.ReleaseDate
+	               && !settings.PublishDate
+	               && !settings.Source
                && !settings.Url
                && !settings.TrackId
                && !settings.ReleaseId

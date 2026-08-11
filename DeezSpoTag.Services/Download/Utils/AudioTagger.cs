@@ -60,6 +60,13 @@ public class AudioTagger
     private const string ReleaseStatusUpperTag = "RELEASESTATUS";
     private const string ReleaseCountryUpperTag = "RELEASECOUNTRY";
     private const string MediaUpperTag = "MEDIA";
+    private const string ReleaseTypeRawTag = "RELEASETYPE";
+    private const string OriginalDateUpperTag = "ORIGINALDATE";
+    private const string CatalogNumberUpperTag = "CATALOGNUMBER";
+    private const string StyleUpperTag = "STYLE";
+    private const string RemixerUpperTag = "REMIXER";
+    private const string LanguageRawTag = "LANGUAGE";
+    private const string TaggedDateTag = "1T_TAGGEDDATE";
     private const string ItunesAdvisoryTag = "ITUNESADVISORY";
     private const string ReplayGainRawTag = "REPLAYGAIN_TRACK_GAIN";
     private const string SourceUpperTag = "SOURCE";
@@ -450,6 +457,18 @@ public class AudioTagger
         SetId3FrameIf(tag, save.Label, "TPUB", "", track.Album?.Label, save);
         SetId3FrameIf(tag, save.Isrc, "TSRC", "", track.ISRC, save);
         SetId3FrameIf(tag, save.Barcode, "TXXX", BarcodeUpperTag, track.Album?.Barcode, save);
+        SetId3FrameIf(tag, save.ReleaseType, "TXXX", ReleaseTypeRawTag, ResolveReleaseType(track), save);
+        SetId3FrameIf(tag, save.ReleaseDate, "TDRC", "", ResolveReleaseDate(track), save);
+        SetId3FrameIf(tag, save.PublishDate, "TDRL", "", ResolvePublishDate(track), save);
+        SetId3FrameIf(tag, save.CatalogNumber, "TXXX", CatalogNumberUpperTag, track.CatalogNumber, save);
+        SetId3FrameIf(tag, save.Version, "TIT3", "", track.TitleVersion, save);
+        SetId3FrameIf(tag, save.Mood, "TMOO", "", track.Mood, save);
+        SetId3FrameIf(tag, save.Activity, "TXXX", "ACTIVITY", track.Activity, save);
+        SetId3FrameIf(tag, save.Language, "TXXX", LanguageRawTag, track.Language, save);
+        WriteMp3ListFrame(tag, save.Style, "TXXX", StyleUpperTag, track.Styles, save);
+        WriteMp3ListFrame(tag, save.Remixer, "TPE4", "", track.Remixers, save);
+        WriteMp3OtherTags(tag, track, save);
+        SetId3FrameIf(tag, save.MetaTags, "TXXX", TaggedDateTag, BuildTaggedDate(), save);
         SetId3FrameIf(tag, save.Explicit, "TXXX", ItunesAdvisoryTag, track.Explicit ? "1" : "0", save);
         SetId3FrameIf(tag, save.ReplayGain, "TXXX", ReplayGainRawTag, track.ReplayGain, save);
 
@@ -590,6 +609,37 @@ public class AudioTagger
         }
 
         SetCustomFrame(tag, "TXXX", description, FormatAudioFeature(value.Value), save);
+    }
+
+    private void WriteMp3ListFrame(
+        Tag tag,
+        bool enabled,
+        string frameId,
+        string description,
+        IReadOnlyCollection<string>? values,
+        TagSettings save)
+    {
+        if (!enabled || values == null || values.Count == 0)
+        {
+            return;
+        }
+
+        var value = string.Join("; ", values.Where(static item => !string.IsNullOrWhiteSpace(item)));
+        SetId3FrameIf(tag, true, frameId, description, value, save);
+    }
+
+    private void WriteMp3OtherTags(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (!save.OtherTags || track.OtherTags.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var pair in track.OtherTags)
+        {
+            var value = string.Join("; ", pair.Value.Where(static item => !string.IsNullOrWhiteSpace(item)));
+            SetId3FrameIf(tag, true, "TXXX", pair.Key, value, save);
+        }
     }
 
     private void SetId3FrameIf(
@@ -1016,6 +1066,18 @@ public class AudioTagger
         SetVorbisCommentIf(tag, save.Label, PublisherUpperTag, track.Album?.Label);
         SetVorbisCommentIf(tag, save.Isrc, "ISRC", track.ISRC);
         SetVorbisCommentIf(tag, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
+        SetVorbisCommentIf(tag, save.ReleaseType, ReleaseTypeRawTag, ResolveReleaseType(track));
+        SetVorbisCommentIf(tag, save.ReleaseDate, "DATE", ResolveReleaseDate(track));
+        SetVorbisCommentIf(tag, save.PublishDate, OriginalDateUpperTag, ResolvePublishDate(track));
+        SetVorbisCommentIf(tag, save.CatalogNumber, CatalogNumberUpperTag, track.CatalogNumber);
+        SetVorbisCommentIf(tag, save.Version, "SUBTITLE", track.TitleVersion);
+        SetVorbisCommentIf(tag, save.Mood, "MOOD", track.Mood);
+        SetVorbisCommentIf(tag, save.Activity, "ACTIVITY", track.Activity);
+        SetVorbisCommentIf(tag, save.Language, LanguageRawTag, track.Language);
+        SetVorbisCommentListIf(tag, save.Style, StyleUpperTag, track.Styles);
+        SetVorbisCommentListIf(tag, save.Remixer, RemixerUpperTag, track.Remixers);
+        WriteVorbisOtherTags(tag, track, save);
+        SetVorbisCommentIf(tag, save.MetaTags, TaggedDateTag, BuildTaggedDate());
         SetVorbisCommentIf(tag, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
         SetVorbisCommentIf(tag, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
 
@@ -1025,7 +1087,6 @@ public class AudioTagger
         }
 
         SetVorbisCommentIf(tag, save.Lyrics, LyricsUpperTag, track.Lyrics?.Unsync);
-
         if (save.SyncedLyrics && TryGetSyncedLyricsText(track.Lyrics, out var syncedLyricsText))
         {
             SetVorbisComment(tag, LyricsSyncedTag, new[] { syncedLyricsText });
@@ -1196,6 +1257,18 @@ public class AudioTagger
     private static void ApplyAtlMp4IdentityMetadata(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
     {
         SetAtlAdditionalFieldIf(file, save.Barcode, BarcodeUpperTag, track.Album?.Barcode);
+        SetAtlAdditionalFieldIf(file, save.ReleaseType, ReleaseTypeRawTag, ResolveReleaseType(track));
+        SetAtlAdditionalFieldIf(file, save.ReleaseDate, "DATE", ResolveReleaseDate(track));
+        SetAtlAdditionalFieldIf(file, save.PublishDate, OriginalDateUpperTag, ResolvePublishDate(track));
+        SetAtlAdditionalFieldIf(file, save.CatalogNumber, CatalogNumberUpperTag, track.CatalogNumber);
+        SetAtlAdditionalFieldIf(file, save.Version, "desc", track.TitleVersion);
+        SetAtlAdditionalFieldIf(file, save.Mood, "MOOD", track.Mood);
+        SetAtlAdditionalFieldIf(file, save.Activity, "ACTIVITY", track.Activity);
+        SetAtlAdditionalFieldIf(file, save.Language, LanguageRawTag, track.Language);
+        SetAtlAdditionalFieldIf(file, save.Style, StyleUpperTag, track.Styles);
+        SetAtlAdditionalFieldIf(file, save.Remixer, RemixerUpperTag, track.Remixers);
+        WriteAtlOtherTags(file, track, save);
+        SetAtlAdditionalFieldIf(file, save.MetaTags, TaggedDateTag, BuildTaggedDate());
         SetAtlAdditionalFieldIf(file, save.Explicit, ItunesAdvisoryTag, track.Explicit ? "1" : "0");
         SetAtlAdditionalFieldIf(file, save.ReplayGain, ReplayGainRawTag, track.ReplayGain);
 
@@ -1577,6 +1650,27 @@ public class AudioTagger
         }
     }
 
+    private static void SetAtlAdditionalFieldIf(AtlTrack file, bool condition, string field, IReadOnlyCollection<string>? values)
+    {
+        if (condition && values is { Count: > 0 })
+        {
+            SetAtlAdditionalField(file, field, values);
+        }
+    }
+
+    private static void WriteAtlOtherTags(AtlTrack file, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (!save.OtherTags || track.OtherTags.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var pair in track.OtherTags)
+        {
+            SetAtlAdditionalField(file, pair.Key, pair.Value);
+        }
+    }
+
     private static void SetAtlAdditionalField(AtlTrack file, string field, IEnumerable<string> values)
     {
         SetAtlAdditionalField(file, field, string.Join("; ", values.Where(static value => !string.IsNullOrWhiteSpace(value))));
@@ -1624,6 +1718,27 @@ public class AudioTagger
         if (condition && !string.IsNullOrWhiteSpace(value))
         {
             SetVorbisComment(tag, field, new[] { value });
+        }
+    }
+
+    private void SetVorbisCommentListIf(Tag tag, bool condition, string field, IReadOnlyCollection<string>? values)
+    {
+        if (condition && values is { Count: > 0 })
+        {
+            SetVorbisComment(tag, field, values);
+        }
+    }
+
+    private void WriteVorbisOtherTags(Tag tag, DeezSpoTag.Core.Models.Track track, TagSettings save)
+    {
+        if (!save.OtherTags || track.OtherTags.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var pair in track.OtherTags)
+        {
+            SetVorbisComment(tag, pair.Key, pair.Value);
         }
     }
 
@@ -1804,6 +1919,44 @@ public class AudioTagger
             DeezerSource => $"https://www.deezer.com/track/{sourceId}",
             _ => null
         };
+    }
+
+    private static string? ResolveReleaseType(DeezSpoTag.Core.Models.Track track)
+    {
+        return FirstNonEmpty(track.ReleaseType, track.Album?.RecordType);
+    }
+
+    private static string? ResolveReleaseDate(DeezSpoTag.Core.Models.Track track)
+    {
+        return FirstNonEmpty(track.DateString, FormatIsoDate(track.Album?.ReleaseDate));
+    }
+
+    private static string? ResolvePublishDate(DeezSpoTag.Core.Models.Track track)
+    {
+        return FirstNonEmpty(track.PublishDate, track.PhysicalReleaseDate);
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FormatIsoDate(DateTime? value)
+    {
+        return value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private static string BuildTaggedDate()
+    {
+        return $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}_DL";
     }
 
     private static string FormatAudioFeature(double value)

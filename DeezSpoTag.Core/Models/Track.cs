@@ -17,6 +17,7 @@ public class Track : AudioFeaturesBase
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
+    public string? TitleVersion { get; set; }
     public string? MD5 { get; set; }
     public string? MediaVersion { get; set; }
     public string TrackToken { get; set; } = "";
@@ -58,6 +59,15 @@ public class Track : AudioFeaturesBase
     public double Gain { get; set; }
     public string? LyricsId { get; set; }
     public string? PhysicalReleaseDate { get; set; }
+    public string? PublishDate { get; set; }
+    public string? ReleaseType { get; set; }
+    public string? CatalogNumber { get; set; }
+    public List<string> Styles { get; set; } = new();
+    public List<string> Remixers { get; set; } = new();
+    public string? Mood { get; set; }
+    public string? Activity { get; set; }
+    public string? Language { get; set; }
+    public Dictionary<string, List<string>> OtherTags { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public int? Position { get; set; }
     public bool Searched { get; set; }
     public string? Source { get; set; }
@@ -170,6 +180,7 @@ public class Track : AudioFeaturesBase
     private void ApplyTrackBasics(ApiTrack trackApi)
     {
         Title = trackApi.Title;
+        TitleVersion = trackApi.TitleVersion;
         DiscNumber = trackApi.DiskNumber;
         Explicit = trackApi.ExplicitLyrics;
         Copyright = trackApi.Copyright ?? "";
