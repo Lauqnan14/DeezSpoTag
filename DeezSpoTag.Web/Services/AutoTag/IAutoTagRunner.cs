@@ -16,7 +16,7 @@ public interface IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken);
 

@@ -301,6 +301,7 @@ public partial class AutoTagService
     private readonly CoverLibraryMaintenanceService _coverMaintenanceService;
     private readonly AutoTagProfileResolutionService _profileResolutionService;
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
+    private readonly MediaServerRefreshOutboxService _mediaServerRefreshOutboxService;
     private readonly UserPreferencesStore _userPreferencesStore;
     private readonly ActivitiesRealtimeService _activitiesRealtime;
     private readonly IDeezSpoTagListener _downloadEvents;
@@ -541,6 +542,7 @@ public partial class AutoTagService
         public required CoverLibraryMaintenanceService CoverMaintenanceService { get; init; }
         public required AutoTagProfileResolutionService ProfileResolutionService { get; init; }
         public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
+        public required MediaServerRefreshOutboxService MediaServerRefreshOutboxService { get; init; }
         public required UserPreferencesStore UserPreferencesStore { get; init; }
         public required ActivitiesRealtimeService ActivitiesRealtime { get; init; }
         public required IDeezSpoTagListener DownloadEvents { get; init; }
@@ -574,6 +576,7 @@ public partial class AutoTagService
         _coverMaintenanceService = collaborators.CoverMaintenanceService;
         _profileResolutionService = collaborators.ProfileResolutionService;
         _mediaServerRefreshService = collaborators.MediaServerRefreshService;
+        _mediaServerRefreshOutboxService = collaborators.MediaServerRefreshOutboxService;
         _userPreferencesStore = collaborators.UserPreferencesStore;
         _activitiesRealtime = collaborators.ActivitiesRealtime;
         _downloadEvents = collaborators.DownloadEvents;

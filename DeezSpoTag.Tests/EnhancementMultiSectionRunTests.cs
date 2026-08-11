@@ -349,26 +349,26 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.True(start > 0);
         var body = workflows[start..(start + 1400)];
 
-        Assert.Contains("RunEnabledEnhancementSectionsForBatchAsync(job, configPath, batchFiles", body, StringComparison.Ordinal);
+        Assert.Contains("RunEnabledEnhancementSectionsForBatchAsync(job, configPath, context", body, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void PerBatchSectionRunnerCoversFolderUniformityAndCoverMaintenance()
+    public void PerBatchSectionRunnerCoversBatchSafeSectionsOnly()
     {
         var workflows = ReadEnhancementWorkflows();
         var start = workflows.IndexOf("RunEnabledEnhancementSectionsForBatchAsync(\n", StringComparison.Ordinal);
         if (start < 0)
         {
-            start = workflows.IndexOf("private async Task RunEnabledEnhancementSectionsForBatchAsync(", StringComparison.Ordinal);
+            start = workflows.IndexOf("private async Task<bool> RunEnabledEnhancementSectionsForBatchAsync(", StringComparison.Ordinal);
         }
 
         Assert.True(start > 0);
         var body = workflows[start..(start + 2600)];
 
-        Assert.Contains("IsFolderUniformityWorkflowEnabled(enhancementRoot)", body, StringComparison.Ordinal);
-        Assert.Contains("RunFolderUniformityForPathsAsync(", body, StringComparison.Ordinal);
         Assert.Contains("IsCoverMaintenanceWorkflowEnabled(enhancementRoot)", body, StringComparison.Ordinal);
         Assert.Contains("RunCoverMaintenanceForBatchAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("RunQualityChecksForBatchAsync(", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunFolderUniformityForPathsAsync(", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -379,6 +379,7 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("job.EnhancementSectionsAppliedPerBatch = true;", workflows, StringComparison.Ordinal);
         Assert.Contains("if (job.EnhancementSectionsAppliedPerBatch)", workflows, StringComparison.Ordinal);
         Assert.Contains("already applied per batch", workflows, StringComparison.Ordinal);
+        Assert.Contains("cover maintenance already applied per batch", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -388,6 +389,39 @@ public sealed class EnhancementMultiSectionRunTests
 
         Assert.Contains("ResolveBatchRootPaths(", workflows, StringComparison.Ordinal);
         Assert.Contains("TargetFiles: batchFiles.ToList()", workflows, StringComparison.Ordinal);
+        Assert.Contains("context.CurrentFiles", workflows, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchTemplateApplicationFeedsFreshPathsToLaterSections()
+    {
+        var workflows = ReadEnhancementWorkflows();
+
+        Assert.Contains("OrganizeFilesWithReportAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("ResolveCurrentBatchFiles(successfulBatchFiles, folderReports)", workflows, StringComparison.Ordinal);
+        Assert.Contains("context = await RefreshBatchLibraryIndexAsync", workflows, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LyricsRefreshRunsInsideTheBatchQualitySection()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("private async Task<bool> RunQualityChecksForBatchAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 3000)];
+
+        Assert.Contains("options.QueueLyricsRefresh", body, StringComparison.Ordinal);
+        Assert.Contains("RunLyricsRefreshForBatchAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("targetTrackIds", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchMediaRefreshUsesTheOutbox()
+    {
+        var workflows = ReadEnhancementWorkflows();
+
+        Assert.Contains("EnqueueBatchMediaServerRefreshAsync(job, context", workflows, StringComparison.Ordinal);
+        Assert.Contains("_mediaServerRefreshOutboxService.EnqueueAsync", workflows, StringComparison.Ordinal);
     }
 
     private static string ReadEnhancementWorkflows()

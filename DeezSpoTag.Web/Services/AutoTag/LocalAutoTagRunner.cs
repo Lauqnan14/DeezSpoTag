@@ -486,7 +486,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         string configPath,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken cancellationToken)
     {
@@ -619,7 +619,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
         AutoTagResumeCursor? resumeCursor,
         CancellationToken token)
     {
@@ -687,7 +687,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         JobMatchCacheState jobMatchCache,
         Action<TaggingStatusWrap> statusCallback,
         Action<string> logCallback,
-        Func<IReadOnlyList<string>, CancellationToken, Task>? batchCompletedCallback,
+        Func<IReadOnlyList<string>, CancellationToken, Task<bool>>? batchCompletedCallback,
         int startPlatformIndex,
         int startFileIndex,
         CancellationToken token)
@@ -768,7 +768,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
             if (batchCompletedCallback != null)
             {
-                await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token);
+                if (await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token))
+                {
+                    return;
+                }
             }
         }
     }

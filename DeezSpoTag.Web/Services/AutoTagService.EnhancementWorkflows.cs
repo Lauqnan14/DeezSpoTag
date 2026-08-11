@@ -21,6 +21,10 @@ public partial class AutoTagService
         public static EnhancementWorkflowOutcome Completed(string message) => new(AutoTagLiterals.CompletedStatus, message);
         public static EnhancementWorkflowOutcome Skipped(string message) => new("skipped", message);
     }
+    private sealed record EnhancementBatchContext(
+        IReadOnlyList<string> OriginalFiles,
+        IReadOnlyList<string> CurrentFiles,
+        IReadOnlyDictionary<long, List<string>> FilesByFolder);
 
     private sealed record QualityCheckOptions(
         bool FlagMissingTags,
@@ -386,73 +390,64 @@ public partial class AutoTagService
         return EnhancementWorkflowOutcome.Completed($"processed {rootPaths.Count} path(s).");
     }
 
-    private async Task ApplyEnhancementBatchTemplatesAsync(
+    private async Task<bool> ApplyEnhancementBatchTemplatesAsync(
         AutoTagJob job,
         string configPath,
         IReadOnlyList<string> batchFiles,
         CancellationToken cancellationToken)
     {
-        await ApplyProfileTemplatesToFilesAsync(
+        var context = await BuildEnhancementBatchContextAsync(batchFiles, cancellationToken);
+        if (context.CurrentFiles.Count == 0)
+        {
+            AppendLog(job, "enhancement batch skipped: no existing audio files remained in this batch.");
+            return false;
+        }
+
+        context = await ApplyProfileTemplatesToFilesAsync(
             job,
             configPath,
-            batchFiles,
-            requireSuccessfulEnhancement: true,
+            context,
+            requireSuccessfulEnhancement: false,
             cancellationToken);
-        await RunEnabledEnhancementSectionsForBatchAsync(job, configPath, batchFiles, cancellationToken);
+        context = await RefreshBatchLibraryIndexAsync(job, context, cancellationToken);
+        var stopAtDownloadBoundary = await RunEnabledEnhancementSectionsForBatchAsync(job, configPath, context, cancellationToken);
+        await EnqueueBatchMediaServerRefreshAsync(job, context, cancellationToken);
         job.EnhancementSectionsAppliedPerBatch = true;
         SaveJob(job);
+        return stopAtDownloadBoundary;
     }
 
-    private async Task RunEnabledEnhancementSectionsForBatchAsync(
+    private async Task<bool> RunEnabledEnhancementSectionsForBatchAsync(
         AutoTagJob job,
         string configPath,
-        IReadOnlyList<string> batchFiles,
+        EnhancementBatchContext context,
         CancellationToken cancellationToken)
     {
-        if (batchFiles.Count == 0)
+        if (context.CurrentFiles.Count == 0)
         {
-            return;
+            return false;
         }
 
         var root = LoadConfigRoot(configPath);
         if (root?[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
         {
-            return;
+            return false;
         }
 
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
-        var batchRootPaths = ResolveBatchRootPaths(batchFiles, enabledFolders);
+        var batchRootPaths = ResolveBatchRootPaths(context.CurrentFiles, enabledFolders);
         if (batchRootPaths.Count == 0)
         {
-            return;
-        }
-
-        if (IsFolderUniformityWorkflowEnabled(enhancementRoot)
-            && TryGetFolderUniformityConfig(enhancementRoot, out var folderUniformity)
-            && ReadBool(folderUniformity!, "enforceFolderStructure") != false)
-        {
-            var profileState = await _profileResolutionService.LoadNormalizedStateAsync(
-                includeFolders: true,
-                cancellationToken);
-            var scopedFolders = enabledFolders
-                .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
-                    && batchRootPaths.Any(path => PathsOverlap(path, folder.RootPath)))
-                .ToList();
-            AppendLog(job, $"enhancement batch: folder uniformity for {batchFiles.Count} file(s).");
-            await RunFolderUniformityForPathsAsync(
-                job,
-                folderUniformity!,
-                batchRootPaths,
-                profileState,
-                BuildScopedFoldersByPath(scopedFolders),
-                cancellationToken);
+            return false;
         }
 
         if (IsCoverMaintenanceWorkflowEnabled(enhancementRoot))
         {
-            AppendLog(job, $"enhancement batch: cover maintenance for {batchFiles.Count} file(s).");
-            await RunCoverMaintenanceForBatchAsync(job, root, enhancementRoot, batchRootPaths, batchFiles, cancellationToken);
+            AppendLog(job, $"enhancement batch: cover maintenance for {context.CurrentFiles.Count} file(s).");
+            await RunCoverMaintenanceForBatchAsync(job, root, enhancementRoot, batchRootPaths, context.CurrentFiles, cancellationToken);
         }
+
+        return await RunQualityChecksForBatchAsync(job, enhancementRoot, context, configPath, cancellationToken);
     }
 
     private async Task RunCoverMaintenanceForBatchAsync(
@@ -518,21 +513,72 @@ public partial class AutoTagService
         return roots;
     }
 
-    private async Task ApplyProfileTemplatesToFilesAsync(
+    private async Task<EnhancementBatchContext> BuildEnhancementBatchContextAsync(
+        IReadOnlyList<string> batchFiles,
+        CancellationToken cancellationToken)
+    {
+        var currentFiles = batchFiles
+            .Select(NormalizePathForJob)
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+        return BuildEnhancementBatchContext(batchFiles, currentFiles, enabledFolders);
+    }
+
+    private static EnhancementBatchContext BuildEnhancementBatchContext(
+        IReadOnlyList<string> originalFiles,
+        IReadOnlyList<string> currentFiles,
+        IReadOnlyList<FolderDto> enabledFolders)
+    {
+        var filesByFolder = new Dictionary<long, List<string>>();
+        foreach (var folder in enabledFolders)
+        {
+            if (string.IsNullOrWhiteSpace(folder.RootPath))
+            {
+                continue;
+            }
+
+            var folderRoot = Path.GetFullPath(folder.RootPath);
+            var folderFiles = currentFiles
+                .Where(path => LibraryFolderPathSafety.IsSameOrDescendantPath(path, folderRoot))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (folderFiles.Count == 0)
+            {
+                continue;
+            }
+
+            filesByFolder[folder.Id] = folderFiles;
+        }
+
+        return new EnhancementBatchContext(
+            originalFiles
+                .Select(NormalizePathForJob)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            currentFiles
+                .Select(NormalizePathForJob)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
+            filesByFolder);
+    }
+
+    private async Task<EnhancementBatchContext> ApplyProfileTemplatesToFilesAsync(
         AutoTagJob job,
         string configPath,
-        IReadOnlyList<string> batchFiles,
+        EnhancementBatchContext context,
         bool requireSuccessfulEnhancement,
         CancellationToken cancellationToken)
     {
         var root = LoadConfigRoot(configPath);
         if (root?[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
         {
-            return;
+            return context;
         }
         var folderUniformity = enhancementRoot["folderUniformity"] as JsonObject;
 
-        var successfulBatchFiles = batchFiles
+        var successfulBatchFiles = context.CurrentFiles
             .Select(NormalizePathForJob)
             .Where(path => (!requireSuccessfulEnhancement
                     || job.EnhancedFilePaths.Contains(path, StringComparer.OrdinalIgnoreCase))
@@ -542,12 +588,13 @@ public partial class AutoTagService
         if (successfulBatchFiles.Count == 0)
         {
             AppendLog(job, "enhancement batch templates skipped: no eligible files remained in this batch.");
-            return;
+            return context with { CurrentFiles = [] };
         }
 
         var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
         var profileState = await _profileResolutionService.LoadNormalizedStateAsync(includeFolders: true, cancellationToken);
         var organizedCount = 0;
+        var folderReports = new List<AutoTagLibraryOrganizer.AutoTagOrganizerReport>();
         foreach (var folder in enabledFolders)
         {
             var folderRoot = Path.GetFullPath(folder.RootPath);
@@ -580,12 +627,13 @@ public partial class AutoTagService
                 throw new InvalidOperationException($"Library folder '{folderRoot}' has no valid file template.");
             }
 
-            await _libraryOrganizer.OrganizeFilesAsync(
+            var report = await _libraryOrganizer.OrganizeFilesWithReportAsync(
                 folderRoot,
                 folderFiles,
                 options,
                 line => AppendLog(job, $"enhancement batch templates: {line}"),
                 cancellationToken);
+            folderReports.Add(report);
             organizedCount += folderFiles.Count;
         }
 
@@ -595,7 +643,108 @@ public partial class AutoTagService
                 $"Template application resolved {organizedCount} of {successfulBatchFiles.Count} successfully enhanced batch files to enabled library folders.");
         }
 
-        AppendLog(job, $"enhancement batch templates completed: {organizedCount} file(s). Next batch unlocked.");
+        var currentFiles = ResolveCurrentBatchFiles(successfulBatchFiles, folderReports);
+        AppendLog(job, $"enhancement batch templates completed: {organizedCount} file(s).");
+        return BuildEnhancementBatchContext(context.OriginalFiles, currentFiles, enabledFolders);
+    }
+
+    private static List<string> ResolveCurrentBatchFiles(
+        IReadOnlyList<string> files,
+        IReadOnlyList<AutoTagLibraryOrganizer.AutoTagOrganizerReport> reports)
+    {
+        var moves = reports
+            .SelectMany(static report => report.Entries)
+            .Select(TryParseMoveFileEntry)
+            .Where(static move => move.Source != null && move.Destination != null)
+            .ToDictionary(
+                static move => NormalizePathForJob(move.Source!),
+                static move => NormalizePathForJob(move.Destination!),
+                StringComparer.OrdinalIgnoreCase);
+        var current = new List<string>();
+        foreach (var file in files.Select(NormalizePathForJob).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var candidate = moves.TryGetValue(file, out var moved)
+                ? moved
+                : file;
+            if (File.Exists(candidate) && !current.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                current.Add(candidate);
+            }
+        }
+
+        return current;
+    }
+
+    private static (string? Source, string? Destination) TryParseMoveFileEntry(string entry)
+    {
+        const string prefix = "move-file: ";
+        const string separator = " -> ";
+        if (!entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, null);
+        }
+
+        var value = entry[prefix.Length..];
+        var separatorIndex = value.IndexOf(separator, StringComparison.Ordinal);
+        if (separatorIndex <= 0)
+        {
+            return (null, null);
+        }
+
+        var source = value[..separatorIndex].Trim();
+        var destination = value[(separatorIndex + separator.Length)..].Trim();
+        return string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(destination)
+            ? (null, null)
+            : (source, destination);
+    }
+
+    private async Task<EnhancementBatchContext> RefreshBatchLibraryIndexAsync(
+        AutoTagJob job,
+        EnhancementBatchContext context,
+        CancellationToken cancellationToken)
+    {
+        if (context.FilesByFolder.Count == 0)
+        {
+            return context;
+        }
+
+        var ingestion = await _knownFileIngestionService.IngestAndVerifyAsync(
+            context.FilesByFolder,
+            cancellationToken);
+        if (!ingestion.IsComplete)
+        {
+            AppendLog(
+                job,
+                $"enhancement batch library ingestion incomplete; {ingestion.MissingFilePaths.Count} file(s) are not indexed yet.");
+        }
+        else
+        {
+            AppendLog(job, $"enhancement batch library ingestion verified for {ingestion.IngestedFilePaths.Count} file(s).");
+        }
+
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+        return BuildEnhancementBatchContext(context.OriginalFiles, context.CurrentFiles, enabledFolders);
+    }
+
+    private async Task EnqueueBatchMediaServerRefreshAsync(
+        AutoTagJob job,
+        EnhancementBatchContext context,
+        CancellationToken cancellationToken)
+    {
+        if (context.FilesByFolder.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (folderId, files) in context.FilesByFolder)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _mediaServerRefreshOutboxService.EnqueueAsync(folderId, files, cancellationToken);
+        }
+
+        AppendLog(
+            job,
+            $"enhancement batch media refresh queued for {context.FilesByFolder.Count} folder scope(s).");
     }
 
     private static bool TryGetFolderUniformityConfig(JsonObject enhancementRoot, out JsonObject? folderUniformity)
@@ -821,6 +970,12 @@ public partial class AutoTagService
             return EnhancementWorkflowOutcome.Skipped("no cover maintenance actions are enabled.");
         }
 
+        if (job.EnhancementSectionsAppliedPerBatch)
+        {
+            AppendLog(job, "enhancement workflow: cover maintenance already applied per batch.");
+            return EnhancementWorkflowOutcome.Completed("cover maintenance already applied per batch.");
+        }
+
         var rootPaths = ResolveRootPathsForWorkflow(rootPath, coverMaintenance, enabledFolders);
         if (rootPaths.Count == 0)
         {
@@ -968,14 +1123,164 @@ public partial class AutoTagService
 
         await ReportMissingCoreMetadataAuditIfRequestedAsync(job, options, scopedFolderIds, cancellationToken);
         await RunFolderTagAlignmentIfRequestedAsync(job, configPath, options, scopedFolders, cancellationToken);
-        if (await RunQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken))
+        if (!job.EnhancementSectionsAppliedPerBatch
+            && await RunQualityScannerIfRequestedAsync(job, qualityChecks, options, scopedFolderIds, cancellationToken))
         {
             return EnhancementWorkflowOutcome.Completed(
                 $"staged {job.EnhancementDownloadItemCount} {job.EnhancementDownloadOperation} item(s); Enhancement stopped at the download batch boundary.");
         }
         await RunDuplicateCheckIfRequestedAsync(job, options, scopedFolders, cancellationToken);
-        await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, configPath, cancellationToken);
+        if (!job.EnhancementSectionsAppliedPerBatch)
+        {
+            await RunLyricsRefreshIfRequestedAsync(job, options, scopedFolderIds, configPath, cancellationToken);
+        }
         return EnhancementWorkflowOutcome.Completed($"processed {scopedFolderIds.Count} folder scope(s).");
+    }
+
+    private async Task<bool> RunQualityChecksForBatchAsync(
+        AutoTagJob job,
+        JsonObject enhancementRoot,
+        EnhancementBatchContext context,
+        string configPath,
+        CancellationToken cancellationToken)
+    {
+        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
+            || ReadBool(qualityChecks, EnabledField) != true)
+        {
+            return false;
+        }
+
+        var options = BuildQualityCheckOptions(qualityChecks);
+        if (!options.ShouldRunAnyWorkflow || context.FilesByFolder.Count == 0)
+        {
+            return false;
+        }
+
+        var trackIdsByPath = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+            context.CurrentFiles,
+            cancellationToken);
+        var targetTrackIds = context.CurrentFiles
+            .Select(path => trackIdsByPath.TryGetValue(path, out var trackId) ? trackId : 0)
+            .Where(static trackId => trackId > 0)
+            .Distinct()
+            .ToList();
+
+        if (targetTrackIds.Count == 0)
+        {
+            AppendLog(job, "enhancement batch quality checks skipped: current batch files are not indexed yet.");
+            return false;
+        }
+
+        var scopedFolderIds = context.FilesByFolder.Keys
+            .Distinct()
+            .ToList();
+
+        if (options.QueueLyricsRefresh)
+        {
+            await RunLyricsRefreshForBatchAsync(job, targetTrackIds, configPath, cancellationToken);
+        }
+
+        if (options.QueueTechnicalProfileUpgrades
+            && await RunQualityScannerPassAsync(
+                job,
+                qualityChecks,
+                scopedFolderIds,
+                runQualityUpgradeStage: true,
+                queueAtmosAlternatives: false,
+                options.TechnicalProfiles,
+                "technical-quality-upgrade",
+                cancellationToken,
+                targetTrackIds))
+        {
+            return true;
+        }
+
+        if (options.QueueAtmosAlternatives
+            && await RunQualityScannerPassAsync(
+                job,
+                qualityChecks,
+                scopedFolderIds,
+                runQualityUpgradeStage: false,
+                queueAtmosAlternatives: true,
+                technicalProfiles: Array.Empty<string>(),
+                "atmos-alternatives",
+                cancellationToken,
+                targetTrackIds))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private async Task RunLyricsRefreshForBatchAsync(
+        AutoTagJob job,
+        IReadOnlyList<long> targetTrackIds,
+        string configPath,
+        CancellationToken cancellationToken)
+    {
+        var batchCount = targetTrackIds.Count == 0
+            ? 0
+            : (int)Math.Ceiling(targetTrackIds.Count / (double)EnhancementBatchSize);
+        var processed = 0;
+        for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
+        {
+            var batch = targetTrackIds
+                .Skip(batchIndex * EnhancementBatchSize)
+                .Take(EnhancementBatchSize)
+                .ToList();
+            var completedPaths = new List<string>();
+            for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var trackId = batch[itemIndex];
+                LyricsRefreshTrackResult result;
+                try
+                {
+                    result = await _lyricsRefreshQueueService.RefreshTrackNowAsync(
+                        trackId,
+                        cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    result = LyricsRefreshTrackResult.Skipped(trackId, null, ex.Message);
+                }
+
+                if (result.Success && !string.IsNullOrWhiteSpace(result.FilePath))
+                {
+                    completedPaths.Add(result.FilePath);
+                }
+
+                processed++;
+                RecordEnhancementItemStatus(
+                    job,
+                    "lyrics-refresh",
+                    result.FilePath ?? $"track {trackId}",
+                    result.Success ? AutoTagLiterals.OkStatus : AutoTagLiterals.SkippedStatus,
+                    result.Message,
+                    processed,
+                    targetTrackIds.Count,
+                    batchIndex + 1,
+                    batchCount,
+                    itemIndex + 1,
+                    batch.Count,
+                    result);
+            }
+
+            if (completedPaths.Count > 0)
+            {
+                var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+                var context = BuildEnhancementBatchContext(completedPaths, completedPaths, enabledFolders);
+                await ApplyProfileTemplatesToFilesAsync(
+                    job,
+                    configPath,
+                    context,
+                    requireSuccessfulEnhancement: false,
+                    cancellationToken);
+            }
+        }
+
+        AppendLog(job, $"enhancement batch lyrics refresh completed ({targetTrackIds.Count} track(s)).");
     }
 
     private static QualityCheckOptions BuildQualityCheckOptions(JsonObject qualityChecks)
@@ -1113,7 +1418,8 @@ public partial class AutoTagService
         bool queueAtmosAlternatives,
         IReadOnlyList<string> technicalProfiles,
         string phase,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<long>? targetTrackIds = null)
     {
         var tracks = await _libraryRepository.GetQualityScanTracksAsync(
             "all",
@@ -1123,6 +1429,13 @@ public partial class AutoTagService
             minSampleRateHz: null,
             cancellationToken);
         tracks = FilterTracksByScopedFolders(tracks, scopedFolderIds);
+        if (targetTrackIds is { Count: > 0 })
+        {
+            var selectedTrackIds = targetTrackIds.ToHashSet();
+            tracks = tracks
+                .Where(track => selectedTrackIds.Contains(track.TrackId))
+                .ToList();
+        }
         if (technicalProfiles.Count > 0)
         {
             var selectedProfiles = technicalProfiles.ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1229,10 +1542,11 @@ public partial class AutoTagService
         for (var batchIndex = 0; batchIndex < batchCount; batchIndex++)
         {
             var batch = batches[batchIndex];
+            var context = BuildEnhancementBatchContext(batch, batch, scopedFolders);
             await ApplyProfileTemplatesToFilesAsync(
                 job,
                 configPath,
-                batch,
+                context,
                 requireSuccessfulEnhancement: false,
                 cancellationToken);
             for (var itemIndex = 0; itemIndex < batch.Count; itemIndex++)
@@ -1346,12 +1660,17 @@ public partial class AutoTagService
                     result);
             }
 
-            await ApplyProfileTemplatesToFilesAsync(
-                job,
-                configPath,
-                completedPaths,
-                requireSuccessfulEnhancement: false,
-                cancellationToken);
+            if (completedPaths.Count > 0)
+            {
+                var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+                var context = BuildEnhancementBatchContext(completedPaths, completedPaths, enabledFolders);
+                await ApplyProfileTemplatesToFilesAsync(
+                    job,
+                    configPath,
+                    context,
+                    requireSuccessfulEnhancement: false,
+                    cancellationToken);
+            }
         }
         AppendLog(job, $"enhancement workflow: lyrics refresh completed ({uniqueTracks.Count} track(s)).");
     }

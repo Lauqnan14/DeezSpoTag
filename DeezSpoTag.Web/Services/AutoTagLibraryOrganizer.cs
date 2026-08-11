@@ -131,6 +131,18 @@ public class AutoTagLibraryOrganizer
         return OrganizeAsync(rootPath, filePaths, options, report: null, log, cancellationToken);
     }
 
+    public async Task<AutoTagOrganizerReport> OrganizeFilesWithReportAsync(
+        string rootPath,
+        IReadOnlyCollection<string> filePaths,
+        AutoTagOrganizerOptions options,
+        Action<string>? log,
+        CancellationToken cancellationToken)
+    {
+        var report = new AutoTagOrganizerReport();
+        await OrganizeAsync(rootPath, filePaths, options, report, log, cancellationToken);
+        return report;
+    }
+
     public async Task OrganizePathInBatchesAsync(
         string rootPath,
         AutoTagOrganizerOptions options,
