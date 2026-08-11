@@ -6,6 +6,7 @@ using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Utils;
+using DeezSpoTag.Web.Controllers.Api;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -61,6 +62,27 @@ public sealed class LyricsProviderRegistryTests
         Assert.True(LyricsProviderRegistry.TryGet("betterlyrics", out var betterLyrics));
         Assert.True(betterLyrics.SupportsWordSynchronized);
         Assert.True(betterLyrics.SupportsNativeTtml);
+    }
+
+    [Theory]
+    [InlineData("youlyplus", "YouLy+", "/images/icons/youly+.png")]
+    [InlineData("betterlyrics", "BetterLyrics", "/images/icons/better-lyrics.png")]
+    public void SidebarRegistry_UsesExistingIconAssetsForLyricsOnlyProviders(
+        string provider,
+        string displayName,
+        string expectedIcon)
+    {
+        var createEntry = typeof(PlatformRegistryApiController).GetMethod(
+            "CreateEntry",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        var entry = Assert.IsType<PlatformRegistryApiController.PlatformRegistryEntry>(
+            createEntry?.Invoke(null, [provider, displayName]));
+
+        Assert.Equal(expectedIcon, entry.Icon);
+        Assert.False(entry.RequiresAuth);
+        Assert.Null(entry.LoginTabId);
+        Assert.True(File.Exists(Path.Join(ResolveRepoRoot(), "DeezSpoTag.Web", "wwwroot", expectedIcon.TrimStart('/'))));
     }
 
     [Theory]

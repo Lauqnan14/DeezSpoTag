@@ -19,6 +19,8 @@ public class PlatformRegistryApiController : ControllerBase
     private const string SoulseekPlatform = "soulseek";
     private const string BoomplayPlatform = "boomplay";
     private const string NavidromePlatform = "navidrome";
+    private const string YouLyPlusPlatform = "youlyplus";
+    private const string BetterLyricsPlatform = "betterlyrics";
 
     private static readonly string[] SidebarOrder =
     [
@@ -255,6 +257,14 @@ public class PlatformRegistryApiController : ControllerBase
         if (string.Equals(platformId, QobuzPlatform, StringComparison.OrdinalIgnoreCase))
         {
             return "/images/icons/qobuz.png";
+        }
+        if (string.Equals(platformId, YouLyPlusPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/images/icons/youly+.png";
+        }
+        if (string.Equals(platformId, BetterLyricsPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            return "/images/icons/better-lyrics.png";
         }
 
         return $"/images/icons/{platformId}.png";
