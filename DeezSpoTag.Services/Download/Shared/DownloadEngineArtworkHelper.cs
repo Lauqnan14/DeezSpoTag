@@ -273,9 +273,15 @@ public static class DownloadEngineArtworkHelper
             return cached;
         }
 
-        foreach (var source in fallbackOrder)
+        for (var index = 0; index < fallbackOrder.Count; index++)
         {
-            var resolution = await TryResolveArtistImageBySourceAsync(source, request, cancellationToken);
+            var source = fallbackOrder[index];
+            var isLastProvider = index == fallbackOrder.Count - 1;
+            var resolution = await TryResolveArtistImageBySourceAsync(
+                source,
+                request,
+                allowAlbumArtworkFallback: isLastProvider,
+                cancellationToken);
             if (resolution != null)
             {
                 request.Logger.LogDebug(
@@ -352,7 +358,95 @@ public static class DownloadEngineArtworkHelper
         }
     }
 
-    private static Task<ArtistArtworkResolution?> TryResolveArtistImageBySourceAsync(
+    /// <summary>
+    /// Resolves an artist portrait from a single provider. Album or song artwork is only an
+    /// acceptable answer for the last provider in the configured order; every earlier provider
+    /// must report a miss so the chain keeps moving.
+    /// </summary>
+    private static async Task<ArtistArtworkResolution?> TryResolveArtistImageBySourceAsync(
+        string source,
+        ArtistImageResolveRequest request,
+        bool allowAlbumArtworkFallback,
+        CancellationToken cancellationToken)
+    {
+        var portrait = await TryResolveArtistPortraitBySourceAsync(source, request, cancellationToken);
+        if (portrait != null || !allowAlbumArtworkFallback)
+        {
+            return portrait;
+        }
+
+        return await TryResolveArtistImageFromAlbumArtworkAsync(source, request, cancellationToken);
+    }
+
+    private static async Task<ArtistArtworkResolution?> TryResolveArtistImageFromAlbumArtworkAsync(
+        string source,
+        ArtistImageResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var normalized = source?.Trim().ToLowerInvariant();
+        var url = normalized switch
+        {
+            "apple" => await ResolveAppleAlbumArtworkForArtistAsync(request, cancellationToken),
+            "deezer" => await ArtworkFallbackHelper.TryResolveDeezerCoverAsync(
+                request.DeezerClient,
+                request.DeezerId,
+                ArtworkSizePolicy.ResolveRequestSize(request.Settings.LocalArtworkSize, "deezer"),
+                request.Logger,
+                cancellationToken),
+            "spotify" => request.SpotifyArtworkResolver == null
+                ? null
+                : await request.SpotifyArtworkResolver.ResolveAlbumCoverUrlAsync(request.SpotifyId, cancellationToken),
+            _ => null
+        };
+
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var provider = normalized switch
+        {
+            "apple" => AppleProvider,
+            "deezer" => DeezerProvider,
+            _ => SpotifyProvider
+        };
+        var providerArtistId = normalized switch
+        {
+            "apple" => request.AppleArtistId,
+            "deezer" => request.DeezerArtistId,
+            _ => request.SpotifyArtistId
+        };
+
+        request.Logger.LogDebug(
+            "Artist portrait unavailable from every provider; using {Provider} album artwork for {Artist}",
+            provider,
+            DeezSpoTag.Core.Security.LogSanitizer.OneLine(request.Artist));
+        return new ArtistArtworkResolution(provider, url!, providerArtistId, "album-artwork-fallback");
+    }
+
+    private static async Task<string?> ResolveAppleAlbumArtworkForArtistAsync(
+        ArtistImageResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.AppleCatalog == null || string.IsNullOrWhiteSpace(request.AppleId))
+        {
+            return null;
+        }
+
+        var storefront = string.IsNullOrWhiteSpace(request.Settings.AppleMusic?.Storefront)
+            ? "us"
+            : request.Settings.AppleMusic!.Storefront;
+        return await AppleQueueHelpers.ResolveAppleArtistImageFromSongAsync(
+            request.AppleCatalog,
+            request.AppleId,
+            storefront,
+            AppleQueueHelpers.GetAppleArtworkSize(request.Settings),
+            request.Logger,
+            cancellationToken,
+            allowAlbumArtwork: true);
+    }
+
+    private static Task<ArtistArtworkResolution?> TryResolveArtistPortraitBySourceAsync(
         string source,
         ArtistImageResolveRequest request,
         CancellationToken cancellationToken)

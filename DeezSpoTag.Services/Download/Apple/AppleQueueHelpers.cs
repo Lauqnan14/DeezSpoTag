@@ -359,6 +359,27 @@ public static class AppleQueueHelpers
         return TryExtractArtworkFromAttrs(attrs, size);
     }
 
+    /// <summary>
+    /// Artist-image lookup. Unlike <see cref="TryExtractArtwork"/> this never falls back to the
+    /// song or album artwork buckets: an artist without a portrait must report a miss so the
+    /// configured artist artwork fallback order can try the next provider.
+    /// </summary>
+    private static string? TryExtractArtistArtwork(System.Text.Json.JsonElement root, int size)
+    {
+        if (!root.TryGetProperty("data", out var dataArr)
+            || dataArr.ValueKind != System.Text.Json.JsonValueKind.Array
+            || dataArr.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var entry = dataArr[0];
+        return entry.TryGetProperty(AttributesKey, out var attrs)
+               && attrs.ValueKind == System.Text.Json.JsonValueKind.Object
+            ? TryExtractArtworkFromAttrs(attrs, size)
+            : null;
+    }
+
     private static bool TryExtractArtworkFromSearch(System.Text.Json.JsonElement results, string? artist, string? album, int size, out string? url)
     {
         url = null;
@@ -828,14 +849,15 @@ public static class AppleQueueHelpers
         string storefront,
         int size,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowAlbumArtwork = false)
     {
         if (string.IsNullOrWhiteSpace(appleSongId))
         {
             return null;
         }
 
-        var cacheKey = $"apple:artist-image-song:{storefront}:{appleSongId}:{size}";
+        var cacheKey = $"apple:artist-image-song:{storefront}:{appleSongId}:{size}:{allowAlbumArtwork}";
         if (AppleArtworkCache.TryGetValue(cacheKey, out string? cached) && !string.IsNullOrWhiteSpace(cached))
         {
             return cached;
@@ -851,7 +873,9 @@ public static class AppleQueueHelpers
             }
 
             using var artistDoc = await appleCatalog.GetArtistAsync(artistId, storefront, DefaultLanguage, cancellationToken);
-            var resolved = TryExtractArtwork(artistDoc.RootElement, null, null, size);
+            var resolved = allowAlbumArtwork
+                ? TryExtractArtwork(artistDoc.RootElement, null, null, size)
+                : TryExtractArtistArtwork(artistDoc.RootElement, size);
             if (string.IsNullOrWhiteSpace(resolved))
             {
                 return null;

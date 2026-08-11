@@ -8,6 +8,7 @@ using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Services.Metadata.Qobuz;
+using DeezSpoTag.Services.Settings;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp;
 
@@ -27,6 +28,16 @@ public sealed class ArtistArtworkCatalogService
     private readonly ILogger<ArtistArtworkCatalogService> _logger;
     private readonly string _cacheRoot;
 
+    private readonly DeezSpoTagSettingsService? _settingsService;
+
+    private int ResolveRequestSize(string provider)
+    {
+        var desired = _settingsService is null
+            ? DeezSpoTag.Services.Download.Shared.ArtworkSizePolicy.DefaultRequestSize
+            : AppleQueueHelpers.GetAppleArtworkSize(_settingsService.LoadSettings());
+        return DeezSpoTag.Services.Download.Shared.ArtworkSizePolicy.ResolveRequestSize(desired, provider);
+    }
+
     public ArtistArtworkCatalogService(
         LibraryRepository repository,
         SpotifyArtistService spotify,
@@ -36,8 +47,10 @@ public sealed class ArtistArtworkCatalogService
         LastFmArtistImageService lastFm,
         IHttpClientFactory httpClients,
         IWebHostEnvironment environment,
-        ILogger<ArtistArtworkCatalogService> logger)
+        ILogger<ArtistArtworkCatalogService> logger,
+        DeezSpoTagSettingsService? settingsService = null)
     {
+        _settingsService = settingsService;
         _repository = repository;
         _spotify = spotify;
         _deezer = deezer;
@@ -202,7 +215,7 @@ public sealed class ArtistArtworkCatalogService
         var stored = await _repository.GetArtistSourceIdAsync(artistId, "deezer", token);
         if (!string.IsNullOrWhiteSpace(stored))
         {
-            var url = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(_deezer, stored, 1200, _logger, token);
+            var url = await ArtworkFallbackHelper.TryResolveDeezerArtistImageByArtistIdAsync(_deezer, stored, ResolveRequestSize("deezer"), _logger, token);
             return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("deezer", $"deezer:{stored}", url!, null, null) };
         }
 
@@ -213,7 +226,13 @@ public sealed class ArtistArtworkCatalogService
             var name = obj?["name"]?.Value<string>()?.Trim();
             var id = obj?["id"]?.ToString()?.Trim();
             if (!string.Equals(name, artistName.Trim(), StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(id)) continue;
-            var url = obj?["picture_xl"]?.Value<string>() ?? obj?["picture_big"]?.Value<string>();
+            var url = new[]
+                {
+                    obj?["picture_xl"]?.Value<string>(),
+                    obj?["picture_big"]?.Value<string>(),
+                    obj?["picture_medium"]?.Value<string>()
+                }
+                .FirstOrDefault(DeezerImageUrlValidator.IsAllowedDeezerImageUrl);
             if (string.IsNullOrWhiteSpace(url)) continue;
             await _repository.UpsertArtistSourceIdAsync(artistId, "deezer", id, token);
             return new[] { new RemoteCandidate("deezer", $"deezer:{id}", url, null, null) };
@@ -223,7 +242,7 @@ public sealed class ArtistArtworkCatalogService
 
     private async Task<IReadOnlyList<RemoteCandidate>> ResolveItunesAsync(string artistName, CancellationToken token)
     {
-        var url = await AppleQueueHelpers.ResolveItunesArtistImageAsync(_httpClients, artistName, 1200, _logger, token);
+        var url = await AppleQueueHelpers.ResolveItunesArtistImageAsync(_httpClients, artistName, ResolveRequestSize("apple"), _logger, token);
         return string.IsNullOrWhiteSpace(url) ? Array.Empty<RemoteCandidate>() : new[] { new RemoteCandidate("itunes", $"itunes:{url}", url, null, null) };
     }
 

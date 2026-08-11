@@ -16939,6 +16939,29 @@ ON CONFLICT(artist_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<IReadOnlyList<(long ArtistId, string? OriginalUrl)>> GetArtistArtworkOriginalUrlsAsync(
+        string role,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT artist_id, original_url
+FROM artist_artwork_cache
+WHERE role = @role
+  AND original_url IS NOT NULL
+  AND TRIM(original_url) <> '';";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("role", role);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var results = new List<(long, string?)>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add((reader.GetInt64(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
+        }
+
+        return results;
+    }
+
     public async Task UpsertArtistArtworkCacheAsync(
         ArtistArtworkCacheUpsertInput input,
         CancellationToken cancellationToken = default)

@@ -780,11 +780,48 @@ public sealed partial class ArtistMetadataUpdaterService
         var driverIds = missingByTarget.TryGetValue(driverTarget, out var selectedIds)
             ? selectedIds
             : new HashSet<long>();
+
+        // Target servers report a placeholder as "has artwork", so a stored provider placeholder
+        // would never be revisited. Fold those artists in so the run replaces them.
+        var placeholderIds = await FindArtistsWithPlaceholderArtworkAsync(scopedArtists, cancellationToken);
+        if (placeholderIds.Count > 0)
+        {
+            driverIds.UnionWith(placeholderIds);
+            warnings.Add($"Included {placeholderIds.Count} artist(s) whose stored artwork is a provider placeholder.");
+        }
+
         var counts = missingByTarget.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.Count,
             StringComparer.OrdinalIgnoreCase);
+        counts["placeholder"] = placeholderIds.Count;
         return new MissingArtistArtworkPlan(driverTarget, counts, driverIds, warnings);
+    }
+
+    private async Task<HashSet<long>> FindArtistsWithPlaceholderArtworkAsync(
+        IReadOnlyList<ArtistDto> scopedArtists,
+        CancellationToken cancellationToken)
+    {
+        var placeholders = new HashSet<long>();
+        try
+        {
+            var scoped = scopedArtists.Select(static artist => artist.Id).ToHashSet();
+            var stored = await _libraryRepository.GetArtistArtworkOriginalUrlsAsync("artist", cancellationToken);
+            foreach (var (artistId, originalUrl) in stored)
+            {
+                if (scoped.Contains(artistId)
+                    && !DeezSpoTag.Services.Download.Utils.DeezerImageUrlValidator.IsAllowedDeezerImageUrl(originalUrl))
+                {
+                    placeholders.Add(artistId);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Placeholder artist artwork audit failed.");
+        }
+
+        return placeholders;
     }
 
     private async Task<HashSet<long>> FindPlexMissingArtistArtworkAsync(

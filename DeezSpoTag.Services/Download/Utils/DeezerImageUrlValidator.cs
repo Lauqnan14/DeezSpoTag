@@ -36,12 +36,17 @@ public static class DeezerImageUrlValidator
             return true;
         }
 
-        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length < 3)
+        // Keep empty entries: Deezer serves placeholders as ".../images/artist//500x500-...jpg",
+        // and collapsing the blank segment would read the size token as the image hash.
+        var segments = uri.AbsolutePath.Split('/');
+        var imagesIndex = Array.FindIndex(
+            segments,
+            segment => segment.Equals("images", StringComparison.OrdinalIgnoreCase));
+        if (imagesIndex < 0 || segments.Length < imagesIndex + 3)
         {
             return true;
         }
 
-        return HasUsableDeezerMd5(segments[2]);
+        return HasUsableDeezerMd5(segments[imagesIndex + 2]);
     }
 }
