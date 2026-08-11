@@ -13,6 +13,7 @@ using DeezSpoTag.Core.Security;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Apple;
+using DeezSpoTag.Services.Utils;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 
@@ -121,6 +122,8 @@ public static class AppleQueueHelpers
     private const string RawItunesArtworkMarker = "#deezspotag-itunes-raw";
     private static readonly MemoryCache AppleArtworkCache = new(new MemoryCacheOptions { SizeLimit = 512 });
     private static readonly ConcurrentDictionary<string, Lazy<Task<AnimatedArtworkUrls?>>> AnimatedArtworkLookups =
+        new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Lazy<Task<string?>>> AnimatedArtworkSourceDownloads =
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, Lazy<Task<string?>>> AnimatedArtworkConversions =
         new(StringComparer.OrdinalIgnoreCase);
@@ -1451,24 +1454,42 @@ public static class AppleQueueHelpers
 
         if (!string.IsNullOrWhiteSpace(motion.SquareUrl))
         {
-            savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
+            var squareSourcePath = await CacheAnimatedArtworkSourceAsync(
+                httpClientFactory,
                 motion.SquareUrl,
-                Path.Join(outputDir, baseName),
-                outputFormats,
-                maxSizeBytes,
-                request.Logger,
-                cancellationToken));
+                request,
+                "square",
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(squareSourcePath))
+            {
+                savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
+                    squareSourcePath,
+                    Path.Join(outputDir, baseName),
+                    outputFormats,
+                    maxSizeBytes,
+                    request.Logger,
+                    cancellationToken));
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(motion.TallUrl))
         {
-            savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
+            var tallSourcePath = await CacheAnimatedArtworkSourceAsync(
+                httpClientFactory,
                 motion.TallUrl,
-                Path.Join(outputDir, $"{baseName}_tall"),
-                outputFormats,
-                maxSizeBytes,
-                request.Logger,
-                cancellationToken));
+                request,
+                "tall",
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(tallSourcePath))
+            {
+                savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
+                    tallSourcePath,
+                    Path.Join(outputDir, $"{baseName}_tall"),
+                    outputFormats,
+                    maxSizeBytes,
+                    request.Logger,
+                    cancellationToken));
+            }
         }
 
         var distinctSavedPaths = savedPaths
@@ -1702,6 +1723,12 @@ public static class AppleQueueHelpers
         return SHA256.HashData(left).AsSpan().SequenceEqual(SHA256.HashData(right));
     }
 
+    private static string ComputeSha256Hex(string value)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(value);
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+    }
+
     public static int ResolveAnimatedArtworkMaxSizeMb(DeezSpoTagSettings settings)
         => NormalizeAnimatedArtworkMaxSizeMb(settings.AnimatedArtworkMaxSizeMb);
 
@@ -1744,8 +1771,111 @@ public static class AppleQueueHelpers
         };
     }
 
+    private static async Task<string?> CacheAnimatedArtworkSourceAsync(
+        IHttpClientFactory httpClientFactory,
+        string sourceUrl,
+        AnimatedArtworkSaveRequest request,
+        string variant,
+        CancellationToken cancellationToken)
+    {
+        var normalizedUrl = sourceUrl.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedUrl))
+        {
+            return null;
+        }
+
+        var cachePath = BuildAnimatedArtworkSourceCachePath(normalizedUrl, request, variant);
+        if (File.Exists(cachePath) && new FileInfo(cachePath).Length > 0)
+        {
+            return cachePath;
+        }
+
+        var lazy = AnimatedArtworkSourceDownloads.GetOrAdd(
+            normalizedUrl,
+            _ => new Lazy<Task<string?>>(
+                () => DownloadAnimatedArtworkSourceAsync(httpClientFactory, normalizedUrl, cachePath, request.Logger, cancellationToken),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            return await lazy.Value;
+        }
+        finally
+        {
+            AnimatedArtworkSourceDownloads.TryRemove(
+                new KeyValuePair<string, Lazy<Task<string?>>>(normalizedUrl, lazy));
+        }
+    }
+
+    private static string BuildAnimatedArtworkSourceCachePath(
+        string sourceUrl,
+        AnimatedArtworkSaveRequest request,
+        string variant)
+    {
+        var dataRoot = DeezSpoTagDataRootResolver.Resolve();
+        var sourceRoot = Path.Join(dataRoot, "cache", "apple-motion", "source");
+        var identity = string.Join(
+            "|",
+            sourceUrl,
+            request.CollectionType ?? string.Empty,
+            request.CollectionId ?? string.Empty,
+            request.AppleId ?? string.Empty,
+            request.MaxResolution.ToString(CultureInfo.InvariantCulture),
+            variant);
+        var fileName = $"{ComputeSha256Hex(identity)}.mp4";
+        return Path.Join(sourceRoot, fileName);
+    }
+
+    private static async Task<string?> DownloadAnimatedArtworkSourceAsync(
+        IHttpClientFactory httpClientFactory,
+        string sourceUrl,
+        string cachePath,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(cachePath) ?? Path.GetTempPath());
+            var temporaryPath = $"{cachePath}.{Guid.NewGuid():N}.tmp";
+            using var client = httpClientFactory.CreateClient();
+            using var response = await client.GetAsync(sourceUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogDebug(
+                    "Apple animated artwork source download failed with HTTP {StatusCode}.",
+                    (int)response.StatusCode);
+                return null;
+            }
+
+            await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
+            await using (var output = File.Create(temporaryPath))
+            {
+                await input.CopyToAsync(output, cancellationToken);
+            }
+
+            if (!File.Exists(temporaryPath) || new FileInfo(temporaryPath).Length <= 0)
+            {
+                DeleteFileIfExists(temporaryPath);
+                return null;
+            }
+
+            if (File.Exists(cachePath))
+            {
+                DeleteFileIfExists(temporaryPath);
+                return cachePath;
+            }
+
+            File.Move(temporaryPath, cachePath);
+            return cachePath;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Apple animated artwork source cache write failed.");
+            return null;
+        }
+    }
+
     private static async Task<IReadOnlyList<string>> SaveAnimatedArtworkVariantAsync(
-        string inputUrl,
+        string inputPath,
         string outputPathWithoutExtension,
         IReadOnlyList<string> outputFormats,
         long maxSizeBytes,
@@ -1763,8 +1893,15 @@ public static class AppleQueueHelpers
                 continue;
             }
 
+            if (format.Equals(AnimatedArtworkMp4, StringComparison.OrdinalIgnoreCase)
+                && TryCopyAnimatedArtworkMp4(inputPath, outputPath, maxSizeBytes, logger))
+            {
+                savedPaths.Add(outputPath);
+                continue;
+            }
+
             conversions.Add(RunAnimatedArtworkConversionCoalescedAsync(
-                inputUrl,
+                inputPath,
                 outputPath,
                 format,
                 maxSizeBytes,
@@ -1781,8 +1918,52 @@ public static class AppleQueueHelpers
         return savedPaths;
     }
 
+    private static bool TryCopyAnimatedArtworkMp4(
+        string inputPath,
+        string outputPath,
+        long maxSizeBytes,
+        ILogger logger)
+    {
+        try
+        {
+            if (!File.Exists(inputPath) || new FileInfo(inputPath).Length <= 0)
+            {
+                return false;
+            }
+
+            var extension = Path.GetExtension(inputPath).TrimStart('.');
+            if (!extension.Equals(AnimatedArtworkMp4, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var outputDirectory = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                Directory.CreateDirectory(outputDirectory);
+            }
+
+            if (maxSizeBytes > 0 && new FileInfo(inputPath).Length > maxSizeBytes)
+            {
+                logger.LogInformation(
+                    "Animated artwork {Output} is {ActualBytes} bytes and exceeds the {BudgetBytes} byte budget.",
+                    LogSanitizer.OneLine(Path.GetFileName(outputPath)),
+                    new FileInfo(inputPath).Length,
+                    maxSizeBytes);
+            }
+
+            File.Copy(inputPath, outputPath, overwrite: false);
+            return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            logger.LogDebug(ex, "Apple animated artwork MP4 copy failed.");
+            return false;
+        }
+    }
+
     private static async Task<string?> RunAnimatedArtworkConversionCoalescedAsync(
-        string inputUrl,
+        string inputPath,
         string outputPath,
         string format,
         long maxSizeBytes,
@@ -1792,7 +1973,7 @@ public static class AppleQueueHelpers
         var lazy = AnimatedArtworkConversions.GetOrAdd(
             outputPath,
             _ => new Lazy<Task<string?>>(
-                () => RunFfmpegAnimatedArtworkAsync(inputUrl, outputPath, format, maxSizeBytes, logger, cancellationToken),
+                () => RunFfmpegAnimatedArtworkAsync(inputPath, outputPath, format, maxSizeBytes, logger, cancellationToken),
                 LazyThreadSafetyMode.ExecutionAndPublication));
         try
         {

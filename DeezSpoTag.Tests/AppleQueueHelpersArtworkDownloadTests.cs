@@ -186,6 +186,38 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
     }
 
     [Fact]
+    public async Task AnimatedArtworkConversion_Mp4OnlyCopiesExistingSourceWithoutFfmpeg()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var source = Path.Join(root, "source.mp4");
+        var outputBase = Path.Join(root, "cover");
+        var output = $"{outputBase}.mp4";
+        var sourceBytes = new byte[] { 0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109 };
+        await File.WriteAllBytesAsync(source, sourceBytes);
+
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "SaveAnimatedArtworkVariantAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task<IReadOnlyList<string>>>(method!.Invoke(null, new object[]
+        {
+            source,
+            outputBase,
+            new[] { "mp4" },
+            (long)AppleQueueHelpers.DefaultAnimatedArtworkMaxSizeMb * 1024 * 1024,
+            NullLogger.Instance,
+            CancellationToken.None
+        }));
+
+        var savedPaths = await task;
+
+        Assert.Equal(new[] { output }, savedPaths);
+        Assert.True(File.Exists(output));
+        Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(output));
+    }
+
+    [Fact]
     public async Task SaveExistingAnimatedArtworkVariantsAsync_ReusesExistingMp4AndCreatesRequestedFormats()
     {
         var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
