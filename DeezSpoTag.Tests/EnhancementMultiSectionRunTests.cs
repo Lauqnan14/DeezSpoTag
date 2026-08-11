@@ -340,4 +340,74 @@ public sealed class EnhancementMultiSectionRunTests
 
         throw new DirectoryNotFoundException("Repository root was not found.");
     }
+
+    [Fact]
+    public void EveryEnabledSectionRunsOnABatchBeforeTheNextBatchStarts()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("ApplyEnhancementBatchTemplatesAsync(", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 1400)];
+
+        Assert.Contains("RunEnabledEnhancementSectionsForBatchAsync(job, configPath, batchFiles", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PerBatchSectionRunnerCoversFolderUniformityAndCoverMaintenance()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("RunEnabledEnhancementSectionsForBatchAsync(\n", StringComparison.Ordinal);
+        if (start < 0)
+        {
+            start = workflows.IndexOf("private async Task RunEnabledEnhancementSectionsForBatchAsync(", StringComparison.Ordinal);
+        }
+
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 2600)];
+
+        Assert.Contains("IsFolderUniformityWorkflowEnabled(enhancementRoot)", body, StringComparison.Ordinal);
+        Assert.Contains("RunFolderUniformityForPathsAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("IsCoverMaintenanceWorkflowEnabled(enhancementRoot)", body, StringComparison.Ordinal);
+        Assert.Contains("RunCoverMaintenanceForBatchAsync(", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EndOfRunPassDoesNotRepeatWorkAlreadyDonePerBatch()
+    {
+        var workflows = ReadEnhancementWorkflows();
+
+        Assert.Contains("job.EnhancementSectionsAppliedPerBatch = true;", workflows, StringComparison.Ordinal);
+        Assert.Contains("if (job.EnhancementSectionsAppliedPerBatch)", workflows, StringComparison.Ordinal);
+        Assert.Contains("already applied per batch", workflows, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PerBatchSectionsAreScopedToTheBatchFiles()
+    {
+        var workflows = ReadEnhancementWorkflows();
+
+        Assert.Contains("ResolveBatchRootPaths(", workflows, StringComparison.Ordinal);
+        Assert.Contains("TargetFiles: batchFiles.ToList()", workflows, StringComparison.Ordinal);
+    }
+
+    private static string ReadEnhancementWorkflows()
+        => File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
+
+    private static string FindEnhancementRepoRoot()
+    {
+        var directory = Directory.GetCurrentDirectory();
+        while (!string.IsNullOrWhiteSpace(directory))
+        {
+            if (Directory.Exists(Path.Join(directory, "DeezSpoTag.Web"))
+                && Directory.Exists(Path.Join(directory, "DeezSpoTag.Tests")))
+            {
+                return directory;
+            }
+
+            directory = Directory.GetParent(directory)?.FullName ?? string.Empty;
+        }
+
+        throw new DirectoryNotFoundException("Repository root was not found.");
+    }
 }

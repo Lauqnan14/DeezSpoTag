@@ -367,7 +367,11 @@ public partial class AutoTagService
         var scopedFoldersByPath = BuildScopedFoldersByPath(scopedFolders);
 
         AppendLog(job, $"enhancement workflow: folder uniformity starting ({rootPaths.Count} path(s)).");
-        if (ReadBool(folderUniformity!, "enforceFolderStructure") != false)
+        if (job.EnhancementSectionsAppliedPerBatch)
+        {
+            AppendLog(job, "enhancement workflow: folder structure already applied per batch; running library-wide steps only.");
+        }
+        else if (ReadBool(folderUniformity!, "enforceFolderStructure") != false)
         {
             await RunFolderUniformityForPathsAsync(job, folderUniformity!, rootPaths, profileState, scopedFoldersByPath, cancellationToken);
         }
@@ -387,12 +391,132 @@ public partial class AutoTagService
         string configPath,
         IReadOnlyList<string> batchFiles,
         CancellationToken cancellationToken)
-        => await ApplyProfileTemplatesToFilesAsync(
+    {
+        await ApplyProfileTemplatesToFilesAsync(
             job,
             configPath,
             batchFiles,
             requireSuccessfulEnhancement: true,
             cancellationToken);
+        await RunEnabledEnhancementSectionsForBatchAsync(job, configPath, batchFiles, cancellationToken);
+        job.EnhancementSectionsAppliedPerBatch = true;
+        SaveJob(job);
+    }
+
+    private async Task RunEnabledEnhancementSectionsForBatchAsync(
+        AutoTagJob job,
+        string configPath,
+        IReadOnlyList<string> batchFiles,
+        CancellationToken cancellationToken)
+    {
+        if (batchFiles.Count == 0)
+        {
+            return;
+        }
+
+        var root = LoadConfigRoot(configPath);
+        if (root?[AutoTagLiterals.EnhancementStage] is not JsonObject enhancementRoot)
+        {
+            return;
+        }
+
+        var enabledFolders = await ResolveEnabledMusicFoldersAsync(cancellationToken);
+        var batchRootPaths = ResolveBatchRootPaths(batchFiles, enabledFolders);
+        if (batchRootPaths.Count == 0)
+        {
+            return;
+        }
+
+        if (IsFolderUniformityWorkflowEnabled(enhancementRoot)
+            && TryGetFolderUniformityConfig(enhancementRoot, out var folderUniformity)
+            && ReadBool(folderUniformity!, "enforceFolderStructure") != false)
+        {
+            var profileState = await _profileResolutionService.LoadNormalizedStateAsync(
+                includeFolders: true,
+                cancellationToken);
+            var scopedFolders = enabledFolders
+                .Where(folder => !string.IsNullOrWhiteSpace(folder.RootPath)
+                    && batchRootPaths.Any(path => PathsOverlap(path, folder.RootPath)))
+                .ToList();
+            AppendLog(job, $"enhancement batch: folder uniformity for {batchFiles.Count} file(s).");
+            await RunFolderUniformityForPathsAsync(
+                job,
+                folderUniformity!,
+                batchRootPaths,
+                profileState,
+                BuildScopedFoldersByPath(scopedFolders),
+                cancellationToken);
+        }
+
+        if (IsCoverMaintenanceWorkflowEnabled(enhancementRoot))
+        {
+            AppendLog(job, $"enhancement batch: cover maintenance for {batchFiles.Count} file(s).");
+            await RunCoverMaintenanceForBatchAsync(job, root, enhancementRoot, batchRootPaths, batchFiles, cancellationToken);
+        }
+    }
+
+    private async Task RunCoverMaintenanceForBatchAsync(
+        AutoTagJob job,
+        JsonNode root,
+        JsonObject enhancementRoot,
+        IReadOnlyList<string> batchRootPaths,
+        IReadOnlyList<string> batchFiles,
+        CancellationToken cancellationToken)
+    {
+        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance)
+        {
+            return;
+        }
+
+        var settings = _settingsService.LoadSettings();
+        var request = new CoverLibraryMaintenanceRequest(
+            RootPaths: batchRootPaths,
+            IncludeSubfolders: true,
+            WorkerCount: Math.Max(1, ReadOptionalInt(coverMaintenance, "workerCount") ?? 1),
+            UpgradeLowResolutionCovers: ReadBool(coverMaintenance, "upgradeLowResolutionCovers") != false,
+            MinResolution: ReadOptionalInt(coverMaintenance, "minResolution") ?? 500,
+            TargetResolution: ReadOptionalInt(coverMaintenance, "targetResolution") ?? 1200,
+            SizeTolerancePercent: 25,
+            PreserveSourceFormat: string.Equals(settings.LocalArtworkFormat, "png", StringComparison.OrdinalIgnoreCase),
+            ReplaceMissingEmbeddedCovers: ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") != false,
+            SyncExternalCovers: ReadBool(coverMaintenance, "syncExternalCovers") != false,
+            QueueAnimatedArtwork: ReadBool(coverMaintenance, "queueAnimatedArtwork") == true,
+            AppleStorefront: string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
+            AnimatedArtworkMaxResolution: settings.Video?.AppleMusicVideoMaxResolution ?? 2160,
+            AnimatedArtworkFormats: AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
+            AnimatedArtworkMaxSizeMb: AppleQueueHelpers.ResolveAnimatedArtworkMaxSizeMb(settings),
+            CoverImageTemplate: settings.CoverImageTemplate,
+            RenameExistingAnimatedArtwork: ReadBool(coverMaintenance, "renameExistingAnimatedArtwork") != false,
+            TargetFiles: batchFiles.ToList());
+        var result = await _coverMaintenanceService.RunAsync(request, cancellationToken);
+        if (!result.Success)
+        {
+            throw new InvalidOperationException(result.Message);
+        }
+    }
+
+    private static List<string> ResolveBatchRootPaths(
+        IReadOnlyList<string> batchFiles,
+        IReadOnlyList<FolderDto> enabledFolders)
+    {
+        var roots = new List<string>();
+        foreach (var folder in enabledFolders)
+        {
+            if (string.IsNullOrWhiteSpace(folder.RootPath))
+            {
+                continue;
+            }
+
+            var folderRoot = Path.GetFullPath(folder.RootPath);
+            if (batchFiles.Any(file => LibraryFolderPathSafety.IsSameOrDescendantPath(file, folderRoot))
+                && !roots.Contains(folderRoot, StringComparer.OrdinalIgnoreCase))
+            {
+                roots.Add(folderRoot);
+            }
+        }
+
+        return roots;
+    }
 
     private async Task ApplyProfileTemplatesToFilesAsync(
         AutoTagJob job,

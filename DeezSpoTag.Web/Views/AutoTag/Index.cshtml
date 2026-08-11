@@ -950,7 +950,14 @@
                                 </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="removeEmptyFolders" checked />
-                                <label for="removeEmptyFolders">Remove empty folders after reorganization</label>
+                                <label for="removeEmptyFolders">
+                                    Remove empty folders after reorganization
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Runs once after every batch has been processed, not per batch, because a folder that looks empty mid-run may still receive files from a later batch."
+                                          aria-label="Runs once after every batch has been processed, not per batch, because a folder that looks empty mid-run may still receive files from a later batch.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
                             </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="mergeNoAudioArtistFolders" checked />
@@ -998,8 +1005,8 @@
                                 <label for="runFolderUniformityDedupe">
                                     Run dedupe alongside folder uniformity
                                     <span class="autotag-tooltip-icon ms-1"
-                                          title="Runs folder and file template normalization first, then optional dedupe on the same scope."
-                                          aria-label="Runs folder and file template normalization first, then optional dedupe on the same scope.">
+                                          title="Compares tracks across the whole library, so it runs once after every batch has been processed rather than per batch. Restricting it to a batch would miss duplicates whose other copy sits in a different batch."
+                                          aria-label="Compares tracks across the whole library, so it runs once after every batch has been processed rather than per batch. Restricting it to a batch would miss duplicates whose other copy sits in a different batch.">
                                         <i class="fas fa-question-circle"></i>
                                     </span>
                                 </label>
@@ -1280,8 +1287,8 @@
                     <div class="playlist-settings-section-title">
                         Enhancement Run Workflows
                         <span class="autotag-tooltip-icon ms-1"
-                              title="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below."
-                              aria-label="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below.">
+                              title="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below. Every ticked workflow is applied to a batch in full before the next batch starts, except dedupe and empty-folder removal, which compare the whole library and run once at the end."
+                              aria-label="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below. Every ticked workflow is applied to a batch in full before the next batch starts, except dedupe and empty-folder removal, which compare the whole library and run once at the end.">
                             <i class="fas fa-question-circle"></i>
                         </span>
                     </div>

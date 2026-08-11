@@ -112,6 +112,7 @@ public abstract class AutoTagRunState
     public string? ProfileId { get; set; }
     public string? ProfileName { get; set; }
     public string? EnhancementFeature { get; set; }
+    public bool EnhancementSectionsAppliedPerBatch { get; set; }
     public string? EnhancementGroupId { get; set; }
     public string? CurrentPhase { get; set; }
     public int CurrentBatch { get; set; }
