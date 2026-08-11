@@ -278,6 +278,7 @@ public sealed class DownloadEngineArtworkHelperTests
     [Theory]
     [InlineData("")]
     [InlineData("https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png")]
+    [InlineData("https://lastfm-img.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png")]
     public void LastFmArtistImageService_RejectsInvalidAndPlaceholderUrls(string url)
     {
         Assert.False(LastFmArtistImageService.IsValidImageUrl(url));
@@ -292,7 +293,7 @@ public sealed class DownloadEngineArtworkHelperTests
                 <img src="https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.jpg">
             </a>
             <a href="/music/Alicio/+images/8b1f6f35d03f4af0b8a7cfb56fb11a99">
-                <img src="//lastfm.freetls.fastly.net/i/u/ar0/8b1f6f35d03f4af0b8a7cfb56fb11a99.jpg">
+                <img src="//lastfm-img.freetls.fastly.net/i/u/ar0/8b1f6f35d03f4af0b8a7cfb56fb11a99.jpg">
             </a>
             <a href="/music/Alicio/+images/8b1f6f35d03f4af0b8a7cfb56fb11a99">
                 <img src="https://lastfm.freetls.fastly.net/i/u/300x300/8b1f6f35d03f4af0b8a7cfb56fb11a99.jpg">
@@ -310,7 +311,7 @@ public sealed class DownloadEngineArtworkHelperTests
         var result = LastFmArtistImageService.ExtractGalleryImages(html, 8, "Alicio");
 
         Assert.Equal(2, result.Count);
-        Assert.Equal("https://lastfm.freetls.fastly.net/i/u/ar0/8b1f6f35d03f4af0b8a7cfb56fb11a99.jpg", result[0].Url);
+        Assert.Equal("https://lastfm-img.freetls.fastly.net/i/u/ar0/8b1f6f35d03f4af0b8a7cfb56fb11a99.jpg", result[0].Url);
         Assert.Equal("Last.fm gallery", result[0].Label);
         Assert.All(result, candidate => Assert.Equal("lastfm", candidate.Source));
     }

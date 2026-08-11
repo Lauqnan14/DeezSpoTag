@@ -57,7 +57,7 @@ public sealed class LastFmMatcher
             return BuildResult(info, cached.Tags);
         }
 
-        var response = await FetchAsync(apiKey, artist, title, cancellationToken);
+        var response = await FetchTrackTagsAsync(apiKey, artist, title, cancellationToken);
         if (response?.Error is 6 or 7)
         {
             SetCache(cacheKey, Array.Empty<ClassifiedTag>(), NegativeCacheTtl);
@@ -65,29 +65,34 @@ public sealed class LastFmMatcher
         }
         if (response is null || response.Error.HasValue || !IdentityMatches(response.Toptags?.Attributes, artist, title)) return null;
 
-        var weighted = response.Toptags?.Tag?
-            .Select(tag => new WeightedTag(NormalizeDisplay(tag.Name), tag.Count ?? 0))
-            .Where(tag => !string.IsNullOrWhiteSpace(tag.Name) && !JunkTags.Contains(tag.Name))
-            .OrderByDescending(tag => tag.Count)
-            .ToList() ?? new();
-        var leading = weighted.FirstOrDefault()?.Count ?? 0;
-        var tags = weighted
-            .Where(tag => tag.Count >= Math.Max(0, config.MinTagCount))
-            .Where(tag => leading <= 0 || tag.Count / (double)leading >= Math.Clamp(config.MinRelativeWeight, 0, 1))
-            .Select(Classify)
-            .Where(tag => tag != null)
-            .Select(tag => tag!)
-            .DistinctBy(tag => $"{tag.Kind}:{tag.Value}", StringComparer.OrdinalIgnoreCase)
-            .Take(Math.Clamp(config.MaxTags, 1, 50))
-            .ToArray();
+        var tags = ClassifyTags(response.Toptags?.Tag, config);
+        if (tags.Length == 0)
+        {
+            var artistResponse = await FetchArtistTagsAsync(apiKey, artist, cancellationToken);
+            if (artistResponse is not null && !artistResponse.Error.HasValue)
+            {
+                tags = ClassifyTags(artistResponse.Toptags?.Tag, config);
+            }
+        }
 
         SetCache(cacheKey, tags, tags.Length > 0 ? CacheTtl : NegativeCacheTtl);
         return BuildResult(info, tags);
     }
 
-    private async Task<LastFmTopTagsResponse?> FetchAsync(string apiKey, string artist, string title, CancellationToken token)
+    private async Task<LastFmTopTagsResponse?> FetchTrackTagsAsync(string apiKey, string artist, string title, CancellationToken token)
     {
         var url = $"https://ws.audioscrobbler.com/2.0/?method=track.gettoptags&artist={Uri.EscapeDataString(artist)}&track={Uri.EscapeDataString(title)}&api_key={Uri.EscapeDataString(apiKey)}&format=json&autocorrect=1";
+        return await FetchAsync(url, $"{artist} - {title}", token);
+    }
+
+    private async Task<LastFmTopTagsResponse?> FetchArtistTagsAsync(string apiKey, string artist, CancellationToken token)
+    {
+        var url = $"https://ws.audioscrobbler.com/2.0/?method=artist.gettoptags&artist={Uri.EscapeDataString(artist)}&api_key={Uri.EscapeDataString(apiKey)}&format=json&autocorrect=1";
+        return await FetchAsync(url, artist, token);
+    }
+
+    private async Task<LastFmTopTagsResponse?> FetchAsync(string url, string lookupContext, CancellationToken token)
+    {
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             try
@@ -98,12 +103,31 @@ public sealed class LastFmMatcher
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) when (attempt == 3)
             {
-                _logger.LogWarning(ex, "Last.fm AutoTag lookup failed for {Artist} - {Title}", artist, title);
+                _logger.LogWarning(ex, "Last.fm AutoTag lookup failed for {LookupContext}", lookupContext);
                 return null;
             }
             await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt * attempt), token);
         }
         return null;
+    }
+
+    private static ClassifiedTag[] ClassifyTags(IEnumerable<LastFmTag>? rawTags, LastFmConfig config)
+    {
+        var weighted = rawTags?
+            .Select(tag => new WeightedTag(NormalizeDisplay(tag.Name), tag.Count ?? 0))
+            .Where(tag => !string.IsNullOrWhiteSpace(tag.Name) && !JunkTags.Contains(tag.Name))
+            .OrderByDescending(tag => tag.Count)
+            .ToList() ?? new();
+        var leading = weighted.FirstOrDefault()?.Count ?? 0;
+        return weighted
+            .Where(tag => tag.Count >= Math.Max(0, config.MinTagCount))
+            .Where(tag => leading <= 0 || tag.Count / (double)leading >= Math.Clamp(config.MinRelativeWeight, 0, 1))
+            .Select(Classify)
+            .Where(tag => tag != null)
+            .Select(tag => tag!)
+            .DistinctBy(tag => $"{tag.Kind}:{tag.Value}", StringComparer.OrdinalIgnoreCase)
+            .Take(Math.Clamp(config.MaxTags, 1, 50))
+            .ToArray();
     }
 
     private static bool IdentityMatches(LastFmTopTagsAttributes? attributes, string artist, string title)

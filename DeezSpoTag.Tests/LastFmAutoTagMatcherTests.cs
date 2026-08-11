@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
@@ -56,6 +58,35 @@ public sealed class LastFmAutoTagMatcherTests
             new LastFmConfig(), CancellationToken.None);
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task MatchAsync_UsesArtistTagsWhenTrackHasNoUsableTags()
+    {
+        var handler = new StubHandler([
+            """
+            {"toptags":{"@attr":{"artist":"Alicios","track":"Example"},"tag":[]}}
+            """,
+            """
+            {"toptags":{"@attr":{"artist":"Alicios"},"tag":[
+              {"name":"pop","count":100},{"name":"dance pop","count":75},{"name":"happy","count":50}]}}
+            """
+        ]);
+        var (matcher, auth) = CreateMatcher(handler);
+        await auth.UpdateAsync(state => state.LastFm = new LastFmAuth { ApiKey = "central-key" });
+
+        var result = await matcher.MatchAsync(
+            new AutoTagAudioInfo { Artist = "Alicios", Title = "Example" },
+            new LastFmConfig { MaxTags = 12, MinTagCount = 10, MinRelativeWeight = .15 },
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(["Pop"], result!.Track.Genres);
+        Assert.Equal(["Dance Pop"], result.Track.Styles);
+        Assert.Equal("Happy", result.Track.Mood);
+        Assert.Equal(2, handler.RequestUris.Count);
+        Assert.Contains("method=track.gettoptags", handler.RequestUris[0].Query, StringComparison.Ordinal);
+        Assert.Contains("method=artist.gettoptags", handler.RequestUris[1].Query, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -143,12 +174,31 @@ public sealed class LastFmAutoTagMatcherTests
         public HttpClient CreateClient(string name) => new(handler, false);
     }
 
-    private sealed class StubHandler(string json) : HttpMessageHandler
+    private sealed class StubHandler : HttpMessageHandler
     {
-        public Uri? RequestUri { get; private set; }
+        private readonly Queue<string> _responses;
+
+        public StubHandler(string json)
+            : this([json])
+        {
+        }
+
+        public StubHandler(IEnumerable<string> responses)
+        {
+            _responses = new Queue<string>(responses);
+        }
+
+        public Uri? RequestUri => RequestUris.LastOrDefault();
+        public List<Uri> RequestUris { get; } = new();
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            RequestUri = request.RequestUri;
+            if (request.RequestUri != null)
+            {
+                RequestUris.Add(request.RequestUri);
+            }
+
+            var json = _responses.Count > 0 ? _responses.Dequeue() : "{}";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) });
         }
     }

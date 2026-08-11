@@ -10,7 +10,7 @@ public sealed class LastFmArtistImageService : ILastFmArtistImageResolver
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex GalleryImageRegex = new(
-        @"(?<url>(?:https?:)?//lastfm\.freetls\.fastly\.net/i/u/[^""'<>\s\\]+)",
+        @"(?<url>(?:https?:)?//lastfm(?:-img)?\.freetls\.fastly\.net/i/u/[^""'<>\s\\]+)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         RegexTimeout);
 

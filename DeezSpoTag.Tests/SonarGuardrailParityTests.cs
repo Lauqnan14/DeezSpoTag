@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Web.Services;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -10,19 +13,21 @@ public sealed class SonarGuardrailParityTests
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
 
     [Fact]
-    public void DefaultConfig_FileTemplates_AreUnified()
+    public void TaggingProfiles_FileTemplates_AreCanonicalized()
     {
-        var root = FindRepoRoot();
-        var configPath = Path.Combine(root, "DeezSpoTag.Workers", "Data", "deezspotag", "config.json");
-        Assert.True(File.Exists(configPath), $"Config file not found: {configPath}");
+        var data = new Dictionary<string, JsonElement>
+        {
+            ["tracknameTemplate"] = JsonSerializer.SerializeToElement("%artist% - %title%"),
+            ["albumTracknameTemplate"] = JsonSerializer.SerializeToElement("%tracknumber% - %title%"),
+            ["playlistTracknameTemplate"] = JsonSerializer.SerializeToElement("%playlist_position% - %title%")
+        };
 
-        var json = File.ReadAllText(configPath);
-        var trackTemplate = ExtractJsonString(json, "tracknameTemplate");
-        var albumTemplate = ExtractJsonString(json, "albumTracknameTemplate");
-        var playlistTemplate = ExtractJsonString(json, "playlistTracknameTemplate");
+        var changed = TaggingProfileCanonicalizer.CanonicalizeTemplateKeys(data);
 
-        Assert.Equal(trackTemplate, albumTemplate);
-        Assert.Equal(trackTemplate, playlistTemplate);
+        Assert.True(changed);
+        Assert.True(data.ContainsKey("tracknameTemplate"));
+        Assert.False(data.ContainsKey("albumTracknameTemplate"));
+        Assert.False(data.ContainsKey("playlistTracknameTemplate"));
     }
 
     [Fact]
