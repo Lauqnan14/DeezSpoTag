@@ -751,9 +751,12 @@ internal sealed class WatchlistEngine
 
         var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
         var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
+        var playlistNotificationLabel = string.IsNullOrWhiteSpace(playlist.Name)
+            ? ResolveSourceLabel(source)
+            : playlist.Name.Trim();
         var queueOptions = BuildQueueWatchOptions(new QueueWatchOptionsInput
         {
-            SourceLabel = ResolveSourceLabel(source),
+            SourceLabel = playlistNotificationLabel,
             WatchlistSource = source,
             WatchlistPlaylistId = sourceId,
             PreferredEngine = preference?.PreferredEngine,

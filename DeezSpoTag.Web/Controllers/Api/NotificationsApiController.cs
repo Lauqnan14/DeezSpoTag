@@ -156,7 +156,7 @@ public sealed class NotificationsApiController : ControllerBase
             preferences.RetentionDays
         };
 
-    public sealed record MarkReadRequest(List<string> Ids);
+    public sealed record MarkReadRequest(List<string>? Ids);
     public sealed record NotificationChannelRequest(bool? InApp, bool? Webhook);
     public sealed record NotificationPreferencesRequest(
         Dictionary<string, NotificationChannelRequest>? Events,

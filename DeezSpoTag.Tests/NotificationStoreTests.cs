@@ -111,6 +111,19 @@ public sealed class NotificationStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Clear_RemovesReadAndUnreadNotifications()
+    {
+        var read = await _store.AddOrCoalesceAsync(Request("read"), 30);
+        await _store.AddOrCoalesceAsync(Request("unread"), 30);
+        await _store.MarkReadAsync([read.Entry.Id]);
+
+        Assert.Equal(2, await _store.ClearAsync());
+
+        Assert.Empty(await _store.GetAsync());
+        Assert.Equal(0, await _store.GetUnreadCountAsync());
+    }
+
+    [Fact]
     public async Task OnlyTheFirstRaiseOpensAnIncident()
     {
         var first = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);

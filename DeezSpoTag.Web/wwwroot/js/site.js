@@ -2328,11 +2328,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function clearNotifications(ids) {
         try {
-            await fetch('/api/notifications/clear', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(ids ? { ids } : {})
-            });
+            const request = ids
+                ? {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids })
+                }
+                : { method: 'POST' };
+            const response = await fetch('/api/notifications/clear', request);
+            if (!response.ok) {
+                throw new Error(`Notification clear failed: ${response.status}`);
+            }
             await loadNotifications();
         } catch (error) {
             console.warn('Failed to clear notifications', error);
@@ -2389,6 +2395,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     void clearNotifications([clearButton.dataset.notificationClear]);
                 }
             });
+        }
 
         const clearAll = document.getElementById('notificationsClearAll');
         if (clearAll) {
@@ -2396,7 +2403,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 event.preventDefault();
                 void clearNotifications(null);
             });
-        }
         }
 
         void loadNotifications();
