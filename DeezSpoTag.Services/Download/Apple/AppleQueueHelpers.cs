@@ -127,6 +127,8 @@ public static class AppleQueueHelpers
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, Lazy<Task<string?>>> AnimatedArtworkConversions =
         new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SemaphoreSlim AnimatedArtworkFfmpegGate = new(1, 1);
+    private static readonly TimeSpan AnimatedArtworkFfmpegTimeout = TimeSpan.FromMinutes(5);
     private static readonly string? FfmpegExecutable = ResolveExecutablePath(
         OperatingSystem.IsWindows()
             ? new[] { "ffmpeg.exe" }
@@ -1883,7 +1885,6 @@ public static class AppleQueueHelpers
         CancellationToken cancellationToken)
     {
         var savedPaths = new List<string>();
-        var conversions = new List<Task<string?>>();
         foreach (var format in outputFormats)
         {
             var outputPath = $"{outputPathWithoutExtension}.{format}";
@@ -1900,19 +1901,17 @@ public static class AppleQueueHelpers
                 continue;
             }
 
-            conversions.Add(RunAnimatedArtworkConversionCoalescedAsync(
+            var converted = await RunAnimatedArtworkConversionCoalescedAsync(
                 inputPath,
                 outputPath,
                 format,
                 maxSizeBytes,
                 logger,
-                cancellationToken));
-        }
-
-        if (conversions.Count > 0)
-        {
-            var results = await Task.WhenAll(conversions);
-            savedPaths.AddRange(results.Where(static path => !string.IsNullOrWhiteSpace(path))!);
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(converted))
+            {
+                savedPaths.Add(converted);
+            }
         }
 
         return savedPaths;
@@ -2770,6 +2769,31 @@ public static class AppleQueueHelpers
         ILogger logger,
         CancellationToken cancellationToken)
     {
+        await AnimatedArtworkFfmpegGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await RunSingleAnimatedArtworkEncodeGuardedAsync(
+                inputUrl,
+                temporaryPath,
+                format,
+                rung,
+                logger,
+                cancellationToken);
+        }
+        finally
+        {
+            AnimatedArtworkFfmpegGate.Release();
+        }
+    }
+
+    private static async Task<long> RunSingleAnimatedArtworkEncodeGuardedAsync(
+        string inputUrl,
+        string temporaryPath,
+        string format,
+        AnimatedArtworkEncodeRung rung,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = FfmpegExecutable,
@@ -2780,6 +2804,9 @@ public static class AppleQueueHelpers
         };
         startInfo.ArgumentList.Add("-loglevel");
         startInfo.ArgumentList.Add("error");
+        startInfo.ArgumentList.Add("-nostdin");
+        startInfo.ArgumentList.Add("-threads");
+        startInfo.ArgumentList.Add("1");
         startInfo.ArgumentList.Add("-y");
         startInfo.ArgumentList.Add("-i");
         startInfo.ArgumentList.Add(inputUrl);
@@ -2787,9 +2814,41 @@ public static class AppleQueueHelpers
         startInfo.ArgumentList.Add(temporaryPath);
 
         using var process = new Process { StartInfo = startInfo };
-        process.Start();
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(AnimatedArtworkFfmpegTimeout);
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            logger.LogDebug(ex, "Failed to start ffmpeg animated artwork encode.");
+            return 0;
+        }
+
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            KillAnimatedArtworkFfmpeg(process, logger);
+            logger.LogWarning(
+                "ffmpeg animated artwork encode timed out after {TimeoutSeconds}s for {Format} at width {MaxWidth}.",
+                (int)AnimatedArtworkFfmpegTimeout.TotalSeconds,
+                format,
+                rung.MaxWidth);
+            DeleteFileIfExists(temporaryPath);
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            KillAnimatedArtworkFfmpeg(process, logger);
+            DeleteFileIfExists(temporaryPath);
+            throw;
+        }
+
         var stderr = await stderrTask;
         if (process.ExitCode != 0)
         {
@@ -2802,6 +2861,21 @@ public static class AppleQueueHelpers
         }
 
         return File.Exists(temporaryPath) ? new FileInfo(temporaryPath).Length : 0;
+    }
+
+    private static void KillAnimatedArtworkFfmpeg(Process process, ILogger logger)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            logger.LogDebug(ex, "Failed to kill timed-out ffmpeg animated artwork process.");
+        }
     }
 
     private static void AddAnimatedArtworkFfmpegArguments(

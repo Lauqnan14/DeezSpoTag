@@ -63,6 +63,20 @@ public sealed class AnimatedArtworkSizeBudgetTests
     }
 
     [Fact]
+    public void AnimatedArtworkFfmpegIsSerializedAndBounded()
+    {
+        var source = ReadHelpers();
+
+        Assert.Contains("AnimatedArtworkFfmpegGate", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkFfmpegTimeout", source, StringComparison.Ordinal);
+        Assert.Contains("process.Kill(entireProcessTree: true)", source, StringComparison.Ordinal);
+        Assert.Contains("startInfo.ArgumentList.Add(\"-nostdin\");", source, StringComparison.Ordinal);
+        Assert.Contains("startInfo.ArgumentList.Add(\"-threads\");", source, StringComparison.Ordinal);
+        Assert.Contains("startInfo.ArgumentList.Add(\"1\");", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.WhenAll(conversions)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task WebpIsReEncodedUntilItFitsTheConfiguredBudget()
     {
         var root = CreateTempDirectory();
