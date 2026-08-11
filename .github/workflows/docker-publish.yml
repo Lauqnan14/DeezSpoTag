@@ -14,6 +14,23 @@ on:
         options:
           - prerelease
           - stable
+      publish_main_app:
+        description: "Publish the main DeezSpoTag image"
+        required: true
+        default: yes
+        type: choice
+        options:
+          - yes
+          - no
+      publish_apple_wrapper:
+        description: "Publish the Apple Wrapper image"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - yes
+          - no
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -47,8 +64,61 @@ jobs:
           echo "channel=${channel}" >> "$GITHUB_OUTPUT"
           echo "Release channel: ${channel}"
 
+  change-scope:
+    runs-on: ubuntu-latest
+    outputs:
+      app_changed: ${{ steps.scope.outputs.app_changed }}
+      apple_wrapper_changed: ${{ steps.scope.outputs.apple_wrapper_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve changed image scopes
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_changed="true"
+          apple_wrapper_changed="false"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${{ github.event.inputs.publish_main_app }}" == "no" ]]; then
+              app_changed="false"
+            fi
+            if [[ "${{ github.event.inputs.publish_apple_wrapper }}" == "yes" ]]; then
+              apple_wrapper_changed="true"
+            fi
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            base="${{ github.event.before }}"
+            if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              base="$(git rev-list --max-parents=0 HEAD | tail -n1)"
+            fi
+
+            changed_files="$(git diff --name-only "${base}..HEAD")"
+            app_changed="false"
+            while IFS= read -r changed_file; do
+              [[ -z "$changed_file" ]] && continue
+              if [[ "$changed_file" == Tools/AppleMusicWrapper/* ]]; then
+                apple_wrapper_changed="true"
+                continue
+              fi
+              if [[ "$changed_file" == .github/* ]]; then
+                continue
+              fi
+              app_changed="true"
+            done <<< "$changed_files"
+          fi
+
+          echo "app_changed=${app_changed}" >> "$GITHUB_OUTPUT"
+          echo "apple_wrapper_changed=${apple_wrapper_changed}" >> "$GITHUB_OUTPUT"
+          echo "app_changed=${app_changed}"
+          echo "apple_wrapper_changed=${apple_wrapper_changed}"
+
   bump-version:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]') }}
+    needs: [change-scope]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip-version-bump]') && needs.change-scope.outputs.app_changed == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       bumped: ${{ steps.bump.outputs.bumped }}
@@ -92,7 +162,7 @@ jobs:
           git push origin HEAD:main
 
   publish:
-    needs: [release-context, bump-version]
+    needs: [release-context, change-scope, bump-version]
     if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
     runs-on: ubuntu-latest
     strategy:
@@ -109,6 +179,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Sync to latest main
         run: |
@@ -122,6 +194,39 @@ jobs:
           full_sha="$(git rev-parse HEAD)"
           echo "full_sha=${full_sha}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${full_sha::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image publish scope
+        id: image_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish="${{ needs.change-scope.outputs.app_changed }}"
+          reason="main app image"
+          if [[ "${{ matrix.image_name }}" == "deezspotag-apple-wrapper" ]]; then
+            requested="auto"
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              requested="${{ github.event.inputs.publish_apple_wrapper }}"
+            fi
+
+            if [[ "$requested" == "yes" ]]; then
+              publish="true"
+              reason="manual wrapper publish requested"
+            elif [[ "$requested" == "no" ]]; then
+              publish="false"
+              reason="manual wrapper publish disabled"
+            else
+              if [[ "${{ needs.change-scope.outputs.apple_wrapper_changed }}" == "true" ]]; then
+                publish="true"
+                reason="Apple Wrapper files changed"
+              else
+                publish="false"
+                reason="Apple Wrapper files unchanged"
+              fi
+            fi
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "reason=${reason}" >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.image_name }} publish=${publish}: ${reason}"
 
       - name: Compute app version
         id: version
@@ -148,10 +253,34 @@ jobs:
           echo "app_major_minor=${app_major_minor}" >> "$GITHUB_OUTPUT"
           echo "app_release_tag=${app_release_tag}" >> "$GITHUB_OUTPUT"
 
+      - name: Compute image version
+        id: image_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_version="${{ steps.version.outputs.app_version }}"
+          if [[ "${{ matrix.image_name }}" == "deezspotag-apple-wrapper" ]]; then
+            image_version="$(tr -d '[:space:]' < Tools/AppleMusicWrapper/VERSION)"
+            if [[ ! "$image_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+              echo "Invalid Apple Wrapper version: ${image_version}" >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "${{ needs.release-context.outputs.channel }}" == "stable" ]]; then
+            image_release_tag="v${image_version}"
+          else
+            image_release_tag="v${image_version}-pre"
+          fi
+          echo "image_version=${image_version}" >> "$GITHUB_OUTPUT"
+          echo "image_release_tag=${image_release_tag}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
+        if: steps.image_scope.outputs.publish == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
+        if: steps.image_scope.outputs.publish == 'true'
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: network=host
@@ -221,31 +350,32 @@ jobs:
             -t deezspotag-audit:${{ steps.commit.outputs.full_sha }} \
             .
 
-      - name: Build wrapper audit image for app smoke
-        if: matrix.image_name == 'deezspotag'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker buildx build \
-            --platform linux/amd64 \
-            --load \
-            -f Tools/AppleMusicWrapper/Dockerfile \
-            -t deezspotag-apple-wrapper-audit:${{ steps.commit.outputs.full_sha }} \
-            .
+      - name: Log in to GHCR
+        if: steps.image_scope.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run app parity smoke audit
         if: matrix.image_name == 'deezspotag'
         shell: bash
         run: |
           set -euo pipefail
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          wrapper_tag="prerelease"
+          if [[ "${{ needs.release-context.outputs.channel }}" == "stable" ]]; then
+            wrapper_tag="latest"
+          fi
           chmod +x scripts/docker-parity-smoke.sh
           PARITY_TEST_PLATFORM=linux/amd64 \
           PARITY_EXPECTED_BUILD_VERSION=${{ steps.version.outputs.app_release_tag }} \
-          PARITY_APPLE_WRAPPER_IMAGE=deezspotag-apple-wrapper-audit:${{ steps.commit.outputs.full_sha }} \
+          PARITY_APPLE_WRAPPER_IMAGE=ghcr.io/${owner}/deezspotag-apple-wrapper:${wrapper_tag} \
             ./scripts/docker-parity-smoke.sh deezspotag-audit:${{ steps.commit.outputs.full_sha }}
 
       - name: Build wrapper audit image
-        if: matrix.image_name == 'deezspotag-apple-wrapper'
+        if: matrix.image_name == 'deezspotag-apple-wrapper' && steps.image_scope.outputs.publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -257,7 +387,7 @@ jobs:
             .
 
       - name: Run wrapper runtime contract audit
-        if: matrix.image_name == 'deezspotag-apple-wrapper'
+        if: matrix.image_name == 'deezspotag-apple-wrapper' && steps.image_scope.outputs.publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -265,29 +395,24 @@ jobs:
           PARITY_TEST_PLATFORM=linux/amd64 \
             ./scripts/apple-wrapper-runtime-smoke.sh deezspotag-apple-wrapper-audit:${{ steps.commit.outputs.full_sha }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Compute image reference
+        if: steps.image_scope.outputs.publish == 'true'
         id: vars
         run: |
           owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
           echo "image=ghcr.io/${owner}/${{ matrix.image_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
+        if: steps.image_scope.outputs.publish == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.vars.outputs.image }}
           tags: |
             type=raw,value=prerelease,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
-            type=raw,value=v${{ steps.version.outputs.app_version }}-pre,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
+            type=raw,value=v${{ steps.image_version.outputs.image_version }}-pre,enable=${{ needs.release-context.outputs.channel == 'prerelease' }}
             type=raw,value=latest,enable=${{ needs.release-context.outputs.channel == 'stable' }}
-            type=raw,value=v${{ steps.version.outputs.app_version }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
+            type=raw,value=v${{ steps.image_version.outputs.image_version }},enable=${{ needs.release-context.outputs.channel == 'stable' }}
             type=raw,value=${{ steps.commit.outputs.short_sha }}
             type=raw,value=${{ steps.commit.outputs.full_sha }}
             type=sha,prefix=sha-
@@ -298,10 +423,11 @@ jobs:
             org.opencontainers.image.url=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.full_sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
-            org.opencontainers.image.version=${{ steps.version.outputs.app_release_tag }}
+            org.opencontainers.image.version=${{ steps.image_version.outputs.image_release_tag }}
             org.opencontainers.image.channel=${{ needs.release-context.outputs.channel }}
 
       - name: Build and push
+        if: steps.image_scope.outputs.publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -319,6 +445,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image_name }}
 
       - name: Verify published manifest platforms
+        if: steps.image_scope.outputs.publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -334,7 +461,7 @@ jobs:
           done
 
       - name: Run wrapper runtime contract audit (published)
-        if: matrix.image_name == 'deezspotag-apple-wrapper'
+        if: matrix.image_name == 'deezspotag-apple-wrapper' && steps.image_scope.outputs.publish == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -347,8 +474,8 @@ jobs:
           done
 
   release:
-    needs: [release-context, bump-version, publish]
-    if: ${{ github.server_url == 'https://github.com' && always() && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
+    needs: [release-context, change-scope, bump-version, publish]
+    if: ${{ github.server_url == 'https://github.com' && always() && github.ref == 'refs/heads/main' && needs.change-scope.outputs.app_changed == 'true' && (github.event_name == 'workflow_dispatch' || github.actor != 'github-actions[bot]') && needs.bump-version.result != 'failure' && needs.bump-version.result != 'cancelled' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

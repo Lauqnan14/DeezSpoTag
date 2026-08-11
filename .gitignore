@@ -112,3 +112,4 @@ codeql-db-*/
 codeql-db-csharp-fresh/
 codeql-db-csharp/
 src.code-workspace
+CLAUDE.md
