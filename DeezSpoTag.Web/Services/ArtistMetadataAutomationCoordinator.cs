@@ -66,8 +66,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
     public Task<bool> EnqueueCacheRefreshAsync(ArtistMetadataCacheRefreshRequest request, CancellationToken cancellationToken)
         => EnqueueAsync(
             "cache-refresh",
-            async token => string.IsNullOrWhiteSpace(
-                (await RunCacheRefreshAsync(request, automatic: false, token)).Error),
+            async token => IsCacheRefreshComplete(await RunCacheRefreshAsync(request, automatic: false, token)),
             cancellationToken,
             resuming: null,
             cacheRequest: request);
@@ -159,8 +158,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             var cacheRequest = run.CacheRequest ?? BuildCacheRequest(preferences);
             await EnqueueAsync(
                 "cache-refresh",
-                async token => string.IsNullOrWhiteSpace(
-                    (await RunCacheRefreshAsync(cacheRequest, run.Automatic, token)).Error),
+                async token => IsCacheRefreshComplete(await RunCacheRefreshAsync(cacheRequest, run.Automatic, token)),
                 cancellationToken,
                 resuming: run);
             return;
@@ -184,6 +182,15 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
         var preferences = await _preferences.LoadAsync();
         var state = await LoadStateAsync(cancellationToken);
         var now = DateTimeOffset.UtcNow;
+
+        // A run left incomplete stays resumable: continue it on the next tick rather than waiting
+        // for a restart or for the interval to come round again.
+        if (state.ActiveRun is not null)
+        {
+            await ResumeInterruptedRunAsync(cancellationToken);
+            return;
+        }
+
         var cacheDue = IsDue(state.LastCacheRefreshUtc, preferences.MetadataCacheRefreshIntervalDays, now);
         var updateDue = IsDue(state.LastTargetUpdateUtc, preferences.MetadataTargetUpdateIntervalDays, now);
         UpdateScheduleStatus(state, preferences, now);
@@ -197,8 +204,7 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             var cacheRequest = BuildCacheRequest(preferences);
             if (await EnqueueAsync(
                     "cache-refresh",
-                    async token => string.IsNullOrWhiteSpace(
-                        (await RunCacheRefreshAsync(cacheRequest, automatic: true, token)).Error),
+                    async token => IsCacheRefreshComplete(await RunCacheRefreshAsync(cacheRequest, automatic: true, token)),
                     cancellationToken,
                     cacheRequest: cacheRequest,
                     automatic: true))
@@ -285,6 +291,30 @@ public sealed class ArtistMetadataAutomationCoordinator : BackgroundService
             _operationGate.Release();
             throw;
         }
+    }
+
+    /// <summary>
+    /// A refresh only counts as complete when every artist was processed. Treating a partially
+    /// failed sweep as complete stamps LastCacheRefreshUtc and locks the remaining artists out
+    /// until the next interval, so failures must leave the run resumable instead.
+    /// </summary>
+    private bool IsCacheRefreshComplete(ArtistMetadataCacheRefreshResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.Error))
+        {
+            return false;
+        }
+
+        if (result.Failed > 0)
+        {
+            _logger.LogWarning(
+                "Artist metadata cache refresh finished with {Failed} of {Total} artist(s) failing; leaving the run resumable.",
+                result.Failed,
+                result.Total);
+            return false;
+        }
+
+        return true;
     }
 
     private async Task RunManualOperationAsync(

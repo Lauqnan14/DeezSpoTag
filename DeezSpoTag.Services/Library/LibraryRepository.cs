@@ -16939,6 +16939,24 @@ ON CONFLICT(artist_id) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<(string? Biography, string? Source)> GetArtistStoredBiographyAsync(
+        long artistId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT apple_biography
+FROM artist
+WHERE id = @artistId
+  AND apple_biography IS NOT NULL
+  AND TRIM(apple_biography) <> ''
+LIMIT 1;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("artistId", artistId);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? (null, null) : (Convert.ToString(result), "apple");
+    }
+
     public async Task<IReadOnlyList<(long ArtistId, string? OriginalUrl)>> GetArtistArtworkOriginalUrlsAsync(
         string role,
         CancellationToken cancellationToken = default)

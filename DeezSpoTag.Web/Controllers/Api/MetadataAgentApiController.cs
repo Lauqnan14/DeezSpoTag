@@ -35,15 +35,28 @@ public sealed partial class MetadataAgentApiController(
             string.IsNullOrWhiteSpace(preferredSource) ? null : preferredSource.Trim(),
             allowFallback: true,
             cancellationToken);
-        if (cached is null || string.IsNullOrWhiteSpace(cached.Biography))
+
+        var rawBiography = cached?.Biography;
+        var source = cached?.Source;
+        if (string.IsNullOrWhiteSpace(rawBiography))
+        {
+            // The rotating multi-source cache only covers artists a cache refresh reached.
+            // Fall back to the biography stored on the artist row so the agent sees the same
+            // text the artist page shows instead of reporting the artist as unknown.
+            (rawBiography, source) = await libraryRepository.GetArtistStoredBiographyAsync(
+                artistId.Value,
+                cancellationToken);
+        }
+
+        if (string.IsNullOrWhiteSpace(rawBiography))
         {
             return NoContent();
         }
 
-        var biography = CleanBiography(cached.Biography);
+        var biography = CleanBiography(rawBiography);
         return string.IsNullOrWhiteSpace(biography)
             ? NoContent()
-            : Ok(new { biography, source = cached.Source });
+            : Ok(new { biography, source });
     }
 
     internal static string CleanBiography(string? biography)
