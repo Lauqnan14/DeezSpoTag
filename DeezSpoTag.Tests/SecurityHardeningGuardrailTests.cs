@@ -1,6 +1,9 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using DeezSpoTag.Web.Controllers.Api;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -93,6 +96,50 @@ public sealed class SecurityHardeningGuardrailTests
     }
 
     [Fact]
+    public void SecuritySensitivePostEndpoints_MustRequireAntiforgeryTokens()
+    {
+        foreach (var methodName in new[]
+                 {
+                     nameof(PlatformAuthApiController.CheckAmazonMusicProviders),
+                     nameof(PlatformAuthApiController.CheckTidalProviders),
+                     nameof(PlatformAuthApiController.CheckQobuzProviders),
+                     nameof(PlatformAuthApiController.SaveSpotify),
+                     nameof(PlatformAuthApiController.SaveDiscogs),
+                     nameof(PlatformAuthApiController.SaveQobuz),
+                     nameof(PlatformAuthApiController.SaveTidal),
+                     nameof(PlatformAuthApiController.SaveSoulseek),
+                     nameof(PlatformAuthApiController.SaveBoomplay),
+                     nameof(PlatformAuthApiController.SaveAmazonMusic),
+                     nameof(PlatformAuthApiController.SaveLastFm),
+                     nameof(PlatformAuthApiController.SaveBpmSupreme),
+                     nameof(PlatformAuthApiController.SavePlex),
+                     nameof(PlatformAuthApiController.LoginPlex),
+                     nameof(PlatformAuthApiController.SaveJellyfin),
+                     nameof(PlatformAuthApiController.LoginJellyfin),
+                     nameof(PlatformAuthApiController.LoginNavidrome),
+                     nameof(PlatformAuthApiController.Disconnect)
+                 })
+        {
+            AssertPostRequiresAntiforgery(typeof(PlatformAuthApiController), methodName);
+        }
+
+        AssertPostRequiresAntiforgery(
+            typeof(SpotifyDiscoveryTracklistApiController),
+            nameof(SpotifyDiscoveryTracklistApiController.SyncRecommendationPlaylist));
+    }
+
+    [Fact]
+    public void PlaylistSyncWarnings_MustSanitizePlaylistIdentifiersBeforeLogging()
+    {
+        var source = File.ReadAllText(Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Services", "PlaylistSyncService.cs"));
+
+        Assert.Contains("No Plex matches found for playlist {Source}:{SourceId}", source, StringComparison.Ordinal);
+        Assert.Contains("SafeLog(playlist.Source),\n                SafeLog(playlist.SourceId),", source, StringComparison.Ordinal);
+        Assert.Contains("No Jellyfin matches found for playlist {Source}:{SourceId}.", source, StringComparison.Ordinal);
+        Assert.Contains("SafeLog(playlist.Source),\n                SafeLog(playlist.SourceId));", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WebProgram_MustApplyDefaultApiRateLimitToControllersWithoutLimitingLibraryBrowsing()
     {
         var webProgramPath = Path.Combine(ResolveSrcRoot(), "DeezSpoTag.Web", "Program.cs");
@@ -128,5 +175,12 @@ public sealed class SecurityHardeningGuardrailTests
         }
 
         throw new InvalidOperationException("Could not resolve src root.");
+    }
+
+    private static void AssertPostRequiresAntiforgery(Type controllerType, string methodName)
+    {
+        var method = controllerType.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(method);
+        Assert.Contains(method.GetCustomAttributes(inherit: true), attribute => attribute is ValidateAntiForgeryTokenAttribute);
     }
 }

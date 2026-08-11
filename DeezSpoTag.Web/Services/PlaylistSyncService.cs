@@ -73,6 +73,25 @@ public sealed class PlaylistSyncService
         public string? FirstPlaylistId => Targets.FirstOrDefault(static target => !string.IsNullOrWhiteSpace(target.PlaylistId))?.PlaylistId;
     }
 
+    public sealed record SpotifyRecommendationPlaylistSyncRequest(
+        string PlaylistId,
+        string? Name,
+        string? Description,
+        string? ImageUrl,
+        bool Monitor);
+
+    public sealed record SpotifyRecommendationPlaylistSyncResult(
+        bool Success,
+        string Message,
+        string PlaylistName,
+        string PlaylistId,
+        string? TargetPlaylistId,
+        int SourceTracks,
+        int LocalMatches,
+        int TargetMatches,
+        int MissingTracks,
+        bool Monitored);
+
     private const string SpotifySource = "spotify";
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
@@ -137,6 +156,179 @@ public sealed class PlaylistSyncService
         CancellationToken cancellationToken)
     {
         return SyncPlaylistAsync(playlist, preference, trackCandidates: null, force, cancellationToken);
+    }
+
+    public async Task<SpotifyRecommendationPlaylistSyncResult> SyncSpotifyRecommendationPlaylistToNavidromeAsync(
+        SpotifyRecommendationPlaylistSyncRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var playlistId = (request.PlaylistId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return new SpotifyRecommendationPlaylistSyncResult(
+                false,
+                PlaylistNotAvailableMessage,
+                "Spotify Playlist",
+                string.Empty,
+                null,
+                0,
+                0,
+                0,
+                0,
+                request.Monitor);
+        }
+
+        var playlistName = string.IsNullOrWhiteSpace(request.Name)
+            ? "Spotify Playlist"
+            : request.Name.Trim();
+        var now = DateTimeOffset.UtcNow;
+        var sourceUrl = $"https://open.spotify.com/playlist/{playlistId}";
+        var playlist = new PlaylistWatchlistDto(
+            0,
+            SpotifySource,
+            playlistId,
+            playlistName,
+            request.ImageUrl,
+            request.Description,
+            null,
+            now,
+            OwnerName: "Spotify",
+            SourceUrl: sourceUrl);
+
+        if (!string.IsNullOrWhiteSpace(request.ImageUrl))
+        {
+            await _playlistVisualService.ResolveManagedVisualUrlAsync(
+                SpotifySource,
+                playlistId,
+                playlistName,
+                request.ImageUrl,
+                reuseSavedArtwork: false,
+                cancellationToken,
+                forceRefresh: true);
+        }
+
+        var preference = new PlaylistWatchPreferenceDto(
+            SpotifySource,
+            playlistId,
+            DestinationFolderId: null,
+            Service: NavidromeService,
+            SyncTargets: new[] { NavidromeService },
+            PreferredEngine: null,
+            DownloadEngineOrder: null,
+            DownloadVariantMode: null,
+            SyncMode: SyncModeMirror,
+            UpdateArtwork: true,
+            ReuseSavedArtwork: false,
+            CreatedAt: now,
+            UpdatedAt: now);
+
+        if (request.Monitor)
+        {
+            var savedPlaylist = await _libraryRepository.AddPlaylistWatchlistAsync(
+                SpotifySource,
+                playlistId,
+                new PlaylistWatchlistMetadataInput(
+                    playlistName,
+                    request.ImageUrl,
+                    request.Description,
+                    TrackCount: null,
+                    OwnerName: "Spotify",
+                    SourceUrl: sourceUrl),
+                cancellationToken);
+
+            if (savedPlaylist is null)
+            {
+                return new SpotifyRecommendationPlaylistSyncResult(
+                    false,
+                    "Failed to monitor Spotify playlist.",
+                    playlistName,
+                    playlistId,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    true);
+            }
+
+            playlist = savedPlaylist;
+            preference = await _libraryRepository.UpsertPlaylistWatchPreferenceAsync(
+                new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                    SpotifySource,
+                    playlistId,
+                    DestinationFolderId: null,
+                    Service: NavidromeService,
+                    SyncTargets: new[] { NavidromeService },
+                    PreferredEngine: null,
+                    DownloadEngineOrder: null,
+                    DownloadVariantMode: null,
+                    SyncMode: SyncModeMirror,
+                    UpdateArtwork: true,
+                    ReuseSavedArtwork: false),
+                cancellationToken) ?? preference;
+        }
+
+        var loadResult = await LoadTracksForSyncAsync(playlist, trackCandidates: null, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(loadResult.ErrorMessage))
+        {
+            return new SpotifyRecommendationPlaylistSyncResult(
+                false,
+                loadResult.ErrorMessage,
+                playlistName,
+                playlistId,
+                null,
+                0,
+                0,
+                0,
+                0,
+                request.Monitor);
+        }
+
+        var tracks = await FilterTracksForSyncAsync(
+            playlist,
+            preference,
+            loadResult.Tracks,
+            cancellationToken);
+        if (tracks.Count == 0)
+        {
+            return new SpotifyRecommendationPlaylistSyncResult(
+                false,
+                "No eligible tracks after blocked/ignored filtering.",
+                playlistName,
+                playlistId,
+                null,
+                loadResult.Tracks.Count,
+                0,
+                0,
+                loadResult.Tracks.Count,
+                request.Monitor);
+        }
+
+        var result = await SyncPlaylistToTargetAsync(
+            NavidromeService,
+            playlist,
+            preference,
+            tracks,
+            cancellationToken);
+
+        if (request.Monitor)
+        {
+            _runSignal?.Request(WatchlistWakeReason.Reconciliation | WatchlistWakeReason.TargetSync);
+        }
+
+        return new SpotifyRecommendationPlaylistSyncResult(
+            result.Success,
+            result.Message,
+            playlistName,
+            playlistId,
+            result.PlaylistId,
+            result.SourceTracks,
+            result.LocalMatches,
+            result.TargetMatches,
+            result.MissingTracks,
+            request.Monitor);
     }
 
     public async Task<GeneratedLocalPlaylistSyncResult> SyncGeneratedLocalPlaylistAsync(
@@ -1944,8 +2136,8 @@ public sealed class PlaylistSyncService
         {
             _logger.LogWarning(
                 "No Plex matches found for playlist {Source}:{SourceId}. sourceTracks={SourceTracks}, localMatches={LocalMatches}, missingTracks={MissingTracks}",
-                playlist.Source,
-                playlist.SourceId,
+                SafeLog(playlist.Source),
+                SafeLog(playlist.SourceId),
                 matchSummary.SourceTracks,
                 matchSummary.LocalMatches,
                 matchSummary.MissingTracks);
@@ -2093,7 +2285,10 @@ public sealed class PlaylistSyncService
             SearchMatches: itemIds.Count);
         if (itemIds.Count == 0)
         {
-            _logger.LogWarning("No Jellyfin matches found for playlist {Source}:{SourceId}.", playlist.Source, playlist.SourceId);
+            _logger.LogWarning(
+                "No Jellyfin matches found for playlist {Source}:{SourceId}.",
+                SafeLog(playlist.Source),
+                SafeLog(playlist.SourceId));
             return BuildFailedResult(
                 BuildSyncMessage("No Jellyfin matches found for this playlist.", matchSummary),
                 matchSummary);

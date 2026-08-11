@@ -512,6 +512,19 @@
     background-color: var(--bg-secondary);
 }
 
+.spotify-recommendation-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+}
+
+.spotify-recommendation-actions .btn {
+    width: 100%;
+    min-height: 32px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
 /* Merged number/play column - shows number by default, play icon on hover */
 .track-number {
     width: 50px;
@@ -3728,10 +3741,34 @@ function renderSpotifyRecommendationItem(item) {
     const subtitleIsGeneric = ['spotify', 'playlist'].includes(rawSubtitle.toLowerCase());
     const subtitle = subtitleIsGeneric ? '' : escapeHtml(rawSubtitle);
     const cover = item.coverUrl || item.imageUrl || item.image_url || '';
+    const description = (item.description || '').toString();
     const type = escapeHtml(item.type || '');
     const hideGenericPlaylistMeta = (source === 'spotify' || source === 'boomplay') && sourceType === 'playlist';
     const meta = hideGenericPlaylistMeta ? '' : (type ? `${type}` : '');
     const artStyle = cover ? `style="background-image: url('${cover}');"` : '';
+    const canSyncToNavidrome = source === 'spotify' && sourceType === 'playlist' && sourceId;
+    const actions = canSyncToNavidrome
+        ? `<div class="spotify-recommendation-actions">
+                <button type="button"
+                        class="btn btn-primary spotify-recommendation-sync-btn"
+                        data-action="sync"
+                        data-source-id="${escapeHtml(sourceId)}"
+                        data-name="${title}"
+                        data-description="${escapeHtml(description)}"
+                        data-image-url="${escapeHtml(cover)}">
+                    Sync to Navidrome
+                </button>
+                <button type="button"
+                        class="btn btn-secondary spotify-recommendation-sync-btn"
+                        data-action="monitor"
+                        data-source-id="${escapeHtml(sourceId)}"
+                        data-name="${title}"
+                        data-description="${escapeHtml(description)}"
+                        data-image-url="${escapeHtml(cover)}">
+                    Monitor
+                </button>
+           </div>`
+        : '';
     return `
         <div class="spotify-card"
              data-source="${escapeHtml(source)}"
@@ -3743,8 +3780,45 @@ function renderSpotifyRecommendationItem(item) {
             <div class="spotify-card-title">${title}</div>
             ${subtitle ? `<div class="spotify-card-subtitle">${subtitle}</div>` : ''}
             ${meta ? `<div class="spotify-card-meta"><span>${meta}</span></div>` : ''}
+            ${actions}
         </div>
     `;
+}
+
+async function syncSpotifyRecommendationPlaylistToNavidrome(button) {
+    const playlistId = (button.dataset.sourceId || '').trim();
+    if (!playlistId) {
+        return;
+    }
+
+    const monitor = button.dataset.action === 'monitor';
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = monitor ? 'Monitoring...' : 'Syncing...';
+
+    try {
+        const result = await fetchJson(`/api/spotify/recommendations/playlists/${encodeURIComponent(playlistId)}/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target: 'navidrome',
+                monitor,
+                name: button.dataset.name || null,
+                description: button.dataset.description || null,
+                imageUrl: button.dataset.imageUrl || null
+            })
+        });
+
+        const message = result?.message || (monitor
+            ? 'Playlist monitored and synced to Navidrome.'
+            : 'Playlist synced to Navidrome.');
+        showTracklistToast(message, result?.success === false ? 'warning' : 'success');
+        button.textContent = monitor ? 'Monitored' : 'Synced';
+    } catch (error) {
+        button.disabled = false;
+        button.textContent = originalText;
+        DeezSpoTag.ui.alert(`Spotify recommendation sync failed: ${error.message}`, { title: 'Spotify Recommendations' });
+    }
 }
 
 function parseSpotifyUri(uri) {
@@ -8041,6 +8115,14 @@ document.addEventListener('click', event => {
     if (!(event.target instanceof Element)) {
         return;
     }
+    const recommendationSyncButton = event.target.closest('#spotify-recommendations .spotify-recommendation-sync-btn');
+    if (recommendationSyncButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        syncSpotifyRecommendationPlaylistToNavidrome(recommendationSyncButton);
+        return;
+    }
+
     const recommendationCard = event.target.closest('#spotify-recommendations .spotify-card');
     if (recommendationCard) {
         const source = (recommendationCard.dataset.source || '').toLowerCase();

@@ -10,11 +10,22 @@ public class SpotifyDiscoveryTracklistApiController : ControllerBase
 {
     private const string UrlRequiredMessage = "URL is required.";
     private readonly SpotifyRecommendationService _recommendationService;
+    private readonly PlaylistSyncService _playlistSyncService;
 
-    public SpotifyDiscoveryTracklistApiController(SpotifyRecommendationService recommendationService)
+    public SpotifyDiscoveryTracklistApiController(
+        SpotifyRecommendationService recommendationService,
+        PlaylistSyncService playlistSyncService)
     {
         _recommendationService = recommendationService;
+        _playlistSyncService = playlistSyncService;
     }
+
+    public sealed record SpotifyRecommendationPlaylistSyncApiRequest(
+        string? Target,
+        bool Monitor,
+        string? Name,
+        string? Description,
+        string? ImageUrl);
 
     [HttpGet("recommendations")]
     public async Task<IActionResult> Recommendations(
@@ -66,5 +77,42 @@ public class SpotifyDiscoveryTracklistApiController : ControllerBase
         }
 
         return Ok(new { available = true, sections });
+    }
+
+    [ValidateAntiForgeryToken]
+    [HttpPost("/api/spotify/recommendations/playlists/{playlistId}/sync")]
+    public async Task<IActionResult> SyncRecommendationPlaylist(
+        string playlistId,
+        [FromBody] SpotifyRecommendationPlaylistSyncApiRequest? request,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            return BadRequest(new { error = "Playlist ID is required." });
+        }
+
+        var target = string.IsNullOrWhiteSpace(request?.Target)
+            ? "navidrome"
+            : request.Target.Trim();
+        if (!string.Equals(target, "navidrome", StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(new { error = "Only Navidrome sync is supported for Spotify recommendations." });
+        }
+
+        var result = await _playlistSyncService.SyncSpotifyRecommendationPlaylistToNavidromeAsync(
+            new PlaylistSyncService.SpotifyRecommendationPlaylistSyncRequest(
+                playlistId,
+                request?.Name,
+                request?.Description,
+                request?.ImageUrl,
+                request?.Monitor ?? false),
+            cancellationToken);
+
+        if (!result.Success)
+        {
+            return BadRequest(result);
+        }
+
+        return Ok(result);
     }
 }

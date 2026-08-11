@@ -188,6 +188,7 @@ public class PlatformAuthApiController : ControllerBase
         return updated is null ? NotFound("Unknown Amazon provider.") : Ok(ToPublicAmazonProvider(updated));
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("amazonmusic/providers/check")]
     public async Task<IActionResult> CheckAmazonMusicProviders(CancellationToken cancellationToken)
     {
@@ -251,6 +252,7 @@ public class PlatformAuthApiController : ControllerBase
         return updated is null ? NotFound("Unknown Tidal provider.") : Ok(ToPublicTidalProvider(updated));
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("tidal/providers/check")]
     public async Task<IActionResult> CheckTidalProviders(CancellationToken cancellationToken)
     {
@@ -288,6 +290,7 @@ public class PlatformAuthApiController : ControllerBase
         return updated is null ? NotFound("Unknown Qobuz provider.") : Ok(ToPublicProvider(updated));
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("qobuz/providers/check")]
     public async Task<IActionResult> CheckQobuzProviders(CancellationToken cancellationToken)
     {
@@ -371,6 +374,7 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("spotify")]
     public IActionResult SaveSpotify()
     {
@@ -383,6 +387,7 @@ public class PlatformAuthApiController : ControllerBase
         return BadRequest("Spotify credentials are managed via /api/spotify-credentials.");
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("discogs")]
     public async Task<IActionResult> SaveDiscogs([FromBody] DiscogsAuth request, CancellationToken cancellationToken)
     {
@@ -417,6 +422,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, discogs });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("qobuz")]
     public async Task<IActionResult> SaveQobuz([FromBody] QobuzAuth request, CancellationToken cancellationToken)
     {
@@ -489,6 +495,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, qobuz = ToPublicQobuz(qobuz) });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("tidal")]
     public async Task<IActionResult> SaveTidal([FromBody] TidalAuth request, CancellationToken cancellationToken)
     {
@@ -539,6 +546,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, tidal = ToPublicTidal(tidal) });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("soulseek")]
     public async Task<IActionResult> SaveSoulseek([FromBody] SoulseekAuth request, CancellationToken cancellationToken)
     {
@@ -585,6 +593,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, soulseek = ToPublicSoulseek(soulseek) });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("boomplay")]
     public async Task<IActionResult> SaveBoomplay([FromBody] BoomplayLoginRequest request)
     {
@@ -618,6 +627,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, boomplay = ToPublicBoomplay(boomplay) });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("amazonmusic")]
     public async Task<IActionResult> SaveAmazonMusic([FromBody] AmazonMusicLoginRequest request, CancellationToken cancellationToken)
     {
@@ -647,6 +657,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, amazonMusic = ToPublicAmazonMusic(amazonMusic) });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("lastfm")]
     public async Task<IActionResult> SaveLastFm([FromBody] LastFmAuth request)
     {
@@ -674,6 +685,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true, lastFm });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("bpmsupreme")]
     public async Task<IActionResult> SaveBpmSupreme([FromBody] BpmSupremeAuth request)
     {
@@ -691,6 +703,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("plex")]
     public async Task<IActionResult> SavePlex([FromBody] PlexAuth request)
     {
@@ -708,6 +721,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("plex/login")]
     public async Task<IActionResult> LoginPlex([FromBody] PlexAuth request, CancellationToken cancellationToken)
     {
@@ -754,6 +768,7 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("jellyfin")]
     public async Task<IActionResult> SaveJellyfin([FromBody] JellyfinAuth request)
     {
@@ -771,6 +786,7 @@ public class PlatformAuthApiController : ControllerBase
         return Ok(new { saved = true });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("jellyfin/login")]
     public async Task<IActionResult> LoginJellyfin([FromBody] JellyfinAuth request, CancellationToken cancellationToken)
     {
@@ -829,6 +845,7 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("navidrome/login")]
     public async Task<IActionResult> LoginNavidrome([FromBody] NavidromeAuth request, CancellationToken cancellationToken)
     {
@@ -1257,6 +1274,7 @@ public class PlatformAuthApiController : ControllerBase
         });
     }
 
+    [ValidateAntiForgeryToken]
     [HttpPost("{platform}/disconnect")]
     public async Task<IActionResult> Disconnect(string platform, CancellationToken cancellationToken)
     {
