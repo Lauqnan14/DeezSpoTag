@@ -5,6 +5,14 @@ using Microsoft.AspNetCore.Mvc.ViewFeatures;
 
 namespace DeezSpoTag.Web.Filters;
 
+public sealed class ApiTokenAwareValidateAntiforgeryAttribute : TypeFilterAttribute
+{
+    public ApiTokenAwareValidateAntiforgeryAttribute()
+        : base(typeof(ApiTokenAwareAntiforgeryFilter))
+    {
+    }
+}
+
 public sealed class ApiTokenAwareAntiforgeryFilter : IAsyncAuthorizationFilter, IAntiforgeryPolicy, IOrderedFilter
 {
     private const int AutoValidateAntiforgeryTokenOrder = 1000;
@@ -15,8 +23,6 @@ public sealed class ApiTokenAwareAntiforgeryFilter : IAsyncAuthorizationFilter, 
         _antiforgery = antiforgery;
     }
 
-    // Run after MVC's AutoValidateAntiforgeryToken filter so this token-aware
-    // policy is the effective IAntiforgeryPolicy and API-token requests remain exempt.
     public int Order => AutoValidateAntiforgeryTokenOrder + 1;
 
     public async Task OnAuthorizationAsync(AuthorizationFilterContext context)

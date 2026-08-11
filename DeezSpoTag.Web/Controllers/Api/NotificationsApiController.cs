@@ -1,4 +1,5 @@
 using DeezSpoTag.Web.Services.Notifications;
+using DeezSpoTag.Web.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -7,6 +8,7 @@ namespace DeezSpoTag.Web.Controllers.Api;
 [ApiController]
 [Route("api/notifications")]
 [Authorize]
+[ApiTokenAwareValidateAntiforgery]
 public sealed class NotificationsApiController : ControllerBase
 {
     private readonly NotificationStore _store;

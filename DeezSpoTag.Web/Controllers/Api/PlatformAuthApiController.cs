@@ -13,6 +13,7 @@ using DeezSpoTag.Services.Utils;
 using DeezSpoTag.Services.Download.Amazon;
 using DeezSpoTag.Services.Download.Qobuz;
 using DeezSpoTag.Services.Download.Tidal;
+using DeezSpoTag.Web.Filters;
 
 namespace DeezSpoTag.Web.Controllers.Api;
 
@@ -63,7 +64,7 @@ public sealed class AmazonMusicLoginRequest
 [ApiController]
 [LocalApiAuthorize]
 [Route("api/platform-auth")]
-[Microsoft.AspNetCore.Mvc.AutoValidateAntiforgeryToken]
+[ApiTokenAwareValidateAntiforgery]
 public class PlatformAuthApiController : ControllerBase
 {
     private readonly PlatformAuthService _authService;
