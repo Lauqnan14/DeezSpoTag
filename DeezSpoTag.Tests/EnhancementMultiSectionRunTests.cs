@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using DeezSpoTag.Web.Controllers.Api;
+using DeezSpoTag.Web.Services;
 using Xunit;
 
 namespace DeezSpoTag.Tests;
@@ -139,6 +141,19 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("\"folder-uniformity\"", method, StringComparison.Ordinal);
         Assert.Contains("\"cover-maintenance\"", method, StringComparison.Ordinal);
         Assert.Contains("\"quality-checks\"", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementStageConfig_KeepsSelectedWorkflowSettingsForBatchExecution()
+    {
+        var field = typeof(AutoTagService).GetField(
+            "EnhancementStageAllowedKeys",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+
+        var keys = Assert.IsAssignableFrom<HashSet<string>>(field!.GetValue(null));
+
+        Assert.Contains("enhancement", keys);
     }
 
     [Fact]
@@ -345,10 +360,11 @@ public sealed class EnhancementMultiSectionRunTests
     public void EveryEnabledSectionRunsOnABatchBeforeTheNextBatchStarts()
     {
         var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("ApplyEnhancementBatchTemplatesAsync(", StringComparison.Ordinal);
+        var start = workflows.IndexOf("ApplyEnhancementBatchSectionsAsync(", StringComparison.Ordinal);
         Assert.True(start > 0);
         var body = workflows[start..(start + 1400)];
 
+        Assert.Contains("RunFolderUniformityForBatchAsync(", body, StringComparison.Ordinal);
         Assert.Contains("RunEnabledEnhancementSectionsForBatchAsync(job, configPath, context", body, StringComparison.Ordinal);
     }
 
@@ -368,7 +384,8 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("IsCoverMaintenanceWorkflowEnabled(enhancementRoot)", body, StringComparison.Ordinal);
         Assert.Contains("RunCoverMaintenanceForBatchAsync(", body, StringComparison.Ordinal);
         Assert.Contains("RunQualityChecksForBatchAsync(", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunFolderUniformityForPathsAsync(", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunConfiguredCoverMaintenanceAsync(", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunConfiguredQualityChecksAsync(", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -376,10 +393,11 @@ public sealed class EnhancementMultiSectionRunTests
     {
         var workflows = ReadEnhancementWorkflows();
 
-        Assert.Contains("job.EnhancementSectionsAppliedPerBatch = true;", workflows, StringComparison.Ordinal);
-        Assert.Contains("if (job.EnhancementSectionsAppliedPerBatch)", workflows, StringComparison.Ordinal);
-        Assert.Contains("already applied per batch", workflows, StringComparison.Ordinal);
-        Assert.Contains("cover maintenance already applied per batch", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnhancementSectionsAppliedPerBatch", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunPostBatchEnhancementFinalizersAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredFolderUniformityFinalizersAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredQualityCheckFinalizersAsync(", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("already applied per batch", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -390,6 +408,50 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("ResolveBatchRootPaths(", workflows, StringComparison.Ordinal);
         Assert.Contains("TargetFiles: batchFiles.ToList()", workflows, StringComparison.Ordinal);
         Assert.Contains("context.CurrentFiles", workflows, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchCoverMaintenanceUsesStructuredAlbumOutcomes()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("private async Task RunCoverMaintenanceForBatchAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 5600)];
+
+        Assert.Contains("result.AlbumResults", body, StringComparison.Ordinal);
+        Assert.Contains("CoverAlbumMaintenanceOutcome", body, StringComparison.Ordinal);
+        Assert.Contains("artworkBadges: album.HasAnimatedArtwork", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartsWith(errorPrefix", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchCoverMaintenanceIsNotGatedByQualityChecks()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("private async Task<bool> RunEnabledEnhancementSectionsForBatchAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 1800)];
+        var coverIndex = body.IndexOf("IsCoverMaintenanceWorkflowEnabled(enhancementRoot)", StringComparison.Ordinal);
+        var qualityIndex = body.IndexOf("RunQualityChecksForBatchAsync(", StringComparison.Ordinal);
+
+        Assert.True(coverIndex >= 0);
+        Assert.True(qualityIndex > coverIndex);
+        Assert.DoesNotContain("qualityChecks", body[..coverIndex], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BatchCoverMaintenanceUsesProfileArtworkSettings()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("private async Task RunCoverMaintenanceForBatchAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 5600)];
+
+        Assert.Contains("BuildEnhancementLyricsSettings(configRoot)", body, StringComparison.Ordinal);
+        Assert.Contains("ApplyProfileArtworkExtras(configRootForArtwork, settings)", body, StringComparison.Ordinal);
+        Assert.Contains("ResolveProfileCoverSources(settings)", body, StringComparison.Ordinal);
+        Assert.Contains("EnabledSources: enabledSources", body, StringComparison.Ordinal);
+        Assert.Contains("ResolveProfileCoverResolution", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -413,6 +475,34 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("options.QueueLyricsRefresh", body, StringComparison.Ordinal);
         Assert.Contains("RunLyricsRefreshForBatchAsync(", body, StringComparison.Ordinal);
         Assert.Contains("targetTrackIds", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CoverMaintenanceResultCarriesAlbumLevelArtworkOutcomes()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "CoverPort", "CoverLibraryMaintenanceService.cs"));
+
+        Assert.Contains("public sealed record CoverAlbumMaintenanceOutcome", source, StringComparison.Ordinal);
+        Assert.Contains("bool AnimatedArtworkSaved", source, StringComparison.Ordinal);
+        Assert.Contains("bool HasAnimatedArtwork", source, StringComparison.Ordinal);
+        Assert.Contains("AlbumResults: albumResults", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStatusCarriesAnimatedArtworkBadges()
+    {
+        var statusSource = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var runnerSource = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var historySource = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
+
+        Assert.Contains("public List<string> ArtworkBadges", statusSource, StringComparison.Ordinal);
+        Assert.Contains("ArtworkBadges = ResolveAnimatedArtworkBadges(context.File)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("artworkBadgeMarkup", historySource, StringComparison.Ordinal);
     }
 
     [Fact]

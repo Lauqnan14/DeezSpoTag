@@ -905,6 +905,18 @@
     border: 1px solid #60a5fa;
 }
 
+.downloads-tab .badge-artwork-animated {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.75);
+}
+
+.badge-artwork-animated {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.75);
+}
+
 .autotag-lyrics-list {
     display: flex;
     flex-direction: column;
@@ -5399,6 +5411,7 @@ async function clearCanceledTasks() {
                </span>`
             : '';
         const lyricsBadges = Array.isArray(task.lyricsBadges) ? task.lyricsBadges : [];
+        const artworkBadges = Array.isArray(task.artworkBadges) ? task.artworkBadges : [];
         const videoBadges = Array.isArray(task.videoBadges) ? task.videoBadges : [];
 
 		        const displayIndex = index + 1;
@@ -5433,6 +5446,10 @@ async function clearCanceledTasks() {
                                 const text = kind === 'time-synced' ? 'Time-Synced' : label;
                                 return `<span class="badge ${cls}">${text} lyrics</span>`;
                             }).join('')
+                            : ''
+                        }
+                        ${artworkBadges.includes('animated-artwork')
+                            ? '<span class="badge badge-artwork-animated">Animated Artwork</span>'
                             : ''
                         }
 	                    </div>
@@ -5866,6 +5883,7 @@ function mapQueueItem(item) {
     const mappedStatus = mapStatus(item.status);
     const lyricsBadges = resolveLyricsBadgesForQueueItem(item);
     const lyricsRevision = getLyricsArtifactRevision(item.lyricsArtifacts ?? item.LyricsArtifacts);
+    const artworkBadges = resolveArtworkBadgesForQueueItem(item);
     return {
         taskId,
         title: resolveQueueItemTitle(item) || 'Unknown',
@@ -5889,6 +5907,7 @@ function mapQueueItem(item) {
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         canMonitorUnavailable: getQueueBoolFlag(item, 'canMonitorUnavailable', 'CanMonitorUnavailable'),
         lyricsBadges,
+        artworkBadges,
         requestedQuality: readQueueItemText(item, ['requestedQuality', 'RequestedQuality']),
         deliveredQuality: readQueueItemText(item, ['deliveredQuality', 'DeliveredQuality']),
         cover: getCoverFromPayload(item)
@@ -6029,6 +6048,9 @@ function mergeQueueTask(existing, incoming) {
         lyricsBadges: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
             ? incoming.lyricsBadges
             : existing.lyricsBadges,
+        artworkBadges: incoming.artworkBadges && incoming.artworkBadges.length
+            ? incoming.artworkBadges
+            : (existing.artworkBadges || []),
         requestedQuality: String(incoming.requestedQuality || '').trim() || existing.requestedQuality,
         deliveredQuality: String(incoming.deliveredQuality || '').trim() || existing.deliveredQuality,
         cover: String(incoming.cover || '').trim() || existing.cover
@@ -6687,6 +6709,11 @@ function applyQueueRealtimeUpdate(payload) {
         }
         task.lyricsRevision = incomingLyricsRevision;
     }
+    const nextArtworkBadges = resolveArtworkBadgesForQueueItem(update);
+    if (nextArtworkBadges.length && !areSameBadgeSet(task.artworkBadges, nextArtworkBadges)) {
+        task.artworkBadges = nextArtworkBadges;
+        taskChanged = true;
+    }
     if (status === 'complete' && task.progress !== 100) {
         task.progress = 100;
         taskChanged = true;
@@ -7059,6 +7086,23 @@ function getLyricsBadgesFromRealtimeUpdate(update) {
 
 function resolveLyricsBadgesForQueueItem(item) {
     return getLyricsBadgesFromArtifacts(item.lyricsArtifacts ?? item.LyricsArtifacts);
+}
+
+function resolveArtworkBadgesForQueueItem(item) {
+    const files = Array.isArray(item?.files)
+        ? item.files
+        : (Array.isArray(item?.Files) ? item.Files : []);
+    const hasAnimatedArtwork = files.some(file => {
+        const path = String(file?.path || file?.Path || '').trim().toLowerCase();
+        const type = String(file?.type || file?.Type || '').trim().toLowerCase();
+        if (!path || (type && type !== 'artwork')) {
+            return false;
+        }
+        return path.endsWith('.mp4')
+            || path.endsWith('.webp')
+            || path.endsWith('.gif');
+    });
+    return hasAnimatedArtwork ? ['animated-artwork'] : [];
 }
 
 function getLyricsBadgesFromArtifacts(artifacts) {

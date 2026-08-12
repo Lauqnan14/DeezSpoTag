@@ -196,6 +196,22 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void ActivitiesDownloadsTab_DerivesAnimatedArtworkBadgeFromGeneratedSidecars()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("const artworkBadges = resolveArtworkBadgesForQueueItem(item);", source, StringComparison.Ordinal);
+        Assert.Contains("function resolveArtworkBadgesForQueueItem(item)", source, StringComparison.Ordinal);
+        Assert.Contains("path.endsWith('.mp4')", source, StringComparison.Ordinal);
+        Assert.Contains("path.endsWith('.webp')", source, StringComparison.Ordinal);
+        Assert.Contains("path.endsWith('.gif')", source, StringComparison.Ordinal);
+        Assert.Contains("Animated Artwork", source, StringComparison.Ordinal);
+        Assert.Contains("badge-artwork-animated", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTag_ProtectsExistingAlbumFromLossyPlatformMatches()
     {
         var source = File.ReadAllText(Path.Combine(

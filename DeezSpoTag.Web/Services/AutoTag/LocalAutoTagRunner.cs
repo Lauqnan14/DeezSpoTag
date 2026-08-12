@@ -2084,6 +2084,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 LyricsBadges = isLyricsPlatform
                     ? ResolveLyricsTimingBadges(context.File, context.Plan.Config, context.Plan.Settings)
                     : new List<string>(),
+                ArtworkBadges = ResolveAnimatedArtworkBadges(context.File),
                 LyricsCoverUrl = isLyricsPlatform ? ResolveLyricsRowCoverUrl(context.File) : null,
                 SourceTitle = isLyricsPlatform
                     ? (match?.Track.Title ?? review?.SourceTitle)
@@ -3210,6 +3211,20 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return badges;
+    }
+
+    private static List<string> ResolveAnimatedArtworkBadges(string filePath)
+    {
+        var directory = Path.GetDirectoryName(filePath);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return new List<string>();
+        }
+
+        return Directory.EnumerateFiles(directory)
+            .Any(AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar)
+            ? new List<string> { "animated-artwork" }
+            : new List<string>();
     }
 
     private static string? ResolveLyricsRowCoverUrl(string filePath)

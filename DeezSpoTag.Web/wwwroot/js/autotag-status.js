@@ -575,6 +575,10 @@
             const track = toFileName(inner.path);
             const usedShazam = inner.usedShazam ? '<i class="fas fa-music ms-1" title="Identified with Shazam"></i>' : "";
             const message = inner.message ? ` <span class="text-muted" title="${escapeHtml(inner.message)}">(${escapeHtml(inner.message)})</span>` : "";
+            const artworkBadges = Array.isArray(inner.artworkBadges) ? inner.artworkBadges : [];
+            const artworkBadgeHtml = artworkBadges
+                .map(artworkBadgeMarkup)
+                .join("");
             const encodedPath = inner.path ? encodeURIComponent(inner.path) : "";
             const encodedPlatform = platform && platform !== "--" ? encodeURIComponent(platform) : "";
             const canDiff = inner.path
@@ -586,7 +590,7 @@
             return `<tr>
                 <td data-label="Time">${escapeHtml(time)}</td>
                 <td data-label="Platform">${escapeHtml(platform)}</td>
-                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}</td>
+                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}${artworkBadgeHtml}</td>
                 <td data-label="Accuracy">${escapeHtml(accuracy)}</td>
                 <td data-label="Track" title="${escapeHtml(inner.path || "")}">${escapeHtml(track)}</td>
                 <td data-label="Diff">${diffButton}</td>
@@ -613,6 +617,15 @@
                 ? "Enhanced Synced Lyrics"
                 : `${normalized} lyrics`;
         return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
+    }
+
+    function artworkBadgeMarkup(kind) {
+        const normalized = String(kind || "").toLowerCase();
+        if (normalized !== "animated-artwork") {
+            return "";
+        }
+
+        return '<span class="badge badge-artwork-animated ms-1">Animated Artwork</span>';
     }
 
     function renderLyricsCards(rows) {

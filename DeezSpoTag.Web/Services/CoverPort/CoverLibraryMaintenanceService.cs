@@ -104,10 +104,7 @@ public sealed class CoverLibraryMaintenanceService
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList()
             : CollectAlbumDirectories(rootPaths, request.IncludeSubfolders);
-        var scanned = 0;
-        var updated = 0;
-        var skipped = 0;
-        var errors = 0;
+        var outcomes = new ConcurrentQueue<CoverAlbumMaintenanceOutcome>();
         var workerCount = Math.Clamp(request.WorkerCount, 1, 32);
         await Parallel.ForEachAsync(
             albumDirs,
@@ -118,18 +115,9 @@ public sealed class CoverLibraryMaintenanceService
             },
             async (albumDir, ct) =>
             {
-                Interlocked.Increment(ref scanned);
                 try
                 {
-                    var updatedDir = await ProcessAlbumDirectoryAsync(albumDir, request, logs, ct);
-                    if (updatedDir)
-                    {
-                        Interlocked.Increment(ref updated);
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref skipped);
-                    }
+                    outcomes.Enqueue(await ProcessAlbumDirectoryAsync(albumDir, request, logs, ct));
                 }
                 catch (OperationCanceledException)
                 {
@@ -137,8 +125,8 @@ public sealed class CoverLibraryMaintenanceService
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    Interlocked.Increment(ref errors);
                     logs.Enqueue($"[error] {albumDir}: {ex.Message}");
+                    outcomes.Enqueue(CoverAlbumMaintenanceOutcome.Error(albumDir, null, null, null, ex.Message));
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {
                         _logger.LogDebug(ex, "Cover maintenance failed for {AlbumDir}", albumDir);
@@ -146,17 +134,24 @@ public sealed class CoverLibraryMaintenanceService
                 }
             });
 
+        var albumResults = outcomes
+            .OrderBy(result => result.AlbumDirectory, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var updated = albumResults.Count(static result => result.Updated);
+        var skipped = albumResults.Count(static result => result.Status.Equals("skipped", StringComparison.OrdinalIgnoreCase));
+        var errors = albumResults.Count(static result => result.Status.Equals("error", StringComparison.OrdinalIgnoreCase));
         return new CoverLibraryMaintenanceResult(
             Success: true,
             Message: $"Cover maintenance finished: {updated} updated, {skipped} skipped, {errors} errors.",
-            AlbumsScanned: scanned,
+            AlbumsScanned: albumResults.Length,
             AlbumsUpdated: updated,
             AlbumsSkipped: skipped,
             Errors: errors,
-            Logs: logs.Take(500).ToArray());
+            Logs: logs.Take(500).ToArray(),
+            AlbumResults: albumResults);
     }
 
-    private async Task<bool> ProcessAlbumDirectoryAsync(
+    private async Task<CoverAlbumMaintenanceOutcome> ProcessAlbumDirectoryAsync(
         string albumDir,
         CoverLibraryMaintenanceRequest request,
         ConcurrentQueue<string> logs,
@@ -168,24 +163,34 @@ public sealed class CoverLibraryMaintenanceService
             .ToList();
         if (audioFiles.Count == 0)
         {
-            logs.Enqueue($"[skip] {albumDir}: no supported audio files.");
-            return false;
+            const string message = "no supported audio files.";
+            logs.Enqueue($"[skip] {albumDir}: {message}");
+            return CoverAlbumMaintenanceOutcome.Skipped(albumDir, null, null, null, message);
         }
 
         if (!TryReadRequiredMetadata(audioFiles, out var metadata))
         {
-            logs.Enqueue($"[skip] {albumDir}: missing artist/album tags.");
-            return false;
+            const string message = "missing artist/album tags.";
+            logs.Enqueue($"[skip] {albumDir}: {message}");
+            return CoverAlbumMaintenanceOutcome.Skipped(albumDir, audioFiles[0], null, null, message);
         }
+
         var artworkState = InspectAlbumArtwork(albumDir, audioFiles[0], audioFiles.Count, metadata, request);
         var workPlan = BuildWorkPlan(request, artworkState);
         if (!workPlan.RequiresAnyWork)
         {
-            return false;
+            return CoverAlbumMaintenanceOutcome.Skipped(
+                albumDir,
+                audioFiles[0],
+                metadata.Artist,
+                metadata.Album,
+                "album artwork already satisfies the selected maintenance options.",
+                HasAnimatedArtwork: artworkState.HasAnimatedArtwork);
         }
 
         var updatedAnything = false;
         var animatedSaved = false;
+        var stillUpdated = false;
         if (workPlan.NeedsAnimatedArtwork)
         {
             animatedSaved = await TrySaveAnimatedArtworkAsync(albumDir, metadata, request, logs, cancellationToken);
@@ -195,13 +200,24 @@ public sealed class CoverLibraryMaintenanceService
         if (workPlan.RequiresStillCoverUpdate && (!request.QueueAnimatedArtwork || !animatedSaved))
         {
             var context = new StillCoverUpdateContext(albumDir, audioFiles, metadata, artworkState, workPlan, request);
-            updatedAnything = await TryUpdateStillCoverAsync(
+            stillUpdated = await TryUpdateStillCoverAsync(
                 context,
                 logs,
-                cancellationToken) || updatedAnything;
+                cancellationToken);
+            updatedAnything = stillUpdated || updatedAnything;
         }
 
-        return updatedAnything;
+        return new CoverAlbumMaintenanceOutcome(
+            AlbumDirectory: albumDir,
+            RepresentativeFilePath: audioFiles[0],
+            Artist: metadata.Artist,
+            Album: metadata.Album,
+            Status: updatedAnything ? "ok" : "skipped",
+            Message: updatedAnything ? "cover maintenance completed." : "no cover maintenance update was applied.",
+            StillCoverUpdated: stillUpdated,
+            AnimatedArtworkSaved: animatedSaved,
+            HasAnimatedArtwork: animatedSaved || artworkState.HasAnimatedArtwork,
+            Updated: updatedAnything);
     }
 
     private static bool IsSameOrDescendantPath(string path, string root)
@@ -859,4 +875,35 @@ public sealed record CoverLibraryMaintenanceResult(
     int AlbumsUpdated,
     int AlbumsSkipped,
     int Errors,
-    IReadOnlyList<string> Logs);
+    IReadOnlyList<string> Logs,
+    IReadOnlyList<CoverAlbumMaintenanceOutcome>? AlbumResults = null);
+
+public sealed record CoverAlbumMaintenanceOutcome(
+    string AlbumDirectory,
+    string? RepresentativeFilePath,
+    string? Artist,
+    string? Album,
+    string Status,
+    string Message,
+    bool StillCoverUpdated = false,
+    bool AnimatedArtworkSaved = false,
+    bool HasAnimatedArtwork = false,
+    bool Updated = false)
+{
+    public static CoverAlbumMaintenanceOutcome Skipped(
+        string albumDirectory,
+        string? representativeFilePath,
+        string? artist,
+        string? album,
+        string message,
+        bool HasAnimatedArtwork = false)
+        => new(albumDirectory, representativeFilePath, artist, album, "skipped", message, HasAnimatedArtwork: HasAnimatedArtwork);
+
+    public static CoverAlbumMaintenanceOutcome Error(
+        string albumDirectory,
+        string? representativeFilePath,
+        string? artist,
+        string? album,
+        string message)
+        => new(albumDirectory, representativeFilePath, artist, album, "error", message);
+}

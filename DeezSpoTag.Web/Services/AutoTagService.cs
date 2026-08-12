@@ -112,7 +112,6 @@ public abstract class AutoTagRunState
     public string? ProfileId { get; set; }
     public string? ProfileName { get; set; }
     public string? EnhancementFeature { get; set; }
-    public bool EnhancementSectionsAppliedPerBatch { get; set; }
     public string? EnhancementGroupId { get; set; }
     public string? CurrentPhase { get; set; }
     public int CurrentBatch { get; set; }
@@ -213,6 +212,7 @@ public class TaggingStatus
     public long? LyricsTrackId { get; set; }
     public string? LyricsCoverUrl { get; set; }
     public List<string> LyricsBadges { get; set; } = new();
+    public List<string> ArtworkBadges { get; set; } = new();
     public string? SourceIsrc { get; set; }
     public double? SourceDurationSeconds { get; set; }
     public string? CandidateTitle { get; set; }
@@ -443,7 +443,7 @@ public partial class AutoTagService
         [AutoTagLiterals.LanguageTag] = AutoTagLiterals.LanguageTag
     };
     private static readonly HashSet<string> EnrichmentStageAllowedKeys = BuildEnrichmentStageAllowedKeys();
-    private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildStageAllowedKeys(includeSkipTagged: true, includeConflictResolution: false, includeTargetFiles: true, includeLibraryWideEnhancementBatchSize: true);
+    private static readonly HashSet<string> EnhancementStageAllowedKeys = BuildEnhancementStageAllowedKeys();
     private static readonly HashSet<string> EligibleAudioExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".flac",
@@ -482,6 +482,18 @@ public partial class AutoTagService
         keys.Add(AutoTagLiterals.ManualForceFingerprintKey);
         return keys;
     }
+
+    private static HashSet<string> BuildEnhancementStageAllowedKeys()
+    {
+        var keys = BuildStageAllowedKeys(
+            includeSkipTagged: true,
+            includeConflictResolution: false,
+            includeTargetFiles: true,
+            includeLibraryWideEnhancementBatchSize: true);
+        keys.Add(AutoTagLiterals.EnhancementStage);
+        return keys;
+    }
+
     private const string AutoTagFolderName = "autotag";
     private const string HistoryFolderName = "history";
     private const string TracknameTemplateKey = "tracknameTemplate";
@@ -1251,8 +1263,7 @@ public partial class AutoTagService
         var status = job.Status?.Trim();
         var staleRunning = string.Equals(status, AutoTagLiterals.RunningStatus, StringComparison.OrdinalIgnoreCase)
             && !_activeJobIds.ContainsKey(job.Id);
-        if (!string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+        if (!string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase)
             && !staleRunning)
@@ -2140,7 +2151,9 @@ public partial class AutoTagService
 
         return string.Equals(stopReason, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
             ? AutoTagLiterals.PausedStatus
-            : AutoTagLiterals.InterruptedStatus;
+            : string.Equals(stopReason, "user", StringComparison.OrdinalIgnoreCase)
+                ? AutoTagLiterals.CanceledStatus
+                : AutoTagLiterals.InterruptedStatus;
     }
 
     private static string NormalizeStopReason(string? stopReason)
@@ -2178,7 +2191,7 @@ public partial class AutoTagService
             AutoTagLiterals.AutomationTrigger => "Paused by automation. Resume is available after download finalization.",
             AutoTagLiterals.ScheduleTrigger => "Interrupted after schedule change. Resume is available.",
             AutoTagLiterals.RecoveryTrigger => "Interrupted by stale recovery. Resume is available.",
-            _ => "Interrupted by user. Resume is available."
+            _ => "Stopped by user."
         };
     }
 
@@ -2403,8 +2416,7 @@ public partial class AutoTagService
             return false;
         }
 
-        return string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+        return string.Equals(job.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(job.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(job.Status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase);
     }
@@ -2530,7 +2542,7 @@ public partial class AutoTagService
                 line => AppendLog(job, line),
                 string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
                     && IsEnhancementRunIntent(job.RunIntent)
-                        ? (files, token) => ApplyEnhancementBatchTemplatesAsync(job, stage.ConfigPath, files, token)
+                        ? (files, token) => ApplyEnhancementBatchSectionsAsync(job, stage.ConfigPath, files, token)
                         : null,
                 resumeCursor,
                 cancellationToken);
@@ -2595,14 +2607,8 @@ public partial class AutoTagService
             return new StageExecutionResult(false);
         }
 
-        var interrupted = IsEnhancementRunIntent(job.RunIntent)
-            || IsManualEnrichmentRunIntent(job.RunIntent);
-        job.Status = interrupted
-            ? AutoTagLiterals.InterruptedStatus
-            : AutoTagLiterals.CanceledStatus;
-        job.Error = interrupted
-            ? "Interrupted by user. Resume is available."
-            : "Stopped by user.";
+        job.Status = AutoTagLiterals.CanceledStatus;
+        job.Error = "Stopped by user.";
         return new StageExecutionResult(false);
     }
 
@@ -2662,6 +2668,7 @@ public partial class AutoTagService
             path,
             context.ConfigPath,
             context.IncludesEnhancementWorkflows,
+            context.IncludesEnhancementStage,
             cancellationToken);
         var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
         var hasEnhancementWork = context.IncludesEnhancementStage
@@ -6594,7 +6601,13 @@ public partial class AutoTagService
 
         var json = File.ReadAllText(path, Encoding.UTF8);
         var summary = JsonSerializer.Deserialize<AutoTagRunSummary>(json, _jsonOptions);
-        if (summary != null && string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
+        if (summary == null)
+        {
+            return null;
+        }
+
+        NormalizeLegacyUserStoppedEnhancement(summary);
+        if (string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
         {
             summary.ResumeFromJobId = TryReadJobResumeFromJobId(summary.Id);
         }
@@ -7318,6 +7331,7 @@ public partial class AutoTagService
     {
         job.Trigger = NormalizeRunTrigger(job.Trigger);
         job.RunIntent = NormalizeRunIntent(job.RunIntent);
+        NormalizeLegacyUserStoppedEnhancement(job);
         if (job.LastActivityAt <= DateTimeOffset.MinValue)
         {
             job.LastActivityAt = ResolveLastActivityTimestamp(job);
@@ -7339,6 +7353,37 @@ public partial class AutoTagService
         job.Error ??= "AutoTag job was interrupted by an application restart; resume is available.";
         SaveJob(job);
         RecordStaleRecoveryPending(job);
+    }
+
+    private static void NormalizeLegacyUserStoppedEnhancement(AutoTagRunState run)
+    {
+        if (!IsEnhancementRunIntent(run.RunIntent)
+            && !IsManualEnrichmentRunIntent(run.RunIntent))
+        {
+            return;
+        }
+
+        if (!string.Equals(NormalizeRunTrigger(run.Trigger), AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(run.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || !IsLegacyUserInterruptedStopMessage(run.Error))
+        {
+            return;
+        }
+
+        run.Status = AutoTagLiterals.CanceledStatus;
+        run.Error = "Stopped by user.";
+    }
+
+    private static bool IsLegacyUserInterruptedStopMessage(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return false;
+        }
+
+        var normalized = error.Trim();
+        return string.Equals(normalized, "Interrupted by user. Resume is available.", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "Interrupted. Resume is available.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static DateTimeOffset ResolveLastActivityTimestamp(AutoTagJob job)
