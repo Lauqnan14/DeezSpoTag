@@ -1084,7 +1084,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("timeBudget", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetOperationTimeout", syncSource, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
-        Assert.Contains("Task.WhenAll", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.WhenAll(jobs", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistSyncJobsAsync", engineSource, StringComparison.Ordinal);
         Assert.DoesNotContain("target_service', 'all'", File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs")), StringComparison.Ordinal);

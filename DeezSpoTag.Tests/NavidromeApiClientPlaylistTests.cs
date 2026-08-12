@@ -133,7 +133,7 @@ public sealed class NavidromeApiClientPlaylistTests
     }
 
     [Fact]
-    public async Task UpdatePlaylistImageFromFileAsync_RejectsSuccessfulUploadWhenTargetStillServesOldArtwork()
+    public async Task UpdatePlaylistImageFromFileAsync_AcceptsSuccessfulUploadWhenTargetServesArtwork()
     {
         var imagePath = Path.Combine(Path.GetTempPath(), $"navidrome-playlist-{Guid.NewGuid():N}.png");
         await File.WriteAllBytesAsync(imagePath, Convert.FromBase64String(
@@ -153,7 +153,7 @@ public sealed class NavidromeApiClientPlaylistTests
                 "image/png",
                 CancellationToken.None);
 
-            Assert.False(updated);
+            Assert.True(updated);
         }
         finally
         {

@@ -94,6 +94,50 @@ public sealed class ManualEnhancementStartContractTests
     }
 
     [Fact]
+    public void AutoTagStopReason_LabelsUserEnhancementStopsAsStopped()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("? AutoTagLiterals.CanceledStatus", source, StringComparison.Ordinal);
+        Assert.Contains("_ => \"Stopped by user.\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("_ => \"Interrupted by user. Resume is available.\"", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStopReason_NormalizesLegacyManualEnhancementStops()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("NormalizeLegacyUserStoppedEnhancement(job);", source, StringComparison.Ordinal);
+        Assert.Contains("NormalizeLegacyUserStoppedEnhancement(summary);", source, StringComparison.Ordinal);
+        Assert.Contains("IsLegacyUserInterruptedStopMessage", source, StringComparison.Ordinal);
+        Assert.Contains("run.Status = AutoTagLiterals.CanceledStatus;", source, StringComparison.Ordinal);
+        Assert.Contains("run.Error = \"Stopped by user.\";", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagStart_DoesNotResumeCanceledEnhancementRuns()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var resumeCandidate = ExtractSourceSpan(
+            source,
+            "private bool IsResumeCandidate",
+            "private static AutoTagResumeCheckpoint? CloneResumeCheckpoint");
+        var preserveRuntimeConfig = ExtractSourceSpan(
+            source,
+            "private static bool ShouldPreserveRuntimeConfigFilesForResume",
+            "private static HashSet<string> InitializeRuntimeConfigPaths");
+
+        Assert.DoesNotContain("AutoTagLiterals.CanceledStatus", resumeCandidate, StringComparison.Ordinal);
+        Assert.DoesNotContain("AutoTagLiterals.CanceledStatus", preserveRuntimeConfig, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.InterruptedStatus", resumeCandidate, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.PausedStatus", resumeCandidate, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AutoTagStart_BlocksIncompatibleConcurrentJobs()
     {
         var repoRoot = FindRepoRoot();
@@ -173,5 +217,17 @@ public sealed class ManualEnhancementStartContractTests
         return nextFunction > start
             ? source[start..nextFunction]
             : source[start..];
+    }
+
+    private static string ExtractSourceSpan(string source, string startMarker, string endMarker)
+    {
+        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            throw new InvalidOperationException($"{startMarker} was not found.");
+        }
+
+        var end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+        return end > start ? source[start..end] : source[start..];
     }
 }

@@ -607,7 +607,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("batchStart += batchSize", batchBody, StringComparison.Ordinal);
         Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
         Assert.Contains("if (await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token))", batchBody, StringComparison.Ordinal);
-        Assert.Contains("ApplyEnhancementBatchTemplatesAsync", autoTagSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyEnhancementBatchSectionsAsync", autoTagSource, StringComparison.Ordinal);
         Assert.Contains("OrganizePathInBatchesAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("options.BatchScopedFilesOnly = true;", workflowSource, StringComparison.Ordinal);
         Assert.Contains("if (options.BatchScopedFilesOnly)", organizerSource, StringComparison.Ordinal);

@@ -49,13 +49,14 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "Services",
             "WatchlistRunCoordinator.cs"));
 
-        Assert.Contains("Task.WhenAll", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.WhenAll(jobs", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetOperationTimeout", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("TargetSyncJobTimeout", worker, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", worker, StringComparison.Ordinal);
         Assert.Contains("GetNextWatchlistSyncJobDueUtcAsync", repository, StringComparison.Ordinal);
         Assert.Contains("RepairWatchlistSyncBacklogAsync", coordinator, StringComparison.Ordinal);
-        Assert.Contains("ROW_NUMBER() OVER", repository, StringComparison.Ordinal);
-        Assert.Contains("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
+        Assert.Contains("ranked.playlist_priority ASC", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
         Assert.Contains("Recovered expired target synchronization lease.", repository, StringComparison.Ordinal);
     }
 
@@ -201,7 +202,8 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("availability == PlexItemAvailability.Missing", service, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM media_server_track_metadata", repository, StringComparison.Ordinal);
         Assert.DoesNotContain("plex_track_metadata", repository, StringComparison.Ordinal);
-        Assert.Contains("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
+        Assert.Contains("ORDER BY ranked.missing_priority", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("PARTITION BY lower(job.target_service),", repository, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "Success = services.Contains(PlexService, StringComparer.OrdinalIgnoreCase)",
             service,

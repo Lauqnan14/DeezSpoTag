@@ -418,8 +418,8 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement workflows own folder uniformity", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldRunGenericOrganizer", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyEnhancementBatchTemplatesAsync", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("OrganizeFilesAsync", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyEnhancementBatchSectionsAsync", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("OrganizeFilesWithReportAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("folder structure skipped (enforceFolderStructure is disabled)", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("FolderTemplatesAppliedInBatches", workflowSource, StringComparison.Ordinal);
         Assert.Contains("AutoTagOrganizerBatchResult", organizerSource, StringComparison.Ordinal);

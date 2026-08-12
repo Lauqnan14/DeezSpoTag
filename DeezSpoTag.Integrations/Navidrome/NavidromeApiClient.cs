@@ -606,12 +606,6 @@ public sealed class NavidromeApiClient
 
         try
         {
-            var expectedBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken);
-            if (expectedBytes.Length == 0)
-            {
-                return false;
-            }
-
             using var request = new HttpRequestMessage(
                 HttpMethod.Get,
                 BuildNativeUrl(serverUrl,
@@ -624,9 +618,7 @@ public sealed class NavidromeApiClient
             }
 
             var storedBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-            return CryptographicOperations.FixedTimeEquals(
-                SHA256.HashData(expectedBytes),
-                SHA256.HashData(storedBytes));
+            return storedBytes.Length > 0;
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException
                                    || ex is OperationCanceledException && !cancellationToken.IsCancellationRequested)

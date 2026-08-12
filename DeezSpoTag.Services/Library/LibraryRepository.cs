@@ -11602,19 +11602,10 @@ WHERE id IN (
                    WHEN lower(job.track_id) = 'playlist' THEN 1
                    ELSE 2
                END AS job_order,
-               ROW_NUMBER() OVER (
-                   PARTITION BY lower(job.target_service),
-                                CASE
-                                    WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0
-                                    WHEN lower(job.track_id) = 'playlist' THEN 1
-                                    ELSE 2
-                                END
-                   ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,
-                            playlist.sync_priority ASC,
-                            job.attempt_count ASC,
-                            job.next_attempt_utc,
-                            job.id
-               ) AS target_rank
+               CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END AS missing_priority,
+               playlist.sync_priority AS playlist_priority,
+               job.attempt_count,
+               job.next_attempt_utc
         FROM watchlist_sync_job job
         LEFT JOIN playlist_watchlist playlist
           ON playlist.source = job.source
@@ -11624,7 +11615,13 @@ WHERE id IN (
                OR (lower(job.status) = 'processing' AND datetime(job.lease_until_utc) <= datetime('now')))
           AND job.id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(@excludedJobIdsJson))
     ) ranked
-    ORDER BY ranked.target_rank, ranked.job_order, ranked.target_order, ranked.id
+    ORDER BY ranked.missing_priority,
+             ranked.playlist_priority ASC,
+             ranked.job_order,
+             ranked.target_order,
+             ranked.attempt_count ASC,
+             ranked.next_attempt_utc,
+             ranked.id
     LIMIT @limit
 )
 RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,

@@ -1,7 +1,9 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download.Shared.Models;
@@ -60,6 +62,28 @@ public sealed class NotificationSinkDispatchTests : IDisposable
     {
         public HttpClient CreateClient(string name)
             => throw new InvalidOperationException("Webhook must not be used when it is disabled.");
+    }
+
+    private sealed class RecordingHttpClientFactory : IHttpClientFactory
+    {
+        private readonly RecordingHandler _handler = new();
+
+        public string? LastBody => _handler.LastBody;
+
+        public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
+    }
+
+    private sealed class RecordingHandler : HttpMessageHandler
+    {
+        public string? LastBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            LastBody = request.Content == null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
     }
 
     private sealed class StubEnvironment : IWebHostEnvironment, DeezSpoTag.Web.Services.IAppDataRootOverride
@@ -155,5 +179,29 @@ public sealed class NotificationSinkDispatchTests : IDisposable
         Assert.Equal("download_failed", entry.Kind);
         Assert.True(entry.OccurrenceCount >= 1);
         Assert.Equal(1, await _store.GetUnreadCountAsync());
+    }
+
+    [Fact]
+    public async Task WebhookTest_SendsAppriseCompatiblePayload()
+    {
+        var factory = new RecordingHttpClientFactory();
+        using var service = new NotificationService(
+            _store,
+            factory,
+            _listener,
+            NullLogger<NotificationService>.Instance);
+
+        var delivered = await service.SendWebhookTestAsync("http://apprise.test/notify/apprise", CancellationToken.None);
+
+        Assert.True(delivered);
+        var body = factory.LastBody;
+        Assert.NotNull(body);
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        Assert.Equal("DeezSpoTag test notification", root.GetProperty("title").GetString());
+        Assert.Equal("If you can read this, the webhook is configured correctly.", root.GetProperty("body").GetString());
+        Assert.Equal("info", root.GetProperty("type").GetString());
+        Assert.False(root.TryGetProperty("Title", out _));
+        Assert.False(root.TryGetProperty("Body", out _));
     }
 }

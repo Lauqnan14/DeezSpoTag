@@ -202,15 +202,16 @@ public sealed class NotificationService : BackgroundService, INotificationSink
     {
         var payload = JsonSerializer.Serialize(new
         {
-            entry.Id,
-            entry.Kind,
+            title = entry.Title,
+            body = string.IsNullOrWhiteSpace(entry.Body) ? entry.Title : entry.Body,
+            type = ResolveWebhookType(entry.Severity),
+            id = entry.Id,
+            kind = entry.Kind,
             severity = entry.Severity.ToString(),
-            entry.Title,
-            entry.Body,
-            entry.EntityType,
-            entry.EntityId,
-            entry.Link,
-            entry.OccurrenceCount,
+            entityType = entry.EntityType,
+            entityId = entry.EntityId,
+            link = entry.Link,
+            occurrenceCount = entry.OccurrenceCount,
             timestamp = entry.LastSeenUtc
         });
 
@@ -246,4 +247,12 @@ public sealed class NotificationService : BackgroundService, INotificationSink
 
         return false;
     }
+
+    private static string ResolveWebhookType(NotificationSeverity severity)
+        => severity switch
+        {
+            NotificationSeverity.Warning => "warning",
+            NotificationSeverity.ActionRequired => "warning",
+            _ => "info"
+        };
 }
