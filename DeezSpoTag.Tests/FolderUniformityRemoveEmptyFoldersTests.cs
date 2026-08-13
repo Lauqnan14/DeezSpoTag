@@ -173,6 +173,69 @@ public sealed class FolderUniformityRemoveEmptyFoldersTests : IDisposable
     }
 
     [Fact]
+    public async Task OrganizePathInBatchesAsync_MovesConfiguredArtworkSidecarsWithRenamedAlbum()
+    {
+        var settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
+        var settings = settingsService.LoadSettings();
+        settings.CoverImageTemplate = "%artist% - %album%";
+        settings.ArtistImageTemplate = "%artist%";
+        settings.AnimatedArtworkSquareFileName = "motion";
+        settings.AnimatedArtworkTallFileName = "motion_tall";
+        settingsService.SaveSettings(settings);
+
+        var libraryRoot = Path.Join(_tempRoot, "configured-artwork");
+        var sourceArtistDir = Path.Join(libraryRoot, "artist a");
+        var sourceAlbumDir = Path.Join(sourceArtistDir, "album a");
+        Directory.CreateDirectory(sourceAlbumDir);
+
+        var trackPath = Path.Join(sourceAlbumDir, "bad-name.flac");
+        await CreateAudioAsync(trackPath);
+        using (var file = TagLib.File.Create(trackPath))
+        {
+            file.Tag.Title = "Track A";
+            file.Tag.Album = "Album A";
+            file.Tag.Performers = ["Artist A"];
+            file.Tag.AlbumArtists = ["Artist A"];
+            file.Tag.Track = 1;
+            file.Save();
+        }
+
+        var configuredCover = Path.Join(sourceAlbumDir, "Artist A - Album A.jpg");
+        var configuredAnimatedSquare = Path.Join(sourceAlbumDir, "motion.webp");
+        var configuredAnimatedTall = Path.Join(sourceAlbumDir, "motion_tall.gif");
+        var configuredArtistArt = Path.Join(sourceArtistDir, "Artist A.png");
+        await System.IO.File.WriteAllTextAsync(configuredCover, "cover");
+        await System.IO.File.WriteAllTextAsync(configuredAnimatedSquare, "square");
+        await System.IO.File.WriteAllTextAsync(configuredAnimatedTall, "tall");
+        await System.IO.File.WriteAllTextAsync(configuredArtistArt, "artist");
+
+        await _organizer.OrganizePathInBatchesAsync(
+            libraryRoot,
+            new AutoTagOrganizerOptions
+            {
+                RemoveEmptyFolders = true,
+                MoveMisplacedFiles = true,
+                RenameFilesToTemplate = true
+            },
+            batchSize: 40,
+            log: null,
+            CancellationToken.None);
+
+        var movedTrack = Directory.EnumerateFiles(libraryRoot, "*.flac", SearchOption.AllDirectories)
+            .Single(path => !string.Equals(path, trackPath, StringComparison.OrdinalIgnoreCase));
+        var destinationAlbumDir = Path.GetDirectoryName(movedTrack)!;
+        var destinationArtistDir = Directory.GetParent(destinationAlbumDir)!.FullName;
+        Assert.True(System.IO.File.Exists(Path.Join(destinationAlbumDir, "Artist A - Album A.jpg")));
+        Assert.True(System.IO.File.Exists(Path.Join(destinationAlbumDir, "motion.webp")));
+        Assert.True(System.IO.File.Exists(Path.Join(destinationAlbumDir, "motion_tall.gif")));
+        Assert.True(System.IO.File.Exists(Path.Join(destinationArtistDir, "Artist A.png")));
+        Assert.False(System.IO.File.Exists(configuredCover));
+        Assert.False(System.IO.File.Exists(configuredAnimatedSquare));
+        Assert.False(System.IO.File.Exists(configuredAnimatedTall));
+        Assert.False(System.IO.File.Exists(configuredArtistArt));
+    }
+
+    [Fact]
     public async Task OrganizePathInBatchesAsync_NeverSweepsTheLibraryRootIntoAnAlbumFolder()
     {
         var libraryRoot = Path.Join(_tempRoot, "rootsweep");

@@ -56,8 +56,8 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
             ".Where(platform => !IsLyricsProviderPlatform(platform))",
             ExtractMethod(source, "private static List<string> FilterAutomaticDownloadEnrichmentPlatforms"),
             StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            ".Where(tag => !IsLyricsTag(tag))",
+        Assert.Contains(
+            "IsLyricsTag(tag)",
             ExtractMethod(source, "private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags"),
             StringComparison.Ordinal);
         Assert.Contains(

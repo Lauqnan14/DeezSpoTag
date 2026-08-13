@@ -507,9 +507,10 @@ public sealed class EnhancementMultiSectionRunTests
         var sidecarStart = workflows.IndexOf("private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync", StringComparison.Ordinal);
         Assert.True(sidecarStart > 0);
         var sidecarBody = workflows[sidecarStart..(sidecarStart + 4500)];
-        Assert.Contains("RunLyricsRefreshIfRequestedAsync(", sidecarBody, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredSidecarLyricsAsync(", sidecarBody, StringComparison.Ordinal);
+        Assert.Contains("RunLyricsRefreshIfRequestedAsync(", workflows, StringComparison.Ordinal);
         Assert.Contains("if (batchFiles is not null)", sidecarBody, StringComparison.Ordinal);
-        Assert.Contains("IngestAndVerifyAsync", sidecarBody, StringComparison.Ordinal);
+        Assert.Contains("IngestAndVerifyAsync", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -553,6 +554,7 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("bool AnimatedArtworkSaved", source, StringComparison.Ordinal);
         Assert.Contains("bool HasAnimatedArtwork", source, StringComparison.Ordinal);
         Assert.Contains("string? CoverPath", source, StringComparison.Ordinal);
+        Assert.Contains("IReadOnlyList<string>? AudioFilePaths", source, StringComparison.Ordinal);
         Assert.Contains("bool WriteEmbeddedCover", source, StringComparison.Ordinal);
         Assert.Contains("bool WriteExternalSidecar", source, StringComparison.Ordinal);
         Assert.Contains("bool UseShazamForUntaggedFiles", source, StringComparison.Ordinal);
@@ -563,6 +565,51 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("if (context.Request.WriteEmbeddedCover)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("|| !context.ArtworkState.HasExternal", source, StringComparison.Ordinal);
         Assert.Contains("AlbumResults: albumResults", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SidecarWorkflowRunsLyricsAndCoverMaintenanceTogether()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf(
+            "private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync",
+            StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 4200)];
+
+        Assert.Contains("var sidecarTasks = new List<Task<EnhancementWorkflowOutcome>>();", body, StringComparison.Ordinal);
+        Assert.Contains("sidecarTasks.Add(RunConfiguredSidecarLyricsAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("sidecarTasks.Add(RunConfiguredCoverMaintenanceAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("var outcomes = await Task.WhenAll(sidecarTasks);", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("await RunLyricsRefreshForBatchAsync(job, trackIds, lyricsOptions, cancellationToken);\n            if (runCovers)", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnimatedArtworkBadgesAreEmittedForAlbumFilesWithoutInflatingCounts()
+    {
+        var workflows = ReadEnhancementWorkflows();
+
+        Assert.Contains("bool countOutcome = true", workflows, StringComparison.Ordinal);
+        Assert.Contains("if (countOutcome)", workflows, StringComparison.Ordinal);
+        Assert.Contains("album.AudioFilePaths is { Count: > 0 }", workflows, StringComparison.Ordinal);
+        Assert.Contains("foreach (var audioPath in album.AudioFilePaths)", workflows, StringComparison.Ordinal);
+        Assert.Contains("countOutcome: false", workflows, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnimatedArtworkAppliesStillArtworkFromTheSameAppleSource()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "CoverPort", "CoverLibraryMaintenanceService.cs"));
+
+        Assert.Contains("private readonly record struct AnimatedArtworkUpdateResult", source, StringComparison.Ordinal);
+        Assert.Contains("bool MatchingStillApplied", source, StringComparison.Ordinal);
+        Assert.Contains("TryApplyMatchingAppleStillArtworkAsync", source, StringComparison.Ordinal);
+        Assert.Contains("updatedAnything = animatedResult.AnimatedSaved || animatedResult.MatchingStillApplied || updatedAnything;", source, StringComparison.Ordinal);
+        Assert.Contains("if (workPlan.RequiresStillCoverUpdate && !animatedResult.AnimatedSaved)", source, StringComparison.Ordinal);
+        Assert.Contains("if (request.WriteExternalSidecar)", source, StringComparison.Ordinal);
+        Assert.Contains("if (request.WriteEmbeddedCover)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (workPlan.RequiresStillCoverUpdate && (!request.QueueAnimatedArtwork || !animatedSaved))", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -598,8 +645,8 @@ public sealed class EnhancementMultiSectionRunTests
         var autoTagService = File.ReadAllText(Path.Join(
             FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
 
-        Assert.Contains("if (job.TargetUsable > 0)", workflows, StringComparison.Ordinal);
-        Assert.Contains("job.TotalItems = job.TargetUsable;", workflows, StringComparison.Ordinal);
+        Assert.Contains("job.ProcessedItems = Math.Max(job.ProcessedItems, Math.Max(0, processed));", workflows, StringComparison.Ordinal);
+        Assert.Contains("job.TotalItems = job.TargetUsable > 0", workflows, StringComparison.Ordinal);
         Assert.Contains("PublishEnhancementPhaseHeartbeat", workflows, StringComparison.Ordinal);
         Assert.Contains("cover maintenance starting", workflows, StringComparison.Ordinal);
         Assert.Contains("quality checks starting", workflows, StringComparison.Ordinal);
@@ -607,7 +654,7 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("onAlbumCompleted", coverService, StringComparison.Ordinal);
         Assert.Contains("lock (job)", workflows, StringComparison.Ordinal);
         Assert.Contains("updateTrackIndex: false", autoTagService, StringComparison.Ordinal);
-        Assert.DoesNotContain("job.ProcessedItems = Math.Max(0, processed);\n        job.TotalItems = job.TargetUsable > 0 ? job.TargetUsable : Math.Max(0, total);", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("job.TotalItems = job.TargetUsable;\n        }", workflows, StringComparison.Ordinal);
     }
 
     [Fact]

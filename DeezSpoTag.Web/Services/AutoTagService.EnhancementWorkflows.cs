@@ -345,29 +345,27 @@ public partial class AutoTagService
         int batchProcessed = 0,
         int batchSize = 0)
     {
-        job.CurrentPhase = phase;
-        job.CurrentBatch = Math.Max(0, currentBatch);
-        job.BatchCount = Math.Max(0, batchCount);
-        job.BatchProcessed = Math.Max(0, batchProcessed);
-        job.BatchSize = Math.Max(0, batchSize);
-        if (job.TargetUsable > 0)
+        lock (job)
         {
-            job.TotalItems = job.TargetUsable;
-        }
-        else
-        {
-            job.ProcessedItems = Math.Max(0, processed);
-            job.TotalItems = Math.Max(0, total);
-            if (total > 0)
+            job.CurrentPhase = phase;
+            job.CurrentBatch = Math.Max(0, currentBatch);
+            job.BatchCount = Math.Max(0, batchCount);
+            job.BatchProcessed = Math.Max(0, batchProcessed);
+            job.BatchSize = Math.Max(0, batchSize);
+            job.ProcessedItems = Math.Max(job.ProcessedItems, Math.Max(0, processed));
+            job.TotalItems = job.TargetUsable > 0
+                ? job.TargetUsable
+                : Math.Max(0, total);
+            if (job.TotalItems > 0)
             {
-                job.Progress = Math.Clamp(processed / (double)total, 0d, 1d);
+                job.Progress = Math.Clamp(job.ProcessedItems / (double)job.TotalItems, 0d, 1d);
             }
-        }
 
-        job.CurrentPlatform = string.IsNullOrWhiteSpace(job.EnhancementFeature)
-            ? AutoTagLiterals.EnhancementStage
-            : job.EnhancementFeature;
-        SaveJob(job);
+            job.CurrentPlatform = string.IsNullOrWhiteSpace(job.EnhancementFeature)
+                ? AutoTagLiterals.EnhancementStage
+                : job.EnhancementFeature;
+            SaveJob(job);
+        }
     }
 
     private void PublishEnhancementPhaseHeartbeat(AutoTagJob job, string feature, string message)
@@ -418,47 +416,54 @@ public partial class AutoTagService
         IReadOnlyList<string>? artworkBadges = null,
         string? sourceTitle = null,
         string? sourceArtist = null,
-        string? coverPath = null)
+        string? coverPath = null,
+        bool countOutcome = true)
     {
-        SetEnhancementPhase(job, feature, processed, total, currentBatch, batchCount, batchProcessed, batchSize);
-        var update = new TaggingStatusWrap
+        lock (job)
         {
-            Platform = feature,
-            Progress = total > 0 ? Math.Clamp(processed / (double)total, 0d, 1d) : 0d,
-            FileIndex = Math.Max(0, processed - 1),
-            FileCount = total,
-            Status = new TaggingStatus
+            SetEnhancementPhase(job, feature, processed, total, currentBatch, batchCount, batchProcessed, batchSize);
+            var update = new TaggingStatusWrap
             {
-                Status = status,
-                Path = path,
-                Message = message,
-                SourceTitle = lyrics?.Title ?? sourceTitle,
-                SourceArtist = lyrics?.ArtistName ?? sourceArtist,
-                LyricsTrackId = lyrics?.TrackId,
-                LyricsCoverUrl = BuildLyricsCoverUrl(lyrics?.CoverPath ?? coverPath),
-                LyricsBadges = lyrics?.TimingBadges.ToList() ?? new List<string>(),
-                ArtworkBadges = artworkBadges?.ToList() ?? new List<string>()
+                Platform = feature,
+                Progress = total > 0 ? Math.Clamp(processed / (double)total, 0d, 1d) : 0d,
+                FileIndex = Math.Max(0, processed - 1),
+                FileCount = total,
+                Status = new TaggingStatus
+                {
+                    Status = status,
+                    Path = path,
+                    Message = message,
+                    SourceTitle = lyrics?.Title ?? sourceTitle,
+                    SourceArtist = lyrics?.ArtistName ?? sourceArtist,
+                    LyricsTrackId = lyrics?.TrackId,
+                    LyricsCoverUrl = BuildLyricsCoverUrl(lyrics?.CoverPath ?? coverPath),
+                    LyricsBadges = lyrics?.TimingBadges.ToList() ?? new List<string>(),
+                    ArtworkBadges = artworkBadges?.ToList() ?? new List<string>()
+                }
+            };
+            job.LastStatus = update;
+            AppendStatusHistory(job, update);
+            if (countOutcome)
+            {
+                switch (status)
+                {
+                    case AutoTagLiterals.OkStatus:
+                    case AutoTagLiterals.TaggedStatus:
+                        job.OkCount++;
+                        break;
+                    case AutoTagLiterals.ErrorStatus:
+                        job.ErrorCount++;
+                        break;
+                    case AutoTagLiterals.ReviewStatus:
+                        job.ReviewCount++;
+                        break;
+                    case AutoTagLiterals.SkippedStatus:
+                        job.SkippedCount++;
+                        break;
+                }
             }
-        };
-        job.LastStatus = update;
-        AppendStatusHistory(job, update);
-        switch (status)
-        {
-            case AutoTagLiterals.OkStatus:
-            case AutoTagLiterals.TaggedStatus:
-                job.OkCount++;
-                break;
-            case AutoTagLiterals.ErrorStatus:
-                job.ErrorCount++;
-                break;
-            case AutoTagLiterals.ReviewStatus:
-                job.ReviewCount++;
-                break;
-            case AutoTagLiterals.SkippedStatus:
-                job.SkippedCount++;
-                break;
+            SaveJob(job);
         }
-        SaveJob(job);
     }
 
     private async Task RunIntegratedEnhancementWorkflowsAsync(
@@ -605,59 +610,22 @@ public partial class AutoTagService
                 ? $"enhancement batch: sidecars for {batchFiles.Count} file(s) (lyrics={runLyrics}, covers={runCovers})."
                 : $"enhancement workflow: sidecars starting (lyrics={runLyrics}, covers={runCovers}).");
 
+        var sidecarTasks = new List<Task<EnhancementWorkflowOutcome>>();
         if (runLyrics)
         {
             var lyricsOptions = BuildSidecarLyricsOptions(enhancementRoot);
-            if (batchFiles is not null)
-            {
-                var context = BuildEnhancementBatchContext(batchFiles, batchFiles, enabledFolders);
-                if (context.FilesByFolder.Count > 0)
-                {
-                    await _knownFileIngestionService.IngestAndVerifyAsync(context.FilesByFolder, cancellationToken);
-                }
-
-                var trackIdsByPath = await _libraryRepository.GetTrackIdsByFilePathsAsync(
-                    context.CurrentFiles,
-                    cancellationToken);
-                var trackIds = context.CurrentFiles
-                    .Select(path => trackIdsByPath.TryGetValue(path, out var trackId) ? trackId : 0)
-                    .Where(static trackId => trackId > 0)
-                    .Distinct()
-                    .ToList();
-                var missing = context.CurrentFiles.Count - trackIds.Count;
-                if (missing > 0)
-                {
-                    AppendLog(job, $"enhancement batch: sidecars lyrics skipped {missing} file(s) with no library track id.");
-                }
-
-                if (trackIds.Count == 0)
-                {
-                    AppendLog(job, "enhancement batch: sidecars lyrics skipped (no indexed tracks were available).");
-                }
-                else
-                {
-                    AppendLog(job, $"enhancement batch: sidecars lyrics lookup starting ({trackIds.Count} track(s)).");
-                    await RunLyricsRefreshForBatchAsync(job, trackIds, lyricsOptions, cancellationToken);
-                }
-            }
-            else
-            {
-                var scopedFolders = ResolveEnhancementJobFolders(
-                    job,
-                    enhancementRoot,
-                    enabledFolders,
-                    AutoTagLiterals.EnhancementFeatureSidecars);
-                var scopedFolderIds = scopedFolders
-                    .Select(folder => folder.Id)
-                    .Distinct()
-                    .ToList();
-                await RunLyricsRefreshIfRequestedAsync(job, lyricsOptions, scopedFolderIds, cancellationToken);
-            }
+            sidecarTasks.Add(RunConfiguredSidecarLyricsAsync(
+                job,
+                enhancementRoot,
+                enabledFolders,
+                lyricsOptions,
+                cancellationToken,
+                batchFiles));
         }
 
         if (runCovers)
         {
-            var coverOutcome = await RunConfiguredCoverMaintenanceAsync(
+            sidecarTasks.Add(RunConfiguredCoverMaintenanceAsync(
                 job,
                 rootPath,
                 configRoot,
@@ -665,17 +633,80 @@ public partial class AutoTagService
                 enabledFolders,
                 configPath,
                 cancellationToken,
-                batchFiles);
-            if (string.Equals(coverOutcome.Status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                return coverOutcome;
-            }
+                batchFiles));
+        }
+
+        var outcomes = await Task.WhenAll(sidecarTasks);
+        var failed = outcomes.FirstOrDefault(outcome =>
+            string.Equals(outcome.Status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(failed.Status))
+        {
+            return failed;
         }
 
         return EnhancementWorkflowOutcome.Completed(
             batchFiles is not null
                 ? $"sidecars finished for {batchFiles.Count} file(s)."
                 : "sidecars finished.");
+    }
+
+    private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarLyricsAsync(
+        AutoTagJob job,
+        JsonObject enhancementRoot,
+        IReadOnlyList<FolderDto> enabledFolders,
+        SidecarLyricsOptions lyricsOptions,
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? batchFiles = null)
+    {
+        if (!lyricsOptions.ShouldRun)
+        {
+            return EnhancementWorkflowOutcome.Skipped("lyrics refresh is not configured.");
+        }
+
+        if (batchFiles is not null)
+        {
+            var context = BuildEnhancementBatchContext(batchFiles, batchFiles, enabledFolders);
+            if (context.FilesByFolder.Count > 0)
+            {
+                await _knownFileIngestionService.IngestAndVerifyAsync(context.FilesByFolder, cancellationToken);
+            }
+
+            var trackIdsByPath = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+                context.CurrentFiles,
+                cancellationToken);
+            var trackIds = context.CurrentFiles
+                .Select(path => trackIdsByPath.TryGetValue(path, out var trackId) ? trackId : 0)
+                .Where(static trackId => trackId > 0)
+                .Distinct()
+                .ToList();
+            var missing = context.CurrentFiles.Count - trackIds.Count;
+            if (missing > 0)
+            {
+                AppendLog(job, $"enhancement batch: sidecars lyrics skipped {missing} file(s) with no library track id.");
+            }
+
+            if (trackIds.Count == 0)
+            {
+                AppendLog(job, "enhancement batch: sidecars lyrics skipped (no indexed tracks were available).");
+                return EnhancementWorkflowOutcome.Skipped("no indexed tracks were available for lyrics.");
+            }
+
+            AppendLog(job, $"enhancement batch: sidecars lyrics lookup starting ({trackIds.Count} track(s)).");
+            await RunLyricsRefreshForBatchAsync(job, trackIds, lyricsOptions, cancellationToken);
+            return EnhancementWorkflowOutcome.Completed($"lyrics refreshed for {trackIds.Count} track(s).");
+        }
+
+        var scopedFolders = ResolveEnhancementJobFolders(
+            job,
+            enhancementRoot,
+            enabledFolders,
+            AutoTagLiterals.EnhancementFeatureSidecars);
+        var scopedFolderIds = scopedFolders
+            .Select(folder => folder.Id)
+            .Distinct()
+            .ToList();
+        await RunLyricsRefreshIfRequestedAsync(job, lyricsOptions, scopedFolderIds, cancellationToken);
+        return EnhancementWorkflowOutcome.Completed("lyrics refresh finished.");
     }
 
     private static JsonObject? ResolveSidecarFolderSection(JsonObject enhancementRoot)
@@ -1353,12 +1384,14 @@ public partial class AutoTagService
                         : album.Status.Equals("ok", StringComparison.OrdinalIgnoreCase)
                             ? AutoTagLiterals.OkStatus
                             : AutoTagLiterals.SkippedStatus;
+                    var primaryPath = album.RepresentativeFilePath ?? album.AlbumDirectory;
+                    var animatedBadges = album.HasAnimatedArtwork ? new[] { "animated-artwork" } : null;
                     lock (job)
                     {
                         RecordEnhancementItemStatus(
                             job,
                             AutoTagLiterals.EnhancementPhaseSidecarsCovers,
-                            album.RepresentativeFilePath ?? album.AlbumDirectory,
+                            primaryPath,
                             status,
                             album.Message,
                             processed,
@@ -1367,10 +1400,42 @@ public partial class AutoTagService
                             batchCount,
                             completed,
                             albumCount,
-                            artworkBadges: album.HasAnimatedArtwork ? new[] { "animated-artwork" } : null,
+                            artworkBadges: animatedBadges,
                             sourceTitle: album.Album,
                             sourceArtist: album.Artist,
                             coverPath: album.CoverPath);
+                        if (album.HasAnimatedArtwork && album.AudioFilePaths is { Count: > 0 })
+                        {
+                            var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                primaryPath
+                            };
+                            foreach (var audioPath in album.AudioFilePaths)
+                            {
+                                if (!emitted.Add(audioPath))
+                                {
+                                    continue;
+                                }
+
+                                RecordEnhancementItemStatus(
+                                    job,
+                                    AutoTagLiterals.EnhancementPhaseSidecarsCovers,
+                                    audioPath,
+                                    status,
+                                    album.Message,
+                                    processed,
+                                    albumRepresentatives.Count,
+                                    batchIndex + 1,
+                                    batchCount,
+                                    completed,
+                                    albumCount,
+                                    artworkBadges: animatedBadges,
+                                    sourceTitle: album.Album,
+                                    sourceArtist: album.Artist,
+                                    coverPath: album.CoverPath,
+                                    countOutcome: false);
+                            }
+                        }
                     }
 
                     return ValueTask.CompletedTask;

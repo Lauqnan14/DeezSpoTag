@@ -179,7 +179,9 @@ public partial class AutoTagService
 
     private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags(JsonObject baseRoot)
     {
-        return ResolveEnrichmentRequestedTags(baseRoot);
+        return ResolveEnrichmentRequestedTags(baseRoot)
+            .Where(tag => !IsLyricsTag(tag))
+            .ToList();
     }
 
     private static bool IsLyricsTag(string? tag)

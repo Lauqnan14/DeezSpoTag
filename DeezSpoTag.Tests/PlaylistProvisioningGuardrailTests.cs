@@ -57,9 +57,9 @@ public sealed class PlaylistProvisioningGuardrailTests
     {
         var syncSource = ReadSource("DeezSpoTag.Web/Services/PlaylistSyncService.cs");
         var ensureMethodStart = syncSource.IndexOf(
-            "public async Task<IReadOnlyList<PlaylistProvisioningOutcome>> EnsureTargetPlaylistContainersAsync(",
+            "private async Task<IReadOnlyList<PlaylistProvisioningOutcome>> EnsureTargetPlaylistContainersForServicesAsync(",
             StringComparison.Ordinal);
-        Assert.True(ensureMethodStart >= 0, "EnsureTargetPlaylistContainersAsync method not found.");
+        Assert.True(ensureMethodStart >= 0, "EnsureTargetPlaylistContainersForServicesAsync method not found.");
         var ensureMethodBody = syncSource.Substring(ensureMethodStart, 1200);
 
         // Plex must be reported as deferred, not routed through a create call -- its classic

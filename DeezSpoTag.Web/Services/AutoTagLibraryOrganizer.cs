@@ -5,6 +5,7 @@ using System.Globalization;
 using DeezSpoTag.Core.Models;
 using DeezSpoTag.Core.Models.Settings;
 using DeezSpoTag.Core.Utils;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Settings;
 using TagLib;
@@ -433,6 +434,9 @@ public class AutoTagLibraryOrganizer
         public required string DestinationPath { get; set; }
         public required string DestinationDir { get; set; }
         public bool IsUntagged { get; set; }
+        public IReadOnlyList<string> AlbumArtworkStems { get; set; } = Array.Empty<string>();
+        public IReadOnlyList<string> ArtistArtworkStems { get; set; } = Array.Empty<string>();
+        public IReadOnlyList<string> AnimatedArtworkStems { get; set; } = Array.Empty<string>();
     }
 
     private sealed record MovePlanTargetContext(
@@ -849,8 +853,64 @@ public class AutoTagLibraryOrganizer
             SourceDir = context.SourceDir,
             DestinationDir = destinationDir,
             DestinationPath = destinationPath,
-            IsUntagged = false
+            IsUntagged = false,
+            AlbumArtworkStems = ResolveAlbumArtworkStems(track, context.Settings, pathProcessor),
+            ArtistArtworkStems = ResolveArtistArtworkStems(track, context.Settings, pathProcessor),
+            AnimatedArtworkStems = ResolveAnimatedArtworkStems(context.Settings)
         };
+    }
+
+    private static IReadOnlyList<string> ResolveAlbumArtworkStems(
+        Track track,
+        DeezSpoTagSettings settings,
+        EnhancedPathTemplateProcessor pathProcessor)
+    {
+        var stems = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "cover" };
+        var generated = pathProcessor.GenerateAlbumName(
+            settings.CoverImageTemplate,
+            track.Album,
+            settings,
+            track.Playlist);
+        AddStem(stems, generated);
+        return stems.ToList();
+    }
+
+    private static IReadOnlyList<string> ResolveArtistArtworkStems(
+        Track track,
+        DeezSpoTagSettings settings,
+        EnhancedPathTemplateProcessor pathProcessor)
+    {
+        var stems = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "folder" };
+        var generated = pathProcessor.GenerateArtistName(
+            settings.ArtistImageTemplate,
+            track.MainArtist,
+            settings,
+            track.Album?.RootArtist);
+        AddStem(stems, generated);
+        return stems.ToList();
+    }
+
+    private static IReadOnlyList<string> ResolveAnimatedArtworkStems(DeezSpoTagSettings settings)
+    {
+        var stems = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            AnimatedArtworkNaming.DefaultSquareStem,
+            AnimatedArtworkNaming.DefaultTallStem,
+            "square_animated_artwork",
+            "tall_animated_artwork",
+            AnimatedArtworkNaming.ResolveSquareStem(settings),
+            AnimatedArtworkNaming.ResolveTallStem(settings)
+        };
+        return stems.Where(static stem => !string.IsNullOrWhiteSpace(stem)).ToList();
+    }
+
+    private static void AddStem(HashSet<string> stems, string? value)
+    {
+        var stem = Path.GetFileNameWithoutExtension(value ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(stem))
+        {
+            stems.Add(stem);
+        }
     }
 
     private static string ResolveContainerAwareExtension(string fullPath, Action<string>? log)
@@ -1011,7 +1071,10 @@ public class AutoTagLibraryOrganizer
             SourceDir = sourceDir,
             DestinationDir = destinationDir,
             DestinationPath = destinationPath,
-            IsUntagged = target.IsUntagged
+            IsUntagged = target.IsUntagged,
+            AlbumArtworkStems = target.AlbumArtworkStems,
+            ArtistArtworkStems = target.ArtistArtworkStems,
+            AnimatedArtworkStems = target.AnimatedArtworkStems
         };
     }
 
@@ -1109,7 +1172,7 @@ public class AutoTagLibraryOrganizer
             return;
         }
 
-        if (albumTransitions != null && !string.Equals(sourceDir, destinationDir, StringComparison.OrdinalIgnoreCase))
+        if (albumTransitions != null && !AreSameOrganizerPath(sourceDir, destinationDir))
         {
             albumTransitions[sourceDir] = destinationDir;
         }
@@ -1286,6 +1349,8 @@ public class AutoTagLibraryOrganizer
                 options,
                 report,
                 log));
+            MoveConfiguredAlbumArtworkSidecars(action, options, report, log);
+            MoveConfiguredArtistArtworkSidecars(rootPath, action, options, report, log);
             CleanupSourceDirectoryIfConfigured(rootPath, action.SourceDir, options, log);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2842,7 +2907,7 @@ public class AutoTagLibraryOrganizer
         {
             var candidate = Path.GetFullPath(path);
             var source = Path.GetFullPath(sourcePath);
-            if (string.Equals(candidate, source, StringComparison.OrdinalIgnoreCase))
+            if (AreSameOrganizerPath(candidate, source))
             {
                 return path;
             }
@@ -2911,7 +2976,7 @@ public class AutoTagLibraryOrganizer
 
     private static void MoveFileOverwrite(string sourcePath, string destinationPath)
     {
-        if (string.Equals(sourcePath, destinationPath, StringComparison.OrdinalIgnoreCase))
+        if (AreSameOrganizerPath(sourcePath, destinationPath))
         {
             return;
         }
@@ -2973,6 +3038,145 @@ public class AutoTagLibraryOrganizer
         {
             DeleteEmptyDirectoryTree(context.SourceDir, context.RootPath, context.Log);
         }
+    }
+
+    private void MoveConfiguredAlbumArtworkSidecars(
+        MovePlanItem action,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        if (!options.MoveMisplacedFiles
+            || AreSameOrganizerPath(action.SourceDir, action.DestinationDir)
+            || !Directory.Exists(action.SourceDir))
+        {
+            return;
+        }
+
+        var stems = new HashSet<string>(action.AlbumArtworkStems, StringComparer.OrdinalIgnoreCase);
+        foreach (var sourcePath in Directory.EnumerateFiles(action.SourceDir))
+        {
+            if (!IsConfiguredAlbumArtworkSidecar(sourcePath, stems, action.AnimatedArtworkStems))
+            {
+                continue;
+            }
+
+            MoveArtworkSidecar(sourcePath, action.DestinationDir, "album artwork sidecar", report, log);
+        }
+    }
+
+    private void MoveConfiguredArtistArtworkSidecars(
+        string rootPath,
+        MovePlanItem action,
+        AutoTagOrganizerOptions options,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        if (!options.MoveMisplacedFiles)
+        {
+            return;
+        }
+
+        var sourceArtistDir = TryResolveTopLevelArtistDirectory(rootPath, action.SourceDir);
+        var destinationArtistDir = TryResolveTopLevelArtistDirectory(rootPath, action.DestinationDir);
+        if (string.IsNullOrWhiteSpace(sourceArtistDir)
+            || string.IsNullOrWhiteSpace(destinationArtistDir)
+            || AreSameOrganizerPath(sourceArtistDir, destinationArtistDir)
+            || !Directory.Exists(sourceArtistDir))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(destinationArtistDir);
+        var stems = new HashSet<string>(action.ArtistArtworkStems, StringComparer.OrdinalIgnoreCase);
+        foreach (var sourcePath in Directory.EnumerateFiles(sourceArtistDir))
+        {
+            if (!IsConfiguredArtistArtworkSidecar(sourcePath, stems))
+            {
+                continue;
+            }
+
+            MoveArtworkSidecar(sourcePath, destinationArtistDir, "artist artwork sidecar", report, log);
+        }
+    }
+
+    private void MoveArtworkSidecar(
+        string sourcePath,
+        string destinationDir,
+        string label,
+        AutoTagOrganizerReport? report,
+        Action<string>? log)
+    {
+        try
+        {
+            Directory.CreateDirectory(destinationDir);
+            var target = GetUniquePath(Path.Join(destinationDir, Path.GetFileName(sourcePath)), sourcePath);
+            MoveFileOverwrite(sourcePath, target);
+            if (report != null)
+            {
+                report.MovedSidecars++;
+            }
+
+            _logger.LogInformation("AutoTag organizer moved {Label} {SourcePath} -> {DestinationPath}", label, DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourcePath), DeezSpoTag.Core.Security.LogSanitizer.OneLine(target));
+            log?.Invoke($"organizer moved {label}: {sourcePath} -> {target}");
+            report?.Entries.Add($"move-{label.Replace(' ', '-')}: {sourcePath} -> {target}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RecordOrganizerFailure(report, log, $"move {label}", sourcePath, destinationDir, ex);
+        }
+    }
+
+    private static bool IsConfiguredAlbumArtworkSidecar(
+        string sourcePath,
+        HashSet<string> albumArtworkStems,
+        IReadOnlyList<string> animatedArtworkStems)
+    {
+        var stem = Path.GetFileNameWithoutExtension(sourcePath);
+        return (IsImageExtension(Path.GetExtension(sourcePath)) && albumArtworkStems.Contains(stem))
+            || IsConfiguredAnimatedArtworkSidecar(sourcePath, animatedArtworkStems);
+    }
+
+    private static bool IsConfiguredArtistArtworkSidecar(string sourcePath, HashSet<string> artistArtworkStems)
+    {
+        return IsImageExtension(Path.GetExtension(sourcePath))
+            && artistArtworkStems.Contains(Path.GetFileNameWithoutExtension(sourcePath));
+    }
+
+    private static bool IsConfiguredAnimatedArtworkSidecar(
+        string sourcePath,
+        IReadOnlyList<string> animatedArtworkStems)
+    {
+        var extension = Path.GetExtension(sourcePath);
+        if (!extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
+            && !extension.Equals(".webp", StringComparison.OrdinalIgnoreCase)
+            && !extension.Equals(".gif", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(sourcePath);
+        if (animatedArtworkStems.Contains(stem, StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return AnimatedArtworkNaming.IsLegacyStem(stem);
+    }
+
+    private static bool AreSameOrganizerPath(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return false;
+        }
+
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var normalizedLeft = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedRight = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(normalizedLeft, normalizedRight, comparison);
     }
 
     private bool TryMoveSidecarFile(SidecarMoveContext context, string sourcePath, string destinationBase)

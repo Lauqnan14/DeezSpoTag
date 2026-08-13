@@ -1941,7 +1941,7 @@ public static class AppleQueueHelpers
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
-                    logger.LogDebug(ex, "Animated artwork overwrite delete failed for {Path}.", outputPath);
+                    logger.LogDebug(ex, "Animated artwork overwrite delete failed for {Path}.", LogSanitizer.OneLine(outputPath));
                 }
             }
 
