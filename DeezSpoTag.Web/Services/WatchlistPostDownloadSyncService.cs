@@ -149,6 +149,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                         budget.IgnoreReconciliationLeaseOwner,
                         cancellationToken);
                     processed++;
+                    if (budget.OnProgress != null)
+                    {
+                        await budget.OnProgress(cancellationToken);
+                    }
                 }
             }
         }
@@ -1121,7 +1125,8 @@ public sealed record TargetSyncBudget(
     TimeSpan TimeBudget,
     (string Source, string PlaylistId)? PlaylistFilter,
     WatchlistSyncJobKind Kind,
-    string? IgnoreReconciliationLeaseOwner);
+    string? IgnoreReconciliationLeaseOwner,
+    Func<CancellationToken, Task>? OnProgress = null);
 
 public enum SyncFailureClass
 {

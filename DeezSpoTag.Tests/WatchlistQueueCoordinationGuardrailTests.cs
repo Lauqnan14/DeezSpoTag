@@ -140,9 +140,13 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
             < hostedSource.IndexOf("RunWatchCycleCoreAsync(", StringComparison.Ordinal),
             "Flag-off keeps one budgeted drain before the playlist sweep.");
         Assert.True(
-            hostedSource.IndexOf("if (!smoothSyncEnabled && RemainingCycleBudget(cycleDeadline) > TargetSyncClaimReserve)", StringComparison.Ordinal)
+            hostedSource.IndexOf("ResolvePreSweepDrainBudget(", StringComparison.Ordinal)
             < hostedSource.IndexOf("if (shouldRunSourceRefresh)", StringComparison.Ordinal),
-            "The pre-sweep drain is flag-off only so due playlists are never starved by a drain-only pass.");
+            "The pre-sweep drain is flag-off only and must reserve playlist start time.");
+        Assert.Contains("ResolvePreSweepDrainBudget", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("remainingAfterReconcile", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("GetDueWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("RunResidualTargetSyncAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetSyncJobTimeout", postDownloadSource, StringComparison.Ordinal);
     }
@@ -171,11 +175,15 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var loopBody = hostedSource[loopStart..loopNext];
 
         Assert.Contains("TryProcessItemAsync(", sliceBody, StringComparison.Ordinal);
+        Assert.Contains("var remainingAfterReconcile = RemainingCycleBudget(cycleDeadline);", sliceBody, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync(", sliceBody, StringComparison.Ordinal);
         Assert.Contains("WatchlistSyncJobKind.Membership", sliceBody, StringComparison.Ordinal);
         Assert.Contains("AdmitCachedMissingTracksAsync", sliceBody, StringComparison.Ordinal);
         Assert.True(
             sliceBody.IndexOf("TryProcessItemAsync(", StringComparison.Ordinal)
+            < sliceBody.IndexOf("remainingAfterReconcile", StringComparison.Ordinal));
+        Assert.True(
+            sliceBody.IndexOf("remainingAfterReconcile", StringComparison.Ordinal)
             < sliceBody.IndexOf("ProcessTargetSyncWorkAsync(", StringComparison.Ordinal));
         Assert.True(
             sliceBody.IndexOf("ProcessTargetSyncWorkAsync(", StringComparison.Ordinal)

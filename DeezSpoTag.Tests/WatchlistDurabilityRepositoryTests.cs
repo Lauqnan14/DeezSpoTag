@@ -273,6 +273,8 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.True(await _repository.HasWatchlistReconciliationRequestAsync(
             "playlist", "spotify", "lease-ignore", "other-owner"));
         Assert.Equal("lease-ignore", claimed.Identifier);
+        Assert.Equal(0, await _repository.GetDueWatchlistReconciliationRequestCountAsync());
+        Assert.Equal(1, await _repository.GetWatchlistReconciliationRequestCountAsync());
     }
 
     [Fact]

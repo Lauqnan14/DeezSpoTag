@@ -80,7 +80,8 @@ public sealed record PlaylistReconciliationResult(
     string? FailureFingerprint = null,
     string? FailureMessage = null,
     string? QueueStopReason = null,
-    int RemainingQueueableTracks = 0);
+    int RemainingQueueableTracks = 0,
+    bool SnapshotExpanded = false);
 
 [SuppressMessage("Major Code Smell", "S1192", Justification = "Watch state/status literals are shared with persisted runtime values and external diagnostics.")]
 internal sealed class WatchlistEngine
@@ -372,6 +373,7 @@ internal sealed class WatchlistEngine
             tryUseCachedCandidates = false;
         }
 
+        var snapshotExpanded = false;
         IReadOnlyList<PlaylistTrackCandidate> candidates;
         if (tryUseCachedCandidates)
         {
@@ -411,6 +413,7 @@ internal sealed class WatchlistEngine
             }
             else
             {
+                snapshotExpanded = true;
                 await UpdatePlaylistStateAsync(
                     source,
                     sourceId,
@@ -428,6 +431,7 @@ internal sealed class WatchlistEngine
         }
         else
         {
+            snapshotExpanded = true;
             await UpdatePlaylistStateAsync(
                 source,
                 sourceId,
@@ -712,7 +716,8 @@ internal sealed class WatchlistEngine
             Deferred: targetSyncScheduled,
             AttemptedTracks: 0,
             QueueStopReason: WatchQueueStopReason.Completed.ToString(),
-            RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount));
+            RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount),
+            SnapshotExpanded: snapshotExpanded);
     }
 
     public async Task<PlaylistReconciliationResult> AdmitCachedMissingTracksAsync(

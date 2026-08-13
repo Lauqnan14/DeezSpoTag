@@ -11370,6 +11370,18 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
+    public async Task<int> GetDueWatchlistReconciliationRequestCountAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT COUNT(*)
+FROM watchlist_reconciliation_request
+WHERE (lower(status) IN ('pending','retry')
+       AND (next_attempt_utc='' OR next_attempt_utc IS NULL OR datetime(next_attempt_utc) <= datetime('now')))
+   OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'));", connection);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+    }
+
     public Task<bool> HasWatchlistReconciliationRequestAsync(
         string kind,
         string source,

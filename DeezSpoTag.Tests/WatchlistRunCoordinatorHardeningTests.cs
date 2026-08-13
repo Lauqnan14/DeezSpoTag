@@ -514,6 +514,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     {
         var settings = _settingsService.LoadSettings();
         settings.WatchDelayBetweenPlaylistsSeconds = 3600;
+        settings.WatchPollIntervalSeconds = 3600;
         _settingsService.SaveSettings(settings);
 
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-persisted-delay", new PlaylistWatchlistMetadataInput("Persisted Delay", null, null, null));
@@ -632,6 +633,14 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains("PersistPlaylistProgressAsync(repository, activeItem, stoppingToken)", loopBody, StringComparison.Ordinal);
         Assert.Contains("RunInterleavedPlaylistSliceAsync(", loopBody, StringComparison.Ordinal);
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
+        Assert.Contains("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ResolvePreSweepDrainBudget", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("remainingAfterReconcile", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("GetDueWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsSnapshotExpandedAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Equal(TimeSpan.FromMinutes(4) - TimeSpan.FromSeconds(15), WatchlistRunCoordinator.ResolvePreSweepDrainBudget(TimeSpan.FromMinutes(4), playlistsDue: true));
+        Assert.Equal(TimeSpan.Zero, WatchlistRunCoordinator.ResolvePreSweepDrainBudget(TimeSpan.FromSeconds(10), playlistsDue: true));
+        Assert.Equal(TimeSpan.FromMinutes(4), WatchlistRunCoordinator.ResolvePreSweepDrainBudget(TimeSpan.FromMinutes(4), playlistsDue: false));
     }
 
     [Fact]
@@ -654,6 +663,122 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var afterFlagOn = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
         Assert.NotNull(afterFlagOn?.LastProgressUtc);
         Assert.True(afterFlagOn!.LastProgressUtc >= afterFlagOff!.LastProgressUtc);
+    }
+
+    [Fact]
+    public async Task RunOnce_FlagOff_SnapshotsDuePlaylistsBeforeDrainingAllJobs()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchSmoothSyncEnabled = false;
+        settings.WatchPollIntervalSeconds = 3600;
+        _settingsService.SaveSettings(settings);
+
+        for (var index = 1; index <= 3; index++)
+        {
+            var sourceId = $"pl-slice-{index}";
+            await _repository.AddPlaylistWatchlistAsync(
+                "unsupported",
+                sourceId,
+                new PlaylistWatchlistMetadataInput($"Slice {index}", null, null, null));
+            await ConfigurePlaylistDestinationAsync("unsupported", sourceId);
+            await _repository.UpsertPlaylistWatchPreferenceAsync(
+                new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                    Source: "unsupported",
+                    SourceId: sourceId,
+                    DestinationFolderId: _destinationFolderId,
+                    Service: "plex",
+                    SyncTargets: ["plex", "jellyfin", "navidrome"],
+                    PreferredEngine: null,
+                    DownloadEngineOrder: null,
+                    DownloadVariantMode: null,
+                    SyncMode: "mirror",
+                    UpdateArtwork: true,
+                    ReuseSavedArtwork: false));
+            var jobs = await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+                "unsupported",
+                sourceId,
+                $"snapshot-{index}");
+            Assert.Equal(3, jobs.Count);
+        }
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeRunOnceAsync(hosted);
+
+        var scheduler = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
+        Assert.NotNull(scheduler?.LastProgressUtc);
+        var checkedPlaylists = 0;
+        for (var index = 1; index <= 3; index++)
+        {
+            var state = await _repository.GetPlaylistWatchStateAsync("unsupported", $"pl-slice-{index}", CancellationToken.None);
+            if (state?.LastCheckedUtc != null)
+            {
+                checkedPlaylists++;
+            }
+        }
+
+        Assert.True(checkedPlaylists >= 1);
+        var remainingJobs = await _repository.GetWatchlistSyncJobStatusCountsAsync();
+        Assert.True(remainingJobs.Due + remainingJobs.Processing + remainingJobs.RetryWaiting >= 1);
+    }
+
+    [Fact]
+    public async Task RunOnce_DoesNotRerunJustCheckedHeadWhenTailIsStillDue()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchPollIntervalSeconds = 3600;
+        settings.WatchDelayBetweenPlaylistsSeconds = 1;
+        _settingsService.SaveSettings(settings);
+
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-head", new PlaylistWatchlistMetadataInput("Head", null, null, null));
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-tail", new PlaylistWatchlistMetadataInput("Tail", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-head");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-tail");
+        var headChecked = DateTimeOffset.UtcNow;
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                "unsupported",
+                "pl-head",
+                null,
+                1,
+                null,
+                null,
+                headChecked,
+                "unchanged",
+                null,
+                null,
+                0,
+                "unchanged",
+                0,
+                1,
+                headChecked,
+                headChecked.AddMinutes(45)));
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                "unsupported",
+                "pl-tail",
+                null,
+                1,
+                null,
+                null,
+                DateTimeOffset.UtcNow.AddHours(-2),
+                "pending",
+                null,
+                null,
+                0,
+                "pending",
+                0,
+                1,
+                DateTimeOffset.UtcNow.AddHours(-2),
+                null));
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeRunOnceAsync(hosted);
+
+        var headAfter = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-head", CancellationToken.None);
+        var tailAfter = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-tail", CancellationToken.None);
+        Assert.Equal(headChecked, headAfter?.LastCheckedUtc);
+        Assert.NotNull(tailAfter?.LastCheckedUtc);
+        Assert.True(tailAfter!.LastCheckedUtc > DateTimeOffset.UtcNow.AddMinutes(-1));
     }
 
     [Fact]
@@ -724,6 +849,13 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 
         var residual = await InvokeGetNextWakeAsync(hosted);
         Assert.Equal(WatchlistWakeReason.TargetSync, residual.Reason);
+
+        Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "unsupported", "pl-overdue"));
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(15), "stale-coord"));
+        Assert.Equal("processing", claimed.Status);
+        var processingWake = await InvokeGetNextWakeAsync(hosted);
+        Assert.Equal(WatchlistWakeReason.TargetSync, processingWake.Reason);
     }
 
     [Fact]
