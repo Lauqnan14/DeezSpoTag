@@ -1336,6 +1336,10 @@ public partial class AutoTagService
                 .Skip(batchIndex * EnhancementBatchSize)
                 .Take(EnhancementBatchSize)
                 .ToList();
+            PublishEnhancementPhaseHeartbeat(
+                job,
+                AutoTagLiterals.EnhancementPhaseSidecarsCovers,
+                $"Fetching cover artwork for batch {batchIndex + 1} of {batchCount}.");
             SetEnhancementPhase(
                 job,
                 AutoTagLiterals.EnhancementPhaseSidecarsCovers,
@@ -1524,6 +1528,19 @@ public partial class AutoTagService
                 cancellationToken.ThrowIfCancellationRequested();
                 var trackId = batch[itemIndex];
                 LyricsRefreshTrackResult result;
+                RecordEnhancementItemStatus(
+                    job,
+                    AutoTagLiterals.EnhancementPhaseSidecarsLyrics,
+                    $"track {trackId}",
+                    AutoTagLiterals.TaggingStatus,
+                    "Fetching lyrics",
+                    processed + 1,
+                    targetTrackIds.Count,
+                    batchIndex + 1,
+                    batchCount,
+                    itemIndex + 1,
+                    batch.Count,
+                    countOutcome: false);
                 try
                 {
                     result = await _lyricsRefreshQueueService.RefreshTrackNowAsync(

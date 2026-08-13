@@ -227,6 +227,23 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void ActivitiesDownloadsTab_RendersSidecarPrefetchDownloadInfo()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/Views/Activities/Index.cshtml"));
+
+        Assert.Contains("connection.on('downloadInfo'", source, StringComparison.Ordinal);
+        Assert.Contains("state !== 'post' && state !== 'fetchingsidecars'", source, StringComparison.Ordinal);
+        Assert.Contains("setTaskActivity(taskId, message);", source, StringComparison.Ordinal);
+        var realtimeIndex = source.IndexOf("const realtime = queueActivityByTask[task.taskId];", StringComparison.Ordinal);
+        var prefetchIndex = source.IndexOf("const prefetchText = getPrefetchActivityText(task.taskId);", StringComparison.Ordinal);
+        Assert.True(realtimeIndex >= 0, "Realtime queue activity lookup is missing.");
+        Assert.True(prefetchIndex >= 0, "Prefetch queue activity lookup is missing.");
+        Assert.True(realtimeIndex < prefetchIndex, "Realtime sidecar messages must render before generic prefetch status.");
+    }
+
+    [Fact]
     public void AutoTag_ProtectsExistingAlbumFromLossyPlatformMatches()
     {
         var source = File.ReadAllText(Path.Combine(

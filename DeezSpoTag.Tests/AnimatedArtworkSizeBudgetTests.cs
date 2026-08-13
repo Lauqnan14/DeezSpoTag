@@ -51,6 +51,43 @@ public sealed class AnimatedArtworkSizeBudgetTests
         Assert.Contains("GetAnimatedArtworkEncodeLadder", source, StringComparison.Ordinal);
         Assert.Contains("scale='min(iw,", source, StringComparison.Ordinal);
         Assert.DoesNotContain("startInfo.ArgumentList.Add(\"fps=15,scale=iw:-2:flags=lanczos\");", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new AnimatedArtworkEncodeRung(0, 90, 15)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("new AnimatedArtworkEncodeRung(0, 0, 12, \"sierra2_4a\")", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkEncodeDurationSeconds", source, StringComparison.Ordinal);
+        Assert.Contains("new AnimatedArtworkEncodeRung(960, 90, 8", source, StringComparison.Ordinal);
+        Assert.Contains("new AnimatedArtworkEncodeRung(640, 0, 8", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkMaxFps", source, StringComparison.Ordinal);
+        Assert.Contains("startInfo.ArgumentList.Add(\"-map\");", source, StringComparison.Ordinal);
+        Assert.Contains("startInfo.ArgumentList.Add(\"-frames:v\");", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SquareBudgetedAnimatedArtworkStartsAtHighQualityBeforeSteppingDown()
+    {
+        var source = ReadHelpers();
+
+        var highQualityWebp = source.IndexOf("new AnimatedArtworkEncodeRung(960, 90, 8)", StringComparison.Ordinal);
+        var lowQualityWebp = source.IndexOf("new AnimatedArtworkEncodeRung(240, 62, 5)", StringComparison.Ordinal);
+        var highQualityGif = source.IndexOf("new AnimatedArtworkEncodeRung(640, 0, 8, \"bayer:bayer_scale=4\")", StringComparison.Ordinal);
+        var lowQualityGif = source.IndexOf("new AnimatedArtworkEncodeRung(200, 0, 4, \"none\")", StringComparison.Ordinal);
+
+        Assert.True(highQualityWebp >= 0, "Square WebP must start with a high-quality rung.");
+        Assert.True(lowQualityWebp > highQualityWebp, "Square WebP must only step down after trying higher quality.");
+        Assert.True(highQualityGif >= 0, "Square GIF must start with a higher-resolution rung.");
+        Assert.True(lowQualityGif > highQualityGif, "Square GIF must only step down after trying higher quality.");
+    }
+
+    [Fact]
+    public void SquareOnlyUsesTheConfiguredAnimatedArtworkBudget()
+    {
+        var source = ReadHelpers();
+
+        Assert.Contains("ResolveAnimatedArtworkOutputMaxSizeBytes", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkNaming.IsTallStem(stem, stems.Tall)", source, StringComparison.Ordinal);
+        Assert.Contains("? 0", source, StringComparison.Ordinal);
+        Assert.Contains(": ResolveAnimatedArtworkMaxSizeBytes(request)", source, StringComparison.Ordinal);
+        Assert.Contains("Path.Join(outputDir, stems.Square),\n                outputFormats,\n                maxSizeBytes,", source, StringComparison.Ordinal);
+        Assert.Contains("Path.Join(outputDir, stems.Tall),\n                outputFormats,\n                maxSizeBytes: 0,", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -159,22 +196,34 @@ public sealed class AnimatedArtworkSizeBudgetTests
         var root = CreateTempDirectory();
         await BuildSmallSourceAsync(Path.Join(root, "cover.webp"));
 
-        var complete = typeof(AppleQueueHelpers)
-            .GetMethod(
-                "AreAllCanonicalAnimatedArtworkOutputsPresent",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
-            .Invoke(null, new object[]
+        var complete = AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(
+            new AppleQueueHelpers.AnimatedArtworkSaveRequest
             {
-                new AppleQueueHelpers.AnimatedArtworkSaveRequest
-                {
-                    OutputDir = root,
-                    BaseFileName = "cover",
-                    OutputFormats = new[] { "webp" },
-                    Logger = NullLogger.Instance
-                }
+                OutputDir = root,
+                BaseFileName = "cover",
+                OutputFormats = new[] { "webp" },
+                Logger = NullLogger.Instance
             });
 
-        Assert.True((bool)complete!, "A square-only album should not be re-resolved on every run.");
+        Assert.True(complete, "A square-only album should not be re-resolved on every run.");
+    }
+
+    [Fact]
+    public async Task TallOnlyAnimatedArtworkDoesNotSatisfyTheSquareVariant()
+    {
+        var root = CreateTempDirectory();
+        await BuildSmallSourceAsync(Path.Join(root, "cover_tall.webp"));
+
+        var complete = AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(
+            new AppleQueueHelpers.AnimatedArtworkSaveRequest
+            {
+                OutputDir = root,
+                BaseFileName = "cover",
+                OutputFormats = new[] { "webp" },
+                Logger = NullLogger.Instance
+            });
+
+        Assert.False(complete, "Tall animated artwork must not skip the required square variant.");
     }
 
     private static string ReadHelpers()

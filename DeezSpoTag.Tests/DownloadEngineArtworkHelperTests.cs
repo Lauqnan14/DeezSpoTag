@@ -78,12 +78,29 @@ public sealed class DownloadEngineArtworkHelperTests
     }
 
     [Fact]
+    public void DownloadPrefetchStatus_NamesAnimatedArtworkExplicitly()
+    {
+        var repoRoot = Path.GetFullPath(Path.Join(AppContext.BaseDirectory, "..", "..", "..", ".."));
+        var postDownloadSource = File.ReadAllText(Path.Join(
+            repoRoot,
+            "DeezSpoTag.Services",
+            "Download",
+            "Shared",
+            "EngineAudioPostDownloadHelper.cs"));
+
+        Assert.Contains("parts.Add(\"animated artwork\")", postDownloadSource, StringComparison.Ordinal);
+        Assert.Contains("DescribePrefetchWork", postDownloadSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Fetching artwork and lyrics\"", postDownloadSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ResolveStandardAudioCoverUrlsAsync_ExcludesPayloadCover_WhenFallbackDisabled()
     {
         var settings = new DeezSpoTagSettings
         {
             ArtworkFallbackEnabled = false,
-            ArtworkFallbackOrder = "apple,deezer"
+            ArtworkFallbackOrder = "apple,deezer",
+            AppleArtworkSizeText = "640x640"
         };
 
         var result = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
@@ -146,7 +163,8 @@ public sealed class DownloadEngineArtworkHelperTests
         var settings = new DeezSpoTagSettings
         {
             ArtworkFallbackEnabled = true,
-            ArtworkFallbackOrder = "apple,deezer"
+            ArtworkFallbackOrder = "apple,deezer",
+            AppleArtworkSizeText = "640x640"
         };
 
         var result = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
@@ -171,6 +189,113 @@ public sealed class DownloadEngineArtworkHelperTests
         Assert.Equal(
             "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/x/y/z/cover.jpg/640x640bb.jpg",
             result[0]);
+    }
+
+    [Fact]
+    public async Task ResolveStandardAudioCoverUrlsAsync_NormalizesDeezerPayloadCoverToTechnicalSize()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtworkFallbackEnabled = true,
+            ArtworkFallbackOrder = "deezer",
+            LocalArtworkSize = 1200
+        };
+
+        var result = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
+            new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
+                settings,
+                AppleCatalog: null,
+                HttpClientFactory: null,
+                SpotifyArtworkResolver: null,
+                DeezerClient: null,
+                AppleId: null,
+                Title: "Personal",
+                Artist: "Shun Breezy",
+                Album: "Personal",
+                CollectionType: "track",
+                DeezerId: "210143191",
+                PayloadCover: "https://e-cdns-images.dzcdn.net/images/cover/34dce81dde8c29a07525d4c87b7878c5/500x500-000000-80-0-0.jpg",
+                Isrc: null,
+                Logger: NullLogger.Instance),
+            CancellationToken.None);
+
+        Assert.Single(result);
+        Assert.Equal(
+            "https://e-cdns-images.dzcdn.net/images/cover/34dce81dde8c29a07525d4c87b7878c5/1000x1000-000000-80-0-0.jpg",
+            result[0]);
+    }
+
+    [Fact]
+    public async Task ResolveStandardAudioCoverUrlsAsync_DoesNotLetDeezerPayloadCoverOutrankEarlierProvider()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtworkFallbackEnabled = true,
+            ArtworkFallbackOrder = "spotify,deezer",
+            LocalArtworkSize = 1000
+        };
+        var spotify = new TestSpotifyArtworkResolver
+        {
+            AlbumCoverUrl = "https://i.scdn.co/image/ab67616d0000b273spotifycover"
+        };
+
+        var result = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
+            new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
+                settings,
+                AppleCatalog: null,
+                HttpClientFactory: null,
+                SpotifyArtworkResolver: spotify,
+                DeezerClient: null,
+                AppleId: null,
+                Title: "Personal",
+                Artist: "Shun Breezy",
+                Album: "Personal",
+                CollectionType: "track",
+                DeezerId: "210143191",
+                PayloadCover: "https://e-cdns-images.dzcdn.net/images/cover/34dce81dde8c29a07525d4c87b7878c5/500x500-000000-80-0-0.jpg",
+                Isrc: null,
+                Logger: NullLogger.Instance)
+                {
+                    SpotifyId = "spotify-track"
+                },
+            CancellationToken.None);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("https://i.scdn.co/image/ab67616d0000b273spotifycover", result[0]);
+        Assert.Equal(
+            "https://e-cdns-images.dzcdn.net/images/cover/34dce81dde8c29a07525d4c87b7878c5/1000x1000-000000-80-0-0.jpg",
+            result[1]);
+    }
+
+    [Fact]
+    public async Task ResolveStandardAudioCoverUrlsAsync_PreservesUnknownPayloadCoverAsSafetyCandidate()
+    {
+        var settings = new DeezSpoTagSettings
+        {
+            ArtworkFallbackEnabled = true,
+            ArtworkFallbackOrder = "apple,deezer"
+        };
+
+        var result = await DownloadEngineArtworkHelper.ResolveStandardAudioCoverUrlsAsync(
+            new DownloadEngineArtworkHelper.StandardAudioCoverResolveRequest(
+                settings,
+                AppleCatalog: null,
+                HttpClientFactory: null,
+                SpotifyArtworkResolver: null,
+                DeezerClient: null,
+                AppleId: null,
+                Title: "Personal",
+                Artist: "Shun Breezy",
+                Album: "Personal",
+                CollectionType: "track",
+                DeezerId: null,
+                PayloadCover: "https://covers.example.com/release/cover.jpg",
+                Isrc: null,
+                Logger: NullLogger.Instance),
+            CancellationToken.None);
+
+        Assert.Single(result);
+        Assert.Equal("https://covers.example.com/release/cover.jpg", result[0]);
     }
 
     [Fact]
@@ -336,6 +461,7 @@ public sealed class DownloadEngineArtworkHelperTests
 
     private sealed class TestSpotifyArtworkResolver : ISpotifyArtworkResolver
     {
+        public string? AlbumCoverUrl { get; init; }
         public string? ArtistIdUrl { get; init; }
         public string? TrackUrl { get; init; }
         public string? NameUrl { get; init; }
@@ -348,7 +474,7 @@ public sealed class DownloadEngineArtworkHelperTests
             CancellationToken cancellationToken,
             string? requestedAlbumTitle = null,
             bool rejectCompilationAlbumCandidate = false)
-            => Task.FromResult<string?>(null);
+            => Task.FromResult(AlbumCoverUrl);
 
         public Task<string?> ResolveArtistImageUrlAsync(string? spotifyTrackId, CancellationToken cancellationToken)
         {

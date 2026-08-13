@@ -42,6 +42,17 @@ public sealed class PostDownloadTaskScheduler : BackgroundService, IPostDownload
             cancellationToken);
     }
 
+    public bool TryEnqueue(
+        string queueUuid,
+        string engine,
+        Func<IServiceProvider, CancellationToken, Task> workItem)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(queueUuid);
+        ArgumentNullException.ThrowIfNull(workItem);
+
+        return _channel.Writer.TryWrite(new PostDownloadTaskWorkItem(queueUuid, engine, workItem));
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var workers = Enumerable.Range(0, _workerCount)

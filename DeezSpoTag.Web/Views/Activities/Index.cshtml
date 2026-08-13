@@ -6330,6 +6330,11 @@ function getTaskActivityText(task) {
         return '';
     }
 
+    const realtime = queueActivityByTask[task.taskId];
+    if (typeof realtime === 'string' && realtime.trim()) {
+        return realtime.trim();
+    }
+
     const prefetchText = getPrefetchActivityText(task.taskId);
     if (prefetchText) {
         return prefetchText;
@@ -6338,11 +6343,6 @@ function getTaskActivityText(task) {
     const progress = normalizeQueueProgressPercent(task.progress);
     if (progress < 100) {
         return '';
-    }
-
-    const realtime = queueActivityByTask[task.taskId];
-    if (typeof realtime === 'string' && realtime.trim()) {
-        return realtime.trim();
     }
 
     return 'Finalizing items...';
@@ -6804,7 +6804,7 @@ function initQueueRealtimeEvents() {
             return;
         }
         const state = String(payload?.state || '').trim().toLowerCase();
-        if (state !== 'post') {
+        if (state !== 'post' && state !== 'fetchingsidecars') {
             return;
         }
         const message = extractQueueEventMessage(payload?.data) || describeQueueEventState(payload?.state);

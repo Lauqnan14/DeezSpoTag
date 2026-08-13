@@ -129,15 +129,17 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
     }
 
     [Fact]
-    public void DownloadArtwork_SourceCoverPrecedesProviderFallbacks()
+    public void DownloadArtwork_PayloadCoverIsResolvedInsideProviderOrder()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../DeezSpoTag.Services/Download/Shared/DownloadEngineArtworkHelper.cs"));
-        var payloadAdd = source.IndexOf("AddCoverUrl(coverUrls, payloadCandidate.Url);", StringComparison.Ordinal);
+        var providerPayloadAdd = source.IndexOf("AddProviderPayloadCoverUrl(coverUrls, payloadCandidate, fallback, request.Settings);", StringComparison.Ordinal);
+        var rawPayloadAdd = source.IndexOf("AddCoverUrl(coverUrls, payloadCandidate.Url);", StringComparison.Ordinal);
         var fallbackLoop = source.IndexOf("foreach (var fallback in fallbackOrder)", StringComparison.Ordinal);
 
-        Assert.True(payloadAdd >= 0 && payloadAdd < fallbackLoop);
+        Assert.True(providerPayloadAdd > fallbackLoop);
+        Assert.True(rawPayloadAdd > fallbackLoop);
     }
 
     [Fact]
@@ -226,6 +228,74 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
         Assert.Equal(new[] { output }, savedPaths);
         Assert.True(File.Exists(output));
         Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(output));
+    }
+
+    [Fact]
+    public async Task AnimatedArtworkConversion_DoesNotCopyHlsManifestAsMp4()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var source = Path.Join(root, "source.mp4");
+        var outputBase = Path.Join(root, "cover");
+        await File.WriteAllTextAsync(source, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nsegment.m3u8\n");
+
+        var method = typeof(AppleQueueHelpers).GetMethod(
+            "SaveAnimatedArtworkVariantAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task<IReadOnlyList<string>>>(method!.Invoke(null, new object[]
+        {
+            source,
+            outputBase,
+            new[] { "mp4" },
+            (long)AppleQueueHelpers.DefaultAnimatedArtworkMaxSizeMb * 1024 * 1024,
+            NullLogger.Instance,
+            CancellationToken.None,
+            false
+        }));
+
+        var savedPaths = await task;
+
+        Assert.Empty(savedPaths);
+        Assert.False(File.Exists($"{outputBase}.mp4"));
+    }
+
+    [Fact]
+    public async Task SaveExistingAnimatedArtworkVariantsAsync_RemovesInvalidCanonicalManifest()
+    {
+        var root = Path.Join(Path.GetTempPath(), "deezspotag-animated-artwork", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var invalidMp4 = Path.Join(root, "cover.mp4");
+        await File.WriteAllTextAsync(invalidMp4, "#EXTM3U\n#EXT-X-VERSION:7\n");
+
+        var savedPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
+            new AppleQueueHelpers.AnimatedArtworkSaveRequest
+            {
+                OutputDir = root,
+                SquareFileName = "cover",
+                TallFileName = "cover_tall",
+                OutputFormats = new[] { "mp4" },
+                Logger = NullLogger.Instance
+            },
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        Assert.Empty(savedPaths);
+        Assert.False(File.Exists(invalidMp4));
+    }
+
+    [Fact]
+    public void AnimatedArtworkLiveSave_UsesMotionUrlDirectlyWithoutSourceMp4Cache()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Services/Download/Apple/AppleQueueHelpers.cs"));
+
+        Assert.Contains("SaveAnimatedArtworkVariantAsync(\n                motion.SquareUrl,", source, StringComparison.Ordinal);
+        Assert.Contains("SaveAnimatedArtworkVariantAsync(\n                motion.TallUrl,", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CacheAnimatedArtworkSourceAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DownloadAnimatedArtworkSourceAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildAnimatedArtworkSourceCachePath", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -157,6 +157,40 @@ public static partial class EngineAudioPostDownloadHelper
         ILogger Logger)
         where TPayload : EngineQueueItemBase;
 
+    public static string? DescribePrefetchWork(PrefetchRequest request)
+    {
+        var requirements = BuildPrefetchRequirements(request);
+        if (!requirements.ShouldQueueWork)
+        {
+            return null;
+        }
+
+        var parts = new List<string>();
+        if (requirements.ShouldFetchPrimaryArtwork)
+        {
+            parts.Add("album artwork");
+        }
+
+        if (requirements.ShouldFetchAnimatedArtwork)
+        {
+            parts.Add("animated artwork");
+        }
+
+        if (requirements.ShouldFetchArtistArtwork)
+        {
+            parts.Add("artist artwork");
+        }
+
+        if (requirements.ShouldFetchLyrics)
+        {
+            parts.Add("lyrics");
+        }
+
+        return parts.Count == 1
+            ? $"Fetching {parts[0]}"
+            : $"Fetching {string.Join(", ", parts.Take(parts.Count - 1))} and {parts[^1]}";
+    }
+
     private sealed record PrefetchRequirements(
         bool ShouldFetchPrimaryArtwork,
         bool ShouldFetchAnimatedArtwork,
@@ -1899,15 +1933,25 @@ public static partial class EngineAudioPostDownloadHelper
         var execution = new PrefetchExecutionContext(request, prefetchPaths, requirements, gateState, lyricsArtifacts);
         try
         {
-            await request.TaskScheduler.EnqueueAsync(
+            var queued = request.TaskScheduler.TryEnqueue(
                 prefetchPaths.QueueUuid,
                 request.Engine,
                 async (provider, token) =>
                 {
                     using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, gateState.Cancellation.Token);
                     await RunPrefetchWorkAsync(provider, execution, linkedCts.Token);
-                },
-                CancellationToken.None);
+                });
+            if (!queued)
+            {
+                request.Logger.LogWarning(
+                    "{Engine} prefetch scheduler is saturated for {QueueUuid}; audio acquisition will continue and finalization will retry sidecars.",
+                    request.Engine,
+                    prefetchPaths.QueueUuid);
+                gateState.Completion.TrySetResult(new PrefetchCompletionResult(
+                    false,
+                    "Sidecar prefetch is waiting for scheduler capacity.",
+                    null));
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2673,7 +2717,7 @@ public static partial class EngineAudioPostDownloadHelper
                 stems.Square,
                 stems.Tall))
             .ToList();
-        if (canonicalExisting.Count > 0)
+        if (canonicalExisting.Count > 0 && AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(request))
         {
             execution.Request.ActivityLog.Info($"Animated artwork reused: {execution.Paths.CoverPath}");
             return canonicalExisting;

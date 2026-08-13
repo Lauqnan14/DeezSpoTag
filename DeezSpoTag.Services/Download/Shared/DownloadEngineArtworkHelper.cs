@@ -7,6 +7,7 @@ using DeezSpoTag.Services.Download.Utils;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Linq;
+using System.Text.RegularExpressions;
 using DeezerClient = DeezSpoTag.Integrations.Deezer.DeezerClient;
 using SixLabors.ImageSharp;
 
@@ -18,6 +19,18 @@ public static class DownloadEngineArtworkHelper
     private const string DeezerProvider = "deezer";
     private const string SpotifyProvider = "spotify";
     private const int ArtistArtworkCacheLimit = 2048;
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
+    private static readonly Regex DeezerCoverSizeRegex = new(
+        @"(?<prefix>/images/cover/[^/]+/)(?<size>\d+x\d+)(?<suffix>-[^/?#]*\.(?:jpg|jpeg|png)(?:[?#].*)?)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled,
+        RegexTimeout);
+    private static readonly string[] SpotifyCoverSizeTokens =
+    {
+        "ab67616d0000b273",
+        "ab67616d00001e02",
+        "ab67616d00004851"
+    };
+    private const string SpotifyCoverSizeMax = "ab67616d000082c1";
     private static readonly TimeSpan ArtistArtworkHitTtl = TimeSpan.FromHours(6);
     private static readonly TimeSpan ArtistArtworkMissTtl = TimeSpan.FromMinutes(30);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTimeOffset Stamp, ArtistArtworkResolution? Resolution)> ArtistArtworkCache = new(StringComparer.OrdinalIgnoreCase);
@@ -96,17 +109,10 @@ public static class DownloadEngineArtworkHelper
         var payloadCandidate = TryCreatePayloadCoverCandidate(request.PayloadCover);
         var rejectCompilationAlbumCandidate = ShouldRejectCompilationArtworkForRequest(request);
 
-        // The queued source cover belongs to the selected release. Other providers
-        // are fallbacks and must not replace it with another edition's artwork.
-        if (payloadCandidate != null
-            && (string.IsNullOrWhiteSpace(payloadCandidate.Provider)
-                || fallbackOrder.Contains(payloadCandidate.Provider, StringComparer.OrdinalIgnoreCase)))
-        {
-            AddCoverUrl(coverUrls, payloadCandidate.Url);
-        }
-
         foreach (var fallback in fallbackOrder)
         {
+            AddProviderPayloadCoverUrl(coverUrls, payloadCandidate, fallback, request.Settings);
+
             string? coverUrl = null;
             switch (fallback)
             {
@@ -146,7 +152,78 @@ public static class DownloadEngineArtworkHelper
             AddCoverUrl(coverUrls, coverUrl);
         }
 
+        if (payloadCandidate != null && string.IsNullOrWhiteSpace(payloadCandidate.Provider))
+        {
+            AddCoverUrl(coverUrls, payloadCandidate.Url);
+        }
+
         return coverUrls;
+    }
+
+    private static void AddProviderPayloadCoverUrl(
+        List<string> coverUrls,
+        ArtworkCandidate? payloadCandidate,
+        string fallback,
+        DeezSpoTagSettings settings)
+    {
+        if (payloadCandidate == null
+            || string.IsNullOrWhiteSpace(payloadCandidate.Provider)
+            || !string.Equals(payloadCandidate.Provider, fallback, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        AddCoverUrl(coverUrls, NormalizeProviderPayloadCoverUrl(payloadCandidate, settings));
+    }
+
+    private static string NormalizeProviderPayloadCoverUrl(ArtworkCandidate candidate, DeezSpoTagSettings settings)
+        => candidate.Provider switch
+        {
+            AppleProvider => NormalizeApplePayloadCoverUrl(candidate.Url, settings),
+            DeezerProvider => NormalizeDeezerPayloadCoverUrl(candidate.Url, settings),
+            SpotifyProvider => NormalizeSpotifyPayloadCoverUrl(candidate.Url),
+            _ => candidate.Url
+        };
+
+    private static string NormalizeApplePayloadCoverUrl(string url, DeezSpoTagSettings settings)
+    {
+        var dimensions = AppleQueueHelpers.GetAppleArtworkDimensions(settings);
+        var format = AppleQueueHelpers.GetAppleArtworkFormat(settings);
+        return AppleQueueHelpers.BuildAppleArtworkUrl(
+            url,
+            dimensions.SizeText,
+            dimensions.Width,
+            dimensions.Height,
+            format);
+    }
+
+    private static string NormalizeDeezerPayloadCoverUrl(string url, DeezSpoTagSettings settings)
+    {
+        var size = ArtworkSizePolicy.ResolveRequestSize(settings.LocalArtworkSize, DeezerProvider);
+        if (size <= 0)
+        {
+            return url;
+        }
+
+        return DeezerCoverSizeRegex.Replace(
+            url,
+            match => match.Groups["prefix"].Value
+                + size.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "x"
+                + size.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + match.Groups["suffix"].Value,
+            1);
+    }
+
+    private static string NormalizeSpotifyPayloadCoverUrl(string url)
+    {
+        var normalized = url;
+        foreach (var token in SpotifyCoverSizeTokens)
+        {
+            normalized = normalized.Replace(token, SpotifyCoverSizeMax, StringComparison.Ordinal);
+        }
+
+        return normalized;
     }
 
     private static ArtworkCandidate? TryCreatePayloadCoverCandidate(string? payloadCover)

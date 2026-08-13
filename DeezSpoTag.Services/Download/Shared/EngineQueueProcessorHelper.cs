@@ -373,7 +373,26 @@ internal static class EngineQueueProcessorHelper
                 workContext.Deps.ActivityLog,
                 workContext.Deps.Logger,
                 workContext.EngineName));
+        SendPrefetchStarted(workContext, prefetchRequest);
         await EngineAudioPostDownloadHelper.QueueParallelPostDownloadPrefetchAsync(prefetchRequest, workContext.ItemToken);
+    }
+
+    private static void SendPrefetchStarted<TPayload>(
+        QueueWorkContext<TPayload> workContext,
+        EngineAudioPostDownloadHelper.PrefetchRequest request)
+        where TPayload : EngineQueueItemBase
+    {
+        var message = EngineAudioPostDownloadHelper.DescribePrefetchWork(request);
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return;
+        }
+
+        workContext.Deps.Listener.SendDownloadInfo(
+            workContext.Item.QueueUuid,
+            workContext.Payload.Title,
+            new { message, state = "fetchingSidecars" },
+            "fetchingSidecars");
     }
 
     private static async Task<string> ApplyPostDownloadSettingsAsync<TPayload>(

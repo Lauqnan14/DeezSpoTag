@@ -7,4 +7,9 @@ public interface IPostDownloadTaskScheduler
         string engine,
         Func<IServiceProvider, CancellationToken, Task> workItem,
         CancellationToken cancellationToken = default);
+
+    bool TryEnqueue(
+        string queueUuid,
+        string engine,
+        Func<IServiceProvider, CancellationToken, Task> workItem);
 }
