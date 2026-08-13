@@ -773,6 +773,15 @@ ORDER BY service;";
         Assert.Contains("reader.GetInt32(16)", select, StringComparison.Ordinal);
         Assert.Contains("reader.GetInt32(15)", select, StringComparison.Ordinal);
         Assert.DoesNotContain("identity_status = 'mapping_retry'", select, StringComparison.Ordinal);
+
+        var statusesStart = repository.IndexOf("public async Task<IReadOnlyList<PlaylistWatchTrackStatusDto>> GetPlaylistWatchTrackStatusesAsync", StringComparison.Ordinal);
+        Assert.True(statusesStart > 0);
+        var statusesEnd = repository.IndexOf("public async Task UpdatePlaylistWatchTrackVerificationAsync", statusesStart, StringComparison.Ordinal);
+        Assert.True(statusesEnd > statusesStart);
+        var statuses = repository[statusesStart..statusesEnd];
+        Assert.Contains("LEFT JOIN playlist_watch_track_presentation_status presentation", statuses, StringComparison.Ordinal);
+        Assert.Contains("COALESCE(presentation.presentation_status, playlist_watch_track.status) AS sync_status", statuses, StringComparison.Ordinal);
+        Assert.DoesNotContain("WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'", statuses, StringComparison.Ordinal);
     }
 
     [Fact]

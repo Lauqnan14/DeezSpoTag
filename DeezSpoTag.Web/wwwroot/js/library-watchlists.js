@@ -1408,7 +1408,8 @@ function renderPlaylistWatchlistPresentationBadges(item) {
         renderPlaylistWatchlistStateBadge(waitingForIdentityCount, 'waiting-for-identity', 'track waiting for target identity', 'fa-fingerprint'),
         renderPlaylistWatchlistStateBadge(missingTrackCount, 'missing', 'missing downloadable track', 'fa-download'),
         renderPlaylistWatchlistStateBadge(mappingRetryCount, 'mapping-retry', 'track waiting for mapping', 'fa-link-slash'),
-        renderPlaylistWatchlistStateBadge(blockedTrackCount || ignoredBlockedTrackCount, 'blocked', 'ignored or blocked track', 'fa-ban'),
+        renderPlaylistWatchlistStateBadge(blockedTrackCount, 'blocked', 'blocked track', 'fa-ban'),
+        renderPlaylistWatchlistStateBadge(Math.max(0, ignoredBlockedTrackCount - blockedTrackCount), 'ignored', 'ignored track', 'fa-eye-slash'),
         renderPlaylistWatchlistStateBadge(failedTrackCount, 'failed', 'failed track', 'fa-triangle-exclamation'),
         renderPlaylistWatchlistStateBadge(reroutedTrackCount, 'rerouted', 'rerouted track', 'fa-route')
     ].filter(Boolean).join('');

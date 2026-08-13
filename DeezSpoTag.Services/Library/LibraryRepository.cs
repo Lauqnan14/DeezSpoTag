@@ -9956,33 +9956,9 @@ SELECT playlist_watch_track.track_source_id,
            AND m.source_id = playlist_watch_track.source_id
            AND m.track_source_id = playlist_watch_track.track_source_id
            AND lower(m.sync_status) = 'playlist_synced') AS target_item_id,
-       -- A track is only 'playlist_synced' once it has been verified on every currently
-       -- configured target for this playlist, not just one of them -- see
-       -- playlist_watch_track_sync_progress (shared with GetPlaylistWatchlistAsync so this
-       -- logic is defined exactly once).
-       CASE
-         WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
-         WHEN COALESCE(progress.configured_target_count, 0) > 0
-              AND COALESCE(progress.verified_target_count, 0) >= progress.configured_target_count
-           THEN 'playlist_synced'
-         WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
-         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'blocked' THEN 'blocked'
-         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'failed' THEN 'failed'
-         WHEN local_track_id IS NOT NULL
-              AND EXISTS (
-                  SELECT 1
-                    FROM playlist_watch_configured_sync_targets cst
-                   WHERE cst.source = playlist_watch_track.source
-                     AND cst.source_id = playlist_watch_track.source_id
-                     AND NOT EXISTS (
-                         SELECT 1
-                           FROM media_server_track_metadata meta
-                          WHERE meta.track_id = playlist_watch_track.local_track_id
-                            AND lower(meta.service) = cst.target))
-           THEN 'waiting_for_identity'
-         WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
-         ELSE status
-       END AS sync_status,
+       -- Presentation CASE lives in playlist_watch_track_presentation_status (shared with
+       -- GetPlaylistWatchlistAsync list buckets) so card counts and tracklist pills cannot drift.
+       COALESCE(presentation.presentation_status, playlist_watch_track.status) AS sync_status,
        redirect_track_source_id,
        redirect_reason,
        verified_at_utc,
@@ -10006,10 +9982,10 @@ SELECT playlist_watch_track.track_source_id,
                   AND lower(m.target_service) = cst.target
                   AND lower(m.sync_status) = 'playlist_synced')) AS missing_target_service
 FROM playlist_watch_track
-LEFT JOIN playlist_watch_track_sync_progress progress
-  ON progress.source = playlist_watch_track.source
- AND progress.source_id = playlist_watch_track.source_id
- AND progress.track_source_id = playlist_watch_track.track_source_id
+LEFT JOIN playlist_watch_track_presentation_status presentation
+  ON presentation.source = playlist_watch_track.source
+ AND presentation.source_id = playlist_watch_track.source_id
+ AND presentation.track_source_id = playlist_watch_track.track_source_id
 WHERE playlist_watch_track.source = @source AND playlist_watch_track.source_id = @sourceId
 ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
          source_position,
