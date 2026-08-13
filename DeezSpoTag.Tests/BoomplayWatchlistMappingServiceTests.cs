@@ -361,6 +361,70 @@ public sealed class BoomplayWatchlistMappingServiceTests : IAsyncLifetime
         Assert.DoesNotContain("boomplay", intent.SourceUrl, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void RemainingQueueableTracks_ExcludesMappingRetryIgnoredAndBlocked()
+    {
+        var local = new PlaylistTrackCandidate(
+            "boom-local", null, "Local", "Artist", "Album", null, 200_000, null, Array.Empty<string>(),
+            DeezerId: "1", MappingStatus: BoomplayWatchlistMappingService.MatchedStatus);
+        var mappingRetry = new PlaylistTrackCandidate(
+            "boom-retry", null, "Retry", "Artist", "Album", null, 200_000, null, Array.Empty<string>(),
+            MappingStatus: BoomplayWatchlistMappingService.MappingRetryStatus);
+        var ignored = new PlaylistTrackCandidate(
+            "boom-ignored", null, "Ignored", "Artist", "Album", null, 200_000, null, Array.Empty<string>(),
+            DeezerId: "2", MappingStatus: BoomplayWatchlistMappingService.MatchedStatus);
+        var blocked = new PlaylistTrackCandidate(
+            "boom-blocked", null, "Blocked", "Artist", "Album", null, 200_000, null, Array.Empty<string>(),
+            DeezerId: "3", MappingStatus: BoomplayWatchlistMappingService.MatchedStatus);
+        var missing = new PlaylistTrackCandidate(
+            "boom-missing", null, "Missing", "Artist", "Album", null, 200_000, null, Array.Empty<string>(),
+            DeezerId: "4", MappingStatus: BoomplayWatchlistMappingService.MatchedStatus);
+        var statuses = new List<PlaylistWatchTrackStatusDto>
+        {
+            new("boom-local", null, "completed", DateTimeOffset.UtcNow, null, null, null, null, null, LocalTrackId: 42),
+            new("boom-blocked", null, "blocked", DateTimeOffset.UtcNow, null, null, null, null, null)
+        };
+
+        var remaining = WatchlistEngine.CountRemainingQueueableTracks(
+            "boomplay",
+            [local, mappingRetry, ignored, blocked, missing],
+            statuses,
+            ["boom-ignored"]);
+
+        Assert.Equal(1, remaining);
+
+        var engineSource = File.ReadAllText(FindEngineSource());
+        Assert.Contains("CountRemainingQueueableTracks(", engineSource, StringComparison.Ordinal);
+        Assert.Contains("mapping_status", File.ReadAllText(FindInsertSource()), StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount)",
+            engineSource,
+            StringComparison.Ordinal);
+    }
+
+    private static string FindEngineSource()
+        => FindSourceFile("DeezSpoTag.Web", "Services", "WatchlistEngine.cs");
+
+    private static string FindInsertSource()
+        => FindSourceFile("DeezSpoTag.Services", "Library", "LibraryRepository.cs");
+
+    private static string FindSourceFile(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(new[] { directory.FullName }.Concat(pathParts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException($"Unable to locate {Path.Combine(pathParts)}.");
+    }
+
     private BoomplayWatchlistMappingService NewService(
         Func<BoomplayDeezerMatchRequest, CancellationToken, Task<BoomplayDeezerMatchResult?>> resolver)
         => new(_repository, resolver, NullLogger<BoomplayWatchlistMappingService>.Instance);

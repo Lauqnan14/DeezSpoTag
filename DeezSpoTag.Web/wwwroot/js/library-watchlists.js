@@ -1395,10 +1395,21 @@ function renderPlaylistWatchlistPresentationBadges(item) {
         ? Math.min(toNonNegativeCount(item.incompleteTrackCount), totalTrackCount)
         : Math.max(0, totalTrackCount - syncedTrackCount);
     const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
+    const waitingForTargetCount = toNonNegativeCount(item.waitingForTargetCount);
+    const waitingForIdentityCount = toNonNegativeCount(item.waitingForIdentityCount);
+    const missingTrackCount = toNonNegativeCount(item.missingTrackCount);
+    const mappingRetryCount = toNonNegativeCount(item.mappingRetryCount);
+    const blockedTrackCount = toNonNegativeCount(item.blockedTrackCount);
+    const failedTrackCount = toNonNegativeCount(item.failedTrackCount);
     const hasIncompleteSync = incompleteTrackCount > 0 && totalTrackCount > syncedTrackCount;
     const syncBadge = hasIncompleteSync ? renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) : '';
     const stateBadges = [
-        renderPlaylistWatchlistStateBadge(ignoredBlockedTrackCount, 'blocked', 'ignored or blocked track', 'fa-ban'),
+        renderPlaylistWatchlistStateBadge(waitingForTargetCount, 'waiting-for-target', 'track waiting for target sync', 'fa-clock'),
+        renderPlaylistWatchlistStateBadge(waitingForIdentityCount, 'waiting-for-identity', 'track waiting for target identity', 'fa-fingerprint'),
+        renderPlaylistWatchlistStateBadge(missingTrackCount, 'missing', 'missing downloadable track', 'fa-download'),
+        renderPlaylistWatchlistStateBadge(mappingRetryCount, 'mapping-retry', 'track waiting for mapping', 'fa-link-slash'),
+        renderPlaylistWatchlistStateBadge(blockedTrackCount || ignoredBlockedTrackCount, 'blocked', 'ignored or blocked track', 'fa-ban'),
+        renderPlaylistWatchlistStateBadge(failedTrackCount, 'failed', 'failed track', 'fa-triangle-exclamation'),
         renderPlaylistWatchlistStateBadge(reroutedTrackCount, 'rerouted', 'rerouted track', 'fa-route')
     ].filter(Boolean).join('');
 
@@ -1412,7 +1423,7 @@ function renderPlaylistWatchlistPresentationBadges(item) {
 
 function renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) {
     const label = `${syncedTrackCount}/${totalTrackCount}`;
-    return `<div class="library-badge library-badge--partial playlist-watchlist-sync-badge" title="Partially synced: ${label} tracks">${escapeHtml(label)}</div>`;
+    return `<div class="library-badge library-badge--partial playlist-watchlist-sync-badge" title="Target sync: ${label} tracks. Incomplete is not the same as missing downloads.">${escapeHtml(label)}</div>`;
 }
 
 function renderPlaylistWatchlistStateBadge(count, state, label, icon) {
@@ -1650,6 +1661,22 @@ async function loadPlaylistWatchlist() {
         if (syncJobHealth.lastError) {
             runtimeHealthParts.push(syncJobHealth.lastError);
         }
+        const presentation = runtime?.presentation || {};
+        const presentationParts = [
+            [presentation.waitingForTarget, 'waiting for target'],
+            [presentation.waitingForIdentity, 'waiting for identity'],
+            [presentation.missing, 'missing'],
+            [presentation.mappingRetry, 'mapping retry'],
+            [presentation.blocked, 'blocked'],
+            [presentation.failed, 'failed'],
+            [presentation.queued, 'queued'],
+            [presentation.downloading, 'downloading']
+        ];
+        presentationParts.forEach(([count, label]) => {
+            if (Number(count || 0) > 0) {
+                runtimeHealthParts.push(`${count} ${label}`);
+            }
+        });
         const runtimeHealthHtml = `<div class="watchlist-runtime-health">${escapeHtml(runtimeHealthParts.join(' • '))}</div>`;
         if (mergeButton) {
             mergeButton.disabled = items.length < 2;

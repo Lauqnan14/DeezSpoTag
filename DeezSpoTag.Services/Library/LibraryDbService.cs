@@ -208,6 +208,7 @@ public sealed class LibraryDbService
 
     private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
+        await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_presentation_status;", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_sync_progress;", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_configured_sync_targets;", cancellationToken);
         await EnsureColumnAsync(connection, PlayHistoryTable, "folder_id", BigIntType, cancellationToken);
@@ -460,6 +461,7 @@ WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "cover_url", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "candidate_revision", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "last_snapshot_id", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "mapping_status", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_admission", PlaylistWatchTrackTable, "status, source, source_id, source_position, unavailable_next_retry_utc", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
@@ -1107,15 +1109,18 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at
     /// its playlist's currently-configured sync targets" -- both GetPlaylistWatchlistAsync (the
     /// per-playlist synced/total badge) and GetPlaylistWatchTrackStatusesAsync (the per-track
     /// sync_status used by the playlist detail view) read from these views instead of each
-    /// carrying their own copy of the target-matching logic. Views hold no data, so they are
-    /// dropped and recreated on every startup rather than guarded with IF NOT EXISTS -- that way
-    /// a future change to this logic only has to be made here and takes effect immediately,
-    /// instead of risking the two consumer queries drifting out of sync with each other again.
+    /// carrying their own copy of the target-matching logic. playlist_watch_track_presentation_status
+    /// also owns the list-breakdown buckets (waiting/identity/missing/mapping_retry/blocked/failed).
+    /// Views hold no data, so they are dropped and recreated on every startup rather than guarded
+    /// with IF NOT EXISTS -- that way a future change to this logic only has to be made here and
+    /// takes effect immediately, instead of risking the two consumer queries drifting out of sync
+    /// with each other again.
     /// </summary>
     private static async Task EnsurePlaylistWatchTargetSyncViewsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
+        await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_presentation_status;", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_sync_progress;", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_configured_sync_targets;", cancellationToken);
         await EnsureTableAsync(connection, @"
@@ -1162,6 +1167,39 @@ LEFT JOIN (
   ON verified_counts.source = track.source
  AND verified_counts.source_id = track.source_id
  AND verified_counts.track_source_id = track.track_source_id;", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE VIEW playlist_watch_track_presentation_status AS
+SELECT playlist_watch_track.source AS source,
+       playlist_watch_track.source_id AS source_id,
+       playlist_watch_track.track_source_id AS track_source_id,
+       CASE
+         WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
+         WHEN COALESCE(progress.configured_target_count, 0) > 0
+              AND COALESCE(progress.verified_target_count, 0) >= progress.configured_target_count
+           THEN 'playlist_synced'
+         WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
+         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'blocked' THEN 'blocked'
+         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'failed' THEN 'failed'
+         WHEN local_track_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1
+                    FROM playlist_watch_configured_sync_targets cst
+                   WHERE cst.source = playlist_watch_track.source
+                     AND cst.source_id = playlist_watch_track.source_id
+                     AND NOT EXISTS (
+                         SELECT 1
+                           FROM media_server_track_metadata meta
+                          WHERE meta.track_id = playlist_watch_track.local_track_id
+                            AND lower(meta.service) = cst.target))
+           THEN 'waiting_for_identity'
+         WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
+         ELSE playlist_watch_track.status
+       END AS presentation_status
+FROM playlist_watch_track
+LEFT JOIN playlist_watch_track_sync_progress progress
+  ON progress.source = playlist_watch_track.source
+ AND progress.source_id = playlist_watch_track.source_id
+ AND progress.track_source_id = playlist_watch_track.track_source_id;", cancellationToken);
     }
 
     private static Task EnsureTrackValueTableAsync(

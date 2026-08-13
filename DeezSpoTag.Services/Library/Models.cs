@@ -669,7 +669,13 @@ public sealed record PlaylistWatchlistDto(
     int? UnavailableTrackCount = null,
     int? ReviewTrackCount = null,
     string? SourceUrl = null,
-    string? SourceStorefront = null);
+    string? SourceStorefront = null,
+    int? WaitingForTargetCount = null,
+    int? WaitingForIdentityCount = null,
+    int? MissingTrackCount = null,
+    int? MappingRetryCount = null,
+    int? BlockedTrackCount = null,
+    int? FailedTrackCount = null);
 
 public sealed record PlaylistWatchlistMetadataInput(
     string? Name,
@@ -922,7 +928,8 @@ public sealed record PlaylistWatchTrackInsert(
     int? DurationMs = null,
     string? CoverUrl = null,
     string? CandidateRevision = null,
-    string? SnapshotId = null);
+    string? SnapshotId = null,
+    string? MappingStatus = null);
 
 public sealed record PlaylistWatchDownloadClaimDto(
     string Source,

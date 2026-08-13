@@ -624,7 +624,8 @@ internal sealed class WatchlistEngine
                     candidate.DurationMs,
                     candidate.CoverUrl,
                     candidateIdentityRevision,
-                    liveSnapshot.SnapshotId))
+                    liveSnapshot.SnapshotId,
+                    candidate.MappingStatus))
                 .ToList(),
             cancellationToken);
         var localTrackCount = await ResolveAndPersistLocalTrackIdentitiesAsync(
@@ -633,13 +634,23 @@ internal sealed class WatchlistEngine
             candidates,
             cancellationToken);
 
+        var localTrackStatuses = await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
+            source,
+            sourceId,
+            cancellationToken);
+        var ignoredTrackIds = await _libraryRepository.GetPlaylistWatchIgnoredTrackIdsAsync(
+            source,
+            sourceId,
+            cancellationToken);
+        var remainingQueueableTracks = CountRemainingQueueableTracks(
+            source,
+            candidates,
+            localTrackStatuses,
+            ignoredTrackIds);
+
         var targetSyncScheduled = false;
         if (hasConfiguredPlaylistSyncTargets)
         {
-            var localTrackStatuses = await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
-                source,
-                sourceId,
-                cancellationToken);
             var syncSnapshotRevision = PlaylistCandidateContract.BuildTargetSyncRevision(
                 candidateIdentityRevision,
                 localTrackStatuses);
@@ -716,7 +727,7 @@ internal sealed class WatchlistEngine
             Deferred: targetSyncScheduled,
             AttemptedTracks: 0,
             QueueStopReason: WatchQueueStopReason.Completed.ToString(),
-            RemainingQueueableTracks: Math.Max(0, liveTrackCount - localTrackCount),
+            RemainingQueueableTracks: remainingQueueableTracks,
             SnapshotExpanded: snapshotExpanded);
     }
 
@@ -3886,6 +3897,56 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return intent == null || string.IsNullOrWhiteSpace(trackId)
             ? null
             : new WatchIntentTrack(trackId, candidate.Isrc, intent);
+    }
+
+    internal static int CountRemainingQueueableTracks(
+        string source,
+        IReadOnlyList<PlaylistTrackCandidate> candidates,
+        IReadOnlyList<PlaylistWatchTrackStatusDto> statuses,
+        IReadOnlyCollection<string> ignoredTrackIds)
+    {
+        var ignored = ignoredTrackIds as HashSet<string>
+            ?? new HashSet<string>(ignoredTrackIds, StringComparer.OrdinalIgnoreCase);
+        var statusByTrackId = statuses
+            .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
+            .GroupBy(static item => item.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        var remaining = 0;
+        foreach (var candidate in candidates)
+        {
+            if (!PlaylistCandidateContract.IsResolvable(source, candidate)
+                || string.Equals(
+                    candidate.MappingStatus,
+                    BoomplayWatchlistMappingService.MappingRetryStatus,
+                    StringComparison.OrdinalIgnoreCase)
+                || ignored.Contains(candidate.TrackSourceId))
+            {
+                continue;
+            }
+
+            if (statusByTrackId.TryGetValue(candidate.TrackSourceId, out var status))
+            {
+                if (status.LocalTrackId.HasValue)
+                {
+                    continue;
+                }
+
+                var persistedStatus = (status.Status ?? string.Empty).Trim().ToLowerInvariant();
+                if (persistedStatus is "blocked" or "ignored"
+                    || string.Equals(
+                        status.SyncStatus,
+                        BoomplayWatchlistMappingService.MappingRetryStatus,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+            }
+
+            remaining++;
+        }
+
+        return remaining;
     }
 
     internal static DownloadIntent? BuildWatchDownloadIntentFromCandidate(

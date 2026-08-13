@@ -178,12 +178,14 @@ WHERE source = 'spotify'
 SELECT
     EXISTS(SELECT 1 FROM pragma_table_info('playlist_watch_track') WHERE name='source_position'),
     EXISTS(SELECT 1 FROM pragma_table_info('playlist_watch_track') WHERE name='candidate_revision'),
+    EXISTS(SELECT 1 FROM pragma_table_info('playlist_watch_track') WHERE name='mapping_status'),
     EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_playlist_watch_track_admission');";
         await using var migrationReader = await migrationCommand.ExecuteReaderAsync();
         Assert.True(await migrationReader.ReadAsync());
         Assert.Equal(1L, migrationReader.GetInt64(0));
         Assert.Equal(1L, migrationReader.GetInt64(1));
         Assert.Equal(1L, migrationReader.GetInt64(2));
+        Assert.Equal(1L, migrationReader.GetInt64(3));
     }
 
     [Fact]

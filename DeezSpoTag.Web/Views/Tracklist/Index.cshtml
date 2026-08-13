@@ -716,7 +716,9 @@
 }
 
 .track-location-status-pill--downloaded,
-.track-location-status-pill--waiting_for_target {
+.track-location-status-pill--waiting_for_target,
+.track-location-status-pill--waiting_for_identity,
+.track-location-status-pill--mapping_retry {
     border-color: color-mix(in srgb, #00c2ff 42%, transparent);
     color: #00c2ff;
 }
@@ -5506,7 +5508,7 @@ function resolveMonitoredTrackLocationStatus(track, source) {
 
 function normalizeTrackLocationStatus(status) {
     const normalized = String(status || '').trim().toLowerCase();
-    return ['target', 'library', 'synced', 'redirected', 'waiting_for_target', 'downloaded', 'review', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'unavailable', 'missing'].includes(normalized)
+    return ['target', 'library', 'synced', 'redirected', 'waiting_for_target', 'waiting_for_identity', 'mapping_retry', 'downloaded', 'review', 'queued', 'downloading', 'paused', 'retrying', 'failed', 'cancelled', 'blocked', 'unavailable', 'missing'].includes(normalized)
         ? normalized
         : 'missing';
 }
@@ -5523,6 +5525,10 @@ function resolveTrackLocationStatusLabel(status) {
             return 'Redirected';
         case 'waiting_for_target':
             return 'Waiting for target';
+        case 'waiting_for_identity':
+            return 'Waiting for identity';
+        case 'mapping_retry':
+            return 'Mapping retry';
         case 'downloaded':
             return 'Downloaded';
         case 'review':

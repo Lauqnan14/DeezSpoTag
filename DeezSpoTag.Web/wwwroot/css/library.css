@@ -880,6 +880,26 @@
     background: #0369a1;
 }
 
+.playlist-watchlist-state-badge--waiting-for-target {
+    background: #0369a1;
+}
+
+.playlist-watchlist-state-badge--waiting-for-identity {
+    background: #6d28d9;
+}
+
+.playlist-watchlist-state-badge--missing {
+    background: #b45309;
+}
+
+.playlist-watchlist-state-badge--mapping-retry {
+    background: #4b5563;
+}
+
+.playlist-watchlist-state-badge--failed {
+    background: #b91c1c;
+}
+
 /* Stats overlay (bottom of art, shown on hover) */
 .watchlist-card-stats {
     position: absolute;

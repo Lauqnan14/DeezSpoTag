@@ -597,9 +597,24 @@ ORDER BY service;";
         Assert.Equal(23, summaryAfterRestart.IncompleteTrackCount);
         var plexOnlyStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var plexOnlyTrack = Assert.Single(plexOnlyStatuses, status => status.TrackSourceId == "dz-song-1");
-        Assert.Equal("waiting_for_target", plexOnlyTrack.SyncStatus);
+        Assert.Equal("waiting_for_identity", plexOnlyTrack.SyncStatus);
         Assert.Equal("plex", plexOnlyTrack.TargetService);
         Assert.Equal("plex-track-1", plexOnlyTrack.TargetItemId);
+        Assert.Equal(1, summaryAfterRestart.WaitingForIdentityCount);
+        Assert.Equal(0, summaryAfterRestart.WaitingForTargetCount);
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(localTrackId, "plex", "plex-track-1", FilePath: null, DateTimeOffset.UtcNow),
+            new MediaServerTrackMetadataUpsertDto(localTrackId, "jellyfin", "jellyfin-track-1", FilePath: null, DateTimeOffset.UtcNow)
+        ]);
+        var identityResolvedSummary = Assert.Single(
+            await restartedRepository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "spotify" && item.SourceId == "pl-123");
+        Assert.Equal(0, identityResolvedSummary.WaitingForIdentityCount);
+        Assert.Equal(1, identityResolvedSummary.WaitingForTargetCount);
+        Assert.Equal(23, identityResolvedSummary.IncompleteTrackCount);
+        var identityResolvedStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
+        var identityResolvedTrack = Assert.Single(identityResolvedStatuses, status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("waiting_for_target", identityResolvedTrack.SyncStatus);
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
@@ -725,6 +740,96 @@ ORDER BY service;";
         Assert.DoesNotContain(
             await _repository.ClaimDueWatchlistSyncJobsAsync(100, TimeSpan.FromMinutes(1), "test-owner"),
             job => job.Source == "spotify" && job.PlaylistId == "pl-123");
+    }
+
+    [Fact]
+    public void PlaylistWatchlistPresentation_AppendsBreakdownOrdinalsAfterSourceStorefront()
+    {
+        var repository = File.ReadAllText(FindSourceFile("DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var selectStart = repository.IndexOf("public async Task<IReadOnlyList<PlaylistWatchlistDto>> GetPlaylistWatchlistAsync", StringComparison.Ordinal);
+        Assert.True(selectStart > 0);
+        var selectEnd = repository.IndexOf("public async Task<bool> IsPlaylistWatchlistedAsync", selectStart, StringComparison.Ordinal);
+        Assert.True(selectEnd > selectStart);
+        var select = repository[selectStart..selectEnd];
+
+        Assert.Contains("pw.source_storefront", select, StringComparison.Ordinal);
+        Assert.Contains("IsDBNullAsync(23", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(24)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(25)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(26)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(27)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(28)", select, StringComparison.Ordinal);
+        Assert.Contains("GetInt32(29)", select, StringComparison.Ordinal);
+        Assert.True(
+            select.IndexOf("pw.source_storefront", StringComparison.Ordinal)
+            < select.IndexOf("waiting_for_target_count", StringComparison.Ordinal));
+        Assert.Contains("WaitingForTargetCount: await reader.IsDBNullAsync(24", select, StringComparison.Ordinal);
+        Assert.Contains("WaitingForIdentityCount: await reader.IsDBNullAsync(25", select, StringComparison.Ordinal);
+        Assert.Contains("MissingTrackCount: await reader.IsDBNullAsync(26", select, StringComparison.Ordinal);
+        Assert.Contains("MappingRetryCount: await reader.IsDBNullAsync(27", select, StringComparison.Ordinal);
+        Assert.Contains("BlockedTrackCount: await reader.IsDBNullAsync(28", select, StringComparison.Ordinal);
+        Assert.Contains("FailedTrackCount: await reader.IsDBNullAsync(29", select, StringComparison.Ordinal);
+        Assert.Contains("reader.GetInt32(6)", select, StringComparison.Ordinal);
+        Assert.Contains("reader.GetInt32(16)", select, StringComparison.Ordinal);
+        Assert.Contains("reader.GetInt32(15)", select, StringComparison.Ordinal);
+        Assert.DoesNotContain("identity_status = 'mapping_retry'", select, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchTrackMappingStatus_IsPersistedSeparatelyAndCountedInPresentation()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "boomplay",
+            "mapping-list",
+            new PlaylistWatchlistMetadataInput("Mapping Split", null, null, 4));
+        await _repository.UpdatePlaylistWatchPresentationSummaryAsync(
+            "boomplay",
+            "mapping-list",
+            ignoredBlockedTrackCount: 1,
+            reroutedTrackCount: 0);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "boomplay",
+            "mapping-list",
+            [
+                new PlaylistWatchTrackInsert("boom-retry", null, MappingStatus: "mapping_retry"),
+                new PlaylistWatchTrackInsert("boom-blocked", null, MappingStatus: "matched"),
+                new PlaylistWatchTrackInsert("boom-failed", null, MappingStatus: "matched"),
+                new PlaylistWatchTrackInsert("boom-missing", null, MappingStatus: "matched")
+            ]);
+        await _repository.UpdatePlaylistWatchTrackStatusAsync("boomplay", "mapping-list", "boom-blocked", "blocked");
+        await _repository.UpdatePlaylistWatchTrackStatusAsync("boomplay", "mapping-list", "boom-failed", "failed");
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = new SqliteCommand(
+                @"SELECT mapping_status, identity_status
+                  FROM playlist_watch_track
+                  WHERE source='boomplay' AND source_id='mapping-list' AND track_source_id='boom-retry';",
+                connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("mapping_retry", reader.GetString(0));
+            Assert.True(reader.IsDBNull(1));
+        }
+
+        var statuses = await _repository.GetPlaylistWatchTrackStatusesAsync("boomplay", "mapping-list");
+        Assert.Equal("mapping_retry", Assert.Single(statuses, status => status.TrackSourceId == "boom-retry").SyncStatus);
+        Assert.Equal("blocked", Assert.Single(statuses, status => status.TrackSourceId == "boom-blocked").SyncStatus);
+        Assert.Equal("failed", Assert.Single(statuses, status => status.TrackSourceId == "boom-failed").SyncStatus);
+        Assert.Equal("missing", Assert.Single(statuses, status => status.TrackSourceId == "boom-missing").SyncStatus);
+
+        var summary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            item => item.Source == "boomplay" && item.SourceId == "mapping-list");
+        Assert.Equal(1, summary.MappingRetryCount);
+        Assert.Equal(1, summary.BlockedTrackCount);
+        Assert.Equal(1, summary.FailedTrackCount);
+        Assert.Equal(1, summary.MissingTrackCount);
+        Assert.Equal(0, summary.WaitingForTargetCount);
+        Assert.Equal(0, summary.WaitingForIdentityCount);
+        Assert.Equal(3, summary.IncompleteTrackCount);
+        Assert.Equal(0, summary.SyncedTrackCount);
     }
 
     [Fact]
@@ -2023,6 +2128,23 @@ WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
         command.Parameters.AddWithValue("path", filePath);
         var result = await command.ExecuteScalarAsync();
         return Assert.IsType<string>(result);
+    }
+
+    private static string FindSourceFile(params string[] pathParts)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(new[] { directory.FullName }.Concat(pathParts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException($"Unable to locate {Path.Combine(pathParts)}.");
     }
 
     private static RecommendationTrackDto CreateRecommendationTrack(string id, string title)

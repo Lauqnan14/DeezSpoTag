@@ -89,6 +89,8 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
             "redirected",
             "synced",
             "waiting_for_target",
+            "waiting_for_identity",
+            "mapping_retry",
             "downloaded",
             "library",
             "unavailable",
@@ -106,6 +108,8 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
             "synced",
             "redirected",
             "waiting_for_target",
+            "waiting_for_identity",
+            "mapping_retry",
             "downloaded",
             "review"
         ];

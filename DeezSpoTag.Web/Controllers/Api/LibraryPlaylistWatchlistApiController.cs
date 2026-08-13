@@ -153,7 +153,9 @@ public partial class WatchlistApiController : ControllerBase
         {
             runtime = runtime with { PendingReconciliationRequests = pendingReconciliationRequests };
         }
-        var playlists = await _repository.GetPlaylistWatchlistAsync(cancellationToken);
+        var playlists = await HydrateQueuePresentationSummaryAsync(
+            await _repository.GetPlaylistWatchlistAsync(cancellationToken),
+            cancellationToken);
         var sources = playlists
             .Select(item => WatchlistPreferenceNormalizer.PlaylistSource(item.Source))
             .Where(source => !string.IsNullOrWhiteSpace(source))
@@ -237,6 +239,17 @@ public partial class WatchlistApiController : ControllerBase
                 orphanedPending = orphanedPendingClaims
             },
             targetSyncJobs = syncJobs,
+            presentation = new
+            {
+                waitingForTarget = playlists.Sum(static item => item.WaitingForTargetCount ?? 0),
+                waitingForIdentity = playlists.Sum(static item => item.WaitingForIdentityCount ?? 0),
+                missing = playlists.Sum(static item => item.MissingTrackCount ?? 0),
+                mappingRetry = playlists.Sum(static item => item.MappingRetryCount ?? 0),
+                blocked = playlists.Sum(static item => item.BlockedTrackCount ?? 0),
+                failed = playlists.Sum(static item => item.FailedTrackCount ?? 0),
+                queued = playlists.Sum(static item => item.QueuedTrackCount ?? 0),
+                downloading = playlists.Sum(static item => item.DownloadingTrackCount ?? 0)
+            },
             utcNow = DateTimeOffset.UtcNow
         });
     }
@@ -1585,6 +1598,17 @@ public partial class WatchlistApiController : ControllerBase
                     $"Verified in {status?.TargetService ?? "the target server"} playlist.");
         }
 
+        if (syncStatus == "waiting_for_identity")
+        {
+            var missingTargets = string.IsNullOrWhiteSpace(status?.MissingTargetServices)
+                ? status?.TargetService
+                : status.MissingTargetServices;
+            return new PlaylistTrackLocationStatus(
+                "waiting_for_identity",
+                $"Waiting for {missingTargets ?? "identity"}",
+                "Available locally but the shared-library identity is not resolved on every target.");
+        }
+
         if (syncStatus is "target_visible" or "waiting_for_target")
         {
             var missingTargets = string.IsNullOrWhiteSpace(status?.MissingTargetServices)
@@ -1594,6 +1618,14 @@ public partial class WatchlistApiController : ControllerBase
                 "waiting_for_target",
                 $"Waiting for {missingTargets ?? "target"}",
                 "Available locally but not verified in the target playlist.");
+        }
+
+        if (syncStatus == "mapping_retry")
+        {
+            return new PlaylistTrackLocationStatus(
+                "mapping_retry",
+                "Mapping retry",
+                status?.IdentityReason ?? "Waiting for a Deezer mapping before this track can be queued.");
         }
 
         var normalized = NormalizeStatusText(status?.Status);

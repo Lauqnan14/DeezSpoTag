@@ -635,6 +635,7 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
     cover_url TEXT,
     candidate_revision TEXT,
     last_snapshot_id TEXT,
+    mapping_status TEXT,
     PRIMARY KEY (source, source_id, track_source_id)
 );
 

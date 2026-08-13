@@ -7675,7 +7675,13 @@ SELECT id,
        COALESCE(state_summary.unavailable_count, 0),
        COALESCE(state_summary.review_count, 0),
        pw.source_url,
-       pw.source_storefront
+       pw.source_storefront,
+       COALESCE(state_breakdown.waiting_for_target_count, 0),
+       COALESCE(state_breakdown.waiting_for_identity_count, 0),
+       COALESCE(state_breakdown.missing_count, 0),
+       COALESCE(state_breakdown.mapping_retry_count, 0),
+       COALESCE(state_breakdown.blocked_count, 0),
+       COALESCE(state_breakdown.failed_count, 0)
 FROM playlist_watchlist pw
 LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
@@ -7718,6 +7724,22 @@ LEFT JOIN (
 ) state_summary
     ON state_summary.source = pw.source
    AND state_summary.source_id = pw.source_id
+LEFT JOIN (
+    -- Presentation buckets share the track CASE in playlist_watch_track_presentation_status
+    -- (ordinals 24-29 are appended after source_storefront so 0-23 stay valid).
+    SELECT source,
+           source_id,
+           COUNT(DISTINCT CASE WHEN presentation_status = 'waiting_for_target' THEN track_source_id END) AS waiting_for_target_count,
+           COUNT(DISTINCT CASE WHEN presentation_status = 'waiting_for_identity' THEN track_source_id END) AS waiting_for_identity_count,
+           COUNT(DISTINCT CASE WHEN presentation_status = 'missing' THEN track_source_id END) AS missing_count,
+           COUNT(DISTINCT CASE WHEN presentation_status = 'mapping_retry' THEN track_source_id END) AS mapping_retry_count,
+           COUNT(DISTINCT CASE WHEN presentation_status = 'blocked' THEN track_source_id END) AS blocked_count,
+           COUNT(DISTINCT CASE WHEN presentation_status = 'failed' THEN track_source_id END) AS failed_count
+    FROM playlist_watch_track_presentation_status
+    GROUP BY source, source_id
+) state_breakdown
+    ON state_breakdown.source = pw.source
+   AND state_breakdown.source_id = pw.source_id
 ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE 0 END,
          pw.sync_priority ASC,
          pw.created_at DESC;";
@@ -7762,7 +7784,13 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                 UnavailableTrackCount: await reader.IsDBNullAsync(20, cancellationToken) ? 0 : reader.GetInt32(20),
                 ReviewTrackCount: await reader.IsDBNullAsync(21, cancellationToken) ? 0 : reader.GetInt32(21),
                 SourceUrl: await reader.IsDBNullAsync(22, cancellationToken) ? null : reader.GetString(22),
-                SourceStorefront: await reader.IsDBNullAsync(23, cancellationToken) ? null : reader.GetString(23)));
+                SourceStorefront: await reader.IsDBNullAsync(23, cancellationToken) ? null : reader.GetString(23),
+                WaitingForTargetCount: await reader.IsDBNullAsync(24, cancellationToken) ? 0 : reader.GetInt32(24),
+                WaitingForIdentityCount: await reader.IsDBNullAsync(25, cancellationToken) ? 0 : reader.GetInt32(25),
+                MissingTrackCount: await reader.IsDBNullAsync(26, cancellationToken) ? 0 : reader.GetInt32(26),
+                MappingRetryCount: await reader.IsDBNullAsync(27, cancellationToken) ? 0 : reader.GetInt32(27),
+                BlockedTrackCount: await reader.IsDBNullAsync(28, cancellationToken) ? 0 : reader.GetInt32(28),
+                FailedTrackCount: await reader.IsDBNullAsync(29, cancellationToken) ? 0 : reader.GetInt32(29)));
         }
 
         return items;
@@ -9936,7 +9964,22 @@ SELECT playlist_watch_track.track_source_id,
          WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
          WHEN COALESCE(progress.configured_target_count, 0) > 0
               AND COALESCE(progress.verified_target_count, 0) >= progress.configured_target_count
-         THEN 'playlist_synced'
+           THEN 'playlist_synced'
+         WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
+         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'blocked' THEN 'blocked'
+         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'failed' THEN 'failed'
+         WHEN local_track_id IS NOT NULL
+              AND EXISTS (
+                  SELECT 1
+                    FROM playlist_watch_configured_sync_targets cst
+                   WHERE cst.source = playlist_watch_track.source
+                     AND cst.source_id = playlist_watch_track.source_id
+                     AND NOT EXISTS (
+                         SELECT 1
+                           FROM media_server_track_metadata meta
+                          WHERE meta.track_id = playlist_watch_track.local_track_id
+                            AND lower(meta.service) = cst.target))
+           THEN 'waiting_for_identity'
          WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
          ELSE status
        END AS sync_status,
@@ -10649,11 +10692,11 @@ VALUES (@normalizedValue);";
 INSERT INTO playlist_watch_track (
     source, source_id, track_source_id, isrc, status, updated_at,
     source_position, title, artist, album, duration_ms, cover_url,
-    candidate_revision, last_snapshot_id)
+    candidate_revision, last_snapshot_id, mapping_status)
 VALUES (
     @source, @sourceId, @trackSourceId, @isrc, 'missing', CURRENT_TIMESTAMP,
     @sourcePosition, @title, @artist, @album, @durationMs, @coverUrl,
-    @candidateRevision, @snapshotId)
+    @candidateRevision, @snapshotId, @mappingStatus)
 ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
     isrc=COALESCE(excluded.isrc, playlist_watch_track.isrc),
     source_position=COALESCE(excluded.source_position, playlist_watch_track.source_position),
@@ -10664,6 +10707,7 @@ ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
     cover_url=COALESCE(excluded.cover_url, playlist_watch_track.cover_url),
     candidate_revision=COALESCE(excluded.candidate_revision, playlist_watch_track.candidate_revision),
     last_snapshot_id=COALESCE(excluded.last_snapshot_id, playlist_watch_track.last_snapshot_id),
+    mapping_status=COALESCE(excluded.mapping_status, playlist_watch_track.mapping_status),
     updated_at=CURRENT_TIMESTAMP;";
         foreach (var track in tracks)
         {
@@ -10680,6 +10724,9 @@ ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
             command.Parameters.AddWithValue("coverUrl", (object?)track.CoverUrl ?? DBNull.Value);
             command.Parameters.AddWithValue("candidateRevision", (object?)track.CandidateRevision ?? DBNull.Value);
             command.Parameters.AddWithValue("snapshotId", (object?)track.SnapshotId ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "mappingStatus",
+                string.IsNullOrWhiteSpace(track.MappingStatus) ? DBNull.Value : track.MappingStatus.Trim());
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
