@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Jellyfin;
 using Xunit;
 
@@ -83,6 +85,89 @@ public sealed class JellyfinPlaylistBatchingTests
     }
 
     [Fact]
+    public async Task FindPlaylistIdByNameResult_NameList500IsTransient()
+    {
+        using var handler = new JsonHandler(HttpStatusCode.InternalServerError, "{}");
+        using var client = new HttpClient(handler);
+        var api = new JellyfinApiClient(client);
+
+        var lookup = await api.FindPlaylistIdByNameResult(
+            "http://jellyfin.local",
+            "key",
+            "user",
+            "Gold School",
+            CancellationToken.None);
+
+        Assert.Equal(TargetLookupStatus.Transient, lookup.Status);
+        Assert.Equal(500, lookup.HttpStatusCode);
+        Assert.Null(lookup.Value);
+    }
+
+    [Fact]
+    public async Task FindPlaylistIdByNameResult_EmptySuccessfulListIsNotFound()
+    {
+        using var handler = new JsonHandler(HttpStatusCode.OK, """{"Items":[]}""");
+        using var client = new HttpClient(handler);
+        var api = new JellyfinApiClient(client);
+
+        var lookup = await api.FindPlaylistIdByNameResult(
+            "http://jellyfin.local",
+            "key",
+            "user",
+            "Gold School",
+            CancellationToken.None);
+
+        Assert.Equal(TargetLookupStatus.NotFound, lookup.Status);
+        Assert.Null(lookup.Value);
+    }
+
+    [Fact]
+    public async Task FindPlaylistIdByNameResult_IgnoresFuzzySearchHits()
+    {
+        using var handler = new JsonHandler(
+            HttpStatusCode.OK,
+            """{"Items":[{"Id":"other-1","Name":"Gold School Radio"}]}""");
+        using var client = new HttpClient(handler);
+        var api = new JellyfinApiClient(client);
+
+        var lookup = await api.FindPlaylistIdByNameResult(
+            "http://jellyfin.local",
+            "key",
+            "user",
+            "Gold School",
+            CancellationToken.None);
+
+        Assert.Equal(TargetLookupStatus.NotFound, lookup.Status);
+        Assert.Null(lookup.Value);
+        Assert.Null(await api.FindPlaylistIdByNameAsync(
+            "http://jellyfin.local",
+            "key",
+            "user",
+            "Gold School",
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task FindPlaylistIdByNameResult_ReturnsExactNameMatch()
+    {
+        using var handler = new JsonHandler(
+            HttpStatusCode.OK,
+            """{"Items":[{"Id":"other-1","Name":"Gold School Radio"},{"Id":"exact-1","Name":"Gold School"}]}""");
+        using var client = new HttpClient(handler);
+        var api = new JellyfinApiClient(client);
+
+        var lookup = await api.FindPlaylistIdByNameResult(
+            "http://jellyfin.local",
+            "key",
+            "user",
+            "Gold School",
+            CancellationToken.None);
+
+        Assert.Equal(TargetLookupStatus.Success, lookup.Status);
+        Assert.Equal("exact-1", lookup.Value);
+    }
+
+    [Fact]
     public void JellyfinMoveFailures_DoNotIncrementTargetCircuit()
     {
         var service = System.IO.File.ReadAllText(System.IO.Path.Combine(
@@ -127,5 +212,16 @@ public sealed class JellyfinPlaylistBatchingTests
             Requests.Add(request.RequestUri!);
             return Task.FromResult(new HttpResponseMessage(statusCode));
         }
+    }
+
+    private sealed class JsonHandler(HttpStatusCode statusCode, string json) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            });
     }
 }

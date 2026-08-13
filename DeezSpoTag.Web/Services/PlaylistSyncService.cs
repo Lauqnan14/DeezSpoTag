@@ -2753,14 +2753,27 @@ public sealed class PlaylistSyncService
         string? existingPlaylistId,
         CancellationToken cancellationToken)
     {
-        var playlistId = string.IsNullOrWhiteSpace(existingPlaylistId)
-            ? await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+        string? playlistId;
+        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            playlistId = existingPlaylistId.Trim();
+        }
+        else
+        {
+            var nameLookup = await _jellyfinApiClient.FindPlaylistIdByNameResult(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 jellyfin.UserId,
                 playlistName,
-                cancellationToken)
-            : existingPlaylistId.Trim();
+                cancellationToken);
+            if (nameLookup.Status == TargetLookupStatus.Transient)
+            {
+                return null;
+            }
+
+            playlistId = nameLookup.Status == TargetLookupStatus.Success ? nameLookup.Value : null;
+        }
+
         if (string.IsNullOrWhiteSpace(playlistId))
         {
             playlistId = await _jellyfinApiClient.CreatePlaylistAsync(
@@ -3064,15 +3077,20 @@ public sealed class PlaylistSyncService
             }
         }
 
-        var byName = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+        var byName = await _jellyfinApiClient.FindPlaylistIdByNameResult(
             connection.Url,
             connection.ApiKey,
             connection.UserId,
             ResolvePlaylistName(playlist),
             cancellationToken);
-        return string.IsNullOrWhiteSpace(byName)
-            ? TargetPlaylistLookup<string>.Missing()
-            : TargetPlaylistLookup<string>.Found(byName);
+        if (byName.Status == TargetLookupStatus.Transient)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byName.HttpStatusCode);
+        }
+
+        return byName.Status == TargetLookupStatus.Success && !string.IsNullOrWhiteSpace(byName.Value)
+            ? TargetPlaylistLookup<string>.Found(byName.Value, byName.HttpStatusCode)
+            : TargetPlaylistLookup<string>.Missing(byName.HttpStatusCode);
     }
 
     private async Task<TargetPlaylistLookup<string>> ResolveAuthoritativeNavidromePlaylistIdAsync(
@@ -3100,15 +3118,20 @@ public sealed class PlaylistSyncService
             }
         }
 
-        var byName = await _navidromeApiClient.FindPlaylistIdByNameAsync(
+        var byName = await _navidromeApiClient.FindPlaylistIdByNameResult(
             connection.Url,
             connection.Username,
             connection.Password,
             ResolvePlaylistName(playlist),
             cancellationToken);
-        return string.IsNullOrWhiteSpace(byName)
-            ? TargetPlaylistLookup<string>.Missing()
-            : TargetPlaylistLookup<string>.Found(byName);
+        if (byName.Status == TargetLookupStatus.Transient)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(byName.HttpStatusCode);
+        }
+
+        return byName.Status == TargetLookupStatus.Success && !string.IsNullOrWhiteSpace(byName.Value)
+            ? TargetPlaylistLookup<string>.Found(byName.Value, byName.HttpStatusCode)
+            : TargetPlaylistLookup<string>.Missing(byName.HttpStatusCode);
     }
 
     private static string? NormalizeExistingTargetPlaylistId(string? playlistId)
@@ -3270,7 +3293,7 @@ public sealed class PlaylistSyncService
             playlistComment,
             delta.IntendedOrder,
             cancellationToken);
-        if (put.Status == NavidromeNativePlaylistPutStatus.NotSupported)
+        if (put.Status == NavidromeNativePlaylistPutStatus.NotSupported && put.HttpStatusCode.HasValue)
         {
             _logger.LogInformation(
                 "Navidrome native playlist PUT is unsupported for {PlaylistId}: HTTP {StatusCode}.",
@@ -3280,7 +3303,7 @@ public sealed class PlaylistSyncService
                 NavidromeService,
                 NavidromeNativePlaylistPutCapability,
                 supported: false,
-                lastError: put.HttpStatusCode is null ? "native playlist PUT not supported" : $"HTTP {put.HttpStatusCode}",
+                lastError: $"HTTP {put.HttpStatusCode}",
                 cancellationToken);
         }
     }

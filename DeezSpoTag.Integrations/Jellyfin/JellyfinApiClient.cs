@@ -523,12 +523,23 @@ public class JellyfinApiClient
         string playlistName,
         CancellationToken cancellationToken = default)
     {
+        var lookup = await FindPlaylistIdByNameResult(serverUrl, apiKey, userId, playlistName, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+    }
+
+    public async Task<TargetPlaylistLookup<string>> FindPlaylistIdByNameResult(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistName,
+        CancellationToken cancellationToken = default)
+    {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
             || string.IsNullOrWhiteSpace(userId)
             || string.IsNullOrWhiteSpace(playlistName))
         {
-            return null;
+            return TargetPlaylistLookup<string>.Missing();
         }
 
         var query = new StringBuilder();
@@ -538,25 +549,31 @@ public class JellyfinApiClient
         query.Append("&Limit=200");
         query.Append($"&SearchTerm={Uri.EscapeDataString(playlistName)}");
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            return null;
-        }
+            using var request = new HttpRequestMessage(HttpMethod.Get, BuildUrl(serverUrl, query.ToString()));
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
+            if (classified != TargetLookupStatus.Success)
+            {
+                return new TargetPlaylistLookup<string>(classified, null, statusCode);
+            }
 
-        var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
-        var items = payload?.Items ?? new List<JellyfinMediaItem>();
-        var exactMatch = items.FirstOrDefault(item =>
-            !string.IsNullOrWhiteSpace(item.Id)
-            && string.Equals(item.Name, playlistName, StringComparison.OrdinalIgnoreCase));
-        if (!string.IsNullOrWhiteSpace(exactMatch?.Id))
+            var payload = await response.Content.ReadFromJsonAsync<JellyfinItemsResponse>(cancellationToken: cancellationToken);
+            var items = payload?.Items ?? new List<JellyfinMediaItem>();
+            var exactMatch = items.FirstOrDefault(item =>
+                !string.IsNullOrWhiteSpace(item.Id)
+                && string.Equals(item.Name, playlistName, StringComparison.OrdinalIgnoreCase));
+            return string.IsNullOrWhiteSpace(exactMatch?.Id)
+                ? TargetPlaylistLookup<string>.Missing(statusCode)
+                : TargetPlaylistLookup<string>.Found(exactMatch.Id, statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
         {
-            return exactMatch.Id;
+            return TargetPlaylistLookup<string>.Unavailable();
         }
-
-        return items.FirstOrDefault(static item => !string.IsNullOrWhiteSpace(item.Id))?.Id;
     }
 
     public async Task<List<JellyfinMediaItem>> GetPlaylistsAsync(

@@ -236,6 +236,78 @@ public sealed class NavidromeApiClientPlaylistTests
     }
 
     [Fact]
+    public async Task CreateOrUpdatePlaylistAsync_StoredIdNotFoundAndNameListTransientDoesNotCreate()
+    {
+        using var handler = new NavidromePlaylistHandler(
+            playlistExistsInitially: false,
+            getPlaylistStatusCode: HttpStatusCode.NotFound,
+            getPlaylistsStatusCode: HttpStatusCode.InternalServerError);
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var playlistId = await client.CreateOrUpdatePlaylistAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "Gold School",
+            new[] { "song-1" },
+            existingPlaylistId: "gone",
+            appendMissingOnly: false,
+            CancellationToken.None);
+
+        Assert.Null(playlistId);
+        Assert.DoesNotContain(
+            handler.RequestedUrls,
+            url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CreateOrUpdatePlaylistAsync_StoredIdNotFoundAndEmptyNameListCreates()
+    {
+        using var handler = new NavidromePlaylistHandler(
+            playlistExistsInitially: false,
+            getPlaylistStatusCode: HttpStatusCode.NotFound);
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var playlistId = await client.CreateOrUpdatePlaylistAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "Gold School",
+            new[] { "song-1" },
+            existingPlaylistId: "gone",
+            appendMissingOnly: false,
+            CancellationToken.None,
+            "A reliable playlist description");
+
+        Assert.Equal("playlist-1", playlistId);
+        Assert.Contains(handler.RequestedUrls, url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ReplaceNativePlaylistTracksAsync_LoginFailureIsTransient()
+    {
+        using var handler = new NavidromePlaylistHandler(loginStatusCode: HttpStatusCode.ServiceUnavailable);
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var put = await client.ReplaceNativePlaylistTracksAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "playlist-1",
+            "Gold School",
+            "A reliable playlist description",
+            new[] { "song-2", "song-1" },
+            CancellationToken.None);
+
+        Assert.Equal(NavidromeNativePlaylistPutStatus.Transient, put.Status);
+        Assert.Null(put.HttpStatusCode);
+        Assert.DoesNotContain(handler.RequestedUrls, url => url.EndsWith("/api/playlist/playlist-1", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ReplaceNativePlaylistTracksAsync_PutsOrderedTrackIdsWithoutCreate()
     {
         using var handler = new NavidromePlaylistHandler();
@@ -348,7 +420,10 @@ public sealed class NavidromeApiClientPlaylistTests
         bool createReturnsPlaylist = true,
         bool playlistExistsInitially = true,
         bool serveStalePlaylistImage = false,
-        HttpStatusCode nativePutStatusCode = HttpStatusCode.OK) : HttpMessageHandler
+        HttpStatusCode nativePutStatusCode = HttpStatusCode.OK,
+        HttpStatusCode getPlaylistStatusCode = HttpStatusCode.OK,
+        HttpStatusCode getPlaylistsStatusCode = HttpStatusCode.OK,
+        HttpStatusCode loginStatusCode = HttpStatusCode.OK) : HttpMessageHandler
     {
         private bool _playlistCreated;
         private byte[] _playlistImageBytes = Array.Empty<byte>();
@@ -366,6 +441,11 @@ public sealed class NavidromeApiClientPlaylistTests
 
             if (path.EndsWith("/auth/login", StringComparison.Ordinal))
             {
+                if (loginStatusCode != HttpStatusCode.OK)
+                {
+                    return new HttpResponseMessage(loginStatusCode);
+                }
+
                 return await Json("""
                     {
                       "token": "jwt-token"
@@ -428,6 +508,11 @@ public sealed class NavidromeApiClientPlaylistTests
 
             if (path.EndsWith("/getPlaylists.view", StringComparison.Ordinal))
             {
+                if (getPlaylistsStatusCode != HttpStatusCode.OK)
+                {
+                    return new HttpResponseMessage(getPlaylistsStatusCode);
+                }
+
                 var playlists = playlistExistsInitially || _playlistCreated
                     ? """
                               "playlist": [
@@ -451,6 +536,11 @@ public sealed class NavidromeApiClientPlaylistTests
 
             if (path.EndsWith("/getPlaylist.view", StringComparison.Ordinal))
             {
+                if (getPlaylistStatusCode != HttpStatusCode.OK)
+                {
+                    return new HttpResponseMessage(getPlaylistStatusCode);
+                }
+
                 return await Json("""
                     {
                       "subsonic-response": {

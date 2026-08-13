@@ -330,21 +330,76 @@ public sealed class NavidromeApiClient
         string password,
         CancellationToken cancellationToken = default)
     {
-        var response = await SendAsync<NavidromePlaylistsResponse>(
+        var lookup = await GetPlaylistsResult(serverUrl, username, password, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success
+            ? lookup.Value!.ToList()
+            : new List<NavidromePlaylistSummary>();
+    }
+
+    public async Task<TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>> GetPlaylistsResult(
+        string serverUrl,
+        string username,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password))
+        {
+            return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Missing();
+        }
+
+        var requestUrl = BuildUrl(
             serverUrl,
+            "getPlaylists",
             username,
             password,
-            "getPlaylists",
-            Array.Empty<KeyValuePair<string, string?>>(),
-            cancellationToken);
-        return response?.SubsonicResponse?.Playlists?.Playlists?
-            .Where(static playlist => !string.IsNullOrWhiteSpace(playlist.Id))
-            .Select(static playlist => new NavidromePlaylistSummary(
-                playlist.Id!,
-                playlist.Name ?? playlist.Id!,
-                playlist.SongCount,
-                playlist.Comment))
-            .ToList() ?? new List<NavidromePlaylistSummary>();
+            Array.Empty<KeyValuePair<string, string?>>());
+        try
+        {
+            using var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
+            if (classified != TargetLookupStatus.Success)
+            {
+                return new TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>(classified, null, statusCode);
+            }
+
+            NavidromePlaylistsResponse? payload;
+            try
+            {
+                payload = await response.Content.ReadFromJsonAsync<NavidromePlaylistsResponse>(cancellationToken: cancellationToken);
+            }
+            catch (JsonException)
+            {
+                return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Unavailable(statusCode);
+            }
+
+            var subsonic = payload?.SubsonicResponse;
+            if (subsonic is null)
+            {
+                return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Missing(statusCode);
+            }
+
+            if (!string.Equals(subsonic.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Unavailable(statusCode);
+            }
+
+            var playlists = subsonic.Playlists?.Playlists?
+                .Where(static playlist => !string.IsNullOrWhiteSpace(playlist.Id))
+                .Select(static playlist => new NavidromePlaylistSummary(
+                    playlist.Id!,
+                    playlist.Name ?? playlist.Id!,
+                    playlist.SongCount,
+                    playlist.Comment))
+                .ToList() ?? new List<NavidromePlaylistSummary>();
+            return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Found(playlists, statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            return TargetPlaylistLookup<IReadOnlyList<NavidromePlaylistSummary>>.Unavailable();
+        }
     }
 
     public async Task<bool> StartScanAsync(
@@ -370,9 +425,28 @@ public sealed class NavidromeApiClient
         string playlistName,
         CancellationToken cancellationToken = default)
     {
-        var playlists = await GetPlaylistsAsync(serverUrl, username, password, cancellationToken);
-        return playlists.FirstOrDefault(playlist =>
-            string.Equals(playlist.Name, playlistName, StringComparison.OrdinalIgnoreCase))?.Id;
+        var lookup = await FindPlaylistIdByNameResult(serverUrl, username, password, playlistName, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+    }
+
+    public async Task<TargetPlaylistLookup<string>> FindPlaylistIdByNameResult(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistName,
+        CancellationToken cancellationToken = default)
+    {
+        var playlists = await GetPlaylistsResult(serverUrl, username, password, cancellationToken);
+        if (playlists.Status != TargetLookupStatus.Success)
+        {
+            return new TargetPlaylistLookup<string>(playlists.Status, null, playlists.HttpStatusCode);
+        }
+
+        var match = (playlists.Value ?? Array.Empty<NavidromePlaylistSummary>()).FirstOrDefault(playlist =>
+            string.Equals(playlist.Name, playlistName, StringComparison.OrdinalIgnoreCase));
+        return string.IsNullOrWhiteSpace(match?.Id)
+            ? TargetPlaylistLookup<string>.Missing(playlists.HttpStatusCode)
+            : TargetPlaylistLookup<string>.Found(match.Id, playlists.HttpStatusCode);
     }
 
     public async Task<string?> CreateOrUpdatePlaylistAsync(
@@ -411,7 +485,21 @@ public sealed class NavidromeApiClient
             }
         }
 
-        playlistId ??= await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken);
+        if (string.IsNullOrWhiteSpace(playlistId))
+        {
+            var nameLookup = await FindPlaylistIdByNameResult(
+                serverUrl,
+                username,
+                password,
+                playlistName,
+                cancellationToken);
+            if (nameLookup.Status == TargetLookupStatus.Transient)
+            {
+                return null;
+            }
+
+            playlistId = nameLookup.Status == TargetLookupStatus.Success ? nameLookup.Value : null;
+        }
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -854,7 +942,7 @@ public sealed class NavidromeApiClient
         var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
         if (string.IsNullOrWhiteSpace(token))
         {
-            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.NotSupported, null);
+            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.Transient, null);
         }
 
         var orderedIds = trackIds
