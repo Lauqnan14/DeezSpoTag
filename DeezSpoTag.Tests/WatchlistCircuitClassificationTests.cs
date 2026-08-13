@@ -27,6 +27,7 @@ public sealed class WatchlistCircuitClassificationTests
             StringComparison.Ordinal);
         Assert.DoesNotContain("repeated failures: {targetCircuit.Reason}", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("HasNoTargetCoverage", worker, StringComparison.Ordinal);
+        Assert.Contains("EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync", worker, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -52,6 +53,8 @@ public sealed class WatchlistCircuitClassificationTests
     [InlineData("Jellyfin sync failed: connection refused", SyncFailureClass.Transport)]
     [InlineData("Plex is not configured.", SyncFailureClass.Auth)]
     [InlineData("timeout talking to navidrome", SyncFailureClass.Transport)]
+    [InlineData("Spotify playlist could not be loaded.", SyncFailureClass.None)]
+    [InlineData("Track candidates are unavailable for this source. Open playlist settings once and retry sync.", SyncFailureClass.None)]
     public void TransportAndAuthFailuresAreClassifiedForCircuit(string message, SyncFailureClass expected)
     {
         Assert.Equal(expected, WatchlistPostDownloadSyncService.ClassifyRetryFailureClass(message));

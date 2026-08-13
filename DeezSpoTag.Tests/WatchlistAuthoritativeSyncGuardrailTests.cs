@@ -225,6 +225,8 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("IsResolvedMembershipVerified(", service, StringComparison.Ordinal);
         Assert.Contains("PlaylistSyncResultKind.IdentityGap", service, StringComparison.Ordinal);
         Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
+        Assert.Contains("RequestLibraryRefreshAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _mediaServerRefreshService.RefreshAsync(targetService, cancellationToken)", service, StringComparison.Ordinal);
         Assert.DoesNotContain("HasNoTargetCoverage", service, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildFailedResult", service, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildPartialResult", service, StringComparison.Ordinal);

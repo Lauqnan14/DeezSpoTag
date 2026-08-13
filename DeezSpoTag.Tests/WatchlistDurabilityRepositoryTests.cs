@@ -878,6 +878,49 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task NewMediaServerIdentity_EnqueuesCatchUpForPartialAppliedPlaylist()
+    {
+        await AddPlaylistWithTargetsAsync("catchup-list", ["jellyfin"]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "catchup-list",
+            [new PlaylistWatchTrackInsert("track-new", "ISRCNEW000001")]);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "catchup-list",
+            new PlaylistWatchTrackVerification("track-new", 201, "identity_verified"));
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "catchup-list",
+            "jellyfin",
+            "jf-playlist",
+            [new PlaylistWatchTargetMembershipWrite("track-new", 201, null, "waiting_for_identity")]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "catchup-list", "snapshot-s");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1, TimeSpan.FromMinutes(1), "catchup-worker"));
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed, "catchup-worker", WatchlistAppliedKind.Partial, null, null));
+        Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "catchup-list"));
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                201,
+                "jellyfin",
+                "jf-item-201",
+                FilePath: null,
+                UpdatedAtUtc: DateTimeOffset.UtcNow)
+        ]);
+
+        var catchUp = Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "catchup-list"));
+        Assert.Equal("playlist", catchUp.TrackId);
+        Assert.Equal("jellyfin", catchUp.TargetService);
+        Assert.Equal("pending", catchUp.Status);
+        Assert.Equal("snapshot-s", catchUp.SnapshotId);
+        Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "catchup-list", "snapshot-s"));
+    }
+
+    [Fact]
     public async Task RepairWatchlistSyncBacklog_DoesNotReopenIdentityGapAppliedState()
     {
         await AddPlaylistWithTargetsAsync("partial-target-list", ["plex"]);

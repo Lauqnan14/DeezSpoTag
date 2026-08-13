@@ -5,6 +5,7 @@ using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -104,6 +105,8 @@ public sealed class PlaylistSyncService
     private const string PlexNotConfiguredMessage = "Plex is not configured.";
     private const string JellyfinNotConfiguredMessage = "Jellyfin is not configured.";
     private const string NavidromeNotConfiguredMessage = "Navidrome is not configured.";
+    private static readonly TimeSpan IdentityRefreshThrottle = TimeSpan.FromMinutes(5);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastIdentityRefreshUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly LibraryRepository _libraryRepository;
     private readonly ILocalTrackAmbiguityResolver _localIdentityResolver;
     private readonly SpotifyMetadataService _spotifyMetadataService;
@@ -1396,6 +1399,11 @@ public sealed class PlaylistSyncService
 
         if (availableTrackRows.Count == 0)
         {
+            await EnsureTargetPlaylistContainersForServicesAsync(
+                playlist,
+                preference,
+                services,
+                cancellationToken);
             return PlaylistSyncResult.NoLocalTracks(
                 "No eligible playlist tracks are visible in the DeezSpoTag library yet.",
                 sourceTracks: eligibleTracks.Count,
@@ -1403,14 +1411,6 @@ public sealed class PlaylistSyncService
         }
 
         var availableTracks = availableTrackRows.Select(static row => row.Track).ToList();
-        if (availableTracks.Count == 0)
-        {
-            return PlaylistSyncResult.IdentityGap(
-                "No eligible playlist tracks are visible in the target server yet.",
-                sourceTracks: eligibleTracks.Count,
-                localMatches: availableTrackRows.Count,
-                missingTracks: eligibleTracks.Count);
-        }
 
         var result = await SyncPlaylistToTargetsAsync(
             services,
@@ -1492,6 +1492,19 @@ public sealed class PlaylistSyncService
             return [];
         }
 
+        return await EnsureTargetPlaylistContainersForServicesAsync(
+            playlist,
+            preference,
+            services,
+            cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<PlaylistProvisioningOutcome>> EnsureTargetPlaylistContainersForServicesAsync(
+        PlaylistWatchlistDto playlist,
+        PlaylistWatchPreferenceDto? preference,
+        IReadOnlyList<string> services,
+        CancellationToken cancellationToken)
+    {
         var outcomes = new List<PlaylistProvisioningOutcome>(services.Count);
         foreach (var service in services)
         {
@@ -3530,15 +3543,24 @@ public sealed class PlaylistSyncService
 
     private async Task RequestTargetLibraryRefreshAsync(string targetService, CancellationToken cancellationToken)
     {
+        var key = NormalizeService(targetService);
+        var now = DateTimeOffset.UtcNow;
+        if (_lastIdentityRefreshUtc.TryGetValue(key, out var last)
+            && now - last < IdentityRefreshThrottle)
+        {
+            return;
+        }
+
+        _lastIdentityRefreshUtc[key] = now;
         try
         {
-            await _mediaServerRefreshService.RefreshAsync(targetService, cancellationToken);
+            await _mediaServerRefreshService.RequestLibraryRefreshAsync(targetService, cancellationToken);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogDebug(
                 ex,
-                "Media-server refresh after unresolved {Target} playlist identities failed; membership already applied.",
+                "Media-server scan after unresolved {Target} playlist identities failed; membership already applied.",
                 targetService);
         }
     }
@@ -3565,9 +3587,6 @@ public sealed class PlaylistSyncService
 
     internal static bool HasUnresolvedTargetIdentities(int sourceTracks, int intendedMembershipCount)
         => intendedMembershipCount < sourceTracks;
-
-    private static bool HasUnresolvedTargetIdentities(SyncMatchSummary matchSummary)
-        => HasUnresolvedTargetIdentities(matchSummary.SourceTracks, matchSummary.Memberships.Count);
 
     private static SyncMatchSummary WithVerifiedMembershipCounts(
         SyncMatchSummary matchSummary,
@@ -5232,6 +5251,11 @@ public sealed record PlaylistSyncResult(
             return PlaylistSyncResultKind.Blocked;
         }
 
+        if (IsSourceLoadMessage(text))
+        {
+            return PlaylistSyncResultKind.Retry;
+        }
+
         if (ContainsOrdinalIgnoreCase(text, "verification is incomplete")
             || ContainsOrdinalIgnoreCase(text, "Source tracks:"))
         {
@@ -5255,6 +5279,10 @@ public sealed record PlaylistSyncResult(
         => ContainsOrdinalIgnoreCase(message, "No Plex matches found for this playlist.")
            || ContainsOrdinalIgnoreCase(message, "No Jellyfin matches found for this playlist.")
            || ContainsOrdinalIgnoreCase(message, "No Navidrome matches found for this playlist.");
+
+    internal static bool IsSourceLoadMessage(string message)
+        => ContainsOrdinalIgnoreCase(message, "Spotify playlist could not be loaded.")
+           || ContainsOrdinalIgnoreCase(message, "Track candidates are unavailable for this source");
 
     private static bool ContainsOrdinalIgnoreCase(string text, string value)
         => text.Contains(value, StringComparison.OrdinalIgnoreCase);

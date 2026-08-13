@@ -3957,13 +3957,21 @@ ORDER BY track_id, variant_order, updated_at_utc DESC;";
         IReadOnlyCollection<MediaServerTrackMetadataUpsertDto> metadata,
         CancellationToken cancellationToken = default)
     {
+        await UpsertMediaServerTrackMetadataReturningNewAsync(metadata, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<(long TrackId, string Service)>> UpsertMediaServerTrackMetadataReturningNewAsync(
+        IReadOnlyCollection<MediaServerTrackMetadataUpsertDto> metadata,
+        CancellationToken cancellationToken = default)
+    {
         if (metadata.Count == 0)
         {
-            return;
+            return [];
         }
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var newlyResolved = new List<(long TrackId, string Service)>();
         const string sql = @"
 INSERT INTO media_server_track_metadata
     (track_id, service, target_item_id, file_path, updated_at_utc)
@@ -3997,6 +4005,13 @@ ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
         var variantFilePathParameter = variantCommand.Parameters.Add("@filePath", SqliteType.Text);
         var variantUpdatedAtParameter = variantCommand.Parameters.Add("@updatedAt", SqliteType.Text);
 
+        await using var existsCommand = new SqliteCommand(
+            "SELECT 1 FROM media_server_track_metadata WHERE track_id=@trackId AND service=@service LIMIT 1;",
+            connection,
+            (SqliteTransaction)transaction);
+        var existsTrackIdParameter = existsCommand.Parameters.Add("@trackId", SqliteType.Integer);
+        var existsServiceParameter = existsCommand.Parameters.Add("@service", SqliteType.Text);
+
         foreach (var item in metadata)
         {
             var normalizedService = NormalizeServiceKey(item.Service);
@@ -4007,12 +4022,20 @@ ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
                 continue;
             }
 
+            existsTrackIdParameter.Value = item.TrackId;
+            existsServiceParameter.Value = normalizedService;
+            var existed = await existsCommand.ExecuteScalarAsync(cancellationToken) is not null;
+
             trackIdParameter.Value = item.TrackId;
             serviceParameter.Value = normalizedService;
             targetItemIdParameter.Value = item.TargetItemId.Trim();
             filePathParameter.Value = string.IsNullOrWhiteSpace(item.FilePath) ? DBNull.Value : item.FilePath.Trim();
             updatedAtParameter.Value = item.UpdatedAtUtc.ToString("O");
             await command.ExecuteNonQueryAsync(cancellationToken);
+            if (!existed)
+            {
+                newlyResolved.Add((item.TrackId, normalizedService));
+            }
 
             var audioVariant = await ResolveMediaServerAudioVariantAsync(
                 connection,
@@ -4029,6 +4052,74 @@ ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
         }
 
         await transaction.CommitAsync(cancellationToken);
+        foreach (var (trackId, service) in newlyResolved)
+        {
+            await EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+                trackId,
+                service,
+                string.Empty,
+                cancellationToken);
+        }
+
+        return newlyResolved;
+    }
+
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync(
+        string source,
+        string playlistId,
+        string targetService,
+        string currentRevision,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, playlistId, out var normalizedSource, out var normalizedPlaylistId)
+            || string.IsNullOrWhiteSpace(targetService))
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT t.local_track_id
+FROM playlist_watch_track t
+JOIN media_server_track_metadata meta
+  ON meta.track_id = t.local_track_id
+ AND lower(meta.service) = lower(@targetService)
+WHERE t.source=@source
+  AND t.source_id=@playlistId
+  AND t.local_track_id IS NOT NULL
+  AND NOT EXISTS (
+        SELECT 1 FROM playlist_watch_target_membership m
+        WHERE m.source=t.source AND m.source_id=t.source_id
+          AND m.track_source_id=t.track_source_id
+          AND lower(m.target_service)=lower(@targetService)
+          AND lower(m.sync_status)='playlist_synced');";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        var trackIds = new List<long>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!await reader.IsDBNullAsync(0, cancellationToken))
+                {
+                    trackIds.Add(reader.GetInt64(0));
+                }
+            }
+        }
+
+        var jobs = new List<WatchlistSyncJobDto>();
+        foreach (var trackId in trackIds)
+        {
+            jobs.AddRange(await EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+                trackId,
+                targetService,
+                currentRevision,
+                cancellationToken));
+        }
+
+        return jobs;
     }
 
     public async Task DeleteMediaServerTrackMetadataAsync(

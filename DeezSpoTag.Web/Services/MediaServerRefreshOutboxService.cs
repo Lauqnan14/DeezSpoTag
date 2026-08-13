@@ -107,6 +107,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 cancellationToken);
             if (refreshed)
             {
+                await _refreshService.UpdateTrackMetadataIndexAsync(job.TargetService, cancellationToken);
                 await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
                 return;
             }

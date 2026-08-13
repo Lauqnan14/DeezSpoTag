@@ -435,6 +435,18 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                         : await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
                     if (completed)
                     {
+                        if (IsPlaylistJob(job.TrackId)
+                            && outcome.AppliedKind is WatchlistAppliedKind.Partial
+                                or WatchlistAppliedKind.WaitingForSeed)
+                        {
+                            await repository.EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync(
+                                job.Source,
+                                job.PlaylistId,
+                                job.TargetService,
+                                job.SnapshotId ?? string.Empty,
+                                cancellationToken);
+                        }
+
                         await ResumePlaylistReconciliationAfterInitialSyncAsync(repository, job, cancellationToken);
                     }
                     return;
@@ -819,7 +831,8 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             return SyncFailureClass.IdentityMiss;
         }
 
-        if (lower.Contains("waiting for the durable playlist reconciliation", StringComparison.Ordinal))
+        if (lower.Contains("waiting for the durable playlist reconciliation", StringComparison.Ordinal)
+            || PlaylistSyncResult.IsSourceLoadMessage(text))
         {
             return SyncFailureClass.None;
         }

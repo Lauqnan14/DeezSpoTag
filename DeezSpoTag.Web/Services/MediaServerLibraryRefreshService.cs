@@ -164,6 +164,27 @@ public sealed class MediaServerLibraryRefreshService
         };
     }
 
+    public async Task UpdateTrackMetadataIndexAsync(string service, CancellationToken cancellationToken)
+    {
+        var state = await _authService.LoadAsync();
+        switch (service.Trim().ToLowerInvariant())
+        {
+            case PlexService when HasPlexConfiguration(state.Plex):
+                var sections = await GetPlexLibrarySectionsWithRetryAsync(state.Plex!, cancellationToken);
+                var musicSections = sections
+                    .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
+                    .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                await UpdatePlexTrackMetadataIndexAsync(state.Plex!, musicSections, cancellationToken);
+                return;
+            case JellyfinService when HasJellyfinConfiguration(state.Jellyfin):
+                await UpdateJellyfinTrackMetadataIndexAsync(state.Jellyfin!, cancellationToken);
+                return;
+            default:
+                return;
+        }
+    }
+
     private Task<bool> RefreshPlexAsync(PlexAuth? plex, CancellationToken cancellationToken)
         => RefreshPlexAsync(plex, updateTrackIndex: true, cancellationToken: cancellationToken);
 
