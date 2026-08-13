@@ -8,7 +8,8 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
-    private const int TargetSyncClaimBatchSize = 100;
+    internal const int ResidualTargetSyncMaxJobs = 9;
+    internal const int SliceMembershipMaxJobs = 3;
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     // Backoff is 15 * 2^(attempt-1) capped at MaximumRetryDelay (10 min from attempt 7 on), so 10
     // attempts is roughly 1-1.5h of accumulated retrying -- long enough to ride out a transient
@@ -91,31 +92,48 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
     }
 
-    public async Task ProcessTargetSyncWorkAsync(CancellationToken cancellationToken)
+    public async Task<int> ProcessTargetSyncWorkAsync(
+        TargetSyncBudget budget,
+        CancellationToken cancellationToken)
     {
+        var processed = 0;
         try
         {
             await RepairIncompleteJobsIfNeededAsync(cancellationToken);
             if (!IsWatchlistEnabled())
             {
-                return;
+                return processed;
             }
 
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
             if (!repository.IsConfigured)
             {
-                return;
+                return processed;
             }
 
-            while (true)
+            var maxJobs = Math.Max(0, budget.MaxJobs);
+            if (maxJobs == 0)
+            {
+                return processed;
+            }
+
+            var deadline = DateTimeOffset.UtcNow + budget.TimeBudget;
+            var excludedJobIds = new List<long>();
+            while (processed < maxJobs
+                   && DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5) < deadline)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var claimLimit = Math.Min(3, maxJobs - processed);
                 var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(
-                    TargetSyncClaimBatchSize,
+                    claimLimit,
                     ProcessingLease,
                     _leaseOwner,
-                    cancellationToken: cancellationToken);
+                    budget.PlaylistFilter?.Source,
+                    budget.PlaylistFilter?.PlaylistId,
+                    budget.Kind,
+                    excludedJobIds,
+                    cancellationToken);
                 if (jobs.Count == 0)
                 {
                     break;
@@ -124,7 +142,13 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 foreach (var job in jobs)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    await ProcessClaimedJobAsync(repository, job, cancellationToken);
+                    excludedJobIds.Add(job.Id);
+                    await ProcessClaimedJobAsync(
+                        repository,
+                        job,
+                        budget.IgnoreReconciliationLeaseOwner,
+                        cancellationToken);
+                    processed++;
                 }
             }
         }
@@ -136,6 +160,8 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         {
             _logger.LogError(ex, "Watchlist coordinator target sync phase failed; the next coordinator cycle will retry.");
         }
+
+        return processed;
     }
 
     private async Task ProcessFinalizationOutboxAsync(int limit, CancellationToken cancellationToken)
@@ -347,10 +373,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private async Task ProcessClaimedJobAsync(
         LibraryRepository repository,
         WatchlistSyncJobDto job,
+        string? ignoreReconciliationLeaseOwner,
         CancellationToken cancellationToken)
     {
         using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var leaseRenewal = RenewLeaseAsync(repository, job.Id, leaseRenewalCancellation.Token);
+        var leaseRenewal = RenewLeaseAsync(repository, job, leaseRenewalCancellation.Token);
         try
         {
             if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, cancellationToken))
@@ -391,6 +418,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             var outcome = await TrySyncOnceAsync(
                 request,
                 job.AttemptCount + 1,
+                ignoreReconciliationLeaseOwner,
                 cancellationToken);
             switch (outcome.Kind)
             {
@@ -550,20 +578,33 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
     }
 
-    private async Task RenewLeaseAsync(LibraryRepository repository, long jobId, CancellationToken cancellationToken)
+    private async Task RenewLeaseAsync(LibraryRepository repository, WatchlistSyncJobDto job, CancellationToken cancellationToken)
     {
         var interval = TimeSpan.FromTicks(ProcessingLease.Ticks / 3);
         while (!cancellationToken.IsCancellationRequested)
         {
             await Task.Delay(interval, cancellationToken);
-            if (!await repository.RenewWatchlistSyncJobLeaseAsync(jobId, _leaseOwner, ProcessingLease, cancellationToken))
+            if (!await repository.RenewWatchlistSyncJobLeaseAsync(job.Id, _leaseOwner, ProcessingLease, cancellationToken))
             {
                 return;
+            }
+
+            if (IsPlaylistJob(job.TrackId))
+            {
+                await repository.TouchPlaylistWatchHeartbeatAsync(
+                    job.Source,
+                    job.PlaylistId,
+                    TimeSpan.FromMinutes(45),
+                    cancellationToken);
             }
         }
     }
 
-    private async Task<SyncAttemptOutcome> TrySyncOnceAsync(SyncRequest request, int attempt, CancellationToken cancellationToken)
+    private async Task<SyncAttemptOutcome> TrySyncOnceAsync(
+        SyncRequest request,
+        int attempt,
+        string? ignoreReconciliationLeaseOwner,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -643,6 +684,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     "playlist",
                     playlist.Source,
                     playlist.SourceId,
+                    ignoreReconciliationLeaseOwner,
                     cancellationToken))
             {
                 _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
@@ -1060,6 +1102,13 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             => new(SyncAttemptOutcomeKind.Blocked, message, FailureClass: failureClass);
     }
 }
+
+public sealed record TargetSyncBudget(
+    int MaxJobs,
+    TimeSpan TimeBudget,
+    (string Source, string PlaylistId)? PlaylistFilter,
+    WatchlistSyncJobKind Kind,
+    string? IgnoreReconciliationLeaseOwner);
 
 public enum SyncFailureClass
 {

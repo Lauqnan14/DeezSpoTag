@@ -213,6 +213,69 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
     }
 
     [Fact]
+    public async Task ClaimDueWatchlistSyncJobs_FiltersByPlaylistAndKind()
+    {
+        await AddPlaylistWithTargetsAsync("claim-list-a", ["plex"]);
+        await AddPlaylistWithTargetsAsync("claim-list-b", ["jellyfin"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "claim-list-a", "snapshot-a");
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "claim-list-b", "snapshot-b");
+        Assert.NotNull(await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
+            "spotify", "claim-list-a", "plex", "art-a"));
+        Assert.NotNull(await _repository.EnqueueWatchlistPlaylistArtworkSyncJobAsync(
+            "spotify", "claim-list-b", "jellyfin", "art-b"));
+
+        var membershipA = await _repository.ClaimDueWatchlistSyncJobsAsync(
+            10,
+            TimeSpan.FromMinutes(1),
+            "kind-worker-a",
+            "spotify",
+            "claim-list-a",
+            WatchlistSyncJobKind.Membership);
+        Assert.All(membershipA, job =>
+        {
+            Assert.Equal("claim-list-a", job.PlaylistId);
+            Assert.Equal("playlist", job.TrackId);
+        });
+        Assert.NotEmpty(membershipA);
+
+        var artworkOnly = await _repository.ClaimDueWatchlistSyncJobsAsync(
+            10,
+            TimeSpan.FromMinutes(1),
+            "kind-worker-art",
+            source: null,
+            playlistId: null,
+            WatchlistSyncJobKind.Artwork);
+        Assert.NotEmpty(artworkOnly);
+        Assert.All(artworkOnly, job => Assert.StartsWith("artwork:", job.TrackId, StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(artworkOnly, job => string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase));
+
+        var remainingMembership = await _repository.ClaimDueWatchlistSyncJobsAsync(
+            10,
+            TimeSpan.FromMinutes(1),
+            "kind-worker-mem",
+            source: null,
+            playlistId: null,
+            WatchlistSyncJobKind.Membership);
+        Assert.All(remainingMembership, job => Assert.Equal("playlist", job.TrackId));
+        Assert.DoesNotContain(remainingMembership, job => job.TrackId.StartsWith("artwork:", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task HasWatchlistReconciliationRequest_IgnoresOwnProcessingLease()
+    {
+        Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "lease-ignore"));
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
+            1, TimeSpan.FromMinutes(15), "coord-owner"));
+
+        Assert.True(await _repository.HasWatchlistReconciliationRequestAsync("playlist", "spotify", "lease-ignore"));
+        Assert.False(await _repository.HasWatchlistReconciliationRequestAsync(
+            "playlist", "spotify", "lease-ignore", "coord-owner"));
+        Assert.True(await _repository.HasWatchlistReconciliationRequestAsync(
+            "playlist", "spotify", "lease-ignore", "other-owner"));
+        Assert.Equal("lease-ignore", claimed.Identifier);
+    }
+
+    [Fact]
     public async Task SyncJobs_ExposeTheNextRetryDueTimeToTheCoordinator()
     {
         await AddPlaylistWithTargetsAsync("scheduled-retry-list", ["plex"]);

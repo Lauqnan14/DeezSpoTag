@@ -11273,10 +11273,18 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
+    public Task<bool> HasWatchlistReconciliationRequestAsync(
+        string kind,
+        string source,
+        string identifier,
+        CancellationToken cancellationToken = default)
+        => HasWatchlistReconciliationRequestAsync(kind, source, identifier, ignoreLeaseOwner: null, cancellationToken);
+
     public async Task<bool> HasWatchlistReconciliationRequestAsync(
         string kind,
         string source,
         string identifier,
+        string? ignoreLeaseOwner,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -11284,10 +11292,19 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
 SELECT 1
 FROM watchlist_reconciliation_request
 WHERE kind=@kind AND source=@source AND identifier=@identifier
+  AND NOT (
+        @ignoreLeaseOwner IS NOT NULL
+        AND lease_owner=@ignoreLeaseOwner
+        AND lower(status)='processing'
+        AND datetime(lease_until_utc) > datetime('now')
+      )
 LIMIT 1;", connection);
         command.Parameters.AddWithValue("kind", kind.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue(SourceField, NormalizePlaylistWatchSource(source));
         command.Parameters.AddWithValue("identifier", identifier.Trim());
+        command.Parameters.AddWithValue(
+            "ignoreLeaseOwner",
+            string.IsNullOrWhiteSpace(ignoreLeaseOwner) ? DBNull.Value : ignoreLeaseOwner.Trim());
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
@@ -11840,14 +11857,41 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<WatchlistSyncJobDto>> ClaimDueWatchlistSyncJobsAsync(
+    public Task<IReadOnlyList<WatchlistSyncJobDto>> ClaimDueWatchlistSyncJobsAsync(
         int limit,
         TimeSpan lease,
         string leaseOwner,
         IReadOnlyCollection<long>? excludedJobIds = null,
         CancellationToken cancellationToken = default)
+        => ClaimDueWatchlistSyncJobsAsync(
+            limit,
+            lease,
+            leaseOwner,
+            source: null,
+            playlistId: null,
+            WatchlistSyncJobKind.All,
+            excludedJobIds,
+            cancellationToken);
+
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> ClaimDueWatchlistSyncJobsAsync(
+        int limit,
+        TimeSpan lease,
+        string leaseOwner,
+        string? source,
+        string? playlistId,
+        WatchlistSyncJobKind kind,
+        IReadOnlyCollection<long>? excludedJobIds = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(leaseOwner);
+        var normalizedSource = string.IsNullOrWhiteSpace(source) ? null : NormalizePlaylistWatchSource(source);
+        var normalizedPlaylistId = string.IsNullOrWhiteSpace(playlistId) ? null : NormalizePlaylistWatchSourceId(playlistId);
+        var kindFilter = kind switch
+        {
+            WatchlistSyncJobKind.Membership => "membership",
+            WatchlistSyncJobKind.Artwork => "artwork",
+            _ => "all"
+        };
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         const string sql = @"
@@ -11883,10 +11927,20 @@ WHERE id IN (
           AND (lower(job.status) IN ('pending', 'retry')
                OR (lower(job.status) = 'processing' AND datetime(job.lease_until_utc) <= datetime('now')))
           AND job.id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(@excludedJobIdsJson))
+          AND (@source IS NULL OR job.source=@source)
+          AND (@playlistId IS NULL OR job.playlist_id=@playlistId)
+          AND (
+                @kind='all'
+                OR (@kind='membership' AND lower(job.track_id)='playlist')
+                OR (@kind='artwork' AND lower(job.track_id) LIKE 'artwork:%')
+              )
     ) ranked
     ORDER BY ranked.missing_priority,
              ranked.playlist_priority ASC,
-             ranked.job_order,
+             CASE @kind
+               WHEN 'membership' THEN 0
+               ELSE ranked.job_order
+             END,
              ranked.target_order,
              ranked.attempt_count ASC,
              ranked.next_attempt_utc,
@@ -11899,6 +11953,9 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         command.Parameters.AddWithValue("limit", Math.Clamp(limit, 1, 100));
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
+        command.Parameters.AddWithValue("source", (object?)normalizedSource ?? DBNull.Value);
+        command.Parameters.AddWithValue("playlistId", (object?)normalizedPlaylistId ?? DBNull.Value);
+        command.Parameters.AddWithValue("kind", kindFilter);
         command.Parameters.AddWithValue(
             "excludedJobIdsJson",
             JsonSerializer.Serialize(excludedJobIds?.Distinct().ToArray() ?? []));
@@ -11911,6 +11968,25 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         return jobs;
+    }
+
+    public async Task<bool> HasPollOverduePlaylistAsync(
+        TimeSpan pollInterval,
+        CancellationToken cancellationToken = default)
+    {
+        var seconds = Math.Max(1, (int)Math.Ceiling(pollInterval.TotalSeconds));
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT 1
+FROM playlist_watchlist playlist
+LEFT JOIN playlist_watch_state state
+  ON state.source = playlist.source
+ AND state.source_id = playlist.source_id
+WHERE state.last_checked_utc IS NULL
+   OR datetime(state.last_checked_utc) <= datetime('now', @pollModifier)
+LIMIT 1;", connection);
+        command.Parameters.AddWithValue("pollModifier", $"-{seconds} seconds");
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     public async Task<DateTimeOffset?> GetNextWatchlistSyncJobDueUtcAsync(

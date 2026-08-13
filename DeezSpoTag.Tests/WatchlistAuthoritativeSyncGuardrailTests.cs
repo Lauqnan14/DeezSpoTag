@@ -52,6 +52,10 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.DoesNotContain("Task.WhenAll(jobs", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetOperationTimeout", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetSyncJobTimeout", worker, StringComparison.Ordinal);
+        Assert.Contains("TargetSyncBudget", worker, StringComparison.Ordinal);
+        Assert.Contains("TimeBudget", worker, StringComparison.Ordinal);
+        Assert.Contains("while (processed < maxJobs", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("while (true)", ExtractMethodBody(worker, "public async Task<int> ProcessTargetSyncWorkAsync("), StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", worker, StringComparison.Ordinal);
         Assert.Contains("GetNextWatchlistSyncJobDueUtcAsync", repository, StringComparison.Ordinal);
         Assert.Contains("RepairWatchlistSyncBacklogAsync", coordinator, StringComparison.Ordinal);
@@ -98,6 +102,32 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         }
 
         return count;
+    }
+
+    private static string ExtractMethodBody(string source, string methodMarker)
+    {
+        var methodIndex = source.IndexOf(methodMarker, StringComparison.Ordinal);
+        Assert.True(methodIndex >= 0, $"Missing method marker: {methodMarker}");
+        var bodyStart = source.IndexOf('{', methodIndex);
+        Assert.True(bodyStart >= 0, $"Missing method body start for: {methodMarker}");
+        var depth = 0;
+        for (var i = bodyStart; i < source.Length; i++)
+        {
+            if (source[i] == '{')
+            {
+                depth++;
+            }
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return source.Substring(bodyStart, i - bodyStart + 1);
+                }
+            }
+        }
+
+        throw new InvalidOperationException($"Missing method body end for: {methodMarker}");
     }
 
     [Fact]

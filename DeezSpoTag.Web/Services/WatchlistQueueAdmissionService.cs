@@ -280,15 +280,6 @@ public sealed class WatchlistQueueAdmissionService
         CancellationToken cancellationToken)
     {
         await queueRepository.RecoverExpiredPostDownloadPipelineStatesAsync(cancellationToken);
-        if (await queueRepository.HasActiveDownloadPipelineAsync(cancellationToken))
-        {
-            return new WatchlistQueueAdmissionDecision(
-                false,
-                WatchQueueStopReason.DownloadGate,
-                null,
-                true,
-                "Waiting for active downloads, moves, or enrichment to finish.");
-        }
 
         if (_publicApiReadiness is not null)
         {

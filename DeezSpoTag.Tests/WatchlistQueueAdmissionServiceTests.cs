@@ -1,4 +1,10 @@
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Web.Services;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -114,6 +120,92 @@ public sealed class WatchlistQueueAdmissionServiceTests
 
         service.EndRun(directToken);
         Assert.Equal(0, service.GetRemaining());
+    }
+
+    [Fact]
+    public async Task EvaluateQueueGate_AllowsAdmitWhenDownloadPipelineIsBusy()
+    {
+        var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-admit-pipeline-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Queue"] = $"Data Source={Path.Join(tempRoot, "queue.db")}"
+                })
+                .Build();
+            var queueRepository = new DownloadQueueRepository(config, NullLogger<DownloadQueueRepository>.Instance);
+            await queueRepository.EnqueueAsync(
+                new DownloadQueueItem(
+                    Id: 0,
+                    QueueUuid: "pipeline-busy",
+                    Engine: "qobuz",
+                    ArtistName: "Artist",
+                    TrackTitle: "Busy",
+                    Isrc: null,
+                    DeezerTrackId: null,
+                    DeezerAlbumId: null,
+                    DeezerArtistId: null,
+                    SpotifyTrackId: null,
+                    SpotifyAlbumId: null,
+                    SpotifyArtistId: null,
+                    AppleTrackId: null,
+                    AppleAlbumId: null,
+                    AppleArtistId: null,
+                    DurationMs: null,
+                    DestinationFolderId: 1,
+                    QualityRank: null,
+                    QueueOrder: null,
+                    ContentType: "stereo",
+                    Status: "queued",
+                    PayloadJson: "{}",
+                    Progress: 0,
+                    Downloaded: 0,
+                    Failed: 0,
+                    Error: null,
+                    CreatedAt: DateTimeOffset.UtcNow,
+                    UpdatedAt: DateTimeOffset.UtcNow),
+                CancellationToken.None);
+            Assert.True(await queueRepository.HasActiveDownloadPipelineAsync(CancellationToken.None));
+
+            var service = new WatchlistQueueAdmissionService();
+            var decision = await service.EvaluateQueueGateAsync(queueRepository, CancellationToken.None);
+
+            Assert.True(decision.Allowed);
+            Assert.Equal(WatchQueueStopReason.None, decision.Reason);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup.
+            }
+        }
+    }
+
+    [Fact]
+    public void EvaluateQueueGate_StillDeniesWhenOrchestrationIsPaused()
+    {
+        var admission = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..",
+            "DeezSpoTag.Web", "Services", "WatchlistQueueAdmissionService.cs"));
+        var threeArgStart = admission.IndexOf(
+            "public async Task<WatchlistQueueAdmissionDecision> EvaluateQueueGateAsync(\n        DownloadQueueRepository queueRepository,\n        DownloadOrchestrationService orchestrationService,",
+            StringComparison.Ordinal);
+        Assert.True(threeArgStart >= 0);
+        var threeArgEnd = admission.IndexOf(
+            "public async Task<WatchlistQueueAdmissionDecision> EvaluateQueueGateAsync(\n        DownloadQueueRepository queueRepository,\n        CancellationToken cancellationToken)",
+            threeArgStart + 1,
+            StringComparison.Ordinal);
+        var threeArgBody = admission[threeArgStart..threeArgEnd];
+        Assert.Contains("EvaluateDownloadGateAsync(orchestrationService, cancellationToken)", threeArgBody, StringComparison.Ordinal);
+        Assert.Contains("WatchQueueStopReason.DownloadGate", admission, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasActiveDownloadPipelineAsync", admission, StringComparison.Ordinal);
     }
 
     [Theory]

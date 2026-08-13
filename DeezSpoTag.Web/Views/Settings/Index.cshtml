@@ -1273,6 +1273,10 @@
                         <input type="number" id="watchMaxItemsPerRun" min="1" max="50" value="50">
                         <div class="warning-text">Limits monitored artists/playlists processed in one scheduler cycle.</div>
                     </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="watchSmoothSyncEnabled">
+                        <label for="watchSmoothSyncEnabled">Smooth playlist sync (mirror library files, then download). Leave off until recovery has cleared stale backoff.</label>
+                    </div>
                     <div class="form-group">
                         <label for="watchMaxReleasesPerArtist">Max Releases Per Artist Check</label>
                         <input type="number" id="watchMaxReleasesPerArtist" min="1" max="100" value="50">
@@ -4430,6 +4434,7 @@ function loadSettings(settings) {
     setCheckboxValue('watchEnabled', settings.watchEnabled);
     setFieldValue('watchPollIntervalSeconds', settings.watchPollIntervalSeconds);
     setFieldValue('watchMaxItemsPerRun', settings.watchMaxItemsPerRun);
+    setCheckboxValue('watchSmoothSyncEnabled', settings.watchSmoothSyncEnabled === true);
     setFieldValue('watchMaxReleasesPerArtist', settings.watchMaxReleasesPerArtist ?? 50);
     setFieldValue('watchMaxTracksPerPlaylistCheck', settings.watchMaxTracksPerPlaylistCheck ?? 50);
     setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
@@ -4803,6 +4808,7 @@ function collectFormData() {
         watchEnabled: getChecked('watchEnabled', baseSettings.watchEnabled ?? false),
         watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 3600),
         watchMaxItemsPerRun: getNumber('watchMaxItemsPerRun', baseSettings.watchMaxItemsPerRun ?? 50),
+        watchSmoothSyncEnabled: getChecked('watchSmoothSyncEnabled', baseSettings.watchSmoothSyncEnabled ?? false),
         watchMaxReleasesPerArtist: getNumber('watchMaxReleasesPerArtist', baseSettings.watchMaxReleasesPerArtist ?? 50),
         watchMaxTracksPerPlaylistCheck: getNumber('watchMaxTracksPerPlaylistCheck', baseSettings.watchMaxTracksPerPlaylistCheck ?? 50),
         watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),

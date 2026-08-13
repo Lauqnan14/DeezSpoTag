@@ -146,6 +146,32 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void WatchSmoothSyncEnabled_DefaultsFalseAndPersistsThroughSettingsView()
+    {
+        var settings = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings();
+        Assert.False(settings.WatchSmoothSyncEnabled);
+
+        var persisted = _settingsService.LoadSettings();
+        Assert.False(persisted.WatchSmoothSyncEnabled);
+        persisted.WatchSmoothSyncEnabled = true;
+        _settingsService.SaveSettings(persisted);
+        Assert.True(_settingsService.LoadSettings().WatchSmoothSyncEnabled);
+
+        var repoRoot = ResolveRepoRoot();
+        var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
+        var admission = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistQueueAdmissionService.cs"));
+        Assert.Contains("id=\"watchSmoothSyncEnabled\"", viewSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "Smooth playlist sync (mirror library files, then download). Leave off until recovery has cleared stale backoff.",
+            viewSource,
+            StringComparison.Ordinal);
+        Assert.Contains("watchSmoothSyncEnabled:", viewSource, StringComparison.Ordinal);
+        Assert.Contains("settings.watchSmoothSyncEnabled", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasActiveDownloadPipelineAsync", admission, StringComparison.Ordinal);
+        Assert.Contains("EvaluateDownloadGateAsync", admission, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void SettingsView_DoesNotExposeWatchlistAutomaticDownloadSource()
     {
         var repoRoot = ResolveRepoRoot();
@@ -1070,18 +1096,20 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("EnqueueWatchlistAllPlaylistSyncJobsAsync", notifyBody, StringComparison.Ordinal);
         Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("public async Task ProcessFinalizationWorkAsync(", syncSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task ProcessTargetSyncWorkAsync(", syncSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task<int> ProcessTargetSyncWorkAsync(", syncSource, StringComparison.Ordinal);
         Assert.Contains("ProcessFinalizationWorkAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("TargetSyncBudget", syncSource, StringComparison.Ordinal);
+        Assert.Contains("TimeBudget", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("protected override async Task ExecuteAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AddDeferredHostedService<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>", programSource, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("HasWatchlistReconciliationRequestAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("ignoreReconciliationLeaseOwner", syncSource, StringComparison.Ordinal);
         Assert.Contains("SyncAvailablePlaylistTracksAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("request.TargetService", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("SyncAvailablePlaylistTracksToTargetAsync", syncSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("timeBudget", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetOperationTimeout", syncSource, StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("Task.WhenAll(jobs", syncSource, StringComparison.Ordinal);

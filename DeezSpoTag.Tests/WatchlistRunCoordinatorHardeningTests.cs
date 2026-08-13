@@ -210,7 +210,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RunOnce_DefersQueuePhaseWhenPreviousWatchlistDownloadIsActive()
+    public async Task RunOnce_DoesNotDeferAdmissionWhenDownloadPipelineIsBusy()
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-queue-gate", new PlaylistWatchlistMetadataInput("Queue Gate", null, null, null));
         await ConfigurePlaylistDestinationAsync("unsupported", "pl-queue-gate");
@@ -225,11 +225,13 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 
         await InvokeRunOnceAsync(hosted);
 
-        Assert.Contains(
+        Assert.DoesNotContain(
             logger.Entries,
             entry => entry.Message.Contains(
                 "Watchlist download admission deferred while source metadata and target synchronization continue",
                 StringComparison.Ordinal));
+        var state = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-queue-gate", CancellationToken.None);
+        Assert.NotNull(state?.LastCheckedUtc);
     }
 
     [Fact]
@@ -607,6 +609,122 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
+    public void CycleBox_StopsNewPlaylistsAndPersistsProgressAfterEachSlice()
+    {
+        var hostedSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..",
+            "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
+
+        Assert.Contains("SteadyCycleBudget = TimeSpan.FromMinutes(4)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("RecoveryCycleBudget = TimeSpan.FromMinutes(10)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("PlaylistStartReserve = TimeSpan.FromSeconds(15)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("RemainingCycleBudget(cycleDeadline) < PlaylistStartReserve", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("PersistPlaylistProgressAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WatchSmoothSyncEnabled", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("RunInterleavedPlaylistSliceAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("HasPollOverduePlaylistAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("watchlist_shared_identity", hostedSource, StringComparison.Ordinal);
+        var loopStart = hostedSource.IndexOf("foreach (var activeItem in scheduledItems)", StringComparison.Ordinal);
+        var loopEnd = hostedSource.IndexOf("private async Task<WatchItemExecutionOutcome> RunInterleavedPlaylistSliceAsync(", loopStart, StringComparison.Ordinal);
+        var loopBody = hostedSource[loopStart..loopEnd];
+        Assert.Contains("PersistPlaylistProgressAsync(repository, activeItem, stoppingToken)", loopBody, StringComparison.Ordinal);
+        Assert.Contains("RunInterleavedPlaylistSliceAsync(", loopBody, StringComparison.Ordinal);
+        Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunOnce_PersistsLastProgressAfterEachPlaylistOnBothFlagValues()
+    {
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-progress-1", new PlaylistWatchlistMetadataInput("Progress One", null, null, null));
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-progress-2", new PlaylistWatchlistMetadataInput("Progress Two", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-progress-1");
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-progress-2");
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeRunOnceAsync(hosted);
+        var afterFlagOff = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
+        Assert.NotNull(afterFlagOff?.LastProgressUtc);
+
+        var settings = _settingsService.LoadSettings();
+        settings.WatchSmoothSyncEnabled = true;
+        _settingsService.SaveSettings(settings);
+        await InvokeRunOnceAsync(hosted);
+        var afterFlagOn = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
+        Assert.NotNull(afterFlagOn?.LastProgressUtc);
+        Assert.True(afterFlagOn!.LastProgressUtc >= afterFlagOff!.LastProgressUtc);
+    }
+
+    [Fact]
+    public async Task GetNextWake_PrefersDuePlaylistsOverDueJobs()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchPollIntervalSeconds = 3600;
+        _settingsService.SaveSettings(settings);
+
+        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-overdue", new PlaylistWatchlistMetadataInput("Overdue", null, null, null));
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                "unsupported",
+                "pl-overdue",
+                null,
+                1,
+                null,
+                null,
+                DateTimeOffset.UtcNow.AddHours(-2),
+                "pending",
+                null,
+                null,
+                0,
+                "pending",
+                0,
+                1,
+                DateTimeOffset.UtcNow.AddHours(-2),
+                null));
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "unsupported",
+                SourceId: "pl-overdue",
+                DestinationFolderId: _destinationFolderId,
+                Service: "plex",
+                SyncTargets: ["plex"],
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: "mirror",
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false));
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("unsupported", "pl-overdue", "snapshot-due");
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        var wake = await InvokeGetNextWakeAsync(hosted);
+        Assert.Equal(TimeSpan.Zero, wake.Delay);
+        Assert.True(wake.Reason.HasFlag(WatchlistWakeReason.ScheduledRefresh) || wake.Reason.HasFlag(WatchlistWakeReason.Reconciliation));
+        Assert.False(wake.Reason == WatchlistWakeReason.TargetSync);
+
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                "unsupported",
+                "pl-overdue",
+                null,
+                1,
+                null,
+                null,
+                DateTimeOffset.UtcNow,
+                "unchanged",
+                null,
+                null,
+                0,
+                "unchanged",
+                0,
+                1,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMinutes(45)));
+
+        var residual = await InvokeGetNextWakeAsync(hosted);
+        Assert.Equal(WatchlistWakeReason.TargetSync, residual.Reason);
+    }
+
+    [Fact]
     public void HeartbeatAndProgress_DoNotOverwriteCurrentPhase()
     {
         var repository = File.ReadAllText(Path.Combine(
@@ -704,6 +822,17 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         field!.SetValue(instance, value);
+    }
+
+    private static async Task<(TimeSpan Delay, WatchlistWakeReason Reason)> InvokeGetNextWakeAsync(WatchlistRunCoordinator hosted)
+    {
+        var method = typeof(WatchlistRunCoordinator).GetMethod(
+            "GetNextWakeAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = method!.Invoke(hosted, new object[] { CancellationToken.None });
+        Assert.NotNull(result);
+        return await (Task<(TimeSpan Delay, WatchlistWakeReason Reason)>)result!;
     }
 
     private static async Task InvokeRecoverCoordinatorStateAsync(WatchlistRunCoordinator hosted)

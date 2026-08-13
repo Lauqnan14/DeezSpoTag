@@ -860,6 +860,13 @@ public enum WatchlistAppliedKind
     WaitingForSeed
 }
 
+public enum WatchlistSyncJobKind
+{
+    All,
+    Membership,
+    Artwork
+}
+
 public sealed record LocalTrackIdentityDto(
     long TrackId,
     string Title,
