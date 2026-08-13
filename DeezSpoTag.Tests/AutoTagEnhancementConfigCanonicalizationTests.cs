@@ -171,6 +171,44 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     }
 
     [Fact]
+    public void TaggingProfileDataHelper_CanonicalizeEnhancementConfig_MovesQcLyricsFlagsToSidecars()
+    {
+        var data = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["enhancement"] = JsonSerializer.SerializeToElement(new
+            {
+                qualityChecks = new
+                {
+                    enabled = true,
+                    queueLyricsRefresh = true,
+                    removeLineSyncedTtml = true
+                },
+                coverMaintenance = new
+                {
+                    enabled = false,
+                    folderIds = new long[] { 6 }
+                }
+            })
+        };
+
+        var changed = (bool)CanonicalizeEnhancementConfigMethod.Invoke(null, [data])!;
+        Assert.True(changed);
+
+        using var document = JsonDocument.Parse(data["enhancement"].GetRawText());
+        var enhancement = document.RootElement;
+        var sidecars = enhancement.GetProperty("sidecars");
+        Assert.True(sidecars.GetProperty("enabled").GetBoolean());
+        Assert.True(sidecars.GetProperty("queueLyricsRefresh").GetBoolean());
+        Assert.True(sidecars.GetProperty("removeLineSyncedTtml").GetBoolean());
+        Assert.Equal(new long[] { 6 }, ReadLongArray(sidecars.GetProperty("folderIds")));
+
+        var quality = enhancement.GetProperty("qualityChecks");
+        Assert.False(quality.TryGetProperty("queueLyricsRefresh", out _));
+        Assert.False(quality.TryGetProperty("removeLineSyncedTtml", out _));
+        Assert.False(quality.TryGetProperty("rewriteLineSyncedTtml", out _));
+    }
+
+    [Fact]
     public void TaggingProfileDataHelper_SanitizeAutoTagSettings_MigratesLegacyAlbumArtFileToSaveArtwork()
     {
         var autoTag = new AutoTagSettings
@@ -229,8 +267,9 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         var workflowSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.EnhancementWorkflows.cs"));
 
         Assert.Contains("enhancementQueueTechnicalProfileUpgrades", viewSource, StringComparison.Ordinal);
-        Assert.Contains("startCentralEnhancementFeature(\"quality-checks\"", scriptSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyEnhancementFolderScope(enhancement, \"qualityChecks\"", controllerSource, StringComparison.Ordinal);
+        Assert.Contains("const features = [\"quality-checks\"];", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("startCentralEnhancementFeature(features, scopes[index], \"enhancementQualityChecksStatus\")", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.ApplyFeatureSelection", controllerSource, StringComparison.Ordinal);
         Assert.Contains("var runQualityUpgradeStage = queueTechnicalProfileUpgrades", workflowSource, StringComparison.Ordinal);
         Assert.Contains("EnhancementAdmissionLimit = EnhancementBatchSize", workflowSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueEnhancementBatchAsync", File.ReadAllText(
@@ -249,7 +288,7 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("[HttpPost(\"enhancement/start\")]", jobsController, StringComparison.Ordinal);
         Assert.Contains("_autoTagService.StartJob(", jobsController, StringComparison.Ordinal);
         Assert.Contains("RunIntentEnhancementRecentDownloads", jobsController, StringComparison.Ordinal);
-        Assert.Contains("SetEnhancementFeatureEnabled", jobsController, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.ApplyFeatureSelection", jobsController, StringComparison.Ordinal);
         Assert.Contains("/api/autotag/enhancement/start", scriptSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement/folder-uniformity/start", scriptSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement/folder-uniformity/status", scriptSource, StringComparison.Ordinal);
@@ -327,12 +366,8 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
     }
 
     [Fact]
-    public void MissingMetadataScan_PreservesGapFillOnlyForScannedTargetFiles()
+    public void MissingMetadataScan_DoesNotEnableGapFillWhenQualityChecksAreSelectedAlone()
     {
-        var method = typeof(AutoTagJobsController).GetMethod(
-            "ApplyEnhancementRunSelection",
-            BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException("Central enhancement selection method was not found.");
         var config = System.Text.Json.Nodes.JsonNode.Parse("""
             {
               "gapFillTags": ["title", "artist", "album", "album_artist", "track_number"],
@@ -351,12 +386,16 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
             Features = ["quality-checks"]
         };
 
-        method.Invoke(null, [config, request, new long[] { 7 }, new[] { "/tmp/music/track.flac" }]);
+        AutoTagJobsController.ApplyEnhancementRunSelection(
+            config,
+            request,
+            new long[] { 7 },
+            new[] { "/tmp/music/track.flac" });
 
         var enhancement = config["enhancement"]!.AsObject();
         Assert.False(enhancement["folderUniformity"]!["enabled"]!.GetValue<bool>());
         Assert.True(enhancement["qualityChecks"]!["enabled"]!.GetValue<bool>());
-        Assert.NotEmpty(config["gapFillTags"]!.AsArray());
+        Assert.Empty(config["gapFillTags"]!.AsArray());
         Assert.Equal("/tmp/music/track.flac", config["targetFiles"]![0]!.GetValue<string>());
     }
 
@@ -376,13 +415,16 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
         Assert.Contains("ResolveEnhancementTargetRootPath(targetFiles)", controllerSource, StringComparison.Ordinal);
         Assert.Contains("BuildMissingCoreMetadataRepair", repositorySource, StringComparison.Ordinal);
         Assert.Contains("IsMissingOrWeakMetadata", repositorySource, StringComparison.Ordinal);
-        Assert.Contains("RepeatedNumericFilenamePrefixRegex", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("TrackIdentityTrust.HasRepeatedNumericFilenamePrefix", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("TrackIdentityTrust.IsWeakMetadataValue", repositorySource, StringComparison.Ordinal);
         Assert.Contains("OrderByDescending(static file => file.RepairScore)", repositorySource, StringComparison.Ordinal);
         Assert.DoesNotContain("var runQualityUpgradeStage = flagMissingTags", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("var runQualityScanner = flagMissingTags", workflowSource, StringComparison.Ordinal);
         Assert.Contains("ReportMissingCoreMetadataAuditIfRequestedAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("missing core metadata DB audit", workflowSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("File.Exists", prepareRunBody, StringComparison.Ordinal);
+        Assert.Contains("gap-fill will use the selected folder.", prepareRunBody, StringComparison.Ordinal);
+        Assert.Contains("if (missingTargets.Count > 0)", prepareRunBody, StringComparison.Ordinal);
+        Assert.Contains("File.Exists", prepareRunBody, StringComparison.Ordinal);
         Assert.Contains("RefreshConfiguredServersAsync", autoTagServiceSource, StringComparison.Ordinal);
     }
 
@@ -400,25 +442,25 @@ public sealed class AutoTagEnhancementConfigCanonicalizationTests
 
         Assert.Contains("enableFolderUniformityWorkflow", viewSource, StringComparison.Ordinal);
         Assert.Contains("enableQualityChecksWorkflow", viewSource, StringComparison.Ordinal);
-        Assert.Contains("enableCoverMaintenanceWorkflow", viewSource, StringComparison.Ordinal);
+        Assert.Contains("enableSidecarsWorkflow", viewSource, StringComparison.Ordinal);
         Assert.Contains("folderUniformityIncludeSubfolders", viewSource, StringComparison.Ordinal);
         Assert.Contains("Keep both on unresolved sidecar/path conflicts", viewSource, StringComparison.Ordinal);
         Assert.Contains("folderUniformity.enabled = getChecked(\"enableFolderUniformityWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("folderUniformity.includeSubfolders = getChecked(\"folderUniformityIncludeSubfolders\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("delete folderUniformity.renameSpotifyArtistFolders", scriptSource, StringComparison.Ordinal);
-        Assert.Contains("coverMaintenance.enabled = getChecked(\"enableCoverMaintenanceWorkflow\"", scriptSource, StringComparison.Ordinal);
+        Assert.Contains("sidecars.enabled = getChecked(\"enableSidecarsWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("qualityChecks.enabled = getChecked(\"enableQualityChecksWorkflow\"", scriptSource, StringComparison.Ordinal);
         Assert.Contains("TryMarkNoStagesConfigured(job, stages, includesEnhancementWorkflows)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("gap-fill tagging skipped", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("ReadBool(config, EnabledField) == true", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("ReadBool(coverMaintenance, EnabledField) != true", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("ReadBool(qualityChecks, EnabledField) != true", workflowSource, StringComparison.Ordinal);
-        Assert.Contains("enhancementCount > 0 || HasConfiguredEnhancementWorkflows(root)", orchestrationSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.IsFolderUniformityRunnable", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.IsSidecarsRunnable", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.IsQualityChecksRunnable", workflowSource, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.HasConfiguredEnhancementWorkflows(root)", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("profile has no gap-fill tags or enhancement workflows", orchestrationSource, StringComparison.Ordinal);
         Assert.Contains("LibraryFolderPathSafety.IsMusicFolder(folder)", controllerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement workflows own folder uniformity", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldRunGenericOrganizer", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("ApplyEnhancementBatchSectionsAsync", serviceSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyEnhancementBatchSectionsAsync(job, stage.ConfigPath, files, token)", serviceSource, StringComparison.Ordinal);
         Assert.Contains("OrganizeFilesWithReportAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("folder structure skipped (enforceFolderStructure is disabled)", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("FolderTemplatesAppliedInBatches", workflowSource, StringComparison.Ordinal);

@@ -66,19 +66,9 @@ public partial class AutoTagService
             return false;
         }
 
-        var enrichmentPlatforms = plan.ForceShazamFingerprint
-            ? plan.Platforms
-                .Where(platform => !string.Equals(platform, ShazamPlatformId, StringComparison.OrdinalIgnoreCase))
-                .ToList()
-            : plan.Platforms.ToList();
-        if (plan.ForceShazamFingerprint && enrichmentPlatforms.Count == 0)
-        {
-            enrichmentPlatforms.Add(ShazamPlatformId);
-        }
-
         var manualPlan = plan with
         {
-            Platforms = enrichmentPlatforms,
+            Platforms = plan.Platforms.ToList(),
             ForceShazamFingerprint = plan.ForceShazamFingerprint
         };
         if (!TryBuildEnrichmentStageFromPlan(
@@ -166,10 +156,7 @@ public partial class AutoTagService
             return new List<string>();
         }
 
-        return platforms
-            .Where(platform => !IsLyricsProviderPlatform(platform))
-            .Where(platform => PlatformSupportsAnyRequestedTag(platform, requested, platformCaps))
-            .ToList();
+        return platforms.ToList();
     }
 
     private static bool IsLyricsProviderPlatform(string? platform)
@@ -192,9 +179,7 @@ public partial class AutoTagService
 
     private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags(JsonObject baseRoot)
     {
-        return ResolveEnrichmentRequestedTags(baseRoot)
-            .Where(tag => !IsLyricsTag(tag))
-            .ToList();
+        return ResolveEnrichmentRequestedTags(baseRoot);
     }
 
     private static bool IsLyricsTag(string? tag)
@@ -229,7 +214,13 @@ public partial class AutoTagService
             return false;
         }
 
-        var filtered = FilterSupportedTags(plan.RequestedTags, plan.Platforms, platformCaps);
+        var requested = AutoTagPlatformTagContract.ResolveRequestedTags(baseRoot);
+        if (requested.Count == 0)
+        {
+            requested = plan.RequestedTags;
+        }
+
+        var filtered = FilterSupportedTags(requested, plan.Platforms, platformCaps);
         if (filtered.Count == 0)
         {
             skipReason = "no supported enrichment tags for enabled platforms";
@@ -241,6 +232,7 @@ public partial class AutoTagService
         WriteStringList(stageRoot, AutoTagLiterals.PlatformsKey, plan.Platforms);
         var platformCount = ReadStringList(stageRoot, AutoTagLiterals.PlatformsKey).Count;
         stageRoot[AutoTagLiterals.MultiPlatformKey] = platformCount > 1;
+        stageRoot["skipTagged"] = ReadBool(baseRoot, "skipTagged") ?? false;
         if (plan.ForceShazamFingerprint)
         {
             ConfigureShazamFingerprintBootstrap(stageRoot);

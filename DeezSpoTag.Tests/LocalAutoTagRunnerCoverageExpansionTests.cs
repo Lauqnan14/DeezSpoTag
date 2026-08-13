@@ -22,10 +22,12 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         typeof(LocalAutoTagRunner).GetNestedType("LyricsRequestFlags", BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("LocalAutoTagRunner.LyricsRequestFlags not found.");
 
-    private static MethodInfo RunnerMethod(string name)
+    private static MethodInfo RunnerMethod(string name, params Type[] parameterTypes)
     {
-        return typeof(LocalAutoTagRunner).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException($"LocalAutoTagRunner.{name} not found.");
+        var method = parameterTypes.Length == 0
+            ? typeof(LocalAutoTagRunner).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)
+            : typeof(LocalAutoTagRunner).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static, parameterTypes);
+        return method ?? throw new InvalidOperationException($"LocalAutoTagRunner.{name} not found.");
     }
 
     private static T InvokeStatic<T>(string methodName, params object?[] args)
@@ -207,7 +209,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     }
 
     [Fact]
-    public void ShouldLookupLyricsInManualEnrichment_RejectsAutomaticAndDownloadEnrichment()
+    public void ShouldRequestAnyLyrics_AllowsAnyFlowWhenLyricsTagsAreRequested()
     {
         var config = CreateRunnerConfig(tags: new List<string> { "syncedLyrics" });
         var settings = new DeezSpoTagSettings
@@ -218,13 +220,13 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
             LrcFormat = "lrc"
         };
 
-        var shouldLookup = InvokeStatic<bool>("ShouldLookupLyricsInManualEnrichment", config, settings);
+        var shouldLookup = InvokeStatic<bool>("ShouldRequestAnyLyrics", config, settings);
 
-        Assert.False(shouldLookup);
+        Assert.True(shouldLookup);
     }
 
     [Fact]
-    public void ShouldLookupLyricsInManualEnrichment_AllowsExplicitManualEnrichment()
+    public void ShouldRequestAnyLyrics_AllowsExplicitManualEnrichment()
     {
         var config = CreateRunnerConfig(
             tags: new List<string> { "syncedLyrics" },
@@ -238,20 +240,98 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
             LrcFormat = "lrc"
         };
 
-        var shouldLookup = InvokeStatic<bool>("ShouldLookupLyricsInManualEnrichment", config, settings);
+        var shouldLookup = InvokeStatic<bool>("ShouldRequestAnyLyrics", config, settings);
 
         Assert.True(shouldLookup);
     }
 
+    [Theory]
+    [InlineData("SHAZAM_URL")]
+    [InlineData("SHAZAM_TRACK_ID")]
+    [InlineData("SHAZAM_SPOTIFY_URL")]
+    [InlineData("SHAZAM_MATCH_STRATEGY")]
+    [InlineData("SHAZAM_TITLE_SIMILARITY")]
+    [InlineData("SHAZAM_ARTIST_SIMILARITY")]
+    [InlineData("SHAZAM_DURATION_DIFF_SECONDS")]
+    public void ShazamIdentityAndMatchScores_AreNotPersistedAsOtherTags(string key)
+    {
+        Assert.True(InvokeStatic<bool>("IsNonPersistedOtherRawKey", key));
+        Assert.False(InvokeStatic<bool>("ShouldPersistOtherRawKey", key));
+    }
+
     [Fact]
-    public void LyricsLookupEntryPoints_AreRestrictedToManualEnrichment()
+    public void VerifyOtherTagsPersisted_AcceptsShazamOnlyExtrasWithoutAFileWrite()
+    {
+        var track = new AutoTagTrack
+        {
+            Title = "No Brainer",
+            Artists = ["DJ Khaled"],
+            Other = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["SHAZAM_URL"] = ["https://www.shazam.com/track/1"],
+                ["SHAZAM_TRACK_ID"] = ["1"],
+                ["SHAZAM_MATCH_STRATEGY"] = ["FINGERPRINT"],
+                ["SHAZAM_TITLE_SIMILARITY"] = ["0.940"]
+            }
+        };
+
+        var persisted = InvokeStatic<bool>("VerifyOtherTagsPersisted", null, ".m4a", track);
+
+        Assert.True(persisted);
+    }
+
+    [Fact]
+    public void OtherTagsPersistenceFailure_DoesNotFailTheFile()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
-        Assert.Contains("if (ShouldLookupLyricsInManualEnrichment(context.Plan.Config, context.Plan.Settings))", source, StringComparison.Ordinal);
-        Assert.Contains("var wantsAppleLyrics = ShouldLookupLyricsInManualEnrichment(config, settings);", source, StringComparison.Ordinal);
-        Assert.Contains("var enableLyrics = context.IsManualEnrichment", source, StringComparison.Ordinal);
-        Assert.Contains("=> IsManualEnrichment(config) && ShouldRequestAnyLyrics(config, settings);", source, StringComparison.Ordinal);
+        Assert.Contains("ShouldPersistOtherRawKey(pair.Key)", source, StringComparison.Ordinal);
+        Assert.Contains("expectedRawTags.Count == 0", source, StringComparison.Ordinal);
+        Assert.Contains("IsNonPersistedOtherRawKey(kvp.Key)", source, StringComparison.Ordinal);
+        Assert.Contains("persistenceFailures.Remove(SupportedTag.OtherTags)", source, StringComparison.Ordinal);
+        Assert.Contains("extra tags were not persisted; identity tags were kept", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AtmosLookup_UsesShazamStereoIsrcAndKeepsFileIsrc()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "No Brainer",
+            Artist = "DJ Khaled",
+            Isrc = "ATMOSISRC001",
+            Tags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["SHAZAM_ISRC"] = ["USUM71806679"]
+            }
+        };
+
+        var lookup = (AutoTagAudioInfo)RunnerMethod(
+            "CreateCatalogLookupInfo",
+            typeof(bool),
+            typeof(AutoTagAudioInfo)).Invoke(null, [true, source])!;
+        Assert.Equal("USUM71806679", lookup.Isrc);
+        Assert.Equal("ATMOSISRC001", source.Isrc);
+
+        var incoming = new AutoTagTrack { Title = "No Brainer", Artists = ["DJ Khaled"], Isrc = "USUM71806679" };
+        RunnerMethod(
+            "PreserveAtmosFileIsrc",
+            typeof(bool),
+            typeof(AutoTagAudioInfo),
+            typeof(AutoTagTrack)).Invoke(null, [true, source, incoming]);
+        Assert.Equal("ATMOSISRC001", incoming.Isrc);
+    }
+
+    [Fact]
+    public void LyricsLookupEntryPoints_FollowRequestedLyricsTags()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
+
+        Assert.Contains("if (ShouldRequestAnyLyrics(context.Plan.Config, context.Plan.Settings))", source, StringComparison.Ordinal);
+        Assert.Contains("var wantsAppleLyrics = ShouldRequestAnyLyrics(config, settings);", source, StringComparison.Ordinal);
+        Assert.Contains("var enableLyrics = ShouldRequestAnyLyrics(context.Config, context.Settings);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ShouldPopulateLyrics", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadEnhancementLyricsWork", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -319,6 +399,10 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
             Assert.Equal(2, withSubfolders.Count);
             Assert.Contains(Path.GetFullPath(topLevelFlac), withSubfolders);
             Assert.Contains(Path.GetFullPath(subLevelMp3), withSubfolders);
+
+            var emptyTargetsConfig = CreateRunnerConfig(targetFiles: new List<string>(), includeSubfolders: true);
+            var emptyTargets = InvokeStatic<IEnumerable<string>>("ResolveTargetFiles", root, emptyTargetsConfig).ToList();
+            Assert.Equal(2, emptyTargets.Count);
         }
         finally
         {
@@ -345,7 +429,7 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     {
         var config = CreateRunnerConfig(platforms: new List<string> { " deezer ", "Deezer", " spotify ", string.Empty });
 
-        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
+        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config, new DeezSpoTagSettings());
 
         Assert.Equal(DeezerSpotifyPlatforms, platforms);
     }
@@ -355,20 +439,26 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
     {
         var config = CreateRunnerConfig(platforms: new List<string> { "deezer", "musixmatch", "lrclib" });
 
-        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
+        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config, new DeezSpoTagSettings());
 
         Assert.Equal(new[] { "deezer" }, platforms);
     }
 
     [Fact]
-    public void BuildEffectivePlatforms_CollapsesLyricsProvidersIntoOnePassForManualEnrichment()
+    public void BuildEffectivePlatforms_CollapsesLyricsProvidersIntoOnePassWhenLyricsAreRequested()
     {
         var config = CreateRunnerConfig(
-            platforms: new List<string> { "deezer", "musixmatch", "lrclib" },
-            manualReleasePreference: "album",
-            manualDestinationFolderId: 1);
+            tags: new List<string> { "syncedLyrics" },
+            platforms: new List<string> { "deezer", "musixmatch", "lrclib" });
+        var settings = new DeezSpoTagSettings
+        {
+            SaveLyrics = true,
+            SyncedLyrics = true,
+            LrcType = "synced-lyrics",
+            LrcFormat = "lrc"
+        };
 
-        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config);
+        var platforms = InvokeStatic<List<string>>("BuildEffectivePlatforms", config, settings);
 
         Assert.Equal(new[] { "deezer", "lyrics" }, platforms);
     }
@@ -447,6 +537,9 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs");
 
         Assert.Contains("if (config.ForceShazam || (hasShazamConfig && shazamConfig.ForceMatch))", source, StringComparison.Ordinal);
+        Assert.Contains("ApplyShazamRecognition(info, recognized, preferShazamCore, shazamConfig)", source, StringComparison.Ordinal);
+        Assert.Contains("WantsArtworkFromSettings", source, StringComparison.Ordinal);
+        Assert.Contains("plan.ShazamConflictResolution || !plan.Config.ParseFilename", ReadSource("DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"), StringComparison.Ordinal);
         Assert.Contains("ShazamFailureKind.Infrastructure", source, StringComparison.Ordinal);
         Assert.Contains("ShazamFailureKind.NoMatch", source, StringComparison.Ordinal);
         Assert.Contains("new ShazamEnrichmentResult(false, \"shazam could not identify track\", false, ShazamFailureKind.NoMatch)", source, StringComparison.Ordinal);
@@ -467,8 +560,12 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains(": CloneAudioInfo(context.Plan.OriginalManualInfo[context.FileIndex]);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var info = firstManualPass", runnerSource, StringComparison.Ordinal);
         Assert.Contains("? CloneAudioInfo(validationInfo)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("var identityIsTrusted = IsTrustedSourceIdentity(validationInfo, context.File, context.Plan.Config);", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("TrackTitleMatcher.HasVersionDrift(info.Title, incomingFullTitle)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var matchInfo = string.Equals(context.Platform, ShazamPlatform, StringComparison.OrdinalIgnoreCase)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("&& identityIsTrusted", runnerSource, StringComparison.Ordinal);
         Assert.Contains("? validationInfo", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("trustSourceIdentity: identityIsTrusted", runnerSource, StringComparison.Ordinal);
         Assert.Contains("var match = await ResolvePlatformMatchAsync(context, matchInfo);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("usedShazamForStatus", runnerSource, StringComparison.Ordinal);
         Assert.Contains("!string.Equals(context.Platform, ShazamPlatform", runnerSource, StringComparison.Ordinal);
@@ -602,12 +699,13 @@ public sealed class LocalAutoTagRunnerCoverageExpansionTests
         Assert.Contains("DefaultLibraryWideEnhancementBatchSize = 40", runnerSource, StringComparison.Ordinal);
         Assert.Contains("LibraryWideEnhancementBatchSize", runnerSource, StringComparison.Ordinal);
         Assert.Contains("ExecuteLibraryWideEnhancementBatchesAsync", executeBody, StringComparison.Ordinal);
-        Assert.Contains("config.TargetFiles == null", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("config.TargetFiles == null || config.TargetFiles.Count == 0", runnerSource, StringComparison.Ordinal);
         Assert.Contains("plan.Files.Sort(CompareLibraryWideEnhancementFiles);", runnerSource, StringComparison.Ordinal);
         Assert.Contains("batchStart += batchSize", batchBody, StringComparison.Ordinal);
         Assert.Contains("for (var platformIndex = firstPlatformIndex; platformIndex < plan.PlatformCount; platformIndex++)", batchBody, StringComparison.Ordinal);
         Assert.Contains("if (await batchCompletedCallback(plan.Files.GetRange(batchStart, batchEnd - batchStart), token))", batchBody, StringComparison.Ordinal);
-        Assert.Contains("ApplyEnhancementBatchSectionsAsync", autoTagSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("(files, token) => ApplyEnhancementBatchSectionsAsync", autoTagSource, StringComparison.Ordinal);
+        Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", autoTagSource, StringComparison.Ordinal);
         Assert.Contains("OrganizePathInBatchesAsync", workflowSource, StringComparison.Ordinal);
         Assert.Contains("options.BatchScopedFilesOnly = true;", workflowSource, StringComparison.Ordinal);
         Assert.Contains("if (options.BatchScopedFilesOnly)", organizerSource, StringComparison.Ordinal);

@@ -54,6 +54,81 @@ public sealed class OneTaggerMatchingAccuracyTests
         Assert.True(match.Accuracy >= StrictConfig().Strictness);
     }
 
+    [Theory]
+    [InlineData("Save Your Tears (Remix) (feat. Ariana Grande)")]
+    [InlineData("Save Your Tears (Instrumental)")]
+    [InlineData("Save Your Tears - Remix")]
+    public void MatchTrack_RejectsOriginalDriftingToRemixOrInstrumental(string driftedTitle)
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = "Save Your Tears",
+            Artist = "The Weeknd",
+            Artists = new List<string> { "The Weeknd" },
+            DurationSeconds = 215
+        };
+        var candidate = new TestTrack(driftedTitle, new List<string> { "The Weeknd" }, TimeSpan.FromSeconds(191));
+
+        var match = OneTaggerMatching.MatchTrack(
+            info,
+            new[] { candidate },
+            StrictConfig(),
+            Selectors(),
+            matchArtist: true);
+
+        Assert.Null(match);
+    }
+
+    [Fact]
+    public void MatchTrack_PrefersOriginalWhenRemixIsAlsoPresent()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = "Save Your Tears",
+            Artist = "The Weeknd",
+            Artists = new List<string> { "The Weeknd" },
+            DurationSeconds = 215
+        };
+        var remix = new TestTrack("Save Your Tears (Remix) (feat. Ariana Grande)", new List<string> { "The Weeknd" }, TimeSpan.FromSeconds(191));
+        var original = new TestTrack("Save Your Tears", new List<string> { "The Weeknd" }, TimeSpan.FromSeconds(215));
+
+        var match = OneTaggerMatching.MatchTrack(
+            info,
+            new[] { remix, original },
+            StrictConfig(),
+            Selectors(),
+            matchArtist: true);
+
+        Assert.NotNull(match);
+        Assert.Equal("Save Your Tears", match!.Track.Title);
+    }
+
+    [Fact]
+    public void MatchTrack_AllowsRequestedRemixToMatchRemix()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = "Save Your Tears (Remix)",
+            Artist = "The Weeknd",
+            Artists = new List<string> { "The Weeknd" },
+            DurationSeconds = 191
+        };
+        var candidate = new TestTrack(
+            "Save Your Tears (Remix) (feat. Ariana Grande)",
+            new List<string> { "The Weeknd" },
+            TimeSpan.FromSeconds(191));
+
+        var match = OneTaggerMatching.MatchTrack(
+            info,
+            new[] { candidate },
+            StrictConfig(),
+            Selectors(),
+            matchArtist: true);
+
+        Assert.NotNull(match);
+        Assert.Contains("Remix", match!.Track.Title, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static AutoTagMatchingConfig StrictConfig()
     {
         return new AutoTagMatchingConfig

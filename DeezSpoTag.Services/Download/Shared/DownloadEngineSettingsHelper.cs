@@ -231,6 +231,16 @@ public static class DownloadEngineSettingsHelper
             settings.CoverImageTemplate = overrides.CoverImageTemplate.Trim();
         }
 
+        if (!string.IsNullOrWhiteSpace(overrides.AnimatedArtworkSquareFileName))
+        {
+            settings.AnimatedArtworkSquareFileName = overrides.AnimatedArtworkSquareFileName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(overrides.AnimatedArtworkTallFileName))
+        {
+            settings.AnimatedArtworkTallFileName = overrides.AnimatedArtworkTallFileName.Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(overrides.ArtistImageTemplate))
         {
             settings.ArtistImageTemplate = overrides.ArtistImageTemplate.Trim();

@@ -650,6 +650,11 @@ public sealed class QobuzTrackResolver
 
     private static bool TitlesMatch(string? expected, string? actual)
     {
+        if (TrackTitleMatcher.HasVersionDrift(expected, actual))
+        {
+            return false;
+        }
+
         var normalizedExpected = TrackTitleMatcher.NormalizeText(expected);
         var normalizedActual = TrackTitleMatcher.NormalizeText(actual);
         if (string.IsNullOrWhiteSpace(normalizedExpected) || string.IsNullOrWhiteSpace(normalizedActual))

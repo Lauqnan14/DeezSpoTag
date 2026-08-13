@@ -49,6 +49,10 @@ public class DeezSpoTagSettingsValidator
                 () => settings.PlaylistFilenameTemplate, (v) => settings.PlaylistFilenameTemplate = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.CoverImageTemplate),
                 () => settings.CoverImageTemplate, (v) => settings.CoverImageTemplate = v);
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkSquareFileName),
+                () => settings.AnimatedArtworkSquareFileName, (v) => settings.AnimatedArtworkSquareFileName = v);
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkTallFileName),
+                () => settings.AnimatedArtworkTallFileName, (v) => settings.AnimatedArtworkTallFileName = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.ArtistImageTemplate),
                 () => settings.ArtistImageTemplate, (v) => settings.ArtistImageTemplate = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.AuthorizationToken),
@@ -57,6 +61,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.LrcType, (v) => settings.LrcType = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcFormat),
                 () => settings.LrcFormat, (v) => settings.LrcFormat = v);
+            changes += ValidateProperty(settings, defaultSettings, nameof(settings.LrcTimingPreference),
+                () => settings.LrcTimingPreference, (v) => settings.LrcTimingPreference = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertFormat),
                 () => settings.ConvertFormat, (v) => settings.ConvertFormat = v);
             changes += ValidateProperty(settings, defaultSettings, nameof(settings.ConvertExtraArgs),
@@ -99,6 +105,8 @@ public class DeezSpoTagSettingsValidator
                 () => settings.SyncedLyrics, (v) => settings.SyncedLyrics = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SynthesizeLrcFromTtml),
                 () => settings.SynthesizeLrcFromTtml, (v) => settings.SynthesizeLrcFromTtml = v);
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SynthesizeTtmlFromLrc),
+                () => settings.SynthesizeTtmlFromLrc, (v) => settings.SynthesizeTtmlFromLrc = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.PreferEnhancedLrc),
                 () => settings.PreferEnhancedLrc, (v) => settings.PreferEnhancedLrc = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.LyricsFallbackEnabled),
@@ -209,6 +217,8 @@ public class DeezSpoTagSettingsValidator
                 (nameof(settings.AlbumNameTemplate), () => settings.AlbumNameTemplate, (string v) => settings.AlbumNameTemplate = v),
                 (nameof(settings.PlaylistFilenameTemplate), () => settings.PlaylistFilenameTemplate, (string v) => settings.PlaylistFilenameTemplate = v),
                 (nameof(settings.CoverImageTemplate), () => settings.CoverImageTemplate, (string v) => settings.CoverImageTemplate = v),
+                (nameof(settings.AnimatedArtworkSquareFileName), () => settings.AnimatedArtworkSquareFileName, (string v) => settings.AnimatedArtworkSquareFileName = v),
+                (nameof(settings.AnimatedArtworkTallFileName), () => settings.AnimatedArtworkTallFileName, (string v) => settings.AnimatedArtworkTallFileName = v),
                 (nameof(settings.ArtistImageTemplate), () => settings.ArtistImageTemplate, (string v) => settings.ArtistImageTemplate = v),
                 (nameof(settings.MvFileFormat), () => settings.MvFileFormat, (string v) => settings.MvFileFormat = v)
             };
@@ -457,6 +467,8 @@ public class DeezSpoTagSettingsValidator
             nameof(defaultSettings.AlbumNameTemplate) => defaultSettings.AlbumNameTemplate,
             nameof(defaultSettings.PlaylistFilenameTemplate) => defaultSettings.PlaylistFilenameTemplate,
             nameof(defaultSettings.CoverImageTemplate) => defaultSettings.CoverImageTemplate,
+            nameof(defaultSettings.AnimatedArtworkSquareFileName) => defaultSettings.AnimatedArtworkSquareFileName,
+            nameof(defaultSettings.AnimatedArtworkTallFileName) => defaultSettings.AnimatedArtworkTallFileName,
             nameof(defaultSettings.ArtistImageTemplate) => defaultSettings.ArtistImageTemplate,
             nameof(defaultSettings.MvFileFormat) => defaultSettings.MvFileFormat,
             _ => ""
@@ -516,6 +528,7 @@ public class DeezSpoTagSettingsValidator
             PlaylistFilenameTemplate = "playlist",
             SyncedLyrics = true,
             SynthesizeLrcFromTtml = false,
+            SynthesizeTtmlFromLrc = true,
             PreferEnhancedLrc = true,
             LyricsFallbackEnabled = true,
             LyricsFallbackOrder = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics",
@@ -530,6 +543,8 @@ public class DeezSpoTagSettingsValidator
             LocalArtworkFormat = "jpg",
             SaveArtwork = true,
             CoverImageTemplate = "cover",
+            AnimatedArtworkSquareFileName = "cover",
+            AnimatedArtworkTallFileName = "cover_tall",
             SaveArtworkArtist = false,
             ArtistImageTemplate = "folder",
             JpegImageQuality = 90,
@@ -544,6 +559,7 @@ public class DeezSpoTagSettingsValidator
             AuthorizationToken = "",
             LrcType = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics",
             LrcFormat = "richlyrics",
+            LrcTimingPreference = LrcTimingModes.PreferEnhanced,
             SaveAnimatedArtwork = true,
             AnimatedArtworkFormats = "mp4",
             AnimatedArtworkMaxSizeMb = 10,

@@ -50,7 +50,11 @@ public static class TechnicalLyricsSettingsApplier
         settings.SyncedLyrics = technical.SyncedLyrics;
         settings.SaveLyrics = technical.SaveLyrics;
         settings.SynthesizeLrcFromTtml = technical.SynthesizeLrcFromTtml;
-        settings.PreferEnhancedLrc = technical.PreferEnhancedLrc;
+        settings.SynthesizeTtmlFromLrc = technical.SynthesizeTtmlFromLrc;
+        settings.LrcTimingPreference = LrcTimingModes.Normalize(
+            technical.LrcTimingPreference,
+            technical.PreferEnhancedLrc);
+        settings.PreferEnhancedLrc = LrcTimingModes.ImpliesEnhanced(settings.LrcTimingPreference);
         settings.LyricsFallbackEnabled = technical.LyricsFallbackEnabled;
         settings.ArtworkFallbackEnabled = technical.ArtworkFallbackEnabled;
         settings.ArtistArtworkFallbackEnabled = technical.ArtistArtworkFallbackEnabled;

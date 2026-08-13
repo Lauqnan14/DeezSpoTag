@@ -61,7 +61,9 @@ public class DeezSpoTagSettings
 
     // Lyrics preference + fallback
     public bool SynthesizeLrcFromTtml { get; set; } = false;
+    public bool SynthesizeTtmlFromLrc { get; set; } = true;
     public bool PreferEnhancedLrc { get; set; } = true;
+    public string LrcTimingPreference { get; set; } = LrcTimingModes.PreferEnhanced;
     public bool LyricsFallbackEnabled { get; set; } = true;
     public string LyricsFallbackOrder { get; set; } = "apple,deezer,spotify,lrclib,musixmatch,youlyplus,betterlyrics";
     public int LyricsProviderRegistryVersion { get; set; }
@@ -129,6 +131,8 @@ public class DeezSpoTagSettings
     public string LocalArtworkFormat { get; set; } = "jpg";
     public bool SaveArtwork { get; set; } = true;
     public string CoverImageTemplate { get; set; } = "cover";
+    public string AnimatedArtworkSquareFileName { get; set; } = "cover";
+    public string AnimatedArtworkTallFileName { get; set; } = "cover_tall";
     public bool SaveArtworkArtist { get; set; } = true;
     public string ArtistImageTemplate { get; set; } = "folder";
     public int JpegImageQuality { get; set; } = 100;

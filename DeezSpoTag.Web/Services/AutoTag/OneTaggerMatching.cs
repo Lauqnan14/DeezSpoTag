@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Utils;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
@@ -176,6 +177,11 @@ internal static class OneTaggerMatching
             }
 
             var trackTitle = FullTitle(selectors.GetTitle(track), selectors.GetVersion(track));
+            if (IsDisallowedVersionDrift(info.Title, trackTitle))
+            {
+                continue;
+            }
+
             var clean = CleanTitleMatching(trackTitle);
             var titleScore = NormalizedLevenshtein(clean, cleanTitle);
             var durationScore = ComputeDurationScore(info.DurationSeconds, selectors.GetDuration(track), config, out var hasDurationEvidence);
@@ -206,6 +212,12 @@ internal static class OneTaggerMatching
         SortTracks(top, config.MultipleMatches, selectors.GetReleaseDate);
 
         return new MatchSelection<T>(top[0].Score, top[0].Track);
+    }
+
+    private static bool IsDisallowedVersionDrift(string? sourceTitle, string? candidateTitle)
+    {
+        return !TrackIdentityTrust.IsWeakMetadataValue(sourceTitle)
+            && TrackTitleMatcher.HasVersionDrift(sourceTitle, candidateTitle);
     }
 
     private static double ApplyEvidenceCaps(
@@ -268,6 +280,11 @@ internal static class OneTaggerMatching
                 }
 
                 var trackTitle = FullTitle(selectors.GetTitle(track), selectors.GetVersion(track));
+                if (IsDisallowedVersionDrift(info.Title, trackTitle))
+                {
+                    continue;
+                }
+
                 if (!string.Equals(cleanTitle, ApplySteps(trackTitle, stepCount), StringComparison.Ordinal))
                 {
                     continue;

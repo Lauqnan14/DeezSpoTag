@@ -25,8 +25,89 @@ public sealed class ItunesCoverSource : ICoverSource
 
     public CoverSourceName Name => CoverSourceName.Itunes;
 
+    private async Task<IReadOnlyList<CoverCandidate>> SearchByAppleIdentityAsync(
+        CoverSearchQuery query,
+        CancellationToken cancellationToken)
+    {
+        var albumId = FirstNonEmpty(query.AppleAlbumId, ExtractAppleAlbumId(query.AppleUrl));
+        if (string.IsNullOrWhiteSpace(albumId))
+        {
+            return Array.Empty<CoverCandidate>();
+        }
+
+        var requestUrl = $"https://itunes.apple.com/lookup?id={Uri.EscapeDataString(albumId)}&entity=album";
+        try
+        {
+            using var document = await _httpService.GetJsonDocumentAsync(Name, requestUrl, cancellationToken);
+            if (document == null
+                || !document.RootElement.TryGetProperty("results", out var results)
+                || results.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<CoverCandidate>();
+            }
+
+            var candidates = new List<CoverCandidate>();
+            var rank = 0;
+            foreach (var result in results.EnumerateArray())
+            {
+                var artworkUrl = ExtractArtworkUrl(result);
+                if (string.IsNullOrWhiteSpace(artworkUrl))
+                {
+                    continue;
+                }
+
+                var artist = result.TryGetProperty("artistName", out var artistEl) ? artistEl.GetString() : query.Artist;
+                var album = result.TryGetProperty("collectionName", out var albumEl) ? albumEl.GetString() : query.Album;
+                await AddSizedCandidatesAsync(
+                    candidates,
+                    new ItunesSearchCandidate(artist, album, artworkUrl, 0.98d, Fuzzy: false, Rank: rank),
+                    cancellationToken);
+                rank++;
+            }
+
+            return candidates;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "iTunes identity lookup errored for {AppleAlbumId}", albumId);
+            }
+
+            return Array.Empty<CoverCandidate>();
+        }
+    }
+
+    private static string? ExtractAppleAlbumId(string? appleUrl)
+    {
+        if (string.IsNullOrWhiteSpace(appleUrl))
+        {
+            return null;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            appleUrl,
+            @"/album/[^/]+/(?<id>\d+)|id(?<id>\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+            TimeSpan.FromMilliseconds(250));
+        return match.Success ? match.Groups["id"].Value : null;
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
     public async Task<IReadOnlyList<CoverCandidate>> SearchAsync(CoverSearchQuery query, CancellationToken cancellationToken)
     {
+        var identityCandidates = await SearchByAppleIdentityAsync(query, cancellationToken);
+        if (identityCandidates.Count > 0)
+        {
+            return identityCandidates;
+        }
+
         var normalizedArtist = NormalizeForItunes(query.Artist);
         var normalizedAlbum = NormalizeForItunes(query.Album);
         var term = $"{normalizedArtist} {normalizedAlbum}".Trim();

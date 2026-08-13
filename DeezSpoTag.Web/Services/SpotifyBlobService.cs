@@ -40,7 +40,8 @@ public sealed class SpotifyBlobService : IAsyncDisposable
     private const string ProcessTimeoutError = "process_timeout";
     private const string WebPlayerProtectionPurpose = "DeezSpoTag.Spotify.WebPlayer";
     private const string LibrespotProtectionPurpose = "DeezSpoTag.Spotify.Librespot";
-    private static readonly TimeSpan LibrespotMetadataRequestTimeout = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan LibrespotMetadataRequestTimeout = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan LibrespotStartFailureBackoff = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan[] WebApiRetryDelays =
     {
         TimeSpan.FromSeconds(2),
@@ -63,6 +64,7 @@ public sealed class SpotifyBlobService : IAsyncDisposable
     private readonly ProtectedCredentialFileStore _librespotCredentialStore;
     private readonly SemaphoreSlim _librespotWorkerLock = new(1, 1);
     private readonly Dictionary<string, LibrespotWorkerProcess> _librespotWorkers = new(StringComparer.OrdinalIgnoreCase);
+    private DateTimeOffset _librespotStartRetryAfter = DateTimeOffset.MinValue;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> BlobGenerationLocks = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SpotifyBlobGenerationStatus> BlobGenerationStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
@@ -698,6 +700,14 @@ public sealed class SpotifyBlobService : IAsyncDisposable
                 await current.DisposeAsync();
             }
 
+            if (DateTimeOffset.UtcNow < _librespotStartRetryAfter)
+            {
+                _logger.LogDebug(
+                    "Spotify librespot worker start is deferred until {RetryAfterUtc}.",
+                    _librespotStartRetryAfter);
+                return null;
+            }
+
             var pythonExecutable = await EnsureSpotifyAuthEnvironmentAsync(cancellationToken);
             var workerScript = ResolveToolFilePath(ResolveRepoRoot(), LibrespotWorkerScript);
             if (workerScript is null)
@@ -730,11 +740,25 @@ public sealed class SpotifyBlobService : IAsyncDisposable
                     _logger,
                     LibrespotMetadataRequestTimeout,
                     cancellationToken);
+                _librespotStartRetryAfter = DateTimeOffset.MinValue;
                 _librespotWorkers[normalizedPath] = worker;
                 return worker;
             }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                MarkLibrespotStartFailure();
+                TryDeleteFile(temporaryCredentials);
+                TryDeleteFile(Path.Join(workerDirectory, "credentials.json"));
+                TryDeleteDirectory(workerDirectory);
+                _logger.LogWarning(
+                    "Spotify librespot worker start timed out after {TimeoutSeconds}s; backing off for {BackoffSeconds}s.",
+                    LibrespotMetadataRequestTimeout.TotalSeconds,
+                    LibrespotStartFailureBackoff.TotalSeconds);
+                return null;
+            }
             catch
             {
+                MarkLibrespotStartFailure();
                 TryDeleteFile(temporaryCredentials);
                 TryDeleteFile(Path.Join(workerDirectory, "credentials.json"));
                 TryDeleteDirectory(workerDirectory);
@@ -745,6 +769,11 @@ public sealed class SpotifyBlobService : IAsyncDisposable
         {
             _librespotWorkerLock.Release();
         }
+    }
+
+    private void MarkLibrespotStartFailure()
+    {
+        _librespotStartRetryAfter = DateTimeOffset.UtcNow.Add(LibrespotStartFailureBackoff);
     }
 
     private async Task RemoveLibrespotWorkerAsync(string blobPath)

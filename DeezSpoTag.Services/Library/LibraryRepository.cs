@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,11 +22,6 @@ public sealed class LibraryRepository
 {
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
-    private static readonly TimeSpan RepairRegexTimeout = TimeSpan.FromMilliseconds(100);
-    private static readonly Regex RepeatedNumericFilenamePrefixRegex = new(
-        @"^\s*(?:\d+\s*[-._)\]]\s*){2,}",
-        RegexOptions.Compiled,
-        RepairRegexTimeout);
 
     public sealed record BoomplayDeezerTrackMappingUpsertInput(
         string BoomplayTrackId,
@@ -13318,6 +13312,13 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
                 continue;
             }
 
+            var hasCoreFieldGap = repair.Fields.Exists(static field =>
+                !string.Equals(field, "Filename prefix", StringComparison.OrdinalIgnoreCase));
+            if (!hasCoreFieldGap || !File.Exists(filePath))
+            {
+                continue;
+            }
+
             results.Add(new MissingCoreMetadataFileDto(
                 reader.GetInt64(0),
                 audioFileId,
@@ -13354,7 +13355,7 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
             score += 20;
         }
 
-        if (HasRepeatedNumericFilenamePrefix(filePath))
+        if (TrackIdentityTrust.HasRepeatedNumericFilenamePrefix(filePath))
         {
             fields.Add("Filename prefix");
             score += 40;
@@ -13377,25 +13378,6 @@ ORDER BY f.id, ar.name, al.title, COALESCE(t.track_no, t.tag_track_no, 999999), 
 
         fields.Add(field);
         score += weight;
-    }
-
-    private static bool HasRepeatedNumericFilenamePrefix(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        try
-        {
-            var fileName = Path.GetFileNameWithoutExtension(path);
-            return !string.IsNullOrWhiteSpace(fileName)
-                && RepeatedNumericFilenamePrefixRegex.IsMatch(fileName);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
-        {
-            return false;
-        }
     }
 
     private static async Task<QualityScanTrackDto> ReadQualityScanTrackDtoAsync(
@@ -15982,24 +15964,7 @@ RETURNING id;";
     }
 
     private static bool IsMissingOrWeakMetadata(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return true;
-        }
-
-        var normalized = value
-            .Trim()
-            .Trim('[', ']')
-            .ToLowerInvariant();
-        return normalized is "unknown"
-            or "unknown artist"
-            or "unknown album artist"
-            or "unknown album"
-            or "untitled"
-            or "track"
-            or "audio";
-    }
+        => TrackIdentityTrust.IsWeakMetadataValue(value);
 
     private static string[] ReadDelimitedValues(string? value)
     {

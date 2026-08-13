@@ -1544,13 +1544,7 @@ public class LyricsService
                     return null;
                 }
                 result.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
-                if (result.HasEnhancedSynchronizedLyrics()
-                    && settings.SyncedLyrics
-                    && ParseLyricsOutputFormats(settings.LrcFormat).Contains("ttml"))
-                {
-                    result.TtmlLyrics = BuildWordSynchronizedTtml(result.SyncedLyrics);
-                    result.TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings;
-                }
+                TryApplySynthesizedWordTtml(result, settings);
             }
         }
 
@@ -1695,6 +1689,29 @@ public class LyricsService
         return lines;
     }
 
+    public static bool TryApplySynthesizedWordTtml(LyricsBase lyrics, DeezSpoTagSettings settings)
+    {
+        if (lyrics == null || !settings.SynthesizeTtmlFromLrc || !ShouldOutputTtmlBySettings(settings))
+        {
+            return false;
+        }
+
+        if (AppleLyricsService.IsWordSyncedTtml(lyrics.TtmlLyrics) || !lyrics.HasEnhancedSynchronizedLyrics())
+        {
+            return false;
+        }
+
+        var synthesized = BuildWordSynchronizedTtml(lyrics.SyncedLyrics!);
+        if (string.IsNullOrWhiteSpace(synthesized) || !AppleLyricsService.IsWordSyncedTtml(synthesized))
+        {
+            return false;
+        }
+
+        lyrics.TtmlLyrics = synthesized;
+        lyrics.TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings;
+        return true;
+    }
+
     private static string BuildWordSynchronizedTtml(IReadOnlyList<SynchronizedLyric> lines)
     {
         var builder = new StringBuilder(
@@ -1826,11 +1843,7 @@ public class LyricsService
         {
             output.SyncedLyrics = richsyncLines;
             output.SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson;
-            if (ResolveOutputRequirements(settings).WantsTtmlLyrics)
-            {
-                output.TtmlLyrics = BuildWordSynchronizedTtml(richsyncLines);
-                output.TtmlLyricsSourceFormat = LyricsSourceFormat.SynthesizedFromWordTimings;
-            }
+            TryApplySynthesizedWordTtml(output, settings);
             return output;
         }
 
@@ -3532,10 +3545,16 @@ public class LyricsService
 
         try
         {
+            var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
             var enhanced = wantsEnhanced
                 ? GenerateEnhancedLrcContent(lyrics, track.Title, track.MainArtist?.Name, track.Album?.Title)
                 : string.Empty;
             var usedEnhanced = !string.IsNullOrEmpty(enhanced);
+            if (timingPreference == LrcTimingModes.WordEnhanced && !usedEnhanced)
+            {
+                return;
+            }
+
             var lrcContent = usedEnhanced
                 ? enhanced
                 : GenerateLrcContent(lyrics, track.Title, track.MainArtist?.Name, track.Album?.Title);
@@ -3583,6 +3602,7 @@ public class LyricsService
         LyricsSaveState state,
         CancellationToken cancellationToken)
     {
+        TryApplySynthesizedWordTtml(lyrics, settings);
         if (!ShouldSaveTtml(settings, lyrics))
         {
             return;

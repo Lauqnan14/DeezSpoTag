@@ -1069,6 +1069,139 @@ public sealed class LyricsServicePrivateHelpersTests
     }
 
     [Fact]
+    public async Task SaveLyricsAsync_WordEnhancedOnly_DoesNotWriteLineFallback()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = true,
+                LrcTimingPreference = LrcTimingModes.WordEnhanced
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics =
+                [
+                    new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                ],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
+                UnsyncedLyrics = "Plain"
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.False(File.Exists(Path.Join(directory, "track.lrc")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_WordEnhancedOnly_UpgradesLineLrcWhenWordsExist()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var lrcPath = Path.Join(directory, "track.lrc");
+            await File.WriteAllTextAsync(lrcPath, "[00:01.00]Oh yeah\n");
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = true,
+                LrcTimingPreference = LrcTimingModes.WordEnhanced,
+                OverwriteFile = "n"
+            };
+
+            await service.SaveLyricsAsync(
+                CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            var lrc = await File.ReadAllTextAsync(lrcPath);
+            Assert.Contains("[00:01.00]<00:01.000>Oh <00:01.400>yeah", lrc);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_WordEnhancedOnly_KeepsExistingLineLrcWhenWordsMissing()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var lrcPath = Path.Join(directory, "track.lrc");
+            const string existing = "[00:01.00]Oh yeah\n";
+            await File.WriteAllTextAsync(lrcPath, existing);
+
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,unsynced-lyrics",
+                LrcFormat = "lrc",
+                PreferEnhancedLrc = true,
+                LrcTimingPreference = LrcTimingModes.WordEnhanced,
+                OverwriteFile = "n"
+            };
+            var lyrics = new LyricsSource
+            {
+                SyncedLyrics =
+                [
+                    new SynchronizedLyric("Oh yeah", "[00:01.00]", 1000, 2000)
+                ],
+                SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson
+            };
+
+            await service.SaveLyricsAsync(lyrics, CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.Equal(existing, await File.ReadAllTextAsync(lrcPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TtmlSidecarCleanup_DeletesLineTimedAndKeepsWordTimed()
+    {
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var linePath = Path.Join(directory, "line.ttml");
+            var wordPath = Path.Join(directory, "word.ttml");
+            File.WriteAllText(linePath, LineTimedTtml);
+            File.WriteAllText(wordPath, WordTimedTtml);
+
+            Assert.True(TtmlSidecarCleanup.IsNonWordTimed(linePath));
+            Assert.False(TtmlSidecarCleanup.IsNonWordTimed(wordPath));
+            Assert.True(TtmlSidecarCleanup.TryDeleteNonWordTimed(linePath));
+            Assert.False(TtmlSidecarCleanup.TryDeleteNonWordTimed(wordPath));
+            Assert.False(File.Exists(linePath));
+            Assert.True(File.Exists(wordPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SaveLyricsAsync_UpgradesLineLevelLrcToWordTiming_EvenWhenOverwriteDisabled()
     {
         var service = CreateUninitializedLyricsService();
@@ -1288,6 +1421,63 @@ public sealed class LyricsServicePrivateHelpersTests
             SyncedLyricsSourceFormat = LyricsSourceFormat.ProviderSyncedJson,
             UnsyncedLyrics = "Plain"
         };
+
+    [Fact]
+    public async Task SaveLyricsAsync_SynthesizeTtmlFromWordLrc_WritesWordTtmlWhenEnabled()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,ttml-lyrics",
+                LrcFormat = "ttml",
+                SynthesizeTtmlFromLrc = true
+            };
+
+            await service.SaveLyricsAsync(
+                CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            var ttmlPath = Path.Join(directory, "track.ttml");
+            Assert.True(File.Exists(ttmlPath));
+            var ttml = await File.ReadAllTextAsync(ttmlPath);
+            Assert.True(AppleLyricsService.IsWordSyncedTtml(ttml));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveLyricsAsync_SynthesizeTtmlFromWordLrcDisabled_DoesNotInventTtml()
+    {
+        var service = CreateUninitializedLyricsService();
+        var directory = CreateLyricsTestDirectory();
+        try
+        {
+            var settings = new DeezSpoTagSettings
+            {
+                SyncedLyrics = true,
+                SaveLyrics = true,
+                LrcType = "lyrics,ttml-lyrics",
+                LrcFormat = "ttml",
+                SynthesizeTtmlFromLrc = false
+            };
+
+            await service.SaveLyricsAsync(
+                CreateEnhancedTestLyrics(), CreateLyricsTestTrack(), BuildLyricsPaths(directory), settings);
+
+            Assert.False(File.Exists(Path.Join(directory, "track.ttml")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 
     [Fact]
     public async Task SaveLyricsAsync_AllRichFormats_WritesEnhancedLrcAndTtml()

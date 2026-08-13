@@ -19,6 +19,12 @@ public sealed class DeezerCoverSource : ICoverSource
 
     public async Task<IReadOnlyList<CoverCandidate>> SearchAsync(CoverSearchQuery query, CancellationToken cancellationToken)
     {
+        var identityCandidates = await SearchByDeezerIdentityAsync(query, cancellationToken);
+        if (identityCandidates.Count > 0)
+        {
+            return identityCandidates;
+        }
+
         var requestQuery = $"artist:\"{query.Artist}\" album:\"{query.Album}\"";
         var requestUrl = $"https://api.deezer.com/search/album?q={Uri.EscapeDataString(requestQuery)}&limit=25";
 
@@ -68,6 +74,78 @@ public sealed class DeezerCoverSource : ICoverSource
             }
             return Array.Empty<CoverCandidate>();
         }
+    }
+
+    private async Task<IReadOnlyList<CoverCandidate>> SearchByDeezerIdentityAsync(
+        CoverSearchQuery query,
+        CancellationToken cancellationToken)
+    {
+        var identityUrl = ResolveDeezerLookupUrl(query.DeezerUrl);
+        if (string.IsNullOrWhiteSpace(identityUrl))
+        {
+            return Array.Empty<CoverCandidate>();
+        }
+
+        try
+        {
+            using var document = await _httpService.GetJsonDocumentAsync(Name, identityUrl, cancellationToken);
+            if (document == null)
+            {
+                return Array.Empty<CoverCandidate>();
+            }
+
+            var albumElement = document.RootElement;
+            if (albumElement.TryGetProperty("album", out var nestedAlbum) && nestedAlbum.ValueKind == JsonValueKind.Object)
+            {
+                albumElement = nestedAlbum;
+            }
+
+            var artworkOptions = EnumerateArtworks(albumElement).ToList();
+            if (artworkOptions.Count == 0)
+            {
+                return Array.Empty<CoverCandidate>();
+            }
+
+            var artist = TryReadNestedString(albumElement, "artist", "name") ?? query.Artist;
+            var album = albumElement.TryGetProperty("title", out var titleEl) ? titleEl.GetString() : query.Album;
+            var context = new AlbumCoverContext(artist, album, 0.98d, Fuzzy: false);
+            var candidates = new List<CoverCandidate>();
+            AddArtworkCandidates(candidates, context, artworkOptions, rank: 0);
+            return candidates;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(ex, "Deezer identity lookup errored for {DeezerUrl}", query.DeezerUrl);
+            }
+
+            return Array.Empty<CoverCandidate>();
+        }
+    }
+
+    private static string? ResolveDeezerLookupUrl(string? deezerUrl)
+    {
+        if (string.IsNullOrWhiteSpace(deezerUrl))
+        {
+            return null;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            deezerUrl,
+            @"deezer\.com/(?:[a-z]{2}/)?(?<kind>album|track)/(?<id>\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+            TimeSpan.FromMilliseconds(250));
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        return $"https://api.deezer.com/{match.Groups["kind"].Value}/{match.Groups["id"].Value}";
     }
 
     private static bool TryBuildAlbumCoverContext(

@@ -242,6 +242,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("public List<string> EnhancedFilePaths", source, StringComparison.Ordinal);
         Assert.Contains("TrackEnhancedFilePath(job, stageName, status)", source, StringComparison.Ordinal);
         Assert.Contains("RefreshConfiguredServersAsync", source, StringComparison.Ordinal);
+        Assert.Contains("updateTrackIndex: false", source, StringComparison.Ordinal);
+        Assert.Contains("not waiting for a full library reindex", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RefreshEnhancementLibraryIndexAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("final-library-reindex", workflowSource, StringComparison.Ordinal);
         Assert.DoesNotContain("library-index-refresh", workflowSource, StringComparison.Ordinal);

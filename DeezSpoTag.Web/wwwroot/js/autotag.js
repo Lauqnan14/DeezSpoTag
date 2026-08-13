@@ -1,14 +1,14 @@
 (() => {
     const DEFAULT_RENAME_SPOTIFY_ARTIST_FOLDERS = true;
 
-    const ENHANCEMENT_RUN_SECTION_IDS = ["tag-gap-fill", "folder-uniformity", "quality-checks", "cover-maintenance"];
+    const ENHANCEMENT_RUN_SECTION_IDS = ["tag-gap-fill", "sidecars", "quality-checks", "folder-uniformity"];
 
     const DEFAULT_CONFIG = {
         platforms: ["deezer", "itunes"],
         path: null,
         customPath: null,
         playlistPath: null,
-        tags: ["genre", "style", "bpm", "releaseDate", "label"],
+        tags: ["genre", "style", "bpm", "key", "releaseDate", "label"],
         downloadTags: ["genre", "bpm", "releaseDate", "label"],
         gapFillTags: ["genre", "style", "bpm", "key", "releaseDate", "label"],
         overwriteTags: [],
@@ -52,7 +52,8 @@
         custom: {},
         enhancement: {
             gapFilling: {
-                folderIds: []
+                folderIds: [],
+                forceFingerprint: false
             },
             folderUniformity: {
                 enabled: false,
@@ -79,6 +80,13 @@
                 duplicatesFolderName: "%duplicates%",
                 includeSubfolders: true
             },
+            sidecars: {
+                enabled: false,
+                folderIds: [],
+                queueLyricsRefresh: false,
+                removeLineSyncedTtml: false,
+                rewriteLineSyncedTtml: false
+            },
             coverMaintenance: {
                 enabled: false,
                 folderIds: [],
@@ -88,6 +96,9 @@
                 syncExternalCovers: false,
                 queueAnimatedArtwork: false,
                 renameExistingAnimatedArtwork: true,
+                overwriteExistingAnimatedArtwork: false,
+                removeOldAnimatedArtwork: false,
+                useShazamForUntaggedFiles: false,
                 workerCount: 8
             },
             qualityChecks: {
@@ -96,7 +107,6 @@
                 scope: "all",
                 technicalProfiles: [],
                 queueAtmosAlternatives: false,
-                queueLyricsRefresh: false,
                 queueTechnicalProfileUpgrades: false,
                 flagDuplicates: false,
                 flagMissingTags: false,
@@ -350,7 +360,7 @@
         { value: "unsynced-lyrics", label: "Unsynced lyrics" }
     ];
     const LYRICS_FORMAT_OPTIONS = [
-        { value: "lrc", label: "Standard synchronized lyrics (.lrc)" },
+        { value: "lrc", label: "Synchronized lyrics" },
         { value: "ttml", label: "TTML lyrics (.ttml)" }
     ];
 
@@ -388,8 +398,10 @@
     const AUTOTAG_LIBRARY_FOLDERS_API = "/api/library/folders";
     const PROFILE_AUTOSAVE_DEBOUNCE_MS = 900;
     const ENHANCEMENT_LAST_SCAN_BANNER_MS = 15000;
-    const DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS = 24;
-    const DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS = Math.max(0, Math.round(DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS / 24));
+    const DEFAULT_RECENT_DOWNLOAD_WINDOW_HOURS = 0;
+    const DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS = 0;
+    const MIN_RECENT_DOWNLOAD_WINDOW_DAYS = 5;
+    const DEFAULT_RECENT_DOWNLOAD_ENHANCEMENT_TIME = "05:00";
     const state = {
         config: structuredClone(DEFAULT_CONFIG),
         platforms: [],
@@ -1690,9 +1702,10 @@
         const normalizedDownloadTags = normalizeDownloadTags(
             Array.isArray(state.config.downloadTags) ? state.config.downloadTags : []
         );
-        state.config.tags = enrichmentTags;
+        const sharedTags = enrichmentTags.length > 0 ? enrichmentTags : enhancementTags;
+        state.config.tags = sharedTags;
         state.config.downloadTags = normalizedDownloadTags;
-        state.config.gapFillTags = enhancementTags;
+        state.config.gapFillTags = sharedTags.slice();
         state.config.overwriteTags = normalizeOverwriteTags(
             Array.isArray(state.config.overwriteTags) ? state.config.overwriteTags : []
         );
@@ -2086,12 +2099,16 @@
         if (!enhancement.coverMaintenance || typeof enhancement.coverMaintenance !== "object") {
             enhancement.coverMaintenance = structuredClone(DEFAULT_CONFIG.enhancement.coverMaintenance);
         }
+        if (!enhancement.sidecars || typeof enhancement.sidecars !== "object") {
+            enhancement.sidecars = structuredClone(DEFAULT_CONFIG.enhancement.sidecars);
+        }
         if (!enhancement.qualityChecks || typeof enhancement.qualityChecks !== "object") {
             enhancement.qualityChecks = structuredClone(DEFAULT_CONFIG.enhancement.qualityChecks);
         }
 
         const gapFilling = enhancement.gapFilling;
         gapFilling.folderIds = parseFolderIdList(gapFilling.folderIds);
+        gapFilling.forceFingerprint = Boolean(gapFilling.forceFingerprint);
         delete gapFilling.folderId;
 
         const folderUniformity = enhancement.folderUniformity;
@@ -2153,6 +2170,9 @@
         coverMaintenance.syncExternalCovers = coverMaintenance.syncExternalCovers === true;
         coverMaintenance.queueAnimatedArtwork = coverMaintenance.queueAnimatedArtwork === true;
         coverMaintenance.renameExistingAnimatedArtwork = coverMaintenance.renameExistingAnimatedArtwork !== false;
+        coverMaintenance.overwriteExistingAnimatedArtwork = coverMaintenance.overwriteExistingAnimatedArtwork === true;
+        coverMaintenance.removeOldAnimatedArtwork = coverMaintenance.removeOldAnimatedArtwork === true;
+        coverMaintenance.useShazamForUntaggedFiles = coverMaintenance.useShazamForUntaggedFiles === true;
         coverMaintenance.enabled = coverMaintenanceHasEnabledFlag
             ? coverMaintenance.enabled === true
             : coverMaintenance.replaceMissingEmbeddedCovers
@@ -2172,7 +2192,6 @@
         qualityChecks.scope = String(qualityChecks.scope || "all").toLowerCase() === "watchlist" ? "watchlist" : "all";
         qualityChecks.technicalProfiles = normalizeTechnicalProfiles(qualityChecks.technicalProfiles);
         qualityChecks.queueAtmosAlternatives = qualityChecks.queueAtmosAlternatives === true;
-        qualityChecks.queueLyricsRefresh = qualityChecks.queueLyricsRefresh === true;
         qualityChecks.queueTechnicalProfileUpgrades = qualityChecks.queueTechnicalProfileUpgrades === true;
         qualityChecks.flagDuplicates = qualityChecks.flagDuplicates === true;
         qualityChecks.flagMissingTags = qualityChecks.flagMissingTags === true;
@@ -2183,7 +2202,6 @@
                 || qualityChecks.flagMissingTags
                 || qualityChecks.flagMismatchedMetadata
                 || qualityChecks.queueAtmosAlternatives
-                || qualityChecks.queueLyricsRefresh
                 || qualityChecks.queueTechnicalProfileUpgrades;
         qualityChecks.useDuplicatesFolder = qualityChecks.useDuplicatesFolder !== false;
         qualityChecks.useShazamForDedupe = qualityChecks.useShazamForDedupe === true;
@@ -2194,6 +2212,38 @@
         delete qualityChecks.minBitDepth;
         delete qualityChecks.minSampleRateKhz;
         qualityChecks.cooldownMinutes = parseOptionalBoundedInt(qualityChecks.cooldownMinutes, 0, 43200);
+
+        const sidecars = enhancement.sidecars;
+        const sidecarsHasEnabledFlag = Object.hasOwn(sidecars, "enabled");
+        sidecars.folderIds = parseFolderIdList(sidecars.folderIds);
+        if (sidecars.folderIds.length === 0) {
+            sidecars.folderIds = parseFolderIdList(coverMaintenance.folderIds);
+        }
+        delete sidecars.folderId;
+        if (sidecars.queueLyricsRefresh == null && Object.hasOwn(qualityChecks, "queueLyricsRefresh")) {
+            sidecars.queueLyricsRefresh = qualityChecks.queueLyricsRefresh === true;
+        }
+        if (sidecars.removeLineSyncedTtml == null && Object.hasOwn(qualityChecks, "removeLineSyncedTtml")) {
+            sidecars.removeLineSyncedTtml = qualityChecks.removeLineSyncedTtml === true;
+        }
+        if (sidecars.rewriteLineSyncedTtml == null && Object.hasOwn(qualityChecks, "rewriteLineSyncedTtml")) {
+            sidecars.rewriteLineSyncedTtml = qualityChecks.rewriteLineSyncedTtml === true;
+        }
+        sidecars.queueLyricsRefresh = sidecars.queueLyricsRefresh === true;
+        sidecars.removeLineSyncedTtml = sidecars.removeLineSyncedTtml === true;
+        sidecars.rewriteLineSyncedTtml = sidecars.rewriteLineSyncedTtml === true;
+        delete qualityChecks.queueLyricsRefresh;
+        delete qualityChecks.removeLineSyncedTtml;
+        delete qualityChecks.rewriteLineSyncedTtml;
+        if (!sidecarsHasEnabledFlag) {
+            const lyricsOn = sidecars.queueLyricsRefresh
+                || sidecars.removeLineSyncedTtml
+                || sidecars.rewriteLineSyncedTtml;
+            sidecars.enabled = coverMaintenance.enabled === true
+                || (qualityChecks.enabled === true && lyricsOn);
+        } else {
+            sidecars.enabled = sidecars.enabled === true;
+        }
     }
 
     function createPlatformSpeedIcon(platform) {
@@ -2271,7 +2321,7 @@
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.checked = isSelected;
-        const selectable = canEnablePlatform(platform);
+        const selectable = isSelected || canEnablePlatform(platform);
         checkbox.disabled = !selectable;
         if (!selectable && platform.requiresAuth) {
             checkbox.title = state.authReady
@@ -2960,6 +3010,11 @@
         }
         setChecked("enableFolderUniformityWorkflow", state.config.enhancement.folderUniformity.enabled);
         updateGapFillingFolderSummary(state.config.enhancement.gapFilling.folderIds ?? []);
+        const enhancementRecognitionMethod = state.config.enhancement.gapFilling.forceFingerprint ? "fingerprint" : "id-first";
+        const enhancementRecognitionControl = document.querySelector(`input[name="enhancementRecognitionMethod"][value="${enhancementRecognitionMethod}"]`);
+        if (enhancementRecognitionControl instanceof HTMLInputElement) {
+            enhancementRecognitionControl.checked = true;
+        }
         setChecked("enforceFolderStructure", state.config.enhancement.folderUniformity.enforceFolderStructure);
         setChecked("folderUniformityIncludeSubfolders", state.config.enhancement.folderUniformity.includeSubfolders);
         setChecked("moveMisplacedFiles", state.config.enhancement.folderUniformity.moveMisplacedFiles);
@@ -2982,13 +3037,16 @@
         setChecked("folderUniformityUseShazamForDedupe", state.config.enhancement.folderUniformity.useShazamForDedupe);
         setValue("folderUniformityDuplicatesFolderName", state.config.enhancement.folderUniformity.duplicatesFolderName || "%duplicates%");
         updateFolderUniformityFolderSummary(state.config.enhancement.folderUniformity.folderIds ?? []);
-        setChecked("enableCoverMaintenanceWorkflow", state.config.enhancement.coverMaintenance.enabled);
+        setChecked("enableSidecarsWorkflow", state.config.enhancement.sidecars.enabled);
         setChecked("upgradeLowResolutionCovers", state.config.enhancement.coverMaintenance.upgradeLowResolutionCovers);
         setValue("coverMinResolution", state.config.enhancement.coverMaintenance.minResolution ?? 500);
         setChecked("replaceMissingCovers", state.config.enhancement.coverMaintenance.replaceMissingEmbeddedCovers);
         setChecked("syncExternalCovers", state.config.enhancement.coverMaintenance.syncExternalCovers);
         setChecked("queueAnimatedArtwork", state.config.enhancement.coverMaintenance.queueAnimatedArtwork);
         setChecked("renameExistingAnimatedArtwork", state.config.enhancement.coverMaintenance.renameExistingAnimatedArtwork !== false);
+        setChecked("overwriteExistingAnimatedArtwork", state.config.enhancement.coverMaintenance.overwriteExistingAnimatedArtwork === true);
+        setChecked("removeOldAnimatedArtwork", state.config.enhancement.coverMaintenance.removeOldAnimatedArtwork === true);
+        setChecked("useShazamForUntaggedCovers", state.config.enhancement.coverMaintenance.useShazamForUntaggedFiles === true);
         updateCoverMaintenanceFolderSummary(state.config.enhancement.coverMaintenance.folderIds ?? []);
         setValue("coverWorkerCount", state.config.enhancement.coverMaintenance.workerCount ?? 8);
         setChecked("enableQualityChecksWorkflow", state.config.enhancement.qualityChecks.enabled);
@@ -3002,7 +3060,9 @@
             state.config.enhancement.qualityChecks.technicalProfiles
         );
         setChecked("enhancementQueueAtmosAlternatives", state.config.enhancement.qualityChecks.queueAtmosAlternatives);
-        setChecked("enhancementQueueLyricsRefresh", state.config.enhancement.qualityChecks.queueLyricsRefresh);
+        setChecked("enhancementQueueLyricsRefresh", state.config.enhancement.sidecars.queueLyricsRefresh);
+        setChecked("enhancementRemoveLineSyncedTtml", state.config.enhancement.sidecars.removeLineSyncedTtml);
+        setChecked("enhancementRewriteLineSyncedTtml", state.config.enhancement.sidecars.rewriteLineSyncedTtml);
         setChecked("enhancementQueueTechnicalProfileUpgrades", state.config.enhancement.qualityChecks.queueTechnicalProfileUpgrades);
         renderEnhancementTechnicalProfilesCatalog();
         void refreshEnhancementTechnicalProfiles();
@@ -3012,7 +3072,7 @@
         renderPlatformOptions();
         loadItunesArtOptions();
         storeSelectedPlatforms();
-        applyAutomaticSectionsToRunScope();
+        updateEnhancementRunScopeState();
         refreshRecentDownloadTargetHint();
     }
 
@@ -3846,10 +3906,10 @@
         const key = String(platformKey || "").toLowerCase().replaceAll(/\s+/g, "");
         const auth = state.platformAuth || {};
         if (key === "discogs") {
-            return Boolean(auth.discogs?.token);
+            return auth.discogs?.tokenSaved === true;
         }
         if (key === "bpmsupreme") {
-            return Boolean(auth.bpmSupreme?.email && auth.bpmSupreme?.password);
+            return Boolean(auth.bpmSupreme?.email && auth.bpmSupreme?.passwordSaved === true);
         }
         if (key === "lastfm") {
             return Boolean(auth.lastFm?.hasApiKey || auth.lastFm?.apiKey);
@@ -3861,7 +3921,7 @@
             return Boolean(auth.appleMusic?.wrapperReady);
         }
         if (key === "plex") {
-            return Boolean(auth.plex?.url && auth.plex?.token);
+            return Boolean(auth.plex?.url && auth.plex?.tokenSaved === true);
         }
         if (key === "jellyfin") {
             return Boolean(auth.jellyfin?.url && (auth.jellyfin?.apiKey || auth.jellyfin?.username));
@@ -3923,9 +3983,12 @@
     }
 
     function readTagSelectionsFromUi() {
-        state.config.tags = normalizeAutoTagSelectionList(getCheckedTags("tags"));
+        const sharedTags = normalizeAutoTagSelectionList(
+            getCheckedTags("tags").length ? getCheckedTags("tags") : getCheckedTags("gapFillTags")
+        );
+        state.config.tags = sharedTags;
         state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-        state.config.gapFillTags = normalizeAutoTagSelectionList(getCheckedTags("gapFillTags"));
+        state.config.gapFillTags = sharedTags.slice();
         state.config.overwriteTags = normalizeOverwriteTags(getCheckedTags("overwriteTags"));
         syncEnhancementTagsWithEnrichment();
     }
@@ -4034,6 +4097,8 @@
         delete state.config.organizer;
         const gapFilling = state.config.enhancement.gapFilling;
         gapFilling.folderIds = parseFolderIdList(getValue("enhancementGapFillFolder", (gapFilling.folderIds ?? []).join(",")));
+        gapFilling.forceFingerprint = document.querySelector('input[name="enhancementRecognitionMethod"]:checked')?.value === "fingerprint";
+        state.config.enhancementForceFingerprint = gapFilling.forceFingerprint;
         const folderUniformity = state.config.enhancement.folderUniformity;
         folderUniformity.enabled = getChecked("enableFolderUniformityWorkflow", folderUniformity.enabled);
         folderUniformity.folderIds = parseFolderIdList(getValue("enhancementFolderUniformityFolder", (folderUniformity.folderIds ?? []).join(",")));
@@ -4067,8 +4132,10 @@
 
     function readCoverAndQualityEnhancementConfig(getChecked, getValue) {
         const coverMaintenance = state.config.enhancement.coverMaintenance;
-        coverMaintenance.enabled = getChecked("enableCoverMaintenanceWorkflow", coverMaintenance.enabled);
+        const sidecars = state.config.enhancement.sidecars;
+        sidecars.enabled = getChecked("enableSidecarsWorkflow", sidecars.enabled);
         coverMaintenance.folderIds = parseFolderIdList(getValue("enhancementCoverFolder", (coverMaintenance.folderIds ?? []).join(",")));
+        sidecars.folderIds = coverMaintenance.folderIds.slice();
         coverMaintenance.minResolution = Math.max(100, Math.min(5000, Number.parseInt(getValue("coverMinResolution", coverMaintenance.minResolution ?? 500), 10) || 500));
         coverMaintenance.upgradeLowResolutionCovers = getChecked("upgradeLowResolutionCovers", coverMaintenance.upgradeLowResolutionCovers);
         coverMaintenance.replaceMissingEmbeddedCovers = getChecked("replaceMissingCovers", coverMaintenance.replaceMissingEmbeddedCovers);
@@ -4077,6 +4144,15 @@
         coverMaintenance.renameExistingAnimatedArtwork = getChecked(
             "renameExistingAnimatedArtwork",
             coverMaintenance.renameExistingAnimatedArtwork !== false);
+        coverMaintenance.overwriteExistingAnimatedArtwork = getChecked(
+            "overwriteExistingAnimatedArtwork",
+            coverMaintenance.overwriteExistingAnimatedArtwork === true);
+        coverMaintenance.removeOldAnimatedArtwork = getChecked(
+            "removeOldAnimatedArtwork",
+            coverMaintenance.removeOldAnimatedArtwork === true);
+        coverMaintenance.useShazamForUntaggedFiles = getChecked(
+            "useShazamForUntaggedCovers",
+            coverMaintenance.useShazamForUntaggedFiles === true);
         coverMaintenance.workerCount = Number.parseInt(getValue("coverWorkerCount", coverMaintenance.workerCount ?? 8), 10);
         if (!Number.isFinite(coverMaintenance.workerCount)) {
             coverMaintenance.workerCount = 8;
@@ -4087,7 +4163,12 @@
         qualityChecks.enabled = getChecked("enableQualityChecksWorkflow", qualityChecks.enabled);
         qualityChecks.folderIds = parseFolderIdList(getValue("enhancementQualityFolder", (qualityChecks.folderIds ?? []).join(",")));
         qualityChecks.queueAtmosAlternatives = getChecked("enhancementQueueAtmosAlternatives", qualityChecks.queueAtmosAlternatives);
-        qualityChecks.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", qualityChecks.queueLyricsRefresh);
+        sidecars.queueLyricsRefresh = getChecked("enhancementQueueLyricsRefresh", sidecars.queueLyricsRefresh);
+        sidecars.removeLineSyncedTtml = getChecked("enhancementRemoveLineSyncedTtml", sidecars.removeLineSyncedTtml);
+        sidecars.rewriteLineSyncedTtml = getChecked("enhancementRewriteLineSyncedTtml", sidecars.rewriteLineSyncedTtml);
+        delete qualityChecks.queueLyricsRefresh;
+        delete qualityChecks.removeLineSyncedTtml;
+        delete qualityChecks.rewriteLineSyncedTtml;
         qualityChecks.queueTechnicalProfileUpgrades = getChecked("enhancementQueueTechnicalProfileUpgrades", qualityChecks.queueTechnicalProfileUpgrades);
         qualityChecks.flagDuplicates = getChecked("flagDuplicates", qualityChecks.flagDuplicates);
         qualityChecks.flagMissingTags = getChecked("flagMissingTags", qualityChecks.flagMissingTags);
@@ -4514,8 +4595,11 @@
     }
 
     async function startCentralEnhancementFeature(feature, folderIds, statusElementId, groupId = null, options = null) {
-        const features = Array.isArray(feature) ? feature : [feature];
+        const features = [...new Set((Array.isArray(feature) ? feature : [feature])
+            .map((id) => String(id || "").toLowerCase())
+            .filter(Boolean))];
         const request = { scope: options?.scope || "full", features, folderIds };
+        request.forceFingerprint = document.querySelector('input[name="enhancementRecognitionMethod"]:checked')?.value === "fingerprint";
         if (Array.isArray(options?.targetFiles) && options.targetFiles.length > 0) {
             request.targetFiles = options.targetFiles;
         }
@@ -4533,6 +4617,15 @@
         }
         if (payload?.jobId) {
             localStorage.setItem("autotagJobId", String(payload.jobId));
+        }
+        if (payload?.target && Number(payload.target.usable) > 0) {
+            const requested = Number(payload.target.requested || payload.target.usable);
+            const usable = Number(payload.target.usable);
+            const stale = Math.max(0, requested - usable);
+            const reason = String(payload.target.reason || "folder-enumeration");
+            setEnhancementStatus(
+                statusElementId,
+                `Targeting ${usable} file${usable === 1 ? "" : "s"} (${reason}${stale > 0 ? `, ${stale} stale` : ""}).`);
         }
         return pollCentralEnhancementJob(
             payload.jobId,
@@ -4552,13 +4645,22 @@
             automatic: gapTags > 0
         });
 
-        const uniformity = enhancement.folderUniformity;
+        const sidecars = enhancement.sidecars;
+        const covers = enhancement.coverMaintenance;
         sections.push({
-            id: "folder-uniformity",
-            label: "Folder Uniformity",
-            folderIds: uniformity.folderIds,
-            configured: uniformity.enforceFolderStructure || uniformity.runDedupe,
-            automatic: uniformity.enabled
+            id: "sidecars",
+            label: "Sidecars",
+            folderIds: sidecars.folderIds?.length ? sidecars.folderIds : covers.folderIds,
+            configured: sidecars.queueLyricsRefresh
+                || sidecars.removeLineSyncedTtml
+                || sidecars.rewriteLineSyncedTtml
+                || covers.upgradeLowResolutionCovers
+                || covers.replaceMissingEmbeddedCovers
+                || covers.syncExternalCovers
+                || covers.queueAnimatedArtwork
+                || covers.overwriteExistingAnimatedArtwork
+                || covers.removeOldAnimatedArtwork,
+            automatic: sidecars.enabled
         });
 
         const checks = enhancement.qualityChecks;
@@ -4570,22 +4672,17 @@
                 || checks.flagMissingTags
                 || checks.flagMismatchedMetadata
                 || checks.queueAtmosAlternatives
-                || checks.queueLyricsRefresh
                 || checks.queueTechnicalProfileUpgrades,
             automatic: checks.enabled
         });
 
-        const covers = enhancement.coverMaintenance;
+        const uniformity = enhancement.folderUniformity;
         sections.push({
-            id: "cover-maintenance",
-            label: "Cover Maintenance",
-            folderIds: covers.folderIds,
-            configured: covers.upgradeLowResolutionCovers
-                || covers.replaceMissingEmbeddedCovers
-                || covers.syncExternalCovers
-                || covers.queueAnimatedArtwork
-                || covers.renameExistingAnimatedArtwork,
-            automatic: covers.enabled
+            id: "folder-uniformity",
+            label: "Folder Uniformity",
+            folderIds: uniformity.folderIds,
+            configured: uniformity.enforceFolderStructure || uniformity.runDedupe,
+            automatic: uniformity.enabled
         });
 
         return sections;
@@ -4593,9 +4690,9 @@
 
     const ENHANCEMENT_SECTION_CHECKBOX_IDS = {
         "tag-gap-fill": "runScope-tag-gap-fill",
-        "folder-uniformity": "enableFolderUniformityWorkflow",
-        "quality-checks": "enableQualityChecksWorkflow",
-        "cover-maintenance": "enableCoverMaintenanceWorkflow"
+        "sidecars": "runScope-sidecars",
+        "quality-checks": "runScope-quality-checks",
+        "folder-uniformity": "runScope-folder-uniformity"
     };
 
     function getSelectedEnhancementRunSectionIds() {
@@ -4622,28 +4719,10 @@
             }
         }
         const hasSelection = getSelectedEnhancementRunSectionIds().length > 0;
-        for (const buttonId of ["runSelectedEnhancementSections", "runSelectedEnhancementSectionsRecent"]) {
-            const button = el(buttonId);
-            if (button) {
-                button.disabled = !hasSelection;
-            }
+        const runEnabled = el("runSelectedEnhancementSections");
+        if (runEnabled) {
+            runEnabled.disabled = !hasSelection;
         }
-    }
-
-    function applyAutomaticSectionsToRunScope() {
-        let config;
-        try {
-            config = readConfigFromUI();
-        } catch {
-            return;
-        }
-        const gapFillBox = el("runScope-tag-gap-fill");
-        if (gapFillBox) {
-            const gapFill = collectEnhancementRunSections(config)
-                .find((section) => section.id === "tag-gap-fill");
-            gapFillBox.checked = gapFill?.configured === true;
-        }
-        updateEnhancementRunScopeState();
     }
 
     async function runEnhancementSections(sectionIds, statusElementId, button, mode = "full") {
@@ -4661,6 +4740,7 @@
                 throw new Error("The selected Enhancement sections have nothing configured to run.");
             }
 
+            const featureIds = runnable.map((section) => section.id);
             const folderIds = [];
             for (const section of runnable) {
                 for (const folderId of parseFolderIdList(section.folderIds)) {
@@ -4690,7 +4770,6 @@
                 }
             }
 
-            const featureIds = runnable.map((section) => section.id);
             const labels = runnable.map((section) => section.label).join(", ");
             const groupId = globalThis.crypto?.randomUUID?.() || `enhancement-${Date.now()}`;
             const failures = [];
@@ -4744,7 +4823,7 @@
             const filePaths = await collectRecentDownloadFilePaths();
             const label = filePaths.length === 0
                 ? "No completed downloads are available to enhance."
-                : `Runs the ticked workflows on ${filePaths.length} completed download${filePaths.length === 1 ? "" : "s"}.`;
+                : `Runs Gap Filling and Sidecars on ${filePaths.length} completed download${filePaths.length === 1 ? "" : "s"}.`;
             button.setAttribute("title", label);
             button.setAttribute("aria-label", label);
         } catch {
@@ -4766,14 +4845,9 @@
     }
 
     async function runSelectedEnhancementSectionsOnRecentDownloads() {
-        const selected = getSelectedEnhancementRunSectionIds();
-        if (selected.length === 0) {
-            setEnhancementStatus("enhancementRunAllStatus", "Tick at least one workflow to run.");
-            return;
-        }
         await runEnhancementSections(
-            selected,
-            "enhancementRunAllStatus",
+            ["tag-gap-fill", "sidecars"],
+            "sidecarsStatus",
             el("runSelectedEnhancementSectionsRecent"),
             "recent");
     }
@@ -4902,16 +4976,23 @@
         try {
             const config = readConfigFromUI();
             await flushProfileAutoSave();
-            const checks = config.enhancement.qualityChecks;
+            const features = ["quality-checks"];
+            const folderIds = [];
+            for (const folderId of parseFolderIdList(config.enhancement.qualityChecks.folderIds)) {
+                if (!folderIds.includes(folderId)) {
+                    folderIds.push(folderId);
+                }
+            }
             setEnhancementStatus("enhancementQualityChecksStatus", "Running selected quality checks...");
-            const scopes = await resolveEnhancementFolderScopes(checks.folderIds);
+            const scopes = await resolveEnhancementFolderScopes(folderIds);
             if (scopes.length === 0) {
                 throw new Error("No enabled music folders are available for enhancement.");
             }
             for (let index = 0; index < scopes.length; index += 1) {
                 setEnhancementStatus("enhancementQualityChecksStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
-                const job = await startCentralEnhancementFeature("quality-checks", scopes[index], "enhancementQualityChecksStatus");
-                const workflow = findEnhancementWorkflow(job, "quality-checks");
+                const job = await startCentralEnhancementFeature(features, scopes[index], "enhancementQualityChecksStatus");
+                const expected = features.length === 1 ? "quality-checks" : null;
+                const workflow = expected ? findEnhancementWorkflow(job, expected) : null;
                 const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
                     || String(workflow?.status || "").toLowerCase() === "failed";
                 if (failed) {
@@ -4972,8 +5053,8 @@
         }
     }
 
-    async function runCoverMaintenance() {
-        const button = el("runCoverMaintenance");
+    async function runSidecars() {
+        const button = el("runSidecars");
         if (button) {
             button.disabled = true;
         }
@@ -4981,23 +5062,35 @@
         try {
             const config = readConfigFromUI();
             await flushProfileAutoSave();
-            const options = config.enhancement.coverMaintenance;
-            const hasAction = options.upgradeLowResolutionCovers
-                || options.replaceMissingEmbeddedCovers
-                || options.syncExternalCovers
-                || options.queueAnimatedArtwork
-                || options.renameExistingAnimatedArtwork;
-            if (!hasAction) {
-                throw new Error("Enable at least one Cover Maintenance action before starting the run.");
+            const lyrics = config.enhancement.sidecars;
+            const covers = config.enhancement.coverMaintenance;
+            const lyricsOn = lyrics.queueLyricsRefresh
+                || lyrics.removeLineSyncedTtml
+                || lyrics.rewriteLineSyncedTtml;
+            const coversOn = covers.upgradeLowResolutionCovers
+                || covers.replaceMissingEmbeddedCovers
+                || covers.syncExternalCovers
+                || covers.queueAnimatedArtwork
+                || covers.overwriteExistingAnimatedArtwork
+                || covers.removeOldAnimatedArtwork;
+            if (!lyricsOn && !coversOn) {
+                throw new Error("Enable at least one Sidecars action before starting the run.");
             }
-            const scopes = await resolveEnhancementFolderScopes(options.folderIds);
+            const features = ["sidecars"];
+            const folderIds = [];
+            for (const folderId of parseFolderIdList(lyrics.folderIds?.length ? lyrics.folderIds : covers.folderIds)) {
+                if (!folderIds.includes(folderId)) {
+                    folderIds.push(folderId);
+                }
+            }
+            const scopes = await resolveEnhancementFolderScopes(folderIds);
             if (scopes.length === 0) {
                 throw new Error("No enabled music folders are available for enhancement.");
             }
             for (let index = 0; index < scopes.length; index += 1) {
-                setEnhancementStatus("coverMaintenanceStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
-                const job = await startCentralEnhancementFeature("cover-maintenance", scopes[index], "coverMaintenanceStatus");
-                const workflow = findEnhancementWorkflow(job, "cover-maintenance");
+                setEnhancementStatus("sidecarsStatus", `Processing music folder ${index + 1}/${scopes.length}...`);
+                const job = await startCentralEnhancementFeature(features, scopes[index], "sidecarsStatus");
+                const workflow = findEnhancementWorkflow(job, "sidecars");
                 const failed = ["failed", "error", "interrupted", "canceled"].includes(String(job?.status || "").toLowerCase())
                     || String(workflow?.status || "").toLowerCase() === "failed";
                 if (failed) {
@@ -5005,12 +5098,12 @@
                 }
             }
 
-            const message = `Cover Maintenance completed for ${scopes.length} music folders.`;
-            setEnhancementStatus("coverMaintenanceStatus", message);
+            const message = `Sidecars completed for ${scopes.length} music folders.`;
+            setEnhancementStatus("sidecarsStatus", message);
             showToast(message, "success");
         } catch (error) {
-            const message = `Cover maintenance failed: ${error?.message || error}`;
-            setEnhancementStatus("coverMaintenanceStatus", message);
+            const message = `Sidecars failed: ${error?.message || error}`;
+            setEnhancementStatus("sidecarsStatus", message);
             showToast(message, "error");
         } finally {
             if (button) {
@@ -5782,10 +5875,12 @@
         const embedLyricsFormatGroup = document.getElementById("embedLyricsFormatGroup");
         const lyricsFormatOptions = document.getElementById("lyricsFormatOptions");
         const synthesizeLrcFromTtmlGroup = document.getElementById("synthesizeLrcFromTtmlGroup");
+        const synthesizeTtmlFromLrcGroup = document.getElementById("synthesizeTtmlFromLrcGroup");
         const lrcFormat = document.getElementById("lrcFormat");
         const synthesizeLrcFromTtml = document.getElementById("synthesizeLrcFromTtml");
-        const preferEnhancedLrcGroup = document.getElementById("preferEnhancedLrcGroup");
-        const preferEnhancedLrc = document.getElementById("preferEnhancedLrc");
+        const synthesizeTtmlFromLrc = document.getElementById("synthesizeTtmlFromLrc");
+        const lrcTimingPreferenceGroup = document.getElementById("lrcTimingPreferenceGroup");
+        const lrcTimingPreference = document.getElementById("lrcTimingPreference");
         if (!embedLyricsFormatGroup) {
             return;
         }
@@ -5794,9 +5889,14 @@
         const canSynthesizeLrc = show
             && document.getElementById("lyrics-format-lrc")?.checked === true
             && document.getElementById("lyrics-type-ttml")?.checked === true;
+        const canSynthesizeTtml = show
+            && document.getElementById("lyrics-format-ttml")?.checked === true;
         embedLyricsFormatGroup.style.display = show ? "" : "none";
         if (synthesizeLrcFromTtmlGroup) {
             synthesizeLrcFromTtmlGroup.style.display = canSynthesizeLrc ? "" : "none";
+        }
+        if (synthesizeTtmlFromLrcGroup) {
+            synthesizeTtmlFromLrcGroup.style.display = canSynthesizeTtml ? "" : "none";
         }
         if (lrcFormat) {
             lrcFormat.disabled = !show;
@@ -5809,13 +5909,53 @@
         if (synthesizeLrcFromTtml) {
             synthesizeLrcFromTtml.disabled = !canSynthesizeLrc;
         }
-        const canPreferEnhancedLrc = show && document.getElementById("lyrics-format-lrc")?.checked === true;
-        if (preferEnhancedLrcGroup) {
-            preferEnhancedLrcGroup.style.display = canPreferEnhancedLrc ? "" : "none";
+        if (synthesizeTtmlFromLrc) {
+            synthesizeTtmlFromLrc.disabled = !canSynthesizeTtml;
         }
-        if (preferEnhancedLrc) {
-            preferEnhancedLrc.disabled = !canPreferEnhancedLrc;
+        const canChooseLrcTiming = show && document.getElementById("lyrics-format-lrc")?.checked === true;
+        if (lrcTimingPreferenceGroup) {
+            lrcTimingPreferenceGroup.style.display = canChooseLrcTiming ? "" : "none";
         }
+        document.querySelectorAll("input[name=\"lrcTimingPreferenceRadio\"]").forEach((radio) => {
+            radio.disabled = !canChooseLrcTiming;
+        });
+        if (lrcTimingPreference) {
+            lrcTimingPreference.disabled = !canChooseLrcTiming;
+        }
+    }
+
+    function normalizeLrcTimingPreference(value, preferEnhancedLrc) {
+        const token = String(value || "").trim().toLowerCase();
+        if (token === "line" || token === "line-timed" || token === "line-level" || token === "standard") {
+            return "line";
+        }
+        if (token === "word-enhanced" || token === "word" || token === "enhanced" || token === "word-only") {
+            return "word-enhanced";
+        }
+        if (token === "prefer-enhanced" || token === "prefer" || token === "prefer-enhanced-else-line") {
+            return "prefer-enhanced";
+        }
+        return preferEnhancedLrc === false ? "line" : "prefer-enhanced";
+    }
+
+    function applyLrcTimingPreferenceToUI(value) {
+        const normalized = normalizeLrcTimingPreference(value, true);
+        const hidden = document.getElementById("lrcTimingPreference");
+        if (hidden) {
+            hidden.value = normalized;
+        }
+        document.querySelectorAll("input[name=\"lrcTimingPreferenceRadio\"]").forEach((radio) => {
+            radio.checked = radio.value === normalized;
+        });
+    }
+
+    function readLrcTimingPreferenceFromUI(fallback) {
+        const selected = document.querySelector("input[name=\"lrcTimingPreferenceRadio\"]:checked");
+        if (selected?.value) {
+            return normalizeLrcTimingPreference(selected.value, true);
+        }
+        const hidden = document.getElementById("lrcTimingPreference");
+        return normalizeLrcTimingPreference(hidden?.value || fallback, fallback !== "line");
     }
 
     function setTemplateInputEnabled(toggleId, groupId, inputId) {
@@ -5836,6 +5976,8 @@
     function refreshArtworkTemplateFieldState() {
         setTemplateInputEnabled("saveArtwork", "coverImageTemplateGroup", "coverImageTemplate");
         setTemplateInputEnabled("saveArtworkArtist", "artistImageTemplateGroup", "artistImageTemplate");
+        setTemplateInputEnabled("saveAnimatedArtwork", "animatedArtworkSquareFileNameGroup", "animatedArtworkSquareFileName");
+        setTemplateInputEnabled("saveAnimatedArtwork", "animatedArtworkTallFileNameGroup", "animatedArtworkTallFileName");
     }
 
     function setupFallbackSourceSelectors() {
@@ -5883,7 +6025,7 @@
         if (saveLyrics) {
             saveLyrics.addEventListener("change", updateEmbedLyricsFormatVisibility);
         }
-        ["lyrics-format-lrc", "lyrics-type-ttml"].forEach((id) => {
+        ["lyrics-format-lrc", "lyrics-format-ttml", "lyrics-type-ttml"].forEach((id) => {
             document.getElementById(id)?.addEventListener("change", updateEmbedLyricsFormatVisibility);
         });
         updateEmbedLyricsFormatVisibility();
@@ -5896,6 +6038,10 @@
         const saveArtworkArtist = document.getElementById("saveArtworkArtist");
         if (saveArtworkArtist) {
             saveArtworkArtist.addEventListener("change", refreshArtworkTemplateFieldState);
+        }
+        const saveAnimatedArtwork = document.getElementById("saveAnimatedArtwork");
+        if (saveAnimatedArtwork) {
+            saveAnimatedArtwork.addEventListener("change", refreshArtworkTemplateFieldState);
         }
         refreshArtworkTemplateFieldState();
 
@@ -6013,7 +6159,10 @@
         applyFieldValueIfPresent("lrcType", normalizeLyricsTypeSetting(technical.lrcType || DEFAULT_LYRICS_TYPE_SELECTION));
         applyFieldValueIfPresent("lrcFormat", normalizeEmbedLyricsFormat(technical.lrcFormat || "richlyrics"));
         applyFieldCheckedWhenBoolean("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
-        applyFieldCheckedWhenBoolean("preferEnhancedLrc", technical.preferEnhancedLrc ?? true);
+        applyFieldCheckedWhenBoolean("synthesizeTtmlFromLrc", technical.synthesizeTtmlFromLrc ?? true);
+        applyLrcTimingPreferenceToUI(normalizeLrcTimingPreference(
+            technical.lrcTimingPreference,
+            technical.preferEnhancedLrc ?? true));
         applyFieldCheckedWhenBoolean("lyricsFallbackEnabled", technical.lyricsFallbackEnabled);
         applyFieldValueIfPresent("lyricsFallbackOrder", technical.lyricsFallbackOrder || LYRICS_SOURCE_ORDER.join(","));
         applyFieldCheckedWhenBoolean("artworkFallbackEnabled", technical.artworkFallbackEnabled);
@@ -6058,6 +6207,8 @@
             const data = await response.json();
             state.settingsCache = data?.settings || null;
             setAnimatedArtworkFormatControls(state.settingsCache?.animatedArtworkFormats || "mp4");
+            applyFieldValueIfPresent("animatedArtworkSquareFileName", state.settingsCache?.animatedArtworkSquareFileName);
+            applyFieldValueIfPresent("animatedArtworkTallFileName", state.settingsCache?.animatedArtworkTallFileName);
             refreshDownloadTagsForSource();
             // Manual external intake path input is intentionally disabled.
             // const intakeInput = el("autotag-custom-path");
@@ -6087,6 +6238,12 @@
         settings.dlAlbumcoverForPlaylist = getChecked("dlAlbumcoverForPlaylist", settings.dlAlbumcoverForPlaylist ?? true);
         settings.saveArtworkArtist = getChecked("saveArtworkArtist", settings.saveArtworkArtist ?? false);
         settings.coverImageTemplate = getValue("coverImageTemplate", settings.coverImageTemplate ?? "cover");
+        settings.animatedArtworkSquareFileName = getValue(
+            "animatedArtworkSquareFileName",
+            settings.animatedArtworkSquareFileName ?? "cover");
+        settings.animatedArtworkTallFileName = getValue(
+            "animatedArtworkTallFileName",
+            settings.animatedArtworkTallFileName ?? "cover_tall");
         settings.artistImageTemplate = getValue("artistImageTemplate", settings.artistImageTemplate ?? "folder");
         settings.localArtworkFormat = getValue("localArtworkFormat", settings.localArtworkFormat ?? "jpg");
         settings.embedMaxQualityCover = getChecked("embedMaxQualityCover", settings.embedMaxQualityCover ?? true);
@@ -6152,7 +6309,9 @@
         technical.embedLyrics = getChecked("embedLyrics", technical.embedLyrics ?? true);
         technical.lrcFormat = normalizeEmbedLyricsFormat(getValue("lrcFormat", technical.lrcFormat ?? "richlyrics"));
         technical.synthesizeLrcFromTtml = getChecked("synthesizeLrcFromTtml", technical.synthesizeLrcFromTtml ?? false);
-        technical.preferEnhancedLrc = getChecked("preferEnhancedLrc", technical.preferEnhancedLrc ?? true);
+        technical.synthesizeTtmlFromLrc = getChecked("synthesizeTtmlFromLrc", technical.synthesizeTtmlFromLrc ?? true);
+        technical.lrcTimingPreference = readLrcTimingPreferenceFromUI(technical.lrcTimingPreference || "prefer-enhanced");
+        technical.preferEnhancedLrc = technical.lrcTimingPreference !== "line";
         technical.lyricsFallbackEnabled = getChecked("lyricsFallbackEnabled", technical.lyricsFallbackEnabled ?? true);
         technical.lyricsFallbackOrder = resolveSavedFallbackOrder({
             fallbackEnabled: technical.lyricsFallbackEnabled,
@@ -6237,6 +6396,12 @@
             dlAlbumcoverForPlaylist: getInputChecked("dlAlbumcoverForPlaylist", getBaseBool("dlAlbumcoverForPlaylist", true)),
             saveArtworkArtist: getInputChecked("saveArtworkArtist", getBaseBool("saveArtworkArtist", false)),
             coverImageTemplate: getInputValue("coverImageTemplate", getBaseString("coverImageTemplate", "cover")),
+            animatedArtworkSquareFileName: getInputValue(
+                "animatedArtworkSquareFileName",
+                getBaseString("animatedArtworkSquareFileName", "cover")),
+            animatedArtworkTallFileName: getInputValue(
+                "animatedArtworkTallFileName",
+                getBaseString("animatedArtworkTallFileName", "cover_tall")),
             artistImageTemplate: getInputValue("artistImageTemplate", getBaseString("artistImageTemplate", "folder")),
             localArtworkFormat: getInputValue("localArtworkFormat", getBaseString("localArtworkFormat", "jpg")),
             embedMaxQualityCover: getInputChecked("embedMaxQualityCover", getBaseBool("embedMaxQualityCover", true)),
@@ -6252,12 +6417,16 @@
                 1,
                 200
             ),
-            recentDownloadWindowDays: getInputNumber(
+            recentDownloadWindowDays: normalizeRecentDownloadWindowDays(getInputNumber(
                 "enhancementRecentDownloadWindowDays",
                 getBaseNumber("recentDownloadWindowDays", DEFAULT_RECENT_DOWNLOAD_WINDOW_DAYS, 0, 3650),
                 0,
                 3650
-            )
+            )),
+            recentDownloadEnhancementTime: normalizeRecentDownloadEnhancementTime(getInputValue(
+                "enhancementRecentDownloadTime",
+                getBaseString("recentDownloadEnhancementTime", DEFAULT_RECENT_DOWNLOAD_ENHANCEMENT_TIME)
+            ))
         };
 
         return profileScoped;
@@ -6277,6 +6446,8 @@
         applyFieldCheckedWhenBoolean("dlAlbumcoverForPlaylist", source.dlAlbumcoverForPlaylist);
         applyFieldCheckedWhenBoolean("saveArtworkArtist", source.saveArtworkArtist);
         applyFieldValueIfPresent("coverImageTemplate", source.coverImageTemplate);
+        applyFieldValueIfPresent("animatedArtworkSquareFileName", source.animatedArtworkSquareFileName);
+        applyFieldValueIfPresent("animatedArtworkTallFileName", source.animatedArtworkTallFileName);
         applyFieldValueIfPresent("artistImageTemplate", source.artistImageTemplate);
         applyFieldValueIfPresent("localArtworkFormat", source.localArtworkFormat);
         applyFieldCheckedWhenBoolean("embedMaxQualityCover", source.embedMaxQualityCover);
@@ -6300,15 +6471,21 @@
             : null;
         const recentWindowDays = source.recentDownloadWindowDays ?? fallbackRecentWindowDays;
         if (recentWindowDays !== undefined && recentWindowDays !== null) {
-            ensureRecentDownloadWindowControls();
             const parsedDays = Number.parseInt(String(recentWindowDays), 10);
             if (Number.isFinite(parsedDays)) {
                 applyFieldValueIfPresent(
                     "enhancementRecentDownloadWindowDays",
-                    Math.min(3650, Math.max(0, parsedDays))
+                    normalizeRecentDownloadWindowDays(parsedDays)
                 );
+                const daysField = el("enhancementRecentDownloadWindowDays");
+                if (daysField instanceof HTMLInputElement) {
+                    daysField.dataset.previousDays = daysField.value;
+                }
             }
         }
+        applyFieldValueIfPresent(
+            "enhancementRecentDownloadTime",
+            normalizeRecentDownloadEnhancementTime(source.recentDownloadEnhancementTime));
 
         refreshArtworkTemplateFieldState();
         renderFolderStructurePreview();
@@ -6706,118 +6883,23 @@
         };
     }
 
-    function createRenameSpotifyArtistFoldersControl() {
-        const group = document.createElement("div");
-        group.className = "form-group";
-        group.innerHTML = `
-            <div class="checkbox-group mb-2">
-                <input type="checkbox" id="enhancementRenameSpotifyArtistFolders" />
-                <label for="enhancementRenameSpotifyArtistFolders">
-                    Rename artist folders to Spotify's canonical artist name
-                </label>
-            </div>
-            <span class="helper">Applies to Spotify artist lookups across the library and watchlist flows.</span>
-        `;
-        return group;
-    }
-
-    function ensureRecentDownloadWindowStatus(section) {
-        if (el("enhancementRecentDownloadWindowStatus")) {
-            return;
-        }
-        const status = document.createElement("span");
-        status.className = "helper";
-        status.id = "enhancementRecentDownloadWindowStatus";
-        section.appendChild(status);
-    }
-
-    function appendRecentDownloadWindowStatusBefore(section, anchor) {
-        if (el("enhancementRecentDownloadWindowStatus")) {
-            return;
-        }
-        const status = document.createElement("span");
-        status.className = "helper";
-        status.id = "enhancementRecentDownloadWindowStatus";
-        section.insertBefore(status, anchor || null);
-    }
-
-    function hasRecentDownloadWindowControls() {
-        return Boolean(el("enhancementRecentDownloadWindowDays") && el("enhancementRenameSpotifyArtistFolders"));
-    }
-
-    function ensureRecentDownloadWindowControls() {
-        const hasWindowField = Boolean(el("enhancementRecentDownloadWindowDays"));
-        const hasRenameToggle = Boolean(el("enhancementRenameSpotifyArtistFolders"));
-        if (hasWindowField && hasRenameToggle) {
-            const section = el("runEnhancementQualityChecks")?.closest(".download-section");
-            if (section) {
-                ensureRecentDownloadWindowStatus(section);
-            }
-            return;
+    function normalizeRecentDownloadWindowDays(value) {
+        const parsed = Number.parseInt(String(value ?? ""), 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            return 0;
         }
 
-        const qualityChecksButton = el("runEnhancementQualityChecks");
-        const section = qualityChecksButton?.closest(".download-section");
-        if (!section) {
-            return;
-        }
-
-        tryInsertRenameSpotifyControl(hasWindowField, hasRenameToggle);
-
-        if (hasRecentDownloadWindowControls()) {
-            ensureRecentDownloadWindowStatus(section);
-            return;
-        }
-
-        const insertionAnchor = resolveRecentDownloadInsertionAnchor(section);
-        section.insertBefore(createRecentDownloadWindowControlsRow(), insertionAnchor || null);
-        appendRecentDownloadWindowStatusBefore(section, insertionAnchor);
+        return Math.min(3650, Math.max(MIN_RECENT_DOWNLOAD_WINDOW_DAYS, parsed));
     }
 
-    function tryInsertRenameSpotifyControl(hasWindowField, hasRenameToggle) {
-        if (!hasWindowField || hasRenameToggle) {
-            return;
+    function normalizeRecentDownloadEnhancementTime(value) {
+        const raw = String(value || "").trim();
+        const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)/);
+        if (!match) {
+            return DEFAULT_RECENT_DOWNLOAD_ENHANCEMENT_TIME;
         }
-        const windowField = el("enhancementRecentDownloadWindowDays");
-        const row = windowField?.closest(".download-grid");
-        if (row) {
-            row.insertBefore(createRenameSpotifyArtistFoldersControl(), row.firstElementChild || null);
-        }
-    }
 
-    function resolveRecentDownloadInsertionAnchor(section) {
-        return el("enhancementTechnicalProfilesStatus")
-            || el("enhancementQualityChecksStatus")
-            || section.querySelector(".enhancement-action-row");
-    }
-
-    function createRecentDownloadWindowControlsRow() {
-        const row = document.createElement("div");
-        row.className = "download-grid download-grid-2 mt-3";
-        row.innerHTML = `
-            <div class="form-group">
-                <div class="checkbox-group mb-2">
-                    <input type="checkbox" id="enhancementRenameSpotifyArtistFolders" />
-                    <label for="enhancementRenameSpotifyArtistFolders">
-                        Rename artist folders to Spotify's canonical artist name
-                    </label>
-                </div>
-                <span class="helper">Applies to Spotify artist lookups across the library and watchlist flows.</span>
-            </div>
-            <div class="form-group">
-                <label for="enhancementRecentDownloadWindowDays">
-                    Recent downloads window (days)
-                    <span class="autotag-tooltip-icon ms-1"
-                          title="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering."
-                          aria-label="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering.">
-                        <i class="fas fa-question-circle"></i>
-                    </span>
-                </label>
-                <input type="number" id="enhancementRecentDownloadWindowDays" min="0" step="1" />
-                <span class="helper">Applies to the automation run that enhances recent downloads moved into library folders.</span>
-            </div>
-        `;
-        return row;
+        return `${String(match[1]).padStart(2, "0")}:${match[2]}`;
     }
 
     function convertRecentWindowHoursToDays(hours) {
@@ -6828,10 +6910,6 @@
             return 0;
         }
         return Math.max(1, Math.round(normalizedHours / 24));
-    }
-
-    function applyAutoTagDefaultsToUi() {
-        ensureRecentDownloadWindowControls();
     }
 
     async function loadAutoTagDefaults() {
@@ -6845,7 +6923,6 @@
             state.autoTagDefaults = normalizeAutoTagDefaults(defaults);
         } finally {
             state.autoTagDefaultsLoaded = true;
-            applyAutoTagDefaultsToUi();
         }
     }
 
@@ -7285,11 +7362,16 @@
             if (target instanceof HTMLInputElement
                 && target.type === "checkbox"
                 && ["tags", "downloadTags", "gapFillTags", "overwriteTags"].includes(target.name)) {
-                state.config.tags = normalizeAutoTagSelectionList(getCheckedTags("tags"));
+                const sourceName = target.name === "gapFillTags" ? "gapFillTags" : "tags";
+                const sharedTags = ["tags", "gapFillTags"].includes(target.name)
+                    ? normalizeAutoTagSelectionList(getCheckedTags(sourceName))
+                    : normalizeAutoTagSelectionList(getCheckedTags("tags"));
+                state.config.tags = sharedTags;
                 state.config.downloadTags = normalizeDownloadTags(getCheckedTags("downloadTags"));
-                state.config.gapFillTags = normalizeAutoTagSelectionList(getCheckedTags("gapFillTags"));
+                state.config.gapFillTags = sharedTags.slice();
                 state.config.overwriteTags = normalizeOverwriteTags(getCheckedTags("overwriteTags"));
                 syncEnhancementTagsWithEnrichment();
+                renderTags("autotag-tags", state.config.tags || [], "tags");
                 renderTags("gap-fill-tags", state.config.gapFillTags || [], "gapFillTags");
                 renderTags("autotag-overwrite-tags", state.config.overwriteTags || [], "overwriteTags");
             }
@@ -7327,7 +7409,6 @@
         });
     }
 
-    ensureRecentDownloadWindowControls();
     el("autotag-start")?.addEventListener("click", startAutoTag);
     el("autotag-stop")?.addEventListener("click", stopAutoTag);
     el("autotag-reset")?.addEventListener("click", resetForm);
@@ -7351,11 +7432,11 @@
     el("autotag-profile-load")?.addEventListener("click", loadProfile);
     el("autotag-profile-copy")?.addEventListener("click", copyProfile);
     el("autotag-profile-delete")?.addEventListener("click", deleteProfile);
-    el("runCoverMaintenance")?.addEventListener("click", runCoverMaintenance);
+    el("runSidecars")?.addEventListener("click", runSidecars);
     el("runEnhancementGapFilling")?.addEventListener("click", runEnhancementGapFilling);
     el("runSelectedEnhancementSections")?.addEventListener("click", runSelectedEnhancementSections);
     el("runSelectedEnhancementSectionsRecent")?.addEventListener("click", runSelectedEnhancementSectionsOnRecentDownloads);
-    el("enhancementRunScopeSelectAutomatic")?.addEventListener("click", applyAutomaticSectionsToRunScope);
+
     el("enhancementRunScopeSelectAll")?.addEventListener("click", () => {
         for (const id of ENHANCEMENT_RUN_SECTION_IDS) {
             const box = el(ENHANCEMENT_SECTION_CHECKBOX_IDS[id]);
@@ -7381,10 +7462,32 @@
     el("runEnhancementQualityChecks")?.addEventListener("click", runEnhancementQualityChecks);
     el("enhancementRenameSpotifyArtistFolders")?.addEventListener("change", () => {
         state.autoTagDefaultsDirty = true;
+        setEnhancementStatus("folderUniformityStatus", "Enhancement profile settings have unsaved changes.");
+        scheduleProfileAutoSave();
+    });
+    el("enhancementRecentDownloadWindowDays")?.addEventListener("input", (event) => {
+        const field = event.currentTarget;
+        if (field instanceof HTMLInputElement) {
+            const previous = Number.parseInt(field.dataset.previousDays || "0", 10);
+            const parsed = Number.parseInt(field.value, 10);
+            if (Number.isFinite(parsed) && previous <= 0 && parsed > 0 && parsed < MIN_RECENT_DOWNLOAD_WINDOW_DAYS) {
+                field.value = String(MIN_RECENT_DOWNLOAD_WINDOW_DAYS);
+            } else if (Number.isFinite(parsed) && previous >= MIN_RECENT_DOWNLOAD_WINDOW_DAYS && parsed > 0 && parsed < MIN_RECENT_DOWNLOAD_WINDOW_DAYS) {
+                field.value = "0";
+            } else {
+                field.value = String(normalizeRecentDownloadWindowDays(field.value));
+            }
+            field.dataset.previousDays = field.value;
+        }
+        state.autoTagDefaultsDirty = true;
         setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement profile settings have unsaved changes.");
         scheduleProfileAutoSave();
     });
-    el("enhancementRecentDownloadWindowDays")?.addEventListener("input", () => {
+    el("enhancementRecentDownloadTime")?.addEventListener("change", () => {
+        const field = el("enhancementRecentDownloadTime");
+        if (field instanceof HTMLInputElement) {
+            field.value = normalizeRecentDownloadEnhancementTime(field.value);
+        }
         state.autoTagDefaultsDirty = true;
         setEnhancementStatus("enhancementRecentDownloadWindowStatus", "Enhancement profile settings have unsaved changes.");
         scheduleProfileAutoSave();

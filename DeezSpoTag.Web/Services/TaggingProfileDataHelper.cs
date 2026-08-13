@@ -107,6 +107,8 @@ internal static class TaggingProfileDataHelper
             changed |= CanonicalizeFolderScopeNode(enhancementNode, "folderUniformity");
             changed |= CanonicalizeFolderScopeNode(enhancementNode, "coverMaintenance");
             changed |= CanonicalizeFolderScopeNode(enhancementNode, "qualityChecks");
+            changed |= EnhancementWorkflowSelection.CanonicalizeSidecars(enhancementNode);
+            changed |= CanonicalizeFolderScopeNode(enhancementNode, "sidecars");
             changed |= RemoveLegacyFolderUniformityStructureMirrors(enhancementNode);
 
             if (!changed)

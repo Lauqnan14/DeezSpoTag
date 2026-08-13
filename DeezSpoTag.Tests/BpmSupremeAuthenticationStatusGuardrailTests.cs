@@ -14,10 +14,13 @@ public sealed class BpmSupremeAuthenticationStatusGuardrailTests
         var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "PlatformAuthApiController.cs");
         var login = ReadSource("DeezSpoTag.Web", "Views", "Login", "Index.cshtml");
         var site = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "site.js");
+        var autotag = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "autotag.js");
 
         Assert.Contains("passwordSaved = !string.IsNullOrWhiteSpace(state.BpmSupreme.Password)", controller, StringComparison.Ordinal);
         Assert.Contains("data.bpmSupreme.passwordSaved === true", login, StringComparison.Ordinal);
         Assert.Contains("authData.bpmSupreme?.passwordSaved === true", site, StringComparison.Ordinal);
+        Assert.Contains("auth.bpmSupreme?.passwordSaved === true", autotag, StringComparison.Ordinal);
+        Assert.DoesNotContain("auth.bpmSupreme?.email && auth.bpmSupreme?.password)", autotag, StringComparison.Ordinal);
         Assert.DoesNotContain("data.bpmSupreme.email && data.bpmSupreme.password)", login, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "authData.bpmSupreme?.email && authData.bpmSupreme?.password,",

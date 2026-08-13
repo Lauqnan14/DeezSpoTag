@@ -52,4 +52,29 @@ public sealed class TrackTitleMatcherTests
     [Fact]
     public void StrictArtistsMatch_DoesNotMatchUnrelatedArtists()
         => Assert.False(TrackTitleMatcher.StrictArtistsMatch("Jay Z", "Sonny Rollins"));
+
+    [Theory]
+    [InlineData("Save Your Tears", "Save Your Tears (Remix) (feat. Ariana Grande)")]
+    [InlineData("Save Your Tears", "Save Your Tears (Instrumental)")]
+    [InlineData("Save Your Tears", "Save Your Tears - Remix")]
+    [InlineData("Blinding Lights", "Blinding Lights (Live)")]
+    [InlineData("Save Your Tears (Remix)", "Save Your Tears")]
+    [InlineData("Save Your Tears (Instrumental)", "Save Your Tears")]
+    public void HasVersionDrift_RejectsRemixAndInstrumentalSwaps(string expected, string actual)
+    {
+        Assert.True(TrackTitleMatcher.HasVersionDrift(expected, actual));
+        Assert.False(TrackTitleMatcher.TitlesMatch(expected, actual));
+    }
+
+    [Theory]
+    [InlineData("Save Your Tears", "Save Your Tears")]
+    [InlineData("Save Your Tears (Remix)", "Save Your Tears (Remix) (feat. Ariana Grande)")]
+    [InlineData("Save Your Tears (Instrumental)", "Save Your Tears [Instrumental]")]
+    [InlineData("Save Your Tears", "Save Your Tears (Radio Edit)")]
+    [InlineData("Save Your Tears", "Save Your Tears (Official Audio)")]
+    public void HasVersionDrift_AllowsSameVersionAndCosmeticTitleChanges(string expected, string actual)
+    {
+        Assert.False(TrackTitleMatcher.HasVersionDrift(expected, actual));
+        Assert.True(TrackTitleMatcher.TitlesMatch(expected, actual));
+    }
 }

@@ -53,7 +53,8 @@ public sealed class DeezSpoTagSettingsServiceLyricsFallbackOrderTests : IDisposa
 
         var persisted = _settingsService.LoadSettings();
         Assert.Equal(expected, persisted.PreferEnhancedLrc);
-        Assert.Equal(1, persisted.LyricsFormatSchemaVersion);
+        Assert.Equal(2, persisted.LyricsFormatSchemaVersion);
+        Assert.True(persisted.SynthesizeTtmlFromLrc);
         Assert.DoesNotContain("elrc", persisted.LrcFormat, StringComparison.OrdinalIgnoreCase);
     }
 

@@ -29,7 +29,13 @@ public sealed class SpotifyClient
 
         try
         {
-            summaries = await _metadataService.HydrateTrackIsrcsAsync(summaries, cancellationToken);
+            using var hydrateTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            hydrateTimeout.CancelAfter(TimeSpan.FromSeconds(8));
+            summaries = await _metadataService.HydrateTrackIsrcsAsync(summaries, hydrateTimeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug("Spotify track ISRC hydration timed out; continuing with search results.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -52,7 +58,10 @@ public sealed class SpotifyClient
 
         try
         {
-            var metadata = await _metadataService.FetchByUrlAsync(sourceUrl, cancellationToken);
+            var metadata = await _metadataService.FetchByUrlAsync(
+                sourceUrl,
+                cancellationToken,
+                hydrateTracks: false);
             if (metadata == null || metadata.TrackList.Count == 0)
             {
                 return track;

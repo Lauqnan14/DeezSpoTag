@@ -241,6 +241,8 @@ public class AudioTagger
                 DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedExtension));
         }
 
+        ApplyAlbumDateConsensus(writePath, track);
+
         const int maxAttempts = 5;
         const int delayMs = 200;
 
@@ -1926,8 +1928,112 @@ public class AudioTagger
         return FirstNonEmpty(track.ReleaseType, track.Album?.RecordType);
     }
 
+    private static readonly string[] AlbumDateSeedExtensions =
+        [".flac", ".mp3", ".m4a", ".mp4", ".aac", ".alac", ".ogg", ".opus", ".wav"];
+
+    private static void ApplyAlbumDateConsensus(string writePath, DeezSpoTag.Core.Models.Track track)
+    {
+        if (track.Playlist != null || track.Album == null || string.IsNullOrWhiteSpace(track.Album.Title))
+        {
+            return;
+        }
+
+        var sibling = TryReadSiblingAlbumDate(writePath, track.Album.Title);
+        if (string.IsNullOrWhiteSpace(sibling))
+        {
+            return;
+        }
+
+        track.Album.DateString = sibling;
+    }
+
+    private static string? TryReadSiblingAlbumDate(string writePath, string albumTitle)
+    {
+        IEnumerable<string> siblings;
+        try
+        {
+            var directory = Path.GetDirectoryName(writePath);
+            if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+            {
+                return null;
+            }
+
+            siblings = Directory.EnumerateFiles(directory).ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null;
+        }
+
+        foreach (var sibling in siblings)
+        {
+            if (string.Equals(sibling, writePath, StringComparison.OrdinalIgnoreCase)
+                || !AlbumDateSeedExtensions.Contains(Path.GetExtension(sibling), StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var file = TagLib.File.Create(sibling);
+                if (!string.Equals(file.Tag.Album?.Trim(), albumTitle.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var date = ReadSiblingDateString(file);
+                if (!string.IsNullOrWhiteSpace(date))
+                {
+                    return date;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ReadSiblingDateString(TagLib.File file)
+    {
+        if (file.GetTag(TagTypes.Xiph, false) is TagLib.Ogg.XiphComment xiph)
+        {
+            var value = xiph.GetField("DATE").FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        if (file.GetTag(TagTypes.Id3v2, false) is TagLib.Id3v2.Tag id3)
+        {
+            var frame = id3.GetFrames<TagLib.Id3v2.TextInformationFrame>()
+                .FirstOrDefault(candidate => candidate.FrameId.ToString() == "TDRC");
+            var value = frame?.Text.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return file.Tag.Year > 0
+            ? file.Tag.Year.ToString(CultureInfo.InvariantCulture)
+            : null;
+    }
+
     private static string? ResolveReleaseDate(DeezSpoTag.Core.Models.Track track)
     {
+        if (track.Playlist == null && !string.IsNullOrWhiteSpace(track.Album?.Title))
+        {
+            var albumDate = FirstNonEmpty(track.Album.DateString, FormatIsoDate(track.Album.ReleaseDate));
+            if (!string.IsNullOrWhiteSpace(albumDate))
+            {
+                return albumDate;
+            }
+        }
+
         return FirstNonEmpty(track.DateString, FormatIsoDate(track.Album?.ReleaseDate));
     }
 

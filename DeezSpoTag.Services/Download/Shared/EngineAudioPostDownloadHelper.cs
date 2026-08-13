@@ -2645,17 +2645,13 @@ public static partial class EngineAudioPostDownloadHelper
     {
         var resolvedAppleId = appleIdentity?.AppleId;
         var settings = execution.Request.Settings;
-        var coverName = runtime.PathProcessor.GenerateAlbumName(
-            settings.CoverImageTemplate,
-            execution.Request.Context.Track.Album,
-            settings,
-            execution.Request.Context.Track.Playlist);
         var request = new AppleQueueHelpers.AnimatedArtworkSaveRequest
         {
             AppleId = resolvedAppleId,
             Artist = appleIdentity?.ArtistName ?? execution.Request.Payload.Artist,
             Album = appleIdentity?.AlbumName ?? execution.Request.Payload.Album,
-            BaseFileName = coverName,
+            SquareFileName = settings.AnimatedArtworkSquareFileName,
+            TallFileName = settings.AnimatedArtworkTallFileName,
             Storefront = string.IsNullOrWhiteSpace(settings.AppleMusic?.Storefront) ? "us" : settings.AppleMusic!.Storefront,
             MaxResolution = settings.Video.AppleMusicVideoMaxResolution,
             OutputDir = execution.Paths.CoverPath,
@@ -2670,10 +2666,17 @@ public static partial class EngineAudioPostDownloadHelper
             request,
             execution.Request.Logger,
             token);
-        if (existingAnimatedPaths.Count > 0)
+        var stems = AppleQueueHelpers.ResolveAnimatedArtworkStems(request);
+        var canonicalExisting = existingAnimatedPaths
+            .Where(path => AnimatedArtworkNaming.IsCurrentStem(
+                Path.GetFileNameWithoutExtension(path),
+                stems.Square,
+                stems.Tall))
+            .ToList();
+        if (canonicalExisting.Count > 0)
         {
             execution.Request.ActivityLog.Info($"Animated artwork reused: {execution.Paths.CoverPath}");
-            return existingAnimatedPaths;
+            return canonicalExisting;
         }
 
         if (string.IsNullOrWhiteSpace(resolvedAppleId))

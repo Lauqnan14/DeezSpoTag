@@ -36,8 +36,16 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
     private static readonly MethodInfo EvaluateGlobalMismatchGuardMethod =
         typeof(LocalAutoTagRunner).GetMethod(
             "EvaluateGlobalMismatchGuard",
-            BindingFlags.NonPublic | BindingFlags.Static)
+            BindingFlags.NonPublic | BindingFlags.Static,
+            [typeof(AutoTagAudioInfo), typeof(AutoTagMatchResult), typeof(AutoTagMatchingConfig)])
         ?? throw new InvalidOperationException("LocalAutoTagRunner.EvaluateGlobalMismatchGuard not found.");
+
+    private static readonly MethodInfo EvaluateGlobalMismatchGuardWithTrustMethod =
+        typeof(LocalAutoTagRunner).GetMethod(
+            "EvaluateGlobalMismatchGuard",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            [typeof(AutoTagAudioInfo), typeof(AutoTagMatchResult), typeof(AutoTagMatchingConfig), typeof(string), typeof(bool)])
+        ?? throw new InvalidOperationException("LocalAutoTagRunner.EvaluateGlobalMismatchGuard(trust) not found.");
 
     private static readonly MethodInfo ApplyPreferenceAwareArtistGuardsMethod =
         typeof(LocalAutoTagRunner).GetMethod(
@@ -411,6 +419,113 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
             });
 
         Assert.StartsWith("match rejected by quality guard (title similarity ", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EvaluateGlobalMismatchGuard_AllowsFingerprintWhenSourceIdentityIsUntrusted()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "01 - 01 - 01 - SLIDE",
+            Artist = "unknown",
+            Artists = new List<string> { "unknown" },
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Accuracy = 1,
+            MatchStrategy = "fingerprint",
+            Track = new AutoTagTrack
+            {
+                Title = "Slide",
+                Artists = new List<string> { "Karun" },
+                Album = "Catch A Vibe"
+            }
+        };
+
+        var untrustedReason = (string?)EvaluateGlobalMismatchGuardWithTrustMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 },
+                "/library/Music/Karun/01 - 01 - 01 - SLIDE.flac",
+                true
+            });
+
+        Assert.Null(untrustedReason);
+    }
+
+    [Fact]
+    public void EvaluateGlobalMismatchGuard_RejectsRemixDriftEvenOnPlatformIdMatch()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "Save Your Tears",
+            Artist = "The Weeknd",
+            Artists = new List<string> { "The Weeknd" },
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Accuracy = 1,
+            MatchStrategy = "id",
+            Track = new AutoTagTrack
+            {
+                Title = "Save Your Tears (Remix) (feat. Ariana Grande)",
+                Artists = new List<string> { "The Weeknd" },
+                TrackId = "bpm-remix"
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.Equal("match rejected by quality guard (version drift)", reason);
+    }
+
+    [Fact]
+    public void EvaluateGlobalMismatchGuard_RejectsInstrumentalDriftEvenOnMatchingIsrc()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "Save Your Tears",
+            Artist = "The Weeknd",
+            Artists = new List<string> { "The Weeknd" },
+            Isrc = "USUG12001949",
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Accuracy = 1,
+            Track = new AutoTagTrack
+            {
+                Title = "Save Your Tears (Instrumental)",
+                Artists = new List<string> { "The Weeknd" },
+                Isrc = "USUG12001949"
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.Equal("match rejected by quality guard (version drift)", reason);
     }
 
     [Fact]

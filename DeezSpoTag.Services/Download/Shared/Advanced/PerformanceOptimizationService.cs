@@ -383,6 +383,8 @@ public class PerformanceOptimizationService : IDisposable
             LocalArtworkFormat = baseSettings.LocalArtworkFormat,
             SaveArtwork = baseSettings.SaveArtwork,
             CoverImageTemplate = baseSettings.CoverImageTemplate,
+            AnimatedArtworkSquareFileName = baseSettings.AnimatedArtworkSquareFileName,
+            AnimatedArtworkTallFileName = baseSettings.AnimatedArtworkTallFileName,
             SaveArtworkArtist = baseSettings.SaveArtworkArtist,
             ArtistImageTemplate = baseSettings.ArtistImageTemplate,
             JpegImageQuality = baseSettings.JpegImageQuality,

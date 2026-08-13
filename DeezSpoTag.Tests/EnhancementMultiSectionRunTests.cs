@@ -36,7 +36,7 @@ public sealed class EnhancementMultiSectionRunTests
         var source = ReadController();
 
         Assert.Contains(
-            "EnhancementFeature: selectedFeatures.Count == 1 ? selectedFeatures.Single() : null",
+            "EnhancementFeature: selectedForJob.Count == 1 ? selectedForJob.Single() : null",
             source,
             StringComparison.Ordinal);
     }
@@ -49,14 +49,8 @@ public sealed class EnhancementMultiSectionRunTests
     [InlineData(new[] { "bogus-section" }, 0)]
     public void NormalizeEnhancementFeatures_KeepsEveryKnownSection(string[] requested, int expected)
     {
-        var method = typeof(AutoTagJobsController).GetMethod(
-            "NormalizeEnhancementFeatures",
-            BindingFlags.NonPublic | BindingFlags.Static)!;
-
-        var result = (System.Collections.Generic.IEnumerable<string>)method.Invoke(null, [requested])!;
-        var count = result.Count();
-
-        Assert.Equal(expected, count);
+        var result = EnhancementWorkflowSelection.NormalizeSelectedFeatures(requested);
+        Assert.Equal(expected, result.Count);
     }
 
     [Fact]
@@ -66,7 +60,8 @@ public sealed class EnhancementMultiSectionRunTests
         {
             ["gapFilling"] = new JsonObject(),
             ["folderUniformity"] = new JsonObject { ["enabled"] = false },
-            ["coverMaintenance"] = new JsonObject { ["enabled"] = true },
+            ["sidecars"] = new JsonObject { ["enabled"] = true },
+            ["coverMaintenance"] = new JsonObject { ["enabled"] = true, ["upgradeLowResolutionCovers"] = true },
             ["qualityChecks"] = new JsonObject { ["enabled"] = true }
         };
         var configNode = new JsonObject { ["enhancement"] = enhancement };
@@ -81,6 +76,7 @@ public sealed class EnhancementMultiSectionRunTests
         method.Invoke(null, [configNode, request, Array.Empty<long>(), Array.Empty<string>()]);
 
         Assert.True((bool)enhancement["folderUniformity"]!["enabled"]!);
+        Assert.True((bool)enhancement["sidecars"]!["enabled"]!);
         Assert.True((bool)enhancement["coverMaintenance"]!["enabled"]!);
         Assert.False((bool)enhancement["qualityChecks"]!["enabled"]!);
     }
@@ -111,7 +107,7 @@ public sealed class EnhancementMultiSectionRunTests
         var source = ReadWorkflows();
         var start = source.IndexOf("private static bool ShouldPrepareMissingCoreMetadataTargets", StringComparison.Ordinal);
         Assert.True(start > 0);
-        var end = source.IndexOf("private static List<FolderDto> ResolveEnhancementJobFolders", start, StringComparison.Ordinal);
+        var end = source.IndexOf("private async Task<EnhancementRunManifest> BuildEnhancementRunManifestAsync", start, StringComparison.Ordinal);
         var method = source[start..end];
 
         Assert.Contains("ReadBool(qualityChecks, EnabledField) == true", method, StringComparison.Ordinal);
@@ -138,9 +134,9 @@ public sealed class EnhancementMultiSectionRunTests
         var end = source.IndexOf("private bool ShouldRunIntegratedEnhancementWorkflows", start, StringComparison.Ordinal);
         var method = source[start..end];
 
-        Assert.Contains("\"folder-uniformity\"", method, StringComparison.Ordinal);
-        Assert.Contains("\"cover-maintenance\"", method, StringComparison.Ordinal);
-        Assert.Contains("\"quality-checks\"", method, StringComparison.Ordinal);
+        Assert.Contains("EnhancementFeatureFolderUniformity", method, StringComparison.Ordinal);
+        Assert.Contains("EnhancementFeatureSidecars", method, StringComparison.Ordinal);
+        Assert.Contains("EnhancementFeatureQualityChecks", method, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -162,9 +158,12 @@ public sealed class EnhancementMultiSectionRunTests
         var view = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
 
         Assert.Contains("id=\"runScope-tag-gap-fill\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"runScope-sidecars\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"runScope-quality-checks\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"runScope-folder-uniformity\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"enableFolderUniformityWorkflow\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"enableQualityChecksWorkflow\"", view, StringComparison.Ordinal);
-        Assert.Contains("id=\"enableCoverMaintenanceWorkflow\"", view, StringComparison.Ordinal);
+        Assert.Contains("id=\"enableSidecarsWorkflow\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"runSelectedEnhancementSections\"", view, StringComparison.Ordinal);
         Assert.Contains("enhancement-checkbox-grid", view, StringComparison.Ordinal);
         Assert.DoesNotContain("enhancement-section-matrix", view, StringComparison.Ordinal);
@@ -216,8 +215,7 @@ public sealed class EnhancementMultiSectionRunTests
         var method = source[start..(start + 2000)];
 
         Assert.Contains("IReadOnlyCollection<string> selectedFeatures", method, StringComparison.Ordinal);
-        Assert.Contains("selected.Contains(AutoTagLiterals.EnhancementFeatureFolderUniformity)", method, StringComparison.Ordinal);
-        Assert.Contains("selected.Contains(AutoTagLiterals.EnhancementFeatureGapFill)", method, StringComparison.Ordinal);
+        Assert.Contains("EnhancementWorkflowSelection.ApplyFeatureSelection", method, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -227,6 +225,18 @@ public sealed class EnhancementMultiSectionRunTests
         var script = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
 
         Assert.Contains("id=\"runSelectedEnhancementSectionsRecent\"", view, StringComparison.Ordinal);
+        var sidecars = view.IndexOf("<!-- Sidecars -->", StringComparison.Ordinal);
+        var quality = view.IndexOf("<!-- Quality Checks -->", StringComparison.Ordinal);
+        var recentButton = view.IndexOf("id=\"runSelectedEnhancementSectionsRecent\"", StringComparison.Ordinal);
+        var runEnabled = view.IndexOf("id=\"runSelectedEnhancementSections\"", StringComparison.Ordinal);
+        Assert.True(sidecars > 0 && recentButton > sidecars && recentButton < quality);
+        Assert.True(runEnabled > quality);
+        Assert.Contains("[\"tag-gap-fill\", \"sidecars\"]", script, StringComparison.Ordinal);
+        var recentRunner = script.IndexOf("async function runSelectedEnhancementSectionsOnRecentDownloads", StringComparison.Ordinal);
+        Assert.True(recentRunner > 0);
+        var recentBody = script[recentRunner..(recentRunner + 500)];
+        Assert.Contains("[\"tag-gap-fill\", \"sidecars\"]", recentBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("getSelectedEnhancementRunSectionIds", recentBody, StringComparison.Ordinal);
         Assert.Contains("collectRecentDownloadFilePaths", script, StringComparison.Ordinal);
         Assert.Contains("groupRecentTargetsByProfile", script, StringComparison.Ordinal);
         Assert.Contains("scope: recentOnly ? \"recent\" : \"full\"", script, StringComparison.Ordinal);
@@ -284,7 +294,7 @@ public sealed class EnhancementMultiSectionRunTests
         var view = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
         var script = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
 
-        foreach (var id in new[] { "tag-gap-fill", "folder-uniformity", "quality-checks", "cover-maintenance" })
+        foreach (var id in new[] { "tag-gap-fill", "folder-uniformity", "quality-checks", "sidecars" })
         {
             Assert.Contains($"id=\"runScopeHint-{id}\"", view, StringComparison.Ordinal);
         }
@@ -298,7 +308,7 @@ public sealed class EnhancementMultiSectionRunTests
     public void WorkflowGuidanceIsATooltipNotAParagraph()
     {
         var view = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
-        var marker = "Ticked workflows run together in a single job";
+        var marker = "Ticked workflows run together in one job";
 
         Assert.Contains($"title=\"{marker}", view, StringComparison.Ordinal);
         Assert.DoesNotContain($"<span class=\"helper\">{marker}", view, StringComparison.Ordinal);
@@ -313,11 +323,61 @@ public sealed class EnhancementMultiSectionRunTests
         var platforms = view.IndexOf("TAB 6: PLATFORMS", panel, StringComparison.Ordinal);
         var segment = view[panel..platforms];
 
-        var covers = segment.IndexOf("<!-- Cover Maintenance -->", StringComparison.Ordinal);
         var runBlock = segment.IndexOf("Enhancement Run Workflows", StringComparison.Ordinal);
+        var gap = segment.IndexOf("<!-- Gap Filling -->", StringComparison.Ordinal);
+        var sidecars = segment.IndexOf("<!-- Sidecars -->", StringComparison.Ordinal);
+        var quality = segment.IndexOf("<!-- Quality Checks -->", StringComparison.Ordinal);
+        var uniformity = segment.IndexOf("<!-- Folder Uniformity -->", StringComparison.Ordinal);
 
-        Assert.True(covers > 0);
-        Assert.True(runBlock > covers, "the run block must render after the section cards");
+        Assert.True(gap > 0 && sidecars > gap);
+        Assert.True(quality > sidecars);
+        Assert.True(uniformity > quality);
+        Assert.True(runBlock > uniformity, "the run block must render after the section cards");
+    }
+
+    [Fact]
+    public void RecentDownloadsWindowLivesOnSidecarsAndArtistRenameLivesOnFolderUniformity()
+    {
+        var view = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var script = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var panel = view.IndexOf("id=\"autotag-stage3-panel\"", StringComparison.Ordinal);
+        var platforms = view.IndexOf("TAB 6: PLATFORMS", panel, StringComparison.Ordinal);
+        var segment = view[panel..platforms];
+
+        var sidecars = segment.IndexOf("<!-- Sidecars -->", StringComparison.Ordinal);
+        var quality = segment.IndexOf("<!-- Quality Checks -->", StringComparison.Ordinal);
+        var uniformity = segment.IndexOf("<!-- Folder Uniformity -->", StringComparison.Ordinal);
+        var recentWindow = segment.IndexOf("id=\"enhancementRecentDownloadWindowDays\"", StringComparison.Ordinal);
+        var recentTime = segment.IndexOf("id=\"enhancementRecentDownloadTime\"", StringComparison.Ordinal);
+        var artistRename = segment.IndexOf("id=\"enhancementRenameSpotifyArtistFolders\"", StringComparison.Ordinal);
+
+        Assert.True(recentWindow > sidecars && recentWindow < quality);
+        Assert.True(recentTime > sidecars && recentTime < quality);
+        Assert.True(artistRename > uniformity);
+        Assert.Contains("step=\"5\"", view, StringComparison.Ordinal);
+        Assert.Contains("normalizeRecentDownloadWindowDays", script, StringComparison.Ordinal);
+        Assert.Contains("MIN_RECENT_DOWNLOAD_WINDOW_DAYS = 5", script, StringComparison.Ordinal);
+        Assert.Contains("DEFAULT_RECENT_DOWNLOAD_ENHANCEMENT_TIME = \"05:00\"", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("createRecentDownloadWindowControlsRow", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("createRenameSpotifyArtistFoldersControl", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("ensureRecentDownloadWindowControls", script, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecentDownloadAutomation_RunsDailyGapFillAndSidecarsAfterEnrichmentSettles()
+    {
+        var orchestration = ReadOrchestration();
+        Assert.Contains("RunScheduledRecentDownloadEnhancementIfDueAsync", orchestration, StringComparison.Ordinal);
+        Assert.Contains("GetEnabledRecentDownloadEnhancementFeatures", orchestration, StringComparison.Ordinal);
+        Assert.Contains("RunIntentEnhancementRecentDownloads", orchestration, StringComparison.Ordinal);
+        var start = orchestration.IndexOf("private async Task RunScheduledRecentDownloadEnhancementIfDueAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var end = orchestration.IndexOf("private async Task<bool> RunRecentDownloadEnhancementJobAsync", start, StringComparison.Ordinal);
+        var method = orchestration[start..end];
+        Assert.Contains("HasPendingPostDownloadEnrichmentAsync", method, StringComparison.Ordinal);
+        Assert.Contains("HasActiveDownloadsAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("quality-checks", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("folder-uniformity", method, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -357,35 +417,44 @@ public sealed class EnhancementMultiSectionRunTests
     }
 
     [Fact]
-    public void EveryEnabledSectionRunsOnABatchBeforeTheNextBatchStarts()
+    public void SelectedWorkflowsRunSequentiallyAfterGapFill()
     {
         var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("ApplyEnhancementBatchSectionsAsync(", StringComparison.Ordinal);
+        var start = workflows.IndexOf("private async Task RunIntegratedEnhancementWorkflowsAsync", StringComparison.Ordinal);
         Assert.True(start > 0);
-        var body = workflows[start..(start + 1400)];
+        var end = workflows.IndexOf("private async Task<bool> ApplyCompletedGapFillBatchAsync", start, StringComparison.Ordinal);
+        var method = workflows[start..end];
 
-        Assert.Contains("RunFolderUniformityForBatchAsync(", body, StringComparison.Ordinal);
-        Assert.Contains("RunEnabledEnhancementSectionsForBatchAsync(job, configPath, context", body, StringComparison.Ordinal);
+        var sidecarIndex = method.IndexOf("EnhancementFeatureSidecars", StringComparison.Ordinal);
+        var qualityIndex = method.IndexOf("EnhancementFeatureQualityChecks", StringComparison.Ordinal);
+        var uniformityIndex = method.IndexOf("EnhancementFeatureFolderUniformity", StringComparison.Ordinal);
+        Assert.True(sidecarIndex > 0);
+        Assert.True(qualityIndex > sidecarIndex);
+        Assert.True(uniformityIndex > qualityIndex);
+        Assert.DoesNotContain("if (enhancementStageRan)", method, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void PerBatchSectionRunnerCoversBatchSafeSectionsOnly()
+    public void GapFillDoesNotRunADeadPerBatchSectionRunner()
     {
         var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("RunEnabledEnhancementSectionsForBatchAsync(\n", StringComparison.Ordinal);
-        if (start < 0)
-        {
-            start = workflows.IndexOf("private async Task<bool> RunEnabledEnhancementSectionsForBatchAsync(", StringComparison.Ordinal);
-        }
 
-        Assert.True(start > 0);
-        var body = workflows[start..(start + 2600)];
-
-        Assert.Contains("IsCoverMaintenanceWorkflowEnabled(enhancementRoot)", body, StringComparison.Ordinal);
-        Assert.Contains("RunCoverMaintenanceForBatchAsync(", body, StringComparison.Ordinal);
-        Assert.Contains("RunQualityChecksForBatchAsync(", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunConfiguredCoverMaintenanceAsync(", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunConfiguredQualityChecksAsync(", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyEnhancementBatchSectionsAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunEnabledEnhancementSectionsForBatchAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunCoverMaintenanceForBatchAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunQualityChecksForBatchAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("ApplyCompletedGapFillBatchAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("if (!EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))", workflows, StringComparison.Ordinal);
+        Assert.Contains("running opted-in sidecars.", workflows, StringComparison.Ordinal);
+        Assert.Contains("sidecars lyrics lookup starting", workflows, StringComparison.Ordinal);
+        Assert.Contains("IngestAndVerifyAsync(context.FilesByFolder, cancellationToken)", workflows, StringComparison.Ordinal);
+        Assert.Contains("GetTrackIdsByFilePathsAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunLyricsRefreshForBatchAsync(job, trackIds, lyricsOptions, cancellationToken)", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveTrackIdsFromPathsAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("lyrics already applied during gap-fill tagging.", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredSidecarsAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredCoverMaintenanceAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredQualityChecksAsync(", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -394,87 +463,84 @@ public sealed class EnhancementMultiSectionRunTests
         var workflows = ReadEnhancementWorkflows();
 
         Assert.DoesNotContain("EnhancementSectionsAppliedPerBatch", workflows, StringComparison.Ordinal);
-        Assert.Contains("RunPostBatchEnhancementFinalizersAsync(", workflows, StringComparison.Ordinal);
-        Assert.Contains("RunConfiguredFolderUniformityFinalizersAsync(", workflows, StringComparison.Ordinal);
-        Assert.Contains("RunConfiguredQualityCheckFinalizersAsync(", workflows, StringComparison.Ordinal);
-        Assert.DoesNotContain("already applied per batch", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredFolderUniformityAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredQualityChecksAsync(", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredCoverMaintenanceAsync(", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (enhancementStageRan)", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void PerBatchSectionsAreScopedToTheBatchFiles()
-    {
-        var workflows = ReadEnhancementWorkflows();
-
-        Assert.Contains("ResolveBatchRootPaths(", workflows, StringComparison.Ordinal);
-        Assert.Contains("TargetFiles: batchFiles.ToList()", workflows, StringComparison.Ordinal);
-        Assert.Contains("context.CurrentFiles", workflows, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void BatchCoverMaintenanceUsesStructuredAlbumOutcomes()
-    {
-        var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("private async Task RunCoverMaintenanceForBatchAsync", StringComparison.Ordinal);
-        Assert.True(start > 0);
-        var body = workflows[start..(start + 5600)];
-
-        Assert.Contains("result.AlbumResults", body, StringComparison.Ordinal);
-        Assert.Contains("CoverAlbumMaintenanceOutcome", body, StringComparison.Ordinal);
-        Assert.Contains("artworkBadges: album.HasAnimatedArtwork", body, StringComparison.Ordinal);
-        Assert.DoesNotContain("StartsWith(errorPrefix", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void BatchCoverMaintenanceIsNotGatedByQualityChecks()
-    {
-        var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("private async Task<bool> RunEnabledEnhancementSectionsForBatchAsync", StringComparison.Ordinal);
-        Assert.True(start > 0);
-        var body = workflows[start..(start + 1800)];
-        var coverIndex = body.IndexOf("IsCoverMaintenanceWorkflowEnabled(enhancementRoot)", StringComparison.Ordinal);
-        var qualityIndex = body.IndexOf("RunQualityChecksForBatchAsync(", StringComparison.Ordinal);
-
-        Assert.True(coverIndex >= 0);
-        Assert.True(qualityIndex > coverIndex);
-        Assert.DoesNotContain("qualityChecks", body[..coverIndex], StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void BatchCoverMaintenanceUsesProfileArtworkSettings()
-    {
-        var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("private async Task RunCoverMaintenanceForBatchAsync", StringComparison.Ordinal);
-        Assert.True(start > 0);
-        var body = workflows[start..(start + 5600)];
-
-        Assert.Contains("BuildEnhancementLyricsSettings(configRoot)", body, StringComparison.Ordinal);
-        Assert.Contains("ApplyProfileArtworkExtras(configRootForArtwork, settings)", body, StringComparison.Ordinal);
-        Assert.Contains("ResolveProfileCoverSources(settings)", body, StringComparison.Ordinal);
-        Assert.Contains("EnabledSources: enabledSources", body, StringComparison.Ordinal);
-        Assert.Contains("ResolveProfileCoverResolution", body, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void BatchTemplateApplicationFeedsFreshPathsToLaterSections()
+    public void FolderUniformityStillUsesBatchScopedTemplateApplication()
     {
         var workflows = ReadEnhancementWorkflows();
 
         Assert.Contains("OrganizeFilesWithReportAsync(", workflows, StringComparison.Ordinal);
         Assert.Contains("ResolveCurrentBatchFiles(successfulBatchFiles, folderReports)", workflows, StringComparison.Ordinal);
-        Assert.Contains("context = await RefreshBatchLibraryIndexAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("RefreshBatchLibraryIndexAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("RunConfiguredCoverMaintenanceAsync(", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void LyricsRefreshRunsInsideTheBatchQualitySection()
+    public void LyricsRefreshDoesNotReRunFolderUniformity()
     {
         var workflows = ReadEnhancementWorkflows();
-        var start = workflows.IndexOf("private async Task<bool> RunQualityChecksForBatchAsync", StringComparison.Ordinal);
-        Assert.True(start > 0);
-        var body = workflows[start..(start + 3000)];
+        var lyricsStart = workflows.IndexOf("private async Task RunLyricsRefreshIfRequestedAsync", StringComparison.Ordinal);
+        Assert.True(lyricsStart > 0);
+        var lyricsEnd = workflows.IndexOf("private DeezSpoTagSettings BuildEnhancementLyricsSettings", lyricsStart, StringComparison.Ordinal);
+        var lyricsBody = workflows[lyricsStart..lyricsEnd];
+        Assert.DoesNotContain("RunFolderUniformityForBatchAsync(", lyricsBody, StringComparison.Ordinal);
+    }
 
-        Assert.Contains("options.QueueLyricsRefresh", body, StringComparison.Ordinal);
-        Assert.Contains("RunLyricsRefreshForBatchAsync(", body, StringComparison.Ordinal);
-        Assert.Contains("targetTrackIds", body, StringComparison.Ordinal);
+    [Fact]
+    public void LyricsRefreshRunsInTheSidecarStageNotQualityChecks()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var start = workflows.IndexOf("private async Task<EnhancementWorkflowOutcome> RunConfiguredQualityChecksAsync", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = workflows[start..(start + 3200)];
+
+        Assert.DoesNotContain("skipLyricsRefresh", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("lyrics already looked up during opted-in quality checks.", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunLyricsRefreshIfRequestedAsync(", body, StringComparison.Ordinal);
+        Assert.Contains("RunQualityScannerIfRequestedAsync(", body, StringComparison.Ordinal);
+
+        var sidecarStart = workflows.IndexOf("private async Task<EnhancementWorkflowOutcome> RunConfiguredSidecarsAsync", StringComparison.Ordinal);
+        Assert.True(sidecarStart > 0);
+        var sidecarBody = workflows[sidecarStart..(sidecarStart + 4500)];
+        Assert.Contains("RunLyricsRefreshIfRequestedAsync(", sidecarBody, StringComparison.Ordinal);
+        Assert.Contains("if (batchFiles is not null)", sidecarBody, StringComparison.Ordinal);
+        Assert.Contains("IngestAndVerifyAsync", sidecarBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GapFillJobDoesNotStartASeparateLyricsRefreshPath()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var service = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var runner = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTag", "LocalAutoTagRunner.cs"));
+        var statusScript = File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
+
+        Assert.Contains("ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)", File.ReadAllText(Path.Join(FindRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs")), StringComparison.Ordinal);
+        var applyBatch = workflows.IndexOf("private async Task<bool> ApplyCompletedGapFillBatchAsync", StringComparison.Ordinal);
+        Assert.True(applyBatch > 0);
+        var applyBody = workflows[applyBatch..(applyBatch + 2500)];
+        Assert.Contains("IsSidecarsRunnable", applyBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsQualityChecksRunnable", applyBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsFolderUniformityRunnable", applyBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("skipLyricsRefresh", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"lyrics-refresh\"", workflows, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.EnhancementPhaseSidecarsLyrics", workflows, StringComparison.Ordinal);
+        Assert.Contains("gap-fill will use the selected folder.", workflows, StringComparison.Ordinal);
+        Assert.Contains("if (missingTargets.Count > 0)", workflows, StringComparison.Ordinal);
+        Assert.Contains("Where(platform => !IsLyricsProviderPlatform(platform))", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadEnhancementLyricsWork", runner, StringComparison.Ordinal);
+        Assert.DoesNotContain("ApplyEnhancementTtmlCleanup", runner, StringComparison.Ordinal);
+        Assert.Contains("function isSidecarPlatform(value)", statusScript, StringComparison.Ordinal);
+        Assert.Contains("platform === \"sidecars-lyrics\"", statusScript, StringComparison.Ordinal);
+        Assert.Contains("platform === \"lyrics-refresh\"", statusScript, StringComparison.Ordinal);
+        Assert.Contains("platform === \"cover-maintenance\"", statusScript, StringComparison.Ordinal);
+        Assert.Contains("const platformLabel = formatEnhancementFeature(platform);", statusScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("return platform.includes(\"lyrics\") || platform.includes(\"cover-maintenance\");", statusScript, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -486,6 +552,16 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("public sealed record CoverAlbumMaintenanceOutcome", source, StringComparison.Ordinal);
         Assert.Contains("bool AnimatedArtworkSaved", source, StringComparison.Ordinal);
         Assert.Contains("bool HasAnimatedArtwork", source, StringComparison.Ordinal);
+        Assert.Contains("string? CoverPath", source, StringComparison.Ordinal);
+        Assert.Contains("bool WriteEmbeddedCover", source, StringComparison.Ordinal);
+        Assert.Contains("bool WriteExternalSidecar", source, StringComparison.Ordinal);
+        Assert.Contains("bool UseShazamForUntaggedFiles", source, StringComparison.Ordinal);
+        Assert.Contains("TryRecognizeUntaggedAlbumAsync", source, StringComparison.Ordinal);
+        Assert.Contains("onAlbumCompleted", source, StringComparison.Ordinal);
+        Assert.Contains("Interlocked.Increment(ref completedAlbums)", source, StringComparison.Ordinal);
+        Assert.Contains("if (context.Request.WriteExternalSidecar)", source, StringComparison.Ordinal);
+        Assert.Contains("if (context.Request.WriteEmbeddedCover)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("|| !context.ArtworkState.HasExternal", source, StringComparison.Ordinal);
         Assert.Contains("AlbumResults: albumResults", source, StringComparison.Ordinal);
     }
 
@@ -503,6 +579,35 @@ public sealed class EnhancementMultiSectionRunTests
         Assert.Contains("ArtworkBadges = ResolveAnimatedArtworkBadges(context.File)", runnerSource, StringComparison.Ordinal);
         Assert.Contains("AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar", runnerSource, StringComparison.Ordinal);
         Assert.Contains("artworkBadgeMarkup", historySource, StringComparison.Ordinal);
+        Assert.Contains("renderLyricsCards(allRows.filter(isSidecarHistoryRow))", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("collectSidecarRows", historySource, StringComparison.Ordinal);
+        Assert.DoesNotContain("${usedShazam}${message}${artworkBadgeHtml}", historySource, StringComparison.Ordinal);
+        Assert.Contains("resolveSidecarCoverUrl", historySource, StringComparison.Ordinal);
+        Assert.Contains("isSidecarHistoryRow", historySource, StringComparison.Ordinal);
+        Assert.Contains("cover-maintenance", historySource, StringComparison.Ordinal);
+        Assert.Contains("setHistoryView(\"sidecar\")", historySource, StringComparison.Ordinal);
+        Assert.Contains("setHistoryView(\"tags\")", historySource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SidecarCoverAndLaterPhasesKeepLiveStatusWithoutResettingOverallProgress()
+    {
+        var workflows = ReadEnhancementWorkflows();
+        var coverService = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "CoverPort", "CoverLibraryMaintenanceService.cs"));
+        var autoTagService = File.ReadAllText(Path.Join(
+            FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("if (job.TargetUsable > 0)", workflows, StringComparison.Ordinal);
+        Assert.Contains("job.TotalItems = job.TargetUsable;", workflows, StringComparison.Ordinal);
+        Assert.Contains("PublishEnhancementPhaseHeartbeat", workflows, StringComparison.Ordinal);
+        Assert.Contains("cover maintenance starting", workflows, StringComparison.Ordinal);
+        Assert.Contains("quality checks starting", workflows, StringComparison.Ordinal);
+        Assert.Contains("folder uniformity starting", workflows, StringComparison.Ordinal);
+        Assert.Contains("onAlbumCompleted", coverService, StringComparison.Ordinal);
+        Assert.Contains("lock (job)", workflows, StringComparison.Ordinal);
+        Assert.Contains("updateTrackIndex: false", autoTagService, StringComparison.Ordinal);
+        Assert.DoesNotContain("job.ProcessedItems = Math.Max(0, processed);\n        job.TotalItems = job.TargetUsable > 0 ? job.TargetUsable : Math.Max(0, total);", workflows, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -510,8 +615,10 @@ public sealed class EnhancementMultiSectionRunTests
     {
         var workflows = ReadEnhancementWorkflows();
 
-        Assert.Contains("EnqueueBatchMediaServerRefreshAsync(job, context", workflows, StringComparison.Ordinal);
-        Assert.Contains("_mediaServerRefreshOutboxService.EnqueueAsync", workflows, StringComparison.Ordinal);
+        Assert.DoesNotContain("EnqueueBatchMediaServerRefreshAsync", workflows, StringComparison.Ordinal);
+        Assert.Contains("EnqueueMediaRefreshForBatchAsync", workflows, StringComparison.Ordinal);
+        var service = File.ReadAllText(Path.Join(FindEnhancementRepoRoot(), "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        Assert.Contains("TriggerConfiguredMediaServerRefreshAfterEnhancementAsync", service, StringComparison.Ordinal);
     }
 
     private static string ReadEnhancementWorkflows()

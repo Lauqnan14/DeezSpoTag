@@ -4,6 +4,7 @@ using DeezSpoTag.Core.Models;
 using DeezSpoTag.Services.Apple;
 using DeezSpoTag.Services.Download.Apple;
 using DeezSpoTag.Services.Download.Identity;
+using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Shared.Utils;
 using DeezSpoTag.Services.Settings;
 using DeezSpoTag.Web.Services;
@@ -22,6 +23,12 @@ public sealed class CoverLibraryMaintenanceService
     private static readonly string[] CompilationMarkers = { "compilation", "greatest hits", "best of", "anthology", "collection", "various artists" };
     private static readonly string[] SingleMarkers = { "single", "ep", "e.p." };
     private readonly record struct AlbumMetadata(string Artist, string Album, string? Title);
+    private readonly record struct ShazamCoverHints(
+        string? AppleAlbumId,
+        string? AppleUrl,
+        string? SpotifyUrl,
+        string? DeezerUrl,
+        IReadOnlyList<string> DirectArtworkUrls);
     private readonly record struct AlbumArtworkState(
         string ExpectedReleaseType,
         string? ExternalCoverPath,
@@ -48,12 +55,14 @@ public sealed class CoverLibraryMaintenanceService
         AlbumMetadata Metadata,
         AlbumArtworkState ArtworkState,
         AlbumWorkPlan WorkPlan,
-        CoverLibraryMaintenanceRequest Request);
+        CoverLibraryMaintenanceRequest Request,
+        ShazamCoverHints? ShazamHints = null);
 
     private readonly CoverSearchAndDownloadService _coverSearchService;
     private readonly AppleMusicCatalogService _appleMusicCatalogService;
     private readonly ITrackIdentityResolver _trackIdentityResolver;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ShazamRecognitionService _shazamRecognitionService;
     private readonly ILogger<CoverLibraryMaintenanceService> _logger;
 
     public CoverLibraryMaintenanceService(
@@ -61,18 +70,21 @@ public sealed class CoverLibraryMaintenanceService
         AppleMusicCatalogService appleMusicCatalogService,
         ITrackIdentityResolver trackIdentityResolver,
         IHttpClientFactory httpClientFactory,
+        ShazamRecognitionService shazamRecognitionService,
         ILogger<CoverLibraryMaintenanceService> logger)
     {
         _coverSearchService = coverSearchService;
         _appleMusicCatalogService = appleMusicCatalogService;
         _trackIdentityResolver = trackIdentityResolver;
         _httpClientFactory = httpClientFactory;
+        _shazamRecognitionService = shazamRecognitionService;
         _logger = logger;
     }
 
     public async Task<CoverLibraryMaintenanceResult> RunAsync(
         CoverLibraryMaintenanceRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<CoverAlbumMaintenanceOutcome, int, int, CancellationToken, ValueTask>? onAlbumCompleted = null)
     {
         var rootPaths = request.RootPaths?
             .Where(path => !string.IsNullOrWhiteSpace(path))
@@ -106,6 +118,7 @@ public sealed class CoverLibraryMaintenanceService
             : CollectAlbumDirectories(rootPaths, request.IncludeSubfolders);
         var outcomes = new ConcurrentQueue<CoverAlbumMaintenanceOutcome>();
         var workerCount = Math.Clamp(request.WorkerCount, 1, 32);
+        var completedAlbums = 0;
         await Parallel.ForEachAsync(
             albumDirs,
             new ParallelOptions
@@ -115,9 +128,10 @@ public sealed class CoverLibraryMaintenanceService
             },
             async (albumDir, ct) =>
             {
+                CoverAlbumMaintenanceOutcome outcome;
                 try
                 {
-                    outcomes.Enqueue(await ProcessAlbumDirectoryAsync(albumDir, request, logs, ct));
+                    outcome = await ProcessAlbumDirectoryAsync(albumDir, request, logs, ct);
                 }
                 catch (OperationCanceledException)
                 {
@@ -126,11 +140,18 @@ public sealed class CoverLibraryMaintenanceService
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     logs.Enqueue($"[error] {albumDir}: {ex.Message}");
-                    outcomes.Enqueue(CoverAlbumMaintenanceOutcome.Error(albumDir, null, null, null, ex.Message));
+                    outcome = CoverAlbumMaintenanceOutcome.Error(albumDir, null, null, null, ex.Message);
                     if (_logger.IsEnabled(LogLevel.Debug))
                     {
                         _logger.LogDebug(ex, "Cover maintenance failed for {AlbumDir}", albumDir);
                     }
+                }
+
+                outcomes.Enqueue(outcome);
+                var completed = Interlocked.Increment(ref completedAlbums);
+                if (onAlbumCompleted != null)
+                {
+                    await onAlbumCompleted(outcome, completed, albumDirs.Count, ct);
                 }
             });
 
@@ -165,14 +186,42 @@ public sealed class CoverLibraryMaintenanceService
         {
             const string message = "no supported audio files.";
             logs.Enqueue($"[skip] {albumDir}: {message}");
-            return CoverAlbumMaintenanceOutcome.Skipped(albumDir, null, null, null, message);
+            return CoverAlbumMaintenanceOutcome.Skipped(albumDir, null, null, null, message, CoverPath: ResolveExternalCoverPath(albumDir));
         }
 
+        ShazamCoverHints? shazamHints = null;
         if (!TryReadRequiredMetadata(audioFiles, out var metadata))
         {
-            const string message = "missing artist/album tags.";
-            logs.Enqueue($"[skip] {albumDir}: {message}");
-            return CoverAlbumMaintenanceOutcome.Skipped(albumDir, audioFiles[0], null, null, message);
+            if (!request.UseShazamForUntaggedFiles)
+            {
+                const string message = "missing artist/album tags.";
+                logs.Enqueue($"[skip] {albumDir}: {message}");
+                return CoverAlbumMaintenanceOutcome.Skipped(
+                    albumDir,
+                    audioFiles[0],
+                    null,
+                    null,
+                    message,
+                    CoverPath: ResolveExternalCoverPath(albumDir));
+            }
+
+            var recognized = await TryRecognizeUntaggedAlbumAsync(audioFiles[0], logs, cancellationToken);
+            if (recognized == null)
+            {
+                const string message = "missing artist/album tags; Shazam did not identify the file.";
+                logs.Enqueue($"[skip] {albumDir}: {message}");
+                return CoverAlbumMaintenanceOutcome.Skipped(
+                    albumDir,
+                    audioFiles[0],
+                    null,
+                    null,
+                    message,
+                    CoverPath: ResolveExternalCoverPath(albumDir));
+            }
+
+            metadata = recognized.Value.Metadata;
+            shazamHints = recognized.Value.Hints;
+            logs.Enqueue($"[shazam] {albumDir}: identified {metadata.Artist} - {metadata.Album}.");
         }
 
         var artworkState = InspectAlbumArtwork(albumDir, audioFiles[0], audioFiles.Count, metadata, request);
@@ -185,7 +234,8 @@ public sealed class CoverLibraryMaintenanceService
                 metadata.Artist,
                 metadata.Album,
                 "album artwork already satisfies the selected maintenance options.",
-                HasAnimatedArtwork: artworkState.HasAnimatedArtwork);
+                HasAnimatedArtwork: artworkState.HasAnimatedArtwork,
+                CoverPath: artworkState.ExternalCoverPath);
         }
 
         var updatedAnything = false;
@@ -199,7 +249,7 @@ public sealed class CoverLibraryMaintenanceService
 
         if (workPlan.RequiresStillCoverUpdate && (!request.QueueAnimatedArtwork || !animatedSaved))
         {
-            var context = new StillCoverUpdateContext(albumDir, audioFiles, metadata, artworkState, workPlan, request);
+            var context = new StillCoverUpdateContext(albumDir, audioFiles, metadata, artworkState, workPlan, request, shazamHints);
             stillUpdated = await TryUpdateStillCoverAsync(
                 context,
                 logs,
@@ -217,7 +267,8 @@ public sealed class CoverLibraryMaintenanceService
             StillCoverUpdated: stillUpdated,
             AnimatedArtworkSaved: animatedSaved,
             HasAnimatedArtwork: animatedSaved || artworkState.HasAnimatedArtwork,
-            Updated: updatedAnything);
+            Updated: updatedAnything,
+            CoverPath: ResolveExternalCoverPath(albumDir) ?? artworkState.ExternalCoverPath);
     }
 
     private static bool IsSameOrDescendantPath(string path, string root)
@@ -233,7 +284,7 @@ public sealed class CoverLibraryMaintenanceService
         ConcurrentQueue<string> logs,
         CancellationToken cancellationToken)
     {
-        var query = new CoverSearchQuery(context.Metadata.Artist, context.Metadata.Album);
+        var query = BuildCoverSearchQuery(context.Metadata, context.ShazamHints);
         var tempCoverPath = Path.Join(context.AlbumDir, $".deezspotag-cover-{Guid.NewGuid():N}.jpg");
         var referenceBytes = await ReadReferenceImageBytesAsync(context.ArtworkState.ExternalCoverPath, context.AudioFiles[0], cancellationToken);
         var searchOptions = BuildSearchOptions(context.Request, context.ArtworkState.ExternalCoverPath, referenceBytes);
@@ -261,17 +312,27 @@ public sealed class CoverLibraryMaintenanceService
             }
 
             var coverBytes = await File.ReadAllBytesAsync(downloaded.OutputPath, cancellationToken);
-            if (context.Request.SyncExternalCovers || !context.ArtworkState.HasExternal || context.WorkPlan.NeedsUpgrade)
+            var wroteAnything = false;
+            if (context.Request.WriteExternalSidecar)
             {
                 await File.WriteAllBytesAsync(ResolveStillCoverOutputPath(context), coverBytes, cancellationToken);
+                wroteAnything = true;
             }
 
-            if (context.Request.ReplaceMissingEmbeddedCovers || !context.ArtworkState.HasEmbedded || context.WorkPlan.NeedsUpgrade)
+            if (context.Request.WriteEmbeddedCover)
             {
                 foreach (var audioPath in context.AudioFiles)
                 {
                     EmbedArtwork(audioPath, coverBytes);
                 }
+
+                wroteAnything = true;
+            }
+
+            if (!wroteAnything)
+            {
+                logs.Enqueue($"[skip] {context.AlbumDir}: profile does not allow embedding or saving artwork files.");
+                return false;
             }
 
             logs.Enqueue($"[ok] {context.AlbumDir}: updated cover from {downloaded.Candidate.Source} ({downloaded.Width}x{downloaded.Height})");
@@ -290,18 +351,20 @@ public sealed class CoverLibraryMaintenanceService
         ConcurrentQueue<string> logs,
         CancellationToken cancellationToken)
     {
-        var baseFileName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
         var saveRequest = new AppleQueueHelpers.AnimatedArtworkSaveRequest
         {
             Artist = metadata.Artist,
             Album = metadata.Album,
-            BaseFileName = baseFileName,
+            SquareFileName = request.AnimatedArtworkSquareFileName,
+            TallFileName = request.AnimatedArtworkTallFileName,
             Storefront = request.AppleStorefront,
             MaxResolution = request.AnimatedArtworkMaxResolution,
             OutputDir = albumDir,
             Logger = _logger,
             OutputFormats = request.AnimatedArtworkFormats,
             RenameExistingArtwork = request.RenameExistingAnimatedArtwork,
+            OverwriteExisting = request.OverwriteExistingAnimatedArtwork,
+            RemoveOldArtwork = request.RemoveOldAnimatedArtwork,
             MaxSizeMb = request.AnimatedArtworkMaxSizeMb
         };
         var existingPaths = await AppleQueueHelpers.SaveExistingAnimatedArtworkVariantsAsync(
@@ -329,7 +392,8 @@ public sealed class CoverLibraryMaintenanceService
                 AppleId = resolvedIdentity.AppleId,
                 Artist = resolvedIdentity.AppleArtistName ?? metadata.Artist,
                 Album = resolvedIdentity.AppleAlbumName ?? metadata.Album,
-                BaseFileName = baseFileName,
+                SquareFileName = request.AnimatedArtworkSquareFileName,
+                TallFileName = request.AnimatedArtworkTallFileName,
                 Storefront = request.AppleStorefront,
                 MaxResolution = request.AnimatedArtworkMaxResolution,
                 OutputDir = albumDir,
@@ -338,6 +402,8 @@ public sealed class CoverLibraryMaintenanceService
                 CollectionId = resolvedIdentity.AppleAlbumId,
                 OutputFormats = request.AnimatedArtworkFormats,
                 RenameExistingArtwork = request.RenameExistingAnimatedArtwork,
+                OverwriteExisting = request.OverwriteExistingAnimatedArtwork,
+                RemoveOldArtwork = request.RemoveOldAnimatedArtwork,
                 MaxSizeMb = request.AnimatedArtworkMaxSizeMb
             },
             cancellationToken);
@@ -404,14 +470,17 @@ public sealed class CoverLibraryMaintenanceService
         }
 
         var baseName = BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate);
-        var destinationPath = Path.Join(albumDir, $"{baseName}.jpg");
-        var temporaryPath = Path.Join(albumDir, $".{baseName}.{Guid.NewGuid():N}.tmp.jpg");
+        var destinationPath = Path.Join(albumDir, $"{baseName}.{ResolveSidecarExtension(request)}");
+        var temporaryPath = Path.Join(albumDir, $".{baseName}.{Guid.NewGuid():N}.tmp.{ResolveSidecarExtension(request)}");
         try
         {
-            await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken);
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            if (request.WriteExternalSidecar)
+            {
+                await File.WriteAllBytesAsync(temporaryPath, bytes, cancellationToken);
+                File.Move(temporaryPath, destinationPath, overwrite: true);
+            }
 
-            if (request.ReplaceMissingEmbeddedCovers || request.UpgradeLowResolutionCovers)
+            if (request.WriteEmbeddedCover)
             {
                 foreach (var audioPath in Directory.EnumerateFiles(albumDir)
                              .Where(path => AudioExtensions.Contains(Path.GetExtension(path))))
@@ -486,7 +555,80 @@ public sealed class CoverLibraryMaintenanceService
             baseFileName = "cover";
         }
 
-        return Path.Join(context.AlbumDir, $"{baseFileName}.jpg");
+        return Path.Join(context.AlbumDir, $"{baseFileName}.{ResolveSidecarExtension(context.Request)}");
+    }
+
+    private static string ResolveSidecarExtension(CoverLibraryMaintenanceRequest request)
+    {
+        var format = (request.LocalArtworkFormat ?? "jpg").Trim().TrimStart('.').ToLowerInvariant();
+        return format == "png" ? "png" : "jpg";
+    }
+
+    private static CoverSearchQuery BuildCoverSearchQuery(AlbumMetadata metadata, ShazamCoverHints? hints)
+    {
+        return new CoverSearchQuery(
+            Artist: metadata.Artist,
+            Album: metadata.Album,
+            AppleAlbumId: hints?.AppleAlbumId,
+            AppleUrl: hints?.AppleUrl,
+            SpotifyUrl: hints?.SpotifyUrl,
+            DeezerUrl: hints?.DeezerUrl,
+            DirectArtworkUrls: hints?.DirectArtworkUrls);
+    }
+
+    private async Task<(AlbumMetadata Metadata, ShazamCoverHints Hints)?> TryRecognizeUntaggedAlbumAsync(
+        string audioFile,
+        ConcurrentQueue<string> logs,
+        CancellationToken cancellationToken)
+    {
+        if (!_shazamRecognitionService.IsAvailable)
+        {
+            logs.Enqueue($"[skip] {audioFile}: Shazam recognizer is unavailable.");
+            return null;
+        }
+
+        try
+        {
+            var recognition = await _shazamRecognitionService.RecognizeAsync(audioFile, cancellationToken);
+            if (recognition?.HasCoreMetadata != true)
+            {
+                return null;
+            }
+
+            var artist = recognition.Artists.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                         ?? recognition.Artist
+                         ?? string.Empty;
+            var album = string.IsNullOrWhiteSpace(recognition.Album)
+                ? recognition.Title
+                : recognition.Album;
+            if (string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(album))
+            {
+                return null;
+            }
+
+            var artworkUrls = new[] { recognition.ArtworkHqUrl, recognition.ArtworkUrl }
+                .Where(url => !string.IsNullOrWhiteSpace(url))
+                .Select(url => url!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var deezerUrl = recognition.Tags.TryGetValue("SHAZAM_DEEZER_URL", out var deezerTags)
+                ? deezerTags.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+                : null;
+            return (
+                new AlbumMetadata(artist.Trim(), album.Trim(), recognition.Title),
+                new ShazamCoverHints(
+                    AppleAlbumId: recognition.AlbumAdamId,
+                    AppleUrl: recognition.AppleMusicUrl,
+                    SpotifyUrl: recognition.SpotifyUrl,
+                    DeezerUrl: deezerUrl,
+                    DirectArtworkUrls: artworkUrls));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logs.Enqueue($"[skip] {audioFile}: Shazam fingerprint failed ({ex.Message}).");
+            _logger.LogDebug(ex, "Cover maintenance Shazam fallback failed for {Path}", audioFile);
+            return null;
+        }
     }
 
     private static AlbumArtworkState InspectAlbumArtwork(
@@ -506,10 +648,8 @@ public sealed class CoverLibraryMaintenanceService
             EmbeddedSize: embeddedSize,
             HasExternal: externalSize.HasValue,
             HasEmbedded: embeddedSize.HasValue,
-            HasAnimatedArtwork: HasAnimatedArtworkFiles(
-                albumDir,
-                BuildAlbumArtworkBaseFileName(metadata, request.CoverImageTemplate)),
-            HasLegacyAnimatedArtwork: HasLegacyAnimatedArtworkFiles(albumDir));
+            HasAnimatedArtwork: HasAnimatedArtworkFiles(albumDir, request),
+            HasLegacyAnimatedArtwork: HasNonCurrentAnimatedArtworkFiles(albumDir, request));
     }
 
     private static bool TryReadRequiredMetadata(IReadOnlyList<string> audioFiles, out AlbumMetadata metadata)
@@ -527,19 +667,27 @@ public sealed class CoverLibraryMaintenanceService
 
     private static AlbumWorkPlan BuildWorkPlan(CoverLibraryMaintenanceRequest request, AlbumArtworkState artworkState)
     {
-        var needsEmbedded = request.ReplaceMissingEmbeddedCovers && !artworkState.HasEmbedded;
-        var needsExternal = request.SyncExternalCovers && !artworkState.HasExternal;
+        var canEmbed = request.WriteEmbeddedCover;
+        var canWriteSidecar = request.WriteExternalSidecar;
+        var needsEmbedded = request.ReplaceMissingEmbeddedCovers && canEmbed && !artworkState.HasEmbedded;
+        var needsExternal = request.SyncExternalCovers && canWriteSidecar && !artworkState.HasExternal;
         var minResolution = Math.Max(0, request.MinResolution);
-        var externalLowRes = artworkState.HasExternal && IsLowResolution(artworkState.ExternalSize!.Value, minResolution);
-        var embeddedLowRes = artworkState.HasEmbedded && IsLowResolution(artworkState.EmbeddedSize!.Value, minResolution);
+        var externalLowRes = canWriteSidecar
+            && artworkState.HasExternal
+            && IsLowResolution(artworkState.ExternalSize!.Value, minResolution);
+        var embeddedLowRes = canEmbed
+            && artworkState.HasEmbedded
+            && IsLowResolution(artworkState.EmbeddedSize!.Value, minResolution);
         var needsUpgrade = request.UpgradeLowResolutionCovers && (externalLowRes || embeddedLowRes);
-        var stillCoverActionEnabled = request.ReplaceMissingEmbeddedCovers
-            || request.SyncExternalCovers
-            || request.UpgradeLowResolutionCovers;
+        var stillCoverActionEnabled = (request.ReplaceMissingEmbeddedCovers && canEmbed)
+            || (request.SyncExternalCovers && canWriteSidecar)
+            || (request.UpgradeLowResolutionCovers && (canEmbed || canWriteSidecar));
         var noArtworkAtAll = stillCoverActionEnabled
             && !artworkState.HasExternal
             && !artworkState.HasEmbedded;
         var needsAnimatedArtwork = request.QueueAnimatedArtwork
+            || request.OverwriteExistingAnimatedArtwork
+            || request.RemoveOldAnimatedArtwork
             || (request.RenameExistingAnimatedArtwork && artworkState.HasLegacyAnimatedArtwork);
         return new AlbumWorkPlan(needsEmbedded, needsExternal, needsUpgrade, noArtworkAtAll, needsAnimatedArtwork);
     }
@@ -641,7 +789,7 @@ public sealed class CoverLibraryMaintenanceService
         return (null, null, null);
     }
 
-    private static bool HasAnimatedArtworkFiles(string albumDir, string baseFileName)
+    private static bool HasAnimatedArtworkFiles(string albumDir, CoverLibraryMaintenanceRequest request)
     {
         return Directory.EnumerateFiles(albumDir)
             .Any(path =>
@@ -655,19 +803,27 @@ public sealed class CoverLibraryMaintenanceService
                 }
 
                 var filename = Path.GetFileNameWithoutExtension(path);
-                return !string.IsNullOrWhiteSpace(filename)
-                    && (AnimatedArtworkFileNaming.IsLegacyStem(filename)
-                        || filename.Equals(baseFileName, StringComparison.OrdinalIgnoreCase)
-                        || filename.Equals($"{baseFileName}_tall", StringComparison.OrdinalIgnoreCase));
+                return AnimatedArtworkNaming.IsRecognizedAnimatedStem(
+                    filename,
+                    request.AnimatedArtworkSquareFileName,
+                    request.AnimatedArtworkTallFileName);
             });
     }
 
-    private static bool HasLegacyAnimatedArtworkFiles(string albumDir)
+    private static bool HasNonCurrentAnimatedArtworkFiles(string albumDir, CoverLibraryMaintenanceRequest request)
     {
         return Directory.EnumerateFiles(albumDir)
             .Select(Path.GetFileNameWithoutExtension)
             .Where(filename => !string.IsNullOrWhiteSpace(filename))
-            .Any(AnimatedArtworkFileNaming.IsLegacyStem);
+            .Any(filename =>
+                AnimatedArtworkNaming.IsRecognizedAnimatedStem(
+                    filename,
+                    request.AnimatedArtworkSquareFileName,
+                    request.AnimatedArtworkTallFileName)
+                && !AnimatedArtworkNaming.IsCurrentStem(
+                    filename,
+                    request.AnimatedArtworkSquareFileName,
+                    request.AnimatedArtworkTallFileName));
     }
 
     private static string? ResolveExternalCoverPath(string albumDir)
@@ -865,8 +1021,16 @@ public sealed record CoverLibraryMaintenanceRequest(
     IReadOnlyCollection<string>? AnimatedArtworkFormats = null,
     IReadOnlyCollection<CoverSourceName>? EnabledSources = null,
     string CoverImageTemplate = "cover",
+    string AnimatedArtworkSquareFileName = "cover",
+    string AnimatedArtworkTallFileName = "cover_tall",
     bool RenameExistingAnimatedArtwork = true,
-    IReadOnlyList<string>? TargetFiles = null);
+    bool OverwriteExistingAnimatedArtwork = false,
+    bool RemoveOldAnimatedArtwork = false,
+    IReadOnlyList<string>? TargetFiles = null,
+    bool WriteEmbeddedCover = true,
+    bool WriteExternalSidecar = true,
+    string LocalArtworkFormat = "jpg",
+    bool UseShazamForUntaggedFiles = false);
 
 public sealed record CoverLibraryMaintenanceResult(
     bool Success,
@@ -888,7 +1052,8 @@ public sealed record CoverAlbumMaintenanceOutcome(
     bool StillCoverUpdated = false,
     bool AnimatedArtworkSaved = false,
     bool HasAnimatedArtwork = false,
-    bool Updated = false)
+    bool Updated = false,
+    string? CoverPath = null)
 {
     public static CoverAlbumMaintenanceOutcome Skipped(
         string albumDirectory,
@@ -896,8 +1061,9 @@ public sealed record CoverAlbumMaintenanceOutcome(
         string? artist,
         string? album,
         string message,
-        bool HasAnimatedArtwork = false)
-        => new(albumDirectory, representativeFilePath, artist, album, "skipped", message, HasAnimatedArtwork: HasAnimatedArtwork);
+        bool HasAnimatedArtwork = false,
+        string? CoverPath = null)
+        => new(albumDirectory, representativeFilePath, artist, album, "skipped", message, HasAnimatedArtwork: HasAnimatedArtwork, CoverPath: CoverPath);
 
     public static CoverAlbumMaintenanceOutcome Error(
         string albumDirectory,

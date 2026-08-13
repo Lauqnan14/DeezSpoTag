@@ -14,10 +14,13 @@ public sealed class DiscogsAuthenticationStatusGuardrailTests
         var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "PlatformAuthApiController.cs");
         var login = ReadSource("DeezSpoTag.Web", "Views", "Login", "Index.cshtml");
         var site = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "site.js");
+        var autotag = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "autotag.js");
 
         Assert.Contains("tokenSaved = !string.IsNullOrWhiteSpace(state.Discogs.Token)", controller, StringComparison.Ordinal);
         Assert.Contains("data.discogs.tokenSaved === true", login, StringComparison.Ordinal);
         Assert.Contains("authData.discogs?.tokenSaved === true", site, StringComparison.Ordinal);
+        Assert.Contains("auth.discogs?.tokenSaved === true", autotag, StringComparison.Ordinal);
+        Assert.DoesNotContain("return Boolean(auth.discogs?.token);", autotag, StringComparison.Ordinal);
         Assert.DoesNotContain("setStatus('discogsStatus', data.discogs.token)", login, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "applySimpleCredentialState(authData.discogs?.token,",

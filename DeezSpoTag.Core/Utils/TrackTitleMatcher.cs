@@ -26,29 +26,29 @@ public static class TrackTitleMatcher
         "acapella", "a cappella", "made famous by", "made popular by", "as made famous by"
     };
 
+    public static bool HasVersionDrift(string? expected, string? actual)
+    {
+        if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual))
+        {
+            return false;
+        }
+
+        var expectedSignature = BuildSignature(expected);
+        var actualSignature = BuildSignature(actual);
+        return HasIncompatibleVariants(expectedSignature, actualSignature);
+    }
+
     public static bool TitlesMatch(string? expected, string? actual)
     {
+        if (HasVersionDrift(expected, actual))
+        {
+            return false;
+        }
+
         var expectedSignature = BuildSignature(expected);
         var actualSignature = BuildSignature(actual);
 
         if (string.IsNullOrWhiteSpace(expectedSignature.BaseTitle) || string.IsNullOrWhiteSpace(actualSignature.BaseTitle))
-        {
-            return false;
-        }
-
-        if (actualSignature.ToxicVariants.Count > 0 && expectedSignature.ToxicVariants.Count == 0)
-        {
-            return false;
-        }
-
-        if (expectedSignature.ToxicVariants.Count != actualSignature.ToxicVariants.Count
-            || !expectedSignature.ToxicVariants.SetEquals(actualSignature.ToxicVariants))
-        {
-            return false;
-        }
-
-        if (expectedSignature.StrictVariants.Count != actualSignature.StrictVariants.Count
-            || !expectedSignature.StrictVariants.SetEquals(actualSignature.StrictVariants))
         {
             return false;
         }
@@ -173,6 +173,23 @@ public static class TrackTitleMatcher
             " ",
             RegexOptions.None,
             RegexTimeout).Trim();
+    }
+
+    private static bool HasIncompatibleVariants(TrackTitleSignature expected, TrackTitleSignature actual)
+    {
+        if (actual.ToxicVariants.Count > 0 && expected.ToxicVariants.Count == 0)
+        {
+            return true;
+        }
+
+        if (expected.ToxicVariants.Count != actual.ToxicVariants.Count
+            || !expected.ToxicVariants.SetEquals(actual.ToxicVariants))
+        {
+            return true;
+        }
+
+        return expected.StrictVariants.Count != actual.StrictVariants.Count
+            || !expected.StrictVariants.SetEquals(actual.StrictVariants);
     }
 
     private static HashSet<string> ExtractVariants(string title, IEnumerable<string> markers)

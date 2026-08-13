@@ -228,10 +228,15 @@ public sealed class ShazamMatcherPrivateHelpersTests
     {
         var method = MatcherMethod("PassesQualityGuards");
 
-        var titleRejected = (bool)method.Invoke(null, new object?[] { 0.2d, 0.9d, 1, 0.7d, 0.4d, 10 })!;
-        var artistRejected = (bool)method.Invoke(null, new object?[] { 0.9d, 0.1d, 1, 0.7d, 0.4d, 10 })!;
-        var durationRejected = (bool)method.Invoke(null, new object?[] { 0.9d, 0.8d, 30, 0.7d, 0.4d, 10 })!;
-        var accepted = (bool)method.Invoke(null, new object?[] { 0.9d, 0.8d, 5, 0.7d, 0.4d, 10 })!;
+        var titleRejected = (bool)method.Invoke(null, new object?[] { 0.2d, 0.9d, 1, 0.7d, 0.4d, 10, true })!;
+        var artistRejected = (bool)method.Invoke(null, new object?[] { 0.9d, 0.1d, 1, 0.7d, 0.4d, 10, true })!;
+        var durationRejected = (bool)method.Invoke(null, new object?[] { 0.9d, 0.8d, 30, 0.7d, 0.4d, 10, true })!;
+        var accepted = (bool)method.Invoke(null, new object?[] { 0.9d, 0.8d, 5, 0.7d, 0.4d, 10, true })!;
+        var untrustedAccepted = (bool)method.Invoke(null, new object?[] { 0.2d, 0.1d, 5, 0.7d, 0.4d, 10, false })!;
+        var untrustedDurationRejected = (bool)method.Invoke(null, new object?[] { 0.2d, 0.1d, 30, 0.7d, 0.4d, 10, false })!;
+
+        Assert.True(untrustedAccepted);
+        Assert.False(untrustedDurationRejected);
 
         Assert.False(titleRejected);
         Assert.False(artistRejected);

@@ -4,6 +4,7 @@ public sealed class SpotifyMatcher
 {
     private const int IsrcAuthority = 2;
     private const int SearchAuthority = 1;
+    private static readonly TimeSpan IdEnrichmentTimeout = TimeSpan.FromSeconds(8);
 
     private static readonly string[] TrackIdTagKeys =
     {
@@ -68,8 +69,7 @@ public sealed class SpotifyMatcher
             return null;
         }
 
-        var enriched = await _client.EnrichTrackWithPathfinderAsync(match.Track.Track, cancellationToken);
-        EnsureTrackIdentity(enriched, seededTrackId, info);
+        var enriched = await EnrichOrKeepAsync(match.Track.Track, seededTrackId, info, cancellationToken);
         return new AutoTagMatchResult
         {
             Accuracy = match.Accuracy,
@@ -211,14 +211,30 @@ public sealed class SpotifyMatcher
             Isrc = info.Isrc
         };
 
-        var enriched = await _client.EnrichTrackWithPathfinderAsync(seeded, cancellationToken);
-        EnsureTrackIdentity(enriched, trackId, info);
-        if (string.IsNullOrWhiteSpace(enriched.TrackId))
+        var enriched = await EnrichOrKeepAsync(seeded, trackId, info, cancellationToken);
+        return string.IsNullOrWhiteSpace(enriched.TrackId) ? null : enriched;
+    }
+
+    private async Task<SpotifyTrackInfo> EnrichOrKeepAsync(
+        SpotifyTrackInfo track,
+        string? preferredTrackId,
+        AutoTagAudioInfo source,
+        CancellationToken cancellationToken)
+    {
+        try
         {
-            return null;
+            using var enrichmentTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            enrichmentTimeout.CancelAfter(IdEnrichmentTimeout);
+            track = await _client.EnrichTrackWithPathfinderAsync(track, enrichmentTimeout.Token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A known Spotify ID is already a match. Pathfinder/librespot enrichment
+            // is best-effort and must not fail the file when those backends stall.
         }
 
-        return enriched;
+        EnsureTrackIdentity(track, preferredTrackId, source);
+        return track;
     }
 
     private sealed record SpotifyCandidate(SpotifyTrackInfo Track, int Authority);

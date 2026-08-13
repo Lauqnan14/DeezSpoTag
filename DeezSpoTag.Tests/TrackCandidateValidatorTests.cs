@@ -74,6 +74,58 @@ public sealed class TrackCandidateValidatorTests
     }
 
     [Fact]
+    public void Validate_AllowsStereoCatalog_WhenAtmosIsrcDiffers()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("ATMOSISRC001", "No Brainer", "DJ Khaled", "Father Of Asahd", 260000),
+            new TrackMatchCandidate(
+                "spotify-stereo",
+                "USUM71806679",
+                "No Brainer",
+                "DJ Khaled",
+                "Father Of Asahd",
+                260000),
+            new TrackCandidateValidationOptions(AllowIsrcMismatch: true));
+
+        Assert.True(result.Accepted);
+        Assert.Equal("metadata", result.Reason);
+    }
+
+    [Fact]
+    public void Validate_RejectsExactIsrc_WhenTitleDriftsToRemix()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("USUG12001949", "Save Your Tears", "The Weeknd", "After Hours", 215000),
+            new TrackMatchCandidate(
+                "bpm-remix",
+                "USUG12001949",
+                "Save Your Tears (Remix) (feat. Ariana Grande)",
+                "The Weeknd",
+                "After Hours",
+                191000));
+
+        Assert.False(result.Accepted);
+        Assert.Equal("version_drift", result.Reason);
+    }
+
+    [Fact]
+    public void Validate_RejectsExactIsrc_WhenTitleDriftsToInstrumental()
+    {
+        var result = TrackCandidateValidator.Validate(
+            new TrackMatchSource("USUG12001949", "Save Your Tears", "The Weeknd", "After Hours", 215000),
+            new TrackMatchCandidate(
+                "instrumental-1",
+                "USUG12001949",
+                "Save Your Tears (Instrumental)",
+                "The Weeknd",
+                "After Hours",
+                215000));
+
+        Assert.False(result.Accepted);
+        Assert.Equal("version_drift", result.Reason);
+    }
+
+    [Fact]
     public void Validate_RejectsWrongTidalIdentity_WhenRequestedTrackHasIsrc()
     {
         var result = TrackCandidateValidator.Validate(

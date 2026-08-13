@@ -198,6 +198,7 @@ public sealed class TagSettingsMigrationService
             result.LrcType = settings.LrcType;
             result.LrcFormat = settings.LrcFormat;
             result.SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml;
+            result.SynthesizeTtmlFromLrc = settings.SynthesizeTtmlFromLrc;
             result.PreferEnhancedLrc = settings.PreferEnhancedLrc;
             result.LyricsFallbackEnabled = settings.LyricsFallbackEnabled;
             result.LyricsFallbackOrder = settings.LyricsFallbackOrder;

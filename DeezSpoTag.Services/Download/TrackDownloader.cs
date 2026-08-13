@@ -1771,7 +1771,7 @@ public class TrackDownloader
                 return;
             }
 
-            ApplyLyricsForTagging(track, tagSettings, lyrics, settings.PreferEnhancedLrc);
+            ApplyLyricsForTagging(track, tagSettings, lyrics, settings);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1800,7 +1800,7 @@ public class TrackDownloader
         return (!tagSettings.Lyrics || hasUnsynced) && (!tagSettings.SyncedLyrics || hasSynced);
     }
 
-    private static void ApplyLyricsForTagging(Track track, TagSettings tagSettings, LyricsBase lyrics, bool preferEnhancedLrc)
+    private static void ApplyLyricsForTagging(Track track, TagSettings tagSettings, LyricsBase lyrics, DeezSpoTagSettings settings)
     {
         track.Lyrics ??= new Lyrics(track.LyricsId ?? "0");
 
@@ -1814,12 +1814,18 @@ public class TrackDownloader
             return;
         }
 
-        var enhancedSync = preferEnhancedLrc
+        var timingPreference = LrcTimingModes.Normalize(settings.LrcTimingPreference, settings.PreferEnhancedLrc);
+        var enhancedSync = LrcTimingModes.ImpliesEnhanced(timingPreference)
             ? lyrics.GenerateEnhancedLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title)
             : string.Empty;
-        track.Lyrics.Sync = string.IsNullOrEmpty(enhancedSync)
-            ? lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title)
-            : enhancedSync;
+        if (!string.IsNullOrEmpty(enhancedSync))
+        {
+            track.Lyrics.Sync = enhancedSync;
+        }
+        else if (timingPreference != LrcTimingModes.WordEnhanced)
+        {
+            track.Lyrics.Sync = lyrics.GenerateLrcContent(track.Title, track.MainArtist?.Name, track.Album?.Title);
+        }
         var syncedLines = lyrics.SyncedLyrics?
             .Where(line => line != null && line.IsValid())
             .Select(line => new SyncLyric

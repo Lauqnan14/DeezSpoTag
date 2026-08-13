@@ -91,6 +91,9 @@ public static class DeezerCandidateHeuristics
         return IsDerivativeCandidate(track) || IsVersionCandidate(track);
     }
 
+    public static bool HasIncompatibleVersion(string? sourceTitle, ApiTrack candidate)
+        => HasTitleVersionDrift(sourceTitle, candidate);
+
     public static bool IsCompilationLikeCandidate(ApiTrack track)
     {
         if (track?.Album == null)
@@ -116,6 +119,11 @@ public static class DeezerCandidateHeuristics
     public static int ScoreFastMatch(ApiTrack candidate, string title, string artist, int? durationSeconds, bool sourceAllowsDerivative, int compilationPenalty)
     {
         if (!sourceAllowsDerivative && IsVariantCandidate(candidate))
+        {
+            return 0;
+        }
+
+        if (HasTitleVersionDrift(title, candidate))
         {
             return 0;
         }
@@ -215,6 +223,15 @@ public static class DeezerCandidateHeuristics
         normalized = ReplaceWithTimeout(normalized, @"[^\p{L}\p{Nd}]+", " ").Trim();
         normalized = ReplaceWithTimeout(normalized, @"\s+", " ");
         return normalized;
+    }
+
+    private static bool HasTitleVersionDrift(string? sourceTitle, ApiTrack candidate)
+    {
+        var candidateTitle = string.Join(
+            " ",
+            new[] { candidate.Title, candidate.TitleShort, candidate.TitleVersion }
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
+        return TrackTitleMatcher.HasVersionDrift(sourceTitle, candidateTitle);
     }
 
     private static bool ContainsDerivativeMarker(string normalized)

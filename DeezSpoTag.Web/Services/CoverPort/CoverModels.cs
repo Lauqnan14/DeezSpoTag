@@ -23,7 +23,15 @@ public readonly record struct CoverRelevance(
     public bool IsReference => !Fuzzy && OnlyFrontCovers && !UnrelatedRisk;
 }
 
-public sealed record CoverSearchQuery(string Artist, string Album);
+public sealed record CoverSearchQuery(
+    string Artist,
+    string Album,
+    string? Isrc = null,
+    string? AppleAlbumId = null,
+    string? AppleUrl = null,
+    string? SpotifyUrl = null,
+    string? DeezerUrl = null,
+    IReadOnlyList<string>? DirectArtworkUrls = null);
 
 public sealed record CoverSearchOptions(
     int TargetSize = 1200,

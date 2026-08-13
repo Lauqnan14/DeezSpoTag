@@ -136,7 +136,7 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
                 try
                 {
-                    _ = await ProcessTrackLyricsRefreshAsync(item.TrackId, stoppingToken);
+                    _ = await ProcessTrackLyricsRefreshAsync(item.TrackId, LyricsRefreshOptions.Default, stoppingToken);
                     lock (_queueLock)
                     {
                         _processedCount++;
@@ -171,11 +171,20 @@ public sealed class LyricsRefreshQueueService : BackgroundService
         long trackId,
         CancellationToken cancellationToken)
     {
-        return await ProcessTrackLyricsRefreshAsync(trackId, cancellationToken);
+        return await RefreshTrackNowAsync(trackId, LyricsRefreshOptions.Default, cancellationToken);
+    }
+
+    public async Task<LyricsRefreshTrackResult> RefreshTrackNowAsync(
+        long trackId,
+        LyricsRefreshOptions options,
+        CancellationToken cancellationToken)
+    {
+        return await ProcessTrackLyricsRefreshAsync(trackId, options ?? LyricsRefreshOptions.Default, cancellationToken);
     }
 
     private async Task<LyricsRefreshTrackResult> ProcessTrackLyricsRefreshAsync(
         long trackId,
+        LyricsRefreshOptions options,
         CancellationToken cancellationToken)
     {
         if (!_repository.IsConfigured)
@@ -204,16 +213,28 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
         var settings = _settingsService.LoadSettings();
         TechnicalLyricsSettingsApplier.Apply(settings, profile.Technical);
-        if (!LyricsSettingsPolicy.CanFetchLyrics(settings))
-        {
-            return LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "Lyrics fetching is disabled by the assigned profile.");
-        }
 
         var directory = Path.GetDirectoryName(info.FilePath);
         var filename = Path.GetFileNameWithoutExtension(info.FilePath);
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(filename))
         {
             return LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "Audio path is invalid.");
+        }
+
+        var ttmlPath = Path.Join(directory, $"{filename}.ttml");
+        var hadNonWordTtml = TtmlSidecarCleanup.IsNonWordTimed(ttmlPath);
+        var shouldFetch = options.RefreshLyrics
+            || (options.RewriteLineSyncedTtml
+                && hadNonWordTtml
+                && LyricsSettingsPolicy.WantsTtmlOutput(settings));
+
+        if (shouldFetch && !LyricsSettingsPolicy.CanFetchLyrics(settings) && !options.RemoveLineSyncedTtml)
+        {
+            return BuildExistingLyricsResult(
+                trackId,
+                info,
+                "Existing lyrics kept; lyrics refresh was not selected for this file.",
+                "Lyrics fetching is disabled by the assigned profile.");
         }
 
         var paths = (
@@ -224,21 +245,71 @@ public sealed class LyricsRefreshQueueService : BackgroundService
             ArtistPath: string.Empty);
 
         var audioModifiedBefore = File.GetLastWriteTimeUtc(info.FilePath);
-        var savedLyrics = await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken);
+        var savedLyrics = LyricsSaveResult.Empty;
+        if (shouldFetch && LyricsSettingsPolicy.CanFetchLyrics(settings))
+        {
+            savedLyrics = await _lyricsService.SaveLyricsAsync(track, paths, settings, cancellationToken);
+        }
+
+        var deletedLineTtml = options.RemoveLineSyncedTtml && TtmlSidecarCleanup.TryDeleteNonWordTimed(ttmlPath);
         var formats = savedLyrics.FilesByFormat.Keys
             .OrderBy(format => format, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var embeddedUpdated = File.GetLastWriteTimeUtc(info.FilePath) > audioModifiedBefore;
+        var timingBadges = MergeTimingBadges(
+            ResolveTimingBadges(savedLyrics.FilesByFormat),
+            LyricsSidecarTimingBadges.FromAudioPath(info.FilePath));
         var result = formats.Count > 0 || embeddedUpdated
             ? LyricsRefreshTrackResult.Completed(trackId, info.FilePath, formats, embeddedUpdated)
-            : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics were returned by the enabled providers.");
+            : deletedLineTtml
+                ? LyricsRefreshTrackResult.Skipped(
+                    trackId,
+                    info.FilePath,
+                    "Line-synced TTML removed.")
+                : timingBadges.Count > 0
+                    ? LyricsRefreshTrackResult.Skipped(
+                        trackId,
+                        info.FilePath,
+                        "Existing lyrics kept; overwrite was not selected.")
+                    : shouldFetch
+                        ? LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics were returned by the enabled providers.")
+                        : LyricsRefreshTrackResult.Skipped(trackId, info.FilePath, "No lyrics cleanup was required.");
         return result with
         {
             Title = info.Title,
             ArtistName = info.ArtistName,
             CoverPath = info.CoverPath,
-            TimingBadges = ResolveTimingBadges(savedLyrics.FilesByFormat)
+            TimingBadges = timingBadges
         };
+    }
+
+    private static LyricsRefreshTrackResult BuildExistingLyricsResult(
+        long trackId,
+        TrackAudioInfoDto info,
+        string keptMessage,
+        string missingMessage)
+    {
+        var existingBadges = LyricsSidecarTimingBadges.FromAudioPath(info.FilePath);
+        return LyricsRefreshTrackResult.Skipped(
+                trackId,
+                info.FilePath,
+                existingBadges.Count > 0 ? keptMessage : missingMessage) with
+        {
+            Title = info.Title,
+            ArtistName = info.ArtistName,
+            CoverPath = info.CoverPath,
+            TimingBadges = existingBadges
+        };
+    }
+
+    private static IReadOnlyList<string> MergeTimingBadges(
+        IReadOnlyList<string> written,
+        IReadOnlyList<string> existing)
+    {
+        return written.Concat(existing)
+            .Where(badge => !string.IsNullOrWhiteSpace(badge))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static IReadOnlyList<string> ResolveTimingBadges(IReadOnlyDictionary<string, string> filesByFormat)
@@ -496,6 +567,14 @@ public sealed class LyricsRefreshQueueService : BackgroundService
 
     private sealed record QueueItem(string JobType, long TrackId);
     private sealed record LyricsLookupIdentity(string Title, string Artist, string Album, string? Isrc);
+}
+
+public sealed record LyricsRefreshOptions(
+    bool RefreshLyrics = true,
+    bool RemoveLineSyncedTtml = false,
+    bool RewriteLineSyncedTtml = false)
+{
+    public static LyricsRefreshOptions Default { get; } = new();
 }
 
 public sealed record LyricsRefreshEnqueueResult(string JobType, int Requested, int Enqueued, int Skipped);

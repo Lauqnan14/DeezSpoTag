@@ -18,8 +18,9 @@ public sealed class AutoTagSharedClassificationToggleContractTests
         Assert.Contains("{ tag: \"mood\", label: \"Mood\"", script, StringComparison.Ordinal);
         Assert.Contains("{ tag: \"activity\", label: \"Activity\"", script, StringComparison.Ordinal);
         Assert.Contains("name === \"tags\" || name === \"gapFillTags\"", script, StringComparison.Ordinal);
-        Assert.Contains("state.config.tags = normalizeAutoTagSelectionList(getCheckedTags(\"tags\"))", script, StringComparison.Ordinal);
-        Assert.Contains("state.config.gapFillTags = normalizeAutoTagSelectionList(getCheckedTags(\"gapFillTags\"))", script, StringComparison.Ordinal);
+        Assert.Contains("state.config.tags = sharedTags", script, StringComparison.Ordinal);
+        Assert.Contains("state.config.gapFillTags = sharedTags.slice()", script, StringComparison.Ordinal);
+        Assert.Contains("const sharedTags = enrichmentTags.length > 0 ? enrichmentTags : enhancementTags", script, StringComparison.Ordinal);
         Assert.Contains("id=\"autotag-tags\"", view, StringComparison.Ordinal);
         Assert.Contains("id=\"gap-fill-tags\"", view, StringComparison.Ordinal);
         Assert.Contains("data-tags-action=\"enable\" data-tags-target=\"gapFillTags\"", view, StringComparison.Ordinal);

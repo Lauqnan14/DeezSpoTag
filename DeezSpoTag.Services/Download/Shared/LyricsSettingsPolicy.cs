@@ -1,4 +1,5 @@
 using DeezSpoTag.Core.Models.Settings;
+using System.Linq;
 
 namespace DeezSpoTag.Services.Download.Shared;
 
@@ -27,6 +28,30 @@ public static class LyricsSettingsPolicy
             || selected.Contains(SyllableLyricsType)
             || selected.Contains(TtmlLyricsType)
             || selected.Contains(UnsyncedLyricsType);
+    }
+
+    public static bool WantsTtmlOutput(DeezSpoTagSettings settings)
+    {
+        if (!settings.SyncedLyrics || !IsLyricsGateEnabled(settings))
+        {
+            return false;
+        }
+
+        var formats = (settings.LrcFormat ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static token => token.Trim().ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (formats.Contains("both")
+            || formats.Contains("richlyrics")
+            || formats.Contains("rich-lyrics")
+            || formats.Contains("all")
+            || formats.Contains("lrc+ttml"))
+        {
+            formats.Add("ttml");
+        }
+
+        return ParseSelectedTypes(settings.LrcType).Contains(TtmlLyricsType)
+            && formats.Contains("ttml");
     }
 
     private static HashSet<string> ParseSelectedTypes(string? rawValue)

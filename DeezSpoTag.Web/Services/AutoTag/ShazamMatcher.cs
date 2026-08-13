@@ -1,5 +1,6 @@
 using System.Globalization;
 using DeezSpoTag.Core.Security;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Logging;
 
@@ -30,7 +31,8 @@ public sealed class ShazamMatcher
         AutoTagMatchingConfig matchingConfig,
         ShazamMatchConfig config,
         IDictionary<string, ShazamRecognitionInfo?> cache,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool trustSourceIdentity = true)
     {
         if (!_recognitionService.IsAvailable)
         {
@@ -58,13 +60,28 @@ public sealed class ShazamMatcher
         var artistSimilarity = ComputeArtistSimilarity(info, recognized);
         var durationDiffSeconds = ComputeDurationDiffSeconds(info.DurationSeconds, recognized.DurationMs);
         var durationSimilarity = ComputeDurationSimilarity(durationDiffSeconds, resolvedConfig.MaxDurationDeltaSeconds);
+        if (trustSourceIdentity && TrackTitleMatcher.HasVersionDrift(info.Title, recognized.Title))
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation(
+                    "Rejected Shazam fingerprint match for {File}: version drift from {SourceTitle} to {RecognizedTitle}",
+                    LogSanitizer.OneLine(filePath),
+                    LogSanitizer.OneLine(info.Title),
+                    LogSanitizer.OneLine(recognized.Title));
+            }
+
+            return null;
+        }
+
         if (!PassesQualityGuards(
                 titleSimilarity,
                 artistSimilarity,
                 durationDiffSeconds,
                 minTitleSimilarity,
                 minArtistSimilarity,
-                resolvedConfig.MaxDurationDeltaSeconds))
+                resolvedConfig.MaxDurationDeltaSeconds,
+                trustSourceIdentity))
         {
             if (_logger.IsEnabled(LogLevel.Information))
             {
@@ -150,14 +167,15 @@ public sealed class ShazamMatcher
         int? durationDiffSeconds,
         double minTitleSimilarity,
         double minArtistSimilarity,
-        int maxDurationDeltaSeconds)
+        int maxDurationDeltaSeconds,
+        bool trustSourceIdentity = true)
     {
-        if (titleSimilarity < minTitleSimilarity)
+        if (trustSourceIdentity && titleSimilarity < minTitleSimilarity)
         {
             return false;
         }
 
-        if (artistSimilarity < minArtistSimilarity)
+        if (trustSourceIdentity && artistSimilarity < minArtistSimilarity)
         {
             return false;
         }

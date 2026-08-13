@@ -58,6 +58,7 @@ public sealed class CoverSearchAndDownloadService
         var results = await Task.WhenAll(searchTasks);
         var mergedCandidates = results
             .SelectMany(static items => items)
+            .Concat(BuildDirectArtworkCandidates(query))
             .Where(static candidate => !string.IsNullOrWhiteSpace(candidate.Url))
             .GroupBy(static candidate => candidate.Url, StringComparer.OrdinalIgnoreCase)
             .Select(static group => group.First())
@@ -89,6 +90,29 @@ public sealed class CoverSearchAndDownloadService
         }
 
         return null;
+    }
+
+    private static IEnumerable<CoverCandidate> BuildDirectArtworkCandidates(CoverSearchQuery query)
+    {
+        if (query.DirectArtworkUrls is not { Count: > 0 })
+        {
+            return Array.Empty<CoverCandidate>();
+        }
+
+        return query.DirectArtworkUrls
+            .Where(url => !string.IsNullOrWhiteSpace(url))
+            .Select((url, index) => new CoverCandidate(
+                Source: CoverSourceName.Itunes,
+                Url: url,
+                Width: 0,
+                Height: 0,
+                Format: "jpg",
+                SourceReliability: 0.9d,
+                MatchConfidence: 0.95d,
+                Artist: query.Artist,
+                Album: query.Album,
+                Rank: index,
+                IsSizeKnown: false));
     }
 
     private List<ICoverSource> ResolveSources(IReadOnlyCollection<CoverSourceName>? configured)

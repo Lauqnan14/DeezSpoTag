@@ -878,6 +878,15 @@ internal static class SpotifyTracklistResolver
 
     private static bool HasDerivativeMismatch(SpotifyTrackSummary sourceTrack, ApiTrack candidate)
     {
+        var candidateTitle = string.Join(
+            " ",
+            new[] { candidate.Title, candidate.TitleShort, candidate.TitleVersion }
+                .Where(static value => !string.IsNullOrWhiteSpace(value)));
+        if (TrackTitleMatcher.HasVersionDrift(sourceTrack.Name, candidateTitle))
+        {
+            return true;
+        }
+
         var sourceAllowsVariant = SourceAllowsVariant(sourceTrack);
         return !sourceAllowsVariant && IsVariantCandidate(candidate);
     }

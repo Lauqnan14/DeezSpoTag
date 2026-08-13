@@ -52,19 +52,11 @@ public sealed class ManualEnrichmentTemplateApplicationGuardrailTests
             "FilterAutomaticDownloadEnrichmentPlatforms(sourceFilteredPlatforms, requestedTags, platformCaps)",
             ExtractMethod(source, "private static EnrichmentStagePlan BuildAutomaticDownloadEnrichmentStagePlan"),
             StringComparison.Ordinal);
-        Assert.Contains(
+        Assert.DoesNotContain(
             ".Where(platform => !IsLyricsProviderPlatform(platform))",
             ExtractMethod(source, "private static List<string> FilterAutomaticDownloadEnrichmentPlatforms"),
             StringComparison.Ordinal);
-        Assert.Contains(
-            "LyricsProviderRegistry.TryGet",
-            ExtractMethod(source, "private static bool IsLyricsProviderPlatform"),
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "provider.IsLyricsOnly",
-            ExtractMethod(source, "private static bool IsLyricsProviderPlatform"),
-            StringComparison.Ordinal);
-        Assert.Contains(
+        Assert.DoesNotContain(
             ".Where(tag => !IsLyricsTag(tag))",
             ExtractMethod(source, "private static List<string> ResolveAutomaticDownloadEnrichmentRequestedTags"),
             StringComparison.Ordinal);

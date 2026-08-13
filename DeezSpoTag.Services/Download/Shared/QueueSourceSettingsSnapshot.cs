@@ -26,7 +26,9 @@ public sealed class QueueSourceSettingsSnapshot
     public string? LrcType { get; set; }
     public string? LrcFormat { get; set; }
     public bool? SynthesizeLrcFromTtml { get; set; }
+    public bool? SynthesizeTtmlFromLrc { get; set; }
     public bool? PreferEnhancedLrc { get; set; }
+    public string? LrcTimingPreference { get; set; }
     public bool? LyricsFallbackEnabled { get; set; }
     public string? LyricsFallbackOrder { get; set; }
 
@@ -47,7 +49,9 @@ public sealed class QueueSourceSettingsSnapshot
         || !string.IsNullOrWhiteSpace(LrcType)
         || !string.IsNullOrWhiteSpace(LrcFormat)
         || SynthesizeLrcFromTtml.HasValue
+        || SynthesizeTtmlFromLrc.HasValue
         || PreferEnhancedLrc.HasValue
+        || !string.IsNullOrWhiteSpace(LrcTimingPreference)
         || LyricsFallbackEnabled.HasValue
         || !string.IsNullOrWhiteSpace(LyricsFallbackOrder);
 
@@ -72,7 +76,9 @@ public sealed class QueueSourceSettingsSnapshot
             LrcType = NormalizeString(settings.LrcType),
             LrcFormat = NormalizeString(settings.LrcFormat),
             SynthesizeLrcFromTtml = settings.SynthesizeLrcFromTtml,
+            SynthesizeTtmlFromLrc = settings.SynthesizeTtmlFromLrc,
             PreferEnhancedLrc = settings.PreferEnhancedLrc,
+            LrcTimingPreference = NormalizeString(settings.LrcTimingPreference),
             LyricsFallbackEnabled = settings.LyricsFallbackEnabled,
             LyricsFallbackOrder = NormalizeString(settings.LyricsFallbackOrder)
         };
@@ -107,7 +113,19 @@ public sealed class QueueSourceSettingsSnapshot
         effective.LrcType = LrcType ?? effective.LrcType;
         effective.LrcFormat = LrcFormat ?? effective.LrcFormat;
         effective.SynthesizeLrcFromTtml = SynthesizeLrcFromTtml ?? effective.SynthesizeLrcFromTtml;
+        effective.SynthesizeTtmlFromLrc = SynthesizeTtmlFromLrc ?? effective.SynthesizeTtmlFromLrc;
         effective.PreferEnhancedLrc = PreferEnhancedLrc ?? effective.PreferEnhancedLrc;
+        if (!string.IsNullOrWhiteSpace(LrcTimingPreference))
+        {
+            effective.LrcTimingPreference = LrcTimingModes.Normalize(LrcTimingPreference, effective.PreferEnhancedLrc);
+            effective.PreferEnhancedLrc = LrcTimingModes.ImpliesEnhanced(effective.LrcTimingPreference);
+        }
+        else
+        {
+            effective.LrcTimingPreference = LrcTimingModes.Normalize(
+                effective.LrcTimingPreference,
+                effective.PreferEnhancedLrc);
+        }
         effective.LyricsFallbackEnabled = LyricsFallbackEnabled ?? effective.LyricsFallbackEnabled;
         effective.LyricsFallbackOrder = LyricsFallbackOrder ?? effective.LyricsFallbackOrder;
 
@@ -145,7 +163,9 @@ public sealed class QueueSourceSettingsSnapshot
             LrcType = ReadString(snapshotObj, "LrcType", "lrcType"),
             LrcFormat = ReadString(snapshotObj, "LrcFormat", "lrcFormat"),
             SynthesizeLrcFromTtml = ReadBool(snapshotObj, "SynthesizeLrcFromTtml", "synthesizeLrcFromTtml"),
+            SynthesizeTtmlFromLrc = ReadBool(snapshotObj, "SynthesizeTtmlFromLrc", "synthesizeTtmlFromLrc"),
             PreferEnhancedLrc = ReadBool(snapshotObj, "PreferEnhancedLrc", "preferEnhancedLrc"),
+            LrcTimingPreference = ReadString(snapshotObj, "LrcTimingPreference", "lrcTimingPreference"),
             LyricsFallbackEnabled = ReadBool(snapshotObj, "LyricsFallbackEnabled", "lyricsFallbackEnabled"),
             LyricsFallbackOrder = ReadString(snapshotObj, "LyricsFallbackOrder", "lyricsFallbackOrder")
         };

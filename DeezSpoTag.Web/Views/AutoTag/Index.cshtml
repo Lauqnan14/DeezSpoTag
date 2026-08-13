@@ -777,18 +777,7 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section">
-                        <div class="download-grid download-grid-3 manual-enrichment-controls">
-                            <div class="form-group" id="autotag-move-success-library-group">
-                                <label for="autotag-move-success-library">
-                                    Library destination
-                                    <span class="autotag-tooltip-icon ms-1" title="The destination folder determines the profile, templates, tags, artwork, lyrics, and sidecar preferences used by this run." aria-label="The destination folder determines the profile, templates, tags, artwork, lyrics, and sidecar preferences used by this run.">
-                                        <i class="fas fa-question-circle"></i>
-                                    </span>
-                                </label>
-                                <select id="autotag-move-success-library">
-                                    <option value="">Select library folder</option>
-                                </select>
-                            </div>
+                        <div class="manual-enrichment-controls">
                             <div class="form-group manual-release-field">
                                 <div class="manual-release-label">
                                     <span>Release type</span>
@@ -829,7 +818,7 @@
                                 <div class="manual-release-menu" role="radiogroup" aria-label="Recognition method">
                                     <div class="manual-release-choice">
                                         <div class="source-header">
-                                            <i class="fas fa-fingerprint manual-release-icon"></i>
+                                            <i class="fas fa-wave-square manual-release-icon"></i>
                                             <label class="switch-label" for="manualRecognitionIdFirst">ID first</label>
                                         </div>
                                         <span class="switch">
@@ -839,7 +828,7 @@
                                     </div>
                                     <div class="manual-release-choice">
                                         <div class="source-header">
-                                            <i class="fas fa-wave-square manual-release-icon"></i>
+                                            <i class="fas fa-fingerprint manual-release-icon"></i>
                                             <label class="switch-label" for="manualRecognitionFingerprint">Fingerprint</label>
                                         </div>
                                         <span class="switch">
@@ -848,6 +837,17 @@
                                         </span>
                                     </div>
                                 </div>
+                            </div>
+                            <div class="form-group" id="autotag-move-success-library-group">
+                                <label for="autotag-move-success-library">
+                                    Library destination
+                                    <span class="autotag-tooltip-icon ms-1" title="The destination folder determines the profile, templates, tags, artwork, lyrics, and sidecar preferences used by this run." aria-label="The destination folder determines the profile, templates, tags, artwork, lyrics, and sidecar preferences used by this run.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <select id="autotag-move-success-library">
+                                    <option value="">Select library folder</option>
+                                </select>
                             </div>
                         </div>
                     </div>
@@ -886,6 +886,37 @@
                         </div>
                         <div class="tags-grid gap-fill-tags-grid" id="gap-fill-tags"></div>
                         <section class="playlist-settings-section mt-3">
+                            <div class="playlist-settings-section-title">Recognition method</div>
+                            <div class="manual-release-label">
+                                <span>When Shazam is enabled</span>
+                                <span class="autotag-tooltip-icon" title="ID first uses leftover platform IDs on well-tagged files. Fingerprint forces audio recognition. Files with corrupt or missing identity always fingerprint, even on ID first." aria-label="Choose ID-first or forced fingerprint recognition for enhancement.">
+                                    <i class="fas fa-question-circle"></i>
+                                </span>
+                            </div>
+                            <div class="manual-release-menu" role="radiogroup" aria-label="Enhancement recognition method">
+                                <div class="manual-release-choice">
+                                    <div class="source-header">
+                                        <i class="fas fa-wave-square manual-release-icon"></i>
+                                        <label class="switch-label" for="enhancementRecognitionIdFirst">ID first</label>
+                                    </div>
+                                    <span class="switch">
+                                        <input type="radio" id="enhancementRecognitionIdFirst" name="enhancementRecognitionMethod" value="id-first" checked />
+                                        <span class="slider"></span>
+                                    </span>
+                                </div>
+                                <div class="manual-release-choice">
+                                    <div class="source-header">
+                                        <i class="fas fa-fingerprint manual-release-icon"></i>
+                                        <label class="switch-label" for="enhancementRecognitionFingerprint">Fingerprint</label>
+                                    </div>
+                                    <span class="switch">
+                                        <input type="radio" id="enhancementRecognitionFingerprint" name="enhancementRecognitionMethod" value="fingerprint" />
+                                        <span class="slider"></span>
+                                    </span>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="playlist-settings-section mt-3">
                             <div class="playlist-settings-section-title">Scope</div>
                             <div class="download-grid download-grid-2">
                                 <div class="form-group">
@@ -909,6 +940,267 @@
                 </div>
             </div>
 
+            <!-- Sidecars -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-photo-film me-2"></i>Sidecars
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section enhancement-settings-panel folder-settings-panel">
+                        <div class="checkbox-group mb-3">
+                            <input type="checkbox" id="enableSidecarsWorkflow" />
+                            <label for="enableSidecarsWorkflow">Include in scheduled enhancement</label>
+                        </div>
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Lyrics</div>
+                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueLyricsRefresh" />
+                                <label for="enhancementQueueLyricsRefresh">Refresh lyrics using profile preferences</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementRemoveLineSyncedTtml" />
+                                <label for="enhancementRemoveLineSyncedTtml">
+                                    Remove line-synced TTML
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Deletes leftover .ttml sidecars that are line-timed, untimed, or otherwise not word-synchronized. Word-timed .ttml files are never deleted."
+                                          aria-label="Deletes leftover .ttml sidecars that are line-timed, untimed, or otherwise not word-synchronized. Word-timed .ttml files are never deleted.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementRewriteLineSyncedTtml" />
+                                <label for="enhancementRewriteLineSyncedTtml">
+                                    Rewrite line-synced TTML with word timing
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Fetches word-timed TTML for files that still have a line-synced or invalid .ttml sidecar. Uses the folder profile Technical lyrics sources and only writes word-timed .ttml."
+                                          aria-label="Fetches word-timed TTML for files that still have a line-synced or invalid .ttml sidecar. Uses the folder profile Technical lyrics sources and only writes word-timed .ttml.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            </div>
+                        </section>
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Covers</div>
+                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="upgradeLowResolutionCovers" />
+                                    <label for="upgradeLowResolutionCovers">Upgrade low-resolution covers</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="replaceMissingCovers" />
+                                    <label for="replaceMissingCovers">Replace missing embedded covers</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="syncExternalCovers" />
+                                    <label for="syncExternalCovers">Sync external cover.jpg with embedded</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="queueAnimatedArtwork" />
+                                    <label for="queueAnimatedArtwork">Add or complete animated artwork</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="renameExistingAnimatedArtwork" checked />
+                                    <label for="renameExistingAnimatedArtwork">
+                                        Rename existing animated artwork
+                                        <span class="autotag-tooltip-icon ms-1"
+                                              title="Rename recognized animated album artwork to the Technical square and tall animated artwork filenames. Existing destination files are kept unless Overwrite existing animated artwork is also selected."
+                                              aria-label="Rename recognized animated album artwork to the Technical square and tall animated artwork filenames. Existing destination files are kept unless Overwrite existing animated artwork is also selected.">
+                                            <i class="fas fa-question-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="overwriteExistingAnimatedArtwork" />
+                                    <label for="overwriteExistingAnimatedArtwork">Overwrite existing animated artwork</label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="removeOldAnimatedArtwork" />
+                                    <label for="removeOldAnimatedArtwork">
+                                        Remove old library animated artwork
+                                        <span class="autotag-tooltip-icon ms-1"
+                                              title="Deletes recognized animated sidecar files whose names are not the current Technical square or tall filenames. Current canonical files and audio tracks are never deleted."
+                                              aria-label="Deletes recognized animated sidecar files whose names are not the current Technical square or tall filenames. Current canonical files and audio tracks are never deleted.">
+                                            <i class="fas fa-question-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="checkbox-group align-self-end">
+                                    <input type="checkbox" id="useShazamForUntaggedCovers" />
+                                    <label for="useShazamForUntaggedCovers">
+                                        Fingerprint untagged files with Shazam
+                                        <span class="autotag-tooltip-icon ms-1"
+                                              title="When artist or album tags are missing, identify the file with Shazam. Apple, Spotify, and Deezer URLs from that match are then resolved through the artwork engines. Embedding and sidecar files still follow Artwork Settings."
+                                              aria-label="When artist or album tags are missing, identify the file with Shazam. Apple, Spotify, and Deezer URLs from that match are then resolved through the artwork engines. Embedding and sidecar files still follow Artwork Settings.">
+                                            <i class="fas fa-question-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                            </div>
+                        </section>
+                        <section class="playlist-settings-section">
+                            <div class="download-grid download-grid-3">
+                            <div class="form-group">
+                                <label for="coverWorkerCount">Workers</label>
+                                <input type="number" id="coverWorkerCount" value="8" min="1" max="32" />
+                                <span class="helper">Parallel album workers (1-32)</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="coverMinResolution">Minimum cover resolution</label>
+                                <input type="number" id="coverMinResolution" value="500" min="100" max="5000" step="100" />
+                            </div>
+                            <div class="form-group">
+                                <label for="enhancementRecentDownloadWindowDays">
+                                    Recent downloads delay (days)
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="0 disables the daily automatic run. The lowest enabled value is 5. A value of 10 means files are enhanced when they are 10 days old."
+                                          aria-label="0 disables the daily automatic run. The lowest enabled value is 5. A value of 10 means files are enhanced when they are 10 days old.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="number" id="enhancementRecentDownloadWindowDays" min="0" max="3650" step="5" />
+                                <span class="helper">Automatic daily Gap Filling and Sidecars run. 0 is off; 5 is the minimum. Aimed mainly at recent releases.</span>
+                            </div>
+                            </div>
+                        </section>
+                        <section class="playlist-settings-section">
+                            <div class="download-grid download-grid-2">
+                            <div class="form-group">
+                                <label for="enhancementCoverFolder">Library folder scope</label>
+                                <div class="dropdown-select" id="enhancementCoverFolderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementCoverFolderTrigger">All enabled music folders</button>
+                                    <div class="dropdown-menu" id="enhancementCoverFolderMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                        <div class="fallback-source-toggles" id="enhancementCoverFolderOptions"></div>
+                                    </div>
+                                    <input type="hidden" id="enhancementCoverFolder" value="" />
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="enhancementRecentDownloadTime">
+                                    Daily run time
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Local time for the automatic recent-downloads run. The only delay is an in-flight download and its enrichment."
+                                          aria-label="Local time for the automatic recent-downloads run. The only delay is an in-flight download and its enrichment.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="time" id="enhancementRecentDownloadTime" value="05:00" />
+                                <span class="helper">Runs every day at this time. Default is 05:00.</span>
+                            </div>
+                            </div>
+                        </section>
+                        <span class="helper" id="enhancementRecentDownloadWindowStatus"></span>
+                        <span class="helper" id="sidecarsStatus">Choose folder scope, then run sidecars.</span>
+                        <div class="enhancement-action-row">
+                            <div class="enhancement-action-buttons">
+                                <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runSidecars">Run Sidecars</button>
+                                <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runSelectedEnhancementSectionsRecent">Run on Recent Downloads</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quality Checks -->
+            <div class="card bg-darker border-secondary mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="fas fa-check-circle me-2"></i>Quality Checks
+                    </h5>
+                </div>
+                <div class="card-body autotag-card-body">
+                    <div class="download-section enhancement-settings-panel folder-settings-panel">
+                        <div class="checkbox-group mb-3">
+                            <input type="checkbox" id="enableQualityChecksWorkflow" />
+                            <label for="enableQualityChecksWorkflow">Include in scheduled enhancement</label>
+                        </div>
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Checks to Run</div>
+                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="flagDuplicates" />
+                                    <label for="flagDuplicates">
+                                        Move duplicate tracks to the duplicates folder
+                                        <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
+                                            <i class="fas fa-info-circle"></i>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
+                                    <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
+                                </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagMissingTags" />
+                                <label for="flagMissingTags">Run missing metadata scan</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="flagMismatchedMetadata" />
+                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
+                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
+                            </div>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="enhancementQueueTechnicalProfileUpgrades" />
+                                <label for="enhancementQueueTechnicalProfileUpgrades">
+                                    Requeue selected technical profiles for better quality
+                                    <span class="autotag-tooltip-icon ms-1"
+                                          title="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks."
+                                          aria-label="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                            </div>
+                            </div>
+                        </section>
+                        <section class="playlist-settings-section">
+                            <div class="playlist-settings-section-title">Scope and Profiles</div>
+                            <div class="download-grid download-grid-3">
+                            <div class="form-group">
+                                <label for="enhancementQualityFolder">Library folder scope</label>
+                                <div class="dropdown-select" id="enhancementQualityFolderDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementQualityFolderTrigger">All enabled music folders</button>
+                                    <div class="dropdown-menu" id="enhancementQualityFolderMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
+                                        <div id="enhancementQualityFolderOptions" class="dropdown-options"></div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="enhancementQualityFolder" value="" />
+                            </div>
+                            <div class="form-group">
+                                <label for="qualityChecksDuplicatesFolderName">Duplicates folder name</label>
+                                <input type="text" id="qualityChecksDuplicatesFolderName" value="%duplicates%" />
+                            </div>
+                            <div class="form-group">
+                                <label for="enhancementTechnicalProfilesTrigger">Technical Profiles</label>
+                                <div class="dropdown-select" id="enhancementTechnicalProfilesDropdown">
+                                    <button type="button" class="dropdown-trigger" id="enhancementTechnicalProfilesTrigger">All profiles</button>
+                                    <div class="dropdown-menu" id="enhancementTechnicalProfilesMenu">
+                                        <p class="artwork-order-hint">Leave everything unchecked to allow all technical profiles.</p>
+                                        <div class="fallback-source-toggles technical-profile-options" id="enhancementTechnicalProfilesOptions">
+                                            <div class="helper">Loading technical profiles...</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            </div>
+                        </section>
+                        <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>
+                        <span class="helper" id="enhancementQualityChecksStatus"></span>
+                        <div class="enhancement-action-row">
+                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runEnhancementQualityChecks">Run Selected Checks</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Folder Uniformity -->
             <div class="card bg-darker border-secondary mb-4">
                 <div class="card-header">
@@ -918,6 +1210,10 @@
                 </div>
                 <div class="card-body autotag-card-body">
                     <div class="download-section enhancement-settings-panel folder-settings-panel">
+                        <div class="checkbox-group mb-3">
+                            <input type="checkbox" id="enableFolderUniformityWorkflow" />
+                            <label for="enableFolderUniformityWorkflow">Include in scheduled enhancement</label>
+                        </div>
                         <section class="playlist-settings-section">
                             <div class="playlist-settings-section-title">Reorganization Rules</div>
                             <div class="download-grid download-grid-3 enhancement-checkbox-grid">
@@ -947,6 +1243,17 @@
                                 <div class="checkbox-group">
                                     <input type="checkbox" id="renameFilesToTemplate" checked />
                                     <label for="renameFilesToTemplate">Apply file template during folder uniformity</label>
+                                </div>
+                                <div class="checkbox-group">
+                                    <input type="checkbox" id="enhancementRenameSpotifyArtistFolders" />
+                                    <label for="enhancementRenameSpotifyArtistFolders">
+                                        Rename artist folders to Spotify's canonical artist name
+                                        <span class="autotag-tooltip-icon ms-1"
+                                              title="Applies to Spotify artist lookups across the library and watchlist flows."
+                                              aria-label="Applies to Spotify artist lookups across the library and watchlist flows.">
+                                            <i class="fas fa-question-circle"></i>
+                                        </span>
+                                    </label>
                                 </div>
                             <div class="checkbox-group">
                                 <input type="checkbox" id="removeEmptyFolders" checked />
@@ -1092,203 +1399,14 @@
                 </div>
             </div>
 
-            <!-- Quality Checks -->
-            <div class="card bg-darker border-secondary mb-4">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-check-circle me-2"></i>Quality Checks
-                    </h5>
-                </div>
-                <div class="card-body autotag-card-body">
-                    <div class="download-section enhancement-settings-panel folder-settings-panel">
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Checks to Run</div>
-                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                                <div class="checkbox-group">
-                                    <input type="checkbox" id="flagDuplicates" />
-                                    <label for="flagDuplicates">
-                                        Move duplicate tracks to the duplicates folder
-                                        <span class="autotag-tooltip-icon ms-1" title="Duplicate Cleaner moves duplicates into the configured duplicates folder." aria-label="Duplicate Cleaner moves duplicates into the configured duplicates folder.">
-                                            <i class="fas fa-info-circle"></i>
-                                        </span>
-                                    </label>
-                                </div>
-                                <div class="checkbox-group">
-                                    <input type="checkbox" id="qualityChecksUseShazamForDedupe" />
-                                    <label for="qualityChecksUseShazamForDedupe">Use Shazam-assisted dedupe</label>
-                                </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="flagMissingTags" />
-                                <label for="flagMissingTags">Run missing metadata scan</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="flagMismatchedMetadata" />
-                                <label for="flagMismatchedMetadata">Run mismatched folder/tag scan</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="enhancementQueueAtmosAlternatives" />
-                                <label for="enhancementQueueAtmosAlternatives">Queue Atmos alternatives</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="enhancementQueueLyricsRefresh" />
-                                <label for="enhancementQueueLyricsRefresh">Refresh lyrics using profile preferences</label>
-                            </div>
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="enhancementQueueTechnicalProfileUpgrades" />
-                                <label for="enhancementQueueTechnicalProfileUpgrades">
-                                    Requeue selected technical profiles for better quality
-                                    <span class="autotag-tooltip-icon ms-1"
-                                          title="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks."
-                                          aria-label="Select a library folder and one or more technical profiles, then queue quality upgrades for matching tracks.">
-                                        <i class="fas fa-question-circle"></i>
-                                    </span>
-                                </label>
-                            </div>
-                            </div>
-                        </section>
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Scope and Profiles</div>
-                            <div class="download-grid download-grid-3">
-                            <div class="form-group">
-                                <label for="enhancementQualityFolder">Library folder scope</label>
-                                <div class="dropdown-select" id="enhancementQualityFolderDropdown">
-                                    <button type="button" class="dropdown-trigger" id="enhancementQualityFolderTrigger">All enabled music folders</button>
-                                    <div class="dropdown-menu" id="enhancementQualityFolderMenu">
-                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
-                                        <div id="enhancementQualityFolderOptions" class="dropdown-options"></div>
-                                    </div>
-                                </div>
-                                <input type="hidden" id="enhancementQualityFolder" value="" />
-                            </div>
-                            <div class="form-group">
-                                <label for="qualityChecksDuplicatesFolderName">Duplicates folder name</label>
-                                <input type="text" id="qualityChecksDuplicatesFolderName" value="%duplicates%" />
-                            </div>
-                            <div class="form-group">
-                                <label for="enhancementTechnicalProfilesTrigger">Technical Profiles</label>
-                                <div class="dropdown-select" id="enhancementTechnicalProfilesDropdown">
-                                    <button type="button" class="dropdown-trigger" id="enhancementTechnicalProfilesTrigger">All profiles</button>
-                                    <div class="dropdown-menu" id="enhancementTechnicalProfilesMenu">
-                                        <p class="artwork-order-hint">Leave everything unchecked to allow all technical profiles.</p>
-                                        <div class="fallback-source-toggles technical-profile-options" id="enhancementTechnicalProfilesOptions">
-                                            <div class="helper">Loading technical profiles...</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            </div>
-                        </section>
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Recent Downloads Automation</div>
-                            <div class="download-grid download-grid-2">
-                            <div class="form-group">
-                                <label for="enhancementRecentDownloadWindowDays">
-                                    Recent downloads window (days)
-                                    <span class="autotag-tooltip-icon ms-1"
-                                          title="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering."
-                                          aria-label="Only files modified within this window in your library are enhanced. Set to 0 to disable time filtering.">
-                                        <i class="fas fa-question-circle"></i>
-                                    </span>
-                                </label>
-                                <input type="number" id="enhancementRecentDownloadWindowDays" min="0" step="1" />
-                                <span class="helper">Applies to the automation run that enhances recent downloads moved into library folders.</span>
-                            </div>
-                            </div>
-                        </section>
-                        <span class="helper" id="enhancementRecentDownloadWindowStatus"></span>
-                        <span class="helper" id="enhancementTechnicalProfilesStatus">Profiles are filtered by the selected library folder and scope.</span>
-                        <span class="helper" id="enhancementQualityChecksStatus"></span>
-                        <div class="enhancement-action-row">
-                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runEnhancementQualityChecks">Run Selected Checks</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
 
-            <!-- Cover Maintenance -->
-            <div class="card bg-darker border-secondary mb-4">
-                <div class="card-header">
-                    <h5 class="mb-0">
-                        <i class="fas fa-image me-2"></i>Library Cover Maintenance
-                    </h5>
-                </div>
-                <div class="card-body autotag-card-body">
-                    <div class="download-section enhancement-settings-panel folder-settings-panel">
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Cover Scan Scope</div>
-                            <div class="download-grid download-grid-2">
-                            <div class="form-group">
-                                <label for="enhancementCoverFolder">Library folder scope</label>
-                                <div class="dropdown-select" id="enhancementCoverFolderDropdown">
-                                    <button type="button" class="dropdown-trigger" id="enhancementCoverFolderTrigger">All enabled music folders</button>
-                                    <div class="dropdown-menu" id="enhancementCoverFolderMenu">
-                                        <p class="artwork-order-hint">Leave everything unchecked to use all enabled music folders.</p>
-                                        <div class="fallback-source-toggles" id="enhancementCoverFolderOptions"></div>
-                                    </div>
-                                    <input type="hidden" id="enhancementCoverFolder" value="" />
-                                </div>
-                            </div>
-                            <div class="form-group">
-                                <label for="coverWorkerCount">Workers</label>
-                                <input type="number" id="coverWorkerCount" value="8" min="1" max="32" />
-                                <span class="helper">Parallel album workers (1-32)</span>
-                            </div>
-                            </div>
-                        </section>
-                        <section class="playlist-settings-section">
-                            <div class="playlist-settings-section-title">Maintenance Actions</div>
-                            <div class="download-grid download-grid-3 enhancement-checkbox-grid">
-                                <div class="checkbox-group align-self-end">
-                                    <input type="checkbox" id="upgradeLowResolutionCovers" />
-                                    <label for="upgradeLowResolutionCovers">Upgrade low-resolution covers</label>
-                                </div>
-                                <div class="checkbox-group align-self-end">
-                                    <input type="checkbox" id="replaceMissingCovers" />
-                                    <label for="replaceMissingCovers">Replace missing embedded covers</label>
-                                </div>
-                                <div class="checkbox-group align-self-end">
-                                    <input type="checkbox" id="syncExternalCovers" />
-                                    <label for="syncExternalCovers">Sync external cover.jpg with embedded</label>
-                                </div>
-                                <div class="checkbox-group align-self-end">
-                                    <input type="checkbox" id="queueAnimatedArtwork" />
-                                    <label for="queueAnimatedArtwork">Add or complete animated artwork</label>
-                                </div>
-                                <div class="checkbox-group align-self-end">
-                                    <input type="checkbox" id="renameExistingAnimatedArtwork" checked />
-                                    <label for="renameExistingAnimatedArtwork">
-                                        Rename existing animated artwork
-                                        <span class="autotag-tooltip-icon ms-1"
-                                              title="Rename recognized animated album artwork to the current Album cover filename template. Square artwork uses the template name; tall artwork adds _tall. Existing files are never overwritten."
-                                              aria-label="Rename recognized animated album artwork to the current Album cover filename template. Square artwork uses the template name; tall artwork adds _tall. Existing files are never overwritten.">
-                                            <i class="fas fa-question-circle"></i>
-                                        </span>
-                                    </label>
-                                </div>
-                            </div>
-                            <div class="download-grid download-grid-3 mt-3">
-                                <div class="form-group">
-                                    <label for="coverMinResolution">Minimum cover resolution</label>
-                                    <input type="number" id="coverMinResolution" value="500" min="100" max="5000" step="100" />
-                                </div>
-                            </div>
-                        </section>
-                        <span class="helper" id="coverMaintenanceStatus">Choose folder scope, then run cover maintenance.</span>
-                        <div class="enhancement-action-row">
-                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runCoverMaintenance">Run Cover Maintenance</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-
-            <div class="download-section enhancement-settings-panel folder-settings-panel mb-4">
+            <div class="download-section enhancement-settings-panel folder-settings-panel mb-0">
                 <section class="playlist-settings-section">
                     <div class="playlist-settings-section-title">
                         Enhancement Run Workflows
                         <span class="autotag-tooltip-icon ms-1"
-                              title="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below. Every ticked workflow is applied to a batch in full before the next batch starts, except dedupe and empty-folder removal, which compare the whole library and run once at the end."
-                              aria-label="Ticked workflows run together in a single job, and are the same workflows used by the per-folder schedule on the Folders tab. Each workflow uses its own folder scope, set in its section below. Every ticked workflow is applied to a batch in full before the next batch starts, except dedupe and empty-folder removal, which compare the whole library and run once at the end.">
+                              title="Ticked workflows run together in one job, in this order: Gap Filling, Sidecars, Quality Checks, Folder Uniformity. These ticks apply to this run only. Each section above still has its own saved schedule enable."
+                              aria-label="Ticked workflows run together in one job, in this order: Gap Filling, Sidecars, Quality Checks, Folder Uniformity. These ticks apply to this run only.">
                             <i class="fas fa-question-circle"></i>
                         </span>
                     </div>
@@ -1305,10 +1423,10 @@
                             </label>
                         </div>
                         <div class="checkbox-group">
-                            <input type="checkbox" id="enableFolderUniformityWorkflow" />
-                            <label for="enableFolderUniformityWorkflow">
-                                Folder Uniformity
-                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-folder-uniformity"
+                            <input type="checkbox" id="runScope-sidecars" />
+                            <label for="runScope-sidecars">
+                                Sidecars
+                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-sidecars"
                                       title="Nothing is enabled or configured in this section, so it will not run."
                                       aria-label="Nothing is enabled or configured in this section, so it will not run.">
                                     <i class="fas fa-exclamation-triangle"></i>
@@ -1316,8 +1434,8 @@
                             </label>
                         </div>
                         <div class="checkbox-group">
-                            <input type="checkbox" id="enableQualityChecksWorkflow" />
-                            <label for="enableQualityChecksWorkflow">
+                            <input type="checkbox" id="runScope-quality-checks" />
+                            <label for="runScope-quality-checks">
                                 Quality Checks
                                 <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-quality-checks"
                                       title="Nothing is enabled or configured in this section, so it will not run."
@@ -1327,10 +1445,10 @@
                             </label>
                         </div>
                         <div class="checkbox-group">
-                            <input type="checkbox" id="enableCoverMaintenanceWorkflow" />
-                            <label for="enableCoverMaintenanceWorkflow">
-                                Library Cover Maintenance
-                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-cover-maintenance"
+                            <input type="checkbox" id="runScope-folder-uniformity" />
+                            <label for="runScope-folder-uniformity">
+                                Folder Uniformity
+                                <span class="autotag-tooltip-icon autotag-tooltip-warning ms-1 d-none" id="runScopeHint-folder-uniformity"
                                       title="Nothing is enabled or configured in this section, so it will not run."
                                       aria-label="Nothing is enabled or configured in this section, so it will not run.">
                                     <i class="fas fa-exclamation-triangle"></i>
@@ -1341,12 +1459,12 @@
                     <div class="enhancement-action-row">
                         <div class="enhancement-action-buttons">
                             <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runSelectedEnhancementSections">Run Enabled Workflows</button>
-                            <button type="button" class="action-btn action-btn-sm enhancement-action-btn" id="runSelectedEnhancementSectionsRecent">Run on Recent Downloads</button>
                         </div>
                     </div>
                     <span class="helper" id="enhancementRunAllStatus"></span>
                 </section>
             </div>
+
         </div>
 
         <!-- ==================== TAB 6: PLATFORMS ==================== -->
@@ -1525,6 +1643,24 @@
                                     </span>
                                 </label>
                                 <input type="text" id="coverImageTemplate" placeholder="cover" />
+                            </div>
+                            <div class="form-group" id="animatedArtworkSquareFileNameGroup">
+                                <label for="animatedArtworkSquareFileName">
+                                    Square animated artwork filename
+                                    <span class="autotag-tooltip-icon ms-1" title="Used for square animated artwork on downloads and cover maintenance. Defaults to cover. Legacy square_animated_artwork names are still recognized." aria-label="Used for square animated artwork on downloads and cover maintenance. Defaults to cover. Legacy square_animated_artwork names are still recognized.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="text" id="animatedArtworkSquareFileName" placeholder="cover" value="cover" />
+                            </div>
+                            <div class="form-group" id="animatedArtworkTallFileNameGroup">
+                                <label for="animatedArtworkTallFileName">
+                                    Tall animated artwork filename
+                                    <span class="autotag-tooltip-icon ms-1" title="Used for tall animated artwork on downloads and cover maintenance. Defaults to cover_tall. Legacy tall_animated_artwork names are still recognized." aria-label="Used for tall animated artwork on downloads and cover maintenance. Defaults to cover_tall. Legacy tall_animated_artwork names are still recognized.">
+                                        <i class="fas fa-question-circle"></i>
+                                    </span>
+                                </label>
+                                <input type="text" id="animatedArtworkTallFileName" placeholder="cover_tall" value="cover_tall" />
                             </div>
                             <div class="form-group" id="artistImageTemplateGroup">
                                 <label for="artistImageTemplate">
@@ -1814,17 +1950,17 @@
                                 <div class="lyrics-format-options lyrics-format-card-grid" id="lyricsFormatOptions">
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-format-lrc" data-value="lrc" checked />
-                                        <label for="lyrics-format-lrc">Standard synchronized lyrics (.lrc)</label>
+                                        <label for="lyrics-format-lrc">Synchronized lyrics</label>
                                     </div>
                                     <div class="checkbox-group">
                                         <input type="checkbox" id="lyrics-format-ttml" data-value="ttml" checked />
                                         <label for="lyrics-format-ttml">TTML lyrics (.ttml)</label>
                                     </div>
-                                    <div class="checkbox-group" id="preferEnhancedLrcGroup">
-                                        <input type="checkbox" id="preferEnhancedLrc" checked />
-                                        <label for="preferEnhancedLrc">
-                                            Enhanced Synced Lyrics
-                                            <span class="autotag-tooltip-icon ms-1" title="Writes word-level (Enhanced LRC) timing into the .lrc file whenever the provider supplies it, falling back to line-level timing otherwise. Turn this off to always write plain line-level timing." aria-label="Writes word-level (Enhanced LRC) timing into the .lrc file whenever the provider supplies it, falling back to line-level timing otherwise. Turn this off to always write plain line-level timing.">
+                                    <div class="checkbox-group" id="synthesizeTtmlFromLrcGroup">
+                                        <input type="checkbox" id="synthesizeTtmlFromLrc" checked />
+                                        <label for="synthesizeTtmlFromLrc">
+                                            Synthesize word-synced TTML
+                                            <span class="autotag-tooltip-icon ms-1" title="Enabled by default. When a provider supplies word-timed .lrc and no word-timed .ttml, write a word-synchronized .ttml sidecar." aria-label="Enabled by default. When a provider supplies word-timed .lrc and no word-timed .ttml, write a word-synchronized .ttml sidecar.">
                                                 <i class="fas fa-question-circle"></i>
                                             </span>
                                         </label>
@@ -1840,6 +1976,29 @@
                                     </div>
                                 </div>
                                 <input type="hidden" id="lrcFormat" value="lrc,ttml" />
+                                <div class="form-group mt-3" id="lrcTimingPreferenceGroup">
+                                    <label>
+                                        Synchronized .lrc timing
+                                        <span class="autotag-tooltip-icon ms-1" title="Chooses what timing is written into the .lrc sidecar for downloads, manual enrichment, and enhancement. Word-enhanced only writes when the provider supplies word tokens. That usually requires Enhanced Synced Lyrics to be selected as a lyrics type." aria-label="Chooses what timing is written into the .lrc sidecar for downloads, manual enrichment, and enhancement. Word-enhanced only writes when the provider supplies word tokens. That usually requires Enhanced Synced Lyrics to be selected as a lyrics type.">
+                                            <i class="fas fa-question-circle"></i>
+                                        </span>
+                                    </label>
+                                    <div class="lyrics-timing-card-grid" id="lrcTimingPreferenceOptions">
+                                        <div class="checkbox-group">
+                                            <input type="radio" name="lrcTimingPreferenceRadio" id="lrcTiming-prefer-enhanced" value="prefer-enhanced" checked />
+                                            <label for="lrcTiming-prefer-enhanced">Prefer word-enhanced, else line</label>
+                                        </div>
+                                        <div class="checkbox-group">
+                                            <input type="radio" name="lrcTimingPreferenceRadio" id="lrcTiming-word-enhanced" value="word-enhanced" />
+                                            <label for="lrcTiming-word-enhanced">Word-enhanced .lrc only</label>
+                                        </div>
+                                        <div class="checkbox-group">
+                                            <input type="radio" name="lrcTimingPreferenceRadio" id="lrcTiming-line" value="line" />
+                                            <label for="lrcTiming-line">Line-timed .lrc</label>
+                                        </div>
+                                    </div>
+                                    <input type="hidden" id="lrcTimingPreference" value="prefer-enhanced" />
+                                </div>
                             </div>
                         </div>
                     </div>

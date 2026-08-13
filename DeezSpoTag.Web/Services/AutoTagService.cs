@@ -86,11 +86,17 @@ internal static class AutoTagLiterals
     internal const string EnhancementFeatureGapFill = "tag-gap-fill";
     internal const string EnhancementFeatureFolderUniformity = "folder-uniformity";
     internal const string EnhancementFeatureQualityChecks = "quality-checks";
+    internal const string EnhancementFeatureSidecars = "sidecars";
+    internal const string EnhancementPhaseSidecarsLyrics = "sidecars-lyrics";
+    internal const string EnhancementPhaseSidecarsCovers = "sidecars-covers";
     internal const string EnhancementFeatureCoverMaintenance = "cover-maintenance";
+    internal const string EnhancementFeatureLyricsRefreshLegacy = "lyrics-refresh";
     internal const string EnhancementFeatureManualEnrichment = "manual-enrichment";
     internal const string ManualReleasePreferenceKey = "manualReleasePreference";
     internal const string ManualDestinationFolderIdKey = "manualDestinationFolderId";
     internal const string ManualForceFingerprintKey = "manualForceFingerprint";
+    internal const string EnhancementForceFingerprintKey = "enhancementForceFingerprint";
+    internal const string EnhancementUntrustedTargetsKey = "enhancementUntrustedTargets";
 }
 
 public abstract class AutoTagRunState
@@ -120,6 +126,10 @@ public abstract class AutoTagRunState
     public int BatchSize { get; set; }
     public int ProcessedItems { get; set; }
     public int TotalItems { get; set; }
+    public string? TargetReason { get; set; }
+    public int TargetRequested { get; set; }
+    public int TargetUsable { get; set; }
+    public string? EnhancementManifestPath { get; set; }
     public string? EnhancementDownloadBatchId { get; set; }
     public string? EnhancementDownloadOperation { get; set; }
     public int EnhancementDownloadItemCount { get; set; }
@@ -473,7 +483,7 @@ public partial class AutoTagService
     private static HashSet<string> BuildEnrichmentStageAllowedKeys()
     {
         var keys = BuildStageAllowedKeys(
-            includeSkipTagged: false,
+            includeSkipTagged: true,
             includeConflictResolution: true,
             includeTargetFiles: true,
             includeLibraryWideEnhancementBatchSize: true);
@@ -487,10 +497,13 @@ public partial class AutoTagService
     {
         var keys = BuildStageAllowedKeys(
             includeSkipTagged: true,
-            includeConflictResolution: false,
+            includeConflictResolution: true,
             includeTargetFiles: true,
             includeLibraryWideEnhancementBatchSize: true);
         keys.Add(AutoTagLiterals.EnhancementStage);
+        keys.Add(AutoTagLiterals.EnhancementForceFingerprintKey);
+        keys.Add(AutoTagLiterals.ManualForceFingerprintKey);
+        keys.Add(AutoTagLiterals.EnhancementUntrustedTargetsKey);
         return keys;
     }
 
@@ -957,6 +970,10 @@ public partial class AutoTagService
         target.BatchSize = source.BatchSize;
         target.ProcessedItems = source.ProcessedItems;
         target.TotalItems = source.TotalItems;
+        target.TargetReason ??= source.TargetReason;
+        target.TargetRequested = source.TargetRequested > 0 ? source.TargetRequested : target.TargetRequested;
+        target.TargetUsable = source.TargetUsable > 0 ? source.TargetUsable : target.TargetUsable;
+        target.EnhancementManifestPath ??= source.EnhancementManifestPath;
         target.ExitCode = null;
         target.Error = null;
         target.LastActivityAt = source.LastActivityAt > DateTimeOffset.MinValue
@@ -2294,6 +2311,10 @@ public partial class AutoTagService
             BatchSize = source.BatchSize,
             ProcessedItems = source.ProcessedItems,
             TotalItems = source.TotalItems,
+            TargetReason = source.TargetReason,
+            TargetRequested = source.TargetRequested,
+            TargetUsable = source.TargetUsable,
+            EnhancementManifestPath = source.EnhancementManifestPath,
             AutoMoveSummary = source.AutoMoveSummary,
             CurrentPlatform = source.CurrentPlatform,
             LastStatus = source.LastStatus,
@@ -2540,10 +2561,9 @@ public partial class AutoTagService
                 stage.ConfigPath,
                 status => UpdateStatus(job, status, stage.Name, stage.ConfigHash, stageIndex, totalStages, fileOutcomes),
                 line => AppendLog(job, line),
-                string.Equals(stage.Name, AutoTagLiterals.EnhancementStage, StringComparison.OrdinalIgnoreCase)
-                    && IsEnhancementRunIntent(job.RunIntent)
-                        ? (files, token) => ApplyEnhancementBatchSectionsAsync(job, stage.ConfigPath, files, token)
-                        : null,
+                IsEnhancementRunIntent(job.RunIntent)
+                    ? (files, token) => ApplyCompletedGapFillBatchAsync(job, stage.ConfigPath, files, token)
+                    : null,
                 resumeCursor,
                 cancellationToken);
             if (string.Equals(result.Error, "stopped", StringComparison.OrdinalIgnoreCase))
@@ -2668,7 +2688,6 @@ public partial class AutoTagService
             path,
             context.ConfigPath,
             context.IncludesEnhancementWorkflows,
-            context.IncludesEnhancementStage,
             cancellationToken);
         var isManualEnrichment = IsManualEnrichmentRunIntent(job.RunIntent);
         var hasEnhancementWork = context.IncludesEnhancementStage
@@ -3220,9 +3239,7 @@ public partial class AutoTagService
     }
 
     private static List<string> ResolveEnhancementRequestedTags(JsonObject baseRoot)
-    {
-        return ReadStringList(baseRoot, "gapFillTags");
-    }
+        => AutoTagPlatformTagContract.ResolveRequestedTags(baseRoot);
 
     private bool TryBuildEnhancementStage(
         JsonObject baseRoot,
@@ -3237,8 +3254,15 @@ public partial class AutoTagService
         skipReason = "gap-fill tags not configured";
         strippedKeys = new List<string>();
 
+        if (!EnhancementWorkflowSelection.IsGapFillRunnable(baseRoot))
+        {
+            return false;
+        }
+
         var requested = ResolveEnhancementRequestedTags(baseRoot);
-        var platforms = eligiblePlatforms.ToList();
+        var platforms = eligiblePlatforms
+            .Where(platform => !IsLyricsProviderPlatform(platform))
+            .ToList();
         if (platforms.Count == 0)
         {
             skipReason = "no eligible enhancement platforms enabled";
@@ -3272,10 +3296,26 @@ public partial class AutoTagService
             stageRoot[AutoTagLiterals.LibraryWideEnhancementBatchSizeKey] = 40;
         }
 
-        // Enhancement should process on-disk files by default and only skip when
-        // an explicit enhancement-level setting is provided.
         stageRoot["skipTagged"] = ReadBool(baseRoot, "enhancementSkipTagged")
+            ?? ReadBool(baseRoot, "skipTagged")
             ?? false;
+        var forceFingerprint = ReadBool(baseRoot, AutoTagLiterals.EnhancementForceFingerprintKey)
+            ?? ReadBool(baseRoot, AutoTagLiterals.ManualForceFingerprintKey)
+            ?? false;
+        if (forceFingerprint)
+        {
+            stageRoot[AutoTagLiterals.EnhancementForceFingerprintKey] = true;
+            if (platforms.Any(platform => string.Equals(platform, "shazam", StringComparison.OrdinalIgnoreCase)))
+            {
+                ConfigureShazamFingerprintBootstrap(stageRoot);
+            }
+        }
+
+        if (ReadBool(baseRoot, AutoTagLiterals.EnhancementUntrustedTargetsKey) == true)
+        {
+            stageRoot[AutoTagLiterals.EnhancementUntrustedTargetsKey] = true;
+        }
+
         strippedKeys = ApplyStageSchema(stageRoot, EnhancementStageAllowedKeys);
 
         var configJson = stageRoot.ToJsonString(new JsonSerializerOptions
@@ -3525,39 +3565,14 @@ public partial class AutoTagService
         IEnumerable<string> platforms,
         Dictionary<string, PlatformTagCapabilities> platformCaps)
     {
-        var requestSet = requested
-            .Select(NormalizeSupportedTagKey)
-            .Where(tag => !string.IsNullOrWhiteSpace(tag))
-            .Select(tag => tag!)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (requestSet.Count == 0)
-        {
-            return new List<string>();
-        }
-
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var platformId in platforms)
-        {
-            if (string.IsNullOrWhiteSpace(platformId))
-            {
-                continue;
-            }
-
-            if (platformCaps.TryGetValue(platformId.Trim(), out var caps))
-            {
-                foreach (var tag in caps.SupportedTags)
-                {
-                    allowed.Add(tag);
-                }
-            }
-        }
-
-        if (allowed.Count == 0)
-        {
-            return new List<string>();
-        }
-
-        return requestSet.Where(tag => allowed.Contains(tag)).ToList();
+        var supported = AutoTagPlatformTagContract.ToSupportedTagMap(
+            platformCaps,
+            static caps => caps.SupportedTags);
+        return AutoTagPlatformTagContract.FilterOfferedTags(
+            requested,
+            platforms,
+            supported,
+            NormalizeSupportedTagKey);
     }
 
     private async Task<List<string>> ResolveEligiblePlatformsAsync(
@@ -3975,10 +3990,19 @@ public partial class AutoTagService
 
         try
         {
-            var refresh = await _mediaServerRefreshService.RefreshConfiguredServersAsync(cancellationToken);
+            AppendLog(job, "media server metadata refresh starting after enhancement (request only; not waiting for a full library reindex).");
+            using var refreshTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            refreshTimeout.CancelAfter(TimeSpan.FromSeconds(45));
+            var refresh = await _mediaServerRefreshService.RefreshConfiguredServersAsync(
+                refreshTimeout.Token,
+                updateTrackIndex: false);
             AppendLog(
                 job,
                 $"media server metadata refresh requested after enhancement: configured={refresh.ConfiguredServerCount}, refreshed={refresh.RefreshedServerCount}, failed=[{string.Join(", ", refresh.FailedServers)}]");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            AppendLog(job, "media server metadata refresh after enhancement timed out; enhancement run will finish without waiting.");
         }
         catch (OperationCanceledException)
         {
@@ -4230,6 +4254,8 @@ public partial class AutoTagService
         CanonicalizeEnhancementFolderScopeSection(enhancement, "folderUniformity");
         CanonicalizeEnhancementFolderScopeSection(enhancement, "coverMaintenance");
         CanonicalizeEnhancementFolderScopeSection(enhancement, "qualityChecks");
+        EnhancementWorkflowSelection.CanonicalizeSidecars(enhancement);
+        CanonicalizeEnhancementFolderScopeSection(enhancement, "sidecars");
     }
 
     private static void CanonicalizeEnhancementFolderScopeSection(JsonObject enhancement, string sectionName)
@@ -4659,7 +4685,9 @@ public partial class AutoTagService
             AutoTagLiterals.EnhancementFeatureGapFill => AutoTagLiterals.EnhancementFeatureGapFill,
             AutoTagLiterals.EnhancementFeatureFolderUniformity => AutoTagLiterals.EnhancementFeatureFolderUniformity,
             AutoTagLiterals.EnhancementFeatureQualityChecks => AutoTagLiterals.EnhancementFeatureQualityChecks,
-            AutoTagLiterals.EnhancementFeatureCoverMaintenance => AutoTagLiterals.EnhancementFeatureCoverMaintenance,
+            AutoTagLiterals.EnhancementFeatureSidecars => AutoTagLiterals.EnhancementFeatureSidecars,
+            AutoTagLiterals.EnhancementFeatureCoverMaintenance => AutoTagLiterals.EnhancementFeatureSidecars,
+            AutoTagLiterals.EnhancementFeatureLyricsRefreshLegacy => null,
             AutoTagLiterals.EnhancementFeatureManualEnrichment => AutoTagLiterals.EnhancementFeatureManualEnrichment,
             _ => null
         };
@@ -4948,8 +4976,8 @@ public partial class AutoTagService
             job.CurrentPhase = string.IsNullOrWhiteSpace(job.EnhancementFeature)
                 ? AutoTagLiterals.EnhancementFeatureGapFill
                 : job.EnhancementFeature;
-            job.TotalItems = status.FileCount.Value;
-            job.ProcessedItems = Math.Min(status.FileCount.Value, fileIndex + 1);
+            job.TotalItems = job.TargetUsable > 0 ? job.TargetUsable : status.FileCount.Value;
+            job.ProcessedItems = Math.Min(job.TotalItems, fileIndex + 1);
             job.BatchSize = Math.Min(EnhancementBatchSize, status.FileCount.Value - (fileIndex / EnhancementBatchSize * EnhancementBatchSize));
             job.CurrentBatch = fileIndex / EnhancementBatchSize + 1;
             job.BatchCount = (int)Math.Ceiling(status.FileCount.Value / (double)EnhancementBatchSize);
@@ -6552,6 +6580,10 @@ public partial class AutoTagService
             BatchSize = job.BatchSize,
             ProcessedItems = job.ProcessedItems,
             TotalItems = job.TotalItems,
+            TargetReason = job.TargetReason,
+            TargetRequested = job.TargetRequested,
+            TargetUsable = job.TargetUsable,
+            EnhancementManifestPath = job.EnhancementManifestPath,
             AutoMoveSummary = job.AutoMoveSummary?.Clone(),
             ResumeFromJobId = string.IsNullOrWhiteSpace(job.ResumeFromJobId) ? null : job.ResumeFromJobId,
             HistoryDate = ResolveRunHistoryDate(job),

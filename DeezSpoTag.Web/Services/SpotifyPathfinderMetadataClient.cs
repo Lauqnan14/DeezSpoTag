@@ -277,6 +277,9 @@ public sealed class SpotifyPathfinderMetadataClient
     private static readonly TimeSpan AuthFailureBackoffBase = TimeSpan.FromSeconds(15.0);
     private static readonly TimeSpan AuthFailureBackoffMax = TimeSpan.FromMinutes(2.0);
     private static readonly TimeSpan AnonymousTokenFetchTimeout = TimeSpan.FromSeconds(3.0);
+    private static readonly TimeSpan PathfinderRequestTimeout = TimeSpan.FromSeconds(8.0);
+    private static readonly TimeSpan PathfinderQueryTimeout = TimeSpan.FromSeconds(12.0);
+    private static readonly TimeSpan PathfinderTimeoutRetryDelay = TimeSpan.FromMilliseconds(250.0);
 
     private static readonly JsonSerializerOptions ClientTokenJsonOptions = new JsonSerializerOptions
     {
@@ -2345,17 +2348,19 @@ public sealed class SpotifyPathfinderMetadataClient
     {
         try
         {
+            using var queryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            queryTimeout.CancelAfter(PathfinderQueryTimeout);
             HttpClient client = _httpClientFactory.CreateClient();
             string payloadJson = JsonSerializer.Serialize(payload, _jsonOptions);
             string operationName = TryGetOperationName(payloadJson) ?? "(unknown)";
-            var (status, json) = await SendPathfinderRequestAsync(client, context, payloadJson, cancellationToken);
+            var (status, json) = await SendPathfinderRequestAsync(client, context, payloadJson, queryTimeout.Token);
             if (status == HttpStatusCode.Unauthorized)
             {
                 InvalidateAuthContext();
-                PathfinderAuthContext? refreshed = await BuildAuthContextAsync(cancellationToken);
+                PathfinderAuthContext? refreshed = await BuildAuthContextAsync(queryTimeout.Token);
                 if (refreshed is not null)
                 {
-                    (status, json) = await SendPathfinderRequestAsync(client, refreshed, payloadJson, cancellationToken);
+                    (status, json) = await SendPathfinderRequestAsync(client, refreshed, payloadJson, queryTimeout.Token);
                 }
             }
             if (ShouldReturnNullFromQueryResponse(status, json, operationName))
@@ -2364,6 +2369,17 @@ public sealed class SpotifyPathfinderMetadataClient
             }
             string responseJson = json!;
             return JsonDocument.Parse(responseJson);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning(
+                "Spotify Pathfinder query exceeded {TimeoutSeconds}s.",
+                PathfinderQueryTimeout.TotalSeconds);
+            return null;
         }
         catch (Exception ex) when (!(ex is OperationCanceledException))
         {
@@ -2501,13 +2517,15 @@ public sealed class SpotifyPathfinderMetadataClient
 
             string url = BuildSearchDesktopUrl(variables, extensions);
             HttpClient client = _httpClientFactory.CreateClient();
+            using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            requestTimeout.CancelAfter(PathfinderRequestTimeout);
             using HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
             request.Headers.Add("App-Platform", WebPlayerAppPlatform);
             request.Headers.Accept.ParseAdd("application/json");
             request.Headers.UserAgent.ParseAdd(WebPlayerUserAgent);
-            using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
-            string json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using HttpResponseMessage response = await client.SendAsync(request, requestTimeout.Token);
+            string json = await response.Content.ReadAsStringAsync(requestTimeout.Token);
             if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(json))
             {
                 _logger.LogDebug(
@@ -4598,8 +4616,10 @@ public sealed class SpotifyPathfinderMetadataClient
             try
             {
                 using HttpRequestMessage request = CreatePathfinderRequest(context, payloadJson);
-                using HttpResponseMessage response = await client.SendAsync(request, cancellationToken);
-                string? body = response.Content != null ? await response.Content.ReadAsStringAsync(cancellationToken) : null;
+                using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                requestTimeout.CancelAfter(PathfinderRequestTimeout);
+                using HttpResponseMessage response = await client.SendAsync(request, requestTimeout.Token);
+                string? body = response.Content != null ? await response.Content.ReadAsStringAsync(requestTimeout.Token) : null;
                 if (!IsTransientPathfinderStatus(response.StatusCode) || attempt == 4)
                 {
                     return (Status: response.StatusCode, Json: body);
@@ -4614,11 +4634,28 @@ public sealed class SpotifyPathfinderMetadataClient
                     4);
                 await Task.Delay(retryDelay, cancellationToken);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (attempt < 4)
+            {
+                _logger.LogWarning(
+                    "Spotify Pathfinder request timed out after {TimeoutSeconds}s. Retrying (attempt {Attempt}/{MaxAttempts}).",
+                    PathfinderRequestTimeout.TotalSeconds,
+                    attempt,
+                    4);
+                await Task.Delay(PathfinderTimeoutRetryDelay, cancellationToken);
+            }
             catch (HttpRequestException ex) when (attempt < 4)
             {
                 var retryDelay = TimeSpan.FromMilliseconds(250 * Math.Pow(2, attempt - 1));
                 _logger.LogWarning(ex, "Spotify Pathfinder transport failed. Retrying in {DelaySeconds}s (attempt {Attempt}/{MaxAttempts}).", Math.Round(retryDelay.TotalSeconds, 1), attempt, 4);
                 await Task.Delay(retryDelay, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return (Status: HttpStatusCode.RequestTimeout, Json: null);
             }
         }
         return (Status: HttpStatusCode.TooManyRequests, Json: null);

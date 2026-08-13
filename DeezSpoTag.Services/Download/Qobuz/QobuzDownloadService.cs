@@ -1431,6 +1431,11 @@ public sealed class QobuzDownloadService : IQobuzDownloadService
 
     private static bool QobuzTitlesMatch(string expectedTitle, string foundTitle)
     {
+        if (TrackTitleMatcher.HasVersionDrift(expectedTitle, foundTitle))
+        {
+            return false;
+        }
+
         var normExpected = NormalizeText(expectedTitle);
         var normFound = NormalizeText(foundTitle);
         if (string.IsNullOrWhiteSpace(normExpected) || string.IsNullOrWhiteSpace(normFound))

@@ -25,7 +25,7 @@
         currentFilter: "all",
         historyStatus: [],
         historyView: "tags",
-        lyricsAutoSwitched: false,
+        sidecarAutoSwitched: false,
         liveJobId: null,
         liveJobPath: null,
         liveJobSummary: null,
@@ -148,14 +148,20 @@
                 return "Folder Uniformity";
             case "quality-checks":
                 return "Quality Checks";
+            case "sidecars":
+                return "Sidecars";
+            case "sidecars-lyrics":
+                return "Sidecars · Lyrics";
+            case "sidecars-covers":
+                return "Sidecars · Covers";
             case "cover-maintenance":
-                return "Cover Maintenance";
+                return "Sidecars · Covers";
             case "missing-core-metadata-discovery":
                 return "Missing Core Metadata Discovery";
             case "missing-core-metadata-db-audit":
                 return "Missing Core Metadata DB Audit";
             case "lyrics-refresh":
-                return "Lyrics Refresh";
+                return "Sidecars · Lyrics";
             case "folder-tag-alignment":
                 return "Folder and File Template Alignment";
             case "technical-quality-upgrade":
@@ -167,19 +173,35 @@
         }
     }
 
-    function autoSwitchOnLyricsStart(job) {
-        const platform = String(job?.lastStatus?.platform || job?.currentPhase || "").toLowerCase();
-        const isLyrics = platform.includes("lyrics");
-        if (isLyrics && !state.lyricsAutoSwitched) {
-            state.lyricsAutoSwitched = true;
-            setHistoryView("lyrics");
-        } else if (!isLyrics) {
-            state.lyricsAutoSwitched = false;
+    function isSidecarPlatform(value) {
+        const platform = String(value || "").toLowerCase();
+        return platform === "sidecars"
+            || platform === "sidecars-lyrics"
+            || platform === "sidecars-covers"
+            || platform === "lyrics-refresh"
+            || platform === "cover-maintenance";
+    }
+
+    function isSidecarPhase(job) {
+        return isSidecarPlatform(job?.lastStatus?.platform || job?.currentPhase);
+    }
+
+    function autoSwitchHistoryView(job) {
+        const sidecarActive = isSidecarPhase(job);
+        if (sidecarActive && !state.sidecarAutoSwitched) {
+            state.sidecarAutoSwitched = true;
+            setHistoryView("sidecar");
+            return;
+        }
+
+        if (!sidecarActive && state.sidecarAutoSwitched) {
+            state.sidecarAutoSwitched = false;
+            setHistoryView("tags");
         }
     }
 
     function updateEnhancementMetadata(job) {
-        autoSwitchOnLyricsStart(job);
+        autoSwitchHistoryView(job);
         setText("autotag-enhancement-feature", formatEnhancementFeature(job?.enhancementFeature || job?.runIntent));
         setText("autotag-current-phase", formatEnhancementFeature(job?.currentPhase));
         const batchCount = Number(job?.batchCount || 0);
@@ -532,9 +554,9 @@
         }
 
         const allRows = Array.isArray(state.historyStatus) ? state.historyStatus : [];
-        renderLyricsCards(allRows.filter(isLyricsHistoryRow));
+        renderLyricsCards(allRows.filter(isSidecarHistoryRow));
 
-        let filteredRows = allRows.filter((entry) => !isLyricsHistoryRow(entry));
+        let filteredRows = allRows.filter((entry) => !isSidecarHistoryRow(entry));
         if (state.currentFilter !== "all") {
             filteredRows = filteredRows.filter((entry) => {
                 const result = String(entry?.status?.status?.status || "").toLowerCase();
@@ -564,6 +586,7 @@
             const inner = status.status || {};
             const time = entry?.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : "--";
             const platform = status.platform || "--";
+            const platformLabel = formatEnhancementFeature(platform);
             const result = inner.status || "--";
             const resultNormalized = String(result).toLowerCase();
             const statusClass = getStatusClass(result);
@@ -575,10 +598,6 @@
             const track = toFileName(inner.path);
             const usedShazam = inner.usedShazam ? '<i class="fas fa-music ms-1" title="Identified with Shazam"></i>' : "";
             const message = inner.message ? ` <span class="text-muted" title="${escapeHtml(inner.message)}">(${escapeHtml(inner.message)})</span>` : "";
-            const artworkBadges = Array.isArray(inner.artworkBadges) ? inner.artworkBadges : [];
-            const artworkBadgeHtml = artworkBadges
-                .map(artworkBadgeMarkup)
-                .join("");
             const encodedPath = inner.path ? encodeURIComponent(inner.path) : "";
             const encodedPlatform = platform && platform !== "--" ? encodeURIComponent(platform) : "";
             const canDiff = inner.path
@@ -589,8 +608,8 @@
                 : '<span class="text-muted">--</span>';
             return `<tr>
                 <td data-label="Time">${escapeHtml(time)}</td>
-                <td data-label="Platform">${escapeHtml(platform)}</td>
-                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}${artworkBadgeHtml}</td>
+                <td data-label="Platform">${escapeHtml(platformLabel)}</td>
+                <td data-label="Status" class="${statusClass}">${escapeHtml(result)}${usedShazam}${message}</td>
                 <td data-label="Accuracy">${escapeHtml(accuracy)}</td>
                 <td data-label="Track" title="${escapeHtml(inner.path || "")}">${escapeHtml(track)}</td>
                 <td data-label="Diff">${diffButton}</td>
@@ -598,8 +617,8 @@
         }).join("");
     }
 
-    function isLyricsHistoryRow(entry) {
-        return String(entry?.status?.platform || "").toLowerCase().includes("lyrics");
+    function isSidecarHistoryRow(entry) {
+        return isSidecarPlatform(entry?.status?.platform);
     }
 
     function lyricsBadgeMarkup(kind) {
@@ -619,6 +638,29 @@
         return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
     }
 
+    function lyricsMissingMarkup(inner, platform) {
+        if (!platform.includes("lyrics")) {
+            return "";
+        }
+
+        const message = String(inner.message || inner.reviewReason || "").toLowerCase();
+        const keptExisting = message.includes("existing lyrics")
+            || message.includes("overwrite was not selected")
+            || message.includes("refresh was not selected");
+        if (keptExisting) {
+            return "";
+        }
+
+        const unavailable = message.includes("no lyrics")
+            || message.includes("not returned")
+            || message.includes("unavailable");
+        if (!unavailable) {
+            return "";
+        }
+
+        return '<span class="badge badge-lyrics-unsynced">No lyrics</span>';
+    }
+
     function artworkBadgeMarkup(kind) {
         const normalized = String(kind || "").toLowerCase();
         if (normalized !== "animated-artwork") {
@@ -628,6 +670,61 @@
         return '<span class="badge badge-artwork-animated ms-1">Animated Artwork</span>';
     }
 
+    function sidecarFolderFromPath(filePath) {
+        const value = String(filePath || "");
+        const slash = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
+        return slash > 0 ? value.slice(0, slash) : "";
+    }
+
+    function sidecarCoverUrlFromPath(filePath, fileName) {
+        const folder = sidecarFolderFromPath(filePath);
+        if (!folder) {
+            return "";
+        }
+
+        return `/api/library/image?path=${encodeURIComponent(`${folder}/${fileName}`)}&size=240`;
+    }
+
+    function resolveSidecarCoverUrl(inner) {
+        if (inner?.lyricsCoverUrl) {
+            return String(inner.lyricsCoverUrl);
+        }
+
+        return sidecarCoverUrlFromPath(inner?.path, "cover.jpg");
+    }
+
+    function sidecarCoverPlaceholder() {
+        return '<div class="lyrics-row-art lyrics-row-art-empty"><i class="fas fa-music"></i></div>';
+    }
+
+    function sidecarCoverMarkup(inner) {
+        const cover = resolveSidecarCoverUrl(inner);
+        if (!cover) {
+            return sidecarCoverPlaceholder();
+        }
+
+        const fallback = inner?.lyricsCoverUrl ? "" : sidecarCoverUrlFromPath(inner?.path, "folder.jpg");
+        return `<img class="lyrics-row-art" src="${escapeHtml(cover)}" alt="" loading="lazy" data-fallback="${escapeHtml(fallback)}" onerror="window.deezSidecarCoverError && window.deezSidecarCoverError(this)" />`;
+    }
+
+    window.deezSidecarCoverError = function deezSidecarCoverError(img) {
+        if (!(img instanceof HTMLImageElement)) {
+            return;
+        }
+
+        const fallback = img.dataset.fallback || "";
+        if (fallback && img.src !== fallback && img.dataset.fallbackTried !== "1") {
+            img.dataset.fallbackTried = "1";
+            img.src = fallback;
+            return;
+        }
+
+        const placeholder = document.createElement("div");
+        placeholder.className = "lyrics-row-art lyrics-row-art-empty";
+        placeholder.innerHTML = '<i class="fas fa-music"></i>';
+        img.replaceWith(placeholder);
+    };
+
     function renderLyricsCards(rows) {
         const container = el("autotag-lyrics-list");
         if (!container) {
@@ -636,27 +733,28 @@
 
         setText("autotag-lyrics-count", String(rows.length));
         if (!state.selectedRunId) {
-            container.innerHTML = `<div class="autotag-run-empty">${escapeHtml(state.runSelectionMessage || "Select a run to load lyrics results.")}</div>`;
+            container.innerHTML = `<div class="autotag-run-empty">${escapeHtml(state.runSelectionMessage || "Select a run to load sidecar results.")}</div>`;
             return;
         }
         if (!rows.length) {
-            container.innerHTML = '<div class="autotag-run-empty">No lyrics were processed in this run.</div>';
+            container.innerHTML = '<div class="autotag-run-empty">No sidecar items were processed in this run.</div>';
             return;
         }
 
         container.innerHTML = rows.map((entry, index) => {
             const inner = entry?.status?.status || {};
+            const platform = String(entry?.status?.platform || "").toLowerCase();
             const title = inner.sourceTitle || toFileName(inner.path) || "Unknown title";
             const artist = inner.sourceArtist || "";
-            const cover = inner.lyricsCoverUrl || "";
-            const badges = Array.isArray(inner.lyricsBadges) ? inner.lyricsBadges : [];
-            const art = cover
-                ? `<img class="lyrics-row-art" src="${escapeHtml(cover)}" alt="" loading="lazy" />`
-                : '<div class="lyrics-row-art lyrics-row-art-empty"><i class="fas fa-music"></i></div>';
+            const lyricsBadges = Array.isArray(inner.lyricsBadges) ? inner.lyricsBadges : [];
+            const artworkBadges = Array.isArray(inner.artworkBadges) ? inner.artworkBadges : [];
+            const art = sidecarCoverMarkup(inner);
             const artistHtml = artist ? `<div class="lyrics-row-artist">${escapeHtml(artist)}</div>` : "";
-            const badgeHtml = badges.length
-                ? badges.map(lyricsBadgeMarkup).join("")
-                : '<span class="badge badge-lyrics-unsynced">No lyrics</span>';
+            const lyricsHtml = lyricsBadges.length
+                ? lyricsBadges.map(lyricsBadgeMarkup).join("")
+                : lyricsMissingMarkup(inner, platform);
+            const artworkHtml = artworkBadges.map(artworkBadgeMarkup).join("");
+            const badgeHtml = `${lyricsHtml}${artworkHtml}` || '<span class="text-muted">--</span>';
             return `<div class="lyrics-row" title="${escapeHtml(inner.path || "")}">
                 <div class="lyrics-row-index">${index + 1}</div>
                 ${art}
@@ -670,9 +768,11 @@
     }
 
     function setHistoryView(view) {
-        state.historyView = view === "lyrics" ? "lyrics" : "tags";
+        const normalized = view === "sidecar" || view === "lyrics" ? "sidecar" : "tags";
+        state.historyView = normalized;
         document.querySelectorAll(".autotag-view-toggle button[data-view]").forEach((btn) => {
-            btn.classList.toggle("active", btn.dataset.view === state.historyView);
+            const buttonView = btn.dataset.view === "lyrics" ? "sidecar" : btn.dataset.view;
+            btn.classList.toggle("active", buttonView === state.historyView);
         });
         const tagsPanel = el("autotag-tags-panel");
         const lyricsPanel = el("autotag-lyrics-panel");
@@ -680,7 +780,7 @@
             tagsPanel.style.display = state.historyView === "tags" ? "" : "none";
         }
         if (lyricsPanel) {
-            lyricsPanel.style.display = state.historyView === "lyrics" ? "" : "none";
+            lyricsPanel.style.display = state.historyView === "sidecar" ? "" : "none";
         }
     }
 

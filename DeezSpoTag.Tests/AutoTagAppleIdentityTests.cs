@@ -49,10 +49,11 @@ public sealed class AutoTagAppleIdentityTests
         }
         """);
 
+        track.Isrc = "ATMOSISRC001";
         ApplyAppleCatalogMetadata(track, config, payload.RootElement, localFileIsAtmos: true);
 
         Assert.Equal(["Afrobeats", "African"], track.Genres);
-        Assert.Equal("QZWA32202168", track.Isrc);
+        Assert.Equal("ATMOSISRC001", track.Isrc);
         Assert.Equal("Encore Recordings", track.Label);
         Assert.Equal("2026 Encore Recordings", Assert.Single(track.Other["copyright"]));
         Assert.Equal(["Anthony Ebuka Victor", "John Doe"], track.Other["composer"]);

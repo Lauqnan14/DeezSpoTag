@@ -694,7 +694,7 @@ public sealed class DeezerClient : IDisposable
 
         foreach (var track in candidates)
         {
-            if (!CanUseMetadataCandidate(track, sourceAllowsDerivative))
+            if (!CanUseMetadataCandidate(track, title, sourceAllowsDerivative))
             {
                 continue;
             }
@@ -729,6 +729,7 @@ public sealed class DeezerClient : IDisposable
 
     private static ApiTrack? FindBestExactMetadataMatch(
         IReadOnlyCollection<ApiTrack> candidates,
+        string sourceTitle,
         string normalizedArtist,
         string normalizedTitle,
         string normalizedTitleNoFeat,
@@ -741,7 +742,7 @@ public sealed class DeezerClient : IDisposable
 
         foreach (var track in candidates)
         {
-            if (!CanUseMetadataCandidate(track, sourceAllowsDerivative) ||
+            if (!CanUseMetadataCandidate(track, sourceTitle, sourceAllowsDerivative) ||
                 !DeezerMetadataMatchHelper.IsArtistMatch(normalizedArtist, track) ||
                 !DeezerMetadataMatchHelper.IsTitleMatch(normalizedTitle, normalizedTitleNoFeat, track) ||
                 !HasMatchingDuration(durationSeconds, track.Duration) ||
@@ -763,6 +764,7 @@ public sealed class DeezerClient : IDisposable
 
     private static ApiTrack? FindBestFuzzyMetadataMatch(
         IReadOnlyCollection<ApiTrack> candidates,
+        string sourceTitle,
         string normalizedArtist,
         string normalizedTitle,
         string normalizedTitleNoFeat,
@@ -775,7 +777,7 @@ public sealed class DeezerClient : IDisposable
 
         foreach (var track in candidates)
         {
-            if (!CanUseMetadataCandidate(track, sourceAllowsDerivative))
+            if (!CanUseMetadataCandidate(track, sourceTitle, sourceAllowsDerivative))
             {
                 continue;
             }
@@ -809,8 +811,13 @@ public sealed class DeezerClient : IDisposable
         return bestFuzzy;
     }
 
-    private static bool CanUseMetadataCandidate(ApiTrack track, bool sourceAllowsDerivative)
+    private static bool CanUseMetadataCandidate(ApiTrack track, string sourceTitle, bool sourceAllowsDerivative)
     {
+        if (DeezerCandidateHeuristics.HasIncompatibleVersion(sourceTitle, track))
+        {
+            return false;
+        }
+
         return sourceAllowsDerivative || !DeezerCandidateHeuristics.IsVariantCandidate(track);
     }
 
@@ -933,6 +940,7 @@ public sealed class DeezerClient : IDisposable
 
         var bestExact = FindBestExactMetadataMatch(
             candidates,
+            title,
             normalizedArtist,
             normalizedTitle,
             normalizedTitleNoFeat,
@@ -947,6 +955,7 @@ public sealed class DeezerClient : IDisposable
 
         return FindBestFuzzyMetadataMatch(
             candidates,
+            title,
             normalizedArtist,
             normalizedTitle,
             normalizedTitleNoFeat,

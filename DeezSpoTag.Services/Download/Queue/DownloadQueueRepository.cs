@@ -407,6 +407,30 @@ ORDER BY (queue_order IS NULL), queue_order ASC, created_at;";
         return items;
     }
 
+    public async Task<IReadOnlyList<DownloadQueueItem>> GetCompletedTasksAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT id, queue_uuid, engine, artist_name, track_title, isrc, deezer_track_id, deezer_album_id, deezer_artist_id,
+       spotify_track_id, spotify_album_id, spotify_artist_id, apple_track_id, apple_album_id, apple_artist_id,
+       duration_ms, destination_folder_id, quality_rank, queue_order, content_type, move_status, enrichment_status,
+       status, payload, progress, downloaded, failed, error, created_at, updated_at, final_destinations_json,
+       qobuz_track_id, qobuz_album_id, qobuz_artist_id, tidal_track_id, tidal_album_id, tidal_artist_id, amazon_track_id, amazon_album_id, amazon_artist_id
+FROM download_task
+WHERE lower(status) IN ('completed', 'complete', 'finished')
+ORDER BY updated_at ASC, id ASC;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var items = new List<DownloadQueueItem>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(ReadItem(reader));
+        }
+
+        return items;
+    }
+
     public async Task<IReadOnlyList<string>> GetPipelineOwnedPayloadPathsAsync(CancellationToken cancellationToken = default)
     {
         await EnsureSchemaAsync(cancellationToken);

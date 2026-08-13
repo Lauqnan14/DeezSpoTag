@@ -78,6 +78,7 @@ public sealed class BpmSupremeMedia
     public string Name { get; set; } = "";
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum BpmSupremeLibrary
 {
     Supreme,

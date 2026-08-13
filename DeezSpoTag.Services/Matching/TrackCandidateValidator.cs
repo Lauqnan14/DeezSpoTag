@@ -23,6 +23,7 @@ public sealed record TrackCandidateValidationOptions(
     bool StrictWithoutIsrc = true,
     bool AllowMissingCandidateArtist = false,
     bool RequireCandidateDurationWhenSourceHasDuration = false,
+    bool AllowIsrcMismatch = false,
     int MaxIsrcDurationDifferenceMs = 20_000,
     int MaxMetadataDurationDifferenceMs = 8_000);
 
@@ -51,7 +52,8 @@ public static class TrackCandidateValidator
         var candidateIsrc = NormalizeIsrc(candidate.Isrc);
         if (!string.IsNullOrWhiteSpace(sourceIsrc)
             && !string.IsNullOrWhiteSpace(candidateIsrc)
-            && !string.Equals(sourceIsrc, candidateIsrc, StringComparison.OrdinalIgnoreCase))
+            && !string.Equals(sourceIsrc, candidateIsrc, StringComparison.OrdinalIgnoreCase)
+            && !options.AllowIsrcMismatch)
         {
             return Reject("isrc_mismatch");
         }
@@ -86,6 +88,11 @@ public static class TrackCandidateValidator
         if (HasArtist(source) && HasArtist(candidate) && !TrackTitleMatcher.ArtistsMatch(source.Artist, candidate.Artist))
         {
             return Reject("artist_mismatch");
+        }
+
+        if (HasTitle(source) && HasTitle(candidate) && TrackTitleMatcher.HasVersionDrift(source.Title, candidate.Title))
+        {
+            return Reject("version_drift");
         }
 
         var durationResult = ValidateDuration(

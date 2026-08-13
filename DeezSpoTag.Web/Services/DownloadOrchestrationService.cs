@@ -118,6 +118,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         public Dictionary<string, DateTimeOffset> LastRunByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> LastScheduleByFolderId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
+
+    private sealed class RecentDownloadEnhancementState
+    {
+        public Dictionary<string, string> LastCheckedLocalDateByProfileId { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> ProcessedQueueUuids { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
     private sealed class ProcessedCompletionState
     {
         public Dictionary<string, DateTimeOffset> ProcessedByQueueItem { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -207,6 +213,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly IConfiguration _configuration;
     private readonly ILogger<DownloadOrchestrationService> _logger;
     private readonly string _enhancementSchedulePath;
+    private readonly string _recentDownloadEnhancementStatePath;
     private readonly string _processedCompletionPath;
     private readonly string _orchestrationStatePath;
     private readonly SemaphoreSlim _pipelineLock = new(1, 1);
@@ -276,6 +283,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var autoTagDataDir = Path.Join(dataRoot, "autotag");
         Directory.CreateDirectory(autoTagDataDir);
         _enhancementSchedulePath = Path.Join(autoTagDataDir, "enhancement-schedule-state.json");
+        _recentDownloadEnhancementStatePath = Path.Join(autoTagDataDir, "recent-download-enhancement-state.json");
         _processedCompletionPath = Path.Join(autoTagDataDir, "processed-completions.json");
         _orchestrationStatePath = Path.Join(autoTagDataDir, "download-orchestration-state.json");
         DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
@@ -872,6 +880,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
         try
         {
+            await RunScheduledRecentDownloadEnhancementIfDueAsync(cancellationToken);
             await RunScheduledEnhancementIfDueAsync(cancellationToken);
             if (_enhancementResumeAwaitingPipelineCompletion)
             {
@@ -2176,6 +2185,293 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         return pendingItems.Count > 0;
     }
 
+    private async Task RunScheduledRecentDownloadEnhancementIfDueAsync(CancellationToken cancellationToken)
+    {
+        if (await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
+        {
+            _pipelineRequested = true;
+            return;
+        }
+
+        if (ShouldDeferEnhancementForDownloadStagingAudio(cancellationToken))
+        {
+            return;
+        }
+
+        if (await _queueRepository.HasActiveDownloadsAsync(cancellationToken))
+        {
+            return;
+        }
+
+        if (_enhancementStageRunning || _autoTagService.TryGetRunningEnhancementJobId(out _))
+        {
+            return;
+        }
+
+        var nowLocal = DateTimeOffset.Now;
+        var profileContext = await BuildAutomationProfileContextAsync(cancellationToken);
+        var folders = profileContext.FoldersById.Values
+            .Where(IsEnhancementEligibleFolder)
+            .ToList();
+        if (folders.Count == 0)
+        {
+            return;
+        }
+
+        var state = await LoadRecentDownloadEnhancementStateAsync();
+        var completedItems = await _queueRepository.GetCompletedTasksAsync(cancellationToken);
+        var today = DateOnly.FromDateTime(nowLocal.DateTime).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var anyAttempted = false;
+
+        foreach (var folder in folders)
+        {
+            var profile = ResolveAutomationProfileForFolder(
+                profileContext,
+                folder.Id.ToString(CultureInfo.InvariantCulture),
+                folder.AutoTagProfileId);
+            if (profile == null)
+            {
+                continue;
+            }
+
+            var settings = RecentDownloadEnhancementPolicy.ReadSettings(profile);
+            if (!RecentDownloadEnhancementPolicy.IsEnabled(settings.Days))
+            {
+                continue;
+            }
+
+            var profileKey = string.IsNullOrWhiteSpace(profile.Id) ? folder.Id.ToString(CultureInfo.InvariantCulture) : profile.Id;
+            if (state.LastCheckedLocalDateByProfileId.TryGetValue(profileKey, out var lastChecked)
+                && string.Equals(lastChecked, today, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!RecentDownloadEnhancementPolicy.IsScheduleDue(settings.LocalTime, ParseLocalDate(lastChecked), nowLocal))
+            {
+                continue;
+            }
+
+            var dueItems = completedItems
+                .Where(item => !state.ProcessedQueueUuids.Contains(item.QueueUuid)
+                    && RecentDownloadEnhancementPolicy.IsDownloadDue(item.UpdatedAt, settings.Days, nowLocal))
+                .ToList();
+            var dueFiles = dueItems
+                .SelectMany(DownloadQueueRepository.GetExistingMaterializedFilePaths)
+                .Select(NormalizePathScope)
+                .Where(path => IsPathUnderRoot(folder.RootPath, path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (dueFiles.Count == 0)
+            {
+                state.LastCheckedLocalDateByProfileId[profileKey] = today;
+                await SaveRecentDownloadEnhancementStateAsync(state);
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: recent-download enhancement had no due files for {folder.RootPath}."));
+                continue;
+            }
+
+            var ran = await RunRecentDownloadEnhancementJobAsync(
+                folder,
+                profile,
+                dueFiles,
+                cancellationToken);
+            if (!ran)
+            {
+                continue;
+            }
+
+            anyAttempted = true;
+            foreach (var item in dueItems)
+            {
+                state.ProcessedQueueUuids.Add(item.QueueUuid);
+            }
+
+            state.LastCheckedLocalDateByProfileId[profileKey] = today;
+            await SaveRecentDownloadEnhancementStateAsync(state);
+        }
+
+        if (anyAttempted)
+        {
+            PruneRecentDownloadProcessedUuids(state, completedItems);
+            await SaveRecentDownloadEnhancementStateAsync(state);
+        }
+    }
+
+    private async Task<bool> RunRecentDownloadEnhancementJobAsync(
+        FolderDto folder,
+        TaggingProfile profile,
+        IReadOnlyList<string> targetFiles,
+        CancellationToken cancellationToken)
+    {
+        var profileConfigJson = _configBuilder.BuildConfigJson(profile);
+        if (string.IsNullOrWhiteSpace(profileConfigJson))
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                WarningLogLevel,
+                $"Automation: recent-download enhancement skipped for {folder.RootPath} (profile config could not be built)."));
+            return false;
+        }
+
+        var enhancementConfig = ClearEnrichmentTags(profileConfigJson);
+        var enabledFeatures = GetEnabledRecentDownloadEnhancementFeatures(enhancementConfig);
+        if (enabledFeatures.Count == 0)
+        {
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: recent-download enhancement skipped for {folder.RootPath} (no Gap Filling tags or Sidecars actions)."));
+            return true;
+        }
+
+        var featureConfig = BuildEnhancementFeatureConfig(
+            enhancementConfig,
+            enabledFeatures,
+            folder.Id.ToString(CultureInfo.InvariantCulture),
+            targetFiles);
+        AutoTagJob? job = null;
+        try
+        {
+            _taggingInProgress = true;
+            job = await _autoTagService.StartJob(
+                folder.RootPath,
+                featureConfig,
+                new AutoTagService.StartJobOptions(
+                    Trigger: AutoTagLiterals.ScheduleTrigger,
+                    ProfileId: profile.Id,
+                    ProfileName: profile.Name,
+                    RunIntent: AutoTagLiterals.RunIntentEnhancementRecentDownloads,
+                    EnhancementFeature: enabledFeatures.Count == 1 ? enabledFeatures[0] : null,
+                    EnhancementGroupId: Guid.NewGuid().ToString("N")));
+            if (job == null)
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    "info",
+                    $"Automation: recent-download enhancement skipped for {folder.RootPath} because downloads are active."));
+                return false;
+            }
+
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: recent-download enhancement starting for {folder.RootPath} ({targetFiles.Count} file(s))."));
+            MarkEnhancementStageStarted(job);
+            await WaitForJobCompletionAsync(job, cancellationToken);
+            MarkEnhancementStageFinished();
+            var finished = _autoTagService.GetJob(job.Id) ?? job;
+            var succeeded = string.Equals(finished.Status, AutoTagLiterals.CompletedStatus, StringComparison.OrdinalIgnoreCase);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                succeeded ? "info" : WarningLogLevel,
+                $"Automation: recent-download enhancement {finished.Status} for {folder.RootPath}."));
+            return succeeded;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Recent-download enhancement failed for {RootPath}.", folder.RootPath);
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                ErrorLogLevel,
+                $"Automation: recent-download enhancement failed for {folder.RootPath} ({ex.Message})."));
+            return false;
+        }
+        finally
+        {
+            MarkEnhancementStageFinished();
+            _taggingInProgress = false;
+        }
+    }
+
+    private static List<string> GetEnabledRecentDownloadEnhancementFeatures(string configJson)
+    {
+        if (string.IsNullOrWhiteSpace(configJson)
+            || JsonNode.Parse(configJson) is not JsonObject root)
+        {
+            return new List<string>();
+        }
+
+        var features = new List<string>();
+        if (root["gapFillTags"] is JsonArray gapFillTags && gapFillTags.Count > 0)
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureGapFill);
+        }
+
+        if (root[AutoTagLiterals.EnhancementStage] is JsonObject enhancementRoot
+            && (EnhancementWorkflowSelection.HasSidecarLyricsActions(enhancementRoot)
+                || EnhancementWorkflowSelection.HasExplicitCoverActions(enhancementRoot)))
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureSidecars);
+        }
+
+        return features;
+    }
+
+    private async Task<RecentDownloadEnhancementState> LoadRecentDownloadEnhancementStateAsync()
+    {
+        try
+        {
+            if (!File.Exists(_recentDownloadEnhancementStatePath))
+            {
+                return new RecentDownloadEnhancementState();
+            }
+
+            var json = await File.ReadAllTextAsync(_recentDownloadEnhancementStatePath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new RecentDownloadEnhancementState();
+            }
+
+            var loaded = JsonSerializer.Deserialize<RecentDownloadEnhancementState>(json, ScheduleJsonOptions)
+                ?? new RecentDownloadEnhancementState();
+            loaded.LastCheckedLocalDateByProfileId ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            loaded.ProcessedQueueUuids ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            return loaded;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to load recent-download enhancement state.");
+            return new RecentDownloadEnhancementState();
+        }
+    }
+
+    private async Task SaveRecentDownloadEnhancementStateAsync(RecentDownloadEnhancementState state)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(state, ScheduleJsonOptions);
+            await File.WriteAllTextAsync(_recentDownloadEnhancementStatePath, json);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to save recent-download enhancement state.");
+        }
+    }
+
+    private static void PruneRecentDownloadProcessedUuids(
+        RecentDownloadEnhancementState state,
+        IReadOnlyList<DownloadQueueItem> completedItems)
+    {
+        var live = completedItems
+            .Select(item => item.QueueUuid)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        state.ProcessedQueueUuids.RemoveWhere(uuid => !live.Contains(uuid));
+    }
+
+    private static DateOnly? ParseLocalDate(string? raw)
+    {
+        if (DateOnly.TryParseExact(raw, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date))
+        {
+            return date;
+        }
+
+        return null;
+    }
+
     private async Task RunScheduledEnhancementIfDueAsync(CancellationToken cancellationToken)
     {
         if (await HasPendingPostDownloadEnrichmentAsync(cancellationToken))
@@ -2897,7 +3193,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
             var enrichmentCount = ReadArrayCount(root, "tags");
             var enhancementCount = ReadArrayCount(root, "gapFillTags");
-            return new AutoTagStages(enrichmentCount > 0, enhancementCount > 0 || HasConfiguredEnhancementWorkflows(root));
+            return new AutoTagStages(enrichmentCount > 0, enhancementCount > 0 || EnhancementWorkflowSelection.HasConfiguredEnhancementWorkflows(root));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -2914,7 +3210,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         var features = new List<string>();
-        if (ReadArrayCount(root, "gapFillTags") > 0)
+        if (EnhancementWorkflowSelection.IsGapFillRunnable(root))
         {
             features.Add(AutoTagLiterals.EnhancementFeatureGapFill);
         }
@@ -2924,17 +3220,17 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return features;
         }
 
-        if (IsFolderUniformityWorkflowEnabled(enhancementRoot))
+        if (EnhancementWorkflowSelection.IsSidecarsRunnable(enhancementRoot))
         {
-            features.Add(AutoTagLiterals.EnhancementFeatureFolderUniformity);
+            features.Add(AutoTagLiterals.EnhancementFeatureSidecars);
         }
-        if (IsCoverMaintenanceWorkflowEnabled(enhancementRoot))
-        {
-            features.Add(AutoTagLiterals.EnhancementFeatureCoverMaintenance);
-        }
-        if (IsQualityChecksWorkflowEnabled(enhancementRoot))
+        if (EnhancementWorkflowSelection.IsQualityChecksRunnable(enhancementRoot))
         {
             features.Add(AutoTagLiterals.EnhancementFeatureQualityChecks);
+        }
+        if (EnhancementWorkflowSelection.IsFolderUniformityRunnable(enhancementRoot))
+        {
+            features.Add(AutoTagLiterals.EnhancementFeatureFolderUniformity);
         }
 
         return features;
@@ -2943,65 +3239,27 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static string BuildEnhancementFeatureConfig(
         string configJson,
         IReadOnlyCollection<string> selectedFeatures,
-        string folderId)
+        string folderId,
+        IReadOnlyList<string>? targetFiles = null)
     {
         if (JsonNode.Parse(configJson) is not JsonObject root)
         {
             throw new InvalidOperationException("Enhancement profile config is invalid.");
         }
 
-        var selected = new HashSet<string>(selectedFeatures, StringComparer.OrdinalIgnoreCase);
-        var enhancementRoot = root[AutoTagLiterals.EnhancementStage] as JsonObject ?? new JsonObject();
-        root[AutoTagLiterals.EnhancementStage] = enhancementRoot;
-        SetEnhancementSectionState(
-            enhancementRoot,
-            "folderUniformity",
-            selected.Contains(AutoTagLiterals.EnhancementFeatureFolderUniformity),
-            folderId);
-        SetEnhancementSectionState(
-            enhancementRoot,
-            "coverMaintenance",
-            selected.Contains(AutoTagLiterals.EnhancementFeatureCoverMaintenance),
-            folderId);
-        SetEnhancementSectionState(
-            enhancementRoot,
-            "qualityChecks",
-            selected.Contains(AutoTagLiterals.EnhancementFeatureQualityChecks),
-            folderId);
-        SetEnhancementSectionState(
-            enhancementRoot,
-            "gapFilling",
-            selected.Contains(AutoTagLiterals.EnhancementFeatureGapFill),
-            folderId);
-
-        if (!selected.Contains(AutoTagLiterals.EnhancementFeatureGapFill))
-        {
-            root["gapFillTags"] = new JsonArray();
-        }
-        root.Remove(AutoTagLiterals.TargetFilesKey);
+        var selected = EnhancementWorkflowSelection.NormalizeSelectedFeatures(selectedFeatures);
+        long.TryParse(folderId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericFolderId);
+        EnhancementWorkflowSelection.ApplyFeatureSelection(
+            root,
+            selected,
+            numericFolderId > 0 ? [numericFolderId] : Array.Empty<long>(),
+            targetFiles);
 
         return root.ToJsonString(new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             WriteIndented = true
         });
-    }
-
-    private static void SetEnhancementSectionState(
-        JsonObject enhancementRoot,
-        string sectionName,
-        bool enabled,
-        string folderId)
-    {
-        var section = enhancementRoot[sectionName] as JsonObject ?? new JsonObject();
-        section["enabled"] = enabled;
-        var folderIds = new JsonArray();
-        if (long.TryParse(folderId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var numericFolderId))
-        {
-            folderIds.Add(numericFolderId);
-        }
-        section["folderIds"] = folderIds;
-        enhancementRoot[sectionName] = section;
     }
 
     private static string ClearEnhancementTags(string configJson)
@@ -3096,61 +3354,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static int ReadArrayCount(JsonObject root, string key)
     {
         return root[key] is JsonArray array ? array.Count : 0;
-    }
-
-    private static bool HasConfiguredEnhancementWorkflows(JsonObject root)
-    {
-        return root[AutoTagLiterals.EnhancementStage] is JsonObject enhancementRoot
-            && (IsFolderUniformityWorkflowEnabled(enhancementRoot)
-                || IsCoverMaintenanceWorkflowEnabled(enhancementRoot)
-                || IsQualityChecksWorkflowEnabled(enhancementRoot));
-    }
-
-    private static bool IsFolderUniformityWorkflowEnabled(JsonObject enhancementRoot)
-    {
-        return enhancementRoot["folderUniformity"] is JsonObject config
-            && ReadBool(config, "enabled") == true
-            && (ReadBool(config, "enforceFolderStructure") != false || ReadBool(config, "runDedupe") != false);
-    }
-
-    private static bool IsCoverMaintenanceWorkflowEnabled(JsonObject enhancementRoot)
-    {
-        if (enhancementRoot["coverMaintenance"] is not JsonObject coverMaintenance
-            || ReadBool(coverMaintenance, "enabled") != true)
-        {
-            return false;
-        }
-
-        return ReadBool(coverMaintenance, "replaceMissingEmbeddedCovers") == true
-            || ReadBool(coverMaintenance, "syncExternalCovers") == true
-            || ReadBool(coverMaintenance, "upgradeLowResolutionCovers") == true
-            || ReadBool(coverMaintenance, "queueAnimatedArtwork") == true;
-    }
-
-    private static bool IsQualityChecksWorkflowEnabled(JsonObject enhancementRoot)
-    {
-        if (enhancementRoot["qualityChecks"] is not JsonObject qualityChecks
-            || ReadBool(qualityChecks, "enabled") != true)
-        {
-            return false;
-        }
-
-        return ReadBool(qualityChecks, "flagDuplicates") == true
-            || ReadBool(qualityChecks, "flagMissingTags") == true
-            || ReadBool(qualityChecks, "flagMismatchedMetadata") == true
-            || ReadBool(qualityChecks, "queueAtmosAlternatives") == true
-            || ReadBool(qualityChecks, "queueLyricsRefresh") == true
-            || ReadBool(qualityChecks, "queueTechnicalProfileUpgrades") == true;
-    }
-
-    private static bool? ReadBool(JsonObject obj, string key)
-    {
-        if (obj[key] is not JsonValue value)
-        {
-            return null;
-        }
-
-        return value.TryGetValue<bool>(out var boolValue) ? boolValue : null;
     }
 
     private async Task<AutomationProfileContext> BuildAutomationProfileContextAsync(CancellationToken cancellationToken)

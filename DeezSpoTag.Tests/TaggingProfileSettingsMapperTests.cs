@@ -72,6 +72,7 @@ public sealed class TaggingProfileSettingsMapperTests
         var settings = new DeezSpoTagSettings
         {
             SynthesizeLrcFromTtml = false,
+            SynthesizeTtmlFromLrc = true,
             Tags = new TagSettings()
         };
         var profile = new TaggingProfile

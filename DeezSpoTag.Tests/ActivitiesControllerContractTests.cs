@@ -196,6 +196,21 @@ public sealed class ActivitiesControllerContractTests
     }
 
     [Fact]
+    public void AutoTagHistorySidecar_DoesNotTreatKeptExistingLyricsAsMissing()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../DeezSpoTag.Web/wwwroot/js/autotag-status.js"));
+
+        Assert.Contains("function lyricsMissingMarkup(inner, platform)", source, StringComparison.Ordinal);
+        Assert.Contains("existing lyrics", source, StringComparison.Ordinal);
+        Assert.Contains("overwrite was not selected", source, StringComparison.Ordinal);
+        Assert.Contains("lyricsBadges.map(lyricsBadgeMarkup)", source, StringComparison.Ordinal);
+        Assert.Contains("lyricsMissingMarkup(inner, platform)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("? '<span class=\"badge badge-lyrics-unsynced\">No lyrics</span>'", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ActivitiesDownloadsTab_DerivesAnimatedArtworkBadgeFromGeneratedSidecars()
     {
         var source = File.ReadAllText(Path.Combine(

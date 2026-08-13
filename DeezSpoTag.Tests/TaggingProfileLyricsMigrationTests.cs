@@ -124,6 +124,8 @@ public sealed class TaggingProfileLyricsMigrationTests
         Assert.Equal(
             TechnicalTagSettings.CurrentLyricsSchemaVersion,
             firstLoad.Technical.LyricsSchemaVersion);
+        Assert.Equal(LrcTimingModes.PreferEnhanced, firstLoad.Technical.LrcTimingPreference);
+        Assert.True(firstLoad.Technical.PreferEnhancedLrc);
         Assert.False(firstLoad.AutoTag.Data.ContainsKey("writeLrc"));
         Assert.True(firstLoad.AutoTag.Data["unrelatedPreference"].GetBoolean());
 

@@ -76,8 +76,13 @@ public sealed class MediaServerLibraryRefreshService
         await RefreshJellyfinAsync(state.Jellyfin, cancellationToken);
     }
 
-    public async Task<MediaServerRefreshSummary> RefreshConfiguredServersAsync(
+    public Task<MediaServerRefreshSummary> RefreshConfiguredServersAsync(
         CancellationToken cancellationToken)
+        => RefreshConfiguredServersAsync(cancellationToken, updateTrackIndex: true);
+
+    public async Task<MediaServerRefreshSummary> RefreshConfiguredServersAsync(
+        CancellationToken cancellationToken,
+        bool updateTrackIndex)
     {
         var state = await _authService.LoadAsync();
         var configuredServers = 0;
@@ -87,7 +92,7 @@ public sealed class MediaServerLibraryRefreshService
         if (HasPlexConfiguration(state.Plex))
         {
             configuredServers++;
-            if (await RefreshPlexAsync(state.Plex, cancellationToken))
+            if (await RefreshPlexAsync(state.Plex, updateTrackIndex, cancellationToken))
             {
                 refreshedServers++;
             }
@@ -100,7 +105,7 @@ public sealed class MediaServerLibraryRefreshService
         if (HasJellyfinConfiguration(state.Jellyfin))
         {
             configuredServers++;
-            if (await RefreshJellyfinAsync(state.Jellyfin, cancellationToken))
+            if (await RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex, cancellationToken))
             {
                 refreshedServers++;
             }

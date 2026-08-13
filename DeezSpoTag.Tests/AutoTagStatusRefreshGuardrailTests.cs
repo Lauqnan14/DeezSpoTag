@@ -419,6 +419,9 @@ public sealed class AutoTagStatusRefreshGuardrailTests
         Assert.Contains("RunPlatformMatchWithTimeoutAsync", source, StringComparison.Ordinal);
         Assert.Contains("matchTask.WaitAsync(PlatformMatchTimeout, context.Token)", source, StringComparison.Ordinal);
         Assert.Contains("match timed out after", source, StringComparison.Ordinal);
+        Assert.Contains("MarkPlatformUnavailable(context.JobMatchCache, context.Platform)", source, StringComparison.Ordinal);
+        Assert.Contains("IsPlatformUnavailable(context.JobMatchCache, context.Platform)", source, StringComparison.Ordinal);
+        Assert.Contains("provider_unavailable", source, StringComparison.Ordinal);
         Assert.Contains("stepTask.WaitAsync(timeout, context.Token)", source, StringComparison.Ordinal);
         Assert.Contains("ObserveBackgroundTask(stepTask)", source, StringComparison.Ordinal);
     }

@@ -390,32 +390,54 @@ public sealed class TaggingProfileService
             return changed;
         }
 
-        var providers = SplitNormalized(technical.LyricsFallbackOrder);
-        foreach (var provider in DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder)
+        if (technical.LyricsSchemaVersion < 2)
         {
-            if (!providers.Contains(provider, StringComparer.OrdinalIgnoreCase))
+            var providers = SplitNormalized(technical.LyricsFallbackOrder);
+            foreach (var provider in DeezSpoTag.Services.Download.Utils.LyricsProviderRegistry.DefaultOrder)
             {
-                providers.Add(provider);
+                if (!providers.Contains(provider, StringComparer.OrdinalIgnoreCase))
+                {
+                    providers.Add(provider);
+                }
             }
-        }
-        technical.LyricsFallbackOrder = string.Join(",", providers);
+            technical.LyricsFallbackOrder = string.Join(",", providers);
 
-        technical.PreferEnhancedLrc = LyricsFormatSelectionImpliesEnhanced(technical.LrcFormat);
-        var formats = NormalizeLyricsFormats(technical.LrcFormat);
-        technical.LrcFormat = string.Join(",", formats);
-        var types = SplitNormalized(technical.LrcType);
-        if (formats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
-            && !types.Contains("ttml-lyrics", StringComparer.OrdinalIgnoreCase))
-        {
-            types.Add("ttml-lyrics");
+            technical.PreferEnhancedLrc = LyricsFormatSelectionImpliesEnhanced(technical.LrcFormat);
+            var formats = NormalizeLyricsFormats(technical.LrcFormat);
+            technical.LrcFormat = string.Join(",", formats);
+            var types = SplitNormalized(technical.LrcType);
+            if (formats.Contains("ttml", StringComparer.OrdinalIgnoreCase)
+                && !types.Contains("ttml-lyrics", StringComparer.OrdinalIgnoreCase))
+            {
+                types.Add("ttml-lyrics");
+            }
+            if (types.Count == 0)
+            {
+                types.AddRange(["lyrics", "syllable-lyrics", "ttml-lyrics", "unsynced-lyrics"]);
+            }
+            technical.LrcType = string.Join(",", types);
+            technical.LyricsSchemaVersion = 2;
+            changed = true;
         }
-        if (types.Count == 0)
+
+        if (technical.LyricsSchemaVersion < 3)
         {
-            types.AddRange(["lyrics", "syllable-lyrics", "ttml-lyrics", "unsynced-lyrics"]);
+            technical.LrcTimingPreference = LrcTimingModes.Normalize(
+                technical.LrcTimingPreference,
+                technical.PreferEnhancedLrc);
+            technical.PreferEnhancedLrc = LrcTimingModes.ImpliesEnhanced(technical.LrcTimingPreference);
+            technical.LyricsSchemaVersion = 3;
+            changed = true;
         }
-        technical.LrcType = string.Join(",", types);
-        technical.LyricsSchemaVersion = TechnicalTagSettings.CurrentLyricsSchemaVersion;
-        return true;
+
+        if (technical.LyricsSchemaVersion < 4)
+        {
+            technical.SynthesizeTtmlFromLrc = true;
+            technical.LyricsSchemaVersion = 4;
+            changed = true;
+        }
+
+        return changed;
     }
 
     private static List<string> SplitNormalized(string? value)

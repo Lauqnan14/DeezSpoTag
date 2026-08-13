@@ -1093,6 +1093,14 @@ public class DeezSpoTagSettingsService : ISettingsService
             fixes.Mark(nameof(settings.LyricsFormatSchemaVersion));
         }
 
+        if (settings.LyricsFormatSchemaVersion < 2)
+        {
+            settings.SynthesizeTtmlFromLrc = true;
+            settings.LyricsFormatSchemaVersion = 2;
+            fixes.Mark(nameof(settings.SynthesizeTtmlFromLrc));
+            fixes.Mark(nameof(settings.LyricsFormatSchemaVersion));
+        }
+
         NormalizeLyricsSetting(
             settings.LrcFormat,
             NormalizeLyricsFormatSelection,

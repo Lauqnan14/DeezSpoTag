@@ -121,6 +121,8 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             DlAlbumcoverForPlaylist: ReadBooleanValue(data, "dlAlbumcoverForPlaylist"),
             SaveArtworkArtist: ReadBooleanValue(data, "saveArtworkArtist"),
             CoverImageTemplate: ReadStringValue(data, "coverImageTemplate"),
+            AnimatedArtworkSquareFileName: ReadStringValue(data, "animatedArtworkSquareFileName"),
+            AnimatedArtworkTallFileName: ReadStringValue(data, "animatedArtworkTallFileName"),
             ArtistImageTemplate: ReadStringValue(data, "artistImageTemplate"),
             LocalArtworkFormat: ReadStringValue(data, "localArtworkFormat"),
             EmbedMaxQualityCover: ReadBooleanValue(data, "embedMaxQualityCover"),
@@ -135,6 +137,8 @@ public sealed class DownloadTagSettingsResolver : IDownloadTagSettingsResolver
             || runtime.DlAlbumcoverForPlaylist.HasValue
             || runtime.SaveArtworkArtist.HasValue
             || !string.IsNullOrWhiteSpace(runtime.CoverImageTemplate)
+            || !string.IsNullOrWhiteSpace(runtime.AnimatedArtworkSquareFileName)
+            || !string.IsNullOrWhiteSpace(runtime.AnimatedArtworkTallFileName)
             || !string.IsNullOrWhiteSpace(runtime.ArtistImageTemplate)
             || !string.IsNullOrWhiteSpace(runtime.LocalArtworkFormat)
             || runtime.EmbedMaxQualityCover.HasValue
