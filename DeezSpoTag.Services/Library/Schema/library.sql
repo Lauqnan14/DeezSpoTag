@@ -527,6 +527,15 @@ CREATE TABLE IF NOT EXISTS watchlist_source_circuit_state (
     PRIMARY KEY (watch_type, source)
 );
 
+CREATE TABLE IF NOT EXISTS watchlist_target_capability (
+    target_service TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    supported INTEGER NOT NULL,
+    last_checked_utc TEXT NOT NULL,
+    last_error TEXT,
+    PRIMARY KEY (target_service, capability)
+);
+
 CREATE TABLE IF NOT EXISTS playlist_track_candidate_cache (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,

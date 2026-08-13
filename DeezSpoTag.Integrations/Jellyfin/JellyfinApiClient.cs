@@ -1,3 +1,5 @@
+using DeezSpoTag.Integrations;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
@@ -1063,27 +1065,181 @@ public class JellyfinApiClient
         string itemId,
         CancellationToken cancellationToken = default)
     {
+        var lookup = await GetItemResult(serverUrl, apiKey, userId, itemId, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+    }
+
+    public async Task<TargetPlaylistLookup<JellyfinMediaItem>> GetItemResult(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string itemId,
+        CancellationToken cancellationToken = default)
+    {
         if (string.IsNullOrWhiteSpace(serverUrl)
             || string.IsNullOrWhiteSpace(apiKey)
             || string.IsNullOrWhiteSpace(userId)
             || string.IsNullOrWhiteSpace(itemId))
         {
-            return null;
+            return TargetPlaylistLookup<JellyfinMediaItem>.Missing();
         }
 
-        using var request = new HttpRequestMessage(
-            HttpMethod.Get,
-            BuildUrl(
-                serverUrl,
-                $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(itemId)}"));
-        request.Headers.Add(EmbyTokenHeader, apiKey);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            return null;
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                BuildUrl(
+                    serverUrl,
+                    $"/Users/{Uri.EscapeDataString(userId)}/Items/{Uri.EscapeDataString(itemId)}"));
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
+            if (classified != TargetLookupStatus.Success)
+            {
+                return new TargetPlaylistLookup<JellyfinMediaItem>(classified, null, statusCode);
+            }
+
+            var item = await response.Content.ReadFromJsonAsync<JellyfinMediaItem>(cancellationToken: cancellationToken);
+            return string.IsNullOrWhiteSpace(item?.Id)
+                ? TargetPlaylistLookup<JellyfinMediaItem>.Missing(statusCode)
+                : TargetPlaylistLookup<JellyfinMediaItem>.Found(item, statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            return TargetPlaylistLookup<JellyfinMediaItem>.Unavailable();
+        }
+    }
+
+    public const int MaxPlaylistMovesPerJob = 20;
+
+    public static int ClampPlaylistMoveIndex(int newIndex, int count)
+        => count <= 0 ? 0 : Math.Clamp(newIndex, 0, count - 1);
+
+    public async Task<JellyfinPlaylistMoveResult> MovePlaylistItemAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        string playlistEntryId,
+        int newIndex,
+        int itemCount,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(apiKey)
+            || string.IsNullOrWhiteSpace(playlistId)
+            || string.IsNullOrWhiteSpace(playlistEntryId)
+            || itemCount <= 0)
+        {
+            return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.NotSupported, null);
         }
 
-        return await response.Content.ReadFromJsonAsync<JellyfinMediaItem>(cancellationToken: cancellationToken);
+        var clampedIndex = ClampPlaylistMoveIndex(newIndex, itemCount);
+        var query = new StringBuilder();
+        query.Append($"/Playlists/{Uri.EscapeDataString(playlistId)}/Items/{Uri.EscapeDataString(playlistEntryId)}/Move/{clampedIndex}");
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            query.Append($"?UserId={Uri.EscapeDataString(userId)}");
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUrl(serverUrl, query.ToString()));
+            request.Headers.Add(EmbyTokenHeader, apiKey);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            if (response.IsSuccessStatusCode)
+            {
+                return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.Moved, statusCode);
+            }
+
+            if (statusCode is 408 or 429 or >= 502)
+            {
+                return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.Transient, statusCode);
+            }
+
+            return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.NotSupported, statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.Transient, null);
+        }
+    }
+
+    public async Task<JellyfinPlaylistMoveResult> ReorderPlaylistItemsAsync(
+        string serverUrl,
+        string apiKey,
+        string userId,
+        string playlistId,
+        IReadOnlyList<string> intendedItemIds,
+        IReadOnlyList<JellyfinPlaylistEntry> currentEntries,
+        CancellationToken cancellationToken = default)
+    {
+        var current = currentEntries
+            .Where(static entry => !string.IsNullOrWhiteSpace(entry.ItemId) && !string.IsNullOrWhiteSpace(entry.PlaylistEntryId))
+            .ToList();
+        var desired = MapIntendedPlaylistEntries(intendedItemIds, current);
+        if (desired.Count == 0 || desired.Count != intendedItemIds.Count(static id => !string.IsNullOrWhiteSpace(id)))
+        {
+            return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.Moved, null);
+        }
+
+        var moves = 0;
+        for (var targetIndex = desired.Count - 1; targetIndex >= 0 && moves < MaxPlaylistMovesPerJob; targetIndex--)
+        {
+            var entryId = desired[targetIndex].PlaylistEntryId;
+            var currentIndex = current.FindIndex(entry =>
+                string.Equals(entry.PlaylistEntryId, entryId, StringComparison.OrdinalIgnoreCase));
+            if (currentIndex < 0 || currentIndex == targetIndex)
+            {
+                continue;
+            }
+
+            var newIndex = ClampPlaylistMoveIndex(targetIndex, current.Count);
+            var moved = await MovePlaylistItemAsync(
+                serverUrl,
+                apiKey,
+                userId,
+                playlistId,
+                entryId,
+                newIndex,
+                current.Count,
+                cancellationToken);
+            if (moved.Status != JellyfinPlaylistMoveStatus.Moved)
+            {
+                return moved;
+            }
+
+            var item = current[currentIndex];
+            current.RemoveAt(currentIndex);
+            current.Insert(Math.Min(newIndex, current.Count), item);
+            moves++;
+        }
+
+        return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.Moved, 204);
+    }
+
+    internal static IReadOnlyList<JellyfinPlaylistEntry> MapIntendedPlaylistEntries(
+        IReadOnlyList<string> intendedItemIds,
+        IReadOnlyList<JellyfinPlaylistEntry> currentEntries)
+    {
+        var remaining = currentEntries.ToList();
+        var mapped = new List<JellyfinPlaylistEntry>();
+        foreach (var itemId in intendedItemIds.Where(static id => !string.IsNullOrWhiteSpace(id)))
+        {
+            var matchIndex = remaining.FindIndex(entry =>
+                string.Equals(entry.ItemId, itemId, StringComparison.OrdinalIgnoreCase));
+            if (matchIndex < 0)
+            {
+                continue;
+            }
+
+            mapped.Add(remaining[matchIndex]);
+            remaining.RemoveAt(matchIndex);
+        }
+
+        return mapped;
     }
 
     private async Task<bool> UpdateItemPrimaryImageAsync(
@@ -1387,6 +1543,17 @@ public sealed record JellyfinAudioTrack(
 public sealed record JellyfinPlaylistEntry(
     string ItemId,
     string PlaylistEntryId);
+
+public enum JellyfinPlaylistMoveStatus
+{
+    Moved,
+    NotSupported,
+    Transient
+}
+
+public sealed record JellyfinPlaylistMoveResult(
+    JellyfinPlaylistMoveStatus Status,
+    int? HttpStatusCode);
 
 public sealed record JellyfinHistoryItem(
     string ItemId,

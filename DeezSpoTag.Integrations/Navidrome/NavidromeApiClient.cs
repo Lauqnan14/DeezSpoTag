@@ -1,3 +1,5 @@
+using DeezSpoTag.Integrations;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Net.Http.Headers;
@@ -389,9 +391,27 @@ public sealed class NavidromeApiClient
             .Select(static id => id.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var playlistId = string.IsNullOrWhiteSpace(existingPlaylistId)
-            ? await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken)
-            : existingPlaylistId.Trim();
+        string? playlistId = null;
+        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            var existingLookup = await GetPlaylistResult(
+                serverUrl,
+                username,
+                password,
+                existingPlaylistId.Trim(),
+                cancellationToken);
+            if (existingLookup.Status == TargetLookupStatus.Transient)
+            {
+                return null;
+            }
+
+            if (existingLookup.Status == TargetLookupStatus.Success)
+            {
+                playlistId = existingPlaylistId.Trim();
+            }
+        }
+
+        playlistId ??= await FindPlaylistIdByNameAsync(serverUrl, username, password, playlistName, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -730,29 +750,145 @@ public sealed class NavidromeApiClient
         string playlistId,
         CancellationToken cancellationToken = default)
     {
-        var response = await SendAsync<NavidromePlaylistResponse>(
-            serverUrl,
-            username,
-            password,
-            "getPlaylist",
-            new[] { new KeyValuePair<string, string?>("id", playlistId) },
-            cancellationToken);
-        var playlist = response?.SubsonicResponse?.Playlist;
-        if (string.IsNullOrWhiteSpace(playlist?.Id))
+        var lookup = await GetPlaylistResult(serverUrl, username, password, playlistId, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+    }
+
+    public async Task<TargetPlaylistLookup<NavidromePlaylistDetails>> GetPlaylistResult(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || string.IsNullOrWhiteSpace(playlistId))
         {
-            return null;
+            return TargetPlaylistLookup<NavidromePlaylistDetails>.Missing();
         }
 
-        var entries = playlist.Entries?
-            .Where(static entry => !string.IsNullOrWhiteSpace(entry.Id))
-            .Select(static entry => new NavidromePlaylistEntry(entry.Id!))
-            .ToList() ?? new List<NavidromePlaylistEntry>();
-        return new NavidromePlaylistDetails(
-            playlist.Id!,
-            playlist.Name ?? playlist.Id!,
-            playlist.Comment,
-            playlist.SongCount,
-            entries);
+        var requestUrl = BuildUrl(
+            serverUrl,
+            "getPlaylist",
+            username,
+            password,
+            new[] { new KeyValuePair<string, string?>("id", playlistId) });
+        try
+        {
+            using var response = await _httpClient.GetAsync(requestUrl, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
+            if (classified != TargetLookupStatus.Success)
+            {
+                return new TargetPlaylistLookup<NavidromePlaylistDetails>(classified, null, statusCode);
+            }
+
+            NavidromePlaylistResponse? payload;
+            try
+            {
+                payload = await response.Content.ReadFromJsonAsync<NavidromePlaylistResponse>(cancellationToken: cancellationToken);
+            }
+            catch (JsonException)
+            {
+                return TargetPlaylistLookup<NavidromePlaylistDetails>.Unavailable(statusCode);
+            }
+
+            var subsonic = payload?.SubsonicResponse;
+            if (subsonic is null)
+            {
+                return TargetPlaylistLookup<NavidromePlaylistDetails>.Missing(statusCode);
+            }
+
+            if (!string.Equals(subsonic.Status, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                return subsonic.Error?.Code == 70
+                    ? TargetPlaylistLookup<NavidromePlaylistDetails>.Missing(statusCode)
+                    : TargetPlaylistLookup<NavidromePlaylistDetails>.Unavailable(statusCode);
+            }
+
+            var playlist = subsonic.Playlist;
+            if (string.IsNullOrWhiteSpace(playlist?.Id))
+            {
+                return TargetPlaylistLookup<NavidromePlaylistDetails>.Missing(statusCode);
+            }
+
+            var entries = playlist.Entries?
+                .Where(static entry => !string.IsNullOrWhiteSpace(entry.Id))
+                .Select(static entry => new NavidromePlaylistEntry(entry.Id!))
+                .ToList() ?? new List<NavidromePlaylistEntry>();
+            return TargetPlaylistLookup<NavidromePlaylistDetails>.Found(
+                new NavidromePlaylistDetails(
+                    playlist.Id!,
+                    playlist.Name ?? playlist.Id!,
+                    playlist.Comment,
+                    playlist.SongCount,
+                    entries),
+                statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            return TargetPlaylistLookup<NavidromePlaylistDetails>.Unavailable();
+        }
+    }
+
+    public async Task<NavidromeNativePlaylistPutResult> ReplaceNativePlaylistTracksAsync(
+        string serverUrl,
+        string username,
+        string password,
+        string playlistId,
+        string playlistName,
+        string? playlistComment,
+        IReadOnlyList<string> trackIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || string.IsNullOrWhiteSpace(playlistId))
+        {
+            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.NotSupported, null);
+        }
+
+        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.NotSupported, null);
+        }
+
+        var orderedIds = trackIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Select(static id => id.Trim())
+            .ToList();
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Put,
+                BuildNativeUrl(serverUrl, $"/api/playlist/{Uri.EscapeDataString(playlistId)}"))
+            {
+                Content = JsonContent.Create(new
+                {
+                    id = playlistId,
+                    name = playlistName,
+                    comment = playlistComment ?? string.Empty,
+                    tracksIds = orderedIds
+                })
+            };
+            request.Headers.TryAddWithoutValidation(NativeAuthorizationHeader, $"Bearer {token}");
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var statusCode = (int)response.StatusCode;
+            if (response.IsSuccessStatusCode)
+            {
+                return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.Updated, statusCode);
+            }
+
+            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.NotSupported, statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            return new NavidromeNativePlaylistPutResult(NavidromeNativePlaylistPutStatus.Transient, null);
+        }
     }
 
     private async Task<T?> SendAsync<T>(
@@ -1031,6 +1167,17 @@ public sealed record NavidromePlaylistDetails(
     IReadOnlyList<NavidromePlaylistEntry> Entries);
 public sealed record NavidromePlaylistEntry(string ItemId);
 
+public enum NavidromeNativePlaylistPutStatus
+{
+    Updated,
+    NotSupported,
+    Transient
+}
+
+public sealed record NavidromeNativePlaylistPutResult(
+    NavidromeNativePlaylistPutStatus Status,
+    int? HttpStatusCode);
+
 file class NavidromeBaseResponse
 {
     [JsonPropertyName("status")]
@@ -1039,6 +1186,16 @@ file class NavidromeBaseResponse
     public string? ServerVersion { get; set; }
     [JsonPropertyName("type")]
     public string? Type { get; set; }
+    [JsonPropertyName("error")]
+    public NavidromeError? Error { get; set; }
+}
+
+file sealed class NavidromeError
+{
+    [JsonPropertyName("code")]
+    public int Code { get; set; }
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
 }
 
 file sealed class NavidromePingResponse

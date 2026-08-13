@@ -65,6 +65,10 @@ public sealed class PlaylistSyncTargetAggregationTests
         Assert.DoesNotContain("Failed to clear existing Jellyfin playlist items.", source, StringComparison.Ordinal);
         Assert.Contains("staleEntryIds", body, StringComparison.Ordinal);
         Assert.Contains("if (staleEntryIds.Count == 0 && pending.Count == 0)", body, StringComparison.Ordinal);
+        var add = body.IndexOf("AddPlaylistItemsAsync(", StringComparison.Ordinal);
+        var remove = body.IndexOf("RemovePlaylistEntriesAsync(", StringComparison.Ordinal);
+        Assert.True(add > 0 && remove > add, "Membership deltas must add before removing extras.");
+        Assert.Contains("TryReorderJellyfinPlaylistAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -73,10 +77,12 @@ public sealed class PlaylistSyncTargetAggregationTests
         var source = ReadNavidromeSource();
         var start = source.IndexOf("> CreateOrUpdatePlaylistAsync(", StringComparison.Ordinal);
         Assert.True(start > 0);
-        var body = source[start..(start + 4200)];
+        var body = source[start..(start + 6200)];
 
         Assert.Contains("songIndexToRemove", source, StringComparison.Ordinal);
         Assert.Contains("if (removalIndexes.Count == 0 && targetIds.Count == 0)", body, StringComparison.Ordinal);
+        Assert.Contains("GetPlaylistResult", body, StringComparison.Ordinal);
+        Assert.Contains("TargetLookupStatus.Transient", body, StringComparison.Ordinal);
         Assert.DoesNotContain("appendMissingOnly ? \"updatePlaylist\" : \"createPlaylist\"", source, StringComparison.Ordinal);
     }
 

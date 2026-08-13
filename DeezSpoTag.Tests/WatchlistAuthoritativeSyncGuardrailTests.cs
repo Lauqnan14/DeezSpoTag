@@ -24,10 +24,41 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("PersistTargetPlaylistBindingAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PersistResolvedTargetBindingAsync", source, StringComparison.Ordinal);
         Assert.Contains("RecreateMissingTargetPlaylistAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TargetLookupStatus.NotFound", source, StringComparison.Ordinal);
+        Assert.Contains("TargetLookupStatus.Transient", source, StringComparison.Ordinal);
         Assert.Contains("return await SyncAvailablePlaylistTracksAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Target Plex playlist was not found.", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Target Jellyfin playlist was not found.", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Target Navidrome playlist was not found.", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RecreateMissingTargetPlaylistAsync_IsCalledOnlyOnNotFound()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            Root,
+            "DeezSpoTag.Web",
+            "Services",
+            "PlaylistSyncService.cs"));
+
+        Assert.Equal(3, CountOccurrences(source, "return await RecreateMissingTargetPlaylistAsync("));
+        foreach (var methodName in new[]
+                 {
+                     "private async Task<PlaylistSyncResult> SyncPlexPlaylistArtworkOnlyAsync(",
+                     "private async Task<PlaylistSyncResult> SyncJellyfinPlaylistArtworkOnlyAsync(",
+                     "private async Task<PlaylistSyncResult> SyncNavidromePlaylistArtworkOnlyAsync("
+                 })
+        {
+            var start = source.IndexOf(methodName, StringComparison.Ordinal);
+            Assert.True(start >= 0, methodName);
+            var body = source[start..(start + 1800)];
+            var transient = body.IndexOf("TargetLookupStatus.Transient", StringComparison.Ordinal);
+            var notFound = body.IndexOf("TargetLookupStatus.NotFound", StringComparison.Ordinal);
+            var recreate = body.IndexOf("RecreateMissingTargetPlaylistAsync", StringComparison.Ordinal);
+            Assert.True(transient >= 0 && notFound >= 0 && recreate > notFound);
+            Assert.True(transient < recreate);
+            Assert.Contains("PlaylistSyncResultKind.Retry", body, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

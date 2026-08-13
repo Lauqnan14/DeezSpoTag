@@ -9080,6 +9080,71 @@ ON CONFLICT(target_service) DO UPDATE SET
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<bool?> GetWatchlistTargetCapabilitySupportedAsync(
+        string targetService,
+        string capability,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(targetService) || string.IsNullOrWhiteSpace(capability))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT supported
+FROM watchlist_target_capability
+WHERE target_service = @targetService AND capability = @capability
+LIMIT 1;", connection);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("capability", capability.Trim().ToLowerInvariant());
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        if (value is null or DBNull)
+        {
+            return null;
+        }
+
+        return Convert.ToInt32(value, CultureInfo.InvariantCulture) == 1;
+    }
+
+    public async Task SetWatchlistTargetCapabilityAsync(
+        string targetService,
+        string capability,
+        bool supported,
+        string? lastError,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(targetService) || string.IsNullOrWhiteSpace(capability))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+INSERT INTO watchlist_target_capability (
+    target_service,
+    capability,
+    supported,
+    last_checked_utc,
+    last_error)
+VALUES (
+    @targetService,
+    @capability,
+    @supported,
+    @lastCheckedUtc,
+    @lastError)
+ON CONFLICT(target_service, capability) DO UPDATE SET
+    supported = excluded.supported,
+    last_checked_utc = excluded.last_checked_utc,
+    last_error = excluded.last_error;", connection);
+        command.Parameters.AddWithValue("targetService", targetService.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("capability", capability.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("supported", supported ? 1 : 0);
+        command.Parameters.AddWithValue("lastCheckedUtc", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("lastError", (object?)lastError ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<PlaylistTrackCandidateCacheDto?> GetPlaylistTrackCandidateCacheAsync(
         string source,
         string sourceId,

@@ -783,6 +783,13 @@ public sealed record WatchlistTargetCircuitStateDto(
     int FailureCount,
     DateTimeOffset UpdatedAt);
 
+public sealed record WatchlistTargetCapabilityDto(
+    string TargetService,
+    string Capability,
+    bool Supported,
+    DateTimeOffset LastCheckedUtc,
+    string? LastError);
+
 public sealed record PlaylistTrackCandidateCacheDto(
     string Source,
     string SourceId,

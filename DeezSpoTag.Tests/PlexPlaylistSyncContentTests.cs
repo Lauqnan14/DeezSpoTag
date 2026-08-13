@@ -82,6 +82,61 @@ public sealed class PlexPlaylistSyncContentTests
     }
 
     [Fact]
+    public async Task GetPlaylistResult_TimeoutIsTransientAndCreateOrUpdateDoesNotCreate()
+    {
+        using var handler = new PlaylistSyncHandler(playlistLookup: PlaylistLookupMode.Timeout);
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var lookup = await client.GetPlaylistResult(
+            "http://plex.local:32400",
+            "token",
+            "900",
+            CancellationToken.None);
+        var result = await client.CreateOrUpdatePlaylistAsync(
+            "http://plex.local:32400",
+            "token",
+            "machine",
+            "Large Playlist",
+            ["1", "2", "3"],
+            new PlexApiClient.PlaylistUpsertOptions(ExistingPlaylistId: "900"),
+            CancellationToken.None);
+
+        Assert.Equal(DeezSpoTag.Integrations.TargetLookupStatus.Transient, lookup.Status);
+        Assert.Equal("900", result.PlaylistId);
+        Assert.False(result.Complete);
+        Assert.False(handler.CreateRequested);
+    }
+
+    [Fact]
+    public async Task GetPlaylistResult_NotFoundWithoutNameMatchCreatesPlaylist()
+    {
+        using var handler = new PlaylistSyncHandler(playlistLookup: PlaylistLookupMode.NotFound);
+        using var httpClient = new HttpClient(handler);
+        var client = new PlexApiClient(NullLogger<PlexApiClient>.Instance, httpClient);
+
+        var lookup = await client.GetPlaylistResult(
+            "http://plex.local:32400",
+            "token",
+            "900",
+            CancellationToken.None);
+        var result = await client.CreateOrUpdatePlaylistAsync(
+            "http://plex.local:32400",
+            "token",
+            "machine",
+            "Large Playlist",
+            ["1", "2", "3"],
+            new PlexApiClient.PlaylistUpsertOptions(ExistingPlaylistId: "900"),
+            CancellationToken.None);
+
+        Assert.Equal(DeezSpoTag.Integrations.TargetLookupStatus.NotFound, lookup.Status);
+        Assert.True(handler.CreateRequested);
+        Assert.Equal("900", result.PlaylistId);
+        Assert.True(result.Complete);
+        Assert.Equal(["1", "2", "3"], handler.StoredRatingKeys);
+    }
+
+    [Fact]
     public async Task CreateOrUpdatePlaylistAsync_ReconcilesMembershipInPlaceAndPreservesOrder()
     {
         using var handler = new PlaylistSyncHandler(initialRatingKeys: ["3", "2", "4"]);
@@ -173,18 +228,28 @@ public sealed class PlexPlaylistSyncContentTests
         }
     }
 
+    private enum PlaylistLookupMode
+    {
+        Found,
+        NotFound,
+        Timeout
+    }
+
     private sealed class PlaylistSyncHandler : HttpMessageHandler
     {
         private readonly bool _dropLastWrittenItem;
         private readonly bool _failAddRequests;
+        private readonly PlaylistLookupMode _playlistLookup;
 
         public PlaylistSyncHandler(
             bool dropLastWrittenItem = false,
             IReadOnlyList<string>? initialRatingKeys = null,
-            bool failAddRequests = false)
+            bool failAddRequests = false,
+            PlaylistLookupMode playlistLookup = PlaylistLookupMode.Found)
         {
             _dropLastWrittenItem = dropLastWrittenItem;
             _failAddRequests = failAddRequests;
+            _playlistLookup = playlistLookup;
             if (initialRatingKeys != null)
             {
                 StoredRatingKeys.AddRange(initialRatingKeys);
@@ -195,14 +260,39 @@ public sealed class PlexPlaylistSyncContentTests
         public List<string> StoredRatingKeys { get; } = new();
         public List<string> RequestedUrls { get; } = new();
         public bool BulkClearRequested { get; private set; }
+        public bool CreateRequested { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var url = request.RequestUri!.ToString();
             RequestedUrls.Add(url);
 
+            if (request.Method == HttpMethod.Get && request.RequestUri.AbsolutePath == "/playlists")
+            {
+                return Xml("<MediaContainer></MediaContainer>");
+            }
+
+            if (request.Method == HttpMethod.Post && request.RequestUri.AbsolutePath == "/playlists")
+            {
+                CreateRequested = true;
+                var created = ExtractRatingKeysFromUriQuery(request.RequestUri.Query);
+                AddBatches.Add(created);
+                StoredRatingKeys.AddRange(created);
+                return Xml("<MediaContainer><Playlist ratingKey=\"900\" title=\"Large Playlist\" /></MediaContainer>");
+            }
+
             if (request.Method == HttpMethod.Get && request.RequestUri.AbsolutePath == "/playlists/900")
             {
+                if (_playlistLookup == PlaylistLookupMode.Timeout && !CreateRequested)
+                {
+                    throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.");
+                }
+
+                if (_playlistLookup == PlaylistLookupMode.NotFound && !CreateRequested)
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                }
+
                 return Xml("<MediaContainer><Playlist ratingKey=\"900\" title=\"Large Playlist\" /></MediaContainer>");
             }
 

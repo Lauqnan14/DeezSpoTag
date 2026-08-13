@@ -1,3 +1,4 @@
+using DeezSpoTag.Integrations;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -1092,14 +1093,27 @@ public class PlexApiClient
 
     public async Task<List<PlexPlaylist>> GetPlaylistsAsync(string serverUrl, string token, CancellationToken cancellationToken = default)
     {
+        var lookup = await GetPlaylistsResult(serverUrl, token, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success
+            ? lookup.Value!.ToList()
+            : new List<PlexPlaylist>();
+    }
+
+    public async Task<TargetPlaylistLookup<IReadOnlyList<PlexPlaylist>>> GetPlaylistsResult(
+        string serverUrl,
+        string token,
+        CancellationToken cancellationToken = default)
+    {
         try
         {
             var url = $"{serverUrl.TrimEnd('/')}/playlists?X-Plex-Token={token}";
             var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            var statusCode = (int)response.StatusCode;
+            var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
+            if (classified != TargetLookupStatus.Success)
             {
                 _logger.LogWarning("Failed to load Plex playlists: {StatusCode}", response.StatusCode);
-                return new List<PlexPlaylist>();
+                return new TargetPlaylistLookup<IReadOnlyList<PlexPlaylist>>(classified, null, statusCode);
             }
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -1118,12 +1132,17 @@ public class PlexApiClient
                 playlists.Add(ParsePlaylist(element, serverUrl, token));
             }
 
-            return playlists;
+            return TargetPlaylistLookup<IReadOnlyList<PlexPlaylist>>.Found(playlists, statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            _logger.LogWarning(ex, "Transient error retrieving Plex playlists");
+            return TargetPlaylistLookup<IReadOnlyList<PlexPlaylist>>.Unavailable();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error retrieving Plex playlists");
-            return new List<PlexPlaylist>();
+            return TargetPlaylistLookup<IReadOnlyList<PlexPlaylist>>.Unavailable();
         }
     }
 
@@ -1489,14 +1508,26 @@ public class PlexApiClient
     }
     public async Task<PlexPlaylist?> GetPlaylistAsync(string serverUrl, string token, string playlistId, CancellationToken cancellationToken = default)
     {
+        var lookup = await GetPlaylistResult(serverUrl, token, playlistId, cancellationToken);
+        return lookup.Status == TargetLookupStatus.Success ? lookup.Value : null;
+    }
+
+    public async Task<TargetPlaylistLookup<PlexPlaylist>> GetPlaylistResult(
+        string serverUrl,
+        string token,
+        string playlistId,
+        CancellationToken cancellationToken = default)
+    {
         try
         {
             var url = $"{serverUrl.TrimEnd('/')}/playlists/{playlistId}?X-Plex-Token={token}";
             var response = await _httpClient.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            var statusCode = (int)response.StatusCode;
+            var classified = TargetLookupClassifier.FromHttpStatus(response.StatusCode);
+            if (classified != TargetLookupStatus.Success)
             {
                 _logger.LogWarning("Failed to load Plex playlist {PlaylistId}: {StatusCode}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId), response.StatusCode);
-                return null;
+                return new TargetPlaylistLookup<PlexPlaylist>(classified, null, statusCode);
             }
 
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -1506,15 +1537,20 @@ public class PlexApiClient
                               string.Equals(el.Attribute("type")?.Value, "playlist", StringComparison.OrdinalIgnoreCase));
             if (element is null)
             {
-                return null;
+                return TargetPlaylistLookup<PlexPlaylist>.Missing(statusCode);
             }
 
-            return ParsePlaylist(element, serverUrl, token);
+            return TargetPlaylistLookup<PlexPlaylist>.Found(ParsePlaylist(element, serverUrl, token), statusCode);
+        }
+        catch (Exception ex) when (TargetLookupClassifier.IsTransientTransport(ex, cancellationToken))
+        {
+            _logger.LogWarning(ex, "Transient error retrieving Plex playlist {PlaylistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
+            return TargetPlaylistLookup<PlexPlaylist>.Unavailable();
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Error retrieving Plex playlist {PlaylistId}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId));
-            return null;
+            return TargetPlaylistLookup<PlexPlaylist>.Unavailable();
         }
     }
 
@@ -1870,15 +1906,45 @@ public class PlexApiClient
         var forcedPlaylistId = string.IsNullOrWhiteSpace(options?.ExistingPlaylistId)
             ? null
             : options!.ExistingPlaylistId!.Trim();
-        string? playlistId;
+
+        TargetPlaylistLookup<PlexPlaylist>? existingLookup = null;
+        string? playlistId = null;
         if (!string.IsNullOrWhiteSpace(forcedPlaylistId))
         {
-            playlistId = forcedPlaylistId;
+            existingLookup = await GetPlaylistResult(
+                normalizedServerUrl,
+                normalizedToken,
+                forcedPlaylistId,
+                cancellationToken);
+            if (existingLookup.Status == TargetLookupStatus.Transient)
+            {
+                _logger.LogWarning(
+                    "Plex playlist upsert preflight was transient for {PlaylistId}; not recreating playlist {PlaylistName}.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(forcedPlaylistId),
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPlaylistName));
+                return new PlexPlaylistUpsertResult(forcedPlaylistId, Complete: false);
+            }
+
+            if (existingLookup.Status == TargetLookupStatus.Success)
+            {
+                playlistId = forcedPlaylistId;
+            }
         }
-        else
+
+        if (string.IsNullOrWhiteSpace(playlistId))
         {
-            var existing = await GetPlaylistsAsync(normalizedServerUrl, normalizedToken, cancellationToken);
-            playlistId = FindMatchingPlaylistId(existing, normalizedPlaylistName, existingTitlePrefix);
+            var nameLookup = await GetPlaylistsResult(normalizedServerUrl, normalizedToken, cancellationToken);
+            if (nameLookup.Status == TargetLookupStatus.Transient)
+            {
+                _logger.LogWarning(
+                    "Plex playlist name lookup was transient for {PlaylistName}; not creating a replacement.",
+                    DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPlaylistName));
+                return new PlexPlaylistUpsertResult(forcedPlaylistId, Complete: false);
+            }
+
+            playlistId = nameLookup.Status == TargetLookupStatus.Success
+                ? FindMatchingPlaylistId(nameLookup.Value ?? Array.Empty<PlexPlaylist>(), normalizedPlaylistName, existingTitlePrefix)
+                : null;
         }
 
         if (string.IsNullOrWhiteSpace(playlistId))
@@ -1892,20 +1958,28 @@ public class PlexApiClient
                 cancellationToken);
         }
 
-        var existingPlaylist = await GetPlaylistAsync(normalizedServerUrl, normalizedToken, playlistId, cancellationToken);
-        if (existingPlaylist == null)
+        if (existingLookup?.Status != TargetLookupStatus.Success)
         {
-            _logger.LogWarning(
-                "Plex playlist upsert preflight failed for {PlaylistId}; playlist inaccessible. Recreating playlist {PlaylistName}.",
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(playlistId),
-                DeezSpoTag.Core.Security.LogSanitizer.OneLine(normalizedPlaylistName));
-            return await CreatePlaylistAsync(
+            existingLookup = await GetPlaylistResult(
                 normalizedServerUrl,
                 normalizedToken,
-                normalizedMachineIdentifier,
-                normalizedPlaylistName,
-                normalizedRatingKeys,
+                playlistId,
                 cancellationToken);
+            if (existingLookup.Status == TargetLookupStatus.Transient)
+            {
+                return new PlexPlaylistUpsertResult(playlistId, Complete: false);
+            }
+
+            if (existingLookup.Status == TargetLookupStatus.NotFound)
+            {
+                return await CreatePlaylistAsync(
+                    normalizedServerUrl,
+                    normalizedToken,
+                    normalizedMachineIdentifier,
+                    normalizedPlaylistName,
+                    normalizedRatingKeys,
+                    cancellationToken);
+            }
         }
 
         var updated = await ReconcilePlaylistItemsAsync(

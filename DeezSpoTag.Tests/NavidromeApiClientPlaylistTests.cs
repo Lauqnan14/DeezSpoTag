@@ -236,6 +236,78 @@ public sealed class NavidromeApiClientPlaylistTests
     }
 
     [Fact]
+    public async Task ReplaceNativePlaylistTracksAsync_PutsOrderedTrackIdsWithoutCreate()
+    {
+        using var handler = new NavidromePlaylistHandler();
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var added = await client.CreateOrUpdatePlaylistAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "Gold School",
+            new[] { "song-1", "song-2" },
+            existingPlaylistId: "playlist-1",
+            appendMissingOnly: true,
+            CancellationToken.None,
+            "A reliable playlist description");
+        var put = await client.ReplaceNativePlaylistTracksAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "playlist-1",
+            "Gold School",
+            "A reliable playlist description",
+            new[] { "song-2", "song-1" },
+            CancellationToken.None);
+
+        Assert.Equal("playlist-1", added);
+        Assert.Equal(NavidromeNativePlaylistPutStatus.Updated, put.Status);
+        Assert.Contains(handler.RequestedUrls, url => url.Contains("/rest/updatePlaylist.view?", StringComparison.Ordinal));
+        Assert.DoesNotContain(handler.RequestedUrls, url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
+        Assert.Equal(1, handler.RequestedUrls.Count(url => url.EndsWith("/api/playlist/playlist-1", StringComparison.Ordinal)));
+        Assert.Contains("\"tracksIds\"", handler.LastPutBody, StringComparison.Ordinal);
+        Assert.Contains("song-2", handler.LastPutBody, StringComparison.Ordinal);
+        Assert.Contains("song-1", handler.LastPutBody, StringComparison.Ordinal);
+        Assert.Contains("\"id\":\"playlist-1\"", handler.LastPutBody.Replace(" ", string.Empty), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReplaceNativePlaylistTracksAsync_Non2xxKeepsMembership()
+    {
+        using var handler = new NavidromePlaylistHandler(nativePutStatusCode: HttpStatusCode.InternalServerError);
+        using var httpClient = new HttpClient(handler);
+        var client = new NavidromeApiClient(httpClient);
+
+        var playlistId = await client.CreateOrUpdatePlaylistAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "Gold School",
+            new[] { "song-1", "song-2" },
+            existingPlaylistId: "playlist-1",
+            appendMissingOnly: true,
+            CancellationToken.None,
+            "A reliable playlist description");
+        var put = await client.ReplaceNativePlaylistTracksAsync(
+            "http://navidrome.local",
+            "user",
+            "pass",
+            "playlist-1",
+            "Gold School",
+            "A reliable playlist description",
+            new[] { "song-2", "song-1" },
+            CancellationToken.None);
+
+        Assert.Equal("playlist-1", playlistId);
+        Assert.Equal(NavidromeNativePlaylistPutStatus.NotSupported, put.Status);
+        Assert.Contains(handler.RequestedUrls, url => url.Contains("songIdToAdd=song-2", StringComparison.Ordinal));
+        Assert.DoesNotContain(handler.RequestedUrls, url => url.Contains("/rest/createPlaylist.view?", StringComparison.Ordinal));
+        Assert.Equal(["song-1", "song-2"], handler.StoredSongIds);
+    }
+
+    [Fact]
     public async Task GetPlaylistAsync_ReturnsDescriptionAndEntries()
     {
         using var handler = new NavidromePlaylistHandler();
@@ -275,13 +347,16 @@ public sealed class NavidromeApiClientPlaylistTests
     private sealed class NavidromePlaylistHandler(
         bool createReturnsPlaylist = true,
         bool playlistExistsInitially = true,
-        bool serveStalePlaylistImage = false) : HttpMessageHandler
+        bool serveStalePlaylistImage = false,
+        HttpStatusCode nativePutStatusCode = HttpStatusCode.OK) : HttpMessageHandler
     {
         private bool _playlistCreated;
         private byte[] _playlistImageBytes = Array.Empty<byte>();
         public List<string> RequestedUrls { get; } = new();
+        public List<string> StoredSongIds { get; } = ["song-1"];
         public string UploadAuthorization { get; private set; } = string.Empty;
         public string UploadBody { get; private set; } = string.Empty;
+        public string LastPutBody { get; private set; } = string.Empty;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -296,6 +371,24 @@ public sealed class NavidromeApiClientPlaylistTests
                       "token": "jwt-token"
                     }
                     """);
+            }
+
+            if (path.EndsWith("/api/playlist/playlist-1", StringComparison.Ordinal)
+                && request.Method == HttpMethod.Put)
+            {
+                LastPutBody = request.Content == null
+                    ? string.Empty
+                    : await request.Content.ReadAsStringAsync(cancellationToken);
+                if (nativePutStatusCode == HttpStatusCode.OK)
+                {
+                    StoredSongIds.Clear();
+                    StoredSongIds.AddRange(new[] { "song-2", "song-1" });
+                }
+
+                return new HttpResponseMessage(nativePutStatusCode)
+                {
+                    Content = new StringContent("""{"id":"playlist-1"}""")
+                };
             }
 
             if (path.EndsWith("/api/playlist/playlist-1/image", StringComparison.Ordinal))
@@ -419,6 +512,10 @@ public sealed class NavidromeApiClientPlaylistTests
                 {
                     Assert.Contains("songIdToAdd=song-2", query, StringComparison.Ordinal);
                     Assert.DoesNotContain("songId=song-2", query, StringComparison.Ordinal);
+                    if (!StoredSongIds.Contains("song-2", StringComparer.Ordinal))
+                    {
+                        StoredSongIds.Add("song-2");
+                    }
                 }
                 return await Json("""
                     {

@@ -1,3 +1,4 @@
+using DeezSpoTag.Integrations;
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
@@ -97,6 +98,8 @@ public sealed class PlaylistSyncService
     private const string PlexService = "plex";
     private const string JellyfinService = "jellyfin";
     private const string NavidromeService = "navidrome";
+    private const string JellyfinPlaylistMoveCapability = "playlist_move";
+    private const string NavidromeNativePlaylistPutCapability = "native_playlist_put";
     private const string SyncModeMirror = "mirror";
     private const string SyncModeAppend = "append";
     private const int DurationToleranceMs = 2000;
@@ -1537,7 +1540,17 @@ public sealed class PlaylistSyncService
         }
 
         var storedPlaylistId = ResolveExistingTargetPlaylistId(preference, JellyfinService);
-        var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(jellyfin, playlist, storedPlaylistId, cancellationToken);
+        var playlistLookup = await ResolveAuthoritativeJellyfinPlaylistIdAsync(jellyfin, playlist, storedPlaylistId, cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return new PlaylistProvisioningOutcome(
+                JellyfinService,
+                false,
+                storedPlaylistId,
+                "Jellyfin playlist lookup timed out.");
+        }
+
+        var playlistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
         var created = false;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -1578,7 +1591,17 @@ public sealed class PlaylistSyncService
         }
 
         var storedPlaylistId = ResolveExistingTargetPlaylistId(preference, NavidromeService);
-        var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(navidrome, playlist, storedPlaylistId, cancellationToken);
+        var playlistLookup = await ResolveAuthoritativeNavidromePlaylistIdAsync(navidrome, playlist, storedPlaylistId, cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return new PlaylistProvisioningOutcome(
+                NavidromeService,
+                false,
+                storedPlaylistId,
+                "Navidrome playlist lookup timed out.");
+        }
+
+        var playlistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
         var created = false;
         if (string.IsNullOrWhiteSpace(playlistId))
         {
@@ -1980,11 +2003,12 @@ public sealed class PlaylistSyncService
                 return false;
             }
 
-            var playlistId = await ResolveAuthoritativePlexPlaylistIdAsync(
+            var playlistLookup = await ResolveAuthoritativePlexPlaylistIdAsync(
                 plex, playlist, ResolveExistingTargetPlaylistId(preference, PlexService), cancellationToken);
-            return !string.IsNullOrWhiteSpace(playlistId)
+            return playlistLookup.Status == TargetLookupStatus.Success
+                && !string.IsNullOrWhiteSpace(playlistLookup.Value)
                 && await _plexApiClient.VerifyPlaylistPosterFromFileAsync(
-                    plex.Url, plex.Token, playlistId, stillVisual.FilePath, cancellationToken);
+                    plex.Url, plex.Token, playlistLookup.Value, stillVisual.FilePath, cancellationToken);
         }
 
         if (normalizedTarget == JellyfinService)
@@ -1995,11 +2019,12 @@ public sealed class PlaylistSyncService
                 return false;
             }
 
-            var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
+            var playlistLookup = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
                 jellyfin, playlist, ResolveExistingTargetPlaylistId(preference, JellyfinService), cancellationToken);
-            return !string.IsNullOrWhiteSpace(playlistId)
+            return playlistLookup.Status == TargetLookupStatus.Success
+                && !string.IsNullOrWhiteSpace(playlistLookup.Value)
                 && await _jellyfinApiClient.VerifyItemPrimaryImageFromFileAsync(
-                    jellyfin.Url, jellyfin.ApiKey, playlistId, stillVisual.FilePath, cancellationToken);
+                    jellyfin.Url, jellyfin.ApiKey, playlistLookup.Value, stillVisual.FilePath, cancellationToken);
         }
 
         if (normalizedTarget == NavidromeService)
@@ -2018,14 +2043,15 @@ public sealed class PlaylistSyncService
                 return false;
             }
 
-            var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
+            var playlistLookup = await ResolveAuthoritativeNavidromePlaylistIdAsync(
                 navidrome, playlist, ResolveExistingTargetPlaylistId(preference, NavidromeService), cancellationToken);
-            return !string.IsNullOrWhiteSpace(playlistId)
+            return playlistLookup.Status == TargetLookupStatus.Success
+                && !string.IsNullOrWhiteSpace(playlistLookup.Value)
                 && await _navidromeApiClient.VerifyPlaylistImageFromFileAsync(
                     navidrome.Url,
                     navidrome.Username,
                     navidrome.Password,
-                    playlistId,
+                    playlistLookup.Value,
                     visual.FilePath,
                     cancellationToken);
         }
@@ -2147,11 +2173,28 @@ public sealed class PlaylistSyncService
 
         var playlistName = ResolvePlaylistName(playlist);
         var storedPlaylistId = NormalizeExistingTargetPlaylistId(existingPlaylistId);
-        existingPlaylistId = await ResolveAuthoritativePlexPlaylistIdAsync(
+        var playlistLookup = await ResolveAuthoritativePlexPlaylistIdAsync(
             plex,
             playlist,
             existingPlaylistId,
             cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return PlaylistSyncResult.Failed("Plex playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+        }
+
+        existingPlaylistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
+        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            await _plexApiClient.UpdatePlaylistMetadataAsync(
+                plex.Url,
+                plex.Token,
+                existingPlaylistId,
+                playlistName,
+                playlist.Description,
+                cancellationToken);
+        }
+
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var matchSummary = await ResolvePlexRatingKeysAsync(plex, tracks, orderedTrackIds, cancellationToken);
         if (matchSummary.TargetIds.Count == 0)
@@ -2231,13 +2274,17 @@ public sealed class PlaylistSyncService
             playlistId,
             cancellationToken);
 
-        await _plexApiClient.UpdatePlaylistMetadataAsync(
-            plex.Url,
-            plex.Token,
-            playlistId,
-            playlistName,
-            playlist.Description,
-            cancellationToken);
+        if (string.IsNullOrWhiteSpace(existingPlaylistId)
+            || !string.Equals(existingPlaylistId, playlistId, StringComparison.OrdinalIgnoreCase))
+        {
+            await _plexApiClient.UpdatePlaylistMetadataAsync(
+                plex.Url,
+                plex.Token,
+                playlistId,
+                playlistName,
+                playlist.Description,
+                cancellationToken);
+        }
 
         var verifiedMemberships = await ReadVerifiedPlexMembershipsAsync(
             plex,
@@ -2296,11 +2343,17 @@ public sealed class PlaylistSyncService
 
         var playlistName = ResolvePlaylistName(playlist);
         var storedPlaylistId = NormalizeExistingTargetPlaylistId(existingPlaylistId);
-        existingPlaylistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
+        var playlistLookup = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
             jellyfin,
             playlist,
             existingPlaylistId,
             cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return PlaylistSyncResult.Failed("Jellyfin playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+        }
+
+        existingPlaylistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var jellyfinMatches = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, orderedTrackIds, cancellationToken);
         var itemIds = jellyfinMatches.Select(static item => item.TargetItemId).ToList();
@@ -2319,6 +2372,11 @@ public sealed class PlaylistSyncService
                 "No Jellyfin matches found for playlist {Source}:{SourceId}.",
                 SafeLog(playlist.Source),
                 SafeLog(playlist.SourceId));
+            if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+            {
+                await SyncJellyfinPlaylistMetadataAsync(jellyfin, playlist, existingPlaylistId, cancellationToken);
+            }
+
             var emptyPlaylistId = await EnsureJellyfinPlaylistContainerAsync(
                 jellyfin,
                 playlist,
@@ -2350,16 +2408,47 @@ public sealed class PlaylistSyncService
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
         var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
-        var playlistId = string.IsNullOrWhiteSpace(existingPlaylistId)
-            ? await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+        var playlistId = existingPlaylistId;
+        var metadataSynced = true;
+        if (!string.IsNullOrWhiteSpace(playlistId))
+        {
+            metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
+                jellyfin,
+                playlist,
+                playlistId,
+                cancellationToken);
+            var syncItemsResult = await SyncExistingJellyfinPlaylistItemsAsync(
                 jellyfin.Url,
                 jellyfin.ApiKey,
                 jellyfin.UserId,
-                playlistName,
-                cancellationToken)
-            : existingPlaylistId.Trim();
+                playlistId,
+                itemIds,
+                appendMissingOnly,
+                cancellationToken);
+            if (!syncItemsResult.Success)
+            {
+                return BuildWriteFailureResult(
+                    BuildSyncMessage(syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.", matchSummary),
+                    matchSummary);
+            }
 
-        if (string.IsNullOrWhiteSpace(playlistId))
+            if (!appendMissingOnly)
+            {
+                var reorder = await TryReorderJellyfinPlaylistAsync(
+                    jellyfin,
+                    playlistId,
+                    itemIds,
+                    cancellationToken);
+                if (reorder.Status == JellyfinPlaylistMoveStatus.Transient)
+                {
+                    return BuildWriteFailureResult(
+                        BuildSyncMessage("Jellyfin playlist reorder timed out.", matchSummary),
+                        matchSummary,
+                        playlistId);
+                }
+            }
+        }
+        else
         {
             var createdPlaylistId = await _jellyfinApiClient.CreatePlaylistAsync(
                 jellyfin.Url,
@@ -2376,32 +2465,14 @@ public sealed class PlaylistSyncService
             }
 
             playlistId = createdPlaylistId;
-        }
-        else
-        {
-            var syncItemsResult = await SyncExistingJellyfinPlaylistItemsAsync(
-                jellyfin.Url,
-                jellyfin.ApiKey,
-                jellyfin.UserId,
+            metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
+                jellyfin,
+                playlist,
                 playlistId,
-                itemIds,
-                appendMissingOnly,
                 cancellationToken);
-            if (!syncItemsResult.Success)
-            {
-                return BuildWriteFailureResult(
-                    BuildSyncMessage(syncItemsResult.ErrorMessage ?? "Failed to sync Jellyfin playlist.", matchSummary),
-                    matchSummary);
-            }
         }
 
         await PersistTargetPlaylistBindingAsync(playlist, preference, JellyfinService, playlistId, cancellationToken);
-
-        var metadataSynced = await SyncJellyfinPlaylistMetadataAsync(
-            jellyfin,
-            playlist,
-            playlistId,
-            cancellationToken);
         var verifiedMemberships = await ReadVerifiedJellyfinMembershipsAsync(
             jellyfin,
             playlistId,
@@ -2451,11 +2522,23 @@ public sealed class PlaylistSyncService
         }
 
         var storedPlaylistId = NormalizeExistingTargetPlaylistId(existingPlaylistId);
-        existingPlaylistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
+        var playlistLookup = await ResolveAuthoritativeNavidromePlaylistIdAsync(
             navidrome,
             playlist,
             existingPlaylistId,
             cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return PlaylistSyncResult.Failed("Navidrome playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+        }
+
+        existingPlaylistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
+        var playlistName = ResolvePlaylistName(playlist);
+        if (!string.IsNullOrWhiteSpace(existingPlaylistId))
+        {
+            await SyncNavidromePlaylistMetadataAsync(navidrome, playlist, existingPlaylistId, cancellationToken);
+        }
+
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
         var navidromeMatches = await ResolveNavidromeItemIdsAsync(navidrome, tracks, orderedTrackIds, cancellationToken);
         var itemIds = navidromeMatches.Select(static item => item.TargetItemId).ToList();
@@ -2504,7 +2587,7 @@ public sealed class PlaylistSyncService
             navidrome.Url,
             navidrome.Username,
             navidrome.Password,
-            ResolvePlaylistName(playlist),
+            playlistName,
             itemIds,
             existingPlaylistId,
             appendMissingOnly,
@@ -2518,12 +2601,21 @@ public sealed class PlaylistSyncService
         }
 
         await PersistTargetPlaylistBindingAsync(playlist, preference, NavidromeService, playlistId, cancellationToken);
+        if (!appendMissingOnly)
+        {
+            await TryReorderNavidromePlaylistAsync(
+                navidrome,
+                playlistId,
+                playlistName,
+                playlist.Description,
+                itemIds,
+                cancellationToken);
+        }
 
-        var metadataSynced = await SyncNavidromePlaylistMetadataAsync(
-            navidrome,
-            playlist,
-            playlistId,
-            cancellationToken);
+        var metadataSynced = string.IsNullOrWhiteSpace(existingPlaylistId)
+            || !string.Equals(existingPlaylistId, playlistId, StringComparison.OrdinalIgnoreCase)
+            ? await SyncNavidromePlaylistMetadataAsync(navidrome, playlist, playlistId, cancellationToken)
+            : true;
         var verifiedMemberships = await ReadVerifiedNavidromeMembershipsAsync(
             navidrome,
             playlistId,
@@ -2905,79 +2997,118 @@ public sealed class PlaylistSyncService
         };
     }
 
-    private async Task<string?> ResolveAuthoritativePlexPlaylistIdAsync(
+    private async Task<TargetPlaylistLookup<string>> ResolveAuthoritativePlexPlaylistIdAsync(
         PlexConnection connection,
         PlaylistWatchlistDto playlist,
         string? storedPlaylistId,
         CancellationToken cancellationToken)
     {
-        var playlists = await _plexApiClient.GetPlaylistsAsync(
+        if (!string.IsNullOrWhiteSpace(storedPlaylistId))
+        {
+            var byId = await _plexApiClient.GetPlaylistResult(
+                connection.Url,
+                connection.Token,
+                storedPlaylistId,
+                cancellationToken);
+            if (byId.Status == TargetLookupStatus.Transient)
+            {
+                return TargetPlaylistLookup<string>.Unavailable(byId.HttpStatusCode);
+            }
+
+            if (byId.Status == TargetLookupStatus.Success && !string.IsNullOrWhiteSpace(byId.Value?.Id))
+            {
+                return TargetPlaylistLookup<string>.Found(byId.Value.Id, byId.HttpStatusCode);
+            }
+        }
+
+        var playlists = await _plexApiClient.GetPlaylistsResult(
             connection.Url,
             connection.Token,
             cancellationToken);
+        if (playlists.Status == TargetLookupStatus.Transient)
+        {
+            return TargetPlaylistLookup<string>.Unavailable(playlists.HttpStatusCode);
+        }
+
         var playlistName = ResolvePlaylistName(playlist);
-        var resolved = playlists.FirstOrDefault(item =>
-                !string.IsNullOrWhiteSpace(item.Id)
-                && !string.IsNullOrWhiteSpace(storedPlaylistId)
-                && string.Equals(item.Id, storedPlaylistId, StringComparison.OrdinalIgnoreCase))?.Id
-            ?? playlists.FirstOrDefault(item =>
+        var resolved = (playlists.Value ?? Array.Empty<PlexPlaylist>()).FirstOrDefault(item =>
                 !string.IsNullOrWhiteSpace(item.Id)
                 && string.Equals(item.Title, playlistName, StringComparison.OrdinalIgnoreCase))?.Id;
-        return resolved;
+        return string.IsNullOrWhiteSpace(resolved)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(resolved);
     }
 
-    private async Task<string?> ResolveAuthoritativeJellyfinPlaylistIdAsync(
+    private async Task<TargetPlaylistLookup<string>> ResolveAuthoritativeJellyfinPlaylistIdAsync(
         JellyfinConnection connection,
         PlaylistWatchlistDto playlist,
         string? storedPlaylistId,
         CancellationToken cancellationToken)
     {
-        string? resolved = null;
         if (!string.IsNullOrWhiteSpace(storedPlaylistId))
         {
-            var existing = await _jellyfinApiClient.GetItemAsync(
+            var existing = await _jellyfinApiClient.GetItemResult(
                 connection.Url,
                 connection.ApiKey,
                 connection.UserId,
                 storedPlaylistId,
                 cancellationToken);
-            resolved = string.IsNullOrWhiteSpace(existing?.Id) ? null : existing.Id;
+            if (existing.Status == TargetLookupStatus.Transient)
+            {
+                return TargetPlaylistLookup<string>.Unavailable(existing.HttpStatusCode);
+            }
+
+            if (existing.Status == TargetLookupStatus.Success && !string.IsNullOrWhiteSpace(existing.Value?.Id))
+            {
+                return TargetPlaylistLookup<string>.Found(existing.Value.Id, existing.HttpStatusCode);
+            }
         }
 
-        resolved ??= await _jellyfinApiClient.FindPlaylistIdByNameAsync(
+        var byName = await _jellyfinApiClient.FindPlaylistIdByNameAsync(
             connection.Url,
             connection.ApiKey,
             connection.UserId,
             ResolvePlaylistName(playlist),
             cancellationToken);
-        return resolved;
+        return string.IsNullOrWhiteSpace(byName)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(byName);
     }
 
-    private async Task<string?> ResolveAuthoritativeNavidromePlaylistIdAsync(
+    private async Task<TargetPlaylistLookup<string>> ResolveAuthoritativeNavidromePlaylistIdAsync(
         NavidromeConnection connection,
         PlaylistWatchlistDto playlist,
         string? storedPlaylistId,
         CancellationToken cancellationToken)
     {
-        string? resolved = null;
         if (!string.IsNullOrWhiteSpace(storedPlaylistId))
         {
-            var existing = await _navidromeApiClient.GetPlaylistAsync(
+            var existing = await _navidromeApiClient.GetPlaylistResult(
                 connection.Url,
                 connection.Username,
                 connection.Password,
                 storedPlaylistId,
                 cancellationToken);
-            resolved = string.IsNullOrWhiteSpace(existing?.Id) ? null : existing.Id;
+            if (existing.Status == TargetLookupStatus.Transient)
+            {
+                return TargetPlaylistLookup<string>.Unavailable(existing.HttpStatusCode);
+            }
+
+            if (existing.Status == TargetLookupStatus.Success && !string.IsNullOrWhiteSpace(existing.Value?.Id))
+            {
+                return TargetPlaylistLookup<string>.Found(existing.Value.Id, existing.HttpStatusCode);
+            }
         }
 
-        resolved ??= await _navidromeApiClient.FindPlaylistIdByNameAsync(
+        var byName = await _navidromeApiClient.FindPlaylistIdByNameAsync(
             connection.Url,
             connection.Username,
             connection.Password,
             ResolvePlaylistName(playlist),
             cancellationToken);
-        return resolved;
+        return string.IsNullOrWhiteSpace(byName)
+            ? TargetPlaylistLookup<string>.Missing()
+            : TargetPlaylistLookup<string>.Found(byName);
     }
 
     private static string? NormalizeExistingTargetPlaylistId(string? playlistId)
@@ -3008,6 +3139,176 @@ public sealed class PlaylistSyncService
             playlistId,
             cancellationToken);
     }
+
+    internal static PlaylistMembershipDelta ComputePlaylistMembershipDelta(
+        IReadOnlyList<string> currentIds,
+        IReadOnlyList<string> intendedIds,
+        bool appendMissingOnly)
+    {
+        var intended = intendedIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Select(static id => id.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var current = currentIds
+            .Where(static id => !string.IsNullOrWhiteSpace(id))
+            .Select(static id => id.Trim())
+            .ToList();
+        var currentSet = current.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var intendedSet = intended.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var toAdd = intended.Where(id => !currentSet.Contains(id)).ToList();
+        var toRemove = appendMissingOnly
+            ? new List<string>()
+            : current.Where(id => !intendedSet.Contains(id)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        IReadOnlyList<string> after;
+        if (appendMissingOnly)
+        {
+            after = current.Concat(toAdd).ToList();
+        }
+        else
+        {
+            var retained = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var id in current)
+            {
+                if (intendedSet.Contains(id) && seen.Add(id))
+                {
+                    retained.Add(id);
+                }
+            }
+
+            after = retained.Concat(toAdd).ToList();
+        }
+
+        var needsReorder = !appendMissingOnly
+            && intended.Count > 0
+            && !after.SequenceEqual(intended, StringComparer.OrdinalIgnoreCase);
+        return new PlaylistMembershipDelta(toAdd, toRemove, needsReorder, intended);
+    }
+
+    private async Task<JellyfinPlaylistMoveResult> TryReorderJellyfinPlaylistAsync(
+        JellyfinConnection jellyfin,
+        string playlistId,
+        IReadOnlyList<string> intendedItemIds,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsTargetCapabilitySupportedAsync(JellyfinService, JellyfinPlaylistMoveCapability, cancellationToken))
+        {
+            return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.NotSupported, null);
+        }
+
+        var entries = await _jellyfinApiClient.GetPlaylistEntriesAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            jellyfin.UserId,
+            playlistId,
+            cancellationToken);
+        var currentIds = entries.Select(static entry => entry.ItemId).ToList();
+        var delta = ComputePlaylistMembershipDelta(currentIds, intendedItemIds, appendMissingOnly: false);
+        if (!delta.NeedsReorder)
+        {
+            return new JellyfinPlaylistMoveResult(JellyfinPlaylistMoveStatus.Moved, null);
+        }
+
+        var moved = await _jellyfinApiClient.ReorderPlaylistItemsAsync(
+            jellyfin.Url,
+            jellyfin.ApiKey,
+            jellyfin.UserId,
+            playlistId,
+            delta.IntendedOrder,
+            entries,
+            cancellationToken);
+        if (moved.Status == JellyfinPlaylistMoveStatus.NotSupported)
+        {
+            _logger.LogInformation(
+                "Jellyfin playlist move is unsupported for {PlaylistId}: HTTP {StatusCode}.",
+                SafeLog(playlistId),
+                moved.HttpStatusCode);
+            await PersistTargetCapabilityAsync(
+                JellyfinService,
+                JellyfinPlaylistMoveCapability,
+                supported: false,
+                lastError: moved.HttpStatusCode is null ? "playlist move not supported" : $"HTTP {moved.HttpStatusCode}",
+                cancellationToken);
+        }
+
+        return moved;
+    }
+
+    private async Task TryReorderNavidromePlaylistAsync(
+        NavidromeConnection navidrome,
+        string playlistId,
+        string playlistName,
+        string? playlistComment,
+        IReadOnlyList<string> intendedItemIds,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsTargetCapabilitySupportedAsync(NavidromeService, NavidromeNativePlaylistPutCapability, cancellationToken))
+        {
+            return;
+        }
+
+        var entries = await _navidromeApiClient.GetPlaylistEntriesAsync(
+            navidrome.Url,
+            navidrome.Username,
+            navidrome.Password,
+            playlistId,
+            cancellationToken);
+        var currentIds = entries.Select(static entry => entry.ItemId).ToList();
+        var delta = ComputePlaylistMembershipDelta(currentIds, intendedItemIds, appendMissingOnly: false);
+        if (!delta.NeedsReorder)
+        {
+            return;
+        }
+
+        var put = await _navidromeApiClient.ReplaceNativePlaylistTracksAsync(
+            navidrome.Url,
+            navidrome.Username,
+            navidrome.Password,
+            playlistId,
+            playlistName,
+            playlistComment,
+            delta.IntendedOrder,
+            cancellationToken);
+        if (put.Status == NavidromeNativePlaylistPutStatus.NotSupported)
+        {
+            _logger.LogInformation(
+                "Navidrome native playlist PUT is unsupported for {PlaylistId}: HTTP {StatusCode}.",
+                SafeLog(playlistId),
+                put.HttpStatusCode);
+            await PersistTargetCapabilityAsync(
+                NavidromeService,
+                NavidromeNativePlaylistPutCapability,
+                supported: false,
+                lastError: put.HttpStatusCode is null ? "native playlist PUT not supported" : $"HTTP {put.HttpStatusCode}",
+                cancellationToken);
+        }
+    }
+
+    private async Task<bool> IsTargetCapabilitySupportedAsync(
+        string targetService,
+        string capability,
+        CancellationToken cancellationToken)
+    {
+        var supported = await _libraryRepository.GetWatchlistTargetCapabilitySupportedAsync(
+            targetService,
+            capability,
+            cancellationToken);
+        return supported != false;
+    }
+
+    private Task PersistTargetCapabilityAsync(
+        string targetService,
+        string capability,
+        bool supported,
+        string? lastError,
+        CancellationToken cancellationToken)
+        => _libraryRepository.SetWatchlistTargetCapabilityAsync(
+            targetService,
+            capability,
+            supported,
+            lastError,
+            cancellationToken);
 
     private async Task<(bool Success, string? ErrorMessage, int SyncedTracks)> AppendMissingJellyfinItemsAsync(
         string url,
@@ -3080,18 +3381,6 @@ public sealed class PlaylistSyncService
             return (true, null, 0);
         }
 
-        if (staleEntryIds.Count > 0
-            && !await _jellyfinApiClient.RemovePlaylistEntriesAsync(
-                url,
-                apiKey,
-                userId,
-                playlistId,
-                staleEntryIds,
-                cancellationToken))
-        {
-            return (false, "Failed to remove stale Jellyfin playlist items.", 0);
-        }
-
         if (pending.Count > 0
             && !await _jellyfinApiClient.AddPlaylistItemsAsync(
                 url,
@@ -3102,6 +3391,18 @@ public sealed class PlaylistSyncService
                 cancellationToken))
         {
             return (false, "Failed to add tracks to Jellyfin playlist.", 0);
+        }
+
+        if (staleEntryIds.Count > 0
+            && !await _jellyfinApiClient.RemovePlaylistEntriesAsync(
+                url,
+                apiKey,
+                userId,
+                playlistId,
+                staleEntryIds,
+                cancellationToken))
+        {
+            return (false, "Failed to remove stale Jellyfin playlist items.", 0);
         }
 
         return (true, null, pending.Count);
@@ -3123,12 +3424,18 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(PlexNotConfiguredMessage, PlaylistSyncResultKind.Retry);
         }
 
-        var playlistId = await ResolveAuthoritativePlexPlaylistIdAsync(
+        var playlistLookup = await ResolveAuthoritativePlexPlaylistIdAsync(
             plex,
             playlist,
             ResolveExistingTargetPlaylistId(preference, PlexService),
             cancellationToken);
-        if (string.IsNullOrWhiteSpace(playlistId))
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return PlaylistSyncResult.Failed("Plex playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+        }
+
+        if (playlistLookup.Status == TargetLookupStatus.NotFound
+            || string.IsNullOrWhiteSpace(playlistLookup.Value))
         {
             return await RecreateMissingTargetPlaylistAsync(
                 playlist,
@@ -3136,6 +3443,8 @@ public sealed class PlaylistSyncService
                 PlexService,
                 cancellationToken);
         }
+
+        var playlistId = playlistLookup.Value;
 
         var updated = await SyncPlexPlaylistArtworkAsync(
             plex,
@@ -3174,13 +3483,18 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(JellyfinNotConfiguredMessage, PlaylistSyncResultKind.Retry);
         }
 
-        var playlistId = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
+        var playlistLookup = await ResolveAuthoritativeJellyfinPlaylistIdAsync(
             jellyfin,
             playlist,
             ResolveExistingTargetPlaylistId(preference, JellyfinService),
             cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return PlaylistSyncResult.Failed("Jellyfin playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+        }
 
-        if (string.IsNullOrWhiteSpace(playlistId))
+        if (playlistLookup.Status == TargetLookupStatus.NotFound
+            || string.IsNullOrWhiteSpace(playlistLookup.Value))
         {
             return await RecreateMissingTargetPlaylistAsync(
                 playlist,
@@ -3188,6 +3502,8 @@ public sealed class PlaylistSyncService
                 JellyfinService,
                 cancellationToken);
         }
+
+        var playlistId = playlistLookup.Value;
 
         var updated = await SyncJellyfinPlaylistArtworkAsync(
             jellyfin,
@@ -3226,13 +3542,18 @@ public sealed class PlaylistSyncService
             return PlaylistSyncResult.Failed(NavidromeNotConfiguredMessage, PlaylistSyncResultKind.Retry);
         }
 
-        var playlistId = await ResolveAuthoritativeNavidromePlaylistIdAsync(
+        var playlistLookup = await ResolveAuthoritativeNavidromePlaylistIdAsync(
             navidrome,
             playlist,
             ResolveExistingTargetPlaylistId(preference, NavidromeService),
             cancellationToken);
+        if (playlistLookup.Status == TargetLookupStatus.Transient)
+        {
+            return PlaylistSyncResult.Failed("Navidrome playlist lookup timed out.", PlaylistSyncResultKind.Retry);
+        }
 
-        if (string.IsNullOrWhiteSpace(playlistId))
+        if (playlistLookup.Status == TargetLookupStatus.NotFound
+            || string.IsNullOrWhiteSpace(playlistLookup.Value))
         {
             return await RecreateMissingTargetPlaylistAsync(
                 playlist,
@@ -3240,6 +3561,8 @@ public sealed class PlaylistSyncService
                 NavidromeService,
                 cancellationToken);
         }
+
+        var playlistId = playlistLookup.Value;
 
         var updated = await SyncNavidromePlaylistArtworkAsync(
             navidrome,
@@ -3268,6 +3591,11 @@ public sealed class PlaylistSyncService
         string targetService,
         CancellationToken cancellationToken)
     {
+        _logger.LogWarning(
+            "Recreating {Target} playlist {Source}:{SourceId}; reason=target_gone.",
+            FormatTargetServiceLabel(targetService),
+            SafeLog(playlist.Source),
+            SafeLog(playlist.SourceId));
         var cache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(
             playlist.Source,
             playlist.SourceId,
@@ -5295,3 +5623,9 @@ public sealed record PlaylistProvisioningOutcome(
     bool Created,
     string? PlaylistId,
     string Message);
+
+public sealed record PlaylistMembershipDelta(
+    IReadOnlyList<string> ToAdd,
+    IReadOnlyList<string> ToRemove,
+    bool NeedsReorder,
+    IReadOnlyList<string> IntendedOrder);

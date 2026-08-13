@@ -665,6 +665,15 @@ CREATE TABLE IF NOT EXISTS watchlist_target_circuit_state (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (target_service)
 );", cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS watchlist_target_capability (
+    target_service TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    supported INTEGER NOT NULL,
+    last_checked_utc TEXT NOT NULL,
+    last_error TEXT,
+    PRIMARY KEY (target_service, capability)
+);", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchlistTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchPreferencesTable, SourceIdColumn, TextType, cancellationToken);
         await EnsureColumnAsync(connection, ArtistWatchlistTable, "destination_folder_id", BigIntType, cancellationToken);

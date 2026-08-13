@@ -841,6 +841,13 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             return SyncFailureClass.None;
         }
 
+        if (lower.Contains("reorder", StringComparison.Ordinal)
+            && (lower.Contains("not supported", StringComparison.Ordinal)
+                || lower.Contains("unsupported", StringComparison.Ordinal)))
+        {
+            return SyncFailureClass.ReorderUnsupported;
+        }
+
         return SyncFailureClass.Transport;
     }
 
