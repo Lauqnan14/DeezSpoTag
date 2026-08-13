@@ -7325,6 +7325,21 @@ WHERE deadline_utc IS NOT NULL
     public async Task<bool> ApplyWatchlistSmoothSyncRecoveryAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var alreadyApplied = new SqliteCommand(@"
+SELECT 1
+FROM playlist_watch_state
+WHERE COALESCE(recovery_generation, 0) >= 1
+LIMIT 1;", connection);
+        if (await alreadyApplied.ExecuteScalarAsync(cancellationToken) is not null)
+        {
+            await using var stampLeftovers = new SqliteCommand(@"
+UPDATE playlist_watch_state
+SET recovery_generation=1
+WHERE COALESCE(recovery_generation, 0) < 1;", connection);
+            await stampLeftovers.ExecuteNonQueryAsync(cancellationToken);
+            return false;
+        }
+
         await using var needsRecovery = new SqliteCommand(@"
 SELECT 1
 FROM playlist_watch_state
@@ -8574,8 +8589,6 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         int currentTrackTotal,
         CancellationToken cancellationToken = default)
     {
-        // current_phase is owned by state transitions, not progress ticks.
-        _ = phase;
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
             return;
@@ -8585,14 +8598,12 @@ ON CONFLICT(source, source_id) DO UPDATE SET
 UPDATE playlist_watch_state
 SET current_track_index=@currentTrackIndex,
     current_track_total=@currentTrackTotal,
-    heartbeat_utc=@heartbeatUtc,
     updated_at=CURRENT_TIMESTAMP
 WHERE source=@source AND source_id=@sourceId;", connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
         command.Parameters.AddWithValue("currentTrackIndex", Math.Max(0, currentTrackIndex));
         command.Parameters.AddWithValue("currentTrackTotal", Math.Max(0, currentTrackTotal));
-        command.Parameters.AddWithValue("heartbeatUtc", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

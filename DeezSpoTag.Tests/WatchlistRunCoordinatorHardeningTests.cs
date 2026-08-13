@@ -618,6 +618,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 
         Assert.Contains("TouchPlaylistWatchHeartbeatAsync", repository, StringComparison.Ordinal);
         Assert.DoesNotContain("SET current_phase=@phase", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("heartbeat_utc=@heartbeatUtc", repository, StringComparison.Ordinal);
         Assert.Contains("current_track_index=@currentTrackIndex", repository, StringComparison.Ordinal);
         Assert.Contains("now.AddMinutes(45)", admission, StringComparison.Ordinal);
     }
@@ -625,10 +626,18 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     [Fact]
     public void Parse_UnknownWatchlistStatus_ReturnsPending()
     {
+        var logger = new ListLogger<WatchlistStateService>();
+        _ = new WatchlistStateService(_repository, logger);
+        var unknown = "unknown_token_" + Guid.NewGuid().ToString("N");
+
         Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("stale_recovered"));
-        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("not_a_real_state"));
+        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse(unknown));
+        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse(unknown));
         Assert.Equal(WatchlistPlaylistState.WaitingForTargetSync, WatchlistStateService.Parse("waiting_for_target_sync"));
         Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("pending"));
+        Assert.Equal(1, logger.Entries.Count(entry =>
+            entry.Level == LogLevel.Warning
+            && entry.Message.Contains(unknown, StringComparison.Ordinal)));
     }
 
     private static async Task InvokeRunOnceAsync(WatchlistRunCoordinator hosted)

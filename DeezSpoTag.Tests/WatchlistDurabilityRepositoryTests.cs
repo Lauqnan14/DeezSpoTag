@@ -701,6 +701,34 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task ApplyWatchlistSmoothSyncRecovery_NewWatchStateAfterRecovery_IsNoOpAndDoesNotClearLaterBackoff()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "first-recovery-list", new PlaylistWatchlistMetadataInput("First", null, null, 1));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "first-recovery-list", null, 1, null, null, null,
+            "backoff", "Recovered stale Watchlist work after its persisted deadline expired.",
+            DateTimeOffset.UtcNow, 2, "stale_recovered", 0, 0, DateTimeOffset.UtcNow, null));
+
+        _ = await _repository.ApplyWatchlistSmoothSyncRecoveryAsync();
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "later-backoff-list", new PlaylistWatchlistMetadataInput("Later", null, null, 1));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "later-backoff-list", null, 1, null, null, null,
+            "backoff", "Recovered stale Watchlist work after its persisted deadline expired.",
+            DateTimeOffset.UtcNow.AddHours(1), 3, "stale_recovered", 0, 0, DateTimeOffset.UtcNow, null));
+
+        Assert.False(await _repository.ApplyWatchlistSmoothSyncRecoveryAsync());
+
+        var later = await _repository.GetPlaylistWatchStateAsync("spotify", "later-backoff-list");
+        Assert.Equal("backoff", later!.LastRunStatus);
+        Assert.Equal("stale_recovered", later.CurrentPhase);
+        Assert.Equal(3, later.ConsecutiveFailures);
+        Assert.Equal(1L, await QueryScalarAsync("SELECT recovery_generation FROM playlist_watch_state WHERE source_id='later-backoff-list';"));
+    }
+
+    [Fact]
     public async Task TouchPlaylistWatchHeartbeat_ExtendsDeadlineWithoutChangingPhase()
     {
         await _repository.AddPlaylistWatchlistAsync(
@@ -723,6 +751,7 @@ WHERE id=@id;",
         Assert.Equal("waiting_for_target_sync", afterProgress!.CurrentPhase);
         Assert.Equal(7, afterProgress.CurrentTrackIndex);
         Assert.Equal(10, afterProgress.CurrentTrackTotal);
+        Assert.Equal(afterHeartbeat.HeartbeatUtc, afterProgress.HeartbeatUtc);
     }
 
     [Fact]

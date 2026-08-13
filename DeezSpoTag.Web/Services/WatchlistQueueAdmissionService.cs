@@ -1,5 +1,8 @@
+using System.Collections.Concurrent;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -70,11 +73,17 @@ public sealed record WatchlistPlaylistStateTransition(
 
 public sealed class WatchlistStateService
 {
+    private static readonly ConcurrentDictionary<string, byte> LoggedUnknownStatuses = new(StringComparer.Ordinal);
+    private static ILogger ParseLogger { get; set; } = NullLogger.Instance;
     private readonly LibraryRepository _repository;
 
-    public WatchlistStateService(LibraryRepository repository)
+    public WatchlistStateService(LibraryRepository repository, ILogger<WatchlistStateService>? logger = null)
     {
         _repository = repository;
+        if (logger is not null)
+        {
+            ParseLogger = logger;
+        }
     }
 
     public async Task TransitionPlaylistAsync(
@@ -137,8 +146,19 @@ public sealed class WatchlistStateService
             "media_sync_blocked" => WatchlistPlaylistState.MediaSyncBlocked,
             "metadata_refreshed" => WatchlistPlaylistState.MetadataRefreshed,
             "configuration_required" => WatchlistPlaylistState.ConfigurationRequired,
-            _ => WatchlistPlaylistState.Pending
+            _ => LogUnknownAndPending(status)
         };
+
+    private static WatchlistPlaylistState LogUnknownAndPending(string status)
+    {
+        var token = status.Trim();
+        if (LoggedUnknownStatuses.TryAdd(token, 0))
+        {
+            ParseLogger.LogWarning("Unknown Watchlist playlist state '{Status}' mapped to pending.", token);
+        }
+
+        return WatchlistPlaylistState.Pending;
+    }
 
     private static DateTimeOffset? ResolveDeadlineUtc(
         WatchlistPlaylistState state,
