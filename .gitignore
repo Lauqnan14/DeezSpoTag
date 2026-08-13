@@ -20,6 +20,9 @@ codeql-results/
 ARCHITECTURE.md
 SECURITY_CODEQL_EXPORT.md
 SECURITY_CODEQL_REMEDIATION_PLAN.md
+docs/enhancement-pipeline-redesign.md
+docs/enhancement-sidecars-stage.md
+platform-tag-matrix.csv
 DeezSpoTag.Web/Tools/venv/
 .jscpd-report/
 .jscpd*/

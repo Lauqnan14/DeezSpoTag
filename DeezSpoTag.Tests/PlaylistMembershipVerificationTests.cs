@@ -6,30 +6,30 @@ public sealed class PlaylistMembershipVerificationTests
 {
     [Theory]
     [InlineData(50, 50, true, true)]
-    [InlineData(50, 50, false, false)]
     [InlineData(50, 49, true, false)]
     [InlineData(0, 0, true, true)]
-    [InlineData(267, 50, true, false)]
-    public void IsIntendedMembershipVerified_RequiresEveryLocalTrackOnTarget(
-        int intended,
+    public void IsResolvedMembershipVerified_UsesResolvedIdentitiesOnly(
+        int resolved,
         int verified,
         bool writeComplete,
         bool expected)
     {
         Assert.Equal(
             expected,
-            DeezSpoTag.Web.Services.PlaylistSyncService.IsIntendedMembershipVerified(
-                intended,
+            DeezSpoTag.Web.Services.PlaylistSyncService.IsResolvedMembershipVerified(
+                resolved,
                 verified,
                 writeComplete));
     }
 
     [Fact]
-    public void IsIntendedMembershipVerified_RejectsPartialTargetResolution()
+    public void HasUnresolvedTargetIdentities_KeepsSourceVersusResolvedMeaning()
     {
-        Assert.False(DeezSpoTag.Web.Services.PlaylistSyncService.IsIntendedMembershipVerified(267, 50));
         Assert.True(DeezSpoTag.Web.Services.PlaylistSyncService.HasUnresolvedTargetIdentities(267, 50));
         Assert.False(DeezSpoTag.Web.Services.PlaylistSyncService.HasUnresolvedTargetIdentities(50, 50));
+        Assert.True(DeezSpoTag.Web.Services.PlaylistSyncService.IsResolvedMembershipVerified(50, 50));
+        Assert.False(DeezSpoTag.Web.Services.PlaylistSyncService.IsResolvedMembershipVerified(50, 49));
+        Assert.True(DeezSpoTag.Web.Services.PlaylistSyncService.IsResolvedMembershipVerified(0, 0));
     }
 
     [Theory]

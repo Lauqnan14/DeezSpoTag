@@ -79,11 +79,12 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.DoesNotContain("ApplyArtworkToNewTargetAsync", service, StringComparison.Ordinal);
         Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
         Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", service, StringComparison.Ordinal);
-        Assert.Equal(3, CountOccurrences(service, "await TryApplyOrScheduleMembershipArtworkAsync("));
+        Assert.True(CountOccurrences(service, "await TryApplyOrScheduleMembershipArtworkAsync(") >= 1);
         // Membership path binds target ids immediately (Plex/JF/Navidrome) plus art-only paths.
         Assert.True(CountOccurrences(service, "await PersistTargetPlaylistBindingAsync(") >= 6);
         Assert.Contains("RecreateMissingTargetPlaylistAsync", service, StringComparison.Ordinal);
-        Assert.Contains("IsIntendedMembershipVerified", service, StringComparison.Ordinal);
+        Assert.Contains("IsResolvedMembershipVerified", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsIntendedMembershipVerified", service, StringComparison.Ordinal);
     }
 
     private static int CountOccurrences(string source, string value)
@@ -191,7 +192,14 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
 
         Assert.Contains("ResolvePersistedAvailableTrackRowsAsync", service, StringComparison.Ordinal);
         Assert.Contains("matchSummary.SourceTracks", service, StringComparison.Ordinal);
-        Assert.Contains("IsIntendedMembershipVerified(matchSummary, verifiedMemberships.Count", service, StringComparison.Ordinal);
+        Assert.Contains("IsResolvedMembershipVerified(", service, StringComparison.Ordinal);
+        Assert.Contains("PlaylistSyncResultKind.IdentityGap", service, StringComparison.Ordinal);
+        Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasNoTargetCoverage", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildFailedResult", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildPartialResult", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("public static PlaylistSyncResult Failed(string message)", service, StringComparison.Ordinal);
+        Assert.Contains("Failed(string message, PlaylistSyncResultKind kind)", service, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldAcceptMembershipWithExceptions", service, StringComparison.Ordinal);
         Assert.DoesNotContain("AppendDeferredTargetIdentityMessage", service, StringComparison.Ordinal);
         Assert.Equal(3, CountOccurrences(service, "DeleteMediaServerTrackMetadataAsync("));

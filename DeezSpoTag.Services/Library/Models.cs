@@ -847,6 +847,19 @@ public sealed record PlaylistWatchTargetMembership(
     long LocalTrackId,
     string TargetItemId);
 
+public sealed record PlaylistWatchTargetMembershipWrite(
+    string TrackSourceId,
+    long? LocalTrackId,
+    string? TargetItemId,
+    string SyncStatus);
+
+public enum WatchlistAppliedKind
+{
+    Full,
+    Partial,
+    WaitingForSeed
+}
+
 public sealed record LocalTrackIdentityDto(
     long TrackId,
     string Title,

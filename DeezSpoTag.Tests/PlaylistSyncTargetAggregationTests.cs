@@ -13,9 +13,9 @@ public sealed class PlaylistSyncTargetAggregationTests
     {
         var result = PlaylistSyncService.CombinePlaylistSyncTargetResults(new List<(string Service, PlaylistSyncResult Result)>
         {
-            ("plex", new PlaylistSyncResult(true, "Playlist synced to Plex.", "plex-1", SyncedTracks: 2, SourceTracks: 3, LocalMatches: 2, TargetMatches: 2)),
-            ("jellyfin", PlaylistSyncResult.Failed("Jellyfin sync failed: connection refused")),
-            ("navidrome", new PlaylistSyncResult(true, "Playlist synced to Navidrome.", "navidrome-1", SyncedTracks: 2, SourceTracks: 3, LocalMatches: 2, TargetMatches: 2))
+            ("plex", PlaylistSyncResult.Completed("Playlist synced to Plex.", "plex-1", syncedTracks: 2, sourceTracks: 3, localMatches: 2, targetMatches: 2)),
+            ("jellyfin", PlaylistSyncResult.Failed("Jellyfin sync failed: connection refused", PlaylistSyncResultKind.Retry)),
+            ("navidrome", PlaylistSyncResult.Completed("Playlist synced to Navidrome.", "navidrome-1", syncedTracks: 2, sourceTracks: 3, localMatches: 2, targetMatches: 2))
         });
 
         Assert.False(result.Success);
@@ -31,13 +31,27 @@ public sealed class PlaylistSyncTargetAggregationTests
     {
         var result = PlaylistSyncService.CombinePlaylistSyncTargetResults(new List<(string Service, PlaylistSyncResult Result)>
         {
-            ("plex", PlaylistSyncResult.Failed("Plex is not configured.")),
-            ("jellyfin", PlaylistSyncResult.Failed("Jellyfin sync failed: connection refused"))
+            ("plex", PlaylistSyncResult.Failed("Plex is not configured.", PlaylistSyncResultKind.Retry)),
+            ("jellyfin", PlaylistSyncResult.Failed("Jellyfin sync failed: connection refused", PlaylistSyncResultKind.Retry))
         });
 
         Assert.False(result.Success);
         Assert.Contains("Plex: Plex is not configured.", result.Message);
         Assert.Contains("Jellyfin: Jellyfin sync failed: connection refused", result.Message);
+        Assert.Equal(PlaylistSyncResultKind.Retry, result.Kind);
+    }
+
+    [Fact]
+    public void CombinePlaylistSyncTargetResults_TreatsIdentityGapWithCompletedAsSuccess()
+    {
+        var result = PlaylistSyncService.CombinePlaylistSyncTargetResults(new List<(string Service, PlaylistSyncResult Result)>
+        {
+            ("plex", PlaylistSyncResult.IdentityGap("Plex mirrored available tracks.", "plex-1", syncedTracks: 50, sourceTracks: 267, localMatches: 129, targetMatches: 50)),
+            ("jellyfin", PlaylistSyncResult.Completed("Playlist synced to Jellyfin.", "jellyfin-1", syncedTracks: 129, sourceTracks: 267, localMatches: 129, targetMatches: 129))
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(PlaylistSyncResultKind.IdentityGap, result.Kind);
     }
 
     [Fact]

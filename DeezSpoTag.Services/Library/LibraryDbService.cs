@@ -703,6 +703,10 @@ CREATE TABLE IF NOT EXISTS playlist_watch_target_sync_state (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, source_id, target_service)
 );", cancellationToken);
+        const string playlistWatchTargetSyncStateTable = "playlist_watch_target_sync_state";
+        await EnsureColumnAsync(connection, playlistWatchTargetSyncStateTable, "applied_kind", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, playlistWatchTargetSyncStateTable, "applied_membership_hash", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, playlistWatchTargetSyncStateTable, "applied_source_playlist_id", TextType, cancellationToken);
         await ApplyWatchlistReliabilityRepairAsync(connection, cancellationToken);
         await RepairPlaylistCandidateAndTargetSyncRuntimeAsync(connection, cancellationToken);
         await EnsureTableAsync(connection, @"

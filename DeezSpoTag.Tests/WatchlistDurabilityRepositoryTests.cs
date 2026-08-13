@@ -606,7 +606,7 @@ WHERE id=@id;",
 
         Assert.Equal("snapshot-1:plex-membership-v2", claimed.SnapshotId);
         Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
-            claimed, "revision-worker"));
+            claimed, "revision-worker", WatchlistAppliedKind.Full, null, null));
         Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify", "revision-list", "snapshot-1"));
 
@@ -616,7 +616,31 @@ WHERE id=@id;",
     }
 
     [Fact]
-    public async Task RepairWatchlistSyncBacklog_ReopensAppliedTargetWhenLocalTracksLackMembership()
+    public async Task PartialAppliedSnapshot_IsNotScheduledAgainUntilSnapshotChanges()
+    {
+        await AddPlaylistWithTargetsAsync("partial-revision-list", ["jellyfin"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "partial-revision-list", "snapshot-s");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1, TimeSpan.FromMinutes(1), "partial-worker"));
+
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed, "partial-worker", WatchlistAppliedKind.Partial, "hash-s", "source-s"));
+        Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "partial-revision-list", "snapshot-s"));
+        var changed = Assert.Single(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "partial-revision-list", "snapshot-s2"));
+        Assert.Equal("snapshot-s2", changed.SnapshotId);
+        Assert.False(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed with { SnapshotId = "   " },
+            "partial-worker",
+            WatchlistAppliedKind.Partial,
+            null,
+            null));
+    }
+
+    [Fact]
+    public async Task RepairWatchlistSyncBacklog_DoesNotReopenIdentityGapAppliedState()
     {
         await AddPlaylistWithTargetsAsync("partial-target-list", ["plex"]);
         await _repository.AddPlaylistWatchTracksAsync(
@@ -639,7 +663,10 @@ WHERE id=@id;",
             "partial-target-list",
             "plex",
             "plex-playlist",
-            [new PlaylistWatchTargetMembership("track-1", 101, "plex-track-1")]);
+            [
+                new PlaylistWatchTargetMembershipWrite("track-1", 101, "plex-track-1", "playlist_synced"),
+                new PlaylistWatchTargetMembershipWrite("track-2", 102, null, "waiting_for_identity")
+            ]);
         await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify",
             "partial-target-list",
@@ -648,17 +675,48 @@ WHERE id=@id;",
             1,
             TimeSpan.FromMinutes(1),
             "repair-worker"));
-        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(claimed, "repair-worker"));
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed,
+            "repair-worker",
+            WatchlistAppliedKind.Partial,
+            null,
+            null));
         Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
+        Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "partial-target-list",
+            "snapshot-1"));
 
         var repaired = await _repository.RepairWatchlistSyncBacklogAsync(10);
 
-        Assert.True(repaired > 0);
-        var reopened = Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
-        Assert.Equal("plex", reopened.TargetService);
-        Assert.Equal("playlist", reopened.TrackId);
-        Assert.Equal("pending", reopened.Status);
-        Assert.Equal("snapshot-1:plex-membership-v2", reopened.SnapshotId);
+        Assert.Equal(0, repaired);
+        Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
+
+        var catchUp = Assert.Single(await _repository.EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+            102,
+            "plex",
+            "snapshot-1"));
+        Assert.Equal("snapshot-1:plex-membership-v2", catchUp.SnapshotId);
+        var catchUpClaimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "catchup-worker"));
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            catchUpClaimed,
+            "catchup-worker",
+            WatchlistAppliedKind.Partial,
+            null,
+            null));
+        Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "partial-target-list",
+            "snapshot-1"));
+        Assert.False(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            catchUpClaimed with { SnapshotId = null },
+            "catchup-worker",
+            WatchlistAppliedKind.Partial,
+            null,
+            null));
     }
 
     [Fact]

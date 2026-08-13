@@ -376,7 +376,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     _leaseOwner,
                     job.AttemptCount,
                     targetCircuit!.OpenUntilUtc ?? DateTimeOffset.UtcNow.AddSeconds(TargetCircuitCooldownSeconds),
-                    $"{FormatTargetServiceLabel(job.TargetService)} sync is temporarily paused after repeated failures: {targetCircuit.Reason}",
+                    $"{FormatTargetServiceLabel(job.TargetService)} sync is temporarily paused after repeated {FormatCircuitFailureClass(targetCircuit.Reason)} failures.",
                     cancellationToken);
                 return;
             }
@@ -397,7 +397,13 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 case SyncAttemptOutcomeKind.Completed:
                     await ResetTargetCircuitAsync(repository, job.TargetService, targetCircuit, cancellationToken);
                     var completed = IsPlaylistJob(job.TrackId)
-                        ? await repository.CompleteWatchlistPlaylistSyncJobAsync(job, _leaseOwner, cancellationToken)
+                        ? await repository.CompleteWatchlistPlaylistSyncJobAsync(
+                            job,
+                            _leaseOwner,
+                            outcome.AppliedKind ?? WatchlistAppliedKind.Full,
+                            outcome.MembershipHash,
+                            outcome.SourcePlaylistId,
+                            cancellationToken)
                         : await repository.CompleteWatchlistSyncJobAsync(job.Id, _leaseOwner, cancellationToken);
                     if (completed)
                     {
@@ -414,9 +420,16 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
                     return;
             }
-            if (!IsArtworkJob(job.TrackId))
+            if (!IsArtworkJob(job.TrackId)
+                && ShouldIncrementTargetCircuit(outcome.FailureClass))
             {
-                await RecordTargetCircuitFailureAsync(repository, job.TargetService, targetCircuit, outcome.Message, cancellationToken);
+                await RecordTargetCircuitFailureAsync(
+                    repository,
+                    job.TargetService,
+                    targetCircuit,
+                    outcome.FailureClass,
+                    outcome.Message,
+                    cancellationToken);
             }
 
             var attempt = job.AttemptCount + 1;
@@ -669,7 +682,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     WatchlistHistoryStatus.MediaSyncCompleted,
                     cancellationToken);
                 LogSyncCompleted(request, attempt, syncResult.SyncedTracks);
-                return SyncAttemptOutcome.Completed(syncResult.Message);
+                return SyncAttemptOutcome.Completed(
+                    syncResult.Message,
+                    MapAppliedKind(syncResult, request.TargetService),
+                    BuildMembershipHash(syncResult),
+                    playlist.SourceId);
             }
 
             var terminalFailure = IsTerminalSyncFailure(syncResult);
@@ -679,9 +696,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 terminalFailure ? WatchlistHistoryStatus.MediaSyncBlocked : WatchlistHistoryStatus.MediaSyncWaiting,
                 cancellationToken);
             LogSyncNotReady(request, attempt, syncResult.Message);
+            var failureClass = ClassifySyncFailureClass(syncResult);
             return terminalFailure
-                ? SyncAttemptOutcome.Blocked(syncResult.Message)
-                : SyncAttemptOutcome.Retry(syncResult.Message);
+                ? SyncAttemptOutcome.Blocked(syncResult.Message, failureClass)
+                : SyncAttemptOutcome.Retry(syncResult.Message, failureClass);
         }
         catch (OperationCanceledException)
         {
@@ -706,22 +724,96 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             return false;
         }
 
-        if (HasNoTargetCoverage(syncResult))
-        {
-            return true;
-        }
-
-        return string.Equals(syncResult.Message, "Playlist not available.", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(syncResult.Message, "No target server selected.", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(syncResult.Message, "Playlist sync target is disabled.", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(syncResult.Message, "Unsupported playlist sync target.", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(syncResult.Message, "No eligible tracks after blocked/ignored filtering.", StringComparison.OrdinalIgnoreCase);
+        return syncResult.Kind == PlaylistSyncResultKind.Blocked
+            || PlaylistSyncResult.IsBlockedConfigMessage(syncResult.Message);
     }
 
-    private static bool HasNoTargetCoverage(PlaylistSyncResult syncResult)
-        => syncResult.TargetMatches == 0
-            && syncResult.LocalMatches > 0
-            && syncResult.SourceTracks > 0;
+    internal static SyncFailureClass ClassifySyncFailureClass(PlaylistSyncResult syncResult)
+    {
+        if (syncResult.Success)
+        {
+            return SyncFailureClass.None;
+        }
+
+        if (syncResult.Kind == PlaylistSyncResultKind.Blocked)
+        {
+            return SyncFailureClass.Config;
+        }
+
+        if (syncResult.Kind == PlaylistSyncResultKind.WriteLag)
+        {
+            return SyncFailureClass.IdentityMiss;
+        }
+
+        return ClassifyRetryFailureClass(syncResult.Message);
+    }
+
+    internal static SyncFailureClass ClassifyRetryFailureClass(string? message)
+    {
+        var text = message ?? string.Empty;
+        var lower = text.ToLowerInvariant();
+        if (lower.Contains("region_blocked", StringComparison.Ordinal)
+            || lower.Contains("geo_restricted", StringComparison.Ordinal)
+            || lower.Contains("not available in your country", StringComparison.Ordinal))
+        {
+            return SyncFailureClass.IdentityMiss;
+        }
+
+        if (lower.Contains("is not configured.", StringComparison.Ordinal)
+            || lower.Contains("unauthorized", StringComparison.Ordinal)
+            || (lower.Contains("forbidden", StringComparison.Ordinal) && !lower.Contains("region_blocked", StringComparison.Ordinal))
+            || lower.Contains("401", StringComparison.Ordinal)
+            || lower.Contains("403", StringComparison.Ordinal))
+        {
+            return SyncFailureClass.Auth;
+        }
+
+        if (PlaylistSyncResult.IsNoTargetMatchesMessage(text)
+            || PlaylistSyncResult.IsLibraryEmptyMessage(text)
+            || lower.Contains("verification is incomplete", StringComparison.Ordinal)
+            || lower.Contains("source tracks:", StringComparison.Ordinal)
+            || lower.Contains("waiting for", StringComparison.Ordinal) && lower.Contains("index finalized", StringComparison.Ordinal))
+        {
+            return SyncFailureClass.IdentityMiss;
+        }
+
+        if (lower.Contains("waiting for the durable playlist reconciliation", StringComparison.Ordinal))
+        {
+            return SyncFailureClass.None;
+        }
+
+        return SyncFailureClass.Transport;
+    }
+
+    private static bool ShouldIncrementTargetCircuit(SyncFailureClass failureClass)
+        => failureClass is SyncFailureClass.Transport or SyncFailureClass.Auth;
+
+    private static WatchlistAppliedKind MapAppliedKind(PlaylistSyncResult result, string targetService)
+    {
+        if (result.Kind == PlaylistSyncResultKind.IdentityGap)
+        {
+            if (string.Equals(targetService, "plex", StringComparison.OrdinalIgnoreCase)
+                && result.TargetMatches == 0)
+            {
+                return WatchlistAppliedKind.WaitingForSeed;
+            }
+
+            return WatchlistAppliedKind.Partial;
+        }
+
+        return WatchlistAppliedKind.Full;
+    }
+
+    private static string? BuildMembershipHash(PlaylistSyncResult result)
+    {
+        var payload = string.Join(
+            "\u001F",
+            result.PlaylistId ?? string.Empty,
+            result.TargetMatches.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            result.SyncedTracks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            result.Kind.ToString());
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(payload)));
+    }
 
     private static bool IsConfiguredTarget(PlaylistWatchPreferenceDto preference, string targetService)
     {
@@ -842,10 +934,32 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private static bool IsPlaylistJob(string? trackId)
         => string.Equals(trackId, PlaylistJobTrackId, StringComparison.OrdinalIgnoreCase);
 
+    private static string FormatCircuitFailureClass(string? reason)
+    {
+        var text = reason ?? string.Empty;
+        if (text.Contains("Source tracks:", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Target matches:", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("verification is incomplete", StringComparison.OrdinalIgnoreCase))
+        {
+            return "transport";
+        }
+
+        var parts = text.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2
+            && Enum.TryParse<SyncFailureClass>(parts[1], ignoreCase: true, out var parsed)
+            && parsed is SyncFailureClass.Transport or SyncFailureClass.Auth)
+        {
+            return parsed.ToString().ToLowerInvariant();
+        }
+
+        return "transport";
+    }
+
     private async Task RecordTargetCircuitFailureAsync(
         LibraryRepository repository,
         string targetService,
         WatchlistTargetCircuitStateDto? existing,
+        SyncFailureClass failureClass,
         string? reason,
         CancellationToken cancellationToken)
     {
@@ -854,13 +968,14 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         var openUntilUtc = isOpen
             ? DateTimeOffset.UtcNow.AddSeconds(TargetCircuitCooldownSeconds)
             : existing?.OpenUntilUtc;
+        var fingerprint = $"{NormalizeTargetService(targetService)}:{failureClass}:0";
 
         await repository.UpsertWatchlistTargetCircuitStateAsync(
             new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
                 targetService,
                 isOpen,
                 openUntilUtc,
-                reason,
+                fingerprint,
                 failureCount),
             cancellationToken);
 
@@ -913,13 +1028,47 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         Blocked
     }
 
-    private sealed record SyncAttemptOutcome(SyncAttemptOutcomeKind Kind, string Message)
+    private sealed record SyncAttemptOutcome(
+        SyncAttemptOutcomeKind Kind,
+        string Message,
+        WatchlistAppliedKind? AppliedKind = null,
+        string? MembershipHash = null,
+        string? SourcePlaylistId = null,
+        SyncFailureClass FailureClass = SyncFailureClass.None)
     {
-        public static SyncAttemptOutcome Completed(string message) => new(SyncAttemptOutcomeKind.Completed, message);
-        public static SyncAttemptOutcome Retry(string message) => new(SyncAttemptOutcomeKind.Retry, message);
+        public static SyncAttemptOutcome Completed(string message)
+            => Completed(message, WatchlistAppliedKind.Full, null, null);
+
+        public static SyncAttemptOutcome Completed(
+            string message,
+            WatchlistAppliedKind appliedKind,
+            string? membershipHash,
+            string? sourcePlaylistId)
+            => new(
+                SyncAttemptOutcomeKind.Completed,
+                message,
+                appliedKind,
+                membershipHash,
+                sourcePlaylistId);
+
+        public static SyncAttemptOutcome Retry(string message, SyncFailureClass failureClass = SyncFailureClass.None)
+            => new(SyncAttemptOutcomeKind.Retry, message, FailureClass: failureClass);
+
         public static SyncAttemptOutcome Obsolete(string message) => new(SyncAttemptOutcomeKind.Obsolete, message);
-        public static SyncAttemptOutcome Blocked(string message) => new(SyncAttemptOutcomeKind.Blocked, message);
+
+        public static SyncAttemptOutcome Blocked(string message, SyncFailureClass failureClass = SyncFailureClass.Config)
+            => new(SyncAttemptOutcomeKind.Blocked, message, FailureClass: failureClass);
     }
+}
+
+public enum SyncFailureClass
+{
+    None,
+    Config,
+    Auth,
+    Transport,
+    IdentityMiss,
+    ReorderUnsupported
 }
 
 public enum WatchlistHistoryStatus

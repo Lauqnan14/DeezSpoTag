@@ -9795,34 +9795,45 @@ WHERE source = @source
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task ReplacePlaylistWatchTargetMembershipAsync(
+    public Task ReplacePlaylistWatchTargetMembershipAsync(
         string source,
         string sourceId,
         string targetService,
         string targetPlaylistId,
         IReadOnlyCollection<PlaylistWatchTargetMembership> memberships,
         CancellationToken cancellationToken = default)
+        => ReplacePlaylistWatchTargetMembershipAsync(
+            source,
+            sourceId,
+            targetService,
+            targetPlaylistId,
+            memberships
+                .Select(static membership => new PlaylistWatchTargetMembershipWrite(
+                    membership.TrackSourceId,
+                    membership.LocalTrackId,
+                    membership.TargetItemId,
+                    "playlist_synced"))
+                .ToList(),
+            cancellationToken);
+
+    public async Task ReplacePlaylistWatchTargetMembershipAsync(
+        string source,
+        string sourceId,
+        string targetService,
+        string? targetPlaylistId,
+        IReadOnlyCollection<PlaylistWatchTargetMembershipWrite> memberships,
+        CancellationToken cancellationToken = default)
     {
-        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId)
+            || string.IsNullOrWhiteSpace(targetService))
         {
             return;
         }
 
+        var normalizedTarget = targetService.Trim().ToLowerInvariant();
+        var playlistId = string.IsNullOrWhiteSpace(targetPlaylistId) ? string.Empty : targetPlaylistId.Trim();
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-        const string deleteMembershipSql = @"
-DELETE FROM playlist_watch_target_membership
-WHERE source = @source
-  AND source_id = @sourceId
-  AND target_service = @targetService;";
-        await using (var deleteMembership = new SqliteCommand(deleteMembershipSql, connection, transaction))
-        {
-            deleteMembership.Parameters.AddWithValue(SourceField, normalizedSource);
-            deleteMembership.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-            deleteMembership.Parameters.AddWithValue("targetService", targetService);
-            await deleteMembership.ExecuteNonQueryAsync(cancellationToken);
-        }
-
         const string insertMembershipSql = @"
 INSERT INTO playlist_watch_target_membership (
     source,
@@ -9844,7 +9855,7 @@ VALUES (
     @targetPlaylistId,
     @targetItemId,
     @localTrackId,
-    'playlist_synced',
+    @syncStatus,
     CURRENT_TIMESTAMP,
     CURRENT_TIMESTAMP
 )
@@ -9853,19 +9864,53 @@ ON CONFLICT(source, source_id, track_source_id, target_service) DO UPDATE SET
     target_item_id = excluded.target_item_id,
     local_track_id = excluded.local_track_id,
     sync_status = excluded.sync_status,
-    verified_at_utc = excluded.verified_at_utc,
-    updated_at = excluded.updated_at;";
+    verified_at_utc = CASE
+        WHEN excluded.sync_status = 'playlist_synced' THEN excluded.verified_at_utc
+        ELSE playlist_watch_target_membership.verified_at_utc
+    END,
+    updated_at = CURRENT_TIMESTAMP;";
         foreach (var membership in memberships)
         {
+            if (string.IsNullOrWhiteSpace(membership.TrackSourceId)
+                || string.IsNullOrWhiteSpace(membership.SyncStatus))
+            {
+                continue;
+            }
+
             await using var insertMembership = new SqliteCommand(insertMembershipSql, connection, transaction);
             insertMembership.Parameters.AddWithValue(SourceField, normalizedSource);
             insertMembership.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-            insertMembership.Parameters.AddWithValue("trackSourceId", membership.TrackSourceId);
-            insertMembership.Parameters.AddWithValue("targetService", targetService);
-            insertMembership.Parameters.AddWithValue("targetPlaylistId", targetPlaylistId);
-            insertMembership.Parameters.AddWithValue("targetItemId", membership.TargetItemId);
-            insertMembership.Parameters.AddWithValue("localTrackId", membership.LocalTrackId);
+            insertMembership.Parameters.AddWithValue("trackSourceId", membership.TrackSourceId.Trim());
+            insertMembership.Parameters.AddWithValue("targetService", normalizedTarget);
+            insertMembership.Parameters.AddWithValue("targetPlaylistId", playlistId);
+            insertMembership.Parameters.AddWithValue(
+                "targetItemId",
+                string.IsNullOrWhiteSpace(membership.TargetItemId) ? DBNull.Value : membership.TargetItemId.Trim());
+            insertMembership.Parameters.AddWithValue(
+                "localTrackId",
+                membership.LocalTrackId.HasValue && membership.LocalTrackId.Value > 0
+                    ? membership.LocalTrackId.Value
+                    : DBNull.Value);
+            insertMembership.Parameters.AddWithValue("syncStatus", membership.SyncStatus.Trim());
             await insertMembership.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string deleteRemovedSql = @"
+DELETE FROM playlist_watch_target_membership
+WHERE source = @source
+  AND source_id = @sourceId
+  AND target_service = @targetService
+  AND track_source_id NOT IN (
+      SELECT track.track_source_id
+      FROM playlist_watch_track track
+      WHERE track.source = @source
+        AND track.source_id = @sourceId);";
+        await using (var deleteRemoved = new SqliteCommand(deleteRemovedSql, connection, transaction))
+        {
+            deleteRemoved.Parameters.AddWithValue(SourceField, normalizedSource);
+            deleteRemoved.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            deleteRemoved.Parameters.AddWithValue("targetService", normalizedTarget);
+            await deleteRemoved.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -11474,6 +11519,85 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         return jobs;
     }
 
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+        long localTrackId,
+        string targetService,
+        string currentRevision,
+        CancellationToken cancellationToken = default)
+    {
+        if (localTrackId <= 0 || string.IsNullOrWhiteSpace(targetService))
+        {
+            return [];
+        }
+
+        var normalizedTarget = targetService.Trim().ToLowerInvariant();
+        var snapshotId = (currentRevision ?? string.Empty).Trim();
+        var plexSnapshotId = string.IsNullOrWhiteSpace(snapshotId)
+            ? string.Empty
+            : $"{snapshotId}:plex-membership-v2";
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO watchlist_sync_job (
+    source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id)
+SELECT DISTINCT t.source, t.source_id, 'playlist', lower(@targetService),
+       'pending', CURRENT_TIMESTAMP, catchup.catchup_snapshot_id
+FROM playlist_watch_track t
+JOIN playlist_watch_configured_sync_targets c
+  ON c.source=t.source AND c.source_id=t.source_id AND c.target=lower(@targetService)
+JOIN (
+    SELECT t2.source, t2.source_id,
+           COALESCE(
+               NULLIF(trim(s.applied_snapshot_id), ''),
+               CASE
+                   WHEN lower(@targetService)='plex' AND trim(@plexSnapshotId) <> '' THEN @plexSnapshotId
+                   WHEN trim(@snapshotId) <> '' THEN @snapshotId
+                   ELSE NULL
+               END
+           ) AS catchup_snapshot_id
+    FROM playlist_watch_track t2
+    LEFT JOIN playlist_watch_target_sync_state s
+      ON s.source=t2.source AND s.source_id=t2.source_id
+     AND lower(s.target_service)=lower(@targetService)
+    WHERE t2.local_track_id=@localTrackId
+) catchup
+  ON catchup.source=t.source AND catchup.source_id=t.source_id
+LEFT JOIN playlist_watch_target_sync_state state
+  ON state.source=t.source AND state.source_id=t.source_id
+ AND lower(state.target_service)=lower(@targetService)
+WHERE t.local_track_id=@localTrackId
+  AND catchup.catchup_snapshot_id IS NOT NULL
+  AND trim(catchup.catchup_snapshot_id) <> ''
+  AND NOT EXISTS (
+        SELECT 1 FROM playlist_watch_target_membership m
+        WHERE m.source=t.source AND m.source_id=t.source_id
+          AND m.track_source_id=t.track_source_id
+          AND lower(m.target_service)=lower(@targetService)
+          AND lower(m.sync_status)='playlist_synced')
+ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
+    status=CASE WHEN lower(watchlist_sync_job.status)='processing'
+                THEN watchlist_sync_job.status ELSE 'pending' END,
+    next_attempt_utc=CASE WHEN lower(watchlist_sync_job.status)='processing'
+                          THEN watchlist_sync_job.next_attempt_utc
+                          ELSE CURRENT_TIMESTAMP END,
+    snapshot_id=COALESCE(excluded.snapshot_id, watchlist_sync_job.snapshot_id),
+    updated_at=CURRENT_TIMESTAMP
+RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,final_file_paths_json,
+          attempt_count,next_attempt_utc,queue_uuid,lease_owner,status,last_error,snapshot_id;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("localTrackId", localTrackId);
+        command.Parameters.AddWithValue("targetService", normalizedTarget);
+        command.Parameters.AddWithValue("snapshotId", snapshotId);
+        command.Parameters.AddWithValue("plexSnapshotId", plexSnapshotId);
+        var jobs = new List<WatchlistSyncJobDto>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            jobs.Add(await ReadWatchlistSyncJobAsync(reader, cancellationToken));
+        }
+
+        return jobs;
+    }
+
     public sealed record WatchlistRuntimeCleanupResult(
         int ReconciliationRequestsDeleted,
         int SyncJobsDeleted,
@@ -11775,74 +11899,6 @@ WHERE NOT EXISTS (
       AND playlist.source_id=watchlist_sync_job.playlist_id
 );", connection, transaction);
         repaired += await removeObsolete.ExecuteNonQueryAsync(cancellationToken);
-
-        await using var reopenIncompleteApplied = new SqliteCommand(@"
-UPDATE playlist_watch_target_sync_state AS state
-SET status='pending',
-    last_error='Target sync state reopened because locally available tracks are not verified on this target.',
-    updated_at=CURRENT_TIMESTAMP
-WHERE lower(state.status)='applied'
-  AND EXISTS (
-      SELECT 1
-      FROM playlist_watch_configured_sync_targets configured
-      WHERE configured.source=state.source
-        AND configured.source_id=state.source_id
-        AND configured.target=lower(state.target_service))
-  AND EXISTS (
-      SELECT 1
-      FROM playlist_watch_track track
-      WHERE track.source=state.source
-        AND track.source_id=state.source_id
-        AND track.local_track_id IS NOT NULL
-        AND lower(COALESCE(track.identity_status, '')) <> 'review'
-        AND NOT EXISTS (
-            SELECT 1
-            FROM playlist_watch_target_membership membership
-            WHERE membership.source=track.source
-              AND membership.source_id=track.source_id
-              AND membership.track_source_id=track.track_source_id
-              AND lower(membership.target_service)=lower(state.target_service)
-              AND lower(membership.sync_status)='playlist_synced'));", connection, transaction);
-        repaired += await reopenIncompleteApplied.ExecuteNonQueryAsync(cancellationToken);
-
-        await using var enqueueReopened = new SqliteCommand(@"
-INSERT INTO watchlist_sync_job (source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id, last_error)
-SELECT state.source,
-       state.source_id,
-       'playlist',
-       lower(state.target_service),
-       'pending',
-       CURRENT_TIMESTAMP,
-       state.applied_snapshot_id,
-       state.last_error
-FROM playlist_watch_target_sync_state state
-WHERE lower(state.status)='pending'
-  AND state.applied_snapshot_id IS NOT NULL
-  AND state.last_error='Target sync state reopened because locally available tracks are not verified on this target.'
-  AND EXISTS (
-      SELECT 1
-      FROM playlist_watch_track track
-      WHERE track.source=state.source
-        AND track.source_id=state.source_id
-        AND track.local_track_id IS NOT NULL
-        AND lower(COALESCE(track.identity_status, '')) <> 'review'
-        AND NOT EXISTS (
-            SELECT 1
-            FROM playlist_watch_target_membership membership
-            WHERE membership.source=track.source
-              AND membership.source_id=track.source_id
-              AND membership.track_source_id=track.track_source_id
-              AND lower(membership.target_service)=lower(state.target_service)
-              AND lower(membership.sync_status)='playlist_synced'))
-ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
-    status='pending',
-    lease_owner=NULL,
-    lease_until_utc=NULL,
-    next_attempt_utc=CURRENT_TIMESTAMP,
-    last_error=excluded.last_error,
-    snapshot_id=excluded.snapshot_id,
-    updated_at=CURRENT_TIMESTAMP;", connection, transaction);
-        repaired += await enqueueReopened.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return repaired + reopenedBlocked;
     }
@@ -11867,6 +11923,14 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
             await reader.IsDBNullAsync(13, cancellationToken) ? null : reader.GetString(13));
     }
 
+    internal static string FormatAppliedKind(WatchlistAppliedKind appliedKind)
+        => appliedKind switch
+        {
+            WatchlistAppliedKind.Partial => "partial",
+            WatchlistAppliedKind.WaitingForSeed => "waiting_for_seed",
+            _ => "full"
+        };
+
     public async Task<bool> CompleteWatchlistSyncJobAsync(long id, string leaseOwner, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -11879,6 +11943,9 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
     public async Task<bool> CompleteWatchlistPlaylistSyncJobAsync(
         WatchlistSyncJobDto job,
         string leaseOwner,
+        WatchlistAppliedKind appliedKind,
+        string? membershipHash,
+        string? sourcePlaylistId,
         CancellationToken cancellationToken = default)
     {
         if (!string.Equals(job.TrackId, "playlist", StringComparison.OrdinalIgnoreCase)
@@ -11892,17 +11959,31 @@ ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var persist = new SqliteCommand(@"
 INSERT INTO playlist_watch_target_sync_state (
-    source,source_id,target_service,applied_snapshot_id,status,last_error)
-VALUES (@source,@sourceId,@targetService,@snapshotId,'applied',NULL)
+    source,source_id,target_service,applied_snapshot_id,status,last_error,
+    applied_kind,applied_membership_hash,applied_source_playlist_id)
+VALUES (@source,@sourceId,@targetService,@snapshotId,'applied',NULL,
+    @appliedKind,@membershipHash,@sourcePlaylistId)
 ON CONFLICT(source,source_id,target_service) DO UPDATE SET
-    applied_snapshot_id=excluded.applied_snapshot_id,
+    applied_snapshot_id=COALESCE(
+        NULLIF(trim(excluded.applied_snapshot_id), ''),
+        playlist_watch_target_sync_state.applied_snapshot_id),
     status='applied',
     last_error=NULL,
+    applied_kind=excluded.applied_kind,
+    applied_membership_hash=excluded.applied_membership_hash,
+    applied_source_playlist_id=excluded.applied_source_playlist_id,
     updated_at=CURRENT_TIMESTAMP;", connection, transaction);
         persist.Parameters.AddWithValue(SourceField, source);
         persist.Parameters.AddWithValue(SourceIdField, playlistId);
         persist.Parameters.AddWithValue("targetService", job.TargetService.Trim().ToLowerInvariant());
         persist.Parameters.AddWithValue("snapshotId", job.SnapshotId.Trim());
+        persist.Parameters.AddWithValue("appliedKind", FormatAppliedKind(appliedKind));
+        persist.Parameters.AddWithValue(
+            "membershipHash",
+            string.IsNullOrWhiteSpace(membershipHash) ? DBNull.Value : membershipHash.Trim());
+        persist.Parameters.AddWithValue(
+            "sourcePlaylistId",
+            string.IsNullOrWhiteSpace(sourcePlaylistId) ? DBNull.Value : sourcePlaylistId.Trim());
         await persist.ExecuteNonQueryAsync(cancellationToken);
 
         await using var complete = new SqliteCommand(

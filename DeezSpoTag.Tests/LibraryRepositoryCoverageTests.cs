@@ -631,19 +631,15 @@ ORDER BY service;";
                 localTrackId,
                 "review",
                 "Identity mismatch."));
-        // ReplacePlaylistWatchTargetMembershipAsync replaces the *entire* membership snapshot for
-        // this (playlist, target) pair -- mirroring how a real sync attempt reports everything it
-        // just verified -- so dz-song-1's existing plex membership must be included here too, or
-        // it would be collaterally wiped and dz-song-1 would incorrectly drop out of sync.
+        // Upsert keeps other rows for this target. Adding dz-song-2 must not wipe dz-song-1.
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
             "plex",
             "plex-playlist-1",
-            [
-                new PlaylistWatchTargetMembership("dz-song-1", localTrackId, "plex-track-1"),
-                new PlaylistWatchTargetMembership("dz-song-2", localTrackId, "plex-track-2")
-            ]);
+            [new PlaylistWatchTargetMembership("dz-song-2", localTrackId, "plex-track-2")]);
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("pl-123", "dz-song-1", "plex"));
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("pl-123", "dz-song-2", "plex"));
         var reviewStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var reviewStatus = Assert.Single(reviewStatuses, status => status.TrackSourceId == "dz-song-2");
         Assert.Equal("review", reviewStatus.IdentityStatus);
@@ -1050,6 +1046,94 @@ ORDER BY service;";
             [input],
             audioVariant: "stereo_preferred"));
         Assert.Equal(atmosTrackId, atmosOnly.LocalTrackId);
+    }
+
+    [Fact]
+    public async Task PlaylistWatchTargetMembership_UpsertsUnresolvedAndDeletesSnapshotRemovedOnly()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Keep Song", "dz-keep", "sp-keep", "ap-keep"),
+            ("Gap Song", "dz-gap", "sp-gap", "ap-gap"),
+            ("Gone Song", "dz-gone", "sp-gone", "ap-gone"));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "membership-upsert",
+            new PlaylistWatchlistMetadataInput("Membership", null, null, 3));
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "spotify",
+                SourceId: "membership-upsert",
+                DestinationFolderId: seeded.Folder.Id,
+                Service: "plex",
+                SyncTargets: ["plex", "jellyfin"],
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: "mirror",
+                UpdateArtwork: true,
+                ReuseSavedArtwork: false));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "membership-upsert",
+            [
+                new PlaylistWatchTrackInsert("dz-keep", "ISRCKEEP00001"),
+                new PlaylistWatchTrackInsert("dz-gap", "ISRCGAP00002"),
+                new PlaylistWatchTrackInsert("dz-gone", "ISRCGONE0003")
+            ]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "membership-upsert",
+            "plex",
+            "plex-pl",
+            [
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-keep",
+                    seeded.TrackIdsByTitle["Keep Song"],
+                    "plex-keep",
+                    "playlist_synced"),
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-gap",
+                    seeded.TrackIdsByTitle["Gap Song"],
+                    null,
+                    "waiting_for_identity"),
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-gone",
+                    seeded.TrackIdsByTitle["Gone Song"],
+                    "plex-gone",
+                    "playlist_synced")
+            ]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "membership-upsert",
+            "jellyfin",
+            "jf-pl",
+            [new PlaylistWatchTargetMembership("dz-keep", seeded.TrackIdsByTitle["Keep Song"], "jf-keep")]);
+
+        Assert.Equal("waiting_for_identity", await ReadMembershipStatusAsync("membership-upsert", "dz-gap", "plex"));
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("membership-upsert", "dz-keep", "jellyfin"));
+
+        await _repository.RemovePlaylistWatchTracksNotInAsync("spotify", "membership-upsert", ["dz-keep", "dz-gap"]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "membership-upsert",
+            "plex",
+            "plex-pl",
+            [
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-keep",
+                    seeded.TrackIdsByTitle["Keep Song"],
+                    "plex-keep",
+                    "playlist_synced"),
+                new PlaylistWatchTargetMembershipWrite(
+                    "dz-gap",
+                    seeded.TrackIdsByTitle["Gap Song"],
+                    null,
+                    "waiting_for_identity")
+            ]);
+
+        Assert.Equal("waiting_for_identity", await ReadMembershipStatusAsync("membership-upsert", "dz-gap", "plex"));
+        Assert.Null(await ReadMembershipStatusAsync("membership-upsert", "dz-gone", "plex"));
+        Assert.Equal("playlist_synced", await ReadMembershipStatusAsync("membership-upsert", "dz-keep", "jellyfin"));
     }
 
     [Fact]
@@ -1909,6 +1993,24 @@ WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
         command.Parameters.AddWithValue("codec", codec);
         command.Parameters.AddWithValue("trackId", trackId);
         await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<string?> ReadMembershipStatusAsync(string sourceId, string trackSourceId, string targetService)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = new SqliteCommand(
+            @"SELECT sync_status
+              FROM playlist_watch_target_membership
+              WHERE source='spotify' AND source_id=@sourceId
+                AND track_source_id=@trackSourceId AND target_service=@targetService
+              LIMIT 1;",
+            connection);
+        command.Parameters.AddWithValue("sourceId", sourceId);
+        command.Parameters.AddWithValue("trackSourceId", trackSourceId);
+        command.Parameters.AddWithValue("targetService", targetService);
+        var result = await command.ExecuteScalarAsync();
+        return result is null or DBNull ? null : Convert.ToString(result);
     }
 
     private async Task<string> ReadAudioFileUpdatedAtAsync(string filePath)
