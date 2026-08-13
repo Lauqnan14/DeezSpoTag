@@ -409,6 +409,7 @@ CREATE TABLE IF NOT EXISTS artist_server_sync_state (
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "current_track_total", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "heartbeat_utc", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "deadline_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, PlaylistWatchStateTable, "recovery_generation", $"{IntegerType} NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "ignored_blocked_track_count", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "rerouted_track_count", IntegerType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchStateTable, "presentation_updated_at", TextType, cancellationToken);

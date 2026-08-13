@@ -220,6 +220,27 @@ public sealed class LibraryRepository
     private const string TrackIdField = "trackId";
     private const string SourceField = "source";
     private const string SourceIdField = "sourceId";
+    private const string WatchlistIdentityErrorFingerprintSql = @"
+(
+    last_error LIKE '%verification is incomplete%'
+    OR last_error LIKE '%Source tracks:%'
+    OR last_error LIKE '%No Jellyfin matches%'
+    OR last_error LIKE '%No Plex matches%'
+    OR last_error LIKE '%No Navidrome matches%'
+    OR last_error LIKE '%sync is temporarily paused after repeated failures%'
+    OR last_error LIKE '%Waiting for the durable playlist reconciliation request%'
+)";
+    private const string WatchlistIdentityCircuitReasonSql = @"
+(
+    reason LIKE '%verification is incomplete%'
+    OR reason LIKE '%Source tracks:%'
+    OR reason LIKE '%Target matches:%'
+    OR reason LIKE '%No Jellyfin matches%'
+    OR reason LIKE '%No Plex matches%'
+    OR reason LIKE '%No Navidrome matches%'
+    OR reason LIKE '%sync is temporarily paused after repeated failures%'
+    OR reason LIKE '%Waiting for the durable playlist reconciliation request%'
+)";
     private const string LibraryIdField = "libraryId";
     private const string DurationMsField = "durationMs";
     private const string TrackCountField = "trackCount";
@@ -7264,31 +7285,120 @@ UPDATE playlist_watch_state
 SET last_run_status='backoff',
     last_run_message='Recovered stale Watchlist work after its persisted deadline expired.',
     next_attempt_utc=CURRENT_TIMESTAMP,
-    consecutive_failures=COALESCE(consecutive_failures,0)+1,
+    consecutive_failures=MIN(1, COALESCE(consecutive_failures,0)+1),
     current_phase='stale_recovered',
     heartbeat_utc=CURRENT_TIMESTAMP,
     deadline_utc=NULL,
     updated_at=CURRENT_TIMESTAMP
 WHERE deadline_utc IS NOT NULL
   AND datetime(deadline_utc) <= datetime('now')
-  AND lower(COALESCE(current_phase,'')) NOT IN ('completed','source_failure','backoff','stale_recovered');", connection, transaction);
+  AND datetime(COALESCE(heartbeat_utc, updated_at)) <= datetime('now', '-20 minutes')
+  AND lower(COALESCE(current_phase,'')) NOT IN
+      ('completed','source_failure','backoff','stale_recovered')
+  AND NOT EXISTS (
+        SELECT 1 FROM watchlist_sync_job j
+         WHERE j.source = playlist_watch_state.source
+           AND j.playlist_id = playlist_watch_state.source_id
+           AND lower(j.status) = 'processing'
+           AND datetime(j.lease_until_utc) > datetime('now'));", connection, transaction);
         var recovered = await playlists.ExecuteNonQueryAsync(cancellationToken);
         await using var artists = new SqliteCommand(@"
 UPDATE artist_watch_state
 SET last_run_status='backoff',
     last_run_message='Recovered stale Watchlist work after its persisted deadline expired.',
     next_attempt_utc=CURRENT_TIMESTAMP,
-    consecutive_failures=COALESCE(consecutive_failures,0)+1,
+    consecutive_failures=MIN(1, COALESCE(consecutive_failures,0)+1),
     current_phase='stale_recovered',
     heartbeat_utc=CURRENT_TIMESTAMP,
     deadline_utc=NULL,
     updated_at=CURRENT_TIMESTAMP
 WHERE deadline_utc IS NOT NULL
   AND datetime(deadline_utc) <= datetime('now')
-  AND lower(COALESCE(current_phase,'')) NOT IN ('completed','source_failure','backoff','stale_recovered');", connection, transaction);
+  AND datetime(COALESCE(heartbeat_utc, updated_at)) <= datetime('now', '-20 minutes')
+  AND lower(COALESCE(current_phase,'')) NOT IN
+      ('completed','source_failure','backoff','stale_recovered');", connection, transaction);
         recovered += await artists.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return recovered;
+    }
+
+    public async Task<bool> ApplyWatchlistSmoothSyncRecoveryAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var needsRecovery = new SqliteCommand(@"
+SELECT 1
+FROM playlist_watch_state
+WHERE COALESCE(recovery_generation, 0) < 1
+LIMIT 1;", connection);
+        if (await needsRecovery.ExecuteScalarAsync(cancellationToken) is null)
+        {
+            return false;
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var resetBackoff = new SqliteCommand(@"
+UPDATE playlist_watch_state
+SET last_run_status='pending',
+    last_run_message=NULL,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    consecutive_failures=0,
+    current_phase='pending',
+    heartbeat_utc=CURRENT_TIMESTAMP,
+    deadline_utc=NULL,
+    recovery_generation=1,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(COALESCE(last_run_status,'')) IN ('backoff','stale_recovered')
+   OR lower(COALESCE(current_phase,'')) IN ('backoff','stale_recovered');", connection, transaction))
+        {
+            await resetBackoff.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var resetBlockedIdentityJobs = new SqliteCommand($@"
+UPDATE watchlist_sync_job
+SET status='pending',
+    attempt_count=0,
+    lease_owner=NULL,
+    lease_until_utc=NULL,
+    next_attempt_utc=CURRENT_TIMESTAMP,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(status)='blocked'
+  AND {WatchlistIdentityErrorFingerprintSql};", connection, transaction))
+        {
+            await resetBlockedIdentityJobs.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var resetDueIdentityJobs = new SqliteCommand($@"
+UPDATE watchlist_sync_job
+SET next_attempt_utc=CURRENT_TIMESTAMP,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(status) IN ('pending','retry')
+  AND {WatchlistIdentityErrorFingerprintSql};", connection, transaction))
+        {
+            await resetDueIdentityJobs.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var resetIdentityCircuits = new SqliteCommand($@"
+UPDATE watchlist_target_circuit_state
+SET is_open=0,
+    open_until_utc=NULL,
+    reason=NULL,
+    failure_count=0,
+    updated_at=CURRENT_TIMESTAMP
+WHERE {WatchlistIdentityCircuitReasonSql};", connection, transaction))
+        {
+            await resetIdentityCircuits.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var markRecovered = new SqliteCommand(@"
+UPDATE playlist_watch_state
+SET recovery_generation=1
+WHERE COALESCE(recovery_generation, 0) < 1;", connection, transaction))
+        {
+            await markRecovered.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return true;
     }
 
     public async Task<HashSet<string>> GetArtistWatchAlbumIdsAsync(
@@ -8464,6 +8574,8 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         int currentTrackTotal,
         CancellationToken cancellationToken = default)
     {
+        // current_phase is owned by state transitions, not progress ticks.
+        _ = phase;
         if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
         {
             return;
@@ -8471,18 +8583,46 @@ ON CONFLICT(source, source_id) DO UPDATE SET
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
 UPDATE playlist_watch_state
-SET current_phase=@phase,
-    current_track_index=@currentTrackIndex,
+SET current_track_index=@currentTrackIndex,
     current_track_total=@currentTrackTotal,
     heartbeat_utc=@heartbeatUtc,
     updated_at=CURRENT_TIMESTAMP
 WHERE source=@source AND source_id=@sourceId;", connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue("phase", phase.Trim().ToLowerInvariant());
         command.Parameters.AddWithValue("currentTrackIndex", Math.Max(0, currentTrackIndex));
         command.Parameters.AddWithValue("currentTrackTotal", Math.Max(0, currentTrackTotal));
         command.Parameters.AddWithValue("heartbeatUtc", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task TouchPlaylistWatchHeartbeatAsync(
+        string source,
+        string sourceId,
+        TimeSpan deadlineExtension,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE playlist_watch_state
+SET heartbeat_utc=@now,
+    deadline_utc=CASE
+        WHEN lower(COALESCE(current_phase,'')) IN ('completed','failed','backoff','source_failure','stale_recovered')
+            THEN NULL
+        ELSE @deadlineUtc
+    END,
+    updated_at=CURRENT_TIMESTAMP
+WHERE source=@source AND source_id=@sourceId;", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        command.Parameters.AddWithValue("now", now.ToString("O"));
+        command.Parameters.AddWithValue("deadlineUtc", now.Add(deadlineExtension).ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

@@ -562,6 +562,75 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Equal(0, debugCount);
     }
 
+    [Fact]
+    public async Task RecoverCoordinatorState_AppliesOneShotSmoothSyncRecoveryAndForcesSourceRefresh()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "unsupported",
+            "pl-smooth-recovery",
+            new PlaylistWatchlistMetadataInput("Smooth Recovery", null, null, null));
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                "unsupported",
+                "pl-smooth-recovery",
+                null,
+                1,
+                null,
+                null,
+                DateTimeOffset.UtcNow.AddHours(-1),
+                "backoff",
+                "Recovered stale Watchlist work after its persisted deadline expired.",
+                DateTimeOffset.UtcNow.AddHours(-2),
+                3,
+                "stale_recovered",
+                1,
+                1,
+                DateTimeOffset.UtcNow.AddHours(-1),
+                null));
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        SetPrivateField(hosted, "_lastSourceRefreshCompletedUtc", DateTimeOffset.UtcNow);
+        GetNextAllowedMap(hosted)["playlist:unsupported:pl-smooth-recovery"] = DateTimeOffset.UtcNow.AddHours(1);
+
+        await InvokeRecoverCoordinatorStateAsync(hosted);
+
+        var state = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-smooth-recovery");
+        Assert.Equal("pending", state!.LastRunStatus);
+        Assert.Equal("pending", state.CurrentPhase);
+        Assert.Equal(0, state.ConsecutiveFailures);
+        Assert.Equal(DateTimeOffset.MinValue, GetPrivateField<DateTimeOffset>(hosted, "_lastSourceRefreshCompletedUtc"));
+        Assert.False(GetNextAllowedMap(hosted).ContainsKey("playlist:unsupported:pl-smooth-recovery"));
+
+        SetPrivateField(hosted, "_lastSourceRefreshCompletedUtc", DateTimeOffset.UtcNow);
+        await InvokeRecoverCoordinatorStateAsync(hosted);
+        Assert.NotEqual(DateTimeOffset.MinValue, GetPrivateField<DateTimeOffset>(hosted, "_lastSourceRefreshCompletedUtc"));
+    }
+
+    [Fact]
+    public void HeartbeatAndProgress_DoNotOverwriteCurrentPhase()
+    {
+        var repository = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..",
+            "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
+        var admission = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..",
+            "DeezSpoTag.Web", "Services", "WatchlistQueueAdmissionService.cs"));
+
+        Assert.Contains("TouchPlaylistWatchHeartbeatAsync", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("SET current_phase=@phase", repository, StringComparison.Ordinal);
+        Assert.Contains("current_track_index=@currentTrackIndex", repository, StringComparison.Ordinal);
+        Assert.Contains("now.AddMinutes(45)", admission, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Parse_UnknownWatchlistStatus_ReturnsPending()
+    {
+        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("stale_recovered"));
+        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("not_a_real_state"));
+        Assert.Equal(WatchlistPlaylistState.WaitingForTargetSync, WatchlistStateService.Parse("waiting_for_target_sync"));
+        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("pending"));
+    }
+
     private static async Task InvokeRunOnceAsync(WatchlistRunCoordinator hosted)
     {
         var method = typeof(WatchlistRunCoordinator).GetMethod("RunOnceAsync", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -616,6 +685,27 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return field!.GetValue(instance)!;
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+        => (T)GetPrivateField(instance, fieldName);
+
+    private static void SetPrivateField(object instance, string fieldName, object value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(instance, value);
+    }
+
+    private static async Task InvokeRecoverCoordinatorStateAsync(WatchlistRunCoordinator hosted)
+    {
+        var method = typeof(WatchlistRunCoordinator).GetMethod(
+            "RecoverCoordinatorStateAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = method!.Invoke(hosted, new object[] { CancellationToken.None });
+        Assert.NotNull(result);
+        await (Task)result!;
     }
 
     private async Task ConfigurePlaylistDestinationAsync(string source, string sourceId)

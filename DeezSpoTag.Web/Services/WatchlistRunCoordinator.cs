@@ -605,6 +605,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return;
         }
 
+        var smoothSyncRecoveryApplied = await repository.ApplyWatchlistSmoothSyncRecoveryAsync(cancellationToken);
+        if (smoothSyncRecoveryApplied)
+        {
+            _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
+            ResetPlaylistRuntimeStateForAll(await repository.GetPlaylistWatchlistAsync(cancellationToken));
+            _logger.LogWarning("Applied Watchlist smooth-sync recovery to clear stale backoff, identity jobs, and identity circuits.");
+        }
+
         var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(cancellationToken);
         var expiredTargetCircuitsClosed = await repository.CloseExpiredWatchlistTargetCircuitsAsync(cancellationToken);
         var expiredTargetJobsRecovered = await repository.RepairWatchlistSyncBacklogAsync(
@@ -650,7 +658,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 expiredTargetCircuitsClosed);
         }
 
-        if (staleWorkRecovered > 0 || expiredTargetJobsRecovered > 0 || expiredTargetCircuitsClosed > 0 || recoveredClaims > 0)
+        if (smoothSyncRecoveryApplied || staleWorkRecovered > 0 || expiredTargetJobsRecovered > 0 || expiredTargetCircuitsClosed > 0 || recoveredClaims > 0)
         {
             _runSignal.Request(WatchlistWakeReason.TargetSync | WatchlistWakeReason.Reconciliation);
         }

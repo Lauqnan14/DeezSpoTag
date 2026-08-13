@@ -85,6 +85,7 @@ public sealed class WatchlistStateService
             transition.Source,
             transition.SourceId,
             cancellationToken);
+        var now = DateTimeOffset.UtcNow;
         await _repository.UpsertPlaylistWatchStateAsync(
             new LibraryRepository.PlaylistWatchStateUpsertInput(
                 transition.Source,
@@ -93,7 +94,7 @@ public sealed class WatchlistStateService
                 transition.TrackCount ?? state?.TrackCount,
                 state?.BatchNextOffset,
                 state?.BatchProcessingSnapshotId,
-                transition.TouchLastChecked ? DateTimeOffset.UtcNow : state?.LastCheckedUtc,
+                transition.TouchLastChecked ? now : state?.LastCheckedUtc,
                 ToPersistedStatus(transition.State),
                 transition.Message,
                 transition.NextAttemptUtc,
@@ -101,13 +102,8 @@ public sealed class WatchlistStateService
                 CurrentPhase: ToPersistedStatus(transition.State),
                 CurrentTrackIndex: state?.CurrentTrackIndex,
                 CurrentTrackTotal: transition.TrackCount ?? state?.CurrentTrackTotal,
-                HeartbeatUtc: DateTimeOffset.UtcNow,
-                DeadlineUtc: transition.State is WatchlistPlaylistState.Completed
-                    or WatchlistPlaylistState.Failed
-                    or WatchlistPlaylistState.Backoff
-                    or WatchlistPlaylistState.SourceFailure
-                    ? null
-                    : state?.DeadlineUtc ?? DateTimeOffset.UtcNow.AddMinutes(15)),
+                HeartbeatUtc: now,
+                DeadlineUtc: ResolveDeadlineUtc(transition.State, now, state?.DeadlineUtc)),
             cancellationToken);
     }
 
@@ -140,8 +136,35 @@ public sealed class WatchlistStateService
             "media_sync_waiting" => WatchlistPlaylistState.MediaSyncWaiting,
             "media_sync_blocked" => WatchlistPlaylistState.MediaSyncBlocked,
             "metadata_refreshed" => WatchlistPlaylistState.MetadataRefreshed,
-            _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown Watchlist playlist state.")
+            "configuration_required" => WatchlistPlaylistState.ConfigurationRequired,
+            _ => WatchlistPlaylistState.Pending
         };
+
+    private static DateTimeOffset? ResolveDeadlineUtc(
+        WatchlistPlaylistState state,
+        DateTimeOffset now,
+        DateTimeOffset? existingDeadline)
+    {
+        if (state is WatchlistPlaylistState.Completed
+            or WatchlistPlaylistState.Failed
+            or WatchlistPlaylistState.Backoff
+            or WatchlistPlaylistState.SourceFailure)
+        {
+            return null;
+        }
+
+        if (state is WatchlistPlaylistState.WaitingForTargetSync
+            or WatchlistPlaylistState.Reconciling
+            or WatchlistPlaylistState.WaitingForDownloads
+            or WatchlistPlaylistState.DeltaDetected
+            or WatchlistPlaylistState.Expanding
+            or WatchlistPlaylistState.HeadFetching)
+        {
+            return now.AddMinutes(45);
+        }
+
+        return existingDeadline ?? now.AddMinutes(15);
+    }
 
     public static string ToPersistedStatus(WatchlistPlaylistState state)
         => state switch

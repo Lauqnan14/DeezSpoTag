@@ -561,10 +561,13 @@ WHERE id=@id;",
             "spotify", "stale-list", new PlaylistWatchlistMetadataInput("Stale", null, null, 1));
         await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
             "spotify", "stale-list", null, 1, null, null, null,
-            "processing", null, null, 0, "selecting_tracks", 1, 1,
-            DateTimeOffset.UtcNow.AddMinutes(-20), DateTimeOffset.UtcNow.AddMinutes(-5)));
-        await ExecuteSqlAsync("INSERT INTO artist_watch_state(artist_id,current_phase,deadline_utc) VALUES(99,'reconciling',@expired);",
-            ("expired", DateTimeOffset.UtcNow.AddMinutes(-5).ToString("O")));
+            "processing", null, null, 5, "selecting_tracks", 1, 1,
+            DateTimeOffset.UtcNow.AddMinutes(-21), DateTimeOffset.UtcNow.AddMinutes(-5)));
+        var staleHeartbeat = DateTimeOffset.UtcNow.AddMinutes(-21).ToString("O");
+        await ExecuteSqlAsync(
+            "INSERT INTO artist_watch_state(artist_id,current_phase,deadline_utc,heartbeat_utc,updated_at,consecutive_failures) VALUES(99,'reconciling',@expired,@stale,@stale,5);",
+            ("expired", DateTimeOffset.UtcNow.AddMinutes(-5).ToString("O")),
+            ("stale", staleHeartbeat));
 
         Assert.Equal(2, await _repository.RecoverStaleWatchlistWorkAsync());
         var playlist = await _repository.GetPlaylistWatchStateAsync("spotify", "stale-list");
@@ -573,10 +576,153 @@ WHERE id=@id;",
         Assert.NotNull(artist);
         Assert.Equal("stale_recovered", playlist!.CurrentPhase);
         Assert.Equal("stale_recovered", artist!.CurrentPhase);
+        Assert.Equal(1, playlist.ConsecutiveFailures);
+        Assert.Equal(1, artist.ConsecutiveFailures);
         Assert.Null(playlist.DeadlineUtc);
         Assert.Null(artist.DeadlineUtc);
         Assert.NotNull(playlist.NextAttemptUtc);
         Assert.NotNull(artist.NextAttemptUtc);
+    }
+
+    [Fact]
+    public async Task RecoverStaleWatchlistWork_RecoversWaitingPhaseWhenHeartbeatAndLeaseHaveFailed()
+    {
+        await AddPlaylistWithTargetsAsync("waiting-stale-list", ["plex"]);
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "waiting-stale-list", null, 1, null, null, null,
+            "waiting_for_target_sync", "mirroring available tracks", null, 0,
+            "waiting_for_target_sync", 1, 1,
+            DateTimeOffset.UtcNow.AddMinutes(-21), DateTimeOffset.UtcNow.AddMinutes(-5)));
+
+        Assert.Equal(1, await _repository.RecoverStaleWatchlistWorkAsync());
+        var playlist = await _repository.GetPlaylistWatchStateAsync("spotify", "waiting-stale-list");
+        Assert.Equal("stale_recovered", playlist!.CurrentPhase);
+        Assert.Equal(1, playlist.ConsecutiveFailures);
+    }
+
+    [Fact]
+    public async Task RecoverStaleWatchlistWork_DoesNotRecoverHealthyHeartbeatOrLiveLease()
+    {
+        await AddPlaylistWithTargetsAsync("healthy-heartbeat-list", ["plex"]);
+        await AddPlaylistWithTargetsAsync("live-lease-list", ["plex"]);
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "healthy-heartbeat-list", null, 1, null, null, null,
+            "waiting_for_target_sync", null, null, 0, "waiting_for_target_sync", 1, 1,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(-5)));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "live-lease-list", null, 1, null, null, null,
+            "waiting_for_target_sync", null, null, 0, "waiting_for_target_sync", 1, 1,
+            DateTimeOffset.UtcNow.AddMinutes(-21), DateTimeOffset.UtcNow.AddMinutes(-5)));
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "live-lease-list", "snapshot-1");
+        Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(15), "live-worker"));
+
+        Assert.Equal(0, await _repository.RecoverStaleWatchlistWorkAsync());
+        Assert.Equal("waiting_for_target_sync", (await _repository.GetPlaylistWatchStateAsync("spotify", "healthy-heartbeat-list"))!.CurrentPhase);
+        Assert.Equal("waiting_for_target_sync", (await _repository.GetPlaylistWatchStateAsync("spotify", "live-lease-list"))!.CurrentPhase);
+    }
+
+    [Fact]
+    public async Task ApplyWatchlistSmoothSyncRecovery_ClearsBackoffAndIdentityBacklogWithoutWipingBindings()
+    {
+        await AddPlaylistWithTargetsAsync("nas-backoff-list", ["plex", "jellyfin"]);
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync("spotify", "nas-backoff-list", "plex", "plex-keep-me");
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync("spotify", "nas-backoff-list", "jellyfin", "jellyfin-keep-me");
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "nas-backoff-list",
+            [new PlaylistWatchTrackInsert("track-1", "ISRC00000001")]);
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "nas-backoff-list",
+            "plex",
+            "plex-keep-me",
+            [new PlaylistWatchTargetMembership("track-1", 101, "plex-track-1")]);
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "nas-backoff-list", "snap", 1, null, null, DateTimeOffset.UtcNow.AddHours(-1),
+            "backoff", "Recovered stale Watchlist work after its persisted deadline expired.",
+            DateTimeOffset.UtcNow.AddHours(-3), 4, "stale_recovered", 1, 1,
+            DateTimeOffset.UtcNow.AddHours(-1), null));
+
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "nas-backoff-list", "snap");
+        var blocked = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(1, TimeSpan.FromMinutes(1), "recovery-worker"));
+        Assert.True(await _repository.BlockWatchlistSyncJobAsync(
+            blocked.Id,
+            "recovery-worker",
+            "Jellyfin verification is incomplete. Source tracks: 267"));
+        await ExecuteSqlAsync("UPDATE watchlist_sync_job SET attempt_count=10 WHERE id=@id;", ("id", blocked.Id));
+
+        var retry = Assert.Single((await _repository.GetWatchlistSyncJobsAsync("spotify", "nas-backoff-list"))
+            .Where(job => job.Id != blocked.Id));
+        await ExecuteSqlAsync(
+            "UPDATE watchlist_sync_job SET status='retry', last_error=@error, next_attempt_utc=@future WHERE id=@id;",
+            ("error", "Waiting for the durable playlist reconciliation request to complete."),
+            ("future", DateTimeOffset.UtcNow.AddHours(2).ToString("O")),
+            ("id", retry.Id));
+
+        await _repository.UpsertWatchlistTargetCircuitStateAsync(
+            new LibraryRepository.WatchlistTargetCircuitStateUpsertInput(
+                "jellyfin",
+                IsOpen: true,
+                OpenUntilUtc: DateTimeOffset.UtcNow.AddMinutes(5),
+                Reason: "Source tracks: 267 Target matches: 50 verification is incomplete",
+                FailureCount: 4));
+
+        Assert.True(await _repository.ApplyWatchlistSmoothSyncRecoveryAsync());
+        Assert.False(await _repository.ApplyWatchlistSmoothSyncRecoveryAsync());
+
+        var state = await _repository.GetPlaylistWatchStateAsync("spotify", "nas-backoff-list");
+        Assert.NotNull(state);
+        Assert.Equal("pending", state!.LastRunStatus);
+        Assert.Equal("pending", state.CurrentPhase);
+        Assert.Equal(0, state.ConsecutiveFailures);
+        Assert.Null(state.DeadlineUtc);
+        Assert.NotNull(state.NextAttemptUtc);
+        Assert.Equal(1L, await QueryScalarAsync("SELECT recovery_generation FROM playlist_watch_state WHERE source_id='nas-backoff-list';"));
+
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync("spotify", "nas-backoff-list");
+        Assert.Equal("plex-keep-me", preference!.PlexPlaylistId);
+        Assert.Equal("jellyfin-keep-me", preference.JellyfinPlaylistId);
+        Assert.True(await _repository.IsPlaylistWatchTrackSyncedToTargetAsync("spotify", "nas-backoff-list", "track-1", "plex"));
+
+        var jobs = await _repository.GetWatchlistSyncJobsAsync("spotify", "nas-backoff-list");
+        var resetBlocked = Assert.Single(jobs, job => job.Id == blocked.Id);
+        Assert.Equal("pending", resetBlocked.Status);
+        Assert.Equal(0, resetBlocked.AttemptCount);
+        Assert.True(resetBlocked.NextAttemptUtc <= DateTimeOffset.UtcNow.AddSeconds(2));
+        var resetRetry = Assert.Single(jobs, job => job.Id == retry.Id);
+        Assert.Equal("retry", resetRetry.Status);
+        Assert.True(resetRetry.NextAttemptUtc <= DateTimeOffset.UtcNow.AddSeconds(2));
+
+        var circuit = await _repository.GetWatchlistTargetCircuitStateAsync("jellyfin");
+        Assert.NotNull(circuit);
+        Assert.False(circuit!.IsOpen);
+        Assert.Equal(0, circuit.FailureCount);
+        Assert.Null(circuit.Reason);
+    }
+
+    [Fact]
+    public async Task TouchPlaylistWatchHeartbeat_ExtendsDeadlineWithoutChangingPhase()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify", "heartbeat-list", new PlaylistWatchlistMetadataInput("Heartbeat", null, null, 1));
+        await _repository.UpsertPlaylistWatchStateAsync(new LibraryRepository.PlaylistWatchStateUpsertInput(
+            "spotify", "heartbeat-list", null, 1, null, null, null,
+            "waiting_for_target_sync", null, null, 0, "waiting_for_target_sync", 3, 10,
+            DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow.AddMinutes(5)));
+
+        await _repository.TouchPlaylistWatchHeartbeatAsync(
+            "spotify", "heartbeat-list", TimeSpan.FromMinutes(45));
+        var afterHeartbeat = await _repository.GetPlaylistWatchStateAsync("spotify", "heartbeat-list");
+        Assert.Equal("waiting_for_target_sync", afterHeartbeat!.CurrentPhase);
+        Assert.Equal(3, afterHeartbeat.CurrentTrackIndex);
+        Assert.True(afterHeartbeat.DeadlineUtc > DateTimeOffset.UtcNow.AddMinutes(40));
+
+        await _repository.UpdatePlaylistWatchProgressAsync(
+            "spotify", "heartbeat-list", "selecting_tracks", 7, 10);
+        var afterProgress = await _repository.GetPlaylistWatchStateAsync("spotify", "heartbeat-list");
+        Assert.Equal("waiting_for_target_sync", afterProgress!.CurrentPhase);
+        Assert.Equal(7, afterProgress.CurrentTrackIndex);
+        Assert.Equal(10, afterProgress.CurrentTrackTotal);
     }
 
     [Fact]
@@ -1114,6 +1260,15 @@ WHERE identifier='leased-list';", ("due", DateTimeOffset.UtcNow.AddMinutes(-1).T
             command.Parameters.AddWithValue(parameter.Name, parameter.Value);
         }
         await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<object?> QueryScalarAsync(string sql)
+    {
+        await using var connection = new SqliteConnection($"Data Source={_dbPath}");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return await command.ExecuteScalarAsync();
     }
 
     private async Task<long> CountRowsAsync(string table)

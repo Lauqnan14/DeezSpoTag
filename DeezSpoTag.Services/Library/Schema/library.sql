@@ -497,6 +497,7 @@ CREATE TABLE IF NOT EXISTS playlist_watch_state (
     current_track_total INTEGER,
     heartbeat_utc TEXT,
     deadline_utc TEXT,
+    recovery_generation INTEGER NOT NULL DEFAULT 0,
     ignored_blocked_track_count INTEGER,
     rerouted_track_count INTEGER,
     presentation_updated_at TEXT,
