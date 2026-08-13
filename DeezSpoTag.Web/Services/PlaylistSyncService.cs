@@ -113,6 +113,7 @@ public sealed class PlaylistSyncService
     private readonly PlatformAuthService _authService;
     private readonly PlaylistVisualService _playlistVisualService;
     private readonly MediaServerLibraryRefreshService _mediaServerRefreshService;
+    private readonly SharedIdentityResolver _sharedIdentityResolver;
     private readonly CrossDeviceSyncService? _crossDeviceSyncService;
     private readonly WatchlistRunSignal? _runSignal;
     private readonly ILogger<PlaylistSyncService> _logger;
@@ -128,6 +129,7 @@ public sealed class PlaylistSyncService
         _authService = dependencies.AuthService;
         _playlistVisualService = dependencies.PlaylistVisualService;
         _mediaServerRefreshService = dependencies.MediaServerRefreshService;
+        _sharedIdentityResolver = dependencies.SharedIdentityResolver;
         _crossDeviceSyncService = dependencies.CrossDeviceSyncService;
         _runSignal = dependencies.WatchlistRunSignal;
         _logger = dependencies.Logger;
@@ -144,6 +146,7 @@ public sealed class PlaylistSyncService
         public required PlatformAuthService AuthService { get; init; }
         public required PlaylistVisualService PlaylistVisualService { get; init; }
         public required MediaServerLibraryRefreshService MediaServerRefreshService { get; init; }
+        public required SharedIdentityResolver SharedIdentityResolver { get; init; }
         public CrossDeviceSyncService? CrossDeviceSyncService { get; init; }
         public WatchlistRunSignal? WatchlistRunSignal { get; init; }
         public required ILogger<PlaylistSyncService> Logger { get; init; }
@@ -2728,7 +2731,11 @@ public sealed class PlaylistSyncService
             cancellationToken);
 
         var verifiedSummary = WithVerifiedMembershipCounts(matchSummary, verifiedMemberships.Count);
-        var resolved = matchSummary.TargetMatches;
+        var resolved = await ResolveVerifiedIdentityCountAsync(
+            matchSummary,
+            targetService,
+            orderedTrackIds,
+            cancellationToken);
         if (!IsResolvedMembershipVerified(resolved, verifiedMemberships.Count, writeComplete))
         {
             return PlaylistSyncResult.Failed(
@@ -3536,6 +3543,20 @@ public sealed class PlaylistSyncService
         }
     }
 
+    private async Task<int> ResolveVerifiedIdentityCountAsync(
+        SyncMatchSummary matchSummary,
+        string targetService,
+        IReadOnlyList<long> orderedTrackIds,
+        CancellationToken cancellationToken)
+    {
+        var localIds = orderedTrackIds.Where(static id => id > 0).Distinct().ToList();
+        var ledger = await _libraryRepository.CountResolvedSharedIdentitiesAsync(
+            localIds,
+            targetService,
+            cancellationToken);
+        return ledger.LedgerRowCount > 0 ? ledger.ResolvedCount : matchSummary.TargetMatches;
+    }
+
     internal static bool IsResolvedMembershipVerified(
         int resolvedIdentities,
         int verifiedMembershipCount,
@@ -4321,98 +4342,28 @@ public sealed class PlaylistSyncService
         List<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
-        var distinctTrackIds = orderedTrackIds.Where(id => id > 0).Distinct().ToList();
-        // Hub: DeezSpoTag local track id → cached Plex item id.
-        var ratingKeyByTrackId = (await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
-                PlexService,
-                distinctTrackIds,
-                cancellationToken))
-            .ToDictionary(static pair => pair.Key, static pair => pair.Value);
-
-        var ratingKeysByIndex = new string?[tracks.Count];
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var metadataMatches = 0;
-        var searchMatches = 0;
-        var unresolvedSearchIndexes = new List<int>();
-        for (var i = 0; i < tracks.Count; i++)
-        {
-            var trackId = orderedTrackIds[i];
-            if (trackId > 0 && ratingKeyByTrackId.TryGetValue(trackId, out var ratingKey))
-            {
-                ratingKeysByIndex[i] = ratingKey;
-                metadataMatches++;
-                continue;
-            }
-
-            unresolvedSearchIndexes.Add(i);
-        }
-
-        var hubContexts = await BuildLocalTrackHubContextsAsync(
+        var resolved = await ResolveSharedTargetIdentitiesAsync(
+            PlexService,
             tracks,
             orderedTrackIds,
-            unresolvedSearchIndexes,
-            cancellationToken);
-        var mediaServerUpdates = new List<MediaServerTrackMetadataUpsertDto>();
-        foreach (var index in unresolvedSearchIndexes)
-        {
-            var trackId = orderedTrackIds[index];
-            var hub = GetLocalTrackHubContext(hubContexts, trackId, tracks[index]);
-            var resolved = await ResolvePlexRatingKeyAsync(
+            async (item, track, filePath, ct) => await ResolvePlexRatingKeyAsync(
                 plex,
-                hub.SearchTrack,
-                hub.FilePath,
+                track,
+                filePath,
                 searchCache,
-                cancellationToken);
-            if (!string.IsNullOrWhiteSpace(resolved))
+                ct),
+            async (targetItemId, ct) =>
             {
-                ratingKeysByIndex[index] = resolved;
-                searchMatches++;
-                if (trackId > 0)
-                {
-                    mediaServerUpdates.Add(new MediaServerTrackMetadataUpsertDto(
-                        trackId,
-                        PlexService,
-                        resolved,
-                        hub.FilePath,
-                        DateTimeOffset.UtcNow));
-                }
-            }
-        }
-
-        if (mediaServerUpdates.Count > 0)
-        {
-            await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
-                mediaServerUpdates,
-                cancellationToken);
-            await EnqueueCatchUpForNewlyResolvedIdentitiesAsync(
-                PlexService,
-                mediaServerUpdates,
-                cancellationToken);
-        }
-
-        var ratingKeys = ratingKeysByIndex
-            .Where(static value => !string.IsNullOrWhiteSpace(value))
-            .Select(static value => value!)
-            .ToList();
-        var memberships = ratingKeysByIndex
-            .Select((targetId, index) => new { targetId, index })
-            .Where(item => !string.IsNullOrWhiteSpace(item.targetId)
-                           && orderedTrackIds[item.index] > 0
-                           && !string.IsNullOrWhiteSpace(tracks[item.index].SourceTrackId))
-            .Select(item => new PlaylistWatchTargetMembership(
-                tracks[item.index].SourceTrackId,
-                orderedTrackIds[item.index],
-                item.targetId!))
-            .ToList();
-        return new SyncMatchSummary(
-            ratingKeys,
-            memberships,
-            SourceTracks: tracks.Count,
-            LocalMatches: orderedTrackIds.Count(static id => id > 0),
-            TargetMatches: ratingKeys.Count,
-            MissingTracks: Math.Max(0, tracks.Count - ratingKeys.Count),
-            MetadataMatches: metadataMatches,
-            SearchMatches: searchMatches);
+                var availability = await _plexApiClient.CheckTrackAvailabilityAsync(
+                    plex.Url,
+                    plex.Token,
+                    targetItemId,
+                    ct);
+                return availability == PlexItemAvailability.Missing;
+            },
+            cancellationToken);
+        return BuildResolvedMatchSummary(tracks, orderedTrackIds, resolved);
     }
 
     private async Task<string?> ResolvePlexRatingKeyAsync(
@@ -4459,81 +4410,20 @@ public sealed class PlaylistSyncService
         IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
-        // Hub: DeezSpoTag local track id → cached Jellyfin item id.
-        var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
-            JellyfinService,
-            orderedTrackIds.Where(static id => id > 0).Distinct().ToList(),
-            cancellationToken);
-        var itemIds = new List<PlaylistWatchTargetMembership>(tracks.Count);
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var unresolvedIndexes = new List<int>();
-        for (var index = 0; index < tracks.Count; index++)
-        {
-            var localTrackId = orderedTrackIds[index];
-            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out _))
-            {
-                continue;
-            }
-
-            unresolvedIndexes.Add(index);
-        }
-
-        var hubContexts = await BuildLocalTrackHubContextsAsync(
+        var resolved = await ResolveSharedTargetIdentitiesAsync(
+            JellyfinService,
             tracks,
             orderedTrackIds,
-            unresolvedIndexes,
+            async (item, track, filePath, ct) => await ResolveJellyfinItemIdAsync(
+                jellyfin,
+                track,
+                filePath,
+                searchCache,
+                ct),
+            confirmMissing: null,
             cancellationToken);
-        var metadataUpdates = new List<MediaServerTrackMetadataUpsertDto>();
-        for (var index = 0; index < tracks.Count; index++)
-        {
-            var track = tracks[index];
-            var localTrackId = orderedTrackIds[index];
-            string? resolved = null;
-            string? filePath = null;
-            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out var mappedItemId))
-            {
-                resolved = mappedItemId;
-            }
-            else
-            {
-                var hub = GetLocalTrackHubContext(hubContexts, localTrackId, track);
-                filePath = hub.FilePath;
-                resolved = await ResolveJellyfinItemIdAsync(
-                    jellyfin,
-                    hub.SearchTrack,
-                    hub.FilePath,
-                    searchCache,
-                    cancellationToken);
-            }
-
-            if (!string.IsNullOrWhiteSpace(resolved) && orderedTrackIds[index] > 0)
-            {
-                itemIds.Add(new PlaylistWatchTargetMembership(
-                    track.SourceTrackId,
-                    orderedTrackIds[index],
-                    resolved));
-                if (!mapped.ContainsKey(localTrackId))
-                {
-                    metadataUpdates.Add(new MediaServerTrackMetadataUpsertDto(
-                        localTrackId,
-                        JellyfinService,
-                        resolved,
-                        filePath,
-                        DateTimeOffset.UtcNow));
-                }
-            }
-        }
-
-        if (metadataUpdates.Count > 0)
-        {
-            await _libraryRepository.UpsertMediaServerTrackMetadataAsync(metadataUpdates, cancellationToken);
-            await EnqueueCatchUpForNewlyResolvedIdentitiesAsync(
-                JellyfinService,
-                metadataUpdates,
-                cancellationToken);
-        }
-
-        return itemIds;
+        return BuildResolvedMemberships(tracks, orderedTrackIds, resolved);
     }
 
     private async Task<string?> ResolveJellyfinItemIdAsync(
@@ -4616,81 +4506,142 @@ public sealed class PlaylistSyncService
         IReadOnlyList<long> orderedTrackIds,
         CancellationToken cancellationToken)
     {
-        // Hub: DeezSpoTag local track id → cached Navidrome item id.
-        var mapped = await _libraryRepository.GetMediaServerItemIdsByTrackIdsAsync(
-            NavidromeService,
-            orderedTrackIds.Where(static id => id > 0).Distinct().ToList(),
-            cancellationToken);
-        var itemIds = new List<PlaylistWatchTargetMembership>(tracks.Count);
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var unresolvedIndexes = new List<int>();
-        for (var index = 0; index < tracks.Count; index++)
+        var resolved = await ResolveSharedTargetIdentitiesAsync(
+            NavidromeService,
+            tracks,
+            orderedTrackIds,
+            async (item, track, filePath, ct) => await ResolveNavidromeItemIdAsync(
+                navidrome,
+                track,
+                filePath,
+                searchCache,
+                ct),
+            confirmMissing: null,
+            cancellationToken);
+        return BuildResolvedMemberships(tracks, orderedTrackIds, resolved);
+    }
+
+    private async Task<IReadOnlyList<SharedIdentityResolveResult>> ResolveSharedTargetIdentitiesAsync(
+        string targetService,
+        IReadOnlyList<SyncTrackSummary> tracks,
+        IReadOnlyList<long> orderedTrackIds,
+        Func<SharedIdentityResolveItem, SyncTrackSummary, string?, CancellationToken, Task<string?>> search,
+        Func<string, CancellationToken, Task<bool>>? confirmMissing,
+        CancellationToken cancellationToken)
+    {
+        var items = new List<SharedIdentityResolveItem>();
+        var trackByLocalId = new Dictionary<long, SyncTrackSummary>();
+        var seen = new HashSet<long>();
+        for (var index = 0; index < tracks.Count && index < orderedTrackIds.Count; index++)
         {
             var localTrackId = orderedTrackIds[index];
-            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out _))
+            if (localTrackId <= 0 || !seen.Add(localTrackId))
             {
                 continue;
             }
 
-            unresolvedIndexes.Add(index);
+            items.Add(new SharedIdentityResolveItem(
+                localTrackId,
+                FilePath: null,
+                SearchName: tracks[index].Name,
+                SearchArtists: tracks[index].Artists));
+            trackByLocalId[localTrackId] = tracks[index];
         }
 
-        var hubContexts = await BuildLocalTrackHubContextsAsync(
-            tracks,
-            orderedTrackIds,
-            unresolvedIndexes,
+        if (items.Count == 0)
+        {
+            return [];
+        }
+
+        var filePaths = await _libraryRepository.GetTrackPrimaryFilePathsAsync(
+            items.Select(static item => item.LocalTrackId).ToList(),
             cancellationToken);
-        var metadataUpdates = new List<MediaServerTrackMetadataUpsertDto>();
-        for (var index = 0; index < tracks.Count; index++)
+        items = items
+            .Select(item =>
+            {
+                filePaths.TryGetValue(item.LocalTrackId, out var filePath);
+                return item with { FilePath = filePath };
+            })
+            .ToList();
+
+        return await _sharedIdentityResolver.ResolveAsync(
+            targetService,
+            items,
+            async (item, ct) =>
+            {
+                var sourceTrack = trackByLocalId.TryGetValue(item.LocalTrackId, out var track)
+                    ? track
+                    : new SyncTrackSummary(
+                        string.Empty,
+                        null,
+                        item.SearchName ?? string.Empty,
+                        item.SearchArtists ?? string.Empty,
+                        string.Empty,
+                        null,
+                        null,
+                        Array.Empty<string>(),
+                        null);
+                var identity = await _libraryRepository.GetLocalTrackIdentityAsync(item.LocalTrackId, ct);
+                var searchTrack = EnrichSearchTrackFromLocalIdentity(sourceTrack, identity);
+                return await search(item, searchTrack, item.FilePath, ct);
+            },
+            confirmMissing,
+            confirmExisting: false,
+            currentRevision: string.Empty,
+            requestRefresh: RequestTargetLibraryRefreshAsync,
+            cancellationToken);
+    }
+
+    private static List<PlaylistWatchTargetMembership> BuildResolvedMemberships(
+        IReadOnlyList<SyncTrackSummary> tracks,
+        IReadOnlyList<long> orderedTrackIds,
+        IReadOnlyList<SharedIdentityResolveResult> resolved)
+    {
+        var byLocalId = resolved
+            .Where(static item =>
+                item.LocalTrackId > 0
+                && !string.IsNullOrWhiteSpace(item.TargetItemId)
+                && string.Equals(item.Status, SharedIdentityResolver.StatusResolved, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(static item => item.LocalTrackId, static item => item.TargetItemId!);
+        var memberships = new List<PlaylistWatchTargetMembership>();
+        for (var index = 0; index < tracks.Count && index < orderedTrackIds.Count; index++)
         {
-            var track = tracks[index];
             var localTrackId = orderedTrackIds[index];
-            string? resolved = null;
-            string? filePath = null;
-            if (localTrackId > 0 && mapped.TryGetValue(localTrackId, out var mappedItemId))
+            if (localTrackId <= 0
+                || string.IsNullOrWhiteSpace(tracks[index].SourceTrackId)
+                || !byLocalId.TryGetValue(localTrackId, out var targetItemId))
             {
-                resolved = mappedItemId;
-            }
-            else
-            {
-                var hub = GetLocalTrackHubContext(hubContexts, localTrackId, track);
-                filePath = hub.FilePath;
-                resolved = await ResolveNavidromeItemIdAsync(
-                    navidrome,
-                    hub.SearchTrack,
-                    hub.FilePath,
-                    searchCache,
-                    cancellationToken);
+                continue;
             }
 
-            if (!string.IsNullOrWhiteSpace(resolved) && orderedTrackIds[index] > 0)
-            {
-                itemIds.Add(new PlaylistWatchTargetMembership(
-                    track.SourceTrackId,
-                    orderedTrackIds[index],
-                    resolved));
-                if (!mapped.ContainsKey(localTrackId))
-                {
-                    metadataUpdates.Add(new MediaServerTrackMetadataUpsertDto(
-                        localTrackId,
-                        NavidromeService,
-                        resolved,
-                        filePath,
-                        DateTimeOffset.UtcNow));
-                }
-            }
+            memberships.Add(new PlaylistWatchTargetMembership(
+                tracks[index].SourceTrackId,
+                localTrackId,
+                targetItemId));
         }
 
-        if (metadataUpdates.Count > 0)
-        {
-            await _libraryRepository.UpsertMediaServerTrackMetadataAsync(metadataUpdates, cancellationToken);
-            await EnqueueCatchUpForNewlyResolvedIdentitiesAsync(
-                NavidromeService,
-                metadataUpdates,
-                cancellationToken);
-        }
+        return memberships;
+    }
 
-        return itemIds;
+    private static SyncMatchSummary BuildResolvedMatchSummary(
+        IReadOnlyList<SyncTrackSummary> tracks,
+        IReadOnlyList<long> orderedTrackIds,
+        IReadOnlyList<SharedIdentityResolveResult> resolved)
+    {
+        var memberships = BuildResolvedMemberships(tracks, orderedTrackIds, resolved);
+        var targetIds = memberships.Select(static item => item.TargetItemId).ToList();
+        return new SyncMatchSummary(
+            targetIds,
+            memberships,
+            SourceTracks: tracks.Count,
+            LocalMatches: orderedTrackIds.Count(static id => id > 0),
+            TargetMatches: targetIds.Count,
+            MissingTracks: Math.Max(0, tracks.Count - targetIds.Count),
+            MetadataMatches: resolved.Count(static item =>
+                !item.Searched && !string.IsNullOrWhiteSpace(item.TargetItemId)),
+            SearchMatches: resolved.Count(static item =>
+                item.Searched && !string.IsNullOrWhiteSpace(item.TargetItemId)));
     }
 
     private async Task<string?> ResolveNavidromeItemIdAsync(
@@ -4724,57 +4675,6 @@ public sealed class PlaylistSyncService
         cache[query] = itemId;
         return itemId;
     }
-
-    /// <summary>
-    /// DeezSpoTag local track id is the hub between media servers:
-    /// server A item id ↔ local track id ↔ server B item id.
-    /// For unresolved B mappings, resolve using the local track's file path and library tags.
-    /// </summary>
-    private sealed record LocalTrackHubContext(SyncTrackSummary SearchTrack, string? FilePath);
-
-    private async Task<IReadOnlyDictionary<long, LocalTrackHubContext>> BuildLocalTrackHubContextsAsync(
-        IReadOnlyList<SyncTrackSummary> tracks,
-        IReadOnlyList<long> orderedTrackIds,
-        IReadOnlyList<int> unresolvedIndexes,
-        CancellationToken cancellationToken)
-    {
-        var localIds = unresolvedIndexes
-            .Select(index => orderedTrackIds[index])
-            .Where(static id => id > 0)
-            .Distinct()
-            .ToList();
-        if (localIds.Count == 0)
-        {
-            return new Dictionary<long, LocalTrackHubContext>();
-        }
-
-        var paths = await _libraryRepository.GetTrackPrimaryFilePathsAsync(localIds, cancellationToken);
-        var contexts = new Dictionary<long, LocalTrackHubContext>();
-        foreach (var index in unresolvedIndexes)
-        {
-            var localTrackId = orderedTrackIds[index];
-            if (localTrackId <= 0 || contexts.ContainsKey(localTrackId))
-            {
-                continue;
-            }
-
-            var sourceTrack = tracks[index];
-            paths.TryGetValue(localTrackId, out var filePath);
-            var identity = await _libraryRepository.GetLocalTrackIdentityAsync(localTrackId, cancellationToken);
-            var searchTrack = EnrichSearchTrackFromLocalIdentity(sourceTrack, identity);
-            contexts[localTrackId] = new LocalTrackHubContext(searchTrack, filePath);
-        }
-
-        return contexts;
-    }
-
-    private static LocalTrackHubContext GetLocalTrackHubContext(
-        IReadOnlyDictionary<long, LocalTrackHubContext> contexts,
-        long localTrackId,
-        SyncTrackSummary fallback)
-        => localTrackId > 0 && contexts.TryGetValue(localTrackId, out var context)
-            ? context
-            : new LocalTrackHubContext(fallback, null);
 
     private static SyncTrackSummary EnrichSearchTrackFromLocalIdentity(
         SyncTrackSummary source,

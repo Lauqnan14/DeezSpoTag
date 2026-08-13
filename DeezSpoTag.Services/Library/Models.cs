@@ -834,6 +834,35 @@ public sealed record PlaylistWatchTrackStatusDto(
     string? SyncedTargetServices = null,
     string? MissingTargetServices = null);
 
+public sealed record WatchlistSharedIdentityDto(
+    long LocalTrackId,
+    string TargetService,
+    string? TargetItemId,
+    string Status,
+    string? LastError,
+    int AttemptCount,
+    DateTimeOffset? NextRetryUtc,
+    DateTimeOffset? LastRefreshRequestedUtc,
+    DateTimeOffset UpdatedAt);
+
+public sealed record WatchlistSharedIdentityUpsertInput(
+    long LocalTrackId,
+    string TargetService,
+    string? TargetItemId,
+    string Status,
+    string? LastError = null,
+    int AttemptCount = 0,
+    DateTimeOffset? NextRetryUtc = null,
+    DateTimeOffset? LastRefreshRequestedUtc = null);
+
+public sealed record PlaylistIdentityRetryPlaylist(
+    string Source,
+    string PlaylistId);
+
+public sealed record WatchlistSharedIdentityCount(
+    int ResolvedCount,
+    int LedgerRowCount);
+
 public sealed record PlaylistWatchTrackVerification(
     string TrackSourceId,
     long? LocalTrackId,

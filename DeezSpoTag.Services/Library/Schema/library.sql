@@ -1086,6 +1086,22 @@ CREATE TABLE IF NOT EXISTS media_server_track_metadata (
     PRIMARY KEY (track_id, service)
 );
 
+CREATE TABLE IF NOT EXISTS watchlist_shared_identity (
+    local_track_id INTEGER NOT NULL,
+    target_service TEXT NOT NULL,
+    target_item_id TEXT,
+    status TEXT NOT NULL,
+    last_error TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_utc TEXT,
+    last_refresh_requested_utc TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (local_track_id, target_service)
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchlist_shared_identity_retry
+    ON watchlist_shared_identity (status, next_retry_utc);
+
 CREATE TABLE IF NOT EXISTS media_server_track_variant_metadata (
     track_id BIGINT NOT NULL,
     service TEXT NOT NULL,

@@ -1508,6 +1508,7 @@ public partial class Program
             StartupWorkerCategory.Deferred,
             "Durable media-server library refresh processing after HTTP readiness.");
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistVisualService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.SharedIdentityResolver>();
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies>(sp =>
             new DeezSpoTag.Web.Services.PlaylistSyncService.PlaylistSyncDependencies
             {
@@ -1520,6 +1521,7 @@ public partial class Program
                 AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
+                SharedIdentityResolver = sp.GetRequiredService<DeezSpoTag.Web.Services.SharedIdentityResolver>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
                 WatchlistRunSignal = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunSignal>(),
                 Logger = sp.GetRequiredService<ILogger<DeezSpoTag.Web.Services.PlaylistSyncService>>()

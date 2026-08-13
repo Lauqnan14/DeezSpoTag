@@ -330,14 +330,16 @@ public sealed class LibraryScanTriggerGuardrailTests
     public void PlaylistSync_ResolvesEveryUnmappedPlexTrackInMainResolver()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
+        var resolver = ReadSource("DeezSpoTag.Web", "Services", "SharedIdentityResolver.cs");
         var methodBody = ExtractMethodBody(source, "private async Task<SyncMatchSummary> ResolvePlexRatingKeysAsync");
 
         Assert.DoesNotContain("PlexSequentialSearchFallbackLimit", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Skipped sequential Plex search", source, StringComparison.Ordinal);
-        Assert.Contains("GetMediaServerItemIdsByTrackIdsAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("foreach (var index in unresolvedSearchIndexes)", methodBody, StringComparison.Ordinal);
+        Assert.Contains("ResolveSharedTargetIdentitiesAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("ResolvePlexRatingKeyAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("UpsertMediaServerTrackMetadataAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("GetMediaServerItemIdsByTrackIdsAsync", resolver, StringComparison.Ordinal);
+        Assert.Contains("UpsertMediaServerTrackMetadataAsync", resolver, StringComparison.Ordinal);
+        Assert.Contains("SelectBestMediaServerMatch", source, StringComparison.Ordinal);
         Assert.DoesNotContain("UpsertPlexTrackMetadataAsync", source, StringComparison.Ordinal);
     }
 

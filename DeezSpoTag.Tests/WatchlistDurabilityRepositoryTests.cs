@@ -958,6 +958,56 @@ WHERE id=@id;",
     }
 
     [Fact]
+    public async Task IdentityLedgerFlip_EnqueuesCatchUpMembershipJobWithoutNullSnapshot()
+    {
+        await AddPlaylistWithTargetsAsync("identity-ledger-list", ["plex"]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "identity-ledger-list",
+            [new PlaylistWatchTrackInsert("track-2", "ISRC00000002")]);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "identity-ledger-list",
+            new PlaylistWatchTrackVerification("track-2", 202, "identity_verified"));
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "identity-ledger-list",
+            "plex",
+            "plex-playlist",
+            [new PlaylistWatchTargetMembershipWrite("track-2", 202, null, "waiting_for_identity")]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify",
+            "identity-ledger-list",
+            "snapshot-ledger");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1,
+            TimeSpan.FromMinutes(1),
+            "ledger-worker"));
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed,
+            "ledger-worker",
+            WatchlistAppliedKind.Partial,
+            null,
+            null));
+        Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "identity-ledger-list"));
+        Assert.Equal(0, await _repository.RepairWatchlistSyncBacklogAsync(10));
+
+        await _repository.UpsertWatchlistSharedIdentityAsync(
+            new WatchlistSharedIdentityUpsertInput(
+                202,
+                "plex",
+                "plex-202",
+                SharedIdentityResolver.StatusResolved));
+
+        var catchUp = Assert.Single(await _repository.EnqueueMembershipJobsForResolvedSharedIdentitiesAsync(
+            "snapshot-ledger"));
+        Assert.False(string.IsNullOrWhiteSpace(catchUp.SnapshotId));
+        Assert.Equal("snapshot-ledger:plex-membership-v2", catchUp.SnapshotId);
+        Assert.Equal(0, await _repository.RepairWatchlistSyncBacklogAsync(10));
+        Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "identity-ledger-list"));
+    }
+
+    [Fact]
     public async Task RepairWatchlistSyncBacklog_ReopensBlockedJobsBelowAttemptCap()
     {
         await AddPlaylistWithTargetsAsync("blocked-before-cap-list", ["plex"]);

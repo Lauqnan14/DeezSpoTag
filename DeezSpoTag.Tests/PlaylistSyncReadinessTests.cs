@@ -66,6 +66,9 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             AuthService = authService,
             PlaylistVisualService = null!,
             MediaServerRefreshService = null!,
+            SharedIdentityResolver = new SharedIdentityResolver(
+                _repository,
+                NullLogger<SharedIdentityResolver>.Instance),
             Logger = NullLogger<PlaylistSyncService>.Instance
         });
     }

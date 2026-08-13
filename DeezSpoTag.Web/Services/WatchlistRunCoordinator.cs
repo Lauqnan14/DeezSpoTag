@@ -164,10 +164,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         var pendingReconRequests = await repository.GetWatchlistReconciliationRequestCountAsync(cancellationToken);
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, cancellationToken);
-        if (pendingReconRequests > 0 || pollOverdue)
+        var identityRetryDue = await repository.HasDueIdentityRetryPlaylistAsync(cancellationToken);
+        if (pendingReconRequests > 0 || pollOverdue || identityRetryDue)
         {
             var reason = WatchlistWakeReason.None;
-            if (pollOverdue)
+            if (pollOverdue || identityRetryDue)
             {
                 reason |= WatchlistWakeReason.ScheduledRefresh;
             }
@@ -504,12 +505,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var watchInterval = GetWatchInterval(settings);
         var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, stoppingToken);
+        var identityRetryPlaylists = await repository.GetPlaylistsDueForIdentityRetryAsync(stoppingToken);
         var shouldRunSourceRefresh =
             wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
             || wakeReason.HasFlag(WatchlistWakeReason.Reconciliation)
             || sourceRefreshOverdue
             || pollOverdue
-            || pendingRequestCount > 0;
+            || pendingRequestCount > 0
+            || identityRetryPlaylists.Count > 0;
         var smoothSyncEnabled = settings.WatchSmoothSyncEnabled;
         var stoppedForTime = false;
         IReadOnlyList<(string Source, string PlaylistId)> slicedPlaylists = Array.Empty<(string, string)>();
@@ -547,6 +550,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                         queueAdmission,
                         coordinatorWork,
                         reconciliationRequests,
+                        identityRetryPlaylists,
+                        pollOverdue,
                         cycleDeadline,
                         smoothSyncEnabled,
                         stoppingToken);
@@ -861,6 +866,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         WatchlistQueueAdmissionService queueAdmission,
         WatchlistPostDownloadSyncService? targetSync,
         IReadOnlyList<WatchlistReconciliationRequestDto> reconciliationRequests,
+        IReadOnlyList<PlaylistIdentityRetryPlaylist> identityRetryPlaylists,
+        bool pollOverdue,
         DateTimeOffset cycleDeadline,
         bool smoothSyncEnabled,
         CancellationToken stoppingToken)
@@ -888,6 +895,16 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 .Where(request => request.Kind == PlaylistKind)
                 .Select(request => $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}")
                 .ToHashSet(StringComparer.Ordinal);
+        foreach (var identityPlaylist in identityRetryPlaylists)
+        {
+            requestedPlaylistKeys.Add(
+                $"playlist:{NormalizeSource(identityPlaylist.Source)}:{identityPlaylist.PlaylistId}");
+        }
+
+        var identityRetryOnly = !pollOverdue
+            && !hasGlobalRequest
+            && reconciliationRequests.Count == 0
+            && identityRetryPlaylists.Count > 0;
         var requestedArtistIds = hasGlobalRequest
             ? artistItems
                 .Where(item => item.Artist is not null)
@@ -935,6 +952,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 queueAdmission,
                 targetSync,
                 requestedPlaylistKeys,
+                identityRetryOnly,
                 cycleDeadline,
                 smoothSyncEnabled,
                 allowAdmit: false,
@@ -958,6 +976,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             queueAdmission,
             targetSync,
             requestedPlaylistKeys,
+            identityRetryOnly,
             cycleDeadline,
             smoothSyncEnabled,
             allowAdmit: true,
@@ -1162,6 +1181,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         WatchlistQueueAdmissionService queueAdmission,
         WatchlistPostDownloadSyncService? targetSync,
         IReadOnlySet<string> requestedPlaylistKeys,
+        bool identityRetryOnly,
         DateTimeOffset cycleDeadline,
         bool smoothSyncEnabled,
         bool allowAdmit,
@@ -1173,7 +1193,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return PlaylistRunResult.Empty;
         }
 
-        var scheduledItems = playlistItems;
+        var scheduledItems = identityRetryOnly
+            ? playlistItems.Where(item => requestedPlaylistKeys.Contains(item.Key)).ToList()
+            : playlistItems;
         var processedKeys = new HashSet<string>(StringComparer.Ordinal);
         var slicedPlaylists = new List<(string Source, string PlaylistId)>();
         var processed = 0;
