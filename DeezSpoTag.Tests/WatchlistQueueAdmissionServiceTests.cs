@@ -1,4 +1,5 @@
 using DeezSpoTag.Services.Download.Queue;
+using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Web.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -104,6 +105,65 @@ public sealed class WatchlistQueueAdmissionServiceTests
         Assert.Equal(WatchQueueStopReason.RunBudget, decision.Reason);
 
         service.EndRun(token);
+    }
+
+    [Fact]
+    public void AdmittedIdentities_SkipDuplicatesWithoutConsumingBudget()
+    {
+        var service = new WatchlistQueueAdmissionService();
+        var token = service.BeginRun(2);
+        var firstKeys = new[] { "isrc:usrc17600001", "deezer:111" };
+        var sameFileDifferentPlaylist = new[] { "isrc:usrc17600001", "spotify:abc" };
+        var uniqueFile = new[] { "isrc:usrc17600002" };
+
+        Assert.False(service.HasAnyAdmittedIdentity(firstKeys));
+        Assert.True(service.TryReserve(1));
+        service.RememberAdmittedIdentities(firstKeys);
+
+        Assert.True(service.HasAnyAdmittedIdentity(sameFileDifferentPlaylist));
+        Assert.Equal(1, service.GetRemaining());
+        Assert.False(service.HasAnyAdmittedIdentity(uniqueFile));
+
+        Assert.True(service.TryReserve(1));
+        service.RememberAdmittedIdentities(uniqueFile);
+        Assert.Equal(0, service.GetRemaining());
+        Assert.False(service.TryReserve(1));
+
+        service.EndRun(token);
+        Assert.False(service.HasAnyAdmittedIdentity(firstKeys));
+        Assert.Equal(0, service.GetRemaining());
+    }
+
+    [Fact]
+    public void BuildWatchIdentityKeys_MatchTheSameFileAcrossPlaylists()
+    {
+        var deezerIntent = new DownloadIntent
+        {
+            Isrc = "USRC17600001",
+            DeezerId = "111",
+            Title = "Same Song",
+            Artist = "Same Artist",
+            DurationMs = 180000
+        };
+        var spotifyIntent = new DownloadIntent
+        {
+            Isrc = "usrc17600001",
+            SpotifyId = "spotify-track",
+            Title = "Same Song",
+            Artist = "Same Artist",
+            DurationMs = 180000
+        };
+
+        var deezerKeys = WatchlistEngine.BuildWatchIdentityKeys("dz-1", "USRC17600001", deezerIntent);
+        var spotifyKeys = WatchlistEngine.BuildWatchIdentityKeys("sp-1", "USRC17600001", spotifyIntent);
+
+        var service = new WatchlistQueueAdmissionService();
+        _ = service.BeginRun(50);
+        service.RememberAdmittedIdentities(deezerKeys);
+
+        Assert.Contains("isrc:USRC17600001", deezerKeys, StringComparer.OrdinalIgnoreCase);
+        Assert.True(service.HasAnyAdmittedIdentity(spotifyKeys));
+        Assert.Contains(deezerKeys, key => key.StartsWith("meta:", StringComparison.Ordinal));
     }
 
     [Fact]

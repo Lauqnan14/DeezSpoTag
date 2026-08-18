@@ -165,10 +165,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var pendingReconRequests = await repository.GetDueWatchlistReconciliationRequestCountAsync(cancellationToken);
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, cancellationToken);
         var identityRetryDue = await repository.HasDueIdentityRetryPlaylistAsync(cancellationToken);
-        if (pendingReconRequests > 0 || pollOverdue || identityRetryDue)
+        var membershipCatchUpDue = await repository.HasMembershipCatchUpPlaylistAsync(cancellationToken);
+        if (pendingReconRequests > 0 || pollOverdue || identityRetryDue || membershipCatchUpDue)
         {
             var reason = WatchlistWakeReason.None;
-            if (pollOverdue || identityRetryDue)
+            if (pollOverdue || identityRetryDue || membershipCatchUpDue)
             {
                 reason |= WatchlistWakeReason.ScheduledRefresh;
             }
@@ -507,11 +508,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, stoppingToken);
         var identityRetryPlaylists = await repository.GetPlaylistsDueForIdentityRetryAsync(stoppingToken);
+        var membershipCatchUpDue = await repository.HasMembershipCatchUpPlaylistAsync(stoppingToken);
         var shouldRunSourceRefresh =
             wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
             || wakeReason.HasFlag(WatchlistWakeReason.Reconciliation)
             || sourceRefreshOverdue
             || pollOverdue
+            || membershipCatchUpDue
             || dueReconRequestCount > 0
             || identityRetryPlaylists.Count > 0;
         var smoothSyncEnabled = settings.WatchSmoothSyncEnabled;
@@ -752,7 +755,17 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
             _useExtendedCycleBox = true;
             ResetPlaylistRuntimeStateForAll(await repository.GetPlaylistWatchlistAsync(cancellationToken));
+            await repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null, cancellationToken);
             _logger.LogWarning("Applied Watchlist smooth-sync recovery to clear stale backoff, identity jobs, and identity circuits.");
+        }
+
+        var membershipCatchUpJobs = await repository.EnqueueMembershipCatchUpForIncompletePlaylistsAsync(cancellationToken);
+        if (membershipCatchUpJobs > 0)
+        {
+            _logger.LogInformation(
+                "Enqueued {JobCount} Watchlist membership catch-up job(s) for library tracks still missing from a target playlist.",
+                membershipCatchUpJobs);
+            _runSignal.Request(WatchlistWakeReason.TargetSync | WatchlistWakeReason.Reconciliation);
         }
 
         var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(cancellationToken);
@@ -916,12 +929,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var playlistItems = BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken));
         var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
         var hasGlobalRequest = reconciliationRequests.Any(request => request.Kind == "all");
-        var requestedPlaylistKeys = hasGlobalRequest
-            ? playlistItems.Select(item => item.Key).ToHashSet(StringComparer.Ordinal)
-            : reconciliationRequests
-                .Where(request => request.Kind == PlaylistKind)
-                .Select(request => $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}")
-                .ToHashSet(StringComparer.Ordinal);
+        var requestedPlaylistKeys = reconciliationRequests
+            .Where(request => request.Kind == PlaylistKind)
+            .Select(request => $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}")
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var identityPlaylist in identityRetryPlaylists)
         {
             requestedPlaylistKeys.Add(
@@ -1013,14 +1024,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return playlistRunResult;
         }
 
-        if (!smoothSyncEnabled)
-        {
-            await ProcessPlaylistQueueAdmissionsAsync(
-                repository,
-                serviceProvider,
-                queueAdmission,
-                stoppingToken);
-        }
+        await ProcessPlaylistQueueAdmissionsAsync(
+            repository,
+            serviceProvider,
+            queueAdmission,
+            stoppingToken);
 
         var processedArtistIds = await ProcessArtistWatchItemsAsync(
             artistItems,
@@ -1031,7 +1039,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             stoppingToken);
         if (hasGlobalRequest)
         {
-            foreach (var item in playlistItems.Where(item => !playlistRunResult.ProcessedKeys.Contains(item.Key)))
+            var pollInterval = GetWatchInterval(settings);
+            foreach (var item in playlistItems.Where(item =>
+                         !playlistRunResult.ProcessedKeys.Contains(item.Key)
+                         && (IsNeverCheckedPlaylist(item.Playlist?.LastCheckedUtc)
+                             || IsPlaylistPollOverdue(item, pollInterval))))
             {
                 await repository.EnqueueWatchlistReconciliationRequestAsync(
                     PlaylistKind,
@@ -1085,11 +1097,21 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         WatchlistQueueAdmissionService queueAdmission,
         CancellationToken cancellationToken)
     {
+        if (queueAdmission.GetRemaining() <= 0)
+        {
+            return;
+        }
+
         var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
         var playlistItems = await repository.GetPlaylistWatchlistAsync(cancellationToken);
         foreach (var playlist in playlistItems)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (queueAdmission.GetRemaining() <= 0)
+            {
+                break;
+            }
+
             var result = await reconciler.AdmitCachedMissingTracksAsync(playlist, cancellationToken);
             if (queueAdmission.GetRemaining() <= 0
                 || string.Equals(result.QueueStopReason, WatchQueueStopReason.RunBudget.ToString(), StringComparison.OrdinalIgnoreCase))
@@ -1673,10 +1695,17 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         IReadOnlySet<string> requestedPlaylistKeys,
         TimeSpan pollInterval)
     {
+        var neverCheckedItems = new List<WatchItem>();
         var reconItems = new List<WatchItem>();
         var overdueItems = new List<WatchItem>();
         foreach (var item in playlistItems)
         {
+            if (IsNeverCheckedPlaylist(item.Playlist?.LastCheckedUtc))
+            {
+                neverCheckedItems.Add(item);
+                continue;
+            }
+
             if (requestedPlaylistKeys.Contains(item.Key))
             {
                 reconItems.Add(item);
@@ -1689,14 +1718,42 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
         }
 
-        reconItems.AddRange(overdueItems);
-        return reconItems;
+        neverCheckedItems.AddRange(reconItems);
+        neverCheckedItems.AddRange(overdueItems);
+        return neverCheckedItems;
     }
+
+    internal static bool IsNeverCheckedPlaylist(DateTimeOffset? lastCheckedUtc)
+        => !lastCheckedUtc.HasValue;
 
     private static bool IsPlaylistPollOverdue(WatchItem item, TimeSpan pollInterval)
     {
         var lastChecked = item.Playlist?.LastCheckedUtc;
         return !lastChecked.HasValue || DateTimeOffset.UtcNow - lastChecked.Value >= pollInterval;
+    }
+
+    private static bool IsPlaylistMembershipCatchUp(WatchItem item)
+    {
+        var playlist = item.Playlist;
+        if (playlist == null)
+        {
+            return false;
+        }
+
+        if ((playlist.IncompleteTrackCount ?? 0) > 0
+            || (playlist.WaitingForTargetCount ?? 0) > 0
+            || (playlist.WaitingForIdentityCount ?? 0) > 0
+            || (playlist.MissingTrackCount ?? 0) > 0)
+        {
+            return true;
+        }
+
+        var status = (playlist.LastRunStatus ?? string.Empty).Trim().ToLowerInvariant();
+        return status is "pending"
+            or "waiting_for_target_sync"
+            or "media_sync_waiting"
+            or "stale_recovered"
+            or "reconciling";
     }
 
     private static async Task PersistPlaylistSchedulerStateAsync(

@@ -624,6 +624,11 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains("WatchSmoothSyncEnabled", hostedSource, StringComparison.Ordinal);
         Assert.Contains("RunInterleavedPlaylistSliceAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("HasPollOverduePlaylistAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("HasMembershipCatchUpPlaylistAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("EnqueueMembershipCatchUpForIncompletePlaylistsAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("IsPlaylistMembershipCatchUp", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("IsNeverCheckedPlaylist", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("neverCheckedItems", hostedSource, StringComparison.Ordinal);
         Assert.Contains("HasDueIdentityRetryPlaylistAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("GetPlaylistsDueForIdentityRetryAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("identityRetryOnly", hostedSource, StringComparison.Ordinal);
@@ -779,6 +784,66 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Equal(headChecked, headAfter?.LastCheckedUtc);
         Assert.NotNull(tailAfter?.LastCheckedUtc);
         Assert.True(tailAfter!.LastCheckedUtc > DateTimeOffset.UtcNow.AddMinutes(-1));
+    }
+
+    [Fact]
+    public void NeverCheckedPlaylist_IsDetectedFromMissingCheckOrStatus()
+    {
+        Assert.True(WatchlistRunCoordinator.IsNeverCheckedPlaylist(null));
+        Assert.False(WatchlistRunCoordinator.IsNeverCheckedPlaylist(DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public async Task RunOnce_ChecksNeverCheckedPlaylistBeforeAlreadyVisitedCatchUp()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchPollIntervalSeconds = 3600;
+        settings.WatchDelayBetweenPlaylistsSeconds = 0;
+        _settingsService.SaveSettings(settings);
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "unsupported",
+            "pl-never-checked",
+            new PlaylistWatchlistMetadataInput("Never Checked", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-never-checked");
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "unsupported",
+            "pl-catch-up",
+            new PlaylistWatchlistMetadataInput("Catch Up", null, null, null));
+        await ConfigurePlaylistDestinationAsync("unsupported", "pl-catch-up");
+        var catchUpChecked = DateTimeOffset.UtcNow.AddMinutes(-5);
+        await _repository.UpsertPlaylistWatchStateAsync(
+            new LibraryRepository.PlaylistWatchStateUpsertInput(
+                "unsupported",
+                "pl-catch-up",
+                null,
+                1,
+                null,
+                null,
+                catchUpChecked,
+                "waiting_for_target_sync",
+                "Waiting for selected target servers.",
+                null,
+                0,
+                "waiting_for_target_sync",
+                0,
+                1,
+                catchUpChecked,
+                catchUpChecked.AddMinutes(45)));
+
+        Assert.True(await _repository.HasPollOverduePlaylistAsync(TimeSpan.FromHours(1)));
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeRunOnceAsync(hosted);
+
+        var neverCheckedAfter = await _repository.GetPlaylistWatchStateAsync(
+            "unsupported",
+            "pl-never-checked",
+            CancellationToken.None);
+        Assert.NotNull(neverCheckedAfter?.LastCheckedUtc);
+        Assert.False(string.IsNullOrWhiteSpace(neverCheckedAfter!.LastRunStatus));
+        Assert.False(WatchlistRunCoordinator.IsNeverCheckedPlaylist(neverCheckedAfter.LastCheckedUtc));
     }
 
     [Fact]

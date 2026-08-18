@@ -146,23 +146,23 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void WatchSmoothSyncEnabled_DefaultsFalseAndPersistsThroughSettingsView()
+    public void WatchSmoothSyncEnabled_DefaultsTrueAndPersistsThroughSettingsView()
     {
         var settings = new DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings();
-        Assert.False(settings.WatchSmoothSyncEnabled);
+        Assert.True(settings.WatchSmoothSyncEnabled);
 
         var persisted = _settingsService.LoadSettings();
-        Assert.False(persisted.WatchSmoothSyncEnabled);
-        persisted.WatchSmoothSyncEnabled = true;
+        Assert.True(persisted.WatchSmoothSyncEnabled);
+        persisted.WatchSmoothSyncEnabled = false;
         _settingsService.SaveSettings(persisted);
-        Assert.True(_settingsService.LoadSettings().WatchSmoothSyncEnabled);
+        Assert.False(_settingsService.LoadSettings().WatchSmoothSyncEnabled);
 
         var repoRoot = ResolveRepoRoot();
         var viewSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
         var admission = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistQueueAdmissionService.cs"));
         Assert.Contains("id=\"watchSmoothSyncEnabled\"", viewSource, StringComparison.Ordinal);
         Assert.Contains(
-            "Smooth playlist sync (mirror library files, then download). Leave off until recovery has cleared stale backoff.",
+            "Smooth playlist sync (mirror library files first, then queue missing tracks).",
             viewSource,
             StringComparison.Ordinal);
         Assert.Contains("watchSmoothSyncEnabled:", viewSource, StringComparison.Ordinal);

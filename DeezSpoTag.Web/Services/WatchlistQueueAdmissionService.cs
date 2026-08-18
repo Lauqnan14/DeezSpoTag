@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
 using Microsoft.Extensions.Logging;
@@ -231,6 +232,7 @@ public sealed class WatchlistQueueAdmissionService
     private readonly WatchlistPublicApiReadinessService? _publicApiReadiness;
     private readonly object _gate = new();
     private readonly AsyncLocal<long> _executionGeneration = new();
+    private readonly HashSet<string> _admittedIdentities = new(StringComparer.OrdinalIgnoreCase);
     private long _generation;
     private long _activeGeneration;
     private int _limit;
@@ -322,6 +324,7 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = _activeGeneration;
             _limit = Math.Max(0, queueBudget);
             _remaining = _limit;
+            _admittedIdentities.Clear();
             return _activeGeneration;
         }
     }
@@ -340,6 +343,7 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = _activeGeneration;
             _limit = Math.Max(0, queueBudget);
             _remaining = _limit;
+            _admittedIdentities.Clear();
             return _activeGeneration;
         }
     }
@@ -357,6 +361,57 @@ public sealed class WatchlistQueueAdmissionService
             _executionGeneration.Value = 0;
             _limit = 0;
             _remaining = 0;
+            _admittedIdentities.Clear();
+        }
+    }
+
+    public bool HasAnyAdmittedIdentity(IEnumerable<string> identityKeys)
+    {
+        if (identityKeys == null)
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            if (!IsActiveRunLocked())
+            {
+                return false;
+            }
+
+            foreach (var key in identityKeys)
+            {
+                if (!string.IsNullOrWhiteSpace(key) && _admittedIdentities.Contains(key.Trim()))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public void RememberAdmittedIdentities(IEnumerable<string> identityKeys)
+    {
+        if (identityKeys == null)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (!IsActiveRunLocked())
+            {
+                return;
+            }
+
+            foreach (var key in identityKeys)
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    _admittedIdentities.Add(key.Trim());
+                }
+            }
         }
     }
 
@@ -379,9 +434,7 @@ public sealed class WatchlistQueueAdmissionService
 
         lock (_gate)
         {
-            if (_activeGeneration == 0
-                || _executionGeneration.Value != _activeGeneration
-                || _remaining < queueItemCount)
+            if (!IsActiveRunLocked() || _remaining < queueItemCount)
             {
                 return false;
             }
@@ -390,6 +443,9 @@ public sealed class WatchlistQueueAdmissionService
             return true;
         }
     }
+
+    private bool IsActiveRunLocked()
+        => _activeGeneration != 0 && _executionGeneration.Value == _activeGeneration;
 
     public void Release(int queueItemCount)
     {

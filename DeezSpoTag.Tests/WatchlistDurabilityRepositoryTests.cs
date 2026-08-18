@@ -868,6 +868,9 @@ WHERE id=@id;",
             claimed, "partial-worker", WatchlistAppliedKind.Partial, "hash-s", "source-s"));
         Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify", "partial-revision-list", "snapshot-s"));
+        var forced = Assert.Single(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "partial-revision-list", "snapshot-s", force: true));
+        Assert.Equal("snapshot-s", forced.SnapshotId);
         var changed = Assert.Single(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify", "partial-revision-list", "snapshot-s2"));
         Assert.Equal("snapshot-s2", changed.SnapshotId);
@@ -920,6 +923,50 @@ WHERE id=@id;",
         Assert.Equal("snapshot-s", catchUp.SnapshotId);
         Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify", "catchup-list", "snapshot-s"));
+    }
+
+    [Fact]
+    public async Task IncompleteTargetMembership_EnqueuesCatchUpWithoutWaitingForSnapshotChange()
+    {
+        await AddPlaylistWithTargetsAsync("stale-applied-list", ["jellyfin"]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "stale-applied-list",
+            [new PlaylistWatchTrackInsert("track-local", "ISRCLOCAL0001")]);
+        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+            "spotify",
+            "stale-applied-list",
+            new PlaylistWatchTrackVerification("track-local", 301, "identity_verified"));
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            "stale-applied-list",
+            "jellyfin",
+            "jf-playlist",
+            [new PlaylistWatchTargetMembershipWrite("track-local", 301, "jf-301", "waiting_for_target")]);
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                301,
+                "jellyfin",
+                "jf-301",
+                FilePath: null,
+                UpdatedAtUtc: DateTimeOffset.UtcNow)
+        ]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "stale-applied-list", "snapshot-applied");
+        var claimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
+            1, TimeSpan.FromMinutes(1), "stale-worker"));
+        Assert.True(await _repository.CompleteWatchlistPlaylistSyncJobAsync(
+            claimed, "stale-worker", WatchlistAppliedKind.Partial, null, null));
+        Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "stale-applied-list"));
+        Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "stale-applied-list", "snapshot-applied"));
+
+        Assert.True(await _repository.HasMembershipCatchUpPlaylistAsync());
+        Assert.True(await _repository.EnqueueMembershipCatchUpForIncompletePlaylistsAsync() > 0);
+        var job = Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "stale-applied-list"));
+        Assert.Equal("playlist", job.TrackId);
+        Assert.Equal("jellyfin", job.TargetService);
+        Assert.Equal("snapshot-applied", job.SnapshotId);
+        Assert.Equal(0, await _repository.EnqueueMembershipCatchUpForIncompletePlaylistsAsync());
     }
 
     [Fact]

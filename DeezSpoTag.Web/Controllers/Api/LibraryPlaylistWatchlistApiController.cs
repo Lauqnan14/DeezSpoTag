@@ -940,7 +940,17 @@ public partial class WatchlistApiController : ControllerBase
             item,
             CancellationToken.None,
             forceMediaServerSync: true);
-        var result = reconciliation.SyncResult;
+        var preference = await _repository.GetPlaylistWatchPreferenceAsync(item.Source, item.SourceId, cancellationToken);
+        var candidates = await _playlistWatchReconciler.GetCachedPlaylistTrackCandidatesAsync(
+            item.Source,
+            item.SourceId,
+            cancellationToken);
+        var result = await _playlistSyncService.SyncAvailablePlaylistTracksAsync(
+            item,
+            preference,
+            candidates,
+            force: true,
+            cancellationToken);
         return Ok(new
         {
             RepairNotifications = repairNotifications,
@@ -952,14 +962,14 @@ public partial class WatchlistApiController : ControllerBase
             reconciliation.QueuedTracks,
             reconciliation.CompletedTracks,
             reconciliation.FailedTracks,
-            PlaylistId = result?.PlaylistId,
-            SyncedTracks = result?.SyncedTracks ?? 0,
-            LocalMatches = result?.LocalMatches ?? 0,
-            TargetMatches = result?.TargetMatches ?? 0,
-            MissingTracks = result?.MissingTracks ?? 0,
-            MetadataMatches = result?.MetadataMatches ?? 0,
-            SearchMatches = result?.SearchMatches ?? 0,
-            SyncMessage = result?.Message
+            PlaylistId = result.PlaylistId,
+            SyncedTracks = result.SyncedTracks,
+            LocalMatches = result.LocalMatches,
+            TargetMatches = result.TargetMatches,
+            MissingTracks = result.MissingTracks,
+            MetadataMatches = result.MetadataMatches,
+            SearchMatches = result.SearchMatches,
+            SyncMessage = result.Message
         });
     }
 
@@ -1910,6 +1920,7 @@ public partial class WatchlistApiController : ControllerBase
             consecutiveFailures: 0,
             cancellationToken,
             touchLastChecked: false);
+        await _repository.ClearPlaylistWatchTargetSyncStateAsync(normalizedSource, sourceId, cancellationToken);
     }
 
     private static (bool UpdateArtwork, bool ReuseSavedArtwork) NormalizeArtworkPreference(bool reuseSavedArtwork)

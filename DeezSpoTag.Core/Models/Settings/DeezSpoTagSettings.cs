@@ -209,7 +209,7 @@ public class DeezSpoTagSettings
     public bool WatchEnabled { get; set; } = false;
     public int WatchPollIntervalSeconds { get; set; } = 3600;
     public int WatchMaxItemsPerRun { get; set; } = 50;
-    public bool WatchSmoothSyncEnabled { get; set; } = false;
+    public bool WatchSmoothSyncEnabled { get; set; } = true;
     public int WatchMaxReleasesPerArtist { get; set; } = 50;
     public int WatchMaxTracksPerPlaylistCheck { get; set; } = 50;
     public int WatchDelayBetweenPlaylistsSeconds { get; set; } = 2;

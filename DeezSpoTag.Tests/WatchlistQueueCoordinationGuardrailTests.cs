@@ -47,6 +47,9 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("GetUnfinishedWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetActiveWatchlistDownloadCountAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("_queueAdmission.TryAdmitTrack()", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.HasAnyAdmittedIdentity(identityKeys)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.RememberAdmittedIdentities(identityKeys)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("BuildWatchIdentityKeys", watchSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -111,6 +114,13 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.True(snapshotIndex > evaluateIndex);
         Assert.True(sourceRefreshAdmissionIndex > snapshotIndex);
         Assert.True(persistedAdmissionIndex >= 0);
+        var lastSmoothGuardBeforeAdmission = hostedSource.LastIndexOf(
+            "if (!smoothSyncEnabled)",
+            sourceRefreshAdmissionIndex,
+            StringComparison.Ordinal);
+        Assert.True(
+            lastSmoothGuardBeforeAdmission < snapshotIndex,
+            "Cached queue admission must fill WatchMaxItemsPerRun after every source sweep, including smooth-sync cycles.");
         Assert.True(beginRunIndex >= 0);
         Assert.Contains("repository.GetPlaylistWatchlistAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasActiveDownloadPipelineAsync", admissionSource, StringComparison.Ordinal);

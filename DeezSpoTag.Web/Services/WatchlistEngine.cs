@@ -13,6 +13,7 @@ using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Integrations.Tidal;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Services.Matching;
 using HtmlAgilityPack;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
@@ -658,6 +659,7 @@ internal sealed class WatchlistEngine
                 source,
                 sourceId,
                 syncSnapshotRevision,
+                forceMediaServerSync,
                 cancellationToken);
             if (targetJobs.Count > 0)
             {
@@ -825,7 +827,8 @@ internal sealed class WatchlistEngine
             message,
             nextAttemptUtc: null,
             consecutiveFailures: null,
-            cancellationToken);
+            cancellationToken,
+            touchLastChecked: false);
         return new PlaylistReconciliationResult(
             success,
             message,
@@ -3899,6 +3902,44 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             : new WatchIntentTrack(trackId, candidate.Isrc, intent);
     }
 
+    internal static IReadOnlyList<string> BuildWatchIdentityKeys(
+        string? trackId,
+        string? isrc,
+        DownloadIntent? intent)
+    {
+        var keys = new List<string>(8);
+        AddIdentityKey(keys, "isrc", TrackCandidateValidator.NormalizeIsrc(isrc ?? intent?.Isrc));
+        AddIdentityKey(keys, "deezer", intent?.DeezerId);
+        AddIdentityKey(keys, "spotify", intent?.SpotifyId);
+        AddIdentityKey(keys, "apple", intent?.AppleId);
+        AddIdentityKey(keys, "qobuz", intent?.QobuzId);
+        AddIdentityKey(keys, "tidal", intent?.TidalId);
+        AddIdentityKey(keys, "amazon", intent?.AmazonId);
+
+        var title = NormalizeIdentityToken(intent?.Title);
+        var artist = NormalizeIdentityToken(intent?.Artist);
+        if (!string.IsNullOrWhiteSpace(title) && !string.IsNullOrWhiteSpace(artist))
+        {
+            var durationMs = intent?.DurationMs > 0 ? intent.DurationMs : 0;
+            keys.Add($"meta:{artist}|{title}|{durationMs}");
+        }
+
+        AddIdentityKey(keys, "track", trackId);
+        return keys;
+    }
+
+    private static void AddIdentityKey(List<string> keys, string prefix, string? value)
+    {
+        var normalized = NormalizeIdentityToken(value);
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            keys.Add($"{prefix}:{normalized}");
+        }
+    }
+
+    private static string NormalizeIdentityToken(string? value)
+        => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+
     internal static int CountRemainingQueueableTracks(
         string source,
         IReadOnlyList<PlaylistTrackCandidate> candidates,
@@ -4326,6 +4367,12 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var track = trackList[index];
+                var identityKeys = BuildWatchIdentityKeys(track.TrackId, track.Isrc, track.Intent);
+                if (_queueAdmission.HasAnyAdmittedIdentity(identityKeys))
+                {
+                    continue;
+                }
+
                 var admission = _queueAdmission.TryAdmitTrack();
                 if (!admission.Allowed)
                 {
@@ -4371,6 +4418,10 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
 
                 var primaryQueuedCount = result.Success ? result.Queued.Count : 0;
                 _queueAdmission.Release(1 - primaryQueuedCount);
+                if (result.Success)
+                {
+                    _queueAdmission.RememberAdmittedIdentities(identityKeys);
+                }
 
                 if (ShouldDeferWatchTrack(result))
                 {

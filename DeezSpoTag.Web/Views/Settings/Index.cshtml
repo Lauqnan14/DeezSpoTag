@@ -1275,7 +1275,7 @@
                     </div>
                     <div class="checkbox-group">
                         <input type="checkbox" id="watchSmoothSyncEnabled">
-                        <label for="watchSmoothSyncEnabled">Smooth playlist sync (mirror library files, then download). Leave off until recovery has cleared stale backoff.</label>
+                        <label for="watchSmoothSyncEnabled">Smooth playlist sync (mirror library files first, then queue missing tracks). Leave on unless you need to pause Watchlist downloads.</label>
                     </div>
                     <div class="form-group">
                         <label for="watchMaxReleasesPerArtist">Max Releases Per Artist Check</label>
@@ -3959,24 +3959,29 @@ async function initNotificationPreferences() {
         return;
     }
 
+    function applyPreferencesPayload(payload) {
+        renderNotificationEventRows(payload?.events);
+        if (retention) {
+            retention.value = payload?.retentionDays ?? 30;
+        }
+        if (webhookUrl) {
+            webhookUrl.placeholder = payload?.webhookPreview
+                ? `Saved: ${payload.webhookPreview} - enter a new URL to replace it`
+                : 'https://ntfy.sh/your-topic';
+        }
+        if (status) {
+            status.textContent = payload?.webhookPreview
+                ? `Webhook configured: ${payload.webhookPreview}`
+                : 'No webhook configured. In-app notifications are still delivered.';
+        }
+    }
+
     try {
         const response = await fetch('/api/notifications/preferences');
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }
-        const payload = await response.json();
-        renderNotificationEventRows(payload?.events);
-        if (retention) {
-            retention.value = payload?.retentionDays ?? 30;
-        }
-        if (webhookUrl && payload?.hasWebhookUrl) {
-            webhookUrl.placeholder = 'Saved - enter a new URL to replace it';
-        }
-        if (status) {
-            status.textContent = payload?.hasWebhookUrl
-                ? 'Webhook configured.'
-                : 'No webhook configured. In-app notifications are still delivered.';
-        }
+        applyPreferencesPayload(await response.json());
     } catch (error) {
         container.textContent = 'Failed to load notification preferences.';
         return;
@@ -4003,6 +4008,7 @@ async function initNotificationPreferences() {
             if (webhookUrl) {
                 webhookUrl.value = '';
             }
+            applyPreferencesPayload(await response.json());
             showToast('Notification settings saved.', 'success');
         } catch (error) {
             showToast('Failed to save notification settings.', 'error');
@@ -4434,7 +4440,7 @@ function loadSettings(settings) {
     setCheckboxValue('watchEnabled', settings.watchEnabled);
     setFieldValue('watchPollIntervalSeconds', settings.watchPollIntervalSeconds);
     setFieldValue('watchMaxItemsPerRun', settings.watchMaxItemsPerRun);
-    setCheckboxValue('watchSmoothSyncEnabled', settings.watchSmoothSyncEnabled === true);
+    setCheckboxValue('watchSmoothSyncEnabled', settings.watchSmoothSyncEnabled !== false);
     setFieldValue('watchMaxReleasesPerArtist', settings.watchMaxReleasesPerArtist ?? 50);
     setFieldValue('watchMaxTracksPerPlaylistCheck', settings.watchMaxTracksPerPlaylistCheck ?? 50);
     setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
@@ -4808,7 +4814,7 @@ function collectFormData() {
         watchEnabled: getChecked('watchEnabled', baseSettings.watchEnabled ?? false),
         watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 3600),
         watchMaxItemsPerRun: getNumber('watchMaxItemsPerRun', baseSettings.watchMaxItemsPerRun ?? 50),
-        watchSmoothSyncEnabled: getChecked('watchSmoothSyncEnabled', baseSettings.watchSmoothSyncEnabled ?? false),
+        watchSmoothSyncEnabled: getChecked('watchSmoothSyncEnabled', baseSettings.watchSmoothSyncEnabled ?? true),
         watchMaxReleasesPerArtist: getNumber('watchMaxReleasesPerArtist', baseSettings.watchMaxReleasesPerArtist ?? 50),
         watchMaxTracksPerPlaylistCheck: getNumber('watchMaxTracksPerPlaylistCheck', baseSettings.watchMaxTracksPerPlaylistCheck ?? 50),
         watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),
