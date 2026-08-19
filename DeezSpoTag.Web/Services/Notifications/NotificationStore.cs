@@ -64,8 +64,7 @@ public sealed class NotificationStore
         await _gate.WaitAsync();
         try
         {
-            var entries = ReadEntries();
-            return entries
+            return ReadInAppVisibleEntries()
                 .Where(entry => !unreadOnly || !entry.IsRead)
                 .OrderByDescending(entry => entry.LastSeenUtc)
                 .Take(Math.Clamp(limit, 1, MaxEntries))
@@ -82,12 +81,25 @@ public sealed class NotificationStore
         await _gate.WaitAsync();
         try
         {
-            return ReadEntries().Count(entry => !entry.IsRead);
+            return ReadInAppVisibleEntries().Count(entry => !entry.IsRead);
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Entries persist regardless of channel preference so webhook delivery keeps its dedupe
+    /// history, but a kind with the "in-app" channel turned off must never surface here: the
+    /// toggle otherwise only silences the live push, and the stored entry would still show up the
+    /// next time the panel is opened.
+    /// </summary>
+    private IEnumerable<NotificationEntry> ReadInAppVisibleEntries()
+    {
+        var preferences = ReadPreferences();
+        preferences.EnsureDefaults();
+        return ReadEntries().Where(entry => preferences.Resolve(entry.Kind).InApp);
     }
 
     public sealed record AddResult(NotificationEntry Entry, bool IsNewIncident);

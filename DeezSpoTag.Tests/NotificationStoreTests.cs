@@ -124,6 +124,25 @@ public sealed class NotificationStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GetAsync_HidesEntriesForAKindWithInAppTurnedOff()
+    {
+        await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
+
+        var preferences = await _store.LoadPreferencesAsync();
+        preferences.Events[NotificationKinds.ProviderUnhealthy] = new NotificationChannelPreference
+        {
+            InApp = false,
+            Webhook = true
+        };
+        await _store.SavePreferencesAsync(preferences);
+
+        // Storage still keeps the entry (webhook dedupe needs the history); only the in-app view,
+        // which the notifications panel reads, must hide it once "in-app" is switched off.
+        Assert.Empty(await _store.GetAsync());
+        Assert.Equal(0, await _store.GetUnreadCountAsync());
+    }
+
+    [Fact]
     public async Task OnlyTheFirstRaiseOpensAnIncident()
     {
         var first = await _store.AddOrCoalesceAsync(Request("provider_unhealthy:zarz"), 30);
@@ -215,6 +234,21 @@ public sealed class NotificationStoreTests : IDisposable
             Assert.True(preferences.Resolve(kind).InApp, $"{kind} should default to in-app on.");
             Assert.False(preferences.Resolve(kind).Webhook, $"{kind} should default to webhook off.");
         });
+        Assert.Equal(NotificationTransportProvider.Apprise, preferences.ResolvedProvider);
+        Assert.Equal(ApprisePayloadMode.UniversalCompatibility, preferences.ResolvedApprisePayloadMode);
+    }
+
+    [Theory]
+    [InlineData("", null)]
+    [InlineData("https://ntfy.sh/my-secret-topic", "https://ntfy.sh/••••")]
+    [InlineData("https://ntfy.sh", "https://ntfy.sh")]
+    [InlineData("https://discord.com/api/webhooks/123/token", "https://discord.com/••••")]
+    [InlineData("not a url", "••••••••")]
+    public void BuildWebhookPreview_RedactsThePathSoTheTokenNeverReachesTheBrowser(string url, string? expected)
+    {
+        var preferences = new NotificationPreferences { WebhookUrl = url };
+
+        Assert.Equal(expected, preferences.BuildWebhookPreview());
     }
 
     [Fact]

@@ -2287,8 +2287,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? ''
                 : `<button type="button" class="notifications-item-action" data-notification-read="${escapeText(item?.id)}">Mark read</button>`;
             const clear = `<button type="button" class="notifications-item-action" data-notification-clear="${escapeText(item?.id)}">Clear</button>`;
-            const link = item?.link
-                ? `<a class="notifications-item-action" href="${escapeText(item.link)}">Open</a>`
+            const safeHref = item?.link ? globalThis.DeezSpoTag?.sanitizeActionHref(item.link) : '';
+            const link = safeHref
+                ? `<a class="notifications-item-action" href="${escapeText(safeHref)}">Open</a>`
                 : '';
             return `<div class="${classes.join(' ')}" data-notification-id="${escapeText(item?.id)}">
                 <div class="notifications-item-title">${escapeText(item?.title)}${suffix}</div>

@@ -89,7 +89,20 @@ public sealed class NotificationPreferences
 {
     public Dictionary<string, NotificationChannelPreference> Events { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string WebhookUrl { get; set; } = string.Empty;
+    public NotificationTransportProvider? Provider { get; set; }
+    public ApprisePayloadMode? AppriseMode { get; set; }
     public int RetentionDays { get; set; } = 30;
+
+    [JsonIgnore]
+    public NotificationTransportProvider ResolvedProvider
+        => Provider
+           ?? (LooksLikeAppriseEndpoint(WebhookUrl) || string.IsNullOrWhiteSpace(WebhookUrl)
+               ? NotificationTransportProvider.Apprise
+               : NotificationTransportProvider.GenericWebhook);
+
+    [JsonIgnore]
+    public ApprisePayloadMode ResolvedApprisePayloadMode
+        => AppriseMode ?? ApprisePayloadMode.UniversalCompatibility;
 
     public static NotificationPreferences CreateDefault()
     {
@@ -118,10 +131,50 @@ public sealed class NotificationPreferences
         {
             RetentionDays = 30;
         }
+
+        Provider ??= LooksLikeAppriseEndpoint(WebhookUrl)
+            ? NotificationTransportProvider.Apprise
+            : string.IsNullOrWhiteSpace(WebhookUrl)
+                ? NotificationTransportProvider.Apprise
+                : NotificationTransportProvider.GenericWebhook;
+        AppriseMode ??= ApprisePayloadMode.UniversalCompatibility;
     }
 
     public NotificationChannelPreference Resolve(string kind)
         => Events.TryGetValue(kind, out var preference)
             ? preference
             : new NotificationChannelPreference { InApp = true, Webhook = false };
+
+    internal static bool LooksLikeAppriseEndpoint(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var path = uri.AbsolutePath.TrimEnd('/');
+        return path.Equals("/notify", StringComparison.OrdinalIgnoreCase)
+               || path.StartsWith("/notify/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A redacted stand-in for the saved webhook URL, safe to send back to the browser: enough to
+    /// recognise which endpoint is configured (scheme, host, and whether it has a path) without
+    /// exposing a token or topic name that's often embedded in the path itself.
+    /// </summary>
+    public string? BuildWebhookPreview()
+    {
+        if (string.IsNullOrWhiteSpace(WebhookUrl))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(WebhookUrl, UriKind.Absolute, out var uri))
+        {
+            return "••••••••";
+        }
+
+        var hasPath = uri.PathAndQuery is { Length: > 1 };
+        return hasPath ? $"{uri.Scheme}://{uri.Host}/••••" : $"{uri.Scheme}://{uri.Host}";
+    }
 }

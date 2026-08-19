@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using DeezSpoTag.Services.Download.Shared.Models;
+using DeezSpoTag.Web.Services;
 
 namespace DeezSpoTag.Web.Services.Notifications;
 
@@ -110,7 +111,13 @@ public sealed class NotificationService : BackgroundService, INotificationSink
         Raise(recovery);
     }
 
-    public async Task<bool> SendWebhookTestAsync(string url, CancellationToken cancellationToken)
+    public Task<bool> SendWebhookTestAsync(string url, CancellationToken cancellationToken)
+        => SendWebhookTestAsync(url, cancellationToken, preferences: null);
+
+    public async Task<bool> SendWebhookTestAsync(
+        string url,
+        CancellationToken cancellationToken,
+        NotificationPreferences? preferences)
     {
         var probe = new NotificationEntry
         {
@@ -120,7 +127,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
             Title = "DeezSpoTag test notification",
             Body = "If you can read this, the webhook is configured correctly."
         };
-        return await PostWebhookAsync(url, probe, singleAttempt: true, cancellationToken);
+        return await PostWebhookAsync(url, probe, singleAttempt: true, cancellationToken, preferences);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -190,7 +197,7 @@ public sealed class NotificationService : BackgroundService, INotificationSink
 
         if (channels.Webhook && !string.IsNullOrWhiteSpace(preferences.WebhookUrl))
         {
-            await PostWebhookAsync(preferences.WebhookUrl, entry, singleAttempt: false, cancellationToken);
+            await PostWebhookAsync(preferences.WebhookUrl, entry, singleAttempt: false, cancellationToken, preferences);
         }
     }
 
@@ -198,22 +205,22 @@ public sealed class NotificationService : BackgroundService, INotificationSink
         string url,
         NotificationEntry entry,
         bool singleAttempt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        NotificationPreferences? preferences = null)
     {
-        var payload = JsonSerializer.Serialize(new
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var webhookUri)
+            || !await OutboundUrlGuard.IsAllowedRemoteUriAsync(
+                webhookUri,
+                _logger,
+                cancellationToken,
+                allowPrivateLan: true))
         {
-            title = entry.Title,
-            body = string.IsNullOrWhiteSpace(entry.Body) ? entry.Title : entry.Body,
-            type = ResolveWebhookType(entry.Severity),
-            id = entry.Id,
-            kind = entry.Kind,
-            severity = entry.Severity.ToString(),
-            entityType = entry.EntityType,
-            entityId = entry.EntityId,
-            link = entry.Link,
-            occurrenceCount = entry.OccurrenceCount,
-            timestamp = entry.LastSeenUtc
-        });
+            _logger.LogWarning("Rejected notification webhook URL by remote host policy.");
+            return false;
+        }
+
+        var transport = preferences ?? NotificationPreferences.CreateDefault();
+        var payload = JsonSerializer.Serialize(NotificationTransportAdapter.BuildPayload(entry, transport));
 
         var attempts = singleAttempt ? 1 : WebhookRetryDelays.Length + 1;
         for (var attempt = 0; attempt < attempts; attempt++)
@@ -247,12 +254,4 @@ public sealed class NotificationService : BackgroundService, INotificationSink
 
         return false;
     }
-
-    private static string ResolveWebhookType(NotificationSeverity severity)
-        => severity switch
-        {
-            NotificationSeverity.Warning => "warning",
-            NotificationSeverity.ActionRequired => "warning",
-            _ => "info"
-        };
 }

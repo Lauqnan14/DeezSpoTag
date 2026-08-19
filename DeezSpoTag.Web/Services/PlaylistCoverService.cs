@@ -1,6 +1,4 @@
 using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -46,13 +44,13 @@ public sealed class PlaylistCoverService
             return null;
         }
 
-        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var sourceUri) || !IsAllowedScheme(sourceUri))
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var sourceUri) || !OutboundUrlGuard.IsAllowedScheme(sourceUri))
         {
             _logger.LogWarning("Rejected playlist cover URL with invalid scheme: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(url));
             return null;
         }
 
-        if (!await IsAllowedRemoteUriAsync(sourceUri, cancellationToken))
+        if (!await OutboundUrlGuard.IsAllowedRemoteUriAsync(sourceUri, _logger, cancellationToken))
         {
             _logger.LogWarning("Rejected playlist cover URL by remote host policy: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(sourceUri.ToString()));
             return null;
@@ -224,7 +222,7 @@ public sealed class PlaylistCoverService
             }
 
             var finalUri = response.RequestMessage?.RequestUri;
-            if (finalUri != null && !await IsAllowedRemoteUriAsync(finalUri, cancellationToken))
+            if (finalUri != null && !await OutboundUrlGuard.IsAllowedRemoteUriAsync(finalUri, _logger, cancellationToken))
             {
                 _logger.LogWarning("Rejected redirected playlist cover URL by remote host policy: {Url}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(finalUri.ToString()));
                 return null;
@@ -269,7 +267,7 @@ public sealed class PlaylistCoverService
             }
 
             var finalUri = response.RequestMessage?.RequestUri;
-            if (finalUri != null && !await IsAllowedRemoteUriAsync(finalUri, cancellationToken))
+            if (finalUri != null && !await OutboundUrlGuard.IsAllowedRemoteUriAsync(finalUri, _logger, cancellationToken))
             {
                 _logger.LogWarning("Rejected redirected playlist cover HEAD URL by remote host policy: {Url}", finalUri);
                 return null;
@@ -514,136 +512,6 @@ public sealed class PlaylistCoverService
         }
 
         return w / h;
-    }
-
-    private static bool IsAllowedScheme(Uri uri)
-    {
-        return uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
-               || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private async Task<bool> IsAllowedRemoteUriAsync(Uri uri, CancellationToken cancellationToken)
-    {
-        if (!IsAllowedScheme(uri))
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(uri.DnsSafeHost))
-        {
-            return false;
-        }
-
-        var host = uri.DnsSafeHost.Trim().TrimEnd('.');
-        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-            host.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (IPAddress.TryParse(host, out var directIp))
-        {
-            return !IsBlockedAddress(directIp);
-        }
-
-        try
-        {
-            var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken);
-            if (addresses.Length == 0)
-            {
-                return false;
-            }
-
-            if (addresses.Any(IsBlockedAddress))
-            {
-                return false;
-            }
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Failed to resolve host for playlist cover URL validation: {Host}", DeezSpoTag.Core.Security.LogSanitizer.OneLine(host));
-            return false;
-        }
-
-        return true;
-    }
-
-    private static bool IsBlockedAddress(IPAddress address)
-    {
-        if (address.IsIPv4MappedToIPv6)
-        {
-            return IsBlockedAddress(address.MapToIPv4());
-        }
-
-        if (IsLoopbackOrWildcard(address))
-        {
-            return true;
-        }
-
-        return address.AddressFamily switch
-        {
-            AddressFamily.InterNetwork => IsBlockedIpv4Address(address),
-            AddressFamily.InterNetworkV6 => IsBlockedIpv6Address(address),
-            _ => false
-        };
-    }
-
-    private static bool IsLoopbackOrWildcard(IPAddress address)
-    {
-        return IPAddress.IsLoopback(address)
-               || address.Equals(IPAddress.Any)
-               || address.Equals(IPAddress.IPv6Any);
-    }
-
-    private static bool IsBlockedIpv4Address(IPAddress address)
-    {
-        var bytes = address.GetAddressBytes();
-        if (bytes.Length < 2)
-        {
-            return true;
-        }
-
-        if (bytes[0] == 0 || bytes[0] == 10 || bytes[0] == 127)
-        {
-            return true;
-        }
-
-        if (bytes[0] == 169 && bytes[1] == 254)
-        {
-            return true;
-        }
-
-        if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-        {
-            return true;
-        }
-
-        if (bytes[0] == 192 && bytes[1] == 168)
-        {
-            return true;
-        }
-
-        if (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127)
-        {
-            return true;
-        }
-
-        return bytes[0] >= 224;
-    }
-
-    private static bool IsBlockedIpv6Address(IPAddress address)
-    {
-        if (address.Equals(IPAddress.IPv6None)
-            || address.IsIPv6LinkLocal
-            || address.IsIPv6Multicast
-            || address.IsIPv6SiteLocal
-            || address.IsIPv6Teredo)
-        {
-            return true;
-        }
-
-        var bytes = address.GetAddressBytes();
-        return bytes.Length == 16 && (bytes[0] & 0xFE) == 0xFC;
     }
 
     private static string ComputeSha256(string input)

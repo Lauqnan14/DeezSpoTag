@@ -182,7 +182,18 @@ public sealed class NotificationSinkDispatchTests : IDisposable
     }
 
     [Fact]
-    public async Task WebhookTest_SendsAppriseCompatiblePayload()
+    public async Task WebhookTest_RejectsLoopbackAndLinkLocal_WithoutEverOpeningAConnection()
+    {
+        // ThrowingHttpClientFactory blows up if PostWebhookAsync ever gets as far as creating an
+        // HttpClient, so this proves the SSRF guard rejects the address before any request is
+        // attempted rather than merely failing the request afterwards.
+        Assert.False(await _service.SendWebhookTestAsync("http://127.0.0.1/notify", CancellationToken.None));
+        Assert.False(await _service.SendWebhookTestAsync("http://localhost/notify", CancellationToken.None));
+        Assert.False(await _service.SendWebhookTestAsync("http://169.254.169.254/latest/meta-data", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WebhookTest_AllowsPrivateLanAppriseEndpoints()
     {
         var factory = new RecordingHttpClientFactory();
         using var service = new NotificationService(
@@ -191,17 +202,64 @@ public sealed class NotificationSinkDispatchTests : IDisposable
             _listener,
             NullLogger<NotificationService>.Instance);
 
-        var delivered = await service.SendWebhookTestAsync("http://apprise.test/notify/apprise", CancellationToken.None);
+        Assert.True(await service.SendWebhookTestAsync("http://192.168.1.10:8180/notify/deezspotag", CancellationToken.None));
+        Assert.False(string.IsNullOrWhiteSpace(factory.LastBody));
+    }
+
+    [Fact]
+    public async Task WebhookTest_DefaultAppriseMode_RendersTitleAndBodyIntoOneField()
+    {
+        var factory = new RecordingHttpClientFactory();
+        using var service = new NotificationService(
+            _store,
+            factory,
+            _listener,
+            NullLogger<NotificationService>.Instance);
+
+        // The reserved .test TLD (RFC 2606) never resolves, and PostWebhookAsync now validates the
+        // webhook host against DNS before posting (see OutboundUrlGuard) — use a real, always-
+        // resolvable public host so this stays a test of the payload, not of DNS.
+        var delivered = await service.SendWebhookTestAsync("http://example.com/notify/deezspotag", CancellationToken.None);
 
         Assert.True(delivered);
         var body = factory.LastBody;
         Assert.NotNull(body);
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
-        Assert.Equal("DeezSpoTag test notification", root.GetProperty("title").GetString());
-        Assert.Equal("If you can read this, the webhook is configured correctly.", root.GetProperty("body").GetString());
-        Assert.Equal("info", root.GetProperty("type").GetString());
-        Assert.False(root.TryGetProperty("Title", out _));
-        Assert.False(root.TryGetProperty("Body", out _));
+        Assert.Equal(
+            "*DeezSpoTag test notification* If you can read this, the webhook is configured correctly.",
+            root.GetProperty("body").GetString());
+        Assert.False(root.TryGetProperty("title", out _));
+        Assert.False(root.TryGetProperty("type", out _));
+    }
+
+    [Fact]
+    public async Task WebhookTest_NativeAppriseMode_MergesTitleIntoBodyAndSendsType()
+    {
+        var factory = new RecordingHttpClientFactory();
+        using var service = new NotificationService(
+            _store,
+            factory,
+            _listener,
+            NullLogger<NotificationService>.Instance);
+        var preferences = new NotificationPreferences
+        {
+            Provider = NotificationTransportProvider.Apprise,
+            AppriseMode = ApprisePayloadMode.NativeTitleBody
+        };
+
+        var delivered = await service.SendWebhookTestAsync(
+            "http://example.com/notify/deezspotag",
+            CancellationToken.None,
+            preferences);
+
+        Assert.True(delivered);
+        using var document = JsonDocument.Parse(factory.LastBody!);
+        var root = document.RootElement;
+        Assert.Equal(
+            "*DeezSpoTag test notification* If you can read this, the webhook is configured correctly.",
+            root.GetProperty("body").GetString());
+        Assert.Equal("success", root.GetProperty("type").GetString());
+        Assert.False(root.TryGetProperty("title", out _));
     }
 }

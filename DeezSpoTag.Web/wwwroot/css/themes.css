@@ -1029,22 +1029,6 @@ textarea::placeholder {
 .theme-swatch[data-theme="amoled-inverse"] { background: linear-gradient(135deg, #ffffff 0%, #ffffff 48%, #000000 52%, #000000 100%); }
 
 /* Connected platforms */
-.notification-event-list {
-    margin-bottom: 12px;
-}
-
-.settings-section--toggle-style .switch-row.notification-event-item {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 120px 120px;
-    align-items: center;
-    gap: 0;
-}
-
-.notification-event-item .checkbox-group {
-    margin-bottom: 0;
-    gap: 8px;
-}
-
 .notifications-badge {
     margin-left: auto;
     min-width: 20px;

@@ -156,10 +156,142 @@
     box-shadow: 0 0 0 2px var(--primary-color);
 }
 
-.form-group input[type="checkbox"] {
+.form-group input[type="checkbox"],
+.form-group input[type="radio"] {
     width: auto;
     margin-right: 8px;
     transform: scale(1.2);
+}
+
+.notification-section-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 14px 0 8px;
+}
+
+.notification-event-list,
+.notification-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.notification-settings-grid--endpoint {
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 180px) auto;
+    align-items: end;
+}
+
+.notification-event-card,
+.notification-option-card {
+    display: flex;
+    min-height: 46px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--primary-color) 30%, var(--border-secondary));
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+.notification-event-card {
+    flex-direction: column;
+    gap: 10px;
+}
+
+.notification-option-card {
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.notification-option-card:has(input:checked) {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 70%, transparent);
+}
+
+.notification-option-card input[type="radio"],
+.notification-channel-option input[type="checkbox"] {
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    width: auto;
+    inline-size: 14px;
+    block-size: 14px;
+    margin: 0;
+    border: 1px solid var(--primary-color);
+    border-radius: 3px;
+    background: var(--bg-primary);
+    flex: 0 0 auto;
+}
+
+.notification-option-card input[type="radio"]:checked,
+.notification-channel-option input[type="checkbox"]:checked {
+    background: var(--primary-color);
+}
+
+.notification-option-card input[type="radio"]:checked::before,
+.notification-channel-option input[type="checkbox"]:checked::before {
+    content: "✓";
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.notification-option-card span,
+.notification-event-title,
+.notification-channel-option span {
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+
+.notification-event-title {
+    display: block;
+}
+
+.notification-channel-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.notification-channel-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+}
+
+.notification-channel-option span {
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.notification-field {
+    margin-bottom: 0;
+}
+
+.notification-field label {
+    display: block;
+    margin-bottom: 6px;
+}
+
+.notification-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 4px;
 }
 
 .form-group input[type="range"] {
@@ -839,6 +971,8 @@
     .form-row-3,
     .form-row-half,
     .multi-quality-atmos-grid,
+    .notification-settings-grid,
+    .notification-settings-grid--endpoint,
     .settings-container {
         grid-template-columns: 1fr;
         flex-direction: column;
@@ -860,6 +994,10 @@
     .server-library-pin-controls .action-btn {
         min-width: 0;
         max-width: none;
+        width: 100%;
+    }
+
+    .notification-settings-grid--endpoint .action-btn {
         width: 100%;
     }
 }
@@ -1660,24 +1798,50 @@
             </div>
             <div class="settings-content">
                 <p class="secondary-text">
-                    Choose where each event is delivered. In-app notifications appear in the sidebar; webhook posts JSON to the URL below and works with ntfy, Apprise, Gotify and Discord.
+                    Choose where each event is delivered. In-app notifications appear in the sidebar. Outbound delivery can go to Apprise or to a generic webhook. Title and body stay separate inside DeezSpoTag; the selected provider decides how they are sent.
                 </p>
                 <div id="notificationEventRows" class="notification-event-list">Loading notification preferences...</div>
-                <div class="server-library-pin-controls">
-                    <label for="notificationWebhookUrl" class="server-library-pin-label">Webhook URL</label>
-                    <input type="password" id="notificationWebhookUrl" placeholder="https://ntfy.sh/your-topic" autocomplete="off">
+                <div class="form-group">
+                    <div class="notification-section-label">Notification provider</div>
+                    <div class="notification-settings-grid" role="radiogroup" aria-label="Notification provider">
+                        <label class="notification-option-card" for="notificationProviderApprise">
+                            <input type="radio" name="notificationProvider" id="notificationProviderApprise" value="apprise" checked>
+                            <span>Apprise</span>
+                        </label>
+                        <label class="notification-option-card" for="notificationProviderGeneric">
+                            <input type="radio" name="notificationProvider" id="notificationProviderGeneric" value="genericWebhook">
+                            <span>Generic webhook</span>
+                        </label>
+                    </div>
+                </div>
+                <div id="notificationAppriseModeRow" class="form-group">
+                    <div class="notification-section-label">Payload mode</div>
+                    <div class="notification-settings-grid" role="radiogroup" aria-label="Apprise payload mode">
+                        <label class="notification-option-card" for="notificationAppriseModeUniversal">
+                            <input type="radio" name="notificationAppriseMode" id="notificationAppriseModeUniversal" value="universalCompatibility" checked>
+                            <span>Universal compatibility</span>
+                        </label>
+                        <label class="notification-option-card" for="notificationAppriseModeNative">
+                            <input type="radio" name="notificationAppriseMode" id="notificationAppriseModeNative" value="nativeTitleBody">
+                            <span>Native title/body</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="notification-settings-grid notification-settings-grid--endpoint">
+                    <div class="form-group notification-field">
+                        <label for="notificationWebhookUrl" id="notificationWebhookUrlLabel">Endpoint</label>
+                        <input type="password" id="notificationWebhookUrl" placeholder="http://host:8180/notify/deezspotag" autocomplete="off">
+                    </div>
+                    <div class="form-group notification-field">
+                        <label for="notificationRetentionDays">Retention (days)</label>
+                        <input type="number" id="notificationRetentionDays" min="1" max="365" value="30">
+                    </div>
                     <button type="button" class="action-btn action-btn-sm" id="testNotificationWebhookBtn">
                         <span class="material-icons">send</span>
                         <span>Test</span>
                     </button>
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="notificationRetentionDays">Retention (days)</label>
-                        <input type="number" id="notificationRetentionDays" min="1" max="365" value="30">
-                    </div>
-                </div>
-                <div class="btn-group">
+                <div class="notification-actions">
                     <button type="button" class="action-btn action-btn-sm" id="saveNotificationPreferencesBtn">
                         <span class="material-icons">save</span>
                         <span>Save Notification Settings</span>
@@ -3919,15 +4083,17 @@ function renderNotificationEventRows(events) {
 
     container.innerHTML = Object.keys(NOTIFICATION_EVENT_LABELS).map((kind) => {
         const value = events?.[kind] || { inApp: true, webhook: false };
-        return `<div class="switch-row notification-event-item" data-kind="${kind}">
-            <span class="switch-label">${NOTIFICATION_EVENT_LABELS[kind]}</span>
-            <div class="checkbox-group">
+        return `<div class="notification-event-card notification-event-item" data-kind="${kind}">
+            <span class="notification-event-title">${NOTIFICATION_EVENT_LABELS[kind]}</span>
+            <div class="notification-channel-grid">
+                <label class="notification-channel-option" for="notify-${kind}-in-app">
                 <input type="checkbox" id="notify-${kind}-in-app" data-channel="inApp" ${value.inApp ? 'checked' : ''}>
-                <label for="notify-${kind}-in-app">In-app</label>
-            </div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="notify-${kind}-webhook" data-channel="webhook" ${value.webhook ? 'checked' : ''}>
-                <label for="notify-${kind}-webhook">Webhook</label>
+                    <span>In-app</span>
+                </label>
+                <label class="notification-channel-option" for="notify-${kind}-webhook">
+                    <input type="checkbox" id="notify-${kind}-webhook" data-channel="webhook" ${value.webhook ? 'checked' : ''}>
+                    <span>Outbound</span>
+                </label>
             </div>
         </div>`;
     }).join('');
@@ -3954,9 +4120,44 @@ async function initNotificationPreferences() {
     const testButton = document.getElementById('testNotificationWebhookBtn');
     const retention = document.getElementById('notificationRetentionDays');
     const webhookUrl = document.getElementById('notificationWebhookUrl');
+    const webhookLabel = document.getElementById('notificationWebhookUrlLabel');
     const status = document.getElementById('notificationPreferencesStatus');
+    const appriseModeRow = document.getElementById('notificationAppriseModeRow');
     if (!container || !saveButton) {
         return;
+    }
+
+    function selectedProvider() {
+        return document.getElementById('notificationProviderApprise')?.checked
+            ? 'apprise'
+            : 'genericWebhook';
+    }
+
+    function selectedAppriseMode() {
+        return document.getElementById('notificationAppriseModeNative')?.checked
+            ? 'nativeTitleBody'
+            : 'universalCompatibility';
+    }
+
+    function setRadioValue(name, value) {
+        document.querySelectorAll(`input[name="${name}"]`).forEach((input) => {
+            input.checked = input.value === value;
+        });
+    }
+
+    function syncProviderUi() {
+        const isApprise = selectedProvider() === 'apprise';
+        if (appriseModeRow) {
+            appriseModeRow.hidden = !isApprise;
+        }
+        if (webhookLabel) {
+            webhookLabel.textContent = isApprise ? 'Endpoint' : 'Webhook URL';
+        }
+        if (webhookUrl && !webhookUrl.value) {
+            webhookUrl.placeholder = isApprise
+                ? 'http://host:8180/notify/deezspotag'
+                : 'https://ntfy.sh/your-topic';
+        }
     }
 
     function applyPreferencesPayload(payload) {
@@ -3964,15 +4165,24 @@ async function initNotificationPreferences() {
         if (retention) {
             retention.value = payload?.retentionDays ?? 30;
         }
+        setRadioValue('notificationProvider', payload?.provider === 'genericWebhook' ? 'genericWebhook' : 'apprise');
+        setRadioValue(
+            'notificationAppriseMode',
+            payload?.apprisePayloadMode === 'nativeTitleBody' ? 'nativeTitleBody' : 'universalCompatibility');
+        syncProviderUi();
         if (webhookUrl) {
+            const defaultPlaceholder = selectedProvider() === 'apprise'
+                ? 'http://host:8180/notify/deezspotag'
+                : 'https://ntfy.sh/your-topic';
             webhookUrl.placeholder = payload?.webhookPreview
                 ? `Saved: ${payload.webhookPreview} - enter a new URL to replace it`
-                : 'https://ntfy.sh/your-topic';
+                : defaultPlaceholder;
         }
         if (status) {
+            const configuredLabel = selectedProvider() === 'apprise' ? 'Apprise endpoint configured' : 'Webhook configured';
             status.textContent = payload?.webhookPreview
-                ? `Webhook configured: ${payload.webhookPreview}`
-                : 'No webhook configured. In-app notifications are still delivered.';
+                ? `${configuredLabel}: ${payload.webhookPreview}`
+                : 'No outbound endpoint configured. In-app notifications are still delivered.';
         }
     }
 
@@ -3992,6 +4202,8 @@ async function initNotificationPreferences() {
             saveButton.disabled = true;
             const body = {
                 events: collectNotificationEventRows(),
+                provider: selectedProvider(),
+                apprisePayloadMode: selectedAppriseMode(),
                 retentionDays: Number(retention?.value) || 30
             };
             if (webhookUrl?.value.trim()) {
@@ -4034,6 +4246,10 @@ async function initNotificationPreferences() {
             }
         });
     }
+
+    document.querySelectorAll('input[name="notificationProvider"]').forEach((input) => {
+        input.addEventListener('change', syncProviderUi);
+    });
 }
 
 function bindApiTokenActions() {

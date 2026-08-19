@@ -111,6 +111,20 @@ public sealed class NotificationsApiController : ControllerBase
             preferences.WebhookUrl = request.WebhookUrl.Trim();
         }
 
+        if (request.Provider is not null)
+        {
+            preferences.Provider = NotificationTransportAdapter.ParseProvider(
+                request.Provider,
+                preferences.ResolvedProvider);
+        }
+
+        if (request.ApprisePayloadMode is not null)
+        {
+            preferences.AppriseMode = NotificationTransportAdapter.ParsePayloadMode(
+                request.ApprisePayloadMode,
+                preferences.ResolvedApprisePayloadMode);
+        }
+
         if (request.RetentionDays is { } retention)
         {
             preferences.RetentionDays = Math.Clamp(retention, 1, 365);
@@ -130,7 +144,10 @@ public sealed class NotificationsApiController : ControllerBase
 
         try
         {
-            var delivered = await _service.SendWebhookTestAsync(preferences.WebhookUrl, cancellationToken);
+            var delivered = await _service.SendWebhookTestAsync(
+                preferences.WebhookUrl,
+                cancellationToken,
+                preferences);
             return delivered
                 ? Ok(new { delivered = true })
                 : StatusCode(502, new { error = "The webhook endpoint did not accept the test notification." });
@@ -152,7 +169,10 @@ public sealed class NotificationsApiController : ControllerBase
                     inApp = preferences.Resolve(kind).InApp,
                     webhook = preferences.Resolve(kind).Webhook
                 }),
+            provider = NotificationTransportAdapter.ResolveProviderValue(preferences.ResolvedProvider),
+            apprisePayloadMode = NotificationTransportAdapter.ResolvePayloadModeValue(preferences.ResolvedApprisePayloadMode),
             hasWebhookUrl = !string.IsNullOrWhiteSpace(preferences.WebhookUrl),
+            webhookPreview = preferences.BuildWebhookPreview(),
             preferences.RetentionDays
         };
 
@@ -161,5 +181,7 @@ public sealed class NotificationsApiController : ControllerBase
     public sealed record NotificationPreferencesRequest(
         Dictionary<string, NotificationChannelRequest>? Events,
         string? WebhookUrl,
+        string? Provider,
+        string? ApprisePayloadMode,
         int? RetentionDays);
 }
