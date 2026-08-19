@@ -103,9 +103,11 @@ public sealed class EngineFallbackSearchService
     {
         if (!IsAtmosRequest(request)
             && !string.IsNullOrWhiteSpace(request.SourceUrl)
-            && IsServiceUrlMatch(request.SourceUrl, request.Engine)
-            && !string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase))
+            && IsServiceUrlMatch(request.SourceUrl, request.Engine))
         {
+            // Tidal still quality-checks and, if this ID is Atmos-only, looks up the
+            // stereo counterpart when the Tidal engine actually downloads. Fallback
+            // must not drop a known Tidal URL as "unresolved" during the 8s resolve window.
             return new EngineFallbackSearchResult(request.SourceUrl, "same-engine-url");
         }
 

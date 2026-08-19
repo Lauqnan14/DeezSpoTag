@@ -74,6 +74,12 @@ public sealed class FallbackFailureClassificationGuardrailTests
         Assert.Contains("ResolveTrackUrlForQualityAsync", fallbackSearch, StringComparison.Ordinal);
         Assert.Contains("TidalTrackCanSatisfyQuality", tidal, StringComparison.Ordinal);
         Assert.Contains("MediaMetadata?.Tags", tidal, StringComparison.Ordinal);
+        Assert.Contains("TryResolveStereoCounterpartAsync", tidal, StringComparison.Ordinal);
+        Assert.Contains("IsTidalAtmosOnlyTrack", tidal, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "&& !string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase)",
+            fallbackSearch,
+            StringComparison.Ordinal);
     }
 
     [Fact]

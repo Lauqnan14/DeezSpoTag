@@ -403,6 +403,31 @@ public sealed class TidalStereoQualitySeparationTests
         Assert.Equal(expected, result);
     }
 
+    [Fact]
+    public void AtmosOnlyTidalIdentity_ResolvesStereoCounterpartInsteadOfFailingTheJob()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindRepoRoot(),
+            "DeezSpoTag.Services",
+            "Download",
+            "Tidal",
+            "TidalDownloadService.cs"));
+        var fallbackSearch = File.ReadAllText(Path.Join(
+            FindRepoRoot(),
+            "DeezSpoTag.Services",
+            "Download",
+            "Fallback",
+            "EngineFallbackSearchService.cs"));
+
+        Assert.Contains("TryResolveStereoCounterpartAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetAlbumTracksAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IsTidalAtmosOnlyTrack", source, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "&& !string.Equals(request.Engine, TidalEngine, StringComparison.OrdinalIgnoreCase)",
+            fallbackSearch,
+            StringComparison.Ordinal);
+    }
+
     private static object BuildTidalTrack(string audioMode, string tag)
     {
         var trackType = typeof(TidalDownloadService).GetNestedType("TidalTrack", BindingFlags.NonPublic)!;

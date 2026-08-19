@@ -277,6 +277,23 @@ public sealed class TidalDownloadService
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(persistedTrack.AudioQuality),
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.MediaMetadata?.Tags ?? [])),
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(string.Join(",", persistedTrack.AudioModes ?? [])));
+
+                if (validation.Accepted)
+                {
+                    var stereoCounterpart = await TryResolveStereoCounterpartAsync(
+                        persistedTrack,
+                        trackTitle,
+                        artistName,
+                        albumName,
+                        isrc,
+                        expectedDuration,
+                        requestedQuality,
+                        cancellationToken);
+                    if (stereoCounterpart != null && stereoCounterpart.Id > 0)
+                    {
+                        return BuildTidalTrackListenUrl(stereoCounterpart.Id);
+                    }
+                }
             }
 
             var trackInfo = await SearchTrackByMetadataWithIsrcForQualityAsync(
@@ -770,19 +787,87 @@ public sealed class TidalDownloadService
         throw new InvalidOperationException("No validated Tidal Atmos track match found");
     }
 
+    private async Task<TidalTrack?> TryResolveStereoCounterpartAsync(
+        TidalTrack atmosTrack,
+        string trackTitle,
+        string artistName,
+        string albumName,
+        string isrc,
+        int expectedDuration,
+        string requestedQuality,
+        CancellationToken cancellationToken)
+    {
+        if (!IsTidalAtmosOnlyTrack(atmosTrack) || atmosTrack.Album is not { Id: > 0 })
+        {
+            return null;
+        }
+
+        var albumTracks = await GetAlbumTracksAsync(atmosTrack.Album.Id, cancellationToken);
+        var sourceAlbum = NormalizeUsableAlbum(albumName) ?? atmosTrack.Album.Title;
+        var qualityCandidates = albumTracks
+            .Where(track => track.Id > 0 && track.Id != atmosTrack.Id)
+            .Where(track => TidalTrackCanSatisfyQuality(track, requestedQuality))
+            .ToList();
+        if (qualityCandidates.Count == 0)
+        {
+            return null;
+        }
+
+        return FindIsrcMatch(qualityCandidates, isrc, sourceAlbum)
+               ?? FindValidatedMetadataMatch(
+                   qualityCandidates,
+                   trackTitle,
+                   artistName,
+                   sourceAlbum,
+                   isrc,
+                   expectedDuration);
+    }
+
+    private async Task<List<TidalTrack>> GetAlbumTracksAsync(long albumId, CancellationToken cancellationToken)
+    {
+        var payload = await SendTidalPublicJsonOrDefaultAsync<TidalSearchResponse>(
+            BuildTidalNativeApiUrl(
+                $"albums/{albumId}/tracks",
+                new Dictionary<string, string>
+                {
+                    ["limit"] = "50",
+                    ["offset"] = "0"
+                }),
+            null,
+            ex =>
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug(ex, "Tidal album track listing failed for album {AlbumId}.", albumId);
+                }
+            },
+            cancellationToken);
+        return payload?.Items ?? [];
+    }
+
     private static bool HasTidalAtmosMode(TidalTrack track)
     {
         return track.AudioModes?.Any(static mode =>
             string.Equals(mode, "DOLBY_ATMOS", StringComparison.OrdinalIgnoreCase)) == true;
     }
 
+    private static bool HasTidalStereoMode(TidalTrack track)
+    {
+        return track.AudioModes == null
+               || track.AudioModes.Count == 0
+               || track.AudioModes.Any(static mode =>
+                   string.Equals(mode, "STEREO", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsTidalAtmosOnlyTrack(TidalTrack track)
+        => HasTidalAtmosMode(track) && !HasTidalStereoMode(track);
+
     private static bool TidalTrackCanSatisfyQuality(TidalTrack track, string? requestedQuality)
     {
         var requested = TidalStereoQuality.Normalize(requestedQuality);
-        var isAtmosOnly = HasTidalAtmosMode(track);
         if (requested == TidalStereoQualityTier.DolbyAtmos)
         {
-            return isAtmosOnly;
+            return HasTidalAtmosMode(track);
         }
 
         // Tidal represents an Atmos master as a distinct track ID from its stereo
@@ -793,7 +878,9 @@ public sealed class TidalDownloadService
         // satisfy -- the provider then returns Atmos content for a stereo/Hi-Res ask,
         // which only gets caught later, at download time, by
         // EnsureTidalManifestMatchesRequestedQuality.
-        if (isAtmosOnly)
+        // Atmos-only IDs are rejected here; the stereo sibling on the same album is
+        // resolved separately. Tidal does not ship Atmos without a stereo master.
+        if (IsTidalAtmosOnlyTrack(track))
         {
             return false;
         }
@@ -3816,6 +3903,9 @@ public sealed class TidalDownloadService
 
     private sealed class TidalAlbum
     {
+        [JsonPropertyName("id")]
+        public long Id { get; set; }
+
         [JsonPropertyName("title")]
         public string Title { get; set; } = "";
 
