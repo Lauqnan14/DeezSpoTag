@@ -45,6 +45,22 @@ public sealed class LastFmAutoTagMatcherTests
     }
 
     [Fact]
+    public async Task MatchAsync_RejectsAutocorrectedNearMissTitle()
+    {
+        var handler = new StubHandler("""
+        {"toptags":{"@attr":{"artist":"Same Artist","track":"Hold Me Closer"},"tag":[{"name":"pop","count":100}]}}
+        """);
+        var (matcher, auth) = CreateMatcher(handler);
+        await auth.UpdateAsync(state => state.LastFm = new LastFmAuth { ApiKey = "central-key" });
+
+        var result = await matcher.MatchAsync(
+            new AutoTagAudioInfo { Artist = "Same Artist", Title = "Hold Me Close" },
+            new LastFmConfig(), CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
     public async Task MatchAsync_RejectsAutocorrectedDifferentIdentity()
     {
         var handler = new StubHandler("""

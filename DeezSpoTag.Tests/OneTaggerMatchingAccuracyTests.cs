@@ -103,6 +103,31 @@ public sealed class OneTaggerMatchingAccuracyTests
         Assert.Equal("Save Your Tears", match!.Track.Title);
     }
 
+    [Theory]
+    [InlineData("Hold Me Close", "Hold Me Closer")]
+    [InlineData("Close", "Closer")]
+    [InlineData("The One", "The Ones")]
+    public void MatchTrack_RejectsNearMissAlternativeTitleFromSameArtist(string sourceTitle, string candidateTitle)
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = sourceTitle,
+            Artist = "Same Artist",
+            Artists = new List<string> { "Same Artist" },
+            DurationSeconds = 200
+        };
+        var candidate = new TestTrack(candidateTitle, new List<string> { "Same Artist" }, TimeSpan.FromSeconds(200));
+
+        var match = OneTaggerMatching.MatchTrack(
+            info,
+            new[] { candidate },
+            StrictConfig(),
+            Selectors(),
+            matchArtist: true);
+
+        Assert.Null(match);
+    }
+
     [Fact]
     public void MatchTrack_AllowsRequestedRemixToMatchRemix()
     {

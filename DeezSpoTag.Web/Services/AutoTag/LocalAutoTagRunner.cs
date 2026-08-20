@@ -1756,6 +1756,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             return null;
         }
 
+        if (!TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, incomingFullTitle))
+        {
+            return "match rejected by quality guard (title identity)";
+        }
+
         List<string> sourceArtists;
         if (info.Artists.Count > 0)
         {
@@ -1851,6 +1856,11 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         if (TrackTitleMatcher.HasVersionDrift(info.Title, incomingFullTitle))
         {
             return "match rejected by Boomplay guard (version drift)";
+        }
+
+        if (!hasMatchingIsrc && !TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, incomingFullTitle))
+        {
+            return "match rejected by Boomplay guard (title identity)";
         }
 
         var sourceTitle = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(info.Title));
@@ -10145,7 +10155,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             var normalizedExistingTitle = AutoTagSimilarity.NormalizeText(existingTitle);
             var normalizedIncomingTitle = AutoTagSimilarity.NormalizeText(sourceTrack.Title);
             var titleSimilarity = AutoTagSimilarity.ComputeScore(normalizedExistingTitle, normalizedIncomingTitle);
-            if (titleSimilarity < 0.90d)
+            if (!TrackTitleMatcher.HasCompatibleTitleIdentity(existingTitle, sourceTrack.Title)
+                || titleSimilarity < 0.90d)
             {
                 sourceTrack.Title = existingTitle;
                 effectiveTagSettings.Title = false;
@@ -10375,6 +10386,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
 
     private static bool ShouldKeepExistingTitle(string existingTitle, string incomingTitle)
     {
+        if (TrackIdentityTrust.IsWeakMetadataValue(existingTitle))
+        {
+            return false;
+        }
+
+        if (IsNearMissAlternativeTitle(existingTitle, incomingTitle))
+        {
+            return true;
+        }
+
         var existingNormalized = NormalizeLooseTitle(existingTitle);
         var incomingNormalized = NormalizeLooseTitle(incomingTitle);
         if (string.IsNullOrWhiteSpace(existingNormalized) || string.IsNullOrWhiteSpace(incomingNormalized))
@@ -10417,6 +10438,24 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             || TitleQualifierRegex.IsMatch(title)
             || BracketedTitleDetailRegex.IsMatch(title)
             || VariantSuffixRegex.IsMatch(title.Trim());
+    }
+
+    private static bool IsNearMissAlternativeTitle(string existingTitle, string incomingTitle)
+    {
+        if (TrackTitleMatcher.HasCompatibleTitleIdentity(existingTitle, incomingTitle))
+        {
+            return false;
+        }
+
+        var existingNormalized = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(existingTitle));
+        var incomingNormalized = AutoTagSimilarity.NormalizeText(OneTaggerMatching.CleanTitleMatching(incomingTitle));
+        if (string.IsNullOrWhiteSpace(existingNormalized) || string.IsNullOrWhiteSpace(incomingNormalized))
+        {
+            return false;
+        }
+
+        // Old MusicBrainz/OneTagger fuzzy thresholds treated scores around 0.86 as the same work.
+        return AutoTagSimilarity.ComputeScore(existingNormalized, incomingNormalized) >= 0.80d;
     }
 
     private static string NormalizeLooseTitle(string value)

@@ -177,7 +177,7 @@ internal static class OneTaggerMatching
             }
 
             var trackTitle = FullTitle(selectors.GetTitle(track), selectors.GetVersion(track));
-            if (IsDisallowedVersionDrift(info.Title, trackTitle))
+            if (!TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, trackTitle))
             {
                 continue;
             }
@@ -212,12 +212,6 @@ internal static class OneTaggerMatching
         SortTracks(top, config.MultipleMatches, selectors.GetReleaseDate);
 
         return new MatchSelection<T>(top[0].Score, top[0].Track);
-    }
-
-    private static bool IsDisallowedVersionDrift(string? sourceTitle, string? candidateTitle)
-    {
-        return !TrackIdentityTrust.IsWeakMetadataValue(sourceTitle)
-            && TrackTitleMatcher.HasVersionDrift(sourceTitle, candidateTitle);
     }
 
     private static double ApplyEvidenceCaps(
@@ -280,7 +274,7 @@ internal static class OneTaggerMatching
                 }
 
                 var trackTitle = FullTitle(selectors.GetTitle(track), selectors.GetVersion(track));
-                if (IsDisallowedVersionDrift(info.Title, trackTitle))
+                if (!TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, trackTitle))
                 {
                     continue;
                 }

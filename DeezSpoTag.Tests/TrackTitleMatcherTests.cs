@@ -39,6 +39,41 @@ public sealed class TrackTitleMatcherTests
         => Assert.False(TrackTitleMatcher.TitlesMatch(expected, actual));
 
     [Theory]
+    [InlineData("Hold Me Close", "Hold Me Closer")]
+    [InlineData("Close", "Closer")]
+    [InlineData("The One", "The Ones")]
+    [InlineData("Love", "Loved")]
+    public void TitlesMatch_DoesNotTreatNearMissAlternativeTitlesAsTheSameWork(
+        string expected,
+        string actual)
+    {
+        Assert.False(TrackTitleMatcher.TitlesMatch(expected, actual));
+        Assert.False(TrackTitleMatcher.TitlesMatch(actual, expected));
+        Assert.False(TrackTitleMatcher.HasCompatibleTitleIdentity(expected, actual));
+        Assert.False(TrackTitleMatcher.HasCompatibleTitleIdentity(actual, expected));
+    }
+
+    [Theory]
+    [InlineData("All Eyes On Me", "All Eyes On Me (feat. Burna Boy)")]
+    [InlineData("Hold Me Close", "Hold Me Close (feat. Tems)")]
+    [InlineData("Save Your Tears", "Save Your Tears (Official Audio)")]
+    public void TitlesMatch_StillAllowsFeaturedArtistAndCosmeticContainment(
+        string expected,
+        string actual)
+    {
+        Assert.True(TrackTitleMatcher.TitlesMatch(expected, actual));
+        Assert.True(TrackTitleMatcher.HasCompatibleTitleIdentity(expected, actual));
+    }
+
+    [Fact]
+    public void HasCompatibleTitleIdentity_AllowsWeakSourceTitlesToBeFilledIn()
+    {
+        Assert.True(TrackTitleMatcher.HasCompatibleTitleIdentity("Unknown", "Hold Me Closer"));
+        Assert.True(TrackTitleMatcher.HasCompatibleTitleIdentity("Track", "Hold Me Closer"));
+        Assert.False(TrackTitleMatcher.HasCompatibleTitleIdentity("Hold Me Close", "Hold Me Closer"));
+    }
+
+    [Theory]
     [InlineData("JAŸ-Z", "Jay Z")]
     [InlineData("Mike WiLL Made-It", "Mike Will Made It")]
     public void StrictArtistsMatch_TreatsCrossServicePunctuationAndDiacriticsAsSameArtist(

@@ -39,6 +39,33 @@ public sealed class BoomplayMatcherGuardrailTests
     }
 
     [Fact]
+    public void IsIdMatchCandidateConsistent_RejectsNearMissAlternativeTitle()
+    {
+        var info = new AutoTagAudioInfo
+        {
+            Title = "Hold Me Close",
+            Artist = "Same Artist",
+            Artists = new List<string> { "Same Artist" }
+        };
+        var candidate = new BoomplayTrackMetadata
+        {
+            Id = "4133539",
+            Title = "Hold Me Closer",
+            Artist = "Same Artist"
+        };
+        var matchingConfig = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var isConsistent = Assert.IsType<bool>(IsIdMatchCandidateConsistentMethod.Invoke(null, new object?[] { info, candidate, matchingConfig }));
+
+        Assert.False(isConsistent);
+    }
+
+    [Fact]
     public void IsIdMatchCandidateConsistent_RejectsInstrumentalTitleDrift()
     {
         var info = new AutoTagAudioInfo

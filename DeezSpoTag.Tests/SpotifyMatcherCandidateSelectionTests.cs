@@ -86,6 +86,29 @@ public sealed class SpotifyMatcherCandidateSelectionTests
     }
 
     [Fact]
+    public void SelectBestCandidate_DoesNotReplaceSourceTitleWithNearMissAlternative()
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "Hold Me Close",
+            Artist = "Same Artist",
+            Artists = new List<string> { "Same Artist" },
+            DurationSeconds = 200
+        };
+        var nearMiss = new SpotifyTrackInfo
+        {
+            Title = "Hold Me Closer",
+            Artists = new List<string> { "Same Artist" },
+            Duration = TimeSpan.FromSeconds(200),
+            TrackId = "1111111111111111111111"
+        };
+
+        var selected = InvokeSelectBestCandidate(source, new[] { nearMiss });
+
+        Assert.Null(selected);
+    }
+
+    [Fact]
     public void SelectBestCandidate_DoesNotUseCompilationForRequestedAlbum()
     {
         var compilation = new SpotifyTrackInfo

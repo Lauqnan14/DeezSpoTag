@@ -120,6 +120,37 @@ public sealed class MusicBrainzImplementationTests
         Assert.True(MusicBrainzMatcher.IsVariantCompatible(sourceTitle, candidateTitle));
     }
 
+    [Theory]
+    [InlineData("Hold Me Close", "Hold Me Closer")]
+    [InlineData("Close", "Closer")]
+    [InlineData("The One", "The Ones")]
+    public void CandidateGuard_RejectsNearMissAlternativeTitleFromSameArtist(string sourceTitle, string candidateTitle)
+    {
+        var method = typeof(MusicBrainzMatcher).GetMethod("IsCandidateCompatibleWithSource", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("MusicBrainzMatcher.IsCandidateCompatibleWithSource not found.");
+        var info = new AutoTagAudioInfo
+        {
+            Title = sourceTitle,
+            Artist = "Same Artist",
+            Artists = ["Same Artist"]
+        };
+        var candidate = new MusicBrainzTrack
+        {
+            Title = candidateTitle,
+            Artists = ["Same Artist"]
+        };
+        var config = new AutoTagMatchingConfig
+        {
+            Strictness = 0.7,
+            MatchDuration = false,
+            MaxDurationDifferenceSeconds = 4
+        };
+
+        var compatible = (bool)method.Invoke(null, [info, candidate, config])!;
+
+        Assert.False(compatible);
+    }
+
     [Fact]
     public void CandidateGuard_RejectsSameArtistDifferentShortTitle()
     {

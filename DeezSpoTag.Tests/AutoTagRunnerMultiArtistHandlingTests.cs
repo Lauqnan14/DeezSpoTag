@@ -418,7 +418,7 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
                 new AutoTagMatchingConfig { Strictness = 0.7 }
             });
 
-        Assert.StartsWith("match rejected by quality guard (title similarity ", reason, StringComparison.Ordinal);
+        Assert.Equal("match rejected by quality guard (title identity)", reason);
     }
 
     [Fact]

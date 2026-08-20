@@ -65,6 +65,19 @@ public sealed class DiscogsMatcherVariantGuardTests
     }
 
     [Fact]
+    public void MatchTracks_DoesNotReturnNearMissAlternativeTitleFromSameArtist()
+    {
+        var match = InvokeMatchTracks(
+            BuildInfo("Hold Me Close"),
+            new List<DiscogsTrackInfo>
+            {
+                BuildTrack("Hold Me Closer")
+            });
+
+        Assert.Null(match);
+    }
+
+    [Fact]
     public void MatchTracks_DoesNotReturnDiscogsInstrumentalCandidateForNormalSourceTitle()
     {
         var match = InvokeMatchTracks(

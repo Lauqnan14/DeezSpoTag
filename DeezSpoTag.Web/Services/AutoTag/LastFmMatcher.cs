@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
+using DeezSpoTag.Core.Utils;
 
 namespace DeezSpoTag.Web.Services.AutoTag;
 
@@ -133,7 +134,8 @@ public sealed class LastFmMatcher
     private static bool IdentityMatches(LastFmTopTagsAttributes? attributes, string artist, string title)
     {
         if (attributes == null || string.IsNullOrWhiteSpace(attributes.Artist) || string.IsNullOrWhiteSpace(attributes.Track)) return false;
-        return NormalizeKey(attributes.Artist) == NormalizeKey(artist) && NormalizeKey(attributes.Track) == NormalizeKey(title);
+        return NormalizeKey(attributes.Artist) == NormalizeKey(artist)
+            && TrackTitleMatcher.HasCompatibleTitleIdentity(title, attributes.Track);
     }
 
     private static ClassifiedTag? Classify(WeightedTag tag)

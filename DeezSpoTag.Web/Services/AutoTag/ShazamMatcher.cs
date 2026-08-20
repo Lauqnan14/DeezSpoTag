@@ -60,12 +60,12 @@ public sealed class ShazamMatcher
         var artistSimilarity = ComputeArtistSimilarity(info, recognized);
         var durationDiffSeconds = ComputeDurationDiffSeconds(info.DurationSeconds, recognized.DurationMs);
         var durationSimilarity = ComputeDurationSimilarity(durationDiffSeconds, resolvedConfig.MaxDurationDeltaSeconds);
-        if (trustSourceIdentity && TrackTitleMatcher.HasVersionDrift(info.Title, recognized.Title))
+        if (trustSourceIdentity && !TrackTitleMatcher.HasCompatibleTitleIdentity(info.Title, recognized.Title))
         {
             if (_logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
-                    "Rejected Shazam fingerprint match for {File}: version drift from {SourceTitle} to {RecognizedTitle}",
+                    "Rejected Shazam fingerprint match for {File}: title identity from {SourceTitle} to {RecognizedTitle}",
                     LogSanitizer.OneLine(filePath),
                     LogSanitizer.OneLine(info.Title),
                     LogSanitizer.OneLine(recognized.Title));

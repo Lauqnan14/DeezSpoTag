@@ -59,6 +59,22 @@ public static class TrackTitleMatcher
             || HasSafeContainmentMatch(expectedSignature.BaseTitle, actualSignature.BaseTitle);
     }
 
+    /// <summary>
+    /// True when a candidate title is the same work as the source title.
+    /// Punctuation, edition markers, and featured-artist containment are allowed.
+    /// Near-miss alternative titles from the same artist (Close vs Closer) are not.
+    /// Weak or empty source titles are treated as compatible so they can be filled in.
+    /// </summary>
+    public static bool HasCompatibleTitleIdentity(string? sourceTitle, string? candidateTitle)
+    {
+        if (TrackIdentityTrust.IsWeakMetadataValue(sourceTitle))
+        {
+            return true;
+        }
+
+        return TitlesMatch(sourceTitle, candidateTitle);
+    }
+
     public static bool ArtistsMatch(string? expected, string? actual)
     {
         var expectedArtists = ExpandComparableArtists(expected);
@@ -203,7 +219,14 @@ public static class TrackTitleMatcher
     {
         var shorter = expectedTitle.Length <= actualTitle.Length ? expectedTitle : actualTitle;
         var longer = expectedTitle.Length > actualTitle.Length ? expectedTitle : actualTitle;
-        return shorter.Length >= 4 && longer.Contains(shorter, StringComparison.Ordinal);
+        if (shorter.Length < 4)
+        {
+            return false;
+        }
+
+        // Require the shorter title as a whole-word phrase so "close" does not match "closer".
+        var pattern = $@"\b{Regex.Escape(shorter)}\b";
+        return Regex.IsMatch(longer, pattern, RegexOptions.None, RegexTimeout);
     }
 
     private static string RemoveTrailingVersionSection(string value, char startChar, char endChar)
