@@ -4305,7 +4305,9 @@ ON CONFLICT(track_id) DO UPDATE SET
             var normalized = NormalizePathForLookup(path);
             if (byAbsolutePath.TryGetValue(normalized, out var trackId)
                 || byRelativePath.TryGetValue(normalized, out trackId)
-                || TryFindByUniqueRelativeSuffix(normalized, byRelativePath, out trackId))
+                || TryFindByUniqueRelativeSuffix(normalized, byRelativePath, out trackId)
+                || TryFindByUniqueParentAndFileName(normalized, localRows, out trackId)
+                || TryFindByUniqueAlbumAndTitle(normalized, localRows, out trackId))
             {
                 result[path] = trackId;
             }
@@ -4355,7 +4357,8 @@ ON CONFLICT(track_id) DO UPDATE SET
         }
 
         var matches = byRelativePath
-            .Where(pair => normalizedPath.EndsWith("/" + pair.Key, StringComparison.OrdinalIgnoreCase))
+            .Where(pair => normalizedPath.EndsWith("/" + pair.Key, StringComparison.OrdinalIgnoreCase)
+                           || pair.Key.EndsWith("/" + normalizedPath.TrimStart('/'), StringComparison.OrdinalIgnoreCase))
             .Take(2)
             .ToList();
         if (matches.Count != 1)
@@ -4365,6 +4368,173 @@ ON CONFLICT(track_id) DO UPDATE SET
 
         trackId = matches[0].Value;
         return true;
+    }
+
+    private static bool TryFindByUniqueParentAndFileName(
+        string normalizedPath,
+        IReadOnlyList<LocalTrackFileRow> localRows,
+        out long trackId)
+    {
+        trackId = 0;
+        var fileName = Path.GetFileName(normalizedPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+        }
+
+        var parent = Path.GetFileName(
+            Path.GetDirectoryName(normalizedPath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(parent))
+        {
+            return false;
+        }
+
+        long? matched = null;
+        foreach (var row in localRows)
+        {
+            var localPath = NormalizePathForLookup(row.AbsolutePath);
+            if (string.IsNullOrWhiteSpace(localPath))
+            {
+                localPath = NormalizePathForLookup(row.RelativePath);
+            }
+
+            var localFile = Path.GetFileName(localPath);
+            var localParent = Path.GetFileName(
+                Path.GetDirectoryName(localPath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty);
+            if (!string.Equals(fileName, localFile, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(parent, localParent, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (matched.HasValue && matched.Value != row.TrackId)
+            {
+                return false;
+            }
+
+            matched = row.TrackId;
+        }
+
+        if (!matched.HasValue)
+        {
+            return false;
+        }
+
+        trackId = matched.Value;
+        return true;
+    }
+
+    private static bool TryFindByUniqueAlbumAndTitle(
+        string normalizedPath,
+        IReadOnlyList<LocalTrackFileRow> localRows,
+        out long trackId)
+    {
+        trackId = 0;
+        if (!TryGetAlbumArtistAndTitleKey(normalizedPath, out var album, out var artist, out var titleKey))
+        {
+            return false;
+        }
+
+        long? matched = null;
+        foreach (var row in localRows)
+        {
+            var localPath = NormalizePathForLookup(row.AbsolutePath);
+            if (string.IsNullOrWhiteSpace(localPath))
+            {
+                localPath = NormalizePathForLookup(row.RelativePath);
+            }
+
+            if (!TryGetAlbumArtistAndTitleKey(localPath, out var localAlbum, out var localArtist, out var localTitle)
+                || !string.Equals(album, localAlbum, StringComparison.Ordinal)
+                || !string.Equals(titleKey, localTitle, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(artist)
+                && !string.IsNullOrWhiteSpace(localArtist)
+                && !string.Equals(artist, localArtist, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (matched.HasValue && matched.Value != row.TrackId)
+            {
+                return false;
+            }
+
+            matched = row.TrackId;
+        }
+
+        if (!matched.HasValue)
+        {
+            return false;
+        }
+
+        trackId = matched.Value;
+        return true;
+    }
+
+    private static bool TryGetAlbumArtistAndTitleKey(
+        string normalizedPath,
+        out string album,
+        out string artist,
+        out string titleKey)
+    {
+        album = string.Empty;
+        artist = string.Empty;
+        titleKey = string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedPath))
+        {
+            return false;
+        }
+
+        var parts = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            return false;
+        }
+
+        var fileName = parts[^1];
+        album = parts[^2];
+        artist = parts.Length >= 3 ? parts[^3] : string.Empty;
+        titleKey = NormalizeTitleKey(fileName, artist);
+        return !string.IsNullOrWhiteSpace(album) && !string.IsNullOrWhiteSpace(titleKey);
+    }
+
+    private static string NormalizeTitleKey(string fileName, string? artistFolder)
+    {
+        var stem = Path.GetFileNameWithoutExtension(fileName).Trim();
+        if (string.IsNullOrWhiteSpace(stem))
+        {
+            return string.Empty;
+        }
+
+        var index = 0;
+        while (index < stem.Length && index < 3 && char.IsDigit(stem[index]))
+        {
+            index++;
+        }
+
+        if (index > 0 && index < stem.Length)
+        {
+            var remainder = stem[index..].TrimStart();
+            if (remainder.Length > 1 && remainder[0] is '-' or '.' or '_')
+            {
+                stem = remainder[1..].TrimStart();
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(artistFolder))
+        {
+            var prefix = artistFolder.Trim() + " - ";
+            if (stem.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                stem = stem[prefix.Length..].TrimStart();
+            }
+        }
+
+        return stem.ToLowerInvariant();
     }
 
     private static async Task<Dictionary<string, long>> GetTrackIdsByExactFilePathsAsync(
@@ -4433,6 +4603,22 @@ WHERE af.path IS NOT NULL
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return string.Empty;
+        }
+
+        if (normalized.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(normalized, UriKind.Absolute, out var fileUri)
+            && fileUri.IsFile)
+        {
+            normalized = fileUri.LocalPath;
+        }
+
+        try
+        {
+            normalized = Uri.UnescapeDataString(normalized);
+        }
+        catch (UriFormatException)
+        {
+            // Keep the original path when it is not URI-encoded.
         }
 
         normalized = normalized.Replace('\\', '/');
@@ -11545,6 +11731,7 @@ WHERE (lower(status) IN ('pending','retry')
 SELECT 1
 FROM watchlist_reconciliation_request
 WHERE kind=@kind AND source=@source AND identifier=@identifier
+  AND lower(status) IN ('pending', 'retry', 'processing')
   AND NOT (
         @ignoreLeaseOwner IS NOT NULL
         AND lease_owner=@ignoreLeaseOwner
@@ -12320,6 +12507,66 @@ ORDER BY t.source, t.source_id;", connection);
         }
 
         return playlists;
+    }
+
+    public async Task<int> PromoteSharedIdentitiesFromMetadataAsync(
+        string? targetService = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured)
+        {
+            return 0;
+        }
+
+        var normalizedService = NormalizeServiceKey(targetService);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE watchlist_shared_identity
+SET status='resolved',
+    target_item_id=(
+        SELECT meta.target_item_id
+        FROM media_server_track_metadata meta
+        WHERE meta.track_id = watchlist_shared_identity.local_track_id
+          AND lower(meta.service) = watchlist_shared_identity.target_service
+          AND meta.target_item_id IS NOT NULL
+          AND TRIM(meta.target_item_id) <> ''
+        LIMIT 1
+    ),
+    last_error=NULL,
+    attempt_count=0,
+    next_retry_utc=NULL,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(status) IN ('pending_refresh', 'unresolved', 'stale')
+  AND (@service = '' OR target_service = @service)
+  AND EXISTS (
+        SELECT 1
+        FROM media_server_track_metadata meta
+        WHERE meta.track_id = watchlist_shared_identity.local_track_id
+          AND lower(meta.service) = watchlist_shared_identity.target_service
+          AND meta.target_item_id IS NOT NULL
+          AND TRIM(meta.target_item_id) <> '')
+RETURNING local_track_id, target_service;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        var promoted = new List<(long TrackId, string Service)>();
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                promoted.Add((reader.GetInt64(0), reader.GetString(1)));
+            }
+        }
+
+        foreach (var item in promoted)
+        {
+            await EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+                item.TrackId,
+                item.Service,
+                string.Empty,
+                cancellationToken);
+        }
+
+        return promoted.Count;
     }
 
     public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueMembershipJobsForResolvedSharedIdentitiesAsync(

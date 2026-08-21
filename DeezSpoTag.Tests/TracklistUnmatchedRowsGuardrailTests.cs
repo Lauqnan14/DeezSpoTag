@@ -48,6 +48,9 @@ public sealed class TracklistUnmatchedRowsGuardrailTests
         Assert.Contains("${shouldShowIgnore ? `<th class=\"track-ignore\"><span class=\"track-ignore-toggle ${ignoreToggleClass}\" title=\"${ignoreToggleTitle}\">Ignore</span></th>` : ''}", view, StringComparison.Ordinal);
         Assert.Contains("${shouldShowIgnore ? `<td class=\"track-ignore\">", view, StringComparison.Ordinal);
         Assert.Contains("setIgnoreVisibility(true);", view, StringComparison.Ordinal);
+        Assert.Contains("tracks-table--ignore-enabled", view, StringComparison.Ordinal);
+        Assert.Contains("table.classList.toggle('tracks-table--ignore-enabled', watchlistIgnoreEnabled);", view, StringComparison.Ordinal);
+        Assert.Contains(".tracks-table:not(.tracks-table--ignore-enabled) th.track-ignore,", view, StringComparison.Ordinal);
         Assert.DoesNotContain("setIgnoreVisibility(false);\n        } else {\n            applyDefaultMonitorState(false);", view, StringComparison.Ordinal);
         Assert.DoesNotContain("tracks-table--with-ignore col.col-actions { width: 168px; }", view, StringComparison.Ordinal);
     }

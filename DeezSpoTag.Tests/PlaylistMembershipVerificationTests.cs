@@ -57,6 +57,7 @@ public sealed class PlaylistMembershipVerificationTests
     [InlineData("/music/Artist/Album/track.flac", "/music/Artist/Album/track.flac", true)]
     [InlineData("/data/media/Artist/Album/track.flac", "/music/Artist/Album/track.flac", true)]
     [InlineData("/music/Artist/Album/track.flac", "/music/Other/Album/track.flac", true)] // same parent+file name
+    [InlineData("/music/Artist/Album/track.flac", "file:///data/media/Artist/Album/track.flac", true)]
     [InlineData("/music/a.flac", "/music/b.flac", false)]
     [InlineData(null, "/music/a.flac", false)]
     public void MediaServerPathsReferToSameFile_MatchesAcrossMountRoots(

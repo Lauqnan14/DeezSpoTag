@@ -73,9 +73,6 @@ public sealed class SharedIdentityResolver
                 normalizedTarget,
                 cancellationToken))
             .ToDictionary(static row => row.LocalTrackId);
-        var pendingRefresh = await _libraryRepository.HasPendingMediaServerRefreshAsync(
-            normalizedTarget,
-            cancellationToken);
         var now = DateTimeOffset.UtcNow;
         var refreshRequestedThisBatch = false;
         var results = new List<SharedIdentityResolveResult>(distinctItems.Count);
@@ -159,18 +156,6 @@ public sealed class SharedIdentityResolver
                     StatusResolved,
                     Searched: false,
                     Confirmed: shouldConfirm));
-                continue;
-            }
-
-            if (string.Equals(ledger?.Status, StatusPendingRefresh, StringComparison.OrdinalIgnoreCase)
-                && pendingRefresh)
-            {
-                results.Add(new SharedIdentityResolveResult(
-                    item.LocalTrackId,
-                    null,
-                    StatusPendingRefresh,
-                    Searched: false,
-                    Confirmed: false));
                 continue;
             }
 

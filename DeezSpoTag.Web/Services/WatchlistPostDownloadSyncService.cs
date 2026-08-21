@@ -9,6 +9,7 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
     internal const int ResidualTargetSyncMaxJobs = 9;
+    internal const int DrainTargetSyncMaxJobs = 32;
     internal const int SliceMembershipMaxJobs = 3;
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     // Backoff is 15 * 2^(attempt-1) capped at MaximumRetryDelay (10 min from attempt 7 on), so 10
@@ -384,18 +385,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         var leaseRenewal = RenewLeaseAsync(repository, job, leaseRenewalCancellation.Token);
         try
         {
-            if (await repository.HasPendingMediaServerRefreshAsync(job.TargetService, cancellationToken))
-            {
-                await repository.RetryWatchlistSyncJobAsync(
-                    job.Id,
-                    _leaseOwner,
-                    job.AttemptCount,
-                    DateTimeOffset.UtcNow.AddSeconds(15),
-                    $"Waiting for {FormatTargetServiceLabel(job.TargetService)} to index finalized library files.",
-                    cancellationToken);
-                return;
-            }
-
             var targetCircuit = await repository.GetWatchlistTargetCircuitStateAsync(job.TargetService, cancellationToken);
             if (IsTargetCircuitOpen(targetCircuit))
             {
@@ -476,7 +465,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     cancellationToken);
             }
 
-            var attempt = job.AttemptCount + 1;
+            var deferWithoutBurningAttempts = outcome.FailureClass is SyncFailureClass.IdentityMiss
+                or SyncFailureClass.None;
+            var attempt = deferWithoutBurningAttempts
+                ? job.AttemptCount
+                : job.AttemptCount + 1;
             if (attempt >= MaxSyncAttempts)
             {
                 await repository.BlockWatchlistSyncJobAsync(
@@ -496,7 +489,9 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return;
             }
 
-            var retryDelay = TimeSpan.FromSeconds(Math.Min(MaximumRetryDelay.TotalSeconds, 15 * Math.Pow(2, Math.Min(attempt - 1, 6))));
+            var retryDelay = deferWithoutBurningAttempts
+                ? TimeSpan.FromMinutes(2)
+                : TimeSpan.FromSeconds(Math.Min(MaximumRetryDelay.TotalSeconds, 15 * Math.Pow(2, Math.Min(Math.Max(attempt, 1) - 1, 6))));
             await repository.RetryWatchlistSyncJobAsync(
                 job.Id,
                 _leaseOwner,
@@ -734,6 +729,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
             if (syncResult.Success)
             {
+                if (syncResult.Kind is PlaylistSyncResultKind.IdentityGap or PlaylistSyncResultKind.NoLocalTracks)
+                {
+                    return SyncAttemptOutcome.Retry(syncResult.Message, SyncFailureClass.IdentityMiss);
+                }
+
                 await AddPlaylistSyncHistoryAsync(
                     scope.ServiceProvider,
                     playlist,

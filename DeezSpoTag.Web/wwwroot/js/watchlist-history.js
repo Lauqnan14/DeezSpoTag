@@ -53,7 +53,9 @@
         if (!value) {
             return "--";
         }
-        return String(value).replaceAll(/\b\w/g, (char) => char.toUpperCase());
+        return String(value)
+            .replaceAll(/[_-]+/g, " ")
+            .replaceAll(/\b\w/g, (char) => char.toUpperCase());
     };
 
     const formatTime = (value) => {

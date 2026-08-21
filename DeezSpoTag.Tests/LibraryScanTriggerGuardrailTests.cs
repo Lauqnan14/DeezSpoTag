@@ -68,7 +68,16 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("RequestLibraryRefreshAsync", source, StringComparison.Ordinal);
         Assert.Contains("RefreshPlexAsync(state.Plex, updateTrackIndex: false", source, StringComparison.Ordinal);
         Assert.Contains("RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex: false", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshNavidromeAsync(state.Navidrome, updateTrackIndex: false", source, StringComparison.Ordinal);
         Assert.Contains("if (updateTrackIndex)", source, StringComparison.Ordinal);
+        Assert.Contains("UpdatePlexTrackMetadataIndexAsync", source, StringComparison.Ordinal);
+        Assert.Contains("UpdateJellyfinTrackMetadataIndexAsync", source, StringComparison.Ordinal);
+        Assert.Contains("UpdateNavidromeTrackMetadataIndexAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksByPathAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetLibraryTracksAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetAudioTracksAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IngestConfiguredTargetIdentitiesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("PromoteSharedIdentitiesFromMetadataAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -303,11 +312,18 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("RefreshWatchlistIdentityIndexAsync", coordinator, StringComparison.Ordinal);
         Assert.Contains("GetLocalScanFileStatesAsync", coordinator, StringComparison.Ordinal);
         Assert.Contains("IngestAndVerifyAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("IngestConfiguredTargetIdentitiesAsync", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", coordinator, StringComparison.Ordinal);
         Assert.True(
             coordinator.IndexOf("await RefreshWatchlistIdentityIndexAsync(", StringComparison.Ordinal)
             < coordinator.IndexOf("var playlistItems = BuildPlaylistWatchItems", StringComparison.Ordinal),
             "The canonical library index must be refreshed before watchlist missing-track selection.");
+        var identityIndexBody = ExtractMethodBody(coordinator, "private async Task RefreshWatchlistIdentityIndexAsync");
+        Assert.Contains("IngestConfiguredTargetIdentitiesAsync", identityIndexBody, StringComparison.Ordinal);
+        Assert.True(
+            identityIndexBody.IndexOf("IngestAndVerifyAsync", StringComparison.Ordinal)
+            < identityIndexBody.IndexOf("IngestConfiguredTargetIdentitiesAsync", StringComparison.Ordinal),
+            "Local library files must be ingested before target-server identities are mapped onto them.");
         Assert.Contains("?? BuildOutboxQueueItem(work.QueueUuid, work.PayloadJson)", postDownload, StringComparison.Ordinal);
         Assert.DoesNotContain("Queue item is not currently available", postDownload, StringComparison.Ordinal);
     }
@@ -324,6 +340,56 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("selection.MissingTracks", source, StringComparison.Ordinal);
         Assert.Contains("WatchlistHistoryStatus.MissingTracksQueued", source, StringComparison.Ordinal);
         Assert.DoesNotContain("candidates.Select(candidate => new PlaylistWatchTrackInsert(candidate.TrackSourceId, candidate.Isrc))", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistSync_IngestsTargetIdentitiesBeforeRequestingAScan()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
+        var methodBody = ExtractMethodBody(source, "private async Task RequestTargetLibraryRefreshAsync");
+
+        Assert.Contains("UpdateTrackMetadataIndexAsync", methodBody, StringComparison.Ordinal);
+        Assert.Contains("RequestLibraryRefreshAsync", methodBody, StringComparison.Ordinal);
+        Assert.True(
+            methodBody.IndexOf("UpdateTrackMetadataIndexAsync", StringComparison.Ordinal)
+            < methodBody.IndexOf("RequestLibraryRefreshAsync", StringComparison.Ordinal),
+            "Existing target-server IDs must be ingested into DeezSpoTag before asking the server to scan.");
+    }
+
+    [Fact]
+    public void ConfiguredServerRefresh_RebuildsIdentityIndexForEveryTargetWhenRequested()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
+        var ingestBody = ExtractMethodBody(source, "public async Task<MediaServerIdentityIngestSummary> IngestConfiguredTargetIdentitiesAsync");
+        var indexBody = ExtractMethodBody(source, "public async Task UpdateTrackMetadataIndexAsync");
+
+        Assert.Contains("UpdateTrackMetadataIndexAsync(service, cancellationToken)", ingestBody, StringComparison.Ordinal);
+        Assert.Contains("case PlexService", indexBody, StringComparison.Ordinal);
+        Assert.Contains("case JellyfinService", indexBody, StringComparison.Ordinal);
+        Assert.Contains("case NavidromeService", indexBody, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksByPathAsync(PlexService", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksByPathAsync(JellyfinService", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksByPathAsync(NavidromeService", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshPlexAsync(state.Plex, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshNavidromeAsync(state.Navidrome, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetIdentitySearch_RequestsFilePathsFromEveryServer()
+    {
+        var jellyfin = ReadSource("DeezSpoTag.Integrations", "Jellyfin", "JellyfinApiClient.cs");
+        var plex = ReadSource("DeezSpoTag.Integrations", "Plex", "PlexApiClient.cs");
+        var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
+        var jellyfinSearch = ExtractMethodBody(jellyfin, "public async Task<List<JellyfinAudioTrack>> SearchTracksAsync");
+        var jellyfinList = ExtractMethodBody(jellyfin, "public async Task<List<JellyfinAudioTrack>> GetAudioTracksAsync");
+
+        Assert.Contains("Fields=Path,RunTimeTicks,AlbumArtists,Artists", jellyfinSearch, StringComparison.Ordinal);
+        Assert.Contains("Fields=Path,RunTimeTicks,AlbumArtists,Artists", jellyfinList, StringComparison.Ordinal);
+        Assert.Contains("NormalizeTrackFilePath", plex, StringComparison.Ordinal);
+        Assert.Contains("Part", plex, StringComparison.Ordinal);
+        Assert.Contains("song.Path", navidrome, StringComparison.Ordinal);
+        Assert.Contains("ResolveNativeSongPath", navidrome, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -169,7 +169,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         if (pendingReconRequests > 0 || pollOverdue || identityRetryDue || membershipCatchUpDue)
         {
             var reason = WatchlistWakeReason.None;
-            if (pollOverdue || identityRetryDue || membershipCatchUpDue)
+            if (pollOverdue || identityRetryDue)
             {
                 reason |= WatchlistWakeReason.ScheduledRefresh;
             }
@@ -179,8 +179,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 reason |= WatchlistWakeReason.Reconciliation;
             }
 
+            if (membershipCatchUpDue)
+            {
+                reason |= WatchlistWakeReason.TargetSync;
+            }
+
             return (TimeSpan.Zero, reason == WatchlistWakeReason.None
-                ? WatchlistWakeReason.ScheduledRefresh
+                ? WatchlistWakeReason.TargetSync
                 : reason);
         }
 
@@ -508,42 +513,39 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, stoppingToken);
         var identityRetryPlaylists = await repository.GetPlaylistsDueForIdentityRetryAsync(stoppingToken);
-        var membershipCatchUpDue = await repository.HasMembershipCatchUpPlaylistAsync(stoppingToken);
         var shouldRunSourceRefresh =
             wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
             || wakeReason.HasFlag(WatchlistWakeReason.Reconciliation)
             || sourceRefreshOverdue
             || pollOverdue
-            || membershipCatchUpDue
             || dueReconRequestCount > 0
             || identityRetryPlaylists.Count > 0;
         var smoothSyncEnabled = settings.WatchSmoothSyncEnabled;
         var stoppedForTime = false;
         IReadOnlyList<(string Source, string PlaylistId)> slicedPlaylists = Array.Empty<(string, string)>();
 
-        if (!smoothSyncEnabled)
+        var drainBudget = ResolvePreSweepDrainBudget(
+            RemainingCycleBudget(cycleDeadline),
+            shouldRunSourceRefresh);
+        if (drainBudget > TargetSyncClaimReserve)
         {
-            var drainBudget = ResolvePreSweepDrainBudget(
-                RemainingCycleBudget(cycleDeadline),
-                shouldRunSourceRefresh);
-            if (drainBudget > TargetSyncClaimReserve)
-            {
-                await RunBudgetedTargetSyncAsync(
-                    coordinatorWork,
-                    drainBudget,
-                    WatchlistPostDownloadSyncService.ResidualTargetSyncMaxJobs,
-                    WatchlistSyncJobKind.All,
-                    playlistFilter: null,
-                    ignoreReconciliationLeaseOwner: null,
-                    stoppingToken,
-                    onProgress: cancellationToken => SaveSchedulerStateAsync(
-                        repository,
-                        activeSource: null,
-                        activeSourceId: null,
-                        activeStartedUtc: null,
-                        lastProgressUtc: DateTimeOffset.UtcNow,
-                        cancellationToken));
-            }
+            await RunBudgetedTargetSyncAsync(
+                coordinatorWork,
+                drainBudget,
+                shouldRunSourceRefresh
+                    ? WatchlistPostDownloadSyncService.ResidualTargetSyncMaxJobs
+                    : WatchlistPostDownloadSyncService.DrainTargetSyncMaxJobs,
+                WatchlistSyncJobKind.All,
+                playlistFilter: null,
+                ignoreReconciliationLeaseOwner: null,
+                stoppingToken,
+                onProgress: cancellationToken => SaveSchedulerStateAsync(
+                    repository,
+                    activeSource: null,
+                    activeSourceId: null,
+                    activeStartedUtc: null,
+                    lastProgressUtc: DateTimeOffset.UtcNow,
+                    cancellationToken));
         }
 
         if (shouldRunSourceRefresh)
@@ -738,6 +740,18 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 stoppingToken);
             leftover -= claimed;
         }
+
+        if (leftover > 0 && RemainingCycleBudget(cycleDeadline) > TargetSyncClaimReserve)
+        {
+            await RunBudgetedTargetSyncAsync(
+                coordinatorWork,
+                RemainingCycleBudget(cycleDeadline),
+                leftover,
+                WatchlistSyncJobKind.Membership,
+                playlistFilter: null,
+                ignoreReconciliationLeaseOwner: null,
+                stoppingToken);
+        }
     }
 
     private async Task RecoverCoordinatorStateAsync(CancellationToken cancellationToken)
@@ -765,7 +779,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _logger.LogInformation(
                 "Enqueued {JobCount} Watchlist membership catch-up job(s) for library tracks still missing from a target playlist.",
                 membershipCatchUpJobs);
-            _runSignal.Request(WatchlistWakeReason.TargetSync | WatchlistWakeReason.Reconciliation);
+            _runSignal.Request(WatchlistWakeReason.TargetSync);
         }
 
         var staleWorkRecovered = await repository.RecoverStaleWatchlistWorkAsync(cancellationToken);
@@ -1132,52 +1146,59 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         var ingestionService = serviceProvider.GetService<KnownLibraryFileIngestionService>();
-        if (ingestionService is null)
-        {
-            return;
-        }
-
         var folderIds = await ResolveWatchlistDestinationFolderIdsAsync(
             profileResolutionService,
             cancellationToken);
-        if (folderIds.Count == 0)
+        if (ingestionService is not null && folderIds.Count > 0)
         {
-            return;
+            var repository = serviceProvider.GetRequiredService<LibraryRepository>();
+            var folders = (await repository.GetFoldersAsync(cancellationToken))
+                .Where(folder => folder.Enabled && folderIds.Contains(folder.Id) && Directory.Exists(folder.RootPath))
+                .ToList();
+            var missingFilesByFolder = new Dictionary<long, List<string>>();
+            foreach (var folder in folders)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var indexedFiles = await repository.GetLocalScanFileStatesAsync(folder.Id, cancellationToken);
+                try
+                {
+                    var missingFiles = Directory
+                        .EnumerateFiles(folder.RootPath, "*", SearchOption.AllDirectories)
+                        .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
+                        .Select(Path.GetFullPath)
+                        .Where(path => !indexedFiles.ContainsKey(path))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (missingFiles.Count > 0)
+                    {
+                        missingFilesByFolder[folder.Id] = missingFiles;
+                    }
+                }
+                catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+                {
+                    _logger.LogWarning(ex, "Watchlist identity index inspection failed for folder {FolderId}.", folder.Id);
+                }
+            }
+
+            if (missingFilesByFolder.Count > 0)
+            {
+                await ingestionService.IngestAndVerifyAsync(missingFilesByFolder, cancellationToken);
+            }
         }
 
-        var repository = serviceProvider.GetRequiredService<LibraryRepository>();
-        var folders = (await repository.GetFoldersAsync(cancellationToken))
-            .Where(folder => folder.Enabled && folderIds.Contains(folder.Id) && Directory.Exists(folder.RootPath))
-            .ToList();
-        var missingFilesByFolder = new Dictionary<long, List<string>>();
-        foreach (var folder in folders)
+        var refreshService = serviceProvider.GetService<MediaServerLibraryRefreshService>();
+        if (refreshService is not null)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var indexedFiles = await repository.GetLocalScanFileStatesAsync(folder.Id, cancellationToken);
             try
             {
-                var missingFiles = Directory
-                    .EnumerateFiles(folder.RootPath, "*", SearchOption.AllDirectories)
-                    .Where(KnownLibraryFilePathSet.IsExistingAudioFile)
-                    .Select(Path.GetFullPath)
-                    .Where(path => !indexedFiles.ContainsKey(path))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                if (missingFiles.Count > 0)
-                {
-                    missingFilesByFolder[folder.Id] = missingFiles;
-                }
+                await refreshService.IngestConfiguredTargetIdentitiesAsync(cancellationToken);
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
-                _logger.LogWarning(ex, "Watchlist identity index inspection failed for folder {FolderId}.", folder.Id);
+                _logger.LogWarning(ex, "Watchlist target identity ingest failed.");
             }
         }
 
-        if (missingFilesByFolder.Count > 0)
-        {
-            await ingestionService.IngestAndVerifyAsync(missingFilesByFolder, cancellationToken);
-        }
         _lastIdentityIndexRefreshUtc = DateTimeOffset.UtcNow;
     }
 

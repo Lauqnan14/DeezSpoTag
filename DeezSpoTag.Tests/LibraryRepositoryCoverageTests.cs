@@ -1251,6 +1251,41 @@ ORDER BY service;";
     }
 
     [Fact]
+    public async Task GetTrackIdsByFilePaths_MapsTargetServerPathByRelativeSuffix()
+    {
+        var seeded = await SeedLibraryAsync(("Shared File", "dz-shared", "sp-shared", "ap-shared"));
+        var trackId = seeded.TrackIdsByTitle["Shared File"];
+        var localPath = seeded.TrackPathsByTitle["Shared File"];
+        var relative = Path.GetRelativePath(seeded.Folder.RootPath, localPath).Replace('\\', '/');
+        var serverPath = "/data/media/music/" + relative;
+        var plexFileUri = "file://" + serverPath;
+        var parentAndFile = "/plex-mount/" + Path.GetFileName(Path.GetDirectoryName(localPath)) + "/" + Path.GetFileName(localPath);
+
+        var mapped = await _repository.GetTrackIdsByFilePathsAsync([serverPath, plexFileUri, parentAndFile]);
+
+        Assert.Equal(trackId, mapped[serverPath]);
+        Assert.Equal(trackId, mapped[plexFileUri]);
+        Assert.Equal(trackId, mapped[parentAndFile]);
+    }
+
+    [Fact]
+    public async Task GetTrackIdsByFilePaths_MapsNumberedServerFileToArtistTitleLocalFile()
+    {
+        var seeded = await SeedLibraryAsync(("Purple Pills", "dz-pills", "sp-pills", "ap-pills"));
+        var trackId = seeded.TrackIdsByTitle["Purple Pills"];
+        var localPath = seeded.TrackPathsByTitle["Purple Pills"];
+        var album = Path.GetFileName(Path.GetDirectoryName(localPath));
+        var artist = Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(localPath)));
+        var serverPath = $"/media/Music/{artist}/{album}/10 - Purple Pills.flac";
+        var taggedPath = $"/library/Music/{artist}/{album}/{artist} - Purple Pills.flac";
+
+        var mapped = await _repository.GetTrackIdsByFilePathsAsync([serverPath, taggedPath]);
+
+        Assert.Equal(trackId, mapped[serverPath]);
+        Assert.Equal(trackId, mapped[taggedPath]);
+    }
+
+    [Fact]
     public async Task MediaServerMappings_PreserveVariantsAndPreferStereo()
     {
         var seeded = await SeedLibraryAsync(("Variant Mapping", "dz-map", "sp-map", "ap-map"));

@@ -103,6 +103,50 @@ public sealed class NavidromeApiClient
             .ToList() ?? new List<NavidromeAudioTrack>();
     }
 
+    public async Task<List<NavidromeAudioTrack>> GetLibraryTracksAsync(
+        string serverUrl,
+        string username,
+        string password,
+        int offset,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(username)
+            || string.IsNullOrWhiteSpace(password)
+            || offset < 0
+            || pageSize <= 0)
+        {
+            return [];
+        }
+
+        var token = await LoginNativeApiAsync(serverUrl, username, password, cancellationToken);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return [];
+        }
+
+        var page = await GetNativeSongsPageAsync(
+            serverUrl,
+            token,
+            offset,
+            Math.Clamp(pageSize, 1, 500),
+            sort: "id",
+            order: "ASC",
+            libraryId: null,
+            cancellationToken);
+        return page
+            .Where(static song => !string.IsNullOrWhiteSpace(song.Id))
+            .Select(song => new NavidromeAudioTrack(
+                song.Id!,
+                song.Title ?? string.Empty,
+                song.Artist ?? string.Empty,
+                song.Duration.HasValue ? (int)Math.Round(song.Duration.Value * 1000d) : null,
+                ResolveNativeSongPath(song.LibraryPath, song.Path),
+                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .ToList();
+    }
+
     public Task<List<NavidromeHistoryItem>> GetPlayHistoryAsync(
         string serverUrl,
         string username,
@@ -1061,11 +1105,30 @@ public sealed class NavidromeApiClient
         }
     }
 
-    private async Task<List<NavidromeNativeSong>> GetNativeSongHistoryPageAsync(
+    private Task<List<NavidromeNativeSong>> GetNativeSongHistoryPageAsync(
         string serverUrl,
         string token,
         int offset,
         int pageSize,
+        string? libraryId,
+        CancellationToken cancellationToken)
+        => GetNativeSongsPageAsync(
+            serverUrl,
+            token,
+            offset,
+            pageSize,
+            sort: "playDate",
+            order: "DESC",
+            libraryId,
+            cancellationToken);
+
+    private async Task<List<NavidromeNativeSong>> GetNativeSongsPageAsync(
+        string serverUrl,
+        string token,
+        int offset,
+        int pageSize,
+        string sort,
+        string order,
         string? libraryId,
         CancellationToken cancellationToken)
     {
@@ -1073,8 +1136,8 @@ public sealed class NavidromeApiClient
         {
             $"_start={offset}",
             $"_end={offset + pageSize}",
-            "_sort=playDate",
-            "_order=DESC"
+            $"_sort={Uri.EscapeDataString(sort)}",
+            $"_order={Uri.EscapeDataString(order)}"
         };
         if (!string.IsNullOrWhiteSpace(libraryId))
         {

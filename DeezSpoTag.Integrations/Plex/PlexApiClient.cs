@@ -1067,7 +1067,7 @@ public class PlexApiClient
             Artist = track.Attribute("grandparentTitle")?.Value ?? string.Empty,
             Album = track.Attribute("parentTitle")?.Value ?? string.Empty,
             DurationMs = ParseLong(track.Attribute(DurationAttributeName)?.Value),
-            FilePath = track.Descendants("Part").FirstOrDefault()?.Attribute("file")?.Value ?? string.Empty
+            FilePath = NormalizeTrackFilePath(track.Descendants("Part").FirstOrDefault()?.Attribute("file")?.Value)
         };
     }
 
@@ -1712,7 +1712,7 @@ public class PlexApiClient
                     track.Attribute(ParentThumbAttributeName)?.Value ??
                     track.Attribute("grandparentThumb")?.Value),
                 StreamUrl = streamUrl,
-                FilePath = filePath
+                FilePath = NormalizeTrackFilePath(filePath)
             });
         }
 
@@ -2842,6 +2842,24 @@ public class PlexApiClient
         }
 
         return DateTimeOffset.FromUnixTimeSeconds(parsed);
+    }
+
+    private static string NormalizeTrackFilePath(string? value)
+    {
+        var path = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        if (path.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(path, UriKind.Absolute, out var fileUri)
+            && fileUri.IsFile)
+        {
+            return fileUri.LocalPath;
+        }
+
+        return path;
     }
 
     private static string? ToAbsoluteUrl(string serverUrl, string token, string? value)

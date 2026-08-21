@@ -118,7 +118,7 @@ public sealed class MediaServerLibraryRefreshService
         if (HasNavidromeConfiguration(state.Navidrome))
         {
             configuredServers++;
-            if (await RefreshNavidromeAsync(state.Navidrome, cancellationToken))
+            if (await RefreshNavidromeAsync(state.Navidrome, updateTrackIndex, cancellationToken))
             {
                 refreshedServers++;
             }
@@ -159,15 +159,49 @@ public sealed class MediaServerLibraryRefreshService
         {
             PlexService => await RefreshPlexAsync(state.Plex, updateTrackIndex: false, cancellationToken: cancellationToken),
             JellyfinService => await RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex: false, cancellationToken: cancellationToken),
-            NavidromeService => await RefreshNavidromeAsync(state.Navidrome, cancellationToken),
+            NavidromeService => await RefreshNavidromeAsync(state.Navidrome, updateTrackIndex: false, cancellationToken),
             _ => false
         };
+    }
+
+    public async Task<MediaServerIdentityIngestSummary> IngestConfiguredTargetIdentitiesAsync(
+        CancellationToken cancellationToken)
+    {
+        var services = await GetConfiguredServicesAsync();
+        var ingestedServers = 0;
+        var failures = new List<string>();
+        foreach (var service in services)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await UpdateTrackMetadataIndexAsync(service, cancellationToken);
+                ingestedServers++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Target identity ingest failed independently for {Service}.", service);
+                failures.Add(service);
+            }
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Target identity ingest completed: configured={Configured} ingested={Ingested} failed={Failed}.",
+                services.Count,
+                ingestedServers,
+                failures.Count);
+        }
+
+        return new MediaServerIdentityIngestSummary(services.Count, ingestedServers, failures);
     }
 
     public async Task UpdateTrackMetadataIndexAsync(string service, CancellationToken cancellationToken)
     {
         var state = await _authService.LoadAsync();
-        switch (service.Trim().ToLowerInvariant())
+        var normalizedService = service.Trim().ToLowerInvariant();
+        switch (normalizedService)
         {
             case PlexService when HasPlexConfiguration(state.Plex):
                 var sections = await GetPlexLibrarySectionsWithRetryAsync(state.Plex!, cancellationToken);
@@ -176,13 +210,18 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
                     .ToList();
                 await UpdatePlexTrackMetadataIndexAsync(state.Plex!, musicSections, cancellationToken);
-                return;
+                break;
             case JellyfinService when HasJellyfinConfiguration(state.Jellyfin):
                 await UpdateJellyfinTrackMetadataIndexAsync(state.Jellyfin!, cancellationToken);
-                return;
+                break;
+            case NavidromeService when HasNavidromeConfiguration(state.Navidrome):
+                await UpdateNavidromeTrackMetadataIndexAsync(state.Navidrome!, cancellationToken);
+                break;
             default:
                 return;
         }
+
+        await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(normalizedService, cancellationToken);
     }
 
     private Task<bool> RefreshPlexAsync(PlexAuth? plex, CancellationToken cancellationToken)
@@ -238,6 +277,9 @@ public sealed class MediaServerLibraryRefreshService
             if (updateTrackIndex)
             {
                 await UpdatePlexTrackMetadataIndexAsync(configuredPlex, musicSections, cancellationToken);
+                await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
+                    PlexService,
+                    cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -290,6 +332,7 @@ public sealed class MediaServerLibraryRefreshService
         }
 
         var mappedCount = 0;
+        var unmappedCount = 0;
         var seenRatingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var section in musicSections)
         {
@@ -306,6 +349,14 @@ public sealed class MediaServerLibraryRefreshService
                     cancellationToken);
                 if (page.Count == 0)
                 {
+                    if (offset == 0)
+                    {
+                        _logger.LogWarning(
+                            "Plex identity ingest found no tracks in section {SectionKey} ({SectionTitle}).",
+                            section.Key,
+                            section.Title);
+                    }
+
                     break;
                 }
 
@@ -313,31 +364,11 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(track => !string.IsNullOrWhiteSpace(track.RatingKey)
                                     && !string.IsNullOrWhiteSpace(track.FilePath)
                                     && seenRatingKeys.Add(track.RatingKey))
+                    .Select(static track => (track.RatingKey, track.FilePath))
                     .ToList();
-                var filePathMap = await _libraryRepository.GetTrackIdsByFilePathsAsync(
-                    tracks.Select(static track => track.FilePath).ToList(),
-                    cancellationToken);
-                var now = DateTimeOffset.UtcNow;
-                var upserts = tracks
-                    .Where(track => filePathMap.ContainsKey(track.FilePath))
-                    .Select(track => new PlexTrackMetadataUpsertDto(
-                        filePathMap[track.FilePath],
-                        track.RatingKey,
-                        now))
-                    .ToList();
-                await _libraryRepository.UpsertPlexTrackMetadataAsync(upserts, cancellationToken);
-                await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
-                    tracks
-                        .Where(track => filePathMap.ContainsKey(track.FilePath))
-                        .Select(track => new MediaServerTrackMetadataUpsertDto(
-                            filePathMap[track.FilePath],
-                            PlexService,
-                            track.RatingKey,
-                            track.FilePath,
-                            now))
-                        .ToList(),
-                    cancellationToken);
-                mappedCount += upserts.Count;
+                var ingest = await IngestTargetTracksByPathAsync(PlexService, tracks, cancellationToken);
+                mappedCount += ingest.Mapped;
+                unmappedCount += ingest.Unmapped;
 
                 if (page.Count < PlexTrackPageSize)
                 {
@@ -350,7 +381,10 @@ public sealed class MediaServerLibraryRefreshService
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Plex track metadata index updated: mappedTracks={MappedTracks}.", mappedCount);
+            _logger.LogInformation(
+                "Plex track identity ingest updated: mappedTracks={MappedTracks} unmappedTracks={UnmappedTracks}.",
+                mappedCount,
+                unmappedCount);
         }
     }
 
@@ -386,6 +420,9 @@ public sealed class MediaServerLibraryRefreshService
             if (updateTrackIndex)
             {
                 await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, cancellationToken);
+                await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
+                    JellyfinService,
+                    cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -406,9 +443,20 @@ public sealed class MediaServerLibraryRefreshService
         {
             return;
         }
-        if (string.IsNullOrWhiteSpace(jellyfin.UserId))
+
+        var userId = jellyfin.UserId;
+        if (string.IsNullOrWhiteSpace(userId))
         {
-            _logger.LogWarning("Jellyfin track metadata index skipped because Jellyfin user id is missing.");
+            var currentUser = await _jellyfinApiClient.GetCurrentUserAsync(
+                jellyfin.Url!,
+                jellyfin.ApiKey!,
+                cancellationToken);
+            userId = currentUser?.Id;
+        }
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            _logger.LogWarning("Jellyfin identity ingest skipped because Jellyfin user id is missing.");
             return;
         }
 
@@ -417,16 +465,19 @@ public sealed class MediaServerLibraryRefreshService
             jellyfin.ApiKey!,
             cancellationToken);
         var musicLibraries = libraries
-            .Where(static library => string.Equals(library.CollectionType, "music", StringComparison.OrdinalIgnoreCase))
-            .Where(static library => !string.IsNullOrWhiteSpace(library.Id))
+            .Where(IsJellyfinMusicLibrary)
+            .Select(library => (Id: library.LibraryId, library.Name))
+            .Where(library => !string.IsNullOrWhiteSpace(library.Id))
             .ToList();
         if (musicLibraries.Count == 0)
         {
-            _logger.LogWarning("Jellyfin track metadata index skipped because no music libraries were found.");
-            return;
+            _logger.LogWarning(
+                "Jellyfin identity ingest found no music libraries; paging all audio items instead.");
+            musicLibraries.Add((Id: null, Name: "all-audio"));
         }
 
         var mappedCount = 0;
+        var unmappedCount = 0;
         var seenItemIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var library in musicLibraries)
         {
@@ -437,13 +488,21 @@ public sealed class MediaServerLibraryRefreshService
                 var page = await _jellyfinApiClient.GetAudioTracksAsync(
                     jellyfin.Url!,
                     jellyfin.ApiKey!,
-                    jellyfin.UserId!,
+                    userId,
                     library.Id,
                     offset,
                     PlexTrackPageSize,
                     cancellationToken);
                 if (page.Count == 0)
                 {
+                    if (offset == 0)
+                    {
+                        _logger.LogWarning(
+                            "Jellyfin identity ingest found no tracks in library {LibraryId} ({LibraryName}).",
+                            library.Id,
+                            library.Name);
+                    }
+
                     break;
                 }
 
@@ -451,23 +510,11 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                                     && !string.IsNullOrWhiteSpace(track.FilePath)
                                     && seenItemIds.Add(track.Id))
+                    .Select(static track => (track.Id, track.FilePath!))
                     .ToList();
-                var filePathMap = await _libraryRepository.GetTrackIdsByFilePathsAsync(
-                    tracks.Select(static track => track.FilePath!).ToList(),
-                    cancellationToken);
-                var now = DateTimeOffset.UtcNow;
-                var upserts = tracks
-                    .Where(track => !string.IsNullOrWhiteSpace(track.FilePath)
-                                    && filePathMap.ContainsKey(track.FilePath!))
-                    .Select(track => new MediaServerTrackMetadataUpsertDto(
-                        filePathMap[track.FilePath!],
-                        JellyfinService,
-                        track.Id,
-                        track.FilePath,
-                        now))
-                    .ToList();
-                await _libraryRepository.UpsertMediaServerTrackMetadataAsync(upserts, cancellationToken);
-                mappedCount += upserts.Count;
+                var ingest = await IngestTargetTracksByPathAsync(JellyfinService, tracks, cancellationToken);
+                mappedCount += ingest.Mapped;
+                unmappedCount += ingest.Unmapped;
 
                 if (page.Count < PlexTrackPageSize)
                 {
@@ -480,8 +527,125 @@ public sealed class MediaServerLibraryRefreshService
 
         if (_logger.IsEnabled(LogLevel.Information))
         {
-            _logger.LogInformation("Jellyfin track metadata index updated: mappedTracks={MappedTracks}.", mappedCount);
+            _logger.LogInformation(
+                "Jellyfin track identity ingest updated: mappedTracks={MappedTracks} unmappedTracks={UnmappedTracks}.",
+                mappedCount,
+                unmappedCount);
         }
+    }
+
+    private async Task UpdateNavidromeTrackMetadataIndexAsync(
+        NavidromeAuth navidrome,
+        CancellationToken cancellationToken)
+    {
+        if (!_libraryRepository.IsConfigured)
+        {
+            return;
+        }
+
+        var mappedCount = 0;
+        var unmappedCount = 0;
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var offset = 0;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = await _navidromeApiClient.GetLibraryTracksAsync(
+                navidrome.Url!,
+                navidrome.Username!,
+                navidrome.Password!,
+                offset,
+                PlexTrackPageSize,
+                cancellationToken);
+            if (page.Count == 0)
+            {
+                if (offset == 0)
+                {
+                    _logger.LogWarning(
+                        "Navidrome identity ingest found no songs. Native /api/song may be unavailable or the library is empty.");
+                }
+
+                break;
+            }
+
+            var tracks = page
+                .Where(track => !string.IsNullOrWhiteSpace(track.Id)
+                                && !string.IsNullOrWhiteSpace(track.FilePath)
+                                && seenIds.Add(track.Id))
+                .Select(static track => (track.Id, track.FilePath!))
+                .ToList();
+            var ingest = await IngestTargetTracksByPathAsync(NavidromeService, tracks, cancellationToken);
+            mappedCount += ingest.Mapped;
+            unmappedCount += ingest.Unmapped;
+
+            if (page.Count < PlexTrackPageSize)
+            {
+                break;
+            }
+
+            offset += PlexTrackPageSize;
+        }
+
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Navidrome track identity ingest updated: mappedTracks={MappedTracks} unmappedTracks={UnmappedTracks}.",
+                mappedCount,
+                unmappedCount);
+        }
+    }
+
+    private async Task<(int Mapped, int Unmapped)> IngestTargetTracksByPathAsync(
+        string service,
+        IReadOnlyList<(string TargetItemId, string FilePath)> tracks,
+        CancellationToken cancellationToken)
+    {
+        if (tracks.Count == 0)
+        {
+            return (0, 0);
+        }
+
+        var filePathMap = await _libraryRepository.GetTrackIdsByFilePathsAsync(
+            tracks.Select(static track => track.FilePath).ToList(),
+            cancellationToken);
+        var now = DateTimeOffset.UtcNow;
+        var mappedTracks = tracks
+            .Where(track => filePathMap.ContainsKey(track.FilePath))
+            .ToList();
+        await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
+            mappedTracks
+                .Select(track => new MediaServerTrackMetadataUpsertDto(
+                    filePathMap[track.FilePath],
+                    service,
+                    track.TargetItemId,
+                    track.FilePath,
+                    now))
+                .ToList(),
+            cancellationToken);
+        if (string.Equals(service, PlexService, StringComparison.OrdinalIgnoreCase))
+        {
+            await _libraryRepository.UpsertPlexTrackMetadataAsync(
+                mappedTracks
+                    .Select(track => new PlexTrackMetadataUpsertDto(
+                        filePathMap[track.FilePath],
+                        track.TargetItemId,
+                        now))
+                    .ToList(),
+                cancellationToken);
+        }
+
+        return (mappedTracks.Count, tracks.Count - mappedTracks.Count);
+    }
+
+    private static bool IsJellyfinMusicLibrary(JellyfinLibrarySection library)
+    {
+        if (string.IsNullOrWhiteSpace(library.CollectionType))
+        {
+            return false;
+        }
+
+        return string.Equals(library.CollectionType, "music", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(library.CollectionType, "audio", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<bool> RetryRefreshAsync(
@@ -520,14 +684,20 @@ public sealed class MediaServerLibraryRefreshService
         return false;
     }
 
-    private async Task<bool> RefreshNavidromeAsync(NavidromeAuth? navidrome, CancellationToken cancellationToken)
+    private Task<bool> RefreshNavidromeAsync(NavidromeAuth? navidrome, CancellationToken cancellationToken)
+        => RefreshNavidromeAsync(navidrome, updateTrackIndex: true, cancellationToken);
+
+    private async Task<bool> RefreshNavidromeAsync(
+        NavidromeAuth? navidrome,
+        bool updateTrackIndex,
+        CancellationToken cancellationToken)
     {
         if (!HasNavidromeConfiguration(navidrome))
         {
             return false;
         }
 
-        return await RetryRefreshAsync(
+        var refreshed = await RetryRefreshAsync(
             () => _navidromeApiClient.StartScanAsync(
                 navidrome!.Url!,
                 navidrome.Username!,
@@ -536,6 +706,30 @@ public sealed class MediaServerLibraryRefreshService
             NavidromeService,
             sectionKey: null,
             cancellationToken);
+        if (!refreshed)
+        {
+            _logger.LogWarning("Navidrome library refresh request failed.");
+            return false;
+        }
+
+        try
+        {
+            if (updateTrackIndex)
+            {
+                await UpdateNavidromeTrackMetadataIndexAsync(navidrome!, cancellationToken);
+                await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
+                    NavidromeService,
+                    cancellationToken);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                ex,
+                "Navidrome library refresh was requested, but the local Navidrome track identity index could not be updated.");
+        }
+
+        return refreshed;
     }
 
     private static bool HasPlexConfiguration(PlexAuth? plex) =>
@@ -561,4 +755,12 @@ public sealed record MediaServerRefreshSummary(
     IReadOnlyList<string> FailedServers)
 {
     public bool IsComplete => ConfiguredServerCount == RefreshedServerCount;
+}
+
+public sealed record MediaServerIdentityIngestSummary(
+    int ConfiguredServerCount,
+    int IngestedServerCount,
+    IReadOnlyList<string> FailedServers)
+{
+    public bool IsComplete => ConfiguredServerCount == IngestedServerCount;
 }

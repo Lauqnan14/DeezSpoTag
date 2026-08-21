@@ -1384,7 +1384,7 @@ function toNonNegativeCount(value) {
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
-function renderPlaylistWatchlistPresentationBadges(item) {
+function resolvePlaylistWatchlistPresentation(item) {
     const sourceTrackCount = toNonNegativeCount(item.trackCount);
     const ignoredBlockedTrackCount = toNonNegativeCount(item.ignoredBlockedTrackCount);
     const totalTrackCount = Math.max(0, sourceTrackCount - ignoredBlockedTrackCount);
@@ -1394,14 +1394,53 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     const incompleteTrackCount = hasAuthoritativeIncompleteCount
         ? Math.min(toNonNegativeCount(item.incompleteTrackCount), totalTrackCount)
         : Math.max(0, totalTrackCount - syncedTrackCount);
-    const reroutedTrackCount = toNonNegativeCount(item.reroutedTrackCount);
-    const waitingForTargetCount = toNonNegativeCount(item.waitingForTargetCount);
-    const waitingForIdentityCount = toNonNegativeCount(item.waitingForIdentityCount);
-    const missingTrackCount = toNonNegativeCount(item.missingTrackCount);
-    const mappingRetryCount = toNonNegativeCount(item.mappingRetryCount);
-    const blockedTrackCount = toNonNegativeCount(item.blockedTrackCount);
-    const failedTrackCount = toNonNegativeCount(item.failedTrackCount);
-    const hasIncompleteSync = incompleteTrackCount > 0 && totalTrackCount > syncedTrackCount;
+    return {
+        totalTrackCount,
+        syncedTrackCount,
+        ignoredBlockedTrackCount,
+        incompleteTrackCount,
+        reroutedTrackCount: toNonNegativeCount(item.reroutedTrackCount),
+        waitingForTargetCount: toNonNegativeCount(item.waitingForTargetCount),
+        waitingForIdentityCount: toNonNegativeCount(item.waitingForIdentityCount),
+        missingTrackCount: toNonNegativeCount(item.missingTrackCount),
+        mappingRetryCount: toNonNegativeCount(item.mappingRetryCount),
+        blockedTrackCount: toNonNegativeCount(item.blockedTrackCount),
+        failedTrackCount: toNonNegativeCount(item.failedTrackCount),
+        hasIncompleteSync: incompleteTrackCount > 0 && totalTrackCount > syncedTrackCount
+    };
+}
+
+function formatPlaylistWatchlistRunStatus(item, presentation) {
+    const runStatus = String(item.lastRunStatus || '').trim().toLowerCase();
+    if (!runStatus) {
+        return 'never checked yet';
+    }
+
+    const visitFinished = runStatus === 'completed'
+        || runStatus === 'unchanged'
+        || runStatus === 'metadata_refreshed'
+        || runStatus === 'media_sync_completed';
+    if (presentation?.hasIncompleteSync && visitFinished) {
+        return 'incomplete';
+    }
+
+    return runStatus.replaceAll('_', ' ');
+}
+
+function renderPlaylistWatchlistPresentationBadges(item) {
+    const {
+        totalTrackCount,
+        syncedTrackCount,
+        ignoredBlockedTrackCount,
+        reroutedTrackCount,
+        waitingForTargetCount,
+        waitingForIdentityCount,
+        missingTrackCount,
+        mappingRetryCount,
+        blockedTrackCount,
+        failedTrackCount,
+        hasIncompleteSync
+    } = resolvePlaylistWatchlistPresentation(item);
     const syncBadge = hasIncompleteSync ? renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) : '';
     const stateBadges = [
         renderPlaylistWatchlistStateBadge(waitingForTargetCount, 'waiting-for-target', 'track waiting for target sync', 'fa-clock'),
@@ -1732,15 +1771,13 @@ async function loadPlaylistWatchlist() {
             const sourceId = String(item.sourceId || '').trim();
             const isActive = activeSource && activeSourceId && source === activeSource && sourceId === activeSourceId;
             const circuit = circuitBySource.get(source);
-            const runStatus = String(item.lastRunStatus || '').trim();
             const runMessage = String(item.lastRunMessage || '').trim();
             const consecutiveFailures = Number(item.consecutiveFailures || 0);
             const nextAttempt = item.nextAttemptUtc
                 ? formatRelativeTime(item.nextAttemptUtc)
                 : '';
-            const statusLabel = runStatus
-                ? runStatus.replaceAll('_', ' ')
-                : 'never checked yet';
+            const presentationCounts = resolvePlaylistWatchlistPresentation(item);
+            const statusLabel = formatPlaylistWatchlistRunStatus(item, presentationCounts);
             const statusParts = [statusLabel];
             if (isActive) {
                 statusParts.push('active');

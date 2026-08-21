@@ -347,7 +347,7 @@ public class JellyfinApiClient
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
         query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Audio");
-        query.Append("&Fields=RunTimeTicks,AlbumArtists,Artists");
+        query.Append("&Fields=Path,RunTimeTicks,AlbumArtists,Artists");
         query.Append("&Limit=25");
         query.Append($"&SearchTerm={Uri.EscapeDataString(searchTerm)}");
 
@@ -1476,6 +1476,11 @@ public sealed class JellyfinLibrarySection
 
     [JsonPropertyName("ItemId")]
     public string? Id { get; set; }
+
+    [JsonPropertyName("Guid")]
+    public string? Guid { get; set; }
+
+    public string? LibraryId => string.IsNullOrWhiteSpace(Id) ? Guid : Id;
 }
 
 public sealed class JellyfinItemsResponse

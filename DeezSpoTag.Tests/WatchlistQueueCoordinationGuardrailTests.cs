@@ -148,11 +148,17 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.True(
             hostedSource.IndexOf("RunBudgetedTargetSyncAsync(", StringComparison.Ordinal)
             < hostedSource.IndexOf("RunWatchCycleCoreAsync(", StringComparison.Ordinal),
-            "Flag-off keeps one budgeted drain before the playlist sweep.");
+            "Due target-sync jobs drain before the playlist sweep, including smooth-sync cycles.");
         Assert.True(
             hostedSource.IndexOf("ResolvePreSweepDrainBudget(", StringComparison.Ordinal)
             < hostedSource.IndexOf("if (shouldRunSourceRefresh)", StringComparison.Ordinal),
-            "The pre-sweep drain is flag-off only and must reserve playlist start time.");
+            "The pre-sweep drain always runs and reserves playlist start time when a source refresh is also due.");
+        Assert.Contains("DrainTargetSyncMaxJobs", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("DrainTargetSyncMaxJobs", postDownloadSource, StringComparison.Ordinal);
+        var refreshStart = hostedSource.IndexOf("var shouldRunSourceRefresh =", StringComparison.Ordinal);
+        var refreshEnd = hostedSource.IndexOf("var smoothSyncEnabled = settings.WatchSmoothSyncEnabled;", StringComparison.Ordinal);
+        Assert.True(refreshStart >= 0 && refreshEnd > refreshStart);
+        Assert.DoesNotContain("membershipCatchUpDue", hostedSource[refreshStart..refreshEnd], StringComparison.Ordinal);
         Assert.Contains("ResolvePreSweepDrainBudget", hostedSource, StringComparison.Ordinal);
         Assert.Contains("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
         Assert.Contains("remainingAfterReconcile", hostedSource, StringComparison.Ordinal);

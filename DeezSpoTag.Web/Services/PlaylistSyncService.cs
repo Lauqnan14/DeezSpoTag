@@ -2196,7 +2196,12 @@ public sealed class PlaylistSyncService
         }
 
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
-        var matchSummary = await ResolvePlexRatingKeysAsync(plex, tracks, orderedTrackIds, cancellationToken);
+        var matchSummary = await ResolvePlexRatingKeysAsync(
+            plex,
+            tracks,
+            orderedTrackIds,
+            cancellationToken,
+            playlist.SnapshotId);
         if (matchSummary.TargetIds.Count == 0)
         {
             _logger.LogWarning(
@@ -2355,7 +2360,12 @@ public sealed class PlaylistSyncService
 
         existingPlaylistId = playlistLookup.Status == TargetLookupStatus.Success ? playlistLookup.Value : null;
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
-        var jellyfinMatches = await ResolveJellyfinItemIdsAsync(jellyfin, tracks, orderedTrackIds, cancellationToken);
+        var jellyfinMatches = await ResolveJellyfinItemIdsAsync(
+            jellyfin,
+            tracks,
+            orderedTrackIds,
+            cancellationToken,
+            playlist.SnapshotId);
         var itemIds = jellyfinMatches.Select(static item => item.TargetItemId).ToList();
         var matchSummary = new SyncMatchSummary(
             itemIds,
@@ -2540,7 +2550,12 @@ public sealed class PlaylistSyncService
         }
 
         var orderedTrackIds = await ResolveOrderedTrackIdsAsync(playlist.Source, tracks, cancellationToken);
-        var navidromeMatches = await ResolveNavidromeItemIdsAsync(navidrome, tracks, orderedTrackIds, cancellationToken);
+        var navidromeMatches = await ResolveNavidromeItemIdsAsync(
+            navidrome,
+            tracks,
+            orderedTrackIds,
+            cancellationToken,
+            playlist.SnapshotId);
         var itemIds = navidromeMatches.Select(static item => item.TargetItemId).ToList();
         var matchSummary = new SyncMatchSummary(
             itemIds,
@@ -3905,13 +3920,14 @@ public sealed class PlaylistSyncService
         _lastIdentityRefreshUtc[key] = now;
         try
         {
+            await _mediaServerRefreshService.UpdateTrackMetadataIndexAsync(targetService, cancellationToken);
             await _mediaServerRefreshService.RequestLibraryRefreshAsync(targetService, cancellationToken);
         }
         catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
         {
             _logger.LogDebug(
                 ex,
-                "Media-server scan after unresolved {Target} playlist identities failed; membership already applied.",
+                "Media-server identity ingest or scan after unresolved {Target} playlist identities failed; membership already applied.",
                 targetService);
         }
     }
@@ -4710,7 +4726,8 @@ public sealed class PlaylistSyncService
         PlexConnection plex,
         IReadOnlyList<SyncTrackSummary> tracks,
         List<long> orderedTrackIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? currentRevision = null)
     {
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var resolved = await ResolveSharedTargetIdentitiesAsync(
@@ -4732,7 +4749,8 @@ public sealed class PlaylistSyncService
                     ct);
                 return availability == PlexItemAvailability.Missing;
             },
-            cancellationToken);
+            cancellationToken,
+            currentRevision);
         return BuildResolvedMatchSummary(tracks, orderedTrackIds, resolved);
     }
 
@@ -4778,7 +4796,8 @@ public sealed class PlaylistSyncService
         JellyfinConnection jellyfin,
         IReadOnlyList<SyncTrackSummary> tracks,
         IReadOnlyList<long> orderedTrackIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? currentRevision = null)
     {
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var resolved = await ResolveSharedTargetIdentitiesAsync(
@@ -4792,7 +4811,8 @@ public sealed class PlaylistSyncService
                 searchCache,
                 ct),
             confirmMissing: null,
-            cancellationToken);
+            cancellationToken,
+            currentRevision);
         return BuildResolvedMemberships(tracks, orderedTrackIds, resolved);
     }
 
@@ -4874,7 +4894,8 @@ public sealed class PlaylistSyncService
         NavidromeConnection navidrome,
         IReadOnlyList<SyncTrackSummary> tracks,
         IReadOnlyList<long> orderedTrackIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? currentRevision = null)
     {
         var searchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var resolved = await ResolveSharedTargetIdentitiesAsync(
@@ -4888,7 +4909,8 @@ public sealed class PlaylistSyncService
                 searchCache,
                 ct),
             confirmMissing: null,
-            cancellationToken);
+            cancellationToken,
+            currentRevision);
         return BuildResolvedMemberships(tracks, orderedTrackIds, resolved);
     }
 
@@ -4898,7 +4920,8 @@ public sealed class PlaylistSyncService
         IReadOnlyList<long> orderedTrackIds,
         Func<SharedIdentityResolveItem, SyncTrackSummary, string?, CancellationToken, Task<string?>> search,
         Func<string, CancellationToken, Task<bool>>? confirmMissing,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? currentRevision = null)
     {
         var items = new List<SharedIdentityResolveItem>();
         var trackByLocalId = new Dictionary<long, SyncTrackSummary>();
@@ -4958,7 +4981,7 @@ public sealed class PlaylistSyncService
             },
             confirmMissing,
             confirmExisting: false,
-            currentRevision: string.Empty,
+            currentRevision: currentRevision,
             requestRefresh: RequestTargetLibraryRefreshAsync,
             cancellationToken);
     }
@@ -5144,7 +5167,15 @@ public sealed class PlaylistSyncService
 
     private static string NormalizeMediaServerPath(string path)
     {
-        var normalized = path.Trim().Replace('\\', '/');
+        var normalized = path.Trim();
+        if (normalized.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(normalized, UriKind.Absolute, out var fileUri)
+            && fileUri.IsFile)
+        {
+            normalized = fileUri.LocalPath;
+        }
+
+        normalized = normalized.Replace('\\', '/');
         while (normalized.Contains("//", StringComparison.Ordinal))
         {
             normalized = normalized.Replace("//", "/", StringComparison.Ordinal);

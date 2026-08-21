@@ -828,7 +828,7 @@ internal sealed class WatchlistEngine
             nextAttemptUtc: null,
             consecutiveFailures: null,
             cancellationToken,
-            touchLastChecked: false);
+            touchLastChecked: true);
         return new PlaylistReconciliationResult(
             success,
             message,

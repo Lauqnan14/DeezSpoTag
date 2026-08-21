@@ -77,7 +77,7 @@ public sealed class SharedIdentityResolverTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PendingRefreshWithPendingOutbox_SkipsThatTrackOnly_AndNewTracksStillSearch()
+    public async Task PendingRefreshBeforeRetry_SkipsThatTrackOnly_AndNewTracksStillSearch()
     {
         await AddPlaylistWithLocalTrackAsync("list-skip", 201, "known-track");
         await AddPlaylistWithLocalTrackAsync("list-new", 202, "new-track");
@@ -89,7 +89,7 @@ public sealed class SharedIdentityResolverTests : IAsyncLifetime
                 SharedIdentityResolver.StatusPendingRefresh,
                 "No target match found.",
                 AttemptCount: 1,
-                NextRetryUtc: DateTimeOffset.UtcNow.AddMinutes(-1)));
+                NextRetryUtc: DateTimeOffset.UtcNow.AddMinutes(5)));
         await _repository.EnqueueMediaServerRefreshAsync(42, "plex", ["/tmp/pending.flac"]);
         var searched = new List<long>();
 
@@ -107,6 +107,35 @@ public sealed class SharedIdentityResolverTests : IAsyncLifetime
         Assert.False(results.Single(item => item.LocalTrackId == 201).Searched);
         Assert.True(results.Single(item => item.LocalTrackId == 202).Searched);
         Assert.NotNull(await _repository.GetWatchlistSharedIdentityAsync(202, "plex"));
+    }
+
+    [Fact]
+    public async Task PendingRefreshRetryDue_SearchesEvenIfOutboxIsPending()
+    {
+        await AddPlaylistWithLocalTrackAsync("list-retry", 211, "retry-track");
+        await _repository.UpsertWatchlistSharedIdentityAsync(
+            new WatchlistSharedIdentityUpsertInput(
+                211,
+                "plex",
+                TargetItemId: null,
+                SharedIdentityResolver.StatusPendingRefresh,
+                "No target match found.",
+                AttemptCount: 1,
+                NextRetryUtc: DateTimeOffset.UtcNow.AddMinutes(-1)));
+        await _repository.EnqueueMediaServerRefreshAsync(42, "plex", ["/tmp/pending.flac"]);
+        var searched = new List<long>();
+
+        var results = await _resolver.ResolveAsync(
+            "plex",
+            [new SharedIdentityResolveItem(211)],
+            (item, _) =>
+            {
+                searched.Add(item.LocalTrackId);
+                return Task.FromResult<string?>(null);
+            });
+
+        Assert.Equal([211], searched);
+        Assert.True(Assert.Single(results).Searched);
     }
 
     [Fact]
@@ -151,6 +180,47 @@ public sealed class SharedIdentityResolverTests : IAsyncLifetime
         Assert.Equal(
             SharedIdentityResolver.StatusPendingRefresh,
             (await _repository.GetWatchlistSharedIdentityAsync(301, "plex"))!.Status);
+    }
+
+    [Theory]
+    [InlineData("plex", "plex-501")]
+    [InlineData("jellyfin", "jf-501")]
+    [InlineData("navidrome", "nd-501")]
+    public async Task PromoteSharedIdentitiesFromMetadata_FlipsPendingRowsForEveryTarget(
+        string targetService,
+        string targetItemId)
+    {
+        await AddPlaylistWithLocalTrackAsync("promote-list", 501, "promote-track");
+        await _repository.UpsertWatchlistSharedIdentityAsync(
+            new WatchlistSharedIdentityUpsertInput(
+                501,
+                targetService,
+                TargetItemId: null,
+                SharedIdentityResolver.StatusPendingRefresh,
+                "No target match found.",
+                AttemptCount: 2,
+                NextRetryUtc: DateTimeOffset.UtcNow.AddMinutes(-1)));
+        Assert.True(await _repository.HasDueIdentityRetryPlaylistAsync());
+        await _repository.UpsertMediaServerTrackMetadataAsync(
+        [
+            new MediaServerTrackMetadataUpsertDto(
+                501,
+                targetService,
+                targetItemId,
+                "/music/Artist/Album/promote.flac",
+                DateTimeOffset.UtcNow)
+        ]);
+
+        var promoted = await _repository.PromoteSharedIdentitiesFromMetadataAsync(targetService);
+
+        Assert.Equal(1, promoted);
+        var row = await _repository.GetWatchlistSharedIdentityAsync(501, targetService);
+        Assert.NotNull(row);
+        Assert.Equal(SharedIdentityResolver.StatusResolved, row!.Status);
+        Assert.Equal(targetItemId, row.TargetItemId);
+        Assert.Equal(0, row.AttemptCount);
+        Assert.Null(row.NextRetryUtc);
+        Assert.False(await _repository.HasDueIdentityRetryPlaylistAsync());
     }
 
     [Fact]

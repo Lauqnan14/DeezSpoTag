@@ -376,8 +376,21 @@
 .tracks-table.tracks-table--podcast col.col-actions { width: 60px; }
 .tracks-table.tracks-table--podcast col.col-quick-download { width: 58px; }
 .tracks-table.tracks-table--playlistlike.tracks-table--podcast col.col-title { width: 440px; }
-.tracks-table.tracks-table--with-ignore {
+.tracks-table.tracks-table--with-ignore.tracks-table--ignore-enabled {
     min-width: 1200px;
+}
+
+.tracks-table:not(.tracks-table--ignore-enabled) col.col-ignore {
+    width: 0;
+}
+
+.tracks-table:not(.tracks-table--ignore-enabled) th.track-ignore,
+.tracks-table:not(.tracks-table--ignore-enabled) td.track-ignore {
+    display: none;
+    width: 0;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
 }
 .tracks-table.tracks-table--podcast.tracks-table--with-ignore col.col-ignore { width: 84px; }
 .tracks-table.tracks-table--podcast .track-number {
@@ -2518,14 +2531,14 @@ async function preloadMonitoredPlaylistTrackStatuses() {
         }
 
         tracks.forEach(track => {
-            const id = String(track?.trackSourceId || '').trim();
-            if (!id) {
-                return;
-            }
-            monitoredPlaylistTrackStatuses.set(id, {
-                status: normalizeTrackLocationStatus(track.locationStatus),
-                label: String(track.locationStatusLabel || '').trim() || resolveTrackLocationStatusLabel(track.locationStatus),
-                detail: String(track.locationStatusDetail || '').trim()
+            const payload = readTrackLocationStatusPayload(track);
+            const status = {
+                status: normalizeTrackLocationStatus(payload.status),
+                label: String(payload.label || '').trim() || resolveTrackLocationStatusLabel(payload.status),
+                detail: String(payload.detail || '').trim()
+            };
+            collectTrackStatusLookupKeys(track).forEach(id => {
+                monitoredPlaylistTrackStatuses.set(id, status);
             });
         });
     } catch (error) {
@@ -5050,6 +5063,9 @@ async function updateMonitorButtonState() {
 
 function setIgnoreVisibility(enabled) {
     watchlistIgnoreEnabled = Boolean(enabled);
+    document.querySelectorAll('.tracks-table').forEach(table => {
+        table.classList.toggle('tracks-table--ignore-enabled', watchlistIgnoreEnabled);
+    });
     document.querySelectorAll('.track-ignore-btn, .track-ignore-toggle').forEach(element => {
         element.classList.toggle('is-hidden', !watchlistIgnoreEnabled);
     });
@@ -5471,39 +5487,56 @@ function bindManualUnavailableDeleteButtons() {
     });
 }
 
+function readTrackLocationStatusPayload(track) {
+    const nested = track?.locationStatus;
+    if (nested && typeof nested === 'object') {
+        return {
+            status: nested.status || nested.Status || '',
+            label: nested.label || nested.Label || '',
+            detail: nested.detail || nested.Detail || ''
+        };
+    }
+
+    return {
+        status: nested || track?.locationStatus || '',
+        label: track?.locationStatusLabel || track?.LocationStatusLabel || '',
+        detail: track?.locationStatusDetail || track?.LocationStatusDetail || ''
+    };
+}
+
+function collectTrackStatusLookupKeys(track) {
+    return [...new Set([
+        track?.trackSourceId,
+        track?.sourceTrackId,
+        track?.id,
+        track?.spotifyId,
+        track?.spotify_id,
+        track?.appleId,
+        track?.apple_id,
+        track?.deezerId,
+        track?.deezer_id,
+        track?.tidalId,
+        track?.tidal_id,
+        track?.qobuzId,
+        track?.qobuz_id,
+        track?.amazonId,
+        track?.amazon_id
+    ].map(value => String(value || '').trim()).filter(Boolean))];
+}
+
 function resolveMonitoredTrackLocationStatus(track, source) {
     if (!monitoredPlaylistTracklistActive || !track) {
         return null;
     }
 
-    const normalizedSource = String(source || '').trim().toLowerCase();
-    let sourceTrackId = '';
-    switch (normalizedSource) {
-        case 'spotify':
-            sourceTrackId = String(track.spotifyId || track.spotify_id || track.sourceTrackId || track.id || '').trim();
-            break;
-        case 'apple':
-            sourceTrackId = String(track.appleId || track.apple_id || track.sourceTrackId || track.id || '').trim();
-            break;
-        case 'tidal':
-            sourceTrackId = String(track.tidalId || track.tidal_id || track.sourceTrackId || track.id || '').trim();
-            break;
-        case 'qobuz':
-            sourceTrackId = String(track.qobuzId || track.qobuz_id || track.sourceTrackId || track.id || '').trim();
-            break;
-        case 'amazon':
-        case 'amazonmusic':
-            sourceTrackId = String(track.amazonId || track.amazon_id || track.sourceTrackId || track.id || '').trim();
-            break;
-        case 'deezer':
-            sourceTrackId = String(track.deezerId || track.deezer_id || track.sourceTrackId || track.id || '').trim();
-            break;
-        default:
-            sourceTrackId = String(track.sourceTrackId || track.id || '').trim();
-            break;
+    for (const key of collectTrackStatusLookupKeys(track)) {
+        const match = monitoredPlaylistTrackStatuses.get(key);
+        if (match) {
+            return match;
+        }
     }
 
-    return sourceTrackId ? monitoredPlaylistTrackStatuses.get(sourceTrackId) || null : null;
+    return null;
 }
 
 function normalizeTrackLocationStatus(status) {
@@ -6601,7 +6634,7 @@ function renderTracksTable(tracks, isPlaylistLike, isLocalSource, fallbackAlbumT
 
     return `
         <div class="tracks-table-wrap">
-        <table class="tracks-table${shouldShowIgnore ? ' tracks-table--with-ignore' : ''}${isPlaylistLike ? ' tracks-table--playlistlike' : ''}${isPodcastTable ? ' tracks-table--podcast' : ''}">
+        <table class="tracks-table${shouldShowIgnore ? ' tracks-table--with-ignore' : ''}${watchlistIgnoreEnabled ? ' tracks-table--ignore-enabled' : ''}${isPlaylistLike ? ' tracks-table--playlistlike' : ''}${isPodcastTable ? ' tracks-table--podcast' : ''}">
             <colgroup>
                 <col class="col-number">
                 <col class="col-title">

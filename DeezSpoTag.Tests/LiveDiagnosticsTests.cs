@@ -38,6 +38,7 @@ public sealed class LiveDiagnosticsTests
     private const string LibraryScanLiveFlag = "DEEZSPOTAG_LIVE_LIBRARY_SCAN_TESTS";
     private const string LibraryScanRootEnv = "DEEZSPOTAG_LIVE_LIBRARY_SCAN_ROOT";
     private const string IdentityResolverLiveFlag = "DEEZSPOTAG_LIVE_IDENTITY_RESOLVER_TESTS";
+    private const string TargetIngestLiveFlag = "DEEZSPOTAG_LIVE_TARGET_INGEST_TESTS";
     private const string AppleLyricsLiveFlag = "DEEZSPOTAG_LIVE_APPLE_LYRICS_TESTS";
     private const string DataRootEnv = "DEEZSPOTAG_DATA_DIR";
 
@@ -91,6 +92,43 @@ public sealed class LiveDiagnosticsTests
         Assert.False(string.IsNullOrWhiteSpace(root), $"{LibraryScanRootEnv} must point to a real library folder.");
         Assert.True(Directory.Exists(root), $"{LibraryScanRootEnv} does not exist: {root}");
         Assert.NotEmpty(Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task TargetIdentityIngest_PullsPlexJellyfinAndNavidromeWhenEnabled()
+    {
+        if (!IsEnabled(TargetIngestLiveFlag))
+        {
+            return;
+        }
+
+        var dataRoot = Environment.GetEnvironmentVariable(DataRootEnv);
+        Assert.False(string.IsNullOrWhiteSpace(dataRoot), $"{DataRootEnv} must point to the configured application data directory.");
+        Assert.True(Directory.Exists(dataRoot), $"{DataRootEnv} does not exist: {dataRoot}");
+        var libraryDb = Path.Join(dataRoot, "db", "library", "deezspotag.db");
+        Assert.True(File.Exists(libraryDb), $"Library database is missing: {libraryDb}");
+        Environment.SetEnvironmentVariable("LIBRARY_DB", $"Data Source={libraryDb}");
+
+        await using var provider = BuildIdentityResolverProvider(dataRoot);
+        var refresh = provider.GetRequiredService<MediaServerLibraryRefreshService>();
+        var configured = await refresh.GetConfiguredServicesAsync();
+        Assert.Contains("plex", configured);
+        Assert.Contains("jellyfin", configured);
+        Assert.Contains("navidrome", configured);
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        var summary = await refresh.IngestConfiguredTargetIdentitiesAsync(timeout.Token);
+        Assert.True(
+            summary.IsComplete,
+            $"Identity ingest incomplete. configured={summary.ConfiguredServerCount} ingested={summary.IngestedServerCount} failed={string.Join(',', summary.FailedServers)}");
+
+        var counts = ReadMediaServerIdentityCounts(libraryDb);
+        foreach (var service in new[] { "plex", "jellyfin", "navidrome" })
+        {
+            Assert.True(
+                counts.TryGetValue(service, out var count) && count.Rows > 0 && count.UpdatedAtUtc > DateTimeOffset.UtcNow.AddMinutes(-20),
+                $"{service} identities were not ingested into DeezSpoTag. rows={count.Rows} updated={count.UpdatedAtUtc:o}");
+        }
     }
 
     [Fact]
@@ -882,6 +920,33 @@ public sealed class LiveDiagnosticsTests
         => string.IsNullOrWhiteSpace(value)
             ? null
             : new string(value.Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+
+    private readonly record struct MediaServerIdentityCount(int Rows, DateTimeOffset UpdatedAtUtc);
+
+    private static IReadOnlyDictionary<string, MediaServerIdentityCount> ReadMediaServerIdentityCounts(string libraryDb)
+    {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={libraryDb};Mode=ReadOnly");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = @"
+SELECT service, COUNT(*), MAX(updated_at_utc)
+FROM media_server_track_metadata
+GROUP BY service;";
+        var result = new Dictionary<string, MediaServerIdentityCount>(StringComparer.OrdinalIgnoreCase);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var updated = DateTimeOffset.MinValue;
+            if (!reader.IsDBNull(2))
+            {
+                _ = DateTimeOffset.TryParse(reader.GetString(2), out updated);
+            }
+
+            result[reader.GetString(0)] = new MediaServerIdentityCount(reader.GetInt32(1), updated);
+        }
+
+        return result;
+    }
 
     private static bool IsEnabled(string envName)
     {
