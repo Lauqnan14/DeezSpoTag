@@ -312,6 +312,24 @@ internal sealed class WatchlistEngine
 
         var headSnapshot = await FetchLivePlaylistHeadAsync(source, sourceId, cancellationToken);
         var liveSnapshot = headSnapshot;
+        LivePlaylistSnapshot? fullSnapshotForArtwork = null;
+        if (_playlistVisualService != null
+            && IsStreamingPlaylistArtworkSource(source)
+            && string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl))
+        {
+            fullSnapshotForArtwork = await FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(fullSnapshotForArtwork.ImageUrl))
+            {
+                liveSnapshot = liveSnapshot with
+                {
+                    Name = string.IsNullOrWhiteSpace(liveSnapshot.Name) ? fullSnapshotForArtwork.Name : liveSnapshot.Name,
+                    Description = string.IsNullOrWhiteSpace(liveSnapshot.Description) ? fullSnapshotForArtwork.Description : liveSnapshot.Description,
+                    ImageUrl = fullSnapshotForArtwork.ImageUrl,
+                    TrackCount = liveSnapshot.TrackCount ?? fullSnapshotForArtwork.TrackCount,
+                    OwnerName = string.IsNullOrWhiteSpace(liveSnapshot.OwnerName) ? fullSnapshotForArtwork.OwnerName : liveSnapshot.OwnerName
+                };
+            }
+        }
         var liveTrackCount = liveSnapshot.TrackCount ?? playlist.TrackCount ?? 0;
 
         var currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
@@ -425,7 +443,9 @@ internal sealed class WatchlistEngine
                     nextAttemptUtc: null,
                     consecutiveFailures: 0,
                     cancellationToken);
-                liveSnapshot = await FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken);
+                liveSnapshot = fullSnapshotForArtwork?.IsComplete == true
+                    ? fullSnapshotForArtwork
+                    : await FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken);
                 candidates = liveSnapshot.Candidates;
                 liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
             }
@@ -443,9 +463,57 @@ internal sealed class WatchlistEngine
                 nextAttemptUtc: null,
                 consecutiveFailures: 0,
                 cancellationToken);
-            liveSnapshot = await FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken);
+            liveSnapshot = fullSnapshotForArtwork?.IsComplete == true
+                ? fullSnapshotForArtwork
+                : await FetchLivePlaylistSnapshotAsync(source, sourceId, maxCandidates, cancellationToken);
             candidates = liveSnapshot.Candidates;
             liveTrackCount = liveSnapshot.TrackCount ?? candidates.Count;
+        }
+
+        if (_playlistVisualService != null
+            && IsStreamingPlaylistArtworkSource(source)
+            && string.IsNullOrWhiteSpace(currentPlaylist.ImageUrl)
+            && !string.IsNullOrWhiteSpace(liveSnapshot.ImageUrl))
+        {
+            currentPlaylist = BuildCurrentPlaylistDto(playlist, source, sourceId, liveSnapshot, liveTrackCount);
+            artworkInspection = await _playlistVisualService.InspectSourceArtworkAsync(
+                source,
+                sourceId,
+                currentPlaylist.Name,
+                currentPlaylist.ImageUrl,
+                activateChangedArtwork: preference?.ReuseSavedArtwork != true,
+                authoritativeRemoval: false,
+                cancellationToken);
+            var activeVisual = _playlistVisualService.GetStoredVisual(source, sourceId);
+            if (activeVisual?.Url is { Length: > 0 })
+            {
+                currentPlaylist = currentPlaylist with { ImageUrl = activeVisual.Url };
+            }
+
+            await _libraryRepository.UpsertPlaylistWatchArtworkStateAsync(
+                new PlaylistWatchArtworkStateDto(
+                    source,
+                    sourceId,
+                    artworkInspection.RemoteIdentity,
+                    artworkInspection.StillContentHash,
+                    artworkInspection.Still?.FilePath,
+                    artworkInspection.AnimatedContentHash,
+                    artworkInspection.Animated?.FilePath,
+                    artworkInspection.Status.ToString().ToLowerInvariant(),
+                    artworkInspection.Error,
+                    DateTimeOffset.UtcNow,
+                    artworkInspection.Revision),
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(artworkInspection.Revision)
+                || artworkInspection.Changed)
+            {
+                await SchedulePlaylistArtworkTargetSyncAsync(
+                    source,
+                    sourceId,
+                    currentPlaylist,
+                    preference,
+                    cancellationToken);
+            }
         }
 
         if (!liveSnapshot.IsComplete || (candidates.Count == 0 && !liveSnapshot.IsAuthoritativeEmpty))
@@ -2358,6 +2426,16 @@ internal sealed class WatchlistEngine
                || string.Equals(source, DeezerSource, StringComparison.OrdinalIgnoreCase)
                || string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase)
                || string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsStreamingPlaylistArtworkSource(string source)
+    {
+        return string.Equals(source, SpotifySource, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(source, DeezerSource, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(source, AppleSource, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(source, BoomplaySource, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(source, TidalSource, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(source, QobuzSource, StringComparison.OrdinalIgnoreCase);
     }
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Pagination and partial-failure handling are intentionally explicit for deterministic snapshot behavior.")]

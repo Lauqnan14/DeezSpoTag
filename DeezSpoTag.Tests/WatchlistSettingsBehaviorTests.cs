@@ -696,6 +696,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("ScheduleArtworkForActiveRevisionAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistArtworkTargetSyncScheduler", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasPlaylistImageAsync", syncSource, StringComparison.Ordinal);
+        Assert.Contains("IsStreamingPlaylistArtworkSource(source)", watchSource, StringComparison.Ordinal);
+        Assert.Contains("fullSnapshotForArtwork = await FetchLivePlaylistSnapshotAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("fullSnapshotForArtwork?.IsComplete == true", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetQobuzSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetTidalSnapshotHeadAsync", watchSource, StringComparison.Ordinal);
     }

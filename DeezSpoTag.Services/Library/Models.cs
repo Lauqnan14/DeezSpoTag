@@ -1147,12 +1147,14 @@ public sealed record LocalScanFileState(
 
 public sealed record WatchlistStateDriftReport(
     int AppliedWithoutMembership,
+    int AppliedWithIncompleteMembership,
     int MembershipWithoutApplied,
     int OrphanedMembership,
     int MembershipForUnconfiguredTarget,
     int BlockedBelowAttemptCap)
 {
     public int Total => AppliedWithoutMembership
+        + AppliedWithIncompleteMembership
         + MembershipWithoutApplied
         + OrphanedMembership
         + MembershipForUnconfiguredTarget;

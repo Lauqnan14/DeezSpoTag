@@ -970,7 +970,7 @@ WHERE id=@id;",
     }
 
     [Fact]
-    public async Task RepairWatchlistSyncBacklog_DoesNotReopenIdentityGapAppliedState()
+    public async Task IncompleteAppliedTargetState_ReopensPlaylistSyncJob()
     {
         await AddPlaylistWithTargetsAsync("partial-target-list", ["plex"]);
         await _repository.AddPlaylistWatchTracksAsync(
@@ -1017,15 +1017,12 @@ WHERE id=@id;",
             "partial-target-list",
             "snapshot-1"));
 
-        var repaired = await _repository.RepairWatchlistSyncBacklogAsync(10);
+        var repaired = await _repository.EnqueueMembershipCatchUpForIncompletePlaylistsAsync();
 
-        Assert.Equal(0, repaired);
-        Assert.Empty(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
-
-        var catchUp = Assert.Single(await _repository.EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
-            102,
-            "plex",
-            "snapshot-1"));
+        Assert.True(repaired > 0);
+        var catchUp = Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "partial-target-list"));
+        Assert.Equal("playlist", catchUp.TrackId);
+        Assert.Equal("plex", catchUp.TargetService);
         Assert.Equal("snapshot-1:plex-membership-v2", catchUp.SnapshotId);
         var catchUpClaimed = Assert.Single(await _repository.ClaimDueWatchlistSyncJobsAsync(
             1,

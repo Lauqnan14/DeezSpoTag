@@ -4167,6 +4167,12 @@ WHERE t.local_track_id IS NOT NULL
         foreach (var item in work)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            enqueued += await EnqueueIncompletePlaylistTargetSyncJobAsync(
+                item.Source,
+                item.PlaylistId,
+                item.Target,
+                item.Revision,
+                cancellationToken);
             enqueued += (await EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync(
                 item.Source,
                 item.PlaylistId,
@@ -4176,6 +4182,60 @@ WHERE t.local_track_id IS NOT NULL
         }
 
         return enqueued;
+    }
+
+    private async Task<int> EnqueueIncompletePlaylistTargetSyncJobAsync(
+        string source,
+        string playlistId,
+        string targetService,
+        string snapshotId,
+        CancellationToken cancellationToken)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, playlistId, out var normalizedSource, out var normalizedPlaylistId)
+            || string.IsNullOrWhiteSpace(targetService)
+            || string.IsNullOrWhiteSpace(snapshotId))
+        {
+            return 0;
+        }
+
+        var normalizedTarget = targetService.Trim().ToLowerInvariant();
+        var normalizedSnapshot = normalizedTarget == "plex"
+            && !snapshotId.EndsWith(":plex-membership-v2", StringComparison.OrdinalIgnoreCase)
+            ? $"{snapshotId}:plex-membership-v2"
+            : snapshotId.Trim();
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+INSERT INTO watchlist_sync_job (
+    source, playlist_id, track_id, target_service, status, next_attempt_utc, snapshot_id)
+SELECT @source, @playlistId, 'playlist', @targetService, 'pending', CURRENT_TIMESTAMP, @snapshotId
+WHERE EXISTS (
+        SELECT 1
+          FROM playlist_watch_track t
+          JOIN playlist_watch_configured_sync_targets c
+            ON c.source=t.source AND c.source_id=t.source_id AND c.target=@targetService
+         WHERE t.source=@source
+           AND t.source_id=@playlistId
+           AND t.local_track_id IS NOT NULL
+           AND NOT EXISTS (
+                SELECT 1
+                  FROM playlist_watch_target_membership m
+                 WHERE m.source=t.source
+                   AND m.source_id=t.source_id
+                   AND m.track_source_id=t.track_source_id
+                   AND lower(m.target_service)=@targetService
+                   AND lower(m.sync_status)='playlist_synced'))
+ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
+    status=CASE WHEN lower(watchlist_sync_job.status)='processing'
+                THEN watchlist_sync_job.status ELSE 'pending' END,
+    next_attempt_utc=CASE WHEN lower(watchlist_sync_job.status)='processing'
+                          THEN watchlist_sync_job.next_attempt_utc ELSE CURRENT_TIMESTAMP END,
+    snapshot_id=excluded.snapshot_id,
+    updated_at=CURRENT_TIMESTAMP;", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
+        command.Parameters.AddWithValue("targetService", normalizedTarget);
+        command.Parameters.AddWithValue("snapshotId", normalizedSnapshot);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task DeleteMediaServerTrackMetadataAsync(
@@ -12941,6 +13001,27 @@ SELECT
                AND m.source_id = state.source_id
                AND lower(m.target_service) = lower(state.target_service))) AS applied_without_membership,
     (SELECT COUNT(*)
+       FROM playlist_watch_target_sync_state state
+      WHERE lower(state.status) = 'applied'
+        AND EXISTS (
+            SELECT 1
+              FROM playlist_watch_track t
+              JOIN playlist_watch_configured_sync_targets cst
+                ON cst.source = t.source
+               AND cst.source_id = t.source_id
+               AND cst.target = lower(state.target_service)
+             WHERE t.source = state.source
+               AND t.source_id = state.source_id
+               AND t.local_track_id IS NOT NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM playlist_watch_target_membership m
+                     WHERE m.source = t.source
+                       AND m.source_id = t.source_id
+                       AND m.track_source_id = t.track_source_id
+                       AND lower(m.target_service) = lower(state.target_service)
+                       AND lower(m.sync_status) = 'playlist_synced'))) AS applied_with_incomplete_membership,
+    (SELECT COUNT(*)
        FROM (SELECT DISTINCT m.source, m.source_id, lower(m.target_service) AS target_service
                FROM playlist_watch_target_membership m
               WHERE lower(m.sync_status) = 'playlist_synced') verified
@@ -12973,7 +13054,7 @@ SELECT
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
         {
-            return new WatchlistStateDriftReport(0, 0, 0, 0, 0);
+            return new WatchlistStateDriftReport(0, 0, 0, 0, 0, 0);
         }
 
         return new WatchlistStateDriftReport(
@@ -12981,7 +13062,8 @@ SELECT
             reader.GetInt32(1),
             reader.GetInt32(2),
             reader.GetInt32(3),
-            reader.GetInt32(4));
+            reader.GetInt32(4),
+            reader.GetInt32(5));
     }
 
     public async Task<int> RepairWatchlistSyncBacklogAsync(

@@ -73,7 +73,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("UpdatePlexTrackMetadataIndexAsync", source, StringComparison.Ordinal);
         Assert.Contains("UpdateJellyfinTrackMetadataIndexAsync", source, StringComparison.Ordinal);
         Assert.Contains("UpdateNavidromeTrackMetadataIndexAsync", source, StringComparison.Ordinal);
-        Assert.Contains("IngestTargetTracksByPathAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetLibraryTracksAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetAudioTracksAsync", source, StringComparison.Ordinal);
         Assert.Contains("IngestConfiguredTargetIdentitiesAsync", source, StringComparison.Ordinal);
@@ -367,9 +367,10 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("case PlexService", indexBody, StringComparison.Ordinal);
         Assert.Contains("case JellyfinService", indexBody, StringComparison.Ordinal);
         Assert.Contains("case NavidromeService", indexBody, StringComparison.Ordinal);
-        Assert.Contains("IngestTargetTracksByPathAsync(PlexService", source, StringComparison.Ordinal);
-        Assert.Contains("IngestTargetTracksByPathAsync(JellyfinService", source, StringComparison.Ordinal);
-        Assert.Contains("IngestTargetTracksByPathAsync(NavidromeService", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksAsync(PlexService", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksAsync(JellyfinService", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksAsync(NavidromeService", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveLocalTrackIdentityAsync", source, StringComparison.Ordinal);
         Assert.Contains("RefreshPlexAsync(state.Plex, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("RefreshNavidromeAsync(state.Navidrome, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);

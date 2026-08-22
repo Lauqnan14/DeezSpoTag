@@ -2035,25 +2035,10 @@ public sealed class PlaylistSyncService
                 return false;
             }
 
-            var visual = await _playlistVisualService.ResolveApplePlaylistAnimatedVisualAsync(
-                    playlist.Source, playlist.SourceId, cancellationToken)
-                ?? stillVisual;
-            if (visual == null)
-            {
-                return false;
-            }
-
             var playlistLookup = await ResolveAuthoritativeNavidromePlaylistIdAsync(
                 navidrome, playlist, ResolveExistingTargetPlaylistId(preference, NavidromeService), cancellationToken);
             return playlistLookup.Status == TargetLookupStatus.Success
-                && !string.IsNullOrWhiteSpace(playlistLookup.Value)
-                && await _navidromeApiClient.VerifyPlaylistImageFromFileAsync(
-                    navidrome.Url,
-                    navidrome.Username,
-                    navidrome.Password,
-                    playlistLookup.Value,
-                    visual.FilePath,
-                    cancellationToken);
+                && !string.IsNullOrWhiteSpace(playlistLookup.Value);
         }
 
         return false;

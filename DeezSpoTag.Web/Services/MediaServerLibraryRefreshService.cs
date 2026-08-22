@@ -22,6 +22,14 @@ public sealed class MediaServerLibraryRefreshService
     private readonly LibraryRepository _libraryRepository;
     private readonly ILogger<MediaServerLibraryRefreshService> _logger;
 
+    private sealed record TargetTrackIdentityCandidate(
+        string TargetItemId,
+        string FilePath,
+        string? Title,
+        string? Artist,
+        string? Album,
+        int? DurationMs);
+
     public MediaServerLibraryRefreshService(
         PlatformAuthService authService,
         PlexApiClient plexApiClient,
@@ -364,9 +372,15 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(track => !string.IsNullOrWhiteSpace(track.RatingKey)
                                     && !string.IsNullOrWhiteSpace(track.FilePath)
                                     && seenRatingKeys.Add(track.RatingKey))
-                    .Select(static track => (track.RatingKey, track.FilePath))
+                    .Select(static track => new TargetTrackIdentityCandidate(
+                        track.RatingKey,
+                        track.FilePath,
+                        track.Title,
+                        track.Artist,
+                        track.Album,
+                        track.DurationMs > 0 ? checked((int)Math.Min(track.DurationMs, int.MaxValue)) : null))
                     .ToList();
-                var ingest = await IngestTargetTracksByPathAsync(PlexService, tracks, cancellationToken);
+                var ingest = await IngestTargetTracksAsync(PlexService, tracks, cancellationToken);
                 mappedCount += ingest.Mapped;
                 unmappedCount += ingest.Unmapped;
 
@@ -510,9 +524,15 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                                     && !string.IsNullOrWhiteSpace(track.FilePath)
                                     && seenItemIds.Add(track.Id))
-                    .Select(static track => (track.Id, track.FilePath!))
+                    .Select(static track => new TargetTrackIdentityCandidate(
+                        track.Id,
+                        track.FilePath!,
+                        track.Name,
+                        track.Artist,
+                        Album: null,
+                        track.DurationMs))
                     .ToList();
-                var ingest = await IngestTargetTracksByPathAsync(JellyfinService, tracks, cancellationToken);
+                var ingest = await IngestTargetTracksAsync(JellyfinService, tracks, cancellationToken);
                 mappedCount += ingest.Mapped;
                 unmappedCount += ingest.Unmapped;
 
@@ -572,9 +592,15 @@ public sealed class MediaServerLibraryRefreshService
                 .Where(track => !string.IsNullOrWhiteSpace(track.Id)
                                 && !string.IsNullOrWhiteSpace(track.FilePath)
                                 && seenIds.Add(track.Id))
-                .Select(static track => (track.Id, track.FilePath!))
+                .Select(static track => new TargetTrackIdentityCandidate(
+                    track.Id,
+                    track.FilePath!,
+                    track.Title,
+                    track.Artist,
+                    Album: null,
+                    track.DurationMs))
                 .ToList();
-            var ingest = await IngestTargetTracksByPathAsync(NavidromeService, tracks, cancellationToken);
+            var ingest = await IngestTargetTracksAsync(NavidromeService, tracks, cancellationToken);
             mappedCount += ingest.Mapped;
             unmappedCount += ingest.Unmapped;
 
@@ -595,9 +621,9 @@ public sealed class MediaServerLibraryRefreshService
         }
     }
 
-    private async Task<(int Mapped, int Unmapped)> IngestTargetTracksByPathAsync(
+    private async Task<(int Mapped, int Unmapped)> IngestTargetTracksAsync(
         string service,
-        IReadOnlyList<(string TargetItemId, string FilePath)> tracks,
+        IReadOnlyList<TargetTrackIdentityCandidate> tracks,
         CancellationToken cancellationToken)
     {
         if (tracks.Count == 0)
@@ -609,16 +635,40 @@ public sealed class MediaServerLibraryRefreshService
             tracks.Select(static track => track.FilePath).ToList(),
             cancellationToken);
         var now = DateTimeOffset.UtcNow;
-        var mappedTracks = tracks
-            .Where(track => filePathMap.ContainsKey(track.FilePath))
-            .ToList();
+        var mappedTracks = new List<(TargetTrackIdentityCandidate Track, long LocalTrackId)>();
+        foreach (var track in tracks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (filePathMap.TryGetValue(track.FilePath, out var localTrackId))
+            {
+                mappedTracks.Add((track, localTrackId));
+                continue;
+            }
+
+            var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
+                new LibraryRepository.LibraryExistenceInput(
+                    Isrc: null,
+                    TrackTitle: track.Title,
+                    ArtistName: track.Artist,
+                    DurationMs: track.DurationMs,
+                    Source: null,
+                    SourceId: null,
+                    AlbumTitle: track.Album,
+                    Explicit: null),
+                cancellationToken: cancellationToken);
+            if (!resolved.IsAmbiguous && resolved.LocalTrackId.HasValue)
+            {
+                mappedTracks.Add((track, resolved.LocalTrackId.Value));
+            }
+        }
+
         await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
             mappedTracks
                 .Select(track => new MediaServerTrackMetadataUpsertDto(
-                    filePathMap[track.FilePath],
+                    track.LocalTrackId,
                     service,
-                    track.TargetItemId,
-                    track.FilePath,
+                    track.Track.TargetItemId,
+                    track.Track.FilePath,
                     now))
                 .ToList(),
             cancellationToken);
@@ -627,8 +677,8 @@ public sealed class MediaServerLibraryRefreshService
             await _libraryRepository.UpsertPlexTrackMetadataAsync(
                 mappedTracks
                     .Select(track => new PlexTrackMetadataUpsertDto(
-                        filePathMap[track.FilePath],
-                        track.TargetItemId,
+                        track.LocalTrackId,
+                        track.Track.TargetItemId,
                         now))
                     .ToList(),
                 cancellationToken);
