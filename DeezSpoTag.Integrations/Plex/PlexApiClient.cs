@@ -736,34 +736,6 @@ public class PlexApiClient
         return keys;
     }
 
-    /// <summary>
-    /// Search for tracks in Plex library
-    /// </summary>
-    public async Task<List<PlexTrack>> SearchTracksAsync(string query, string? libraryKey = null)
-    {
-        try
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Searching Plex for tracks: {Query}", query);            }
-
-            // This would make actual search API call
-            // For now, return empty results
-            await Task.CompletedTask;
-            var tracks = new List<PlexTrack>();
-
-            if (_logger.IsEnabled(LogLevel.Debug))
-            {
-                _logger.LogDebug("Found {TrackCount} tracks in Plex for query: {Query}", tracks.Count, query);            }
-            return tracks;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogError(ex, "Error searching Plex for tracks: {Query}", query);
-            return new List<PlexTrack>();
-        }
-    }
-
     public async Task<List<PlexTrack>> SearchTracksAsync(
         string serverUrl,
         string token,

@@ -3810,6 +3810,28 @@ function resolveLibraryScanSuccessMessage(refreshImages, reset) {
     return refreshImages ? 'Images refreshed.' : 'Library refreshed.';
 }
 
+let targetIdentityRefreshInProgress = false;
+let targetIdentityRefreshPollingTimer = null;
+
+function startTargetIdentityRefreshPolling() {
+    stopTargetIdentityRefreshPolling();
+    targetIdentityRefreshPollingTimer = window.setInterval(() => {
+        void loadTargetIdentityStatus().catch(error => {
+            const status = document.getElementById('libraryTargetIdentityStatus');
+            if (status) {
+                status.textContent = `Target ID status unavailable: ${error.message}`;
+            }
+        });
+    }, 1500);
+}
+
+function stopTargetIdentityRefreshPolling() {
+    if (targetIdentityRefreshPollingTimer !== null) {
+        window.clearInterval(targetIdentityRefreshPollingTimer);
+        targetIdentityRefreshPollingTimer = null;
+    }
+}
+
 async function loadTargetIdentityStatus() {
     const panel = document.getElementById('library-target-identities-panel');
     if (!panel) {
@@ -3830,6 +3852,9 @@ async function loadTargetIdentityStatus() {
 function renderTargetIdentityStatus(payload) {
     const services = Array.isArray(payload?.services) ? payload.services : [];
     const serviceMap = new Map(services.map(service => [String(service.service || '').toLowerCase(), service]));
+    let connectedCount = 0;
+    let completedConnectedCount = 0;
+    let runningCount = 0;
     document.querySelectorAll('[data-target-identity-service]').forEach(input => {
         const service = String(input.value || input.dataset.targetIdentityService || '').toLowerCase();
         const state = serviceMap.get(service);
@@ -3838,20 +3863,33 @@ function renderTargetIdentityStatus(payload) {
         input.checked = connected;
         input.closest('.dropdown-setting-row')?.classList.toggle('is-disabled', !connected);
         const coverage = state?.coverage;
+        const progress = state?.progress?.running === true ? state.progress : null;
         const label = input.closest('label')?.querySelector('span');
         if (label) {
             const baseLabel = state?.label || service;
-            label.textContent = coverage
-                ? `${baseLabel} (${Number(coverage.mappedTracks || 0)}/${Number(coverage.totalTracks || 0)})`
+            const counter = progress || coverage;
+            label.textContent = counter
+                ? `${baseLabel} (${Number(counter.mappedTracks || 0)}/${Number(counter.totalTracks || 0)})`
                 : baseLabel;
         }
+        if (connected) {
+            connectedCount += 1;
+            const counter = progress || coverage;
+            const totalTracks = Number(counter?.totalTracks || 0);
+            const mappedTracks = Number(counter?.mappedTracks || 0);
+            if (progress) {
+                runningCount += 1;
+            } else if (totalTracks > 0 && mappedTracks >= totalTracks) {
+                completedConnectedCount += 1;
+            }
+        }
     });
-    syncTargetIdentityActionState();
+    syncTargetIdentityActionState({ connectedCount, completedConnectedCount, runningCount });
 }
 
-function syncTargetIdentityActionState() {
+function syncTargetIdentityActionState(statusState = null) {
     const selected = getSelectedTargetIdentityServices();
-    const disabled = selected.length === 0;
+    const disabled = selected.length === 0 || targetIdentityRefreshInProgress;
     const fetchButton = document.getElementById('fetchTargetTrackIds');
     const resetButton = document.getElementById('resetFetchTargetTrackIds');
     if (fetchButton) {
@@ -3861,7 +3899,22 @@ function syncTargetIdentityActionState() {
         resetButton.disabled = disabled;
     }
     const status = document.getElementById('libraryTargetIdentityStatus');
-    if (status && disabled) {
+    if (!status) {
+        return;
+    }
+
+    if (targetIdentityRefreshInProgress || Number(statusState?.runningCount || 0) > 0) {
+        status.textContent = 'Fetching target track IDs...';
+        return;
+    }
+
+    if (Number(statusState?.connectedCount || 0) > 0
+        && Number(statusState?.completedConnectedCount || 0) === Number(statusState?.connectedCount || 0)) {
+        status.textContent = 'Target track IDs fetched for all connected servers.';
+        return;
+    }
+
+    if (selected.length === 0) {
         status.textContent = 'Connect a target server to fetch track IDs.';
     }
 }
@@ -3887,23 +3940,38 @@ async function runTargetIdentityRefresh(resetFirst) {
             : 'Fetching target track IDs...';
     }
 
-    const result = await fetchJson(resetFirst
-        ? '/api/library/target-identities/reset-refresh'
-        : '/api/library/target-identities/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            services,
-            folderId: getSelectedLibraryViewFolderId()
-        })
-    });
-    const failed = Number(result?.failed || 0);
-    const refreshed = Number(result?.refreshed || 0);
-    await loadTargetIdentityStatus();
-    showToast(failed > 0
-        ? `Target track ID refresh completed with ${failed} failed server(s).`
-        : `Target track IDs refreshed for ${refreshed} server(s).`,
-        failed > 0);
+    targetIdentityRefreshInProgress = true;
+    syncTargetIdentityActionState();
+    startTargetIdentityRefreshPolling();
+    let statusRefreshed = false;
+    try {
+        const result = await fetchJson(resetFirst
+            ? '/api/library/target-identities/reset-refresh'
+            : '/api/library/target-identities/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                services,
+                folderId: getSelectedLibraryViewFolderId()
+            })
+        });
+        const failed = Number(result?.failed || 0);
+        const refreshed = Number(result?.refreshed || 0);
+        targetIdentityRefreshInProgress = false;
+        stopTargetIdentityRefreshPolling();
+        await loadTargetIdentityStatus();
+        statusRefreshed = true;
+        showToast(failed > 0
+            ? `Target track ID refresh completed with ${failed} failed server(s).`
+            : `Target track IDs refreshed for ${refreshed} server(s).`,
+            failed > 0);
+    } finally {
+        targetIdentityRefreshInProgress = false;
+        stopTargetIdentityRefreshPolling();
+        if (!statusRefreshed && document.getElementById('libraryTargetIdentityStatus')) {
+            void loadTargetIdentityStatus().catch(() => syncTargetIdentityActionState());
+        }
+    }
 }
 
 async function waitForScanCompletion(startedAtMs) {

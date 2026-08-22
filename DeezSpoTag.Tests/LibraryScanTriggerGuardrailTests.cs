@@ -99,6 +99,14 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("Reset &amp; Fetch Track IDs", libraryView, StringComparison.Ordinal);
         Assert.Contains("loadTargetIdentityStatus", libraryScript, StringComparison.Ordinal);
         Assert.Contains("runTargetIdentityRefresh", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("startTargetIdentityRefreshPolling", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("targetIdentityRefreshInProgress", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("state?.progress?.running === true", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("Target track IDs fetched for all connected servers.", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("GetTargetIdentityRefreshProgress", controller, StringComparison.Ordinal);
+        Assert.Contains("StartTargetIdentityResetProgress", controller, StringComparison.Ordinal);
+        Assert.Contains("statusRefreshed", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("ReportTargetIdentityProgress", ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs"), StringComparison.Ordinal);
         Assert.Contains("fetchTargetTrackIdsButton", extrasScript, StringComparison.Ordinal);
         Assert.Contains("resetFetchTargetTrackIdsButton", extrasScript, StringComparison.Ordinal);
     }
@@ -118,7 +126,9 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("TargetIdentityLocalIndex.Build", service, StringComparison.Ordinal);
         Assert.Contains("localIndex.MissingTrackIds.Count == 0", service, StringComparison.Ordinal);
         Assert.Contains("TryResolveByPath", service, StringComparison.Ordinal);
-        Assert.Contains("IngestTargetTrackMetadataFallbackAsync", service, StringComparison.Ordinal);
+        Assert.Contains("ResolveMissingTargetIdentitiesBySearchAsync", service, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksWithMetadataAsync", service, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTrackMetadataAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("GetTrackIdsByFilePathsAsync(\n            tracks.Select", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveLocalTrackIdentityAsync(", service, StringComparison.Ordinal);
         Assert.Contains("AlbumArtists,Artists,Album", jellyfin, StringComparison.Ordinal);
@@ -436,7 +446,9 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("IngestTargetTracksAsync(NavidromeService", source, StringComparison.Ordinal);
         Assert.Contains("TargetIdentityLocalIndex.Build", source, StringComparison.Ordinal);
         Assert.Contains("TryResolveByPath", source, StringComparison.Ordinal);
-        Assert.Contains("IngestTargetTrackMetadataFallbackAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveMissingTargetIdentitiesBySearchAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTracksWithMetadataAsync", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTrackMetadataAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveLocalTrackIdentityAsync", source, StringComparison.Ordinal);
         Assert.Contains("RefreshPlexAsync(state.Plex, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);

@@ -53,7 +53,8 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
                     service.Service,
                     service.Label,
                     service.Connected,
-                    Coverage = serviceCoverage ?? new TargetServerIdentityCoverageDto(service.Service, 0, 0, 0)
+                    Coverage = serviceCoverage ?? new TargetServerIdentityCoverageDto(service.Service, 0, 0, 0),
+                    Progress = _refreshService.GetTargetIdentityRefreshProgress(service.Service, folderId)
                 };
             }).ToList()
         });
@@ -111,6 +112,14 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
                         service,
                         request?.FolderId,
                         cancellationToken);
+                    var resetCoverage = await _repository.GetTargetServerIdentityCoverageAsync(
+                        [service],
+                        request?.FolderId,
+                        cancellationToken);
+                    _refreshService.StartTargetIdentityResetProgress(
+                        service,
+                        request?.FolderId,
+                        resetCoverage.FirstOrDefault() ?? new TargetServerIdentityCoverageDto(service, 0, 0, 0));
                 }
 
                 await _refreshService.UpdateTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
