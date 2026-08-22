@@ -118,6 +118,7 @@ public sealed class EngineAudioPostDownloadArtworkPayloadTests : IDisposable
         [
             files,
             new[] { configuredArtworkPath },
+            Array.Empty<string>(),
             new PathGenerationResult
             {
                 FilePath = albumPath,

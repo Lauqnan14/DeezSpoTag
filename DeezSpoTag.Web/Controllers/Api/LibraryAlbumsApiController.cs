@@ -75,7 +75,8 @@ public class LibraryAlbumsApiController : ControllerBase
 
         var dbTracks = await _repository.GetAlbumTracksAsync(id, cancellationToken);
         var sourceLinks = await _repository.GetAlbumTrackSourceLinksAsync(id, cancellationToken);
-        return Ok(BuildDatabaseTrackRows(dbTracks, sourceLinks, audioInfoByTrack, audioVariantsByTrack));
+        var targetServerIds = await _repository.GetAlbumTrackTargetServerIdsAsync(id, cancellationToken);
+        return Ok(BuildDatabaseTrackRows(dbTracks, sourceLinks, targetServerIds, audioInfoByTrack, audioVariantsByTrack));
     }
 
     private static List<object> BuildLocalTrackRows(
@@ -110,6 +111,7 @@ public class LibraryAlbumsApiController : ControllerBase
     private static List<object> BuildDatabaseTrackRows(
         IReadOnlyList<TrackDto> dbTracks,
         IReadOnlyDictionary<long, TrackSourceLinksDto> sourceLinks,
+        IReadOnlyDictionary<long, TrackTargetServerIdsDto> targetServerIds,
         Dictionary<long, AlbumTrackAudioInfoDto> audioInfoByTrack,
         Dictionary<long, IReadOnlyList<AlbumTrackAudioInfoDto>> audioVariantsByTrack)
     {
@@ -117,12 +119,13 @@ public class LibraryAlbumsApiController : ControllerBase
         foreach (var track in dbTracks)
         {
             sourceLinks.TryGetValue(track.Id, out var links);
+            targetServerIds.TryGetValue(track.Id, out var serverIds);
             audioInfoByTrack.TryGetValue(track.Id, out var audio);
             audioVariantsByTrack.TryGetValue(track.Id, out var variants);
             var orderedVariants = OrderTrackVariants(variants);
             if (orderedVariants.Count == 0)
             {
-                rows.Add(BuildDatabaseTrackRow(track, links, audio));
+                rows.Add(BuildDatabaseTrackRow(track, links, serverIds, audio));
                 continue;
             }
 
@@ -130,14 +133,18 @@ public class LibraryAlbumsApiController : ControllerBase
             for (var index = 0; index < orderedVariants.Count; index++)
             {
                 var variant = orderedVariants[index];
-                rows.Add(BuildDatabaseTrackVariantRow(track, links, audio, variant, index + 1, primaryAudioFilePath));
+                rows.Add(BuildDatabaseTrackVariantRow(track, links, serverIds, audio, variant, index + 1, primaryAudioFilePath));
             }
         }
 
         return rows;
     }
 
-    private static object BuildDatabaseTrackRow(TrackDto track, TrackSourceLinksDto? links, AlbumTrackAudioInfoDto? audio)
+    private static object BuildDatabaseTrackRow(
+        TrackDto track,
+        TrackSourceLinksDto? links,
+        TrackTargetServerIdsDto? targetServerIds,
+        AlbumTrackAudioInfoDto? audio)
     {
         return new
         {
@@ -169,13 +176,17 @@ public class LibraryAlbumsApiController : ControllerBase
             Isrc = links?.Isrc,
             DeezerUrl = links?.DeezerUrl,
             SpotifyUrl = links?.SpotifyUrl,
-            AppleUrl = links?.AppleUrl
+            AppleUrl = links?.AppleUrl,
+            PlexTrackId = targetServerIds?.PlexTrackId,
+            JellyfinTrackId = targetServerIds?.JellyfinTrackId,
+            NavidromeTrackId = targetServerIds?.NavidromeTrackId
         };
     }
 
     private static object BuildDatabaseTrackVariantRow(
         TrackDto track,
         TrackSourceLinksDto? links,
+        TrackTargetServerIdsDto? targetServerIds,
         AlbumTrackAudioInfoDto? primaryAudio,
         AlbumTrackAudioInfoDto variant,
         int variantIndex,
@@ -217,7 +228,10 @@ public class LibraryAlbumsApiController : ControllerBase
             Isrc = links?.Isrc,
             DeezerUrl = links?.DeezerUrl,
             SpotifyUrl = links?.SpotifyUrl,
-            AppleUrl = links?.AppleUrl
+            AppleUrl = links?.AppleUrl,
+            PlexTrackId = targetServerIds?.PlexTrackId,
+            JellyfinTrackId = targetServerIds?.JellyfinTrackId,
+            NavidromeTrackId = targetServerIds?.NavidromeTrackId
         };
     }
 

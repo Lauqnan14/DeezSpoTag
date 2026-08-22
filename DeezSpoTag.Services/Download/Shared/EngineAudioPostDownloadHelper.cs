@@ -206,7 +206,8 @@ public static partial class EngineAudioPostDownloadHelper
         bool Success,
         string? FailureReason = null,
         IReadOnlyList<string>? GeneratedSidecarPaths = null,
-        string? PrimaryArtworkPath = null);
+        string? PrimaryArtworkPath = null,
+        IReadOnlyList<string>? AnimatedArtworkPaths = null);
 
     private sealed record PrefetchCompletionResult(
         bool ArtworkReady,
@@ -2284,6 +2285,7 @@ public static partial class EngineAudioPostDownloadHelper
             AddGeneratedSidecars(
                 files,
                 runState.ArtworkResult.GeneratedSidecarPaths,
+                runState.ArtworkResult.AnimatedArtworkPaths,
                 execution.Request.Context.PathResult);
             execution.Request.Payload.Files = files;
             var filesJson = System.Text.Json.JsonSerializer.Serialize(files);
@@ -2316,6 +2318,7 @@ public static partial class EngineAudioPostDownloadHelper
     private static void AddGeneratedSidecars(
         List<Dictionary<string, object>> files,
         IReadOnlyList<string>? sidecarPaths,
+        IReadOnlyList<string>? animatedSidecarPaths,
         PathGenerationResult pathResult)
     {
         if (sidecarPaths == null || sidecarPaths.Count == 0)
@@ -2325,6 +2328,9 @@ public static partial class EngineAudioPostDownloadHelper
 
         var albumPath = DownloadPathResolver.NormalizeDisplayPath(pathResult.FilePath);
         var artistPath = DownloadPathResolver.NormalizeDisplayPath(pathResult.ArtistPath ?? pathResult.FilePath);
+        var animatedPaths = (animatedSidecarPaths ?? Array.Empty<string>())
+            .Select(DownloadPathResolver.NormalizeDisplayPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var existing = files
             .Select(file => file.TryGetValue("path", out var value) ? value?.ToString() : null)
             .Where(static path => !string.IsNullOrWhiteSpace(path))
@@ -2337,13 +2343,19 @@ public static partial class EngineAudioPostDownloadHelper
                 continue;
             }
 
-            files.Add(new Dictionary<string, object>
+            var generated = new Dictionary<string, object>
             {
                 ["path"] = displayPath,
                 ["albumPath"] = albumPath,
                 ["artistPath"] = artistPath,
                 ["type"] = "artwork"
-            });
+            };
+            if (animatedPaths.Contains(displayPath))
+            {
+                generated["artworkKind"] = "album-animated";
+            }
+
+            files.Add(generated);
         }
     }
 
@@ -2394,6 +2406,7 @@ public static partial class EngineAudioPostDownloadHelper
         CancellationToken token)
     {
         var generatedSidecarPaths = new List<string>();
+        var animatedSidecarPaths = new List<string>();
         string? primaryArtworkPath = null;
         if (execution.Requirements.ShouldFetchPrimaryArtwork)
         {
@@ -2418,8 +2431,8 @@ public static partial class EngineAudioPostDownloadHelper
 
         if (execution.Requirements.ShouldFetchAnimatedArtwork && runtime.AppleCatalog != null && runtime.HttpClientFactory != null)
         {
-            generatedSidecarPaths.AddRange(
-                await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token));
+            animatedSidecarPaths.AddRange(await LogMissingAnimatedArtworkAsync(execution, runtime, appleIdentity, token));
+            generatedSidecarPaths.AddRange(animatedSidecarPaths);
         }
 
         if (execution.Requirements.ShouldFetchArtistArtwork)
@@ -2442,7 +2455,8 @@ public static partial class EngineAudioPostDownloadHelper
         return new PrefetchArtworkResult(
             true,
             GeneratedSidecarPaths: generatedSidecarPaths,
-            PrimaryArtworkPath: primaryArtworkPath);
+            PrimaryArtworkPath: primaryArtworkPath,
+            AnimatedArtworkPaths: animatedSidecarPaths);
     }
 
     private static AppleArtworkIdentity? ResolveAppleArtworkIdentity(PrefetchExecutionContext execution)

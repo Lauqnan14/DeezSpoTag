@@ -142,4 +142,20 @@ public static class AnimatedArtworkNaming
             return false;
         }
     }
+
+    public static bool IsAlbumAnimatedArtworkSidecar(string? path, string? squareStem = null, string? tallStem = null)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(path);
+        if (!AnimatedExtensions.Contains(extension))
+        {
+            return false;
+        }
+
+        return IsRecognizedAnimatedStem(Path.GetFileNameWithoutExtension(path), squareStem, tallStem);
+    }
 }

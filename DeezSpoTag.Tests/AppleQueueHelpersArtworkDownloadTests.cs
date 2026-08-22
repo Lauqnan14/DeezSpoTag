@@ -111,6 +111,38 @@ public sealed class AppleQueueHelpersArtworkDownloadTests
         Assert.Contains("/5000x5000bb.jpg", handler.RequestedUrls[0], StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task DownloadAppleArtworkAsync_RawWebpArtistArtwork_RespectsRequestedJpegOutput()
+    {
+        var handler = new CapturingHttpMessageHandler();
+        var downloader = new ImageDownloader(
+            NullLogger<ImageDownloader>.Instance,
+            new StubHttpClientFactory(handler));
+        var settings = BuildSettings();
+        settings.LocalArtworkFormat = "jpg";
+        var outputPath = BuildTempOutputPath();
+
+        var downloaded = await AppleQueueHelpers.DownloadAppleArtworkAsync(
+            downloader,
+            new AppleQueueHelpers.AppleArtworkDownloadRequest
+            {
+                RawUrl = "https://is1-ssl.mzstatic.com/image/thumb/AMCArtistImages126/v4/54/56/b5/artist_file_cropped.png/5000x5000cc.webp",
+                OutputPath = outputPath,
+                Settings = settings,
+                Size = 5000,
+                Overwrite = "y",
+                PreferMaxQuality = true,
+                Logger = NullLogger.Instance
+            },
+            CancellationToken.None);
+
+        Assert.Equal(outputPath, downloaded);
+        Assert.EndsWith(".jpg", downloaded, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(handler.RequestedUrls);
+        Assert.EndsWith("/5000x5000cc.jpg", handler.RequestedUrls[0], StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(".webp", handler.RequestedUrls[0], StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("mp4,webp,gif", new[] { "mp4", "webp", "gif" })]
     [InlineData("WEBP, mp4, invalid, gif, mp4", new[] { "webp", "mp4", "gif" })]

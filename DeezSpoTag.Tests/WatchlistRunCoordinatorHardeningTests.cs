@@ -610,19 +610,26 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public void CycleBox_StopsNewPlaylistsAndPersistsProgressAfterEachSlice()
+    public void WatchlistCycle_DoesNotUseDeadlinesOrPerPlaylistTargetSlices()
     {
         var hostedSource = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory, "..", "..", "..", "..",
             "DeezSpoTag.Web", "Services", "WatchlistRunCoordinator.cs"));
+        var syncSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "..", "..", "..", "..",
+            "DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"));
 
-        Assert.Contains("SteadyCycleBudget = TimeSpan.FromMinutes(4)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("RecoveryCycleBudget = TimeSpan.FromMinutes(10)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("PlaylistStartReserve = TimeSpan.FromSeconds(15)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("RemainingCycleBudget(cycleDeadline) < PlaylistStartReserve", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SteadyCycleBudget", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RecoveryCycleBudget", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistStartReserve", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RemainingCycleBudget", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("RunInterleavedPlaylistSliceAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolvePreSweepDrainBudget", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("WatchSmoothSyncEnabled", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SliceMembershipMaxJobs", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResidualTargetSyncMaxJobs", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("DrainTargetSyncMaxJobs", syncSource, StringComparison.Ordinal);
         Assert.Contains("PersistPlaylistProgressAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("WatchSmoothSyncEnabled", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("RunInterleavedPlaylistSliceAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("HasPollOverduePlaylistAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("HasMembershipCatchUpPlaylistAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueMembershipCatchUpForIncompletePlaylistsAsync", hostedSource, StringComparison.Ordinal);
@@ -633,23 +640,17 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains("GetPlaylistsDueForIdentityRetryAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("identityRetryOnly", hostedSource, StringComparison.Ordinal);
         var loopStart = hostedSource.IndexOf("foreach (var activeItem in scheduledItems)", StringComparison.Ordinal);
-        var loopEnd = hostedSource.IndexOf("private async Task<WatchItemExecutionOutcome> RunInterleavedPlaylistSliceAsync(", loopStart, StringComparison.Ordinal);
+        var loopEnd = hostedSource.IndexOf("private static async Task PersistPlaylistProgressAsync(", loopStart, StringComparison.Ordinal);
         var loopBody = hostedSource[loopStart..loopEnd];
         Assert.Contains("PersistPlaylistProgressAsync(repository, activeItem, stoppingToken)", loopBody, StringComparison.Ordinal);
-        Assert.Contains("RunInterleavedPlaylistSliceAsync(", loopBody, StringComparison.Ordinal);
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
         Assert.Contains("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("ResolvePreSweepDrainBudget", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("remainingAfterReconcile", hostedSource, StringComparison.Ordinal);
         Assert.Contains("GetDueWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IsSnapshotExpandedAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Equal(TimeSpan.FromMinutes(4) - TimeSpan.FromSeconds(15), WatchlistRunCoordinator.ResolvePreSweepDrainBudget(TimeSpan.FromMinutes(4), playlistsDue: true));
-        Assert.Equal(TimeSpan.Zero, WatchlistRunCoordinator.ResolvePreSweepDrainBudget(TimeSpan.FromSeconds(10), playlistsDue: true));
-        Assert.Equal(TimeSpan.FromMinutes(4), WatchlistRunCoordinator.ResolvePreSweepDrainBudget(TimeSpan.FromMinutes(4), playlistsDue: false));
     }
 
     [Fact]
-    public async Task RunOnce_PersistsLastProgressAfterEachPlaylistOnBothFlagValues()
+    public async Task RunOnce_PersistsLastProgressAfterEachPlaylist()
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-progress-1", new PlaylistWatchlistMetadataInput("Progress One", null, null, null));
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-progress-2", new PlaylistWatchlistMetadataInput("Progress Two", null, null, null));
@@ -661,9 +662,6 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         var afterFlagOff = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
         Assert.NotNull(afterFlagOff?.LastProgressUtc);
 
-        var settings = _settingsService.LoadSettings();
-        settings.WatchSmoothSyncEnabled = true;
-        _settingsService.SaveSettings(settings);
         await InvokeRunOnceAsync(hosted);
         var afterFlagOn = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
         Assert.NotNull(afterFlagOn?.LastProgressUtc);
@@ -671,10 +669,9 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task RunOnce_FlagOff_SnapshotsDuePlaylistsBeforeDrainingAllJobs()
+    public async Task RunOnce_SnapshotsDuePlaylistsAndDrainsTargetJobs()
     {
         var settings = _settingsService.LoadSettings();
-        settings.WatchSmoothSyncEnabled = false;
         settings.WatchPollIntervalSeconds = 3600;
         _settingsService.SaveSettings(settings);
 

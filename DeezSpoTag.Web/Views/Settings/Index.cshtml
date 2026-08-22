@@ -1400,20 +1400,16 @@
 	                        <span class="slider"></span>
 	                    </span>
 	                </div>
-	                <div class="warning-text" data-tooltip-target="watchEnabled">Watchlist admits missing tracks under Max Monitored Items Per Run even if other downloads, moves, or enrichment are already running. Orchestration pause and an unusable public API still block admission.</div>
+	                <div class="warning-text" data-tooltip-target="watchEnabled">Watchlist admits missing tracks under Max Missing Tracks Queued Per Run even if other downloads, moves, or enrichment are already running. Orchestration pause and an unusable public API still block admission.</div>
 	                <div class="form-row-3">
                     <div class="form-group">
                         <label for="watchPollIntervalSeconds">Watch Interval (seconds)</label>
                         <input type="number" id="watchPollIntervalSeconds" min="1" max="86400" value="3600">
                     </div>
                     <div class="form-group">
-                        <label for="watchMaxItemsPerRun">Max Monitored Items Per Run</label>
+                        <label for="watchMaxItemsPerRun">Max Missing Tracks Queued Per Run</label>
                         <input type="number" id="watchMaxItemsPerRun" min="1" max="50" value="50">
-                        <div class="warning-text">Limits monitored artists/playlists processed in one scheduler cycle.</div>
-                    </div>
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="watchSmoothSyncEnabled">
-                        <label for="watchSmoothSyncEnabled">Smooth playlist sync (mirror library files first, then queue missing tracks). Leave on unless you need to pause Watchlist downloads.</label>
+                        <div class="warning-text">Limits how many missing tracks Watchlist can add to the download queue in one run.</div>
                     </div>
                     <div class="form-group">
                         <label for="watchMaxReleasesPerArtist">Max Releases Per Artist Check</label>
@@ -4656,7 +4652,6 @@ function loadSettings(settings) {
     setCheckboxValue('watchEnabled', settings.watchEnabled);
     setFieldValue('watchPollIntervalSeconds', settings.watchPollIntervalSeconds);
     setFieldValue('watchMaxItemsPerRun', settings.watchMaxItemsPerRun);
-    setCheckboxValue('watchSmoothSyncEnabled', settings.watchSmoothSyncEnabled !== false);
     setFieldValue('watchMaxReleasesPerArtist', settings.watchMaxReleasesPerArtist ?? 50);
     setFieldValue('watchMaxTracksPerPlaylistCheck', settings.watchMaxTracksPerPlaylistCheck ?? 50);
     setFieldValue('watchDelayBetweenPlaylistsSeconds', settings.watchDelayBetweenPlaylistsSeconds);
@@ -5030,7 +5025,6 @@ function collectFormData() {
         watchEnabled: getChecked('watchEnabled', baseSettings.watchEnabled ?? false),
         watchPollIntervalSeconds: getNumber('watchPollIntervalSeconds', baseSettings.watchPollIntervalSeconds ?? 3600),
         watchMaxItemsPerRun: getNumber('watchMaxItemsPerRun', baseSettings.watchMaxItemsPerRun ?? 50),
-        watchSmoothSyncEnabled: getChecked('watchSmoothSyncEnabled', baseSettings.watchSmoothSyncEnabled ?? true),
         watchMaxReleasesPerArtist: getNumber('watchMaxReleasesPerArtist', baseSettings.watchMaxReleasesPerArtist ?? 50),
         watchMaxTracksPerPlaylistCheck: getNumber('watchMaxTracksPerPlaylistCheck', baseSettings.watchMaxTracksPerPlaylistCheck ?? 50),
         watchDelayBetweenPlaylistsSeconds: getNumber('watchDelayBetweenPlaylistsSeconds', baseSettings.watchDelayBetweenPlaylistsSeconds ?? 2),

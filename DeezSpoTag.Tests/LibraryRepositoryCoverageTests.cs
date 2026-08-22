@@ -807,6 +807,25 @@ ORDER BY service;";
             ]);
         await _repository.UpdatePlaylistWatchTrackStatusAsync("boomplay", "mapping-list", "boom-blocked", "blocked");
         await _repository.UpdatePlaylistWatchTrackStatusAsync("boomplay", "mapping-list", "boom-failed", "failed");
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "boomplay",
+            "mapping-list",
+            [
+                new PlaylistWatchMissingTrackUpsert(
+                    "boom-missing",
+                    null,
+                    SourcePosition: null,
+                    Title: "Missing",
+                    Artist: "Artist",
+                    Album: "Album",
+                    DurationMs: null,
+                    CoverUrl: null,
+                    DeezerId: "dz-missing",
+                    MappingStatus: "matched",
+                    SnapshotId: null,
+                    CandidateRevision: null,
+                    ProviderReadinessRevision: null)
+            ]);
 
         await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
         {
@@ -1321,6 +1340,41 @@ ORDER BY service;";
             connection);
         command.Parameters.AddWithValue("trackId", trackId);
         Assert.Equal(2L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+    }
+
+    [Fact]
+    public async Task TargetServerIdentityCoverageAndReset_AreScopedToLibraryFolder()
+    {
+        var seeded = await SeedLibraryAsync(("Scoped Identity", "dz-scoped", "sp-scoped", "ap-scoped"));
+        var trackId = seeded.TrackIdsByTitle["Scoped Identity"];
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(trackId, "plex", "plex-scoped", seeded.TrackPathsByTitle["Scoped Identity"], DateTimeOffset.UtcNow),
+            new MediaServerTrackMetadataUpsertDto(trackId, "jellyfin", "jellyfin-scoped", seeded.TrackPathsByTitle["Scoped Identity"], DateTimeOffset.UtcNow),
+            new MediaServerTrackMetadataUpsertDto(trackId, "navidrome", "navidrome-scoped", seeded.TrackPathsByTitle["Scoped Identity"], DateTimeOffset.UtcNow)
+        ]);
+
+        var targetIds = await _repository.GetAlbumTrackTargetServerIdsAsync(seeded.AlbumId);
+        Assert.Equal("plex-scoped", targetIds[trackId].PlexTrackId);
+        Assert.Equal("jellyfin-scoped", targetIds[trackId].JellyfinTrackId);
+        Assert.Equal("navidrome-scoped", targetIds[trackId].NavidromeTrackId);
+
+        var coverage = await _repository.GetTargetServerIdentityCoverageAsync(
+            ["plex", "jellyfin", "navidrome"],
+            seeded.Folder.Id);
+        Assert.All(coverage, item =>
+        {
+            Assert.Equal(1, item.TotalTracks);
+            Assert.Equal(1, item.MappedTracks);
+            Assert.Equal(0, item.MissingTracks);
+        });
+
+        var deleted = await _repository.DeleteMediaServerTrackMetadataForScopeAsync("plex", seeded.Folder.Id);
+        Assert.True(deleted > 0);
+
+        var afterReset = await _repository.GetAlbumTrackTargetServerIdsAsync(seeded.AlbumId);
+        Assert.Null(afterReset[trackId].PlexTrackId);
+        Assert.Equal("jellyfin-scoped", afterReset[trackId].JellyfinTrackId);
+        Assert.Equal("navidrome-scoped", afterReset[trackId].NavidromeTrackId);
     }
 
     [Fact]

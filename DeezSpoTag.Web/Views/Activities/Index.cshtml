@@ -7087,16 +7087,33 @@ function resolveArtworkBadgesForQueueItem(item) {
         ? item.files
         : (Array.isArray(item?.Files) ? item.Files : []);
     const hasAnimatedArtwork = files.some(file => {
-        const path = String(file?.path || file?.Path || '').trim().toLowerCase();
+        const path = String(file?.path || file?.Path || '').trim();
         const type = String(file?.type || file?.Type || '').trim().toLowerCase();
+        const artworkKind = String(file?.artworkKind || file?.ArtworkKind || '').trim().toLowerCase();
         if (!path || (type && type !== 'artwork')) {
             return false;
         }
-        return path.endsWith('.mp4')
-            || path.endsWith('.webp')
-            || path.endsWith('.gif');
+        return artworkKind === 'album-animated' || isAlbumAnimatedArtworkPath(path);
     });
     return hasAnimatedArtwork ? ['animated-artwork'] : [];
+}
+
+function isAlbumAnimatedArtworkPath(path) {
+    const value = String(path || '').trim().toLowerCase();
+    if (!value.endsWith('.mp4') && !value.endsWith('.webp') && !value.endsWith('.gif')) {
+        return false;
+    }
+
+    const slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\'));
+    const fileName = slash >= 0 ? value.slice(slash + 1) : value;
+    const dot = fileName.lastIndexOf('.');
+    const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
+    return stem === 'cover'
+        || stem === 'cover_tall'
+        || stem === 'square_animated_artwork'
+        || stem === 'tall_animated_artwork'
+        || stem.endsWith(' - square_animated_artwork')
+        || stem.endsWith(' - tall_animated_artwork');
 }
 
 function getLyricsBadgesFromArtifacts(artifacts) {

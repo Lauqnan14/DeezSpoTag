@@ -20,6 +20,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchStateTable = "playlist_watch_state";
     private const string PlaylistWatchPreferencesTable = "playlist_watch_preferences";
     private const string PlaylistWatchTrackTable = "playlist_watch_track";
+    private const string PlaylistWatchMissingTrackTable = "playlist_watch_missing_track";
     private const string PlaylistWatchTargetMembershipTable = "playlist_watch_target_membership";
     private const string PlaylistWatchDownloadClaimTable = "playlist_watch_download_claim";
     private const string MediaServerTrackMetadataTable = "media_server_track_metadata";
@@ -126,6 +127,12 @@ public sealed class LibraryDbService
             ["idx_playlist_watch_track_unavailable_retry"] = (PlaylistWatchTrackTable, "source, source_id, status, unavailable_next_retry_utc", false)
             ,
             ["idx_playlist_watch_track_admission"] = (PlaylistWatchTrackTable, "status, source, source_id, source_position, unavailable_next_retry_utc", false)
+            ,
+            ["idx_playlist_watch_missing_track_playlist"] = (PlaylistWatchMissingTrackTable, "source, source_id, status, source_position", false)
+            ,
+            ["idx_playlist_watch_missing_track_due"] = (PlaylistWatchMissingTrackTable, "status, retry_after_utc, source, source_id, source_position", false)
+            ,
+            ["idx_playlist_watch_missing_track_queue"] = (PlaylistWatchMissingTrackTable, "queue_uuid, status", false)
             ,
             ["idx_playlist_watch_target_membership_target"] = (PlaylistWatchTargetMembershipTable, "target_service, target_playlist_id", false)
             ,
@@ -463,6 +470,35 @@ WHERE updated_at IS NULL OR TRIM(updated_at) = '';", cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "last_snapshot_id", TextType, cancellationToken);
         await EnsureColumnAsync(connection, PlaylistWatchTrackTable, "mapping_status", TextType, cancellationToken);
         await EnsureIndexAsync(connection, "idx_playlist_watch_track_admission", PlaylistWatchTrackTable, "status, source, source_id, source_position, unavailable_next_retry_utc", unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS playlist_watch_missing_track (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    isrc TEXT,
+    source_position INTEGER,
+    title TEXT,
+    artist TEXT,
+    album TEXT,
+    duration_ms INTEGER,
+    cover_url TEXT,
+    deezer_id TEXT,
+    mapping_status TEXT,
+    status TEXT NOT NULL DEFAULT 'missing',
+    snapshot_id TEXT,
+    candidate_revision TEXT,
+    provider_readiness_revision TEXT,
+    queue_uuid TEXT,
+    last_error TEXT,
+    retry_after_utc TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, source_id, track_source_id)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_missing_track_playlist", PlaylistWatchMissingTrackTable, "source, source_id, status, source_position", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_missing_track_due", PlaylistWatchMissingTrackTable, "status, retry_after_utc, source, source_id, source_position", unique: false, cancellationToken);
+        await EnsureIndexAsync(connection, "idx_playlist_watch_missing_track_queue", PlaylistWatchMissingTrackTable, "queue_uuid, status", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
     source TEXT NOT NULL,

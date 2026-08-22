@@ -3810,6 +3810,102 @@ function resolveLibraryScanSuccessMessage(refreshImages, reset) {
     return refreshImages ? 'Images refreshed.' : 'Library refreshed.';
 }
 
+async function loadTargetIdentityStatus() {
+    const panel = document.getElementById('library-target-identities-panel');
+    if (!panel) {
+        return null;
+    }
+
+    const scopedFolderId = getSelectedLibraryViewFolderId();
+    const params = new URLSearchParams();
+    if (scopedFolderId !== null) {
+        params.set('folderId', String(scopedFolderId));
+    }
+    const suffix = params.toString();
+    const payload = await fetchJson(`/api/library/target-identities/status${suffix ? `?${suffix}` : ''}`);
+    renderTargetIdentityStatus(payload);
+    return payload;
+}
+
+function renderTargetIdentityStatus(payload) {
+    const services = Array.isArray(payload?.services) ? payload.services : [];
+    const serviceMap = new Map(services.map(service => [String(service.service || '').toLowerCase(), service]));
+    document.querySelectorAll('[data-target-identity-service]').forEach(input => {
+        const service = String(input.value || input.dataset.targetIdentityService || '').toLowerCase();
+        const state = serviceMap.get(service);
+        const connected = state?.connected === true;
+        input.disabled = !connected;
+        input.checked = connected;
+        input.closest('.dropdown-setting-row')?.classList.toggle('is-disabled', !connected);
+        const coverage = state?.coverage;
+        const label = input.closest('label')?.querySelector('span');
+        if (label) {
+            const baseLabel = state?.label || service;
+            label.textContent = coverage
+                ? `${baseLabel} (${Number(coverage.mappedTracks || 0)}/${Number(coverage.totalTracks || 0)})`
+                : baseLabel;
+        }
+    });
+    syncTargetIdentityActionState();
+}
+
+function syncTargetIdentityActionState() {
+    const selected = getSelectedTargetIdentityServices();
+    const disabled = selected.length === 0;
+    const fetchButton = document.getElementById('fetchTargetTrackIds');
+    const resetButton = document.getElementById('resetFetchTargetTrackIds');
+    if (fetchButton) {
+        fetchButton.disabled = disabled;
+    }
+    if (resetButton) {
+        resetButton.disabled = disabled;
+    }
+    const status = document.getElementById('libraryTargetIdentityStatus');
+    if (status && disabled) {
+        status.textContent = 'Connect a target server to fetch track IDs.';
+    }
+}
+
+function getSelectedTargetIdentityServices() {
+    return Array.from(document.querySelectorAll('[data-target-identity-service]'))
+        .filter(input => !input.disabled && input.checked)
+        .map(input => String(input.value || input.dataset.targetIdentityService || '').toLowerCase())
+        .filter(Boolean);
+}
+
+async function runTargetIdentityRefresh(resetFirst) {
+    const services = getSelectedTargetIdentityServices();
+    if (services.length === 0) {
+        showToast('Select a connected target server.', true);
+        return;
+    }
+
+    const status = document.getElementById('libraryTargetIdentityStatus');
+    if (status) {
+        status.textContent = resetFirst
+            ? 'Resetting and fetching target track IDs...'
+            : 'Fetching target track IDs...';
+    }
+
+    const result = await fetchJson(resetFirst
+        ? '/api/library/target-identities/reset-refresh'
+        : '/api/library/target-identities/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            services,
+            folderId: getSelectedLibraryViewFolderId()
+        })
+    });
+    const failed = Number(result?.failed || 0);
+    const refreshed = Number(result?.refreshed || 0);
+    await loadTargetIdentityStatus();
+    showToast(failed > 0
+        ? `Target track ID refresh completed with ${failed} failed server(s).`
+        : `Target track IDs refreshed for ${refreshed} server(s).`,
+        failed > 0);
+}
+
 async function waitForScanCompletion(startedAtMs) {
     const deadline = startedAtMs + (15 * 60 * 1000);
     const policy = getLibraryRefreshPolicy();
@@ -9187,6 +9283,8 @@ function getLibraryBootstrapElements() {
         refreshImagesButton: document.getElementById('refreshImages'),
         cleanupButton: document.getElementById('cleanupLibrary'),
         clearButton: document.getElementById('clearLibrary'),
+        fetchTargetTrackIdsButton: document.getElementById('fetchTargetTrackIds'),
+        resetFetchTargetTrackIdsButton: document.getElementById('resetFetchTargetTrackIds'),
         resolveUnmatchedArtistsButton: document.getElementById('resolveUnmatchedArtists'),
         saveButton: document.getElementById('saveSettings'),
         chooseFolderButton: document.getElementById('chooseFolder'),
@@ -11072,6 +11170,7 @@ function bindLibraryFilterEvents(viewSelect, searchInput, sortSelect) {
         viewSelect.addEventListener('change', async () => {
             setStoredLibraryViewSelection(viewSelect.value || 'main');
             syncLibraryScopeInLocationBar(viewSelect.value || 'main');
+            await loadTargetIdentityStatus().catch(() => null);
             await Promise.all([requestArtistRefresh({ force: true }), loadLibraryScanStatus()]);
         });
     }

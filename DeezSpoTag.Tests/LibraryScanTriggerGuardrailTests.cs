@@ -81,6 +81,46 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void LibraryTargetIdentityRefresh_IsFirstClassLibraryAction()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "LibraryTargetIdentitiesApiController.cs");
+        var libraryView = ReadSource("DeezSpoTag.Web", "Views", "Library", "Index.cshtml");
+        var libraryScript = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library.js");
+        var extrasScript = ReadSource("DeezSpoTag.Web", "wwwroot", "js", "library-apple-extras.js");
+
+        Assert.Contains("api/library/target-identities", controller, StringComparison.Ordinal);
+        Assert.Contains("GetTargetServerIdentityCoverageAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("DeleteMediaServerTrackMetadataForScopeAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("UpdateTrackMetadataIndexAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("data-target-identity-service=\"plex\"", libraryView, StringComparison.Ordinal);
+        Assert.Contains("data-target-identity-service=\"jellyfin\"", libraryView, StringComparison.Ordinal);
+        Assert.Contains("data-target-identity-service=\"navidrome\"", libraryView, StringComparison.Ordinal);
+        Assert.Contains("Fetch Track IDs", libraryView, StringComparison.Ordinal);
+        Assert.Contains("Reset &amp; Fetch Track IDs", libraryView, StringComparison.Ordinal);
+        Assert.Contains("loadTargetIdentityStatus", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("runTargetIdentityRefresh", libraryScript, StringComparison.Ordinal);
+        Assert.Contains("fetchTargetTrackIdsButton", extrasScript, StringComparison.Ordinal);
+        Assert.Contains("resetFetchTargetTrackIdsButton", extrasScript, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryTrackRowsExposeStoredTargetServerIds()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "LibraryAlbumsApiController.cs");
+        var repository = ReadSource("DeezSpoTag.Services", "Library", "LibraryRepository.cs");
+        var playlistSync = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
+
+        Assert.Contains("GetAlbumTrackTargetServerIdsAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("PlexTrackId = targetServerIds?.PlexTrackId", controller, StringComparison.Ordinal);
+        Assert.Contains("JellyfinTrackId = targetServerIds?.JellyfinTrackId", controller, StringComparison.Ordinal);
+        Assert.Contains("NavidromeTrackId = targetServerIds?.NavidromeTrackId", controller, StringComparison.Ordinal);
+        Assert.Contains("media_server_track_metadata", repository, StringComparison.Ordinal);
+        Assert.Contains("TrackTargetServerIdsDto", repository, StringComparison.Ordinal);
+        Assert.Contains("GetMediaServerItemIdsByTrackIdsAsync", playlistSync, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPlexRatingKeysByTrackIdsAsync", playlistSync, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DownloadOrchestration_FinalDestinationReaderUsesDatabaseJsonOnly()
     {
         const string staleStagingPath = "/tmp/deezspotag/staging/Artist/Album/Artist - Song.flac";

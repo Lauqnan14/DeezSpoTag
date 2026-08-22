@@ -1132,8 +1132,11 @@ public static class AppleQueueHelpers
             request.Settings,
             request.Size,
             request.Logger);
-        var preferredUrl = NormalizeArtworkUrl(sourceUrl, preferredSizeText, preferredWidth, preferredHeight);
-        var effectivePath = ResolveRawItunesArtworkOutputPath(request.OutputPath, preferredUrl);
+        var requestedExtension = ResolveRequestedStillArtworkExtension(request.OutputPath);
+        var preferredUrl = ApplyRequestedStillArtworkExtension(
+            NormalizeArtworkUrl(sourceUrl, preferredSizeText, preferredWidth, preferredHeight),
+            requestedExtension);
+        var effectivePath = request.OutputPath;
 
         if (request.Logger.IsEnabled(LogLevel.Debug))
         {
@@ -1179,14 +1182,34 @@ public static class AppleQueueHelpers
         return (safeWidth, safeHeight, $"{safeWidth}x{safeHeight}");
     }
 
-    private static string ResolveRawItunesArtworkOutputPath(string outputPath, string preferredUrl)
+    private static string ResolveRequestedStillArtworkExtension(string outputPath)
     {
         var requestedExtension = Path.GetExtension(outputPath).TrimStart('.');
-        var rawExtension = GetAppleArtworkExtension(preferredUrl, DefaultArtworkFormat);
-        return !string.IsNullOrWhiteSpace(rawExtension)
-               && !string.Equals(requestedExtension, rawExtension, StringComparison.OrdinalIgnoreCase)
-            ? Path.ChangeExtension(outputPath, rawExtension)
-            : outputPath;
+        return string.Equals(requestedExtension, "png", StringComparison.OrdinalIgnoreCase)
+            ? "png"
+            : DefaultArtworkFormat;
+    }
+
+    private static string ApplyRequestedStillArtworkExtension(string url, string extension)
+    {
+        var normalizedExtension = string.Equals(extension, "png", StringComparison.OrdinalIgnoreCase)
+            ? "png"
+            : DefaultArtworkFormat;
+        var match = MatchWithTimeout(
+            url ?? string.Empty,
+            @"\.(?<extension>jpg|jpeg|png|webp)(?<query>\?.*)?$",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return url ?? string.Empty;
+        }
+
+        var extensionGroup = match.Groups["extension"];
+        return string.Concat(
+            url.AsSpan(0, extensionGroup.Index - 1),
+            ".",
+            normalizedExtension,
+            url.AsSpan(extensionGroup.Index + extensionGroup.Length));
     }
 
     private static bool ShouldPreserveRawArtworkSize(string sourceUrl, out int width, out int height)

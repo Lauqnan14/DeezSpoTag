@@ -1344,6 +1344,17 @@ function bindBootstrapScanActions(elements) {
     });
     bindLibraryAction(elements.cleanupButton, cleanupMissingLibraryFiles);
     bindLibraryAction(elements.clearButton, clearLibraryData);
+    bindLibraryAction(elements.fetchTargetTrackIdsButton, async () => runTargetIdentityRefresh(false));
+    bindLibraryAction(elements.resetFetchTargetTrackIdsButton, async () => runTargetIdentityRefresh(true));
+    document.querySelectorAll('[data-target-identity-service]').forEach(input => {
+        input.addEventListener('change', syncTargetIdentityActionState);
+    });
+    void loadTargetIdentityStatus().catch(error => {
+        const status = document.getElementById('libraryTargetIdentityStatus');
+        if (status) {
+            status.textContent = `Target ID status unavailable: ${error.message}`;
+        }
+    });
     bindUnmatchedArtistResolverActions(elements);
     bindLibraryAction(elements.saveButton, saveLibrarySettings);
 }

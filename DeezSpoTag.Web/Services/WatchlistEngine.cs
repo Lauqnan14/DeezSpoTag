@@ -702,6 +702,38 @@ internal sealed class WatchlistEngine
             sourceId,
             candidates,
             cancellationToken);
+        var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
+        var effectiveBlockRules = PlaylistTrackBlockRuleHelper.MergeRules(preference?.IgnoreRules, globalBlockRules);
+        var playlistNotificationLabel = string.IsNullOrWhiteSpace(currentPlaylist.Name)
+            ? ResolveSourceLabel(source)
+            : currentPlaylist.Name.Trim();
+        var queueOptions = BuildQueueWatchOptions(new QueueWatchOptionsInput
+        {
+            SourceLabel = playlistNotificationLabel,
+            WatchlistSource = source,
+            WatchlistPlaylistId = sourceId,
+            PreferredEngine = preference?.PreferredEngine,
+            DownloadEngineOrder = preference?.DownloadEngineOrder,
+            DownloadVariantMode = preference?.DownloadVariantMode,
+            AtmosDestinationFolderId = preference?.AtmosDestinationFolderId,
+            RuleSet = new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules),
+            WatchlistOrigin = PlaylistWatchOrigin,
+            CandidateIdentityRevision = candidateIdentityRevision,
+            ProviderReadinessRevision = providerReadinessRevision
+        });
+        var selection = await SelectMissingPlaylistTracksAsync(
+            source,
+            sourceId,
+            candidates,
+            preference?.DestinationFolderId,
+            queueOptions,
+            cancellationToken);
+        await _libraryRepository.UpsertPlaylistWatchMissingTracksAsync(
+            source,
+            sourceId,
+            selection.MissingTracks.Select(track => ToMissingTrackUpsert(track, liveSnapshot.SnapshotId, candidateIdentityRevision, providerReadinessRevision)).ToList(),
+            cancellationToken);
+        await RecordPlaylistSelectionHistoryAsync(source, sourceId, currentPlaylist.Name, selection, cancellationToken);
 
         var localTrackStatuses = await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
             source,
@@ -787,8 +819,8 @@ internal sealed class WatchlistEngine
             syncRequestAccepted,
             reconciliationMessage,
             liveTrackCount,
-            MissingTracks: Math.Max(0, liveTrackCount - localTrackCount),
-            IgnoredTracks: 0,
+            MissingTracks: selection.MissingTracks.Count,
+            IgnoredTracks: selection.IgnoredCount,
             LocalTracks: localTrackCount,
             QueuedTracks: 0,
             CompletedTracks: localTrackCount,
@@ -807,32 +839,17 @@ internal sealed class WatchlistEngine
     {
         var source = NormalizeWatchSource(playlist.Source);
         var sourceId = (playlist.SourceId ?? string.Empty).Trim();
-        var cache = await _libraryRepository.GetPlaylistTrackCandidateCacheAsync(source, sourceId, cancellationToken);
-        var candidates = cache is { IsComplete: true }
-            ? TryDeserializePlaylistTrackCandidates(cache.CandidatesJson)
-            : null;
-        if (candidates is not { Count: > 0 })
-        {
-            return new PlaylistReconciliationResult(
-                false,
-                "A complete persisted playlist snapshot is required before queue admission.",
-                playlist.TrackCount ?? 0,
-                0, 0, 0, 0, 0, 0, null,
-                Deferred: true,
-                QueueStopReason: WatchQueueStopReason.TrackDeferred.ToString());
-        }
-
         var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(source, sourceId, cancellationToken);
         if (!HasDownloadDestination(preference))
         {
             return new PlaylistReconciliationResult(
                 false,
                 "Select a destination folder before Watchlist can plan downloads.",
-                candidates.Count,
-                candidates.Count, 0, 0, 0, 0, 0, null,
+                playlist.TrackCount ?? 0,
+                playlist.MissingTrackCount ?? 0, 0, 0, 0, 0, 0, null,
                 Deferred: true,
                 QueueStopReason: WatchQueueStopReason.TrackDeferred.ToString(),
-                RemainingQueueableTracks: candidates.Count);
+                RemainingQueueableTracks: playlist.MissingTrackCount ?? 0);
         }
 
         var globalBlockRules = await GetGlobalPlaylistBlockRulesAsync(cancellationToken);
@@ -840,6 +857,23 @@ internal sealed class WatchlistEngine
         var playlistNotificationLabel = string.IsNullOrWhiteSpace(playlist.Name)
             ? ResolveSourceLabel(source)
             : playlist.Name.Trim();
+        var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksAsync(
+            source,
+            sourceId,
+            int.MaxValue,
+            cancellationToken);
+        if (dueRows.Count == 0)
+        {
+            return new PlaylistReconciliationResult(
+                true,
+                "No due missing tracks are ready for queue admission.",
+                playlist.TrackCount ?? 0,
+                playlist.MissingTrackCount ?? 0,
+                0, 0, 0, 0, 0, null,
+                QueueStopReason: WatchQueueStopReason.Completed.ToString(),
+                RemainingQueueableTracks: playlist.MissingTrackCount ?? 0);
+        }
+
         var queueOptions = BuildQueueWatchOptions(new QueueWatchOptionsInput
         {
             SourceLabel = playlistNotificationLabel,
@@ -851,28 +885,25 @@ internal sealed class WatchlistEngine
             AtmosDestinationFolderId = preference?.AtmosDestinationFolderId,
             RuleSet = new QueueWatchRuleSet(preference?.RoutingRules, effectiveBlockRules),
             WatchlistOrigin = PlaylistWatchOrigin,
-            CandidateIdentityRevision = cache?.IdentityRevision,
-            ProviderReadinessRevision = cache?.ProviderReadinessRevision
+            CandidateIdentityRevision = dueRows.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.CandidateRevision))?.CandidateRevision,
+            ProviderReadinessRevision = dueRows.FirstOrDefault(row => !string.IsNullOrWhiteSpace(row.ProviderReadinessRevision))?.ProviderReadinessRevision
         });
-        var selection = await SelectMissingPlaylistTracksAsync(
-            source,
-            sourceId,
-            candidates,
-            preference?.DestinationFolderId,
-            queueOptions,
-            cancellationToken);
+        var missingTracks = dueRows
+            .Select(row => BuildWatchIntentTrackFromMissingTrack(row))
+            .Where(static track => track != null)
+            .Select(static track => track!)
+            .ToList();
         var queueResult = await QueueWatchIntentTracksAsync(
-            selection.MissingTracks,
+            missingTracks,
             preference?.DestinationFolderId,
             queueOptions,
             cancellationToken);
-        await RecordPlaylistSelectionHistoryAsync(source, sourceId, playlist.Name, selection, cancellationToken);
         await AddPlaylistWatchHistoryAsync(source, sourceId, playlist.Name, queueResult, cancellationToken);
         await _libraryRepository.UpdatePlaylistWatchPresentationSummaryAsync(
             source,
             sourceId,
-            selection.IgnoredCount + selection.BlockedCount,
-            CountReroutedTracks(candidates, preference?.RoutingRules),
+            playlist.IgnoredBlockedTrackCount ?? 0,
+            playlist.ReroutedTrackCount ?? 0,
             cancellationToken);
         if (queueResult.QueuedCount > 0)
         {
@@ -889,8 +920,8 @@ internal sealed class WatchlistEngine
         await UpdatePlaylistStateAsync(
             source,
             sourceId,
-            candidates.Count,
-            cache?.SnapshotId,
+            playlist.TrackCount ?? missingTracks.Count,
+            playlist.SnapshotId,
             WatchlistStateService.Parse(ResolvePlaylistRunStatus(queueResult, success)),
             message,
             nextAttemptUtc: null,
@@ -900,10 +931,10 @@ internal sealed class WatchlistEngine
         return new PlaylistReconciliationResult(
             success,
             message,
-            candidates.Count,
-            selection.MissingTracks.Count,
-            selection.IgnoredCount,
-            selection.LocalCount,
+            playlist.TrackCount ?? missingTracks.Count,
+            missingTracks.Count,
+            playlist.IgnoredBlockedTrackCount ?? 0,
+            0,
             queueResult.QueuedCount,
             queueResult.CompletedCount,
             queueResult.FailedCount,
@@ -1603,6 +1634,11 @@ internal sealed class WatchlistEngine
                         "identity_verified",
                         decision.Message),
                     cancellationToken);
+                await _libraryRepository.ResolvePlaylistWatchMissingTrackAsync(
+                    source,
+                    sourceId,
+                    track.TrackId,
+                    cancellationToken);
                 return new PreQueueDedupeHandledResult(true, 1, 0, 0, 0);
 
             case "blocklist_match":
@@ -1811,6 +1847,11 @@ internal sealed class WatchlistEngine
                     sourceId,
                     track.TrackId,
                     CompletedStatus,
+                    cancellationToken);
+                await _libraryRepository.ResolvePlaylistWatchMissingTrackAsync(
+                    source,
+                    sourceId,
+                    track.TrackId,
                     cancellationToken);
                 return new PreQueueDedupeHandledResult(true, 1, 0, 0, 0);
             }
@@ -3977,8 +4018,53 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         var trackId = (candidate.TrackSourceId ?? string.Empty).Trim();
         return intent == null || string.IsNullOrWhiteSpace(trackId)
             ? null
-            : new WatchIntentTrack(trackId, candidate.Isrc, intent);
+            : new WatchIntentTrack(trackId, candidate.Isrc, intent, candidate.SourcePosition);
     }
+
+    private static WatchIntentTrack? BuildWatchIntentTrackFromMissingTrack(PlaylistWatchMissingTrackDto row)
+    {
+        var candidate = new PlaylistTrackCandidate(
+            row.TrackSourceId,
+            row.Isrc,
+            row.Title ?? string.Empty,
+            row.Artist ?? string.Empty,
+            row.Album ?? string.Empty,
+            ReleaseYear: null,
+            row.DurationMs,
+            Explicit: null,
+            Array.Empty<string>(),
+            row.CoverUrl,
+            row.DeezerId,
+            row.MappingStatus,
+            MappingError: null,
+            SourceUrl: null,
+            row.SourcePosition);
+        var intent = BuildWatchDownloadIntentFromCandidate(row.Source, candidate);
+        var trackId = (row.TrackSourceId ?? string.Empty).Trim();
+        return intent == null || string.IsNullOrWhiteSpace(trackId)
+            ? null
+            : new WatchIntentTrack(trackId, row.Isrc, intent, row.SourcePosition);
+    }
+
+    private static PlaylistWatchMissingTrackUpsert ToMissingTrackUpsert(
+        WatchIntentTrack track,
+        string? snapshotId,
+        string? candidateIdentityRevision,
+        string? providerReadinessRevision)
+        => new(
+            track.TrackId,
+            track.Isrc,
+            track.SourcePosition,
+            track.Intent.Title,
+            track.Intent.Artist,
+            track.Intent.Album,
+            track.Intent.DurationMs,
+            track.Intent.Cover,
+            track.Intent.DeezerId,
+            MappingStatus: null,
+            snapshotId,
+            candidateIdentityRevision,
+            providerReadinessRevision);
 
     internal static IReadOnlyList<string> BuildWatchIdentityKeys(
         string? trackId,
@@ -4676,6 +4762,14 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     track.TrackId,
                     "blocked",
                     cancellationToken);
+                await _libraryRepository.MarkPlaylistWatchMissingTrackStatusAsync(
+                    context.Options.WatchlistSource!,
+                    context.Options.WatchlistPlaylistId!,
+                    track.TrackId,
+                    "blocked",
+                    result.Message,
+                    retryAfterUtc: null,
+                    cancellationToken);
                 return new QueueWatchTrackResult(queuedCount, Completed: true, Failed: false, Unavailable: false);
             }
             queuedCount += await TryQueueAtmosIntentAsync(
@@ -4710,6 +4804,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     "identity_verified",
                     libraryDecision.Message),
                 cancellationToken);
+            await _libraryRepository.ResolvePlaylistWatchMissingTrackAsync(
+                context.Options.WatchlistSource!,
+                context.Options.WatchlistPlaylistId!,
+                track.TrackId,
+                cancellationToken);
             return new QueueWatchTrackResult(queuedCount, Completed: true, Failed: false, Unavailable: false);
         }
 
@@ -4731,6 +4830,14 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             context.Options.WatchlistPlaylistId,
             track.TrackId,
             FailedStatus,
+            cancellationToken);
+        await _libraryRepository.MarkPlaylistWatchMissingTrackStatusAsync(
+            context.Options.WatchlistSource!,
+            context.Options.WatchlistPlaylistId!,
+            track.TrackId,
+            FailedStatus,
+            result.Message,
+            retryAfterUtc: null,
             cancellationToken);
         return new QueueWatchTrackResult(queuedCount, Completed: false, Failed: true, Unavailable: false);
     }
@@ -5004,6 +5111,14 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                 BuildUnavailableSettingsFingerprint(options),
                 nextRecheckUtc,
                 cancellationToken);
+            await _libraryRepository.MarkPlaylistWatchMissingTrackStatusAsync(
+                options.WatchlistSource!,
+                options.WatchlistPlaylistId!,
+                trackId,
+                UnavailableStatus,
+                message,
+                nextRecheckUtc,
+                cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -5190,6 +5305,16 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             queueUuids,
             destinationFolderId,
             cancellationToken);
+        var queueUuid = queueUuids.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value));
+        if (!string.IsNullOrWhiteSpace(queueUuid))
+        {
+            await _libraryRepository.MarkPlaylistWatchMissingTrackQueuedAsync(
+                options.WatchlistSource!,
+                options.WatchlistPlaylistId!,
+                trackId,
+                queueUuid,
+                cancellationToken);
+        }
     }
 
     private static bool ShouldDeferWatchTrack(DownloadIntentResult result)

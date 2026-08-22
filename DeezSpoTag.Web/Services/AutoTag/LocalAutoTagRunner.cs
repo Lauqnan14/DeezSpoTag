@@ -2169,7 +2169,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                 LyricsBadges = isLyricsPlatform
                     ? ResolveLyricsTimingBadges(context.File, context.Plan.Config, context.Plan.Settings)
                     : new List<string>(),
-                ArtworkBadges = ResolveAnimatedArtworkBadges(context.File),
+                ArtworkBadges = ResolveAnimatedArtworkBadges(context.File, context.Plan.Settings),
                 LyricsCoverUrl = isLyricsPlatform ? ResolveLyricsRowCoverUrl(context.File) : null,
                 SourceTitle = isLyricsPlatform
                     ? (match?.Track.Title ?? review?.SourceTitle)
@@ -3314,7 +3314,7 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
     private static List<string> ResolveLyricsTimingBadges(string filePath, AutoTagRunnerConfig config, DeezSpoTagSettings settings)
         => LyricsSidecarTimingBadges.FromAudioPath(filePath).ToList();
 
-    private static List<string> ResolveAnimatedArtworkBadges(string filePath)
+    private static List<string> ResolveAnimatedArtworkBadges(string filePath, DeezSpoTagSettings settings)
     {
         var directory = Path.GetDirectoryName(filePath);
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
@@ -3323,7 +3323,10 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         }
 
         return Directory.EnumerateFiles(directory)
-            .Any(AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar)
+            .Any(path => AnimatedArtworkNaming.IsAlbumAnimatedArtworkSidecar(
+                path,
+                settings.AnimatedArtworkSquareFileName,
+                settings.AnimatedArtworkTallFileName))
             ? new List<string> { "animated-artwork" }
             : new List<string>();
     }

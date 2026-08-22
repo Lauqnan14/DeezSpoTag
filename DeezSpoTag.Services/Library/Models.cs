@@ -566,6 +566,17 @@ public sealed record TrackSourceLinksDto(
     string? SpotifyUrl,
     string? AppleUrl);
 
+public sealed record TrackTargetServerIdsDto(
+    string? PlexTrackId,
+    string? JellyfinTrackId,
+    string? NavidromeTrackId);
+
+public sealed record TargetServerIdentityCoverageDto(
+    string Service,
+    int TotalTracks,
+    int MappedTracks,
+    int MissingTracks);
+
 public sealed record ArtistSpotifyMatchSignalDto(
     long TrackId,
     string Title,
@@ -930,6 +941,42 @@ public sealed record PlaylistWatchTrackInsert(
     string? CandidateRevision = null,
     string? SnapshotId = null,
     string? MappingStatus = null);
+
+public sealed record PlaylistWatchMissingTrackUpsert(
+    string TrackSourceId,
+    string? Isrc,
+    int? SourcePosition,
+    string? Title,
+    string? Artist,
+    string? Album,
+    int? DurationMs,
+    string? CoverUrl,
+    string? DeezerId,
+    string? MappingStatus,
+    string? SnapshotId,
+    string? CandidateRevision,
+    string? ProviderReadinessRevision);
+
+public sealed record PlaylistWatchMissingTrackDto(
+    long Id,
+    string Source,
+    string SourceId,
+    string TrackSourceId,
+    string? Isrc,
+    int? SourcePosition,
+    string? Title,
+    string? Artist,
+    string? Album,
+    int? DurationMs,
+    string? CoverUrl,
+    string? DeezerId,
+    string? MappingStatus,
+    string Status,
+    string? SnapshotId,
+    string? CandidateRevision,
+    string? ProviderReadinessRevision,
+    string? QueueUuid,
+    DateTimeOffset UpdatedAt);
 
 public sealed record PlaylistWatchDownloadClaimDto(
     string Source,

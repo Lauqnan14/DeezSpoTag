@@ -219,9 +219,12 @@ public sealed class ActivitiesControllerContractTests
 
         Assert.Contains("const artworkBadges = resolveArtworkBadgesForQueueItem(item);", source, StringComparison.Ordinal);
         Assert.Contains("function resolveArtworkBadgesForQueueItem(item)", source, StringComparison.Ordinal);
-        Assert.Contains("path.endsWith('.mp4')", source, StringComparison.Ordinal);
-        Assert.Contains("path.endsWith('.webp')", source, StringComparison.Ordinal);
-        Assert.Contains("path.endsWith('.gif')", source, StringComparison.Ordinal);
+        Assert.Contains("artworkKind === 'album-animated'", source, StringComparison.Ordinal);
+        Assert.Contains("function isAlbumAnimatedArtworkPath(path)", source, StringComparison.Ordinal);
+        Assert.Contains("stem === 'cover'", source, StringComparison.Ordinal);
+        Assert.Contains("stem === 'cover_tall'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("stem === 'folder'", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("return path.endsWith('.mp4')", source, StringComparison.Ordinal);
         Assert.Contains("Animated Artwork", source, StringComparison.Ordinal);
         Assert.Contains("badge-artwork-animated", source, StringComparison.Ordinal);
     }

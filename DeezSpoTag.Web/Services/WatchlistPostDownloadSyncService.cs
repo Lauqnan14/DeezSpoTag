@@ -8,9 +8,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
-    internal const int ResidualTargetSyncMaxJobs = 9;
-    internal const int DrainTargetSyncMaxJobs = 32;
-    internal const int SliceMembershipMaxJobs = 3;
+    private const int TargetSyncClaimBatchSize = 25;
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     // Backoff is 15 * 2^(attempt-1) capped at MaximumRetryDelay (10 min from attempt 7 on), so 10
     // attempts is roughly 1-1.5h of accumulated retrying -- long enough to ride out a transient
@@ -74,14 +72,12 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
     }
 
-    public async Task ProcessFinalizationWorkAsync(
-        int finalizationLimit,
-        CancellationToken cancellationToken)
+    public async Task ProcessFinalizationWorkAsync(CancellationToken cancellationToken)
     {
         try
         {
             await RepairMissingFinalizationOutboxAsync(cancellationToken);
-            await ProcessFinalizationOutboxAsync(finalizationLimit, cancellationToken);
+            await ProcessFinalizationOutboxAsync(cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -113,21 +109,12 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return processed;
             }
 
-            var maxJobs = Math.Max(0, budget.MaxJobs);
-            if (maxJobs == 0)
-            {
-                return processed;
-            }
-
-            var deadline = DateTimeOffset.UtcNow + budget.TimeBudget;
             var excludedJobIds = new List<long>();
-            while (processed < maxJobs
-                   && DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5) < deadline)
+            while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var claimLimit = Math.Min(3, maxJobs - processed);
                 var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(
-                    claimLimit,
+                    TargetSyncClaimBatchSize,
                     ProcessingLease,
                     _leaseOwner,
                     budget.PlaylistFilter?.Source,
@@ -169,9 +156,9 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         return processed;
     }
 
-    private async Task ProcessFinalizationOutboxAsync(int limit, CancellationToken cancellationToken)
+    private async Task ProcessFinalizationOutboxAsync(CancellationToken cancellationToken)
     {
-        for (var processed = 0; processed < limit; processed++)
+        while (true)
         {
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
@@ -651,11 +638,22 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             if (IsArtworkJob(request.TrackId))
             {
                 var revision = request.TrackId[ArtworkJobTrackIdPrefix.Length..].Trim();
-                var activeRevision = scope.ServiceProvider.GetRequiredService<PlaylistVisualService>()
-                    .GetTargetArtworkRevision(
+                var playlistVisualService = scope.ServiceProvider.GetRequiredService<PlaylistVisualService>();
+                var activeRevision = playlistVisualService.GetTargetArtworkRevision(
+                    playlist.Source,
+                    playlist.SourceId,
+                    request.TargetService);
+                if (string.IsNullOrWhiteSpace(activeRevision))
+                {
+                    var refreshedPlaylist = await scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>()
+                        .RefreshPlaylistMetadataOnlyAsync(playlist, cancellationToken, forceArtworkRefresh: true);
+                    playlist = refreshedPlaylist;
+                    activeRevision = playlistVisualService.GetTargetArtworkRevision(
                         playlist.Source,
                         playlist.SourceId,
                         request.TargetService);
+                }
+
                 if (string.IsNullOrWhiteSpace(activeRevision)
                     || !string.Equals(activeRevision, revision, StringComparison.OrdinalIgnoreCase))
                 {
@@ -717,6 +715,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
+
+            await scope.ServiceProvider
+                .GetRequiredService<MediaServerLibraryRefreshService>()
+                .UpdateTrackMetadataIndexAsync(request.TargetService, cancellationToken);
 
             var syncResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
                 .SyncAvailablePlaylistTracksAsync(
@@ -1128,12 +1130,22 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 }
 
 public sealed record TargetSyncBudget(
-    int MaxJobs,
-    TimeSpan TimeBudget,
     (string Source, string PlaylistId)? PlaylistFilter,
     WatchlistSyncJobKind Kind,
     string? IgnoreReconciliationLeaseOwner,
-    Func<CancellationToken, Task>? OnProgress = null);
+    Func<CancellationToken, Task>? OnProgress = null)
+{
+    public static TargetSyncBudget DrainAll(
+        WatchlistSyncJobKind kind,
+        (string Source, string PlaylistId)? playlistFilter = null,
+        string? ignoreReconciliationLeaseOwner = null,
+        Func<CancellationToken, Task>? onProgress = null)
+        => new(
+            PlaylistFilter: playlistFilter,
+            Kind: kind,
+            IgnoreReconciliationLeaseOwner: ignoreReconciliationLeaseOwner,
+            OnProgress: onProgress);
+}
 
 public enum SyncFailureClass
 {

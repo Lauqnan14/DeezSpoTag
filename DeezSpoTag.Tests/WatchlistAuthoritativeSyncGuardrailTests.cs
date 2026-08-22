@@ -84,9 +84,9 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.DoesNotContain("TargetOperationTimeout", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetSyncJobTimeout", worker, StringComparison.Ordinal);
         Assert.Contains("TargetSyncBudget", worker, StringComparison.Ordinal);
-        Assert.Contains("TimeBudget", worker, StringComparison.Ordinal);
-        Assert.Contains("while (processed < maxJobs", worker, StringComparison.Ordinal);
-        Assert.DoesNotContain("while (true)", ExtractMethodBody(worker, "public async Task<int> ProcessTargetSyncWorkAsync("), StringComparison.Ordinal);
+        Assert.DoesNotContain("TimeBudget", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("while (processed < maxJobs", worker, StringComparison.Ordinal);
+        Assert.Contains("while (true)", ExtractMethodBody(worker, "public async Task<int> ProcessTargetSyncWorkAsync("), StringComparison.Ordinal);
         Assert.Contains("RenewWatchlistSyncJobLeaseAsync", worker, StringComparison.Ordinal);
         Assert.Contains("GetNextWatchlistSyncJobDueUtcAsync", repository, StringComparison.Ordinal);
         Assert.Contains("RepairWatchlistSyncBacklogAsync", coordinator, StringComparison.Ordinal);

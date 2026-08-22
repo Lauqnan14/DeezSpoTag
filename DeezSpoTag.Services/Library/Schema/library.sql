@@ -642,6 +642,41 @@ CREATE TABLE IF NOT EXISTS playlist_watch_track (
 CREATE INDEX IF NOT EXISTS idx_playlist_watch_track_playlist
     ON playlist_watch_track (source, source_id);
 
+CREATE TABLE IF NOT EXISTS playlist_watch_missing_track (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    track_source_id TEXT NOT NULL,
+    isrc TEXT,
+    source_position INTEGER,
+    title TEXT,
+    artist TEXT,
+    album TEXT,
+    duration_ms INTEGER,
+    cover_url TEXT,
+    deezer_id TEXT,
+    mapping_status TEXT,
+    status TEXT NOT NULL DEFAULT 'missing',
+    snapshot_id TEXT,
+    candidate_revision TEXT,
+    provider_readiness_revision TEXT,
+    queue_uuid TEXT,
+    last_error TEXT,
+    retry_after_utc TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, source_id, track_source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_missing_track_playlist
+    ON playlist_watch_missing_track (source, source_id, status, source_position);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_missing_track_due
+    ON playlist_watch_missing_track (status, retry_after_utc, source, source_id, source_position);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_watch_missing_track_queue
+    ON playlist_watch_missing_track (queue_uuid, status);
+
 CREATE TABLE IF NOT EXISTS playlist_watch_target_membership (
     source TEXT NOT NULL,
     source_id TEXT NOT NULL,

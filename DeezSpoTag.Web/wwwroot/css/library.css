@@ -3673,6 +3673,37 @@
     background: rgba(255, 255, 255, 0.06);
 }
 
+.library-page .dropdown-setting-row--checkbox {
+    grid-template-columns: 1fr auto;
+}
+
+.library-page .dropdown-setting-row--checkbox:has(input:disabled) {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.library-page .dropdown-target-identity-services,
+.library-page .dropdown-target-identity-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.library-page .dropdown-item--compact {
+    min-height: 34px;
+    padding: 8px 10px;
+    justify-content: center;
+    border: 1px solid rgba(0, 188, 255, 0.24);
+    background: rgba(0, 188, 255, 0.08);
+    color: var(--accent-primary);
+    font-size: 12px;
+}
+
+.library-page .dropdown-item--compact:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .library-page .dropdown-setting-select {
     min-width: 108px;
     max-width: 124px;

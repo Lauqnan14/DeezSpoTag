@@ -623,8 +623,8 @@ public sealed class EnhancementMultiSectionRunTests
             FindEnhancementRepoRoot(), "DeezSpoTag.Web", "wwwroot", "js", "autotag-status.js"));
 
         Assert.Contains("public List<string> ArtworkBadges", statusSource, StringComparison.Ordinal);
-        Assert.Contains("ArtworkBadges = ResolveAnimatedArtworkBadges(context.File)", runnerSource, StringComparison.Ordinal);
-        Assert.Contains("AnimatedArtworkFileNaming.IsAnimatedArtworkSidecar", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("ArtworkBadges = ResolveAnimatedArtworkBadges(context.File, context.Plan.Settings)", runnerSource, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkNaming.IsAlbumAnimatedArtworkSidecar", runnerSource, StringComparison.Ordinal);
         Assert.Contains("artworkBadgeMarkup", historySource, StringComparison.Ordinal);
         Assert.Contains("renderLyricsCards(allRows.filter(isSidecarHistoryRow))", historySource, StringComparison.Ordinal);
         Assert.DoesNotContain("collectSidecarRows", historySource, StringComparison.Ordinal);

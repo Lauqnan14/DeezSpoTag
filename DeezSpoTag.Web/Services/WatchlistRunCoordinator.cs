@@ -57,10 +57,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private const string ArtistWatchType = "artist";
     private const int SourceCircuitFailureThreshold = 2;
     private const int SourceCircuitCooldownSeconds = 300;
-    internal static readonly TimeSpan SteadyCycleBudget = TimeSpan.FromMinutes(4);
-    internal static readonly TimeSpan RecoveryCycleBudget = TimeSpan.FromMinutes(10);
-    internal static readonly TimeSpan PlaylistStartReserve = TimeSpan.FromSeconds(15);
-    internal static readonly TimeSpan TargetSyncClaimReserve = TimeSpan.FromSeconds(5);
     private readonly IServiceProvider _serviceProvider;
     private readonly BackgroundWorkCoordinator _workCoordinator;
     private readonly WatchlistRunSignal _runSignal;
@@ -73,7 +69,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private DateTimeOffset _lastDestinationRepairUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
-    private bool _useExtendedCycleBox;
     private int _artistRoundRobinIndex;
     private readonly object _runtimeHealthGate = new();
     private readonly object _activeCycleGate = new();
@@ -354,7 +349,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             _lastDestinationRepairUtc = DateTimeOffset.MinValue;
             _lastIdentityIndexRefreshUtc = DateTimeOffset.MinValue;
             _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
-            _useExtendedCycleBox = false;
             UpdateRuntimeHealth(_ => new WatchlistRuntimeHealth(false, false, null, DateTimeOffset.UtcNow, null, 0));
 
             var triggerStatus = WatchlistTriggerStatus.Disabled;
@@ -497,12 +491,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return;
         }
         await RecoverCoordinatorStateAsync(stoppingToken);
-        var cycleDeadline = DateTimeOffset.UtcNow + (_useExtendedCycleBox ? RecoveryCycleBudget : SteadyCycleBudget);
-        _useExtendedCycleBox = false;
         var coordinatorWork = scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>();
         if (coordinatorWork != null)
         {
-            await coordinatorWork.ProcessFinalizationWorkAsync(finalizationLimit: 25, stoppingToken);
+            await coordinatorWork.ProcessFinalizationWorkAsync(stoppingToken);
         }
 
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
@@ -520,95 +512,54 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             || pollOverdue
             || dueReconRequestCount > 0
             || identityRetryPlaylists.Count > 0;
-        var smoothSyncEnabled = settings.WatchSmoothSyncEnabled;
-        var stoppedForTime = false;
-        IReadOnlyList<(string Source, string PlaylistId)> slicedPlaylists = Array.Empty<(string, string)>();
-
-        var drainBudget = ResolvePreSweepDrainBudget(
-            RemainingCycleBudget(cycleDeadline),
-            shouldRunSourceRefresh);
-        if (drainBudget > TargetSyncClaimReserve)
-        {
-            await RunBudgetedTargetSyncAsync(
-                coordinatorWork,
-                drainBudget,
-                shouldRunSourceRefresh
-                    ? WatchlistPostDownloadSyncService.ResidualTargetSyncMaxJobs
-                    : WatchlistPostDownloadSyncService.DrainTargetSyncMaxJobs,
-                WatchlistSyncJobKind.All,
-                playlistFilter: null,
-                ignoreReconciliationLeaseOwner: null,
-                stoppingToken,
-                onProgress: cancellationToken => SaveSchedulerStateAsync(
-                    repository,
-                    activeSource: null,
-                    activeSourceId: null,
-                    activeStartedUtc: null,
-                    lastProgressUtc: DateTimeOffset.UtcNow,
-                    cancellationToken));
-        }
 
         if (shouldRunSourceRefresh)
         {
-            var queueBudget = Math.Max(1, settings.WatchMaxItemsPerRun);
-            var queueAdmissionToken = queueAdmission.BeginRun(queueBudget);
+            var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
+                1000,
+                TimeSpan.FromMinutes(15),
+                _reconciliationLeaseOwner,
+                stoppingToken);
+            using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
             try
             {
-                var reconciliationRequests = await repository.ClaimDueWatchlistReconciliationRequestsAsync(
-                    1000,
-                    TimeSpan.FromMinutes(15),
-                    _reconciliationLeaseOwner,
+                await RunWatchCycleCoreAsync(
+                    scope.ServiceProvider,
+                    settings,
+                    reconciliationRequests,
+                    identityRetryPlaylists,
+                    pollOverdue,
                     stoppingToken);
-                using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
-                try
-                {
-                    var playlistRun = await RunWatchCycleCoreAsync(
-                        scope.ServiceProvider,
-                        settings,
-                        queueAdmission,
-                        coordinatorWork,
-                        reconciliationRequests,
-                        identityRetryPlaylists,
-                        pollOverdue,
-                        cycleDeadline,
-                        smoothSyncEnabled,
-                        stoppingToken);
-                    stoppedForTime = playlistRun.StoppedForTime;
-                    slicedPlaylists = playlistRun.SlicedPlaylists;
-                    _lastSourceRefreshCompletedUtc = DateTimeOffset.UtcNow;
-                }
-                finally
-                {
-                    leaseRenewalCancellation.Cancel();
-                    try
-                    {
-                        await leaseRenewal;
-                    }
-                    catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
-                    {
-                        // Expected after the claimed reconciliation batch leaves processing.
-                    }
-                }
+                _lastSourceRefreshCompletedUtc = DateTimeOffset.UtcNow;
             }
             finally
             {
-                if (queueAdmissionToken != 0)
+                leaseRenewalCancellation.Cancel();
+                try
                 {
-                    queueAdmission.EndRun(queueAdmissionToken);
+                    await leaseRenewal;
+                }
+                catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
+                {
+                    // Expected after the claimed reconciliation batch leaves processing.
                 }
             }
         }
 
-        if (!stoppedForTime && RemainingCycleBudget(cycleDeadline) > TargetSyncClaimReserve)
+        if (coordinatorWork != null)
         {
-            await RunResidualTargetSyncAsync(
-                coordinatorWork,
-                cycleDeadline,
-                smoothSyncEnabled,
-                slicedPlaylists,
+            await coordinatorWork.ProcessTargetSyncWorkAsync(
+                TargetSyncBudget.DrainAll(WatchlistSyncJobKind.All),
                 stoppingToken);
         }
+
+        await ProcessPersistedQueueAdmissionsIfAllowedAsync(
+            settings,
+            repository,
+            scope.ServiceProvider,
+            queueAdmission,
+            stoppingToken);
     }
 
     private async Task ProcessPersistedQueueAdmissionsIfAllowedAsync(
@@ -651,109 +602,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
     }
 
-    private static TimeSpan RemainingCycleBudget(DateTimeOffset cycleDeadline)
-    {
-        var remaining = cycleDeadline - DateTimeOffset.UtcNow;
-        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
-    }
-
-    internal static TimeSpan ResolvePreSweepDrainBudget(TimeSpan remainingCycle, bool playlistsDue)
-    {
-        if (!playlistsDue)
-        {
-            return remainingCycle;
-        }
-
-        var reserved = remainingCycle - PlaylistStartReserve;
-        return reserved > TimeSpan.Zero ? reserved : TimeSpan.Zero;
-    }
-
-    private static async Task<int> RunBudgetedTargetSyncAsync(
-        WatchlistPostDownloadSyncService? coordinatorWork,
-        TimeSpan remaining,
-        int maxJobs,
-        WatchlistSyncJobKind kind,
-        (string Source, string PlaylistId)? playlistFilter,
-        string? ignoreReconciliationLeaseOwner,
-        CancellationToken stoppingToken,
-        Func<CancellationToken, Task>? onProgress = null)
-    {
-        if (coordinatorWork == null || maxJobs <= 0 || remaining <= TargetSyncClaimReserve)
-        {
-            return 0;
-        }
-
-        return await coordinatorWork.ProcessTargetSyncWorkAsync(
-            new TargetSyncBudget(
-                maxJobs,
-                remaining,
-                playlistFilter,
-                kind,
-                ignoreReconciliationLeaseOwner,
-                onProgress),
-            stoppingToken);
-    }
-
-    private static async Task RunResidualTargetSyncAsync(
-        WatchlistPostDownloadSyncService? coordinatorWork,
-        DateTimeOffset cycleDeadline,
-        bool smoothSyncEnabled,
-        IReadOnlyList<(string Source, string PlaylistId)> slicedPlaylists,
-        CancellationToken stoppingToken)
-    {
-        if (!smoothSyncEnabled)
-        {
-            await RunBudgetedTargetSyncAsync(
-                coordinatorWork,
-                RemainingCycleBudget(cycleDeadline),
-                WatchlistPostDownloadSyncService.ResidualTargetSyncMaxJobs,
-                WatchlistSyncJobKind.All,
-                playlistFilter: null,
-                ignoreReconciliationLeaseOwner: null,
-                stoppingToken);
-            return;
-        }
-
-        var processed = await RunBudgetedTargetSyncAsync(
-            coordinatorWork,
-            RemainingCycleBudget(cycleDeadline),
-            WatchlistPostDownloadSyncService.ResidualTargetSyncMaxJobs,
-            WatchlistSyncJobKind.Artwork,
-            playlistFilter: null,
-            ignoreReconciliationLeaseOwner: null,
-            stoppingToken);
-        var leftover = WatchlistPostDownloadSyncService.ResidualTargetSyncMaxJobs - processed;
-        foreach (var playlist in slicedPlaylists)
-        {
-            if (leftover <= 0 || RemainingCycleBudget(cycleDeadline) <= TargetSyncClaimReserve)
-            {
-                break;
-            }
-
-            var claimed = await RunBudgetedTargetSyncAsync(
-                coordinatorWork,
-                RemainingCycleBudget(cycleDeadline),
-                leftover,
-                WatchlistSyncJobKind.Membership,
-                playlist,
-                ignoreReconciliationLeaseOwner: null,
-                stoppingToken);
-            leftover -= claimed;
-        }
-
-        if (leftover > 0 && RemainingCycleBudget(cycleDeadline) > TargetSyncClaimReserve)
-        {
-            await RunBudgetedTargetSyncAsync(
-                coordinatorWork,
-                RemainingCycleBudget(cycleDeadline),
-                leftover,
-                WatchlistSyncJobKind.Membership,
-                playlistFilter: null,
-                ignoreReconciliationLeaseOwner: null,
-                stoppingToken);
-        }
-    }
-
     private async Task RecoverCoordinatorStateAsync(CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
@@ -767,7 +615,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         if (smoothSyncRecoveryApplied)
         {
             _lastSourceRefreshCompletedUtc = DateTimeOffset.MinValue;
-            _useExtendedCycleBox = true;
             ResetPlaylistRuntimeStateForAll(await repository.GetPlaylistWatchlistAsync(cancellationToken));
             await repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null, cancellationToken);
             _logger.LogWarning("Applied Watchlist smooth-sync recovery to clear stale backoff, identity jobs, and identity circuits.");
@@ -917,13 +764,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     private async Task<PlaylistRunResult> RunWatchCycleCoreAsync(
         IServiceProvider serviceProvider,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        WatchlistQueueAdmissionService queueAdmission,
-        WatchlistPostDownloadSyncService? targetSync,
         IReadOnlyList<WatchlistReconciliationRequestDto> reconciliationRequests,
         IReadOnlyList<PlaylistIdentityRetryPlaylist> identityRetryPlaylists,
         bool pollOverdue,
-        DateTimeOffset cycleDeadline,
-        bool smoothSyncEnabled,
         CancellationToken stoppingToken)
     {
         var repository = serviceProvider.GetRequiredService<LibraryRepository>();
@@ -982,42 +825,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         CleanupStaleState(allItems);
         await SeedPersistedLastRunsAsync(allItems, repository, stoppingToken);
-        var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
-        var orchestrationService = serviceProvider.GetService<DownloadOrchestrationService>();
-        var queueGate = orchestrationService is null
-            ? await queueAdmission.EvaluateQueueGateAsync(queueRepository, stoppingToken)
-            : await queueAdmission.EvaluateQueueGateAsync(
-                queueRepository,
-                orchestrationService,
-                stoppingToken);
-        if (!queueGate.Allowed)
-        {
-            UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
-            _logger.LogInformation(
-                "Watchlist download admission deferred while source metadata and target synchronization continue: {Reason}",
-                queueGate.Message);
-            var deferredRun = await ProcessPlaylistWatchItemsAsync(
-                playlistItems,
-                settings,
-                repository,
-                serviceProvider,
-                queueAdmission,
-                targetSync,
-                requestedPlaylistKeys,
-                identityRetryOnly,
-                cycleDeadline,
-                smoothSyncEnabled,
-                allowAdmit: false,
-                stoppingToken);
-            await repository.CompleteClaimedWatchlistReconciliationRequestsAsync(
-                reconciliationRequests,
-                _reconciliationLeaseOwner,
-                stoppingToken);
-            var remainingWhenDeferred = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
-            UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingWhenDeferred });
-            return deferredRun;
-        }
-
         UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = null });
 
         var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
@@ -1025,30 +832,19 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             settings,
             repository,
             serviceProvider,
-            queueAdmission,
-            targetSync,
             requestedPlaylistKeys,
             identityRetryOnly,
-            cycleDeadline,
-            smoothSyncEnabled,
-            allowAdmit: true,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
             return playlistRunResult;
         }
 
-        await ProcessPlaylistQueueAdmissionsAsync(
-            repository,
-            serviceProvider,
-            queueAdmission,
-            stoppingToken);
-
         var processedArtistIds = await ProcessArtistWatchItemsAsync(
             artistItems,
             settings,
             serviceProvider,
-            queueAdmission,
+            queueAdmission: null,
             requestedArtistIds,
             stoppingToken);
         if (hasGlobalRequest)
@@ -1248,13 +1044,8 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         LibraryRepository repository,
         IServiceProvider serviceProvider,
-        WatchlistQueueAdmissionService queueAdmission,
-        WatchlistPostDownloadSyncService? targetSync,
         IReadOnlySet<string> requestedPlaylistKeys,
         bool identityRetryOnly,
-        DateTimeOffset cycleDeadline,
-        bool smoothSyncEnabled,
-        bool allowAdmit,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
@@ -1266,29 +1057,15 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var pollInterval = GetWatchInterval(settings);
         var scheduledItems = SelectDuePlaylistItems(playlistItems, requestedPlaylistKeys, pollInterval);
         var processedKeys = new HashSet<string>(StringComparer.Ordinal);
-        var slicedPlaylists = new List<(string Source, string PlaylistId)>();
         var processed = 0;
         var succeeded = 0;
         var failed = 0;
         var skippedByBackoff = 0;
         var skippedByDelayWindow = 0;
         var skippedByLockBusy = 0;
-        var stoppedForTime = false;
         foreach (var activeItem in scheduledItems)
         {
             stoppingToken.ThrowIfCancellationRequested();
-            if (RemainingCycleBudget(cycleDeadline) < PlaylistStartReserve)
-            {
-                stoppedForTime = true;
-                var remaining = scheduledItems.Count - processed - skippedByBackoff - skippedByDelayWindow - skippedByLockBusy;
-                _logger.LogInformation(
-                    "Watchlist cycle box stop: slicesDone={SlicesDone}, slicesRemaining={SlicesRemaining}, elapsedMs={ElapsedMs:0}",
-                    processed,
-                    Math.Max(0, remaining),
-                    (DateTimeOffset.UtcNow - runStartedUtc).TotalMilliseconds);
-                break;
-            }
-
             var sourceCircuit = await repository.GetWatchlistSourceCircuitStateAsync(
                 PlaylistWatchType,
                 activeItem.Source,
@@ -1325,17 +1102,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
 
             await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
-            var execution = smoothSyncEnabled
-                ? await RunInterleavedPlaylistSliceAsync(
-                    activeItem,
-                    settings,
-                    serviceProvider,
-                    queueAdmission,
-                    targetSync,
-                    cycleDeadline,
-                    allowAdmit,
-                    stoppingToken)
-                : await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken);
+            var execution = await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken);
             await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
             await PersistPlaylistProgressAsync(repository, activeItem, stoppingToken);
             if (execution.Outcome == WatchItemRunOutcome.LockBusy)
@@ -1349,10 +1116,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             {
                 processedKeys.Add(activeItem.Key);
                 succeeded++;
-                if (activeItem.Playlist != null)
-                {
-                    slicedPlaylists.Add((activeItem.Playlist.Source, activeItem.Playlist.SourceId));
-                }
             }
             else
             {
@@ -1395,7 +1158,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
             if (execution.SnapshotExpanded
                 && settings.WatchDelayBetweenPlaylistsSeconds > 0
-                && RemainingCycleBudget(cycleDeadline) > PlaylistStartReserve)
+                && !identityRetryOnly)
             {
                 await Task.Delay(
                     TimeSpan.FromSeconds(settings.WatchDelayBetweenPlaylistsSeconds),
@@ -1418,45 +1181,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 elapsedMs);
         }
 
-        return new PlaylistRunResult(AbortedRun: false, processedKeys, stoppedForTime, slicedPlaylists);
-    }
-
-    private async Task<WatchItemExecutionOutcome> RunInterleavedPlaylistSliceAsync(
-        WatchItem item,
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        IServiceProvider serviceProvider,
-        WatchlistQueueAdmissionService admission,
-        WatchlistPostDownloadSyncService? targetSync,
-        DateTimeOffset cycleDeadline,
-        bool allowAdmit,
-        CancellationToken ct)
-    {
-        var execution = await TryProcessItemAsync(item, settings, serviceProvider, ct);
-        if (execution.Outcome != WatchItemRunOutcome.Success || item.Playlist == null)
-        {
-            return execution;
-        }
-
-        var remainingAfterReconcile = RemainingCycleBudget(cycleDeadline);
-        if (targetSync != null && remainingAfterReconcile > TargetSyncClaimReserve)
-        {
-            await targetSync.ProcessTargetSyncWorkAsync(
-                new TargetSyncBudget(
-                    WatchlistPostDownloadSyncService.SliceMembershipMaxJobs,
-                    remainingAfterReconcile,
-                    (item.Playlist.Source, item.Playlist.SourceId),
-                    WatchlistSyncJobKind.Membership,
-                    _reconciliationLeaseOwner),
-                ct);
-        }
-
-        if (allowAdmit && admission.GetRemaining() > 0)
-        {
-            var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
-            await reconciler.AdmitCachedMissingTracksAsync(item.Playlist, ct);
-        }
-
-        return execution;
+        return new PlaylistRunResult(AbortedRun: false, processedKeys);
     }
 
     private static async Task PersistPlaylistProgressAsync(
@@ -2124,15 +1849,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         WatchlistArtistDto? Artist);
     private sealed record PlaylistRunResult(
         bool AbortedRun,
-        IReadOnlySet<string> ProcessedKeys,
-        bool StoppedForTime,
-        IReadOnlyList<(string Source, string PlaylistId)> SlicedPlaylists)
+        IReadOnlySet<string> ProcessedKeys)
     {
         public static PlaylistRunResult Empty { get; } = new(
             false,
-            new HashSet<string>(StringComparer.Ordinal),
-            false,
-            Array.Empty<(string, string)>());
+            new HashSet<string>(StringComparer.Ordinal));
     }
 
     private sealed record WatchItemExecutionOutcome(
