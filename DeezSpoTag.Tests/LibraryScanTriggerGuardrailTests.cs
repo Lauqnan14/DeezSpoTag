@@ -104,6 +104,30 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void LibraryTargetIdentityRefresh_UsesMissingFirstScopedIndex()
+    {
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "LibraryTargetIdentitiesApiController.cs");
+        var service = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
+        var repository = ReadSource("DeezSpoTag.Services", "Library", "LibraryRepository.cs");
+        var jellyfin = ReadSource("DeezSpoTag.Integrations", "Jellyfin", "JellyfinApiClient.cs");
+        var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
+
+        Assert.Contains("UpdateTrackMetadataIndexAsync(service, request?.FolderId", controller, StringComparison.Ordinal);
+        Assert.Contains("GetTargetServerIdentityLocalTracksAsync", repository, StringComparison.Ordinal);
+        Assert.Contains("TargetServerIdentityLocalTrackDto", repository, StringComparison.Ordinal);
+        Assert.Contains("TargetIdentityLocalIndex.Build", service, StringComparison.Ordinal);
+        Assert.Contains("localIndex.MissingTrackIds.Count == 0", service, StringComparison.Ordinal);
+        Assert.Contains("TryResolveByPath", service, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTrackMetadataFallbackAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetTrackIdsByFilePathsAsync(\n            tracks.Select", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveLocalTrackIdentityAsync(", service, StringComparison.Ordinal);
+        Assert.Contains("AlbumArtists,Artists,Album", jellyfin, StringComparison.Ordinal);
+        Assert.Contains("string? Album", jellyfin, StringComparison.Ordinal);
+        Assert.Contains("public async Task<string?> LoginNativeApiAsync", navidrome, StringComparison.Ordinal);
+        Assert.Contains("GetLibraryTracksAsync(\n        string serverUrl,\n        string nativeApiToken", navidrome.Replace("\r\n", "\n"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LibraryTrackRowsExposeStoredTargetServerIds()
     {
         var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "LibraryAlbumsApiController.cs");
@@ -410,7 +434,10 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("IngestTargetTracksAsync(PlexService", source, StringComparison.Ordinal);
         Assert.Contains("IngestTargetTracksAsync(JellyfinService", source, StringComparison.Ordinal);
         Assert.Contains("IngestTargetTracksAsync(NavidromeService", source, StringComparison.Ordinal);
-        Assert.Contains("ResolveLocalTrackIdentityAsync", source, StringComparison.Ordinal);
+        Assert.Contains("TargetIdentityLocalIndex.Build", source, StringComparison.Ordinal);
+        Assert.Contains("TryResolveByPath", source, StringComparison.Ordinal);
+        Assert.Contains("IngestTargetTrackMetadataFallbackAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolveLocalTrackIdentityAsync", source, StringComparison.Ordinal);
         Assert.Contains("RefreshPlexAsync(state.Plex, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("RefreshJellyfinAsync(state.Jellyfin, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("RefreshNavidromeAsync(state.Navidrome, updateTrackIndex, cancellationToken)", source, StringComparison.Ordinal);

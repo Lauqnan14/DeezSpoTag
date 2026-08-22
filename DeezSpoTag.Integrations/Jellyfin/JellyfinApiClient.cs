@@ -347,7 +347,7 @@ public class JellyfinApiClient
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
         query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Audio");
-        query.Append("&Fields=Path,RunTimeTicks,AlbumArtists,Artists");
+        query.Append("&Fields=Path,RunTimeTicks,AlbumArtists,Artists,Album");
         query.Append("&Limit=25");
         query.Append($"&SearchTerm={Uri.EscapeDataString(searchTerm)}");
 
@@ -367,6 +367,7 @@ public class JellyfinApiClient
                 item.Id!,
                 item.Name ?? string.Empty,
                 ResolveArtistText(item),
+                item.Album,
                 item.RunTimeTicks.HasValue
                     ? (int?)Math.Min(item.RunTimeTicks.Value / JellyfinTimeTicksPerMillisecond, int.MaxValue)
                     : null,
@@ -396,7 +397,7 @@ public class JellyfinApiClient
         query.Append($"/Users/{Uri.EscapeDataString(userId)}/Items");
         query.Append(RecursiveQuerySegment);
         query.Append("&IncludeItemTypes=Audio");
-        query.Append("&Fields=Path,RunTimeTicks,AlbumArtists,Artists");
+        query.Append("&Fields=Path,RunTimeTicks,AlbumArtists,Artists,Album");
         query.Append($"&Limit={normalizedLimit}");
         query.Append($"&StartIndex={normalizedOffset}");
         if (!string.IsNullOrWhiteSpace(libraryId))
@@ -419,6 +420,7 @@ public class JellyfinApiClient
                 item.Id!,
                 item.Name ?? string.Empty,
                 ResolveArtistText(item),
+                item.Album,
                 item.RunTimeTicks.HasValue
                     ? (int?)Math.Min(item.RunTimeTicks.Value / JellyfinTimeTicksPerMillisecond, int.MaxValue)
                     : null,
@@ -1559,6 +1561,7 @@ public sealed record JellyfinAudioTrack(
     string Id,
     string Name,
     string Artist,
+    string? Album,
     int? DurationMs,
     string? FilePath = null);
 

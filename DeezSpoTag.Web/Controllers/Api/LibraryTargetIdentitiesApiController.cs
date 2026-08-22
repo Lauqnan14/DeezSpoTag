@@ -113,7 +113,7 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
                         cancellationToken);
                 }
 
-                await _refreshService.UpdateTrackMetadataIndexAsync(service, cancellationToken);
+                await _refreshService.UpdateTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
                 var coverage = await _repository.GetTargetServerIdentityCoverageAsync(
                     [service],
                     request?.FolderId,

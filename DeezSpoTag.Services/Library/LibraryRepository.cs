@@ -4047,6 +4047,66 @@ ORDER BY services.service;";
         return result;
     }
 
+    public async Task<IReadOnlyList<TargetServerIdentityLocalTrackDto>> GetTargetServerIdentityLocalTracksAsync(
+        string service,
+        long? folderId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedService = NormalizeServiceKey(service);
+        if (string.IsNullOrWhiteSpace(normalizedService))
+        {
+            return [];
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT
+       tl.track_id,
+       af.path,
+       af.relative_path,
+       f.root_path,
+       COALESCE(NULLIF(t.tag_title, ''), t.title, '') AS title,
+       COALESCE(NULLIF(t.tag_artist, ''), NULLIF(t.tag_album_artist, ''), ar.name, '') AS artist,
+       COALESCE(NULLIF(t.tag_album, ''), al.title, '') AS album,
+       COALESCE(t.tag_duration_ms, t.duration_ms, af.duration_ms) AS duration_ms,
+       m.target_item_id
+FROM track_local tl
+JOIN audio_file af ON af.id = tl.audio_file_id
+JOIN folder f ON f.id = af.folder_id
+JOIN track t ON t.id = tl.track_id
+JOIN album al ON al.id = t.album_id
+JOIN artist ar ON ar.id = al.artist_id
+LEFT JOIN media_server_track_metadata m
+  ON m.track_id = tl.track_id
+ AND m.service = @service
+ AND m.target_item_id IS NOT NULL
+ AND TRIM(m.target_item_id) <> ''
+WHERE f.enabled = TRUE
+  AND (@folderId IS NULL OR f.id = @folderId);";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("service", normalizedService);
+        command.Parameters.AddWithValue(FolderIdParameter, (object?)folderId ?? DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var result = new List<TargetServerIdentityLocalTrackDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var rootPath = await ReadNullableStringAsync(reader, 3, cancellationToken);
+            var relativePath = await ReadNullableStringAsync(reader, 2, cancellationToken);
+            var rawPath = await ReadNullableStringAsync(reader, 1, cancellationToken);
+            result.Add(new TargetServerIdentityLocalTrackDto(
+                reader.GetInt64(0),
+                BuildAbsolutePath(rootPath, relativePath, rawPath),
+                relativePath,
+                await ReadNullableStringAsync(reader, 4, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 5, cancellationToken) ?? string.Empty,
+                await ReadNullableStringAsync(reader, 6, cancellationToken) ?? string.Empty,
+                await ReadNullableIntAsync(reader, 7, cancellationToken),
+                await ReadNullableStringAsync(reader, 8, cancellationToken)));
+        }
+
+        return result;
+    }
+
     public async Task<int> DeleteMediaServerTrackMetadataForScopeAsync(
         string service,
         long? folderId = null,

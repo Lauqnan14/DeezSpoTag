@@ -147,6 +147,42 @@ public sealed class NavidromeApiClient
             .ToList();
     }
 
+    public async Task<List<NavidromeAudioTrack>> GetLibraryTracksAsync(
+        string serverUrl,
+        string nativeApiToken,
+        int offset,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(serverUrl)
+            || string.IsNullOrWhiteSpace(nativeApiToken)
+            || offset < 0
+            || pageSize <= 0)
+        {
+            return [];
+        }
+
+        var page = await GetNativeSongsPageAsync(
+            serverUrl,
+            nativeApiToken,
+            offset,
+            Math.Clamp(pageSize, 1, 500),
+            sort: "id",
+            order: "ASC",
+            libraryId: null,
+            cancellationToken);
+        return page
+            .Where(static song => !string.IsNullOrWhiteSpace(song.Id))
+            .Select(song => new NavidromeAudioTrack(
+                song.Id!,
+                song.Title ?? string.Empty,
+                song.Artist ?? string.Empty,
+                song.Duration.HasValue ? (int)Math.Round(song.Duration.Value * 1000d) : null,
+                ResolveNativeSongPath(song.LibraryPath, song.Path),
+                song.LibraryId?.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+            .ToList();
+    }
+
     public Task<List<NavidromeHistoryItem>> GetPlayHistoryAsync(
         string serverUrl,
         string username,
@@ -1071,7 +1107,7 @@ public sealed class NavidromeApiClient
         }
     }
 
-    private async Task<string?> LoginNativeApiAsync(
+    public async Task<string?> LoginNativeApiAsync(
         string serverUrl,
         string username,
         string password,

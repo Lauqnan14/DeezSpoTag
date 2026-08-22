@@ -577,6 +577,16 @@ public sealed record TargetServerIdentityCoverageDto(
     int MappedTracks,
     int MissingTracks);
 
+public sealed record TargetServerIdentityLocalTrackDto(
+    long TrackId,
+    string? AbsolutePath,
+    string? RelativePath,
+    string Title,
+    string Artist,
+    string Album,
+    int? DurationMs,
+    string? TargetItemId);
+
 public sealed record ArtistSpotifyMatchSignalDto(
     long TrackId,
     string Title,

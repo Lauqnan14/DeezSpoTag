@@ -4848,7 +4848,7 @@ public sealed class PlaylistSyncService
         {
             if (cache.TryGetValue(query, out var cached) && !string.IsNullOrWhiteSpace(cached))
             {
-                candidates.Add(new JellyfinAudioTrack(cached, track.Name, track.Artists, track.DurationMs));
+                candidates.Add(new JellyfinAudioTrack(cached, track.Name, track.Artists, track.Album, track.DurationMs));
                 continue;
             }
 

@@ -1,6 +1,7 @@
 using DeezSpoTag.Integrations.Jellyfin;
 using DeezSpoTag.Integrations.Navidrome;
 using DeezSpoTag.Integrations.Plex;
+using DeezSpoTag.Core.Utils;
 using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Services;
@@ -30,6 +31,257 @@ public sealed class MediaServerLibraryRefreshService
         string? Album,
         int? DurationMs);
 
+    private sealed class TargetIdentityLocalIndex
+    {
+        private readonly Dictionary<string, long> _pathMap;
+        private readonly Dictionary<string, long> _suffixMap;
+        private readonly Dictionary<string, long> _parentFileMap;
+        private readonly Dictionary<string, long> _albumTitlePathMap;
+        private readonly Dictionary<string, List<TargetServerIdentityLocalTrackDto>> _metadataMap;
+
+        private TargetIdentityLocalIndex(
+            IReadOnlyList<TargetServerIdentityLocalTrackDto> tracks,
+            HashSet<long> missingTrackIds,
+            Dictionary<string, long> pathMap,
+            Dictionary<string, long> suffixMap,
+            Dictionary<string, long> parentFileMap,
+            Dictionary<string, long> albumTitlePathMap,
+            Dictionary<string, List<TargetServerIdentityLocalTrackDto>> metadataMap)
+        {
+            Tracks = tracks;
+            MissingTrackIds = missingTrackIds;
+            _pathMap = pathMap;
+            _suffixMap = suffixMap;
+            _parentFileMap = parentFileMap;
+            _albumTitlePathMap = albumTitlePathMap;
+            _metadataMap = metadataMap;
+        }
+
+        public IReadOnlyList<TargetServerIdentityLocalTrackDto> Tracks { get; }
+        public HashSet<long> MissingTrackIds { get; }
+
+        public static TargetIdentityLocalIndex Build(IReadOnlyList<TargetServerIdentityLocalTrackDto> tracks)
+        {
+            var pathMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var suffixMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var parentFileMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var albumTitlePathMap = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            var metadataMap = new Dictionary<string, List<TargetServerIdentityLocalTrackDto>>(StringComparer.OrdinalIgnoreCase);
+            var missingTrackIds = tracks
+                .Where(static track => string.IsNullOrWhiteSpace(track.TargetItemId))
+                .Select(static track => track.TrackId)
+                .ToHashSet();
+
+            foreach (var track in tracks)
+            {
+                AddPathKeys(track.AbsolutePath, track.TrackId, pathMap, suffixMap, parentFileMap, albumTitlePathMap);
+                AddPathKeys(track.RelativePath, track.TrackId, pathMap, suffixMap, parentFileMap, albumTitlePathMap);
+
+                AddMetadataKey(metadataMap, BuildMetadataKey(track.Title, track.Artist, track.Album), track);
+                AddMetadataKey(metadataMap, BuildMetadataKey(track.Title, track.Artist, null), track);
+            }
+
+            return new TargetIdentityLocalIndex(
+                tracks,
+                missingTrackIds,
+                pathMap,
+                suffixMap,
+                parentFileMap,
+                albumTitlePathMap,
+                metadataMap);
+        }
+
+        public bool TryResolveByPath(TargetTrackIdentityCandidate candidate, out long trackId)
+        {
+            trackId = 0;
+            var normalized = NormalizePathForIdentity(candidate.FilePath);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return false;
+            }
+
+            if (_pathMap.TryGetValue(normalized, out trackId) && trackId > 0)
+            {
+                return true;
+            }
+
+            foreach (var suffix in BuildPathSuffixes(normalized))
+            {
+                if (_suffixMap.TryGetValue(suffix, out trackId) && trackId > 0)
+                {
+                    return true;
+                }
+            }
+
+            var parentFileKey = BuildParentFileKey(normalized);
+            if (!string.IsNullOrWhiteSpace(parentFileKey)
+                && _parentFileMap.TryGetValue(parentFileKey, out trackId)
+                && trackId > 0)
+            {
+                return true;
+            }
+
+            var albumTitleKey = BuildAlbumTitleKeyFromPath(normalized);
+            return !string.IsNullOrWhiteSpace(albumTitleKey)
+                   && _albumTitlePathMap.TryGetValue(albumTitleKey, out trackId)
+                   && trackId > 0;
+        }
+
+        public bool TryResolveByMetadata(TargetTrackIdentityCandidate candidate, out long trackId)
+        {
+            trackId = 0;
+            var metadataKey = BuildMetadataKey(candidate.Title, candidate.Artist, candidate.Album);
+            if (!string.IsNullOrWhiteSpace(metadataKey)
+                && TryResolveUniqueMetadataCandidate(candidate, metadataKey, out trackId))
+            {
+                return true;
+            }
+
+            var titleArtistKey = BuildMetadataKey(candidate.Title, candidate.Artist, null);
+            return !string.IsNullOrWhiteSpace(titleArtistKey)
+                   && TryResolveUniqueMetadataCandidate(candidate, titleArtistKey, out trackId);
+        }
+
+        private bool TryResolveUniqueMetadataCandidate(
+            TargetTrackIdentityCandidate candidate,
+            string metadataKey,
+            out long trackId)
+        {
+            trackId = 0;
+            if (!_metadataMap.TryGetValue(metadataKey, out var candidates))
+            {
+                return false;
+            }
+
+            var matches = candidates
+                .Where(local => MissingTrackIds.Contains(local.TrackId))
+                .Where(local => TrackTitleMatcher.TitlesMatch(local.Title, candidate.Title)
+                                && TrackTitleMatcher.ArtistsMatch(local.Artist, candidate.Artist))
+                .Where(local => IsDurationCompatible(local.DurationMs, candidate.DurationMs))
+                .Take(2)
+                .ToList();
+            if (matches.Count != 1)
+            {
+                return false;
+            }
+
+            trackId = matches[0].TrackId;
+            return true;
+        }
+
+        private static void AddPathKeys(
+            string? path,
+            long trackId,
+            Dictionary<string, long> pathMap,
+            Dictionary<string, long> suffixMap,
+            Dictionary<string, long> parentFileMap,
+            Dictionary<string, long> albumTitlePathMap)
+        {
+            var normalized = NormalizePathForIdentity(path);
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return;
+            }
+
+            AddUnique(pathMap, normalized, trackId);
+            foreach (var suffix in BuildPathSuffixes(normalized))
+            {
+                AddUnique(suffixMap, suffix, trackId);
+            }
+
+            AddUnique(parentFileMap, BuildParentFileKey(normalized), trackId);
+            AddUnique(albumTitlePathMap, BuildAlbumTitleKeyFromPath(normalized), trackId);
+        }
+
+        private static void AddUnique(Dictionary<string, long> map, string key, long trackId)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            if (map.TryGetValue(key, out var existing))
+            {
+                if (existing != trackId)
+                {
+                    map[key] = 0;
+                }
+                return;
+            }
+
+            map[key] = trackId;
+        }
+
+        private static void AddMetadataKey(
+            Dictionary<string, List<TargetServerIdentityLocalTrackDto>> map,
+            string key,
+            TargetServerIdentityLocalTrackDto track)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            if (!map.TryGetValue(key, out var bucket))
+            {
+                bucket = [];
+                map[key] = bucket;
+            }
+
+            if (bucket.All(item => item.TrackId != track.TrackId))
+            {
+                bucket.Add(track);
+            }
+        }
+
+        private static IEnumerable<string> BuildPathSuffixes(string normalizedPath)
+        {
+            var parts = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            for (var length = 2; length <= Math.Min(6, parts.Length); length++)
+            {
+                yield return string.Join('/', parts.Skip(parts.Length - length));
+            }
+        }
+
+        private static string BuildParentFileKey(string normalizedPath)
+        {
+            var parts = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length < 2
+                ? string.Empty
+                : $"{parts[^2]}/{parts[^1]}";
+        }
+
+        private static string BuildAlbumTitleKeyFromPath(string normalizedPath)
+        {
+            var parts = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2)
+            {
+                return string.Empty;
+            }
+
+            var album = NormalizeIdentityText(parts[^2]);
+            var title = NormalizeIdentityText(Path.GetFileNameWithoutExtension(parts[^1]));
+            return string.IsNullOrWhiteSpace(album) || string.IsNullOrWhiteSpace(title)
+                ? string.Empty
+                : $"{album}|{title}";
+        }
+
+        private static string BuildMetadataKey(string? title, string? artist, string? album)
+        {
+            var normalizedTitle = NormalizeIdentityText(title);
+            var normalizedArtist = NormalizeIdentityText(artist);
+            var normalizedAlbum = NormalizeIdentityText(album);
+            if (string.IsNullOrWhiteSpace(normalizedTitle) || string.IsNullOrWhiteSpace(normalizedArtist))
+            {
+                return string.Empty;
+            }
+
+            return string.IsNullOrWhiteSpace(normalizedAlbum)
+                ? $"{normalizedArtist}|{normalizedTitle}"
+                : $"{normalizedArtist}|{normalizedAlbum}|{normalizedTitle}";
+        }
+    }
+
     public MediaServerLibraryRefreshService(
         PlatformAuthService authService,
         PlexApiClient plexApiClient,
@@ -44,6 +296,57 @@ public sealed class MediaServerLibraryRefreshService
         _navidromeApiClient = navidromeApiClient;
         _libraryRepository = libraryRepository;
         _logger = logger;
+    }
+
+    private static string NormalizePathForIdentity(string? path)
+    {
+        var normalized = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        if (normalized.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(normalized, UriKind.Absolute, out var fileUri)
+            && fileUri.IsFile)
+        {
+            normalized = fileUri.LocalPath;
+        }
+
+        normalized = TryUnescapePath(normalized);
+
+        normalized = normalized.Replace('\\', '/');
+        while (normalized.Contains("//", StringComparison.Ordinal))
+        {
+            normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+        }
+
+        return normalized.TrimEnd('/').ToLowerInvariant();
+    }
+
+    private static string NormalizeIdentityText(string? value)
+        => TrackTitleMatcher.NormalizeText(value);
+
+    private static string TryUnescapePath(string path)
+    {
+        try
+        {
+            return Uri.UnescapeDataString(path);
+        }
+        catch (UriFormatException)
+        {
+            return path;
+        }
+    }
+
+    private static bool IsDurationCompatible(int? localDurationMs, int? targetDurationMs)
+    {
+        if (!localDurationMs.HasValue || !targetDurationMs.HasValue)
+        {
+            return true;
+        }
+
+        return Math.Abs(localDurationMs.Value - targetDurationMs.Value) <= 10_000;
     }
 
     public async Task RefreshAsync(string? service, CancellationToken cancellationToken)
@@ -205,7 +508,10 @@ public sealed class MediaServerLibraryRefreshService
         return new MediaServerIdentityIngestSummary(services.Count, ingestedServers, failures);
     }
 
-    public async Task UpdateTrackMetadataIndexAsync(string service, CancellationToken cancellationToken)
+    public Task UpdateTrackMetadataIndexAsync(string service, CancellationToken cancellationToken)
+        => UpdateTrackMetadataIndexAsync(service, folderId: null, cancellationToken);
+
+    public async Task UpdateTrackMetadataIndexAsync(string service, long? folderId, CancellationToken cancellationToken)
     {
         var state = await _authService.LoadAsync();
         var normalizedService = service.Trim().ToLowerInvariant();
@@ -217,13 +523,13 @@ public sealed class MediaServerLibraryRefreshService
                     .Where(section => string.Equals(section.Type, "artist", StringComparison.OrdinalIgnoreCase))
                     .Where(section => !section.Title.Contains("audiobook", StringComparison.OrdinalIgnoreCase))
                     .ToList();
-                await UpdatePlexTrackMetadataIndexAsync(state.Plex!, musicSections, cancellationToken);
+                await UpdatePlexTrackMetadataIndexAsync(state.Plex!, musicSections, folderId, cancellationToken);
                 break;
             case JellyfinService when HasJellyfinConfiguration(state.Jellyfin):
-                await UpdateJellyfinTrackMetadataIndexAsync(state.Jellyfin!, cancellationToken);
+                await UpdateJellyfinTrackMetadataIndexAsync(state.Jellyfin!, folderId, cancellationToken);
                 break;
             case NavidromeService when HasNavidromeConfiguration(state.Navidrome):
-                await UpdateNavidromeTrackMetadataIndexAsync(state.Navidrome!, cancellationToken);
+                await UpdateNavidromeTrackMetadataIndexAsync(state.Navidrome!, folderId, cancellationToken);
                 break;
             default:
                 return;
@@ -284,7 +590,7 @@ public sealed class MediaServerLibraryRefreshService
         {
             if (updateTrackIndex)
             {
-                await UpdatePlexTrackMetadataIndexAsync(configuredPlex, musicSections, cancellationToken);
+                await UpdatePlexTrackMetadataIndexAsync(configuredPlex, musicSections, folderId: null, cancellationToken);
                 await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
                     PlexService,
                     cancellationToken);
@@ -332,6 +638,7 @@ public sealed class MediaServerLibraryRefreshService
     private async Task UpdatePlexTrackMetadataIndexAsync(
         PlexAuth plex,
         List<PlexLibrarySection> musicSections,
+        long? folderId,
         CancellationToken cancellationToken)
     {
         if (!_libraryRepository.IsConfigured || musicSections.Count == 0)
@@ -339,13 +646,21 @@ public sealed class MediaServerLibraryRefreshService
             return;
         }
 
+        var localIndex = TargetIdentityLocalIndex.Build(
+            await _libraryRepository.GetTargetServerIdentityLocalTracksAsync(PlexService, folderId, cancellationToken));
+        if (localIndex.Tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
+        {
+            return;
+        }
+
         var mappedCount = 0;
         var unmappedCount = 0;
         var seenRatingKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fallbackCandidates = new List<TargetTrackIdentityCandidate>();
         foreach (var section in musicSections)
         {
             var offset = 0;
-            while (!cancellationToken.IsCancellationRequested)
+            while (!cancellationToken.IsCancellationRequested && localIndex.MissingTrackIds.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var page = await _plexApiClient.GetLibraryTracksAsync(
@@ -380,7 +695,8 @@ public sealed class MediaServerLibraryRefreshService
                         track.Album,
                         track.DurationMs > 0 ? checked((int)Math.Min(track.DurationMs, int.MaxValue)) : null))
                     .ToList();
-                var ingest = await IngestTargetTracksAsync(PlexService, tracks, cancellationToken);
+                fallbackCandidates.AddRange(tracks);
+                var ingest = await IngestTargetTracksAsync(PlexService, tracks, localIndex, cancellationToken);
                 mappedCount += ingest.Mapped;
                 unmappedCount += ingest.Unmapped;
 
@@ -391,6 +707,18 @@ public sealed class MediaServerLibraryRefreshService
 
                 offset += PlexTrackPageSize;
             }
+
+            if (localIndex.MissingTrackIds.Count == 0)
+            {
+                break;
+            }
+        }
+
+        if (localIndex.MissingTrackIds.Count > 0)
+        {
+            var fallback = await IngestTargetTrackMetadataFallbackAsync(PlexService, fallbackCandidates, localIndex, cancellationToken);
+            mappedCount += fallback.Mapped;
+            unmappedCount = localIndex.MissingTrackIds.Count;
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -433,7 +761,7 @@ public sealed class MediaServerLibraryRefreshService
         {
             if (updateTrackIndex)
             {
-                await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, cancellationToken);
+                await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, folderId: null, cancellationToken);
                 await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
                     JellyfinService,
                     cancellationToken);
@@ -451,9 +779,17 @@ public sealed class MediaServerLibraryRefreshService
 
     private async Task UpdateJellyfinTrackMetadataIndexAsync(
         JellyfinAuth jellyfin,
+        long? folderId,
         CancellationToken cancellationToken)
     {
         if (!_libraryRepository.IsConfigured)
+        {
+            return;
+        }
+
+        var localIndex = TargetIdentityLocalIndex.Build(
+            await _libraryRepository.GetTargetServerIdentityLocalTracksAsync(JellyfinService, folderId, cancellationToken));
+        if (localIndex.Tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
         {
             return;
         }
@@ -493,10 +829,11 @@ public sealed class MediaServerLibraryRefreshService
         var mappedCount = 0;
         var unmappedCount = 0;
         var seenItemIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fallbackCandidates = new List<TargetTrackIdentityCandidate>();
         foreach (var library in musicLibraries)
         {
             var offset = 0;
-            while (!cancellationToken.IsCancellationRequested)
+            while (!cancellationToken.IsCancellationRequested && localIndex.MissingTrackIds.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var page = await _jellyfinApiClient.GetAudioTracksAsync(
@@ -529,10 +866,11 @@ public sealed class MediaServerLibraryRefreshService
                         track.FilePath!,
                         track.Name,
                         track.Artist,
-                        Album: null,
+                        track.Album,
                         track.DurationMs))
                     .ToList();
-                var ingest = await IngestTargetTracksAsync(JellyfinService, tracks, cancellationToken);
+                fallbackCandidates.AddRange(tracks);
+                var ingest = await IngestTargetTracksAsync(JellyfinService, tracks, localIndex, cancellationToken);
                 mappedCount += ingest.Mapped;
                 unmappedCount += ingest.Unmapped;
 
@@ -543,6 +881,18 @@ public sealed class MediaServerLibraryRefreshService
 
                 offset += PlexTrackPageSize;
             }
+
+            if (localIndex.MissingTrackIds.Count == 0)
+            {
+                break;
+            }
+        }
+
+        if (localIndex.MissingTrackIds.Count > 0)
+        {
+            var fallback = await IngestTargetTrackMetadataFallbackAsync(JellyfinService, fallbackCandidates, localIndex, cancellationToken);
+            mappedCount += fallback.Mapped;
+            unmappedCount = localIndex.MissingTrackIds.Count;
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -556,6 +906,7 @@ public sealed class MediaServerLibraryRefreshService
 
     private async Task UpdateNavidromeTrackMetadataIndexAsync(
         NavidromeAuth navidrome,
+        long? folderId,
         CancellationToken cancellationToken)
     {
         if (!_libraryRepository.IsConfigured)
@@ -563,17 +914,35 @@ public sealed class MediaServerLibraryRefreshService
             return;
         }
 
+        var localIndex = TargetIdentityLocalIndex.Build(
+            await _libraryRepository.GetTargetServerIdentityLocalTracksAsync(NavidromeService, folderId, cancellationToken));
+        if (localIndex.Tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
+        {
+            return;
+        }
+
+        var sessionToken = await _navidromeApiClient.LoginNativeApiAsync(
+            navidrome.Url!,
+            navidrome.Username!,
+            navidrome.Password!,
+            cancellationToken);
+        if (string.IsNullOrWhiteSpace(sessionToken))
+        {
+            _logger.LogWarning("Navidrome identity ingest skipped because native API login failed.");
+            return;
+        }
+
         var mappedCount = 0;
         var unmappedCount = 0;
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var fallbackCandidates = new List<TargetTrackIdentityCandidate>();
         var offset = 0;
-        while (!cancellationToken.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested && localIndex.MissingTrackIds.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var page = await _navidromeApiClient.GetLibraryTracksAsync(
                 navidrome.Url!,
-                navidrome.Username!,
-                navidrome.Password!,
+                sessionToken,
                 offset,
                 PlexTrackPageSize,
                 cancellationToken);
@@ -600,7 +969,8 @@ public sealed class MediaServerLibraryRefreshService
                     Album: null,
                     track.DurationMs))
                 .ToList();
-            var ingest = await IngestTargetTracksAsync(NavidromeService, tracks, cancellationToken);
+            fallbackCandidates.AddRange(tracks);
+            var ingest = await IngestTargetTracksAsync(NavidromeService, tracks, localIndex, cancellationToken);
             mappedCount += ingest.Mapped;
             unmappedCount += ingest.Unmapped;
 
@@ -610,6 +980,13 @@ public sealed class MediaServerLibraryRefreshService
             }
 
             offset += PlexTrackPageSize;
+        }
+
+        if (localIndex.MissingTrackIds.Count > 0)
+        {
+            var fallback = await IngestTargetTrackMetadataFallbackAsync(NavidromeService, fallbackCandidates, localIndex, cancellationToken);
+            mappedCount += fallback.Mapped;
+            unmappedCount = localIndex.MissingTrackIds.Count;
         }
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -624,6 +1001,7 @@ public sealed class MediaServerLibraryRefreshService
     private async Task<(int Mapped, int Unmapped)> IngestTargetTracksAsync(
         string service,
         IReadOnlyList<TargetTrackIdentityCandidate> tracks,
+        TargetIdentityLocalIndex localIndex,
         CancellationToken cancellationToken)
     {
         if (tracks.Count == 0)
@@ -631,35 +1009,70 @@ public sealed class MediaServerLibraryRefreshService
             return (0, 0);
         }
 
-        var filePathMap = await _libraryRepository.GetTrackIdsByFilePathsAsync(
-            tracks.Select(static track => track.FilePath).ToList(),
-            cancellationToken);
         var now = DateTimeOffset.UtcNow;
         var mappedTracks = new List<(TargetTrackIdentityCandidate Track, long LocalTrackId)>();
         foreach (var track in tracks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (filePathMap.TryGetValue(track.FilePath, out var localTrackId))
+            if (localIndex.MissingTrackIds.Count == 0)
             {
-                mappedTracks.Add((track, localTrackId));
-                continue;
+                break;
             }
 
-            var resolved = await _libraryRepository.ResolveLocalTrackIdentityAsync(
-                new LibraryRepository.LibraryExistenceInput(
-                    Isrc: null,
-                    TrackTitle: track.Title,
-                    ArtistName: track.Artist,
-                    DurationMs: track.DurationMs,
-                    Source: null,
-                    SourceId: null,
-                    AlbumTitle: track.Album,
-                    Explicit: null),
-                cancellationToken: cancellationToken);
-            if (!resolved.IsAmbiguous && resolved.LocalTrackId.HasValue)
+            if (localIndex.TryResolveByPath(track, out var localTrackId)
+                && localIndex.MissingTrackIds.Contains(localTrackId))
             {
-                mappedTracks.Add((track, resolved.LocalTrackId.Value));
+                mappedTracks.Add((track, localTrackId));
+                localIndex.MissingTrackIds.Remove(localTrackId);
             }
+        }
+
+        await PersistTargetIdentityMappingsAsync(service, mappedTracks, now, cancellationToken);
+        return (mappedTracks.Count, tracks.Count - mappedTracks.Count);
+    }
+
+    private async Task<(int Mapped, int Unmapped)> IngestTargetTrackMetadataFallbackAsync(
+        string service,
+        IReadOnlyList<TargetTrackIdentityCandidate> tracks,
+        TargetIdentityLocalIndex localIndex,
+        CancellationToken cancellationToken)
+    {
+        if (tracks.Count == 0 || localIndex.MissingTrackIds.Count == 0)
+        {
+            return (0, localIndex.MissingTrackIds.Count);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var mappedTracks = new List<(TargetTrackIdentityCandidate Track, long LocalTrackId)>();
+        foreach (var track in tracks)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (localIndex.MissingTrackIds.Count == 0)
+            {
+                break;
+            }
+
+            if (localIndex.TryResolveByMetadata(track, out var localTrackId)
+                && localIndex.MissingTrackIds.Contains(localTrackId))
+            {
+                mappedTracks.Add((track, localTrackId));
+                localIndex.MissingTrackIds.Remove(localTrackId);
+            }
+        }
+
+        await PersistTargetIdentityMappingsAsync(service, mappedTracks, now, cancellationToken);
+        return (mappedTracks.Count, localIndex.MissingTrackIds.Count);
+    }
+
+    private async Task PersistTargetIdentityMappingsAsync(
+        string service,
+        IReadOnlyList<(TargetTrackIdentityCandidate Track, long LocalTrackId)> mappedTracks,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (mappedTracks.Count == 0)
+        {
+            return;
         }
 
         await _libraryRepository.UpsertMediaServerTrackMetadataAsync(
@@ -683,8 +1096,6 @@ public sealed class MediaServerLibraryRefreshService
                     .ToList(),
                 cancellationToken);
         }
-
-        return (mappedTracks.Count, tracks.Count - mappedTracks.Count);
     }
 
     private static bool IsJellyfinMusicLibrary(JellyfinLibrarySection library)
@@ -766,7 +1177,7 @@ public sealed class MediaServerLibraryRefreshService
         {
             if (updateTrackIndex)
             {
-                await UpdateNavidromeTrackMetadataIndexAsync(navidrome!, cancellationToken);
+                await UpdateNavidromeTrackMetadataIndexAsync(navidrome!, folderId: null, cancellationToken);
                 await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
                     NavidromeService,
                     cancellationToken);
