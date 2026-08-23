@@ -103,6 +103,7 @@ public sealed class MusicBrainzImplementationTests
     [Theory]
     [InlineData("Sweet Love", "Sweet Love (Instrumental)")]
     [InlineData("Sweet Love", "Sweet Love - Radio Edit")]
+    [InlineData("One Night", "One Night (Extended)")]
     [InlineData("Sweet Love", "Sweet Love (Extended Mix)")]
     [InlineData("Sweet Love (Live)", "Sweet Love")]
     public void VariantGuard_RejectsCandidateWithDifferentVersionIntent(string sourceTitle, string candidateTitle)
@@ -114,6 +115,7 @@ public sealed class MusicBrainzImplementationTests
     [InlineData("Sweet Love", "Sweet Love")]
     [InlineData("Sweet Love (Instrumental)", "Sweet Love - Instrumental")]
     [InlineData("Sweet Love (Radio Edit)", "Sweet Love - Radio Version")]
+    [InlineData("One Night (Extended)", "One Night - Extended")]
     [InlineData("Sweet Love (Extended Mix)", "Sweet Love - Extended Version")]
     public void VariantGuard_AllowsSameVersionIntent(string sourceTitle, string candidateTitle)
     {

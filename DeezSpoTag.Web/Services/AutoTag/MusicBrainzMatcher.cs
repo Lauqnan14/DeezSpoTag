@@ -8,13 +8,13 @@ public sealed class MusicBrainzMatcher
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex VariantSegmentRegex = CreateVariantRegex(@"(?:\(|\[|\{)(?<value>[^)\]\}]+)(?:\)|\]|\})");
-    private static readonly Regex TrailingVariantRegex = CreateVariantRegex(@"\b(?<value>instrumental|radio edit|radio version|club version|club mix|extended mix|extended version|live|acoustic|karaoke|remix|remastered)\b$");
+    private static readonly Regex TrailingVariantRegex = CreateVariantRegex(@"\b(?<value>instrumental|radio edit|radio version|club version|club mix|extended(?: mix| version| edit)?|live|acoustic|karaoke|remix|remastered)\b$");
     private static readonly (string Key, Regex Pattern)[] VariantPatterns =
     [
         ("instrumental", CreateVariantRegex(@"\binstrumental\b")),
         ("radio", CreateVariantRegex(@"\bradio\s+(edit|version|mix)\b")),
         ("club", CreateVariantRegex(@"\bclub\s+(version|mix|edit)\b")),
-        ("extended", CreateVariantRegex(@"\bextended\s+(mix|version|edit)?\b")),
+        ("extended", CreateVariantRegex(@"\bextended(?:\s+(mix|version|edit))?\b")),
         ("live", CreateVariantRegex(@"\blive\b")),
         ("acoustic", CreateVariantRegex(@"\bacoustic\b")),
         ("karaoke", CreateVariantRegex(@"\bkaraoke\b")),
@@ -104,6 +104,11 @@ public sealed class MusicBrainzMatcher
 
                 var track = ToTrack(recording, preferences);
                 await ExtendTrackAsync(info, track, preferences, cancellationToken);
+                if (!IsCandidateCompatibleWithSource(info, track, matchingConfig))
+                {
+                    continue;
+                }
+
                 return new AutoTagMatchResult
                 {
                     Accuracy = 1.0,
