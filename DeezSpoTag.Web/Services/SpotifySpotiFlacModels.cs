@@ -15,7 +15,9 @@ public sealed record SpotifyPathfinderPlaylistPageResult(
     int NextOffset,
     bool HasMore,
     bool IsComplete,
-    string? FailureCode);
+    string? FailureCode,
+    string? FailureIncidentId = null,
+    bool FailureIsIncidentOrigin = true);
 
 public sealed record SpotiFlacPlaylistInfo(
     [property: JsonPropertyName("tracks")] SpotiFlacPlaylistTracks Tracks,

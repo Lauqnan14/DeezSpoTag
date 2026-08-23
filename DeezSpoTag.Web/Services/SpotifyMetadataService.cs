@@ -1159,7 +1159,11 @@ public sealed class SpotifyMetadataService
             cancellationToken);
         if (!providerPage.IsComplete || providerPage.Payload is null)
         {
-            return SpotifyPlaylistPage.Failed(offset, providerPage.FailureCode ?? "spotify_page_failed");
+            return SpotifyPlaylistPage.Failed(
+                offset,
+                providerPage.FailureCode ?? "spotify_page_failed",
+                providerPage.FailureIncidentId,
+                providerPage.FailureIsIncidentOrigin);
         }
 
         var metadata = MapSpotiFlacPlaylistMetadata(playlistId, providerPage.Payload, includeTracks: true)
@@ -3548,10 +3552,29 @@ public sealed record SpotifyPlaylistPage(
     string? FailureCode = null,
     string? OwnerName = null,
     int? Followers = null,
-    string? OwnerImageUrl = null)
+    string? OwnerImageUrl = null,
+    string? FailureIncidentId = null,
+    bool FailureIsIncidentOrigin = true)
 {
-    public static SpotifyPlaylistPage Failed(int offset, string failureCode)
-        => new(null, null, null, null, null, [], false, offset, 0, false, failureCode);
+    public static SpotifyPlaylistPage Failed(
+        int offset,
+        string failureCode,
+        string? failureIncidentId = null,
+        bool failureIsIncidentOrigin = true)
+        => new(
+            null,
+            null,
+            null,
+            null,
+            null,
+            [],
+            false,
+            offset,
+            0,
+            false,
+            failureCode,
+            FailureIncidentId: failureIncidentId,
+            FailureIsIncidentOrigin: failureIsIncidentOrigin);
 }
 
 public sealed record SpotifyTrackSummary(

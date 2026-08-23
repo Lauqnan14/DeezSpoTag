@@ -82,7 +82,8 @@ public sealed record PlaylistReconciliationResult(
     string? FailureMessage = null,
     string? QueueStopReason = null,
     int RemainingQueueableTracks = 0,
-    bool SnapshotExpanded = false);
+    bool SnapshotExpanded = false,
+    bool FailureIsIncidentOrigin = true);
 
 [SuppressMessage("Major Code Smell", "S1192", Justification = "Watch state/status literals are shared with persisted runtime values and external diagnostics.")]
 internal sealed class WatchlistEngine
@@ -261,7 +262,9 @@ internal sealed class WatchlistEngine
         bool IsAuthoritativeEmpty,
         bool CanClearImageUrl,
         string? OwnerName,
-        string? FailureCode);
+        string? FailureCode,
+        string? FailureIncidentId,
+        bool FailureIsIncidentOrigin);
 
     private sealed record LivePlaylistSnapshotMetadata(
         string? SnapshotId = null,
@@ -273,7 +276,9 @@ internal sealed class WatchlistEngine
         bool IsAuthoritativeEmpty = false,
         bool CanClearImageUrl = false,
         string? OwnerName = null,
-        string? FailureCode = null);
+        string? FailureCode = null,
+        string? FailureIncidentId = null,
+        bool FailureIsIncidentOrigin = true);
 
     [SuppressMessage("Major Code Smell", "S3776", Justification = "Playlist reconciliation intentionally preserves a linear execution flow for state persistence and queue/sync ordering.")]
     public async Task<PlaylistReconciliationResult> ReconcilePlaylistAsync(
@@ -547,13 +552,14 @@ internal sealed class WatchlistEngine
                 null,
                 SystemicFailures: playlistScopedFailure ? 0 : 1,
                 FailureFingerprint: !string.IsNullOrWhiteSpace(liveSnapshot.FailureCode)
-                    ? liveSnapshot.FailureCode
+                    ? BuildSourceFailureFingerprint(liveSnapshot.FailureCode, liveSnapshot.FailureIncidentId)
                     : candidates.Count == 0
                         ? "source_unverified_empty"
                         : "source_partial_snapshot",
                 FailureMessage: sourceFailureMessage,
                 QueueStopReason: WatchQueueStopReason.SystemicFailure.ToString(),
-                RemainingQueueableTracks: playlist.TrackCount ?? liveTrackCount);
+                RemainingQueueableTracks: playlist.TrackCount ?? liveTrackCount,
+                FailureIsIncidentOrigin: liveSnapshot.FailureIsIncidentOrigin);
         }
 
         await _libraryRepository.UpdatePlaylistWatchlistMetadataAsync(
@@ -2433,7 +2439,9 @@ internal sealed class WatchlistEngine
             metadata.IsAuthoritativeEmpty,
             metadata.CanClearImageUrl,
             EmptyToNull(metadata.OwnerName),
-            EmptyToNull(metadata.FailureCode));
+            EmptyToNull(metadata.FailureCode),
+            EmptyToNull(metadata.FailureIncidentId),
+            metadata.FailureIsIncidentOrigin);
     }
 
     private static IReadOnlyList<PlaylistTrackCandidate>? TryDeserializePlaylistTrackCandidates(string candidatesJson)
@@ -2511,6 +2519,8 @@ internal sealed class WatchlistEngine
         var sourceItemsConsumed = 0;
         var isComplete = true;
         string? failureCode = null;
+        string? failureIncidentId = null;
+        var failureIsIncidentOrigin = true;
         var isAuthoritativeEmpty = false;
         var pageCount = 0;
         var seenPageFingerprints = new HashSet<string>(StringComparer.Ordinal);
@@ -2577,6 +2587,8 @@ internal sealed class WatchlistEngine
                 }
                 isComplete = false;
                 failureCode = page?.FailureCode ?? "spotify_page_failed";
+                failureIncidentId = page?.FailureIncidentId;
+                failureIsIncidentOrigin = page?.FailureIsIncidentOrigin ?? true;
                 break;
             }
 
@@ -2647,7 +2659,9 @@ internal sealed class WatchlistEngine
                 IsAuthoritativeEmpty: isAuthoritativeEmpty,
                 CanClearImageUrl: true,
                 OwnerName: metadata.OwnerName,
-                FailureCode: failureCode));
+                FailureCode: failureCode,
+                FailureIncidentId: failureIncidentId,
+                FailureIsIncidentOrigin: failureIsIncidentOrigin));
     }
 
     internal static bool IsAuthoritativeEmptySpotifyPage(
@@ -3681,6 +3695,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
             failureCode,
             "apple_storefront_not_persisted",
             StringComparison.OrdinalIgnoreCase);
+
+    private static string BuildSourceFailureFingerprint(string failureCode, string? incidentId)
+        => string.IsNullOrWhiteSpace(incidentId)
+            ? failureCode
+            : $"{failureCode}:{incidentId}";
 
     private async Task<BoomplayPlaylistWatchData?> GetBoomplayPlaylistWatchDataAsync(
         string playlistId,

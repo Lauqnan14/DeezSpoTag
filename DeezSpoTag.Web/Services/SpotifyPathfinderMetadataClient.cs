@@ -29,15 +29,41 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private sealed record PathfinderAuthContext(string AccessToken, string ClientToken, string ClientVersion, string DeviceId);
 
+    public sealed record PathfinderAuthFailure(
+        string Stage,
+        string Code,
+        bool IsTransient,
+        string Diagnostic,
+        string IncidentId,
+        bool IsIncidentOrigin);
+
+    public sealed record PathfinderAuthRecovery(
+        string? RecoveredIncidentId,
+        string? RecoveredFailureCode);
+
+    private sealed record PathfinderAuthBuildResult(
+        PathfinderAuthContext? Context,
+        PathfinderAuthFailure? Failure)
+    {
+        public bool Success => Context is not null;
+
+        public static PathfinderAuthBuildResult Ready(PathfinderAuthContext context)
+            => new(context, null);
+
+        public static PathfinderAuthBuildResult Failed(PathfinderAuthFailure failure)
+            => new(null, failure);
+    }
+
     private sealed class BlobAuthState
     {
         public PathfinderAuthContext? Context { get; set; }
         public DateTimeOffset AccessTokenExpiresAt { get; set; }
         public DateTimeOffset ClientTokenExpiresAt { get; set; }
-        public Task<PathfinderAuthContext?>? BuildTask { get; set; }
+        public Task<PathfinderAuthBuildResult>? BuildTask { get; set; }
         public int FailureCount { get; set; }
         public DateTimeOffset RetryAfterUtc { get; set; }
         public bool Invalidated { get; set; }
+        public PathfinderAuthFailure? LastFailure { get; set; }
     }
 
     private sealed record PersistedQueryOverride(int Version, string Sha256Hash, string? VariablesJson);
@@ -76,7 +102,11 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private sealed record PlaylistUnionResult(JsonElement PlaylistUnion, List<JsonElement> TrackItems);
 
-    private sealed record PlaylistPageQueryResult(JsonElement? PlaylistUnion, string? FailureCode);
+    private sealed record PlaylistPageQueryResult(
+        JsonElement? PlaylistUnion,
+        string? FailureCode,
+        string? FailureIncidentId = null,
+        bool FailureIsIncidentOrigin = true);
 
     private sealed record DiscographyPageResult(JsonElement DiscographyAll, List<JsonElement> Items);
 
@@ -276,6 +306,8 @@ public sealed class SpotifyPathfinderMetadataClient
     private static readonly TimeSpan AuthContextBuildTimeout = TimeSpan.FromSeconds(6.0);
     private static readonly TimeSpan AuthFailureBackoffBase = TimeSpan.FromSeconds(15.0);
     private static readonly TimeSpan AuthFailureBackoffMax = TimeSpan.FromMinutes(2.0);
+    private const int AuthTransientBuildAttempts = 3;
+    private static readonly TimeSpan AuthTransientRetryDelay = TimeSpan.FromMilliseconds(250.0);
     private static readonly TimeSpan AnonymousTokenFetchTimeout = TimeSpan.FromSeconds(3.0);
     private static readonly TimeSpan PathfinderRequestTimeout = TimeSpan.FromSeconds(8.0);
     private static readonly TimeSpan PathfinderQueryTimeout = TimeSpan.FromSeconds(12.0);
@@ -349,6 +381,8 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private string? _backgroundUserBlobCachedPath;
 
+    public event Func<PathfinderAuthRecovery, CancellationToken, Task>? AuthenticationRecovered;
+
     private static string BuildUrl(string host, string path)
     {
         return string.IsNullOrEmpty(path) ? ($"{HttpsScheme}://{host}") : ($"{HttpsScheme}://{host}{path}");
@@ -372,7 +406,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -403,7 +437,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -788,7 +822,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -807,7 +841,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -846,7 +880,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -885,7 +919,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyAlbumSummary>();
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyAlbumSummary>();
@@ -923,7 +957,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         return context is null ? null : await QueryArtistAndOverviewAsync(context, artistId, cancellationToken);
     }
 
@@ -967,7 +1001,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyTrackSummary>();
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyTrackSummary>();
@@ -990,7 +1024,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyRelatedArtist>();
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyRelatedArtist>();
@@ -1009,7 +1043,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyAlbumSummary>();
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyAlbumSummary>();
@@ -1034,7 +1068,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return new List<SpotifyTrackSummary>();
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyTrackSummary>();
@@ -1070,21 +1104,29 @@ public sealed class SpotifyPathfinderMetadataClient
             return FailedPlaylistPage(boundedOffset, "spotify_playlist_id_missing");
         }
 
-        var context = await BuildAuthContextAsync(cancellationToken);
-        if (context is null)
+        var auth = await BuildAuthContextAsync(cancellationToken);
+        if (auth.Context is null)
         {
-            return FailedPlaylistPage(boundedOffset, "spotify_auth_unavailable");
+            return FailedPlaylistPage(
+                boundedOffset,
+                auth.Failure?.Code ?? "spotify_auth_build_failed",
+                auth.Failure?.IncidentId,
+                auth.Failure?.IsIncidentOrigin ?? true);
         }
 
         var query = await QueryPlaylistUnionPageWithFailureAsync(
-            context,
+            auth.Context,
             playlistId,
             boundedOffset,
             boundedLimit,
             cancellationToken);
         if (!query.PlaylistUnion.HasValue)
         {
-            return FailedPlaylistPage(boundedOffset, query.FailureCode ?? "spotify_page_failed");
+            return FailedPlaylistPage(
+                boundedOffset,
+                query.FailureCode ?? "spotify_page_failed",
+                query.FailureIncidentId,
+                query.FailureIsIncidentOrigin);
         }
 
         var playlistUnion = query.PlaylistUnion;
@@ -1112,29 +1154,45 @@ public sealed class SpotifyPathfinderMetadataClient
             isComplete ? null : "spotify_page_incomplete");
     }
 
-    private static SpotifyPathfinderPlaylistPageResult FailedPlaylistPage(int offset, string failureCode)
-        => new(null, null, offset, 0, 0, offset, false, false, failureCode);
+    private static SpotifyPathfinderPlaylistPageResult FailedPlaylistPage(
+        int offset,
+        string failureCode,
+        string? failureIncidentId = null,
+        bool failureIsIncidentOrigin = true)
+        => new(
+            null,
+            null,
+            offset,
+            0,
+            0,
+            offset,
+            false,
+            false,
+            failureCode,
+            failureIncidentId,
+            failureIsIncidentOrigin);
 
     private static string? ExtractPlaylistSnapshotId(JsonElement playlistUnion)
         => TryGetString(playlistUnion, "revisionId")
             ?? TryGetString(playlistUnion, "snapshotId")
             ?? TryGetString(playlistUnion, "revision");
 
-    private async Task<PathfinderAuthContext?> BuildAuthContextAsync(CancellationToken cancellationToken)
+    private async Task<PathfinderAuthBuildResult> BuildAuthContextAsync(CancellationToken cancellationToken)
     {
-        PathfinderAuthContext? blobContext = await BuildBlobAuthContextAsync(cancellationToken);
-        if (blobContext is not null)
+        var result = await BuildBlobAuthContextAsync(cancellationToken);
+        if (result.Success)
         {
             _logger.LogInformation("Spotify Pathfinder auth: using active Spotify auth context.");
-            return blobContext;
+            return result;
         }
-        LogBlobAuthMissingWarningThrottled();
-        return null;
+
+        LogBlobAuthMissingWarningThrottled(result.Failure);
+        return result;
     }
 
     public async Task<bool> HasPathfinderAuthContextAsync(CancellationToken cancellationToken)
     {
-        return await BuildBlobAuthContextAsync(cancellationToken) is not null;
+        return (await BuildBlobAuthContextAsync(cancellationToken)).Success;
     }
 
     public async Task<bool> HasBlobBackedAuthContextAsync(CancellationToken cancellationToken)
@@ -1154,13 +1212,20 @@ public sealed class SpotifyPathfinderMetadataClient
         return !string.IsNullOrWhiteSpace(blobPath);
     }
 
-    private void LogBlobAuthMissingWarningThrottled()
+    private void LogBlobAuthMissingWarningThrottled(PathfinderAuthFailure? failure)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         if (now - _lastBlobAuthMissingWarningUtc >= TimeSpan.FromMinutes(2.0))
         {
             _lastBlobAuthMissingWarningUtc = now;
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: no blob-backed auth context resolved.");
+            _logger.LogWarning(
+                "Spotify Pathfinder auth unavailable: stage={Stage} code={Code} transient={Transient} incident={IncidentId} diagnostic={Diagnostic}.",
+                failure?.Stage ?? "blob_resolution",
+                failure?.Code ?? "spotify_auth_blob_unavailable",
+                failure?.IsTransient ?? false,
+                failure?.IncidentId ?? "none",
+                DeezSpoTag.Core.Security.LogSanitizer.OneLine(
+                    failure?.Diagnostic ?? "No usable Spotify authentication context was resolved."));
             return;
         }
 
@@ -1170,16 +1235,18 @@ public sealed class SpotifyPathfinderMetadataClient
         }
     }
 
-    private async Task<PathfinderAuthContext?> BuildBlobAuthContextAsync(CancellationToken cancellationToken)
+    private async Task<PathfinderAuthBuildResult> BuildBlobAuthContextAsync(CancellationToken cancellationToken)
     {
+        PathfinderAuthBuildResult? primaryFailure = null;
         string? blobPath = await TryResolveActiveSpotifyBlobPathAsync(cancellationToken);
         if (!string.IsNullOrWhiteSpace(blobPath))
         {
             var context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
-            if (context is not null)
+            if (context.Success)
             {
                 return context;
             }
+            primaryFailure = context;
         }
 
         string? librespotBlobPath = await TryResolveActiveLibrespotBlobPathAsync();
@@ -1187,19 +1254,30 @@ public sealed class SpotifyPathfinderMetadataClient
             !string.Equals(librespotBlobPath, blobPath, StringComparison.OrdinalIgnoreCase))
         {
             var librespotContext = await BuildBlobAuthContextAsync(librespotBlobPath, cancellationToken);
-            if (librespotContext is not null)
+            if (librespotContext.Success)
             {
                 return librespotContext;
             }
+            primaryFailure ??= librespotContext;
+        }
+
+        if (primaryFailure is not null)
+        {
+            return primaryFailure;
         }
 
         _logger.LogDebug("Spotify Pathfinder auth unavailable: missing usable auth blob path.");
-        return null;
+        return FailedAuth(
+            "blob_resolution",
+            "spotify_auth_blob_unavailable",
+            isTransient: false,
+            "No usable Spotify authentication blob was resolved.");
     }
 
-    private async Task<PathfinderAuthContext?> BuildBlobAuthContextAsync(string blobPath, CancellationToken cancellationToken)
+    private async Task<PathfinderAuthBuildResult> BuildBlobAuthContextAsync(string blobPath, CancellationToken cancellationToken)
     {
-        Task<PathfinderAuthContext?> buildTask;
+        Task<PathfinderAuthBuildResult> buildTask;
+        var isBuildOwner = false;
         lock (_authBuildSync)
         {
             if (!_blobAuthStates.TryGetValue(blobPath, out var state))
@@ -1210,7 +1288,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
             if (TryGetCachedBlobContext(state, out PathfinderAuthContext? cachedContext) && cachedContext is not null)
             {
-                return cachedContext;
+                return PathfinderAuthBuildResult.Ready(cachedContext);
             }
 
             if (DateTimeOffset.UtcNow < state.RetryAfterUtc)
@@ -1219,7 +1297,12 @@ public sealed class SpotifyPathfinderMetadataClient
                     "Spotify Pathfinder auth retry for {BlobPath} is deferred until {RetryAfterUtc}.",
                     DeezSpoTag.Core.Security.LogSanitizer.OneLine(blobPath),
                     state.RetryAfterUtc);
-                return null;
+                var observedFailure = state.LastFailure ?? CreateAuthFailure(
+                    "auth_backoff",
+                    "spotify_auth_retry_deferred",
+                    isTransient: true,
+                    "Spotify authentication retry is deferred.");
+                return PathfinderAuthBuildResult.Failed(observedFailure with { IsIncidentOrigin = false });
             }
 
             if (state.BuildTask is { IsCompleted: false })
@@ -1230,66 +1313,115 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 state.BuildTask = RunBlobAuthBuildAsync(blobPath, state);
                 buildTask = state.BuildTask;
+                isBuildOwner = true;
             }
         }
 
-        return await buildTask.WaitAsync(cancellationToken);
+        var result = await buildTask.WaitAsync(cancellationToken);
+        return !isBuildOwner && result.Failure is not null
+            ? PathfinderAuthBuildResult.Failed(result.Failure with { IsIncidentOrigin = false })
+            : result;
     }
 
-    private async Task<PathfinderAuthContext?> RunBlobAuthBuildAsync(string blobPath, BlobAuthState state)
+    private async Task<PathfinderAuthBuildResult> RunBlobAuthBuildAsync(string blobPath, BlobAuthState state)
     {
         var stopwatch = Stopwatch.StartNew();
-        PathfinderAuthContext? context = null;
-        try
+        PathfinderAuthBuildResult result = FailedAuth(
+            "auth_build",
+            "spotify_auth_build_failed",
+            isTransient: true,
+            "Spotify authentication context could not be built.");
+        for (var attempt = 1; attempt <= AuthTransientBuildAttempts; attempt++)
         {
-            using var timeoutSource = new CancellationTokenSource(AuthContextBuildTimeout);
-            context = await BuildBlobAuthContextCoreAsync(blobPath, state, timeoutSource.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogWarning(
-                "Spotify Pathfinder auth context build exceeded {TimeoutSeconds}s.",
-                AuthContextBuildTimeout.TotalSeconds);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "Spotify Pathfinder auth context build failed.");
-        }
-        finally
-        {
-            stopwatch.Stop();
-            lock (_authBuildSync)
+            try
             {
-                if (state.Invalidated)
-                {
-                    context = null;
-                }
-                else if (context is not null)
-                {
-                    state.FailureCount = 0;
-                    state.RetryAfterUtc = default;
-                }
-                else
-                {
-                    state.FailureCount = Math.Min(state.FailureCount + 1, 8);
-                    double multiplier = Math.Pow(2, Math.Max(0, state.FailureCount - 1));
-                    var delay = TimeSpan.FromSeconds(Math.Min(
-                        AuthFailureBackoffMax.TotalSeconds,
-                        AuthFailureBackoffBase.TotalSeconds * multiplier));
-                    state.RetryAfterUtc = DateTimeOffset.UtcNow.Add(delay);
-                }
+                using var timeoutSource = new CancellationTokenSource(AuthContextBuildTimeout);
+                result = await BuildBlobAuthContextCoreAsync(blobPath, state, timeoutSource.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                result = FailedAuth(
+                    "auth_build_deadline",
+                    "spotify_auth_build_timeout",
+                    isTransient: true,
+                    $"Spotify authentication context build exceeded {AuthContextBuildTimeout.TotalSeconds:0} seconds.");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(ex, "Spotify Pathfinder auth context network request failed at attempt {Attempt}.", attempt);
+                result = FailedAuth(
+                    "auth_network",
+                    "spotify_auth_request_failed",
+                    isTransient: true,
+                    "A Spotify authentication network request failed.");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Spotify Pathfinder auth context build failed at attempt {Attempt}.", attempt);
+                result = FailedAuth(
+                    "auth_build",
+                    "spotify_auth_build_failed",
+                    isTransient: false,
+                    "Spotify authentication context build failed unexpectedly.");
             }
 
-            _logger.LogInformation(
-                "Spotify Pathfinder auth context build completed in {ElapsedMilliseconds}ms with status {Status}.",
-                stopwatch.ElapsedMilliseconds,
-                context is null ? "unavailable" : "ready");
+            if (result.Success || result.Failure?.IsTransient != true || attempt >= AuthTransientBuildAttempts)
+            {
+                break;
+            }
+
+            await Task.Delay(AuthTransientRetryDelay);
         }
 
-        return context;
+        stopwatch.Stop();
+        PathfinderAuthFailure? recoveredFailure;
+        lock (_authBuildSync)
+        {
+            if (state.Invalidated)
+            {
+                result = FailedAuth(
+                    "auth_invalidated",
+                    "spotify_auth_context_invalidated",
+                    isTransient: true,
+                    "Spotify authentication context was invalidated while it was being built.");
+            }
+
+            recoveredFailure = state.LastFailure;
+            if (result.Success)
+            {
+                state.FailureCount = 0;
+                state.RetryAfterUtc = default;
+                state.LastFailure = null;
+            }
+            else
+            {
+                state.FailureCount = Math.Min(state.FailureCount + 1, 8);
+                double multiplier = Math.Pow(2, Math.Max(0, state.FailureCount - 1));
+                var delay = TimeSpan.FromSeconds(Math.Min(
+                    AuthFailureBackoffMax.TotalSeconds,
+                    AuthFailureBackoffBase.TotalSeconds * multiplier));
+                state.RetryAfterUtc = DateTimeOffset.UtcNow.Add(delay);
+                state.LastFailure = result.Failure;
+            }
+        }
+
+        _logger.LogInformation(
+            "Spotify Pathfinder auth context build completed in {ElapsedMilliseconds}ms with status {Status}, stage={Stage}, code={Code}, incident={IncidentId}.",
+            stopwatch.ElapsedMilliseconds,
+            result.Success ? "ready" : "unavailable",
+            result.Failure?.Stage ?? "ready",
+            result.Failure?.Code ?? "none",
+            result.Failure?.IncidentId ?? "none");
+
+        if (result.Success)
+        {
+            await NotifyAuthenticationRecoveredAsync(recoveredFailure, CancellationToken.None);
+        }
+
+        return result;
     }
 
-    private async Task<PathfinderAuthContext?> BuildBlobAuthContextCoreAsync(
+    private async Task<PathfinderAuthBuildResult> BuildBlobAuthContextCoreAsync(
         string blobPath,
         BlobAuthState state,
         CancellationToken buildToken)
@@ -1302,33 +1434,28 @@ public sealed class SpotifyPathfinderMetadataClient
         SpotifyBlobPayload? payload = await _blobService.TryLoadBlobPayloadAsync(blobPath, buildToken);
         if (payload is null)
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: invalid blob payload.");
-            return null;
+            return FailedAuth("blob_payload", "spotify_auth_blob_invalid", false, "The Spotify authentication blob is invalid.");
         }
         LogBlobSnapshot(payload);
         if (payload.Cookies.Count == 0 || string.IsNullOrWhiteSpace(payload.UserAgent))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: blob has no web player cookies.");
-            return null;
+            return FailedAuth("blob_cookies", "spotify_auth_cookies_missing", false, "The Spotify web-player blob has no usable cookies or user agent.");
         }
         using HttpClient? cookieClient = _blobService.CreateCookieClient(payload);
         if (cookieClient is null)
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: failed to build cookie client.");
-            return null;
+            return FailedAuth("cookie_client", "spotify_auth_cookie_client_failed", false, "The Spotify cookie client could not be created.");
         }
         SpotifyBlobService.SpotifyWebPlayerTokenInfo? tokenInfo = await _blobService.GetWebPlayerTokenInfoAsync(blobPath, buildToken);
         if (tokenInfo is null || string.IsNullOrWhiteSpace(tokenInfo.AccessToken))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing web player access token.");
-            return null;
+            return BuildWebPlayerAccessTokenFailure(tokenInfo);
         }
         var accessToken = tokenInfo.AccessToken;
         WebPlayerSessionInfo? sessionInfo = await FetchWebPlayerSessionInfoFromBlobAsync(cookieClient, payload, buildToken);
         if (sessionInfo is null || string.IsNullOrWhiteSpace(sessionInfo.ClientVersion))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing client version.");
-            return null;
+            return FailedAuth("client_version", "spotify_auth_client_version_failed", true, "Spotify did not return a usable client version.");
         }
         string? clientId = sessionInfo.ClientId;
         if (string.IsNullOrWhiteSpace(clientId))
@@ -1337,16 +1464,14 @@ public sealed class SpotifyPathfinderMetadataClient
         }
         if (string.IsNullOrWhiteSpace(clientId))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing client id.");
-            return null;
+            return FailedAuth("client_id", "spotify_auth_client_id_missing", false, "Spotify did not provide a usable client ID.");
         }
         string deviceId = sessionInfo.DeviceId ?? string.Empty;
         HttpClient blobClient = _httpClientFactory.CreateClient();
         string? clientToken = await GetClientTokenAsync(blobClient, clientId, sessionInfo.ClientVersion, deviceId, buildToken);
         if (string.IsNullOrWhiteSpace(clientToken))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing client token.");
-            return null;
+            return FailedAuth("client_token", "spotify_auth_client_token_failed", true, "Spotify did not return a usable client token.");
         }
         PathfinderAuthContext context = new PathfinderAuthContext(accessToken, clientToken, sessionInfo.ClientVersion, deviceId);
         CacheBlobContext(
@@ -1356,7 +1481,105 @@ public sealed class SpotifyPathfinderMetadataClient
             (_clientTokenExpiresAt != default(DateTimeOffset))
                 ? _clientTokenExpiresAt
                 : DateTimeOffset.UtcNow.AddMinutes(50.0));
-        return context;
+        return PathfinderAuthBuildResult.Ready(context);
+    }
+
+    private static PathfinderAuthBuildResult FailedAuth(
+        string stage,
+        string code,
+        bool isTransient,
+        string diagnostic)
+        => PathfinderAuthBuildResult.Failed(CreateAuthFailure(stage, code, isTransient, diagnostic));
+
+    private static PathfinderAuthBuildResult BuildWebPlayerAccessTokenFailure(
+        SpotifyBlobService.SpotifyWebPlayerTokenInfo? tokenInfo)
+    {
+        var status = tokenInfo?.StatusCode;
+        var error = (tokenInfo?.Error ?? string.Empty).Trim();
+        if (status is 401 or 403)
+        {
+            return FailedAuth(
+                "access_token",
+                "spotify_auth_access_token_rejected",
+                isTransient: false,
+                $"Spotify rejected the web-player authentication cookie with HTTP {status}.");
+        }
+
+        if (status == 429)
+        {
+            return FailedAuth(
+                "access_token",
+                "spotify_auth_access_token_rate_limited",
+                isTransient: true,
+                "Spotify rate-limited the web-player access-token request.");
+        }
+
+        if (string.Equals(error, "web_player_timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            return FailedAuth(
+                "access_token",
+                "spotify_auth_access_token_timeout",
+                isTransient: true,
+                "The Spotify web-player access-token request timed out.");
+        }
+
+        if (string.Equals(error, "web_player_request_failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return FailedAuth(
+                "access_token",
+                "spotify_auth_access_token_request_failed",
+                isTransient: true,
+                "The Spotify web-player access-token network request failed.");
+        }
+
+        return FailedAuth(
+            "access_token",
+            "spotify_auth_access_token_failed",
+            isTransient: status is null || status >= 500,
+            status.HasValue
+                ? $"Spotify web-player access-token request failed with HTTP {status.Value}."
+                : "Spotify did not return a usable web-player access token.");
+    }
+
+    private static PathfinderAuthFailure CreateAuthFailure(
+        string stage,
+        string code,
+        bool isTransient,
+        string diagnostic)
+        => new(
+            stage,
+            code,
+            isTransient,
+            diagnostic,
+            Guid.NewGuid().ToString("N"),
+            IsIncidentOrigin: true);
+
+    private async Task NotifyAuthenticationRecoveredAsync(
+        PathfinderAuthFailure? recoveredFailure,
+        CancellationToken cancellationToken)
+    {
+        var handlers = AuthenticationRecovered?.GetInvocationList()
+            .Cast<Func<PathfinderAuthRecovery, CancellationToken, Task>>()
+            .ToArray();
+        if (handlers is not { Length: > 0 })
+        {
+            return;
+        }
+
+        var recovery = new PathfinderAuthRecovery(
+            recoveredFailure?.IncidentId,
+            recoveredFailure?.Code);
+        foreach (var handler in handlers)
+        {
+            try
+            {
+                await handler(recovery, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Spotify authentication recovery notification failed.");
+            }
+        }
     }
 
     public void InvalidateAuthContext()
@@ -1377,7 +1600,7 @@ public sealed class SpotifyPathfinderMetadataClient
         }
     }
 
-    private async Task<PathfinderAuthContext?> BuildLibrespotAuthContextAsync(
+    private async Task<PathfinderAuthBuildResult> BuildLibrespotAuthContextAsync(
         string blobPath,
         BlobAuthState state,
         CancellationToken cancellationToken)
@@ -1387,8 +1610,7 @@ public sealed class SpotifyPathfinderMetadataClient
             cancellationToken: cancellationToken);
         if (string.IsNullOrWhiteSpace(tokenResult.AccessToken))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing librespot access token.");
-            return null;
+            return FailedAuth("librespot_access_token", "spotify_auth_librespot_token_failed", true, "Librespot did not return a usable Spotify access token.");
         }
 
         HttpClient client = _httpClientFactory.CreateClient();
@@ -1396,8 +1618,7 @@ public sealed class SpotifyPathfinderMetadataClient
         string? clientVersion = config?.ClientVersion;
         if (string.IsNullOrWhiteSpace(clientVersion))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing public client version for librespot session.");
-            return null;
+            return FailedAuth("client_version", "spotify_auth_client_version_failed", true, "Spotify did not return a usable public client version.");
         }
 
         string clientId = string.IsNullOrWhiteSpace(config!.ClientId)
@@ -1407,8 +1628,7 @@ public sealed class SpotifyPathfinderMetadataClient
         string? clientToken = await GetClientTokenAsync(client, clientId, clientVersion, deviceId, cancellationToken);
         if (string.IsNullOrWhiteSpace(clientToken))
         {
-            _logger.LogWarning("Spotify Pathfinder auth unavailable: missing client token for librespot session.");
-            return null;
+            return FailedAuth("client_token", "spotify_auth_client_token_failed", true, "Spotify did not return a usable client token for the Librespot session.");
         }
 
         PathfinderAuthContext context = new PathfinderAuthContext(
@@ -1421,7 +1641,7 @@ public sealed class SpotifyPathfinderMetadataClient
             context,
             ResolveWebPlayerAccessTokenExpiry(tokenResult.ExpiresAtUnixMs),
             (_clientTokenExpiresAt != default(DateTimeOffset)) ? _clientTokenExpiresAt : DateTimeOffset.UtcNow.AddMinutes(50.0));
-        return context;
+        return PathfinderAuthBuildResult.Ready(context);
     }
 
     private static bool TryGetCachedBlobContext(BlobAuthState state, out PathfinderAuthContext? context)
@@ -2357,7 +2577,7 @@ public sealed class SpotifyPathfinderMetadataClient
             if (status == HttpStatusCode.Unauthorized)
             {
                 InvalidateAuthContext();
-                PathfinderAuthContext? refreshed = await BuildAuthContextAsync(queryTimeout.Token);
+                PathfinderAuthContext? refreshed = (await BuildAuthContextAsync(queryTimeout.Token)).Context;
                 if (refreshed is not null)
                 {
                     (status, json) = await SendPathfinderRequestAsync(client, refreshed, payloadJson, queryTimeout.Token);
@@ -2431,7 +2651,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     public async Task<JsonDocument?> FetchHomeFeedAsync(string? timeZone, CancellationToken cancellationToken)
     {
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -2453,7 +2673,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return anonymousTracks;
         }
 
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyTrackSummary>();
@@ -2586,7 +2806,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return new SearchSuggestionResult<T>(null, new List<T>());
         }
 
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new SearchSuggestionResult<T>(null, new List<T>());
@@ -2909,7 +3129,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     public async Task<List<SpotifyTrackSummary>> FetchLibraryLikedTracksAsync(int limit, int offset, CancellationToken cancellationToken)
     {
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return new List<SpotifyTrackSummary>();
@@ -2951,7 +3171,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return null;
         }
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         if (context is null)
         {
             return null;
@@ -3010,7 +3230,7 @@ public sealed class SpotifyPathfinderMetadataClient
             _logger.LogWarning("Spotify home feed (blob) failed: missing blob path.");
             return null;
         }
-        PathfinderAuthContext? context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
+        PathfinderAuthContext? context = (await BuildBlobAuthContextAsync(blobPath, cancellationToken)).Context;
         if (context is null)
         {
             _logger.LogWarning("Spotify home feed (blob) failed: blob auth unavailable.");
@@ -3028,7 +3248,7 @@ public sealed class SpotifyPathfinderMetadataClient
             _logger.LogWarning("Spotify home feed (legacy) failed: missing blob path.");
             return null;
         }
-        PathfinderAuthContext? context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
+        PathfinderAuthContext? context = (await BuildBlobAuthContextAsync(blobPath, cancellationToken)).Context;
         if (context is null)
         {
             _logger.LogWarning("Spotify home feed (legacy) failed: blob auth unavailable.");
@@ -3044,7 +3264,7 @@ public sealed class SpotifyPathfinderMetadataClient
         {
             return false;
         }
-        PathfinderAuthContext? context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
+        PathfinderAuthContext? context = (await BuildBlobAuthContextAsync(blobPath, cancellationToken)).Context;
         if (context is null)
         {
             return false;
@@ -4404,7 +4624,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        PathfinderAuthContext? context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
+        PathfinderAuthContext? context = (await BuildBlobAuthContextAsync(blobPath, cancellationToken)).Context;
         if (context is null)
         {
             _logger.LogWarning("Spotify {OperationName} (blob) failed: blob auth unavailable.", HomeSectionOperationName);
@@ -4416,7 +4636,7 @@ public sealed class SpotifyPathfinderMetadataClient
 
     private async Task<JsonDocument?> QueryWithAuthContextAsync(object payload, CancellationToken cancellationToken)
     {
-        PathfinderAuthContext? context = await BuildAuthContextAsync(cancellationToken);
+        PathfinderAuthContext? context = (await BuildAuthContextAsync(cancellationToken)).Context;
         return context is null ? null : await QueryAsync(context, payload, cancellationToken);
     }
 
@@ -4429,7 +4649,7 @@ public sealed class SpotifyPathfinderMetadataClient
             return null;
         }
 
-        PathfinderAuthContext? context = await BuildBlobAuthContextAsync(blobPath, cancellationToken);
+        PathfinderAuthContext? context = (await BuildBlobAuthContextAsync(blobPath, cancellationToken)).Context;
         if (context is null)
         {
             _logger.LogWarning("Spotify {OperationName} (blob) failed: blob auth unavailable.", operationName);
@@ -4989,11 +5209,15 @@ public sealed class SpotifyPathfinderMetadataClient
             {
                 InvalidateAuthContext();
                 var refreshed = await BuildAuthContextAsync(cancellationToken);
-                if (refreshed is null)
+                if (refreshed.Context is null)
                 {
-                    return new(null, "spotify_auth_unavailable");
+                    return new(
+                        null,
+                        refreshed.Failure?.Code ?? "spotify_auth_build_failed",
+                        refreshed.Failure?.IncidentId,
+                        refreshed.Failure?.IsIncidentOrigin ?? true);
                 }
-                (status, json) = await SendPathfinderRequestAsync(client, refreshed, payloadJson, cancellationToken);
+                (status, json) = await SendPathfinderRequestAsync(client, refreshed.Context, payloadJson, cancellationToken);
             }
             if (status == HttpStatusCode.TooManyRequests)
             {

@@ -441,7 +441,8 @@ public sealed class SpotifyBlobService : IAsyncDisposable
                 result.IsAnonymous,
                 result.Country,
                 result.ClientId,
-                result.ErrorSnippet ?? "web_player_token_failed");
+                result.ErrorSnippet ?? "web_player_token_failed",
+                result.StatusCode);
         }
 
         return new SpotifyWebPlayerTokenInfo(
@@ -450,7 +451,8 @@ public sealed class SpotifyBlobService : IAsyncDisposable
             result.IsAnonymous,
             result.Country,
             result.ClientId,
-            null);
+            null,
+            result.StatusCode);
     }
 
     public async Task<SpotifyLibrespotPlaylistResult> GetLibrespotPlaylistAsync(
@@ -2118,7 +2120,8 @@ public sealed class SpotifyBlobService : IAsyncDisposable
         bool? IsAnonymous,
         string? Country,
         string? ClientId,
-        string? Error);
+        string? Error,
+        int? StatusCode);
     public sealed record SpotifyLibrespotItemFailure(string Id, string Error);
     public sealed record SpotifyLibrespotPlaylistResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);
     public sealed record SpotifyLibrespotTracksResult(string? PayloadJson, string? Error, bool IsPartial = false, IReadOnlyList<SpotifyLibrespotItemFailure>? Failures = null);

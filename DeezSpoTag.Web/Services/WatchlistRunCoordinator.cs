@@ -103,30 +103,120 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Playlist watch service started.");
-        await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
-        await RecoverCoordinatorStateAsync(stoppingToken);
-        UpdateRuntimeHealth(health => health with { IsRunning = false });
-
-        var wakeReason = WatchlistWakeReason.ScheduledRefresh;
-        while (!stoppingToken.IsCancellationRequested)
+        var pathfinder = _serviceProvider.GetService<SpotifyPathfinderMetadataClient>();
+        if (pathfinder is not null)
         {
-            await RunTriggeredOnceAsync(wakeReason, stoppingToken);
+            pathfinder.AuthenticationRecovered += HandleSpotifyAuthenticationRecoveredAsync;
+        }
 
-            try
+        try
+        {
+            await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+            await RecoverCoordinatorStateAsync(stoppingToken);
+            UpdateRuntimeHealth(health => health with { IsRunning = false });
+
+            var wakeReason = WatchlistWakeReason.ScheduledRefresh;
+            while (!stoppingToken.IsCancellationRequested)
             {
-                var nextWake = await GetNextWakeAsync(stoppingToken);
-                wakeReason = await _runSignal.WaitAsync(
-                    nextWake.Delay,
-                    stoppingToken,
-                    nextWake.Reason);
+                await RunTriggeredOnceAsync(wakeReason, stoppingToken);
+
+                try
+                {
+                    var nextWake = await GetNextWakeAsync(stoppingToken);
+                    wakeReason = await _runSignal.WaitAsync(
+                        nextWake.Delay,
+                        stoppingToken,
+                        nextWake.Reason);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
-            catch (OperationCanceledException)
+        }
+        finally
+        {
+            if (pathfinder is not null)
             {
-                break;
+                pathfinder.AuthenticationRecovered -= HandleSpotifyAuthenticationRecoveredAsync;
             }
         }
 
         _logger.LogInformation("Playlist watch service stopped.");
+    }
+
+    private async Task HandleSpotifyAuthenticationRecoveredAsync(
+        SpotifyPathfinderMetadataClient.PathfinderAuthRecovery recovery,
+        CancellationToken cancellationToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
+        if (!repository.IsConfigured)
+        {
+            return;
+        }
+
+        var reconciler = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
+        await repository.UpsertWatchlistSourceCircuitStateAsync(
+            new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                PlaylistWatchType,
+                "spotify",
+                IsOpen: false,
+                OpenUntilUtc: null,
+                Reason: null,
+                Fingerprint: null,
+                FailureCount: 0),
+            cancellationToken);
+
+        var recovered = 0;
+        var playlists = await repository.GetPlaylistWatchlistAsync(cancellationToken);
+        foreach (var playlist in playlists.Where(IsRecoverableSpotifyAuthenticationFailure))
+        {
+            await reconciler.UpdatePlaylistStateAsync(
+                playlist.Source,
+                playlist.SourceId,
+                playlist.TrackCount,
+                playlist.SnapshotId,
+                WatchlistPlaylistState.Pending,
+                lastRunMessage: null,
+                nextAttemptUtc: null,
+                consecutiveFailures: 0,
+                cancellationToken: cancellationToken,
+                touchLastChecked: false);
+            ResetPlaylistRuntimeState(playlist.Source, playlist.SourceId);
+            await repository.EnqueueWatchlistReconciliationRequestAsync(
+                PlaylistKind,
+                playlist.Source,
+                playlist.SourceId,
+                cancellationToken);
+            recovered++;
+        }
+
+        if (recovered > 0)
+        {
+            _logger.LogInformation(
+                "Spotify authentication recovered; cleared {PlaylistCount} stale playlist auth states and requested reconciliation. Previous code={FailureCode}, incident={IncidentId}.",
+                recovered,
+                recovery.RecoveredFailureCode ?? "unknown",
+                recovery.RecoveredIncidentId ?? "unknown");
+            _runSignal.Request(WatchlistWakeReason.Reconciliation);
+        }
+    }
+
+    internal static bool IsRecoverableSpotifyAuthenticationFailure(PlaylistWatchlistDto playlist)
+    {
+        if (!string.Equals(NormalizeSource(playlist.Source), "spotify", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var status = (playlist.LastRunStatus ?? string.Empty).Trim().ToLowerInvariant();
+        if (status is not ("source_failure" or "circuit_open" or "backoff"))
+        {
+            return false;
+        }
+
+        return (playlist.LastRunMessage ?? string.Empty).Contains("spotify_auth_", StringComparison.OrdinalIgnoreCase);
     }
 
     private TimeSpan GetWatchInterval()
@@ -1123,7 +1213,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
 
             var playlistResult = execution.PlaylistResult;
-            if (playlistResult is { SystemicFailures: > 0 } systemicFailureResult)
+            if (playlistResult is { } systemicFailureResult && ShouldRecordSystemicFailure(systemicFailureResult))
             {
                 await OpenSourceCircuitAsync(
                     repository,
@@ -1723,6 +1813,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         string watchType = PlaylistWatchType)
     {
         var existing = await repository.GetWatchlistSourceCircuitStateAsync(watchType, source, cancellationToken);
+        if (IsSpotifyAuthenticationIncidentFingerprint(fingerprint)
+            && string.Equals(existing?.Fingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            return;
+        }
         var failureCount = Math.Max(0, existing?.FailureCount ?? 0) + 1;
         var isOpen = failureCount >= SourceCircuitFailureThreshold;
         var openUntilUtc = isOpen
@@ -1767,6 +1862,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                || normalized.Contains("http 503", StringComparison.Ordinal)
                || normalized.Contains("http 504", StringComparison.Ordinal);
     }
+
+    internal static bool ShouldRecordSystemicFailure(PlaylistReconciliationResult result)
+        => result.SystemicFailures > 0 && result.FailureIsIncidentOrigin;
+
+    private static bool IsSpotifyAuthenticationIncidentFingerprint(string? fingerprint)
+        => !string.IsNullOrWhiteSpace(fingerprint)
+           && fingerprint.StartsWith("spotify_auth_", StringComparison.OrdinalIgnoreCase)
+           && fingerprint.Contains(':', StringComparison.Ordinal);
 
     private WatchItemEligibility GetEligibility(WatchItem item, DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings)
     {

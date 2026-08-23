@@ -210,6 +210,130 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
+    public void SystemicAuthBackoffObserver_DoesNotCountAsAnotherIncident()
+    {
+        var observer = new PlaylistReconciliationResult(
+            false,
+            "auth observer",
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            null,
+            SystemicFailures: 1,
+            FailureFingerprint: "spotify_auth_client_token_failed:incident-1",
+            FailureIsIncidentOrigin: false);
+        var origin = observer with { FailureIsIncidentOrigin = true };
+
+        Assert.False(WatchlistRunCoordinator.ShouldRecordSystemicFailure(observer));
+        Assert.True(WatchlistRunCoordinator.ShouldRecordSystemicFailure(origin));
+    }
+
+    [Fact]
+    public async Task SourceCircuit_CountsOneFingerprintOnce_AndSeparateIncidentsIndependently()
+    {
+        await InvokeOpenSourceCircuitAsync("spotify", "spotify_auth_client_token_failed:incident-1");
+        await InvokeOpenSourceCircuitAsync("spotify", "spotify_auth_client_token_failed:incident-1");
+
+        var first = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "spotify");
+        Assert.NotNull(first);
+        Assert.Equal(1, first!.FailureCount);
+        Assert.False(first.IsOpen);
+
+        await InvokeOpenSourceCircuitAsync("spotify", "spotify_auth_client_token_failed:incident-2");
+
+        var second = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "spotify");
+        Assert.NotNull(second);
+        Assert.Equal(2, second!.FailureCount);
+        Assert.True(second.IsOpen);
+    }
+
+    [Fact]
+    public async Task SourceCircuit_DoesNotDeduplicateUnrelatedRepeatedFailures()
+    {
+        await InvokeOpenSourceCircuitAsync("spotify", "spotify_rate_limited");
+        await InvokeOpenSourceCircuitAsync("spotify", "spotify_rate_limited");
+
+        var state = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "spotify");
+        Assert.NotNull(state);
+        Assert.Equal(2, state!.FailureCount);
+        Assert.True(state.IsOpen);
+    }
+
+    [Fact]
+    public async Task SpotifyAuthRecovery_ClearsOnlyAuthFailures_AndQueuesImmediateReconciliation()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "auth-failed",
+            new PlaylistWatchlistMetadataInput("Auth failed", null, null, 10));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "rate-limited",
+            new PlaylistWatchlistMetadataInput("Rate limited", null, null, 20));
+        var stateService = new WatchlistStateService(_repository);
+        await stateService.TransitionPlaylistAsync(
+            new WatchlistPlaylistStateTransition(
+                "spotify",
+                "auth-failed",
+                WatchlistPlaylistState.CircuitOpen,
+                "Playlist source failed (spotify_auth_client_token_failed); the previous valid snapshot was preserved.",
+                10,
+                "snapshot-auth",
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                2,
+                TouchLastChecked: false),
+            CancellationToken.None);
+        await stateService.TransitionPlaylistAsync(
+            new WatchlistPlaylistStateTransition(
+                "spotify",
+                "rate-limited",
+                WatchlistPlaylistState.SourceFailure,
+                "Playlist source failed (spotify_rate_limited); the previous valid snapshot was preserved.",
+                20,
+                "snapshot-rate",
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                1,
+                TouchLastChecked: false),
+            CancellationToken.None);
+        await _repository.UpsertWatchlistSourceCircuitStateAsync(
+            new LibraryRepository.WatchlistSourceCircuitStateUpsertInput(
+                "playlist",
+                "spotify",
+                IsOpen: true,
+                OpenUntilUtc: DateTimeOffset.UtcNow.AddMinutes(5),
+                Reason: "auth failed",
+                Fingerprint: "spotify_auth_client_token_failed:incident-1",
+                FailureCount: 2));
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeSpotifyAuthRecoveryAsync(
+            hosted,
+            new SpotifyPathfinderMetadataClient.PathfinderAuthRecovery(
+                "incident-1",
+                "spotify_auth_client_token_failed"));
+
+        var recovered = await _repository.GetPlaylistWatchStateAsync("spotify", "auth-failed");
+        var unrelated = await _repository.GetPlaylistWatchStateAsync("spotify", "rate-limited");
+        var circuit = await _repository.GetWatchlistSourceCircuitStateAsync("playlist", "spotify");
+        Assert.NotNull(recovered);
+        Assert.Equal("pending", recovered!.LastRunStatus);
+        Assert.Null(recovered.LastRunMessage);
+        Assert.Null(recovered.NextAttemptUtc);
+        Assert.Equal(0, recovered.ConsecutiveFailures);
+        Assert.NotNull(unrelated);
+        Assert.Equal("source_failure", unrelated!.LastRunStatus);
+        Assert.Contains("spotify_rate_limited", unrelated.LastRunMessage, StringComparison.Ordinal);
+        Assert.NotNull(circuit);
+        Assert.False(circuit!.IsOpen);
+        Assert.Equal(0, circuit.FailureCount);
+        Assert.True(await _repository.GetWatchlistReconciliationRequestCountAsync() > 0);
+    }
+
+    [Fact]
     public async Task RunOnce_DoesNotDeferAdmissionWhenDownloadPipelineIsBusy()
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-queue-gate", new PlaylistWatchlistMetadataInput("Queue Gate", null, null, null));
@@ -1113,6 +1237,40 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         var result = method!.Invoke(hosted, new object[] { CancellationToken.None });
+        Assert.NotNull(result);
+        await (Task)result!;
+    }
+
+    private async Task InvokeOpenSourceCircuitAsync(string source, string fingerprint)
+    {
+        var method = typeof(WatchlistRunCoordinator).GetMethod(
+            "OpenSourceCircuitAsync",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = method!.Invoke(
+            null,
+            new object?[]
+            {
+                _repository,
+                source,
+                fingerprint,
+                "test failure",
+                CancellationToken.None,
+                "playlist"
+            });
+        Assert.NotNull(result);
+        await (Task)result!;
+    }
+
+    private static async Task InvokeSpotifyAuthRecoveryAsync(
+        WatchlistRunCoordinator hosted,
+        SpotifyPathfinderMetadataClient.PathfinderAuthRecovery recovery)
+    {
+        var method = typeof(WatchlistRunCoordinator).GetMethod(
+            "HandleSpotifyAuthenticationRecoveredAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = method!.Invoke(hosted, new object[] { recovery, CancellationToken.None });
         Assert.NotNull(result);
         await (Task)result!;
     }
