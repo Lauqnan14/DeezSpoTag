@@ -376,6 +376,43 @@ public sealed class AutoTagRunnerMultiArtistHandlingTests
         Assert.Null(reason);
     }
 
+    [Theory]
+    [InlineData("X.O", "XO")]
+    [InlineData("O.B.I", "OBI")]
+    public void EvaluateGlobalMismatchGuard_RejectsDottedInitialArtistCollapseBeforeWrite(
+        string sourceArtist,
+        string incomingArtist)
+    {
+        var source = new AutoTagAudioInfo
+        {
+            Title = "Mammi",
+            Artist = sourceArtist,
+            Artists = new List<string> { sourceArtist },
+            HasEmbeddedTitle = true,
+            HasEmbeddedArtist = true
+        };
+        var match = new AutoTagMatchResult
+        {
+            Track = new AutoTagTrack
+            {
+                Title = "Mammi",
+                Artists = new List<string> { incomingArtist },
+                AlbumArtists = new List<string> { incomingArtist }
+            }
+        };
+
+        var reason = (string?)EvaluateGlobalMismatchGuardMethod.Invoke(
+            null,
+            new object?[]
+            {
+                source,
+                match,
+                new AutoTagMatchingConfig { Strictness = 0.7 }
+            });
+
+        Assert.Equal("match rejected by quality guard (artist mismatch)", reason);
+    }
+
     [Fact]
     public void EvaluateGlobalMismatchGuard_RejectsWrongShazamFingerprintBeforeWrite()
     {

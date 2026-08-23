@@ -1891,11 +1891,18 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         IReadOnlyList<string> incomingArtists,
         double strictness)
     {
-        var normalizedSource = SplitArtistCredits(sourceArtists)
+        var sourceCredits = SplitArtistCredits(sourceArtists);
+        var incomingCredits = SplitArtistCredits(incomingArtists);
+        if (HasDottedInitialArtistCollapse(sourceCredits, incomingCredits))
+        {
+            return false;
+        }
+
+        var normalizedSource = sourceCredits
             .Select(NormalizeArtistIdentity)
             .Where(artist => !string.IsNullOrWhiteSpace(artist))
             .ToList();
-        var normalizedIncoming = SplitArtistCredits(incomingArtists)
+        var normalizedIncoming = incomingCredits
             .Select(NormalizeArtistIdentity)
             .Where(artist => !string.IsNullOrWhiteSpace(artist))
             .ToList();
@@ -1914,6 +1921,41 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         var incomingJoined = string.Join(" ", normalizedIncoming);
         var similarity = AutoTagSimilarity.ComputeScore(sourceJoined, incomingJoined);
         return similarity >= Math.Clamp(strictness + 0.15d, 0.80d, 0.98d);
+    }
+
+    private static bool HasDottedInitialArtistCollapse(IReadOnlyList<string> sourceArtists, IReadOnlyList<string> incomingArtists)
+    {
+        foreach (var sourceArtist in sourceArtists)
+        {
+            foreach (var incomingArtist in incomingArtists)
+            {
+                if (!string.Equals(
+                        NormalizeArtistIdentity(sourceArtist),
+                        NormalizeArtistIdentity(incomingArtist),
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (IsDottedInitialArtist(sourceArtist) != IsDottedInitialArtist(incomingArtist))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsDottedInitialArtist(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var compact = Regex.Replace(value.Trim(), @"\s+", string.Empty, RegexOptions.None, RegexTimeout);
+        return Regex.IsMatch(compact, @"^\p{L}(?:\.\p{L})+\.?$", RegexOptions.None, RegexTimeout);
     }
 
     private static string NormalizeArtistIdentity(string value)

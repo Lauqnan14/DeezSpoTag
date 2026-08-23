@@ -10,7 +10,7 @@ public static class ArtistNameNormalizer
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly Regex CollaborationSplitRegex = new(
-        @"\s*(?:\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b|&|,|;|/|\+)\s*",
+        @"(?:\s*(?:\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|&|,|;|/|\+)\s*|\s+\bx\b\s+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled,
         RegexTimeout);
 
