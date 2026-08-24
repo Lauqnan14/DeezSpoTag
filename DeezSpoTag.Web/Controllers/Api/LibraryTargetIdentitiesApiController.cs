@@ -99,8 +99,7 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
             return BadRequest(new { error = "No connected target server was selected." });
         }
 
-        var results = new List<TargetIdentityRefreshResult>();
-        foreach (var service in runnable)
+        var resultTasks = runnable.Select(async service =>
         {
             cancellationToken.ThrowIfCancellationRequested();
             var deleted = 0;
@@ -122,28 +121,36 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
                         resetCoverage.FirstOrDefault() ?? new TargetServerIdentityCoverageDto(service, 0, 0, 0));
                 }
 
-                await _refreshService.UpdateTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
+                if (resetFirst)
+                {
+                    await _refreshService.RebuildTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
+                }
+                else
+                {
+                    await _refreshService.UpdateTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
+                }
                 var coverage = await _repository.GetTargetServerIdentityCoverageAsync(
                     [service],
                     request?.FolderId,
                     cancellationToken);
-                results.Add(new TargetIdentityRefreshResult(
+                return new TargetIdentityRefreshResult(
                     service,
                     Success: true,
                     deleted,
                     coverage.FirstOrDefault(),
-                    Error: null));
+                    Error: null);
             }
             catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
             {
-                results.Add(new TargetIdentityRefreshResult(
+                return new TargetIdentityRefreshResult(
                     service,
                     Success: false,
                     deleted,
                     Coverage: null,
-                    ex.Message));
+                    ex.Message);
             }
-        }
+        });
+        var results = (await Task.WhenAll(resultTasks)).ToList();
 
         var refreshedServices = results.Count(static result => result.Success);
 

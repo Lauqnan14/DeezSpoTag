@@ -121,12 +121,15 @@ public sealed class LibraryScanTriggerGuardrailTests
         var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
 
         Assert.Contains("UpdateTrackMetadataIndexAsync(service, request?.FolderId", controller, StringComparison.Ordinal);
+        Assert.Contains("RebuildTrackMetadataIndexAsync(service, request?.FolderId", controller, StringComparison.Ordinal);
+        Assert.Contains("Task.WhenAll(resultTasks)", controller, StringComparison.Ordinal);
         Assert.Contains("GetTargetServerIdentityLocalTracksAsync", repository, StringComparison.Ordinal);
         Assert.Contains("TargetServerIdentityLocalTrackDto", repository, StringComparison.Ordinal);
         Assert.Contains("TargetIdentityLocalIndex.Build", service, StringComparison.Ordinal);
         Assert.Contains("localIndex.MissingTrackIds.Count == 0", service, StringComparison.Ordinal);
         Assert.Contains("TryResolveByPath", service, StringComparison.Ordinal);
         Assert.Contains("ResolveMissingTargetIdentitiesBySearchAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("TargetIdentitySearchLimit", service, StringComparison.Ordinal);
         Assert.Contains("IngestTargetTracksWithMetadataAsync", service, StringComparison.Ordinal);
         Assert.Contains("IngestTargetTrackMetadataAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("GetTrackIdsByFilePathsAsync(\n            tracks.Select", service.Replace("\r\n", "\n"), StringComparison.Ordinal);
@@ -422,6 +425,11 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("EnqueueTargetAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RequestTargetLibraryRefreshAsync", source, StringComparison.Ordinal);
         Assert.Contains("job.DestinationFolderId", outbox, StringComparison.Ordinal);
+        Assert.Contains("job.RequestedTrackIds", outbox, StringComparison.Ordinal);
+        Assert.Contains("unresolvedPaths.Count > 0", outbox, StringComparison.Ordinal);
+        Assert.Contains("job.AttemptCount == 0", outbox, StringComparison.Ordinal);
+        Assert.Contains("scan submitted; waiting for requested track IDs", outbox, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddMinutes(delayMinutes)", outbox, StringComparison.Ordinal);
     }
 
     [Fact]

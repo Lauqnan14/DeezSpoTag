@@ -12585,6 +12585,7 @@ WHERE lower(status)='completed' AND datetime(updated_at) < datetime(@cutoffUtc);
         long destinationFolderId,
         string targetService,
         IReadOnlyCollection<string> changedFilePaths,
+        IReadOnlyCollection<long> requestedTrackIds,
         TimeSpan? coalescingDelay = null,
         CancellationToken cancellationToken = default)
     {
@@ -12594,6 +12595,7 @@ WHERE lower(status)='completed' AND datetime(updated_at) < datetime(@cutoffUtc);
             .Select(static path => path.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var trackIds = requestedTrackIds.Where(static id => id > 0).Distinct().ToList();
         if (destinationFolderId <= 0
             || service is not ("plex" or "jellyfin" or "navidrome")
             || paths.Count == 0)
@@ -12604,19 +12606,21 @@ WHERE lower(status)='completed' AND datetime(updated_at) < datetime(@cutoffUtc);
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using (var read = new SqliteCommand(@"
-SELECT changed_file_paths_json
+SELECT changed_file_paths_json,requested_track_ids_json
 FROM media_server_refresh_outbox
 WHERE destination_folder_id=@destinationFolderId AND target_service=@targetService;", connection, transaction))
         {
             read.Parameters.AddWithValue("destinationFolderId", destinationFolderId);
             read.Parameters.AddWithValue("targetService", service);
-            var existingJson = await read.ExecuteScalarAsync(cancellationToken) as string;
-            if (!string.IsNullOrWhiteSpace(existingJson))
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
             {
                 try
                 {
-                    paths.AddRange(JsonSerializer.Deserialize<List<string>>(existingJson) ?? []);
+                    paths.AddRange(JsonSerializer.Deserialize<List<string>>(reader.GetString(0)) ?? []);
                     paths = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    trackIds.AddRange(JsonSerializer.Deserialize<List<long>>(reader.GetString(1)) ?? []);
+                    trackIds = trackIds.Where(static id => id > 0).Distinct().ToList();
                 }
                 catch (JsonException)
                 {
@@ -12627,10 +12631,11 @@ WHERE destination_folder_id=@destinationFolderId AND target_service=@targetServi
 
         await using var command = new SqliteCommand(@"
 INSERT INTO media_server_refresh_outbox
-    (destination_folder_id,target_service,changed_file_paths_json,status,attempt_count,next_attempt_utc)
-VALUES (@destinationFolderId,@targetService,@paths,'pending',0,@nextAttemptUtc)
+    (destination_folder_id,target_service,changed_file_paths_json,requested_track_ids_json,status,attempt_count,next_attempt_utc)
+VALUES (@destinationFolderId,@targetService,@paths,@trackIds,'pending',0,@nextAttemptUtc)
 ON CONFLICT(destination_folder_id,target_service) DO UPDATE SET
     changed_file_paths_json=excluded.changed_file_paths_json,
+    requested_track_ids_json=excluded.requested_track_ids_json,
     status='pending',
     attempt_count=0,
     next_attempt_utc=excluded.next_attempt_utc,
@@ -12641,6 +12646,7 @@ ON CONFLICT(destination_folder_id,target_service) DO UPDATE SET
         command.Parameters.AddWithValue("destinationFolderId", destinationFolderId);
         command.Parameters.AddWithValue("targetService", service);
         command.Parameters.AddWithValue("paths", JsonSerializer.Serialize(paths));
+        command.Parameters.AddWithValue("trackIds", JsonSerializer.Serialize(trackIds));
         command.Parameters.AddWithValue(
             "nextAttemptUtc",
             DateTimeOffset.UtcNow.Add(coalescingDelay ?? TimeSpan.FromSeconds(5)).ToString("O"));
@@ -12666,7 +12672,7 @@ WHERE id IN (
        OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'))
     ORDER BY next_attempt_utc,id LIMIT @limit
 )
-RETURNING id,destination_folder_id,target_service,changed_file_paths_json,status,attempt_count,
+RETURNING id,destination_folder_id,target_service,changed_file_paths_json,requested_track_ids_json,status,attempt_count,
           next_attempt_utc,lease_owner,lease_until_utc,last_error,updated_at;", connection, transaction);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner.Trim());
         command.Parameters.AddWithValue("leaseUntilUtc", (DateTimeOffset.UtcNow + lease).ToString("O"));
@@ -12680,13 +12686,14 @@ RETURNING id,destination_folder_id,target_service,changed_file_paths_json,status
                 reader.GetInt64(1),
                 reader.GetString(2),
                 JsonSerializer.Deserialize<List<string>>(reader.GetString(3)) ?? [],
-                reader.GetString(4),
-                reader.GetInt32(5),
-                ParseDateTimeOffsetInvariant(reader.GetString(6)),
-                reader.IsDBNull(7) ? null : reader.GetString(7),
-                reader.IsDBNull(8) ? null : ParseDateTimeOffsetInvariant(reader.GetString(8)),
-                reader.IsDBNull(9) ? null : reader.GetString(9),
-                ParseDateTimeOffsetInvariant(reader.GetString(10))));
+                JsonSerializer.Deserialize<List<long>>(reader.GetString(4)) ?? [],
+                reader.GetString(5),
+                reader.GetInt32(6),
+                ParseDateTimeOffsetInvariant(reader.GetString(7)),
+                reader.IsDBNull(8) ? null : reader.GetString(8),
+                reader.IsDBNull(9) ? null : ParseDateTimeOffsetInvariant(reader.GetString(9)),
+                reader.IsDBNull(10) ? null : reader.GetString(10),
+                ParseDateTimeOffsetInvariant(reader.GetString(11))));
         }
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
@@ -12701,7 +12708,7 @@ RETURNING id,destination_folder_id,target_service,changed_file_paths_json,status
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
 UPDATE media_server_refresh_outbox
-SET status='completed',changed_file_paths_json='[]',lease_owner=NULL,lease_until_utc=NULL,
+SET status='completed',changed_file_paths_json='[]',requested_track_ids_json='[]',lease_owner=NULL,lease_until_utc=NULL,
     last_error=NULL,updated_at=CURRENT_TIMESTAMP
 WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         command.Parameters.AddWithValue("id", id);

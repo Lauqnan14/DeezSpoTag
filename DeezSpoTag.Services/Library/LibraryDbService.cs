@@ -614,6 +614,7 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
     destination_folder_id INTEGER NOT NULL,
     target_service TEXT NOT NULL,
     changed_file_paths_json TEXT NOT NULL,
+    requested_track_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending',
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -624,6 +625,7 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (destination_folder_id, target_service)
 );", cancellationToken);
+        await EnsureColumnAsync(connection, MediaServerRefreshOutboxTable, "requested_track_ids_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureIndexAsync(connection, "idx_media_server_refresh_outbox_due", MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
         await MigrateAndDropWatchlistSharedIdentityAsync(connection, cancellationToken);
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);

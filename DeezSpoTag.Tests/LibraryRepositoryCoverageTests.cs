@@ -171,9 +171,9 @@ ORDER BY service;";
     [Fact]
     public async Task MediaServerRefreshOutbox_CoalescesPathsPerLibraryAndServer()
     {
-        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/a.flac"], TimeSpan.Zero);
-        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/b.flac", "/music/a.flac"], TimeSpan.Zero);
-        await _repository.EnqueueMediaServerRefreshAsync(12, "jellyfin", ["/music/a.flac"], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/a.flac"], [1], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "plex", ["/music/b.flac", "/music/a.flac"], [2, 1], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(12, "jellyfin", ["/music/a.flac"], [1], TimeSpan.Zero);
 
         var claimed = await _repository.ClaimDueMediaServerRefreshesAsync(
             10,
@@ -183,14 +183,15 @@ ORDER BY service;";
         Assert.Equal(2, claimed.Count);
         var plex = Assert.Single(claimed, row => row.TargetService == "plex");
         Assert.Equal(["/music/b.flac", "/music/a.flac"], plex.ChangedFilePaths.OrderDescending());
+        Assert.Equal([1L, 2L], plex.RequestedTrackIds.Order());
         Assert.Single(claimed, row => row.TargetService == "jellyfin");
     }
 
     [Fact]
     public async Task MediaServerRefreshOutbox_IsDurableAndServerFailuresAreIndependent()
     {
-        await _repository.EnqueueMediaServerRefreshAsync(25, "plex", ["/music/song.flac"], TimeSpan.Zero);
-        await _repository.EnqueueMediaServerRefreshAsync(25, "navidrome", ["/music/song.flac"], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(25, "plex", ["/music/song.flac"], [1], TimeSpan.Zero);
+        await _repository.EnqueueMediaServerRefreshAsync(25, "navidrome", ["/music/song.flac"], [1], TimeSpan.Zero);
 
         var restartedRepository = new LibraryRepository(
             _configuration,

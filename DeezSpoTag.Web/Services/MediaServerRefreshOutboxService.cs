@@ -4,6 +4,11 @@ namespace DeezSpoTag.Web.Services;
 
 public sealed class MediaServerRefreshOutboxService : BackgroundService
 {
+    private static readonly HashSet<string> AudioExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".flac", ".wav", ".aiff", ".aif", ".alac", ".m4a", ".m4b", ".mp4",
+        ".aac", ".mp3", ".wma", ".ogg", ".opus", ".oga", ".ape", ".wv", ".dsf", ".dff"
+    };
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(5);
     private readonly LibraryRepository _repository;
@@ -58,10 +63,31 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             return;
         }
 
+        var audioPaths = changedFilePaths
+            .Where(path => !string.IsNullOrWhiteSpace(path) && AudioExtensions.Contains(Path.GetExtension(path)))
+            .Select(static path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (audioPaths.Count == 0)
+        {
+            return;
+        }
+
+        var trackIds = new HashSet<long>();
+        foreach (var path in audioPaths)
+        {
+            var trackId = await _repository.GetTrackIdForFilePathAsync(path, cancellationToken);
+            if (trackId is > 0)
+            {
+                trackIds.Add(trackId.Value);
+            }
+        }
+
         await _repository.EnqueueMediaServerRefreshAsync(
             destinationFolderId,
             targetService,
-            changedFilePaths,
+            audioPaths,
+            trackIds,
             cancellationToken: cancellationToken);
         if (_wakeSignal.CurrentCount == 0)
         {
@@ -129,25 +155,25 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 return;
             }
 
-            var refreshed = await _refreshService.RequestLibraryRefreshAsync(
-                job.TargetService,
-                cancellationToken);
-            if (refreshed)
+            if (job.AttemptCount == 0)
             {
-                if (await RefreshAndVerifyRequestedIdentitiesAsync(job, cancellationToken))
+                var submitted = await _refreshService.RequestLibraryRefreshAsync(
+                    job.TargetService,
+                    cancellationToken);
+                if (!submitted)
                 {
-                    await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                    await RetryAsync(job, $"{job.TargetService} rejected the library refresh request.", cancellationToken);
                     return;
                 }
 
                 await RetryAsync(
                     job,
-                    $"{job.TargetService} scan completed, but one or more requested track IDs are still unavailable.",
+                    $"{job.TargetService} scan submitted; waiting for requested track IDs.",
                     cancellationToken);
                 return;
             }
 
-            await RetryAsync(job, $"{job.TargetService} rejected the library refresh request.", cancellationToken);
+            await RetryAsync(job, $"{job.TargetService} is still indexing one or more requested tracks.", cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -168,11 +194,8 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         MediaServerRefreshOutboxDto job,
         CancellationToken cancellationToken)
     {
-        await _refreshService.UpdateTrackMetadataIndexAsync(
-            job.TargetService,
-            job.DestinationFolderId,
-            cancellationToken);
-        var trackIds = new HashSet<long>();
+        var trackIds = job.RequestedTrackIds.Where(static id => id > 0).ToHashSet();
+        var unresolvedPaths = new List<string>();
         foreach (var filePath in job.ChangedFilePaths)
         {
             var trackId = await _repository.GetTrackIdForFilePathAsync(filePath, cancellationToken);
@@ -180,12 +203,22 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             {
                 trackIds.Add(trackId.Value);
             }
+            else
+            {
+                unresolvedPaths.Add(filePath);
+            }
         }
 
-        if (trackIds.Count == 0)
+        if (unresolvedPaths.Count > 0 || trackIds.Count == 0)
         {
             return false;
         }
+
+        await _refreshService.UpdateTrackMetadataIndexAsync(
+            job.TargetService,
+            job.DestinationFolderId,
+            trackIds,
+            cancellationToken);
 
         var mapped = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
             job.TargetService,
@@ -200,12 +233,12 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         CancellationToken cancellationToken)
     {
         var attempt = job.AttemptCount + 1;
-        var delayMinutes = Math.Min(30, Math.Pow(2, Math.Min(attempt - 1, 5)));
+        var delaySeconds = attempt == 1 ? 5 : Math.Min(30, attempt * 5);
         await _repository.RetryMediaServerRefreshAsync(
             job.Id,
             _leaseOwner,
             attempt,
-            DateTimeOffset.UtcNow.AddMinutes(delayMinutes),
+            DateTimeOffset.UtcNow.AddSeconds(delaySeconds),
             error,
             cancellationToken);
     }

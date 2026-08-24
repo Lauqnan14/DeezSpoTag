@@ -786,6 +786,7 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
     destination_folder_id INTEGER NOT NULL,
     target_service TEXT NOT NULL,
     changed_file_paths_json TEXT NOT NULL,
+    requested_track_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'pending',
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

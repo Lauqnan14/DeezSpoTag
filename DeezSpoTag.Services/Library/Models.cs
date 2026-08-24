@@ -1012,6 +1012,7 @@ public sealed record MediaServerRefreshOutboxDto(
     long DestinationFolderId,
     string TargetService,
     IReadOnlyList<string> ChangedFilePaths,
+    IReadOnlyList<long> RequestedTrackIds,
     string Status,
     int AttemptCount,
     DateTimeOffset NextAttemptUtc,
