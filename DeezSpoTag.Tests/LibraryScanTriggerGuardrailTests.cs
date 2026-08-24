@@ -77,7 +77,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("GetLibraryTracksAsync", source, StringComparison.Ordinal);
         Assert.Contains("GetAudioTracksAsync", source, StringComparison.Ordinal);
         Assert.Contains("IngestConfiguredTargetIdentitiesAsync", source, StringComparison.Ordinal);
-        Assert.Contains("PromoteSharedIdentitiesFromMetadataAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("PromoteSharedIdentitiesFromMetadataAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -386,18 +386,14 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("RefreshWatchlistIdentityIndexAsync", coordinator, StringComparison.Ordinal);
         Assert.Contains("GetLocalScanFileStatesAsync", coordinator, StringComparison.Ordinal);
         Assert.Contains("IngestAndVerifyAsync", coordinator, StringComparison.Ordinal);
-        Assert.Contains("IngestConfiguredTargetIdentitiesAsync", coordinator, StringComparison.Ordinal);
+        Assert.DoesNotContain("IngestConfiguredTargetIdentitiesAsync", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("RunChangedFoldersAsync", coordinator, StringComparison.Ordinal);
         Assert.True(
             coordinator.IndexOf("await RefreshWatchlistIdentityIndexAsync(", StringComparison.Ordinal)
             < coordinator.IndexOf("var playlistItems = BuildPlaylistWatchItems", StringComparison.Ordinal),
             "The canonical library index must be refreshed before watchlist missing-track selection.");
         var identityIndexBody = ExtractMethodBody(coordinator, "private async Task RefreshWatchlistIdentityIndexAsync");
-        Assert.Contains("IngestConfiguredTargetIdentitiesAsync", identityIndexBody, StringComparison.Ordinal);
-        Assert.True(
-            identityIndexBody.IndexOf("IngestAndVerifyAsync", StringComparison.Ordinal)
-            < identityIndexBody.IndexOf("IngestConfiguredTargetIdentitiesAsync", StringComparison.Ordinal),
-            "Local library files must be ingested before target-server identities are mapped onto them.");
+        Assert.DoesNotContain("IngestConfiguredTargetIdentitiesAsync", identityIndexBody, StringComparison.Ordinal);
         Assert.Contains("?? BuildOutboxQueueItem(work.QueueUuid, work.PayloadJson)", postDownload, StringComparison.Ordinal);
         Assert.DoesNotContain("Queue item is not currently available", postDownload, StringComparison.Ordinal);
     }
@@ -417,17 +413,15 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
-    public void PlaylistSync_IngestsTargetIdentitiesBeforeRequestingAScan()
+    public void PlaylistSync_QueuesOnlyMissingTargetIdentitiesThroughTheOutbox()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
-        var methodBody = ExtractMethodBody(source, "private async Task RequestTargetLibraryRefreshAsync");
+        var outbox = ReadSource("DeezSpoTag.Web", "Services", "MediaServerRefreshOutboxService.cs");
 
-        Assert.Contains("UpdateTrackMetadataIndexAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("RequestLibraryRefreshAsync", methodBody, StringComparison.Ordinal);
-        Assert.True(
-            methodBody.IndexOf("UpdateTrackMetadataIndexAsync", StringComparison.Ordinal)
-            < methodBody.IndexOf("RequestLibraryRefreshAsync", StringComparison.Ordinal),
-            "Existing target-server IDs must be ingested into DeezSpoTag before asking the server to scan.");
+        Assert.Contains("GetMediaServerIdentityRefreshFilesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("EnqueueTargetAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RequestTargetLibraryRefreshAsync", source, StringComparison.Ordinal);
+        Assert.Contains("job.DestinationFolderId", outbox, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -482,9 +476,9 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("PlexSequentialSearchFallbackLimit", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Skipped sequential Plex search", source, StringComparison.Ordinal);
         Assert.Contains("ResolveSharedTargetIdentitiesAsync", methodBody, StringComparison.Ordinal);
-        Assert.Contains("ResolvePlexRatingKeyAsync", methodBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolvePlexRatingKeyAsync", methodBody, StringComparison.Ordinal);
         Assert.Contains("GetMediaServerItemIdsByTrackIdsAsync", resolver, StringComparison.Ordinal);
-        Assert.Contains("UpsertMediaServerTrackMetadataAsync", resolver, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertMediaServerTrackMetadataAsync", resolver, StringComparison.Ordinal);
         Assert.Contains("SelectBestMediaServerMatch", source, StringComparison.Ordinal);
         Assert.DoesNotContain("UpsertPlexTrackMetadataAsync", source, StringComparison.Ordinal);
     }

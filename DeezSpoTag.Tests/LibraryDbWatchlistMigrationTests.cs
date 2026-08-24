@@ -138,6 +138,48 @@ SELECT spotify_id, deezer_id FROM artist_watchlist WHERE artist_id=1;";
     }
 
     [Fact]
+    public async Task EnsureSchema_MigratesResolvedLegacyIdentityRowsAndDropsDuplicateLedger()
+    {
+        var dbService = new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance);
+        await dbService.EnsureSchemaAsync();
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+CREATE TABLE watchlist_shared_identity (
+    local_track_id INTEGER NOT NULL,
+    target_service TEXT NOT NULL,
+    target_item_id TEXT,
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(local_track_id,target_service)
+);
+INSERT INTO watchlist_shared_identity(local_track_id,target_service,target_item_id,status)
+VALUES (701,'plex','plex-701','resolved'),(702,'plex',NULL,'pending_refresh');";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await dbService.EnsureSchemaAsync();
+
+        await using var verify = new SqliteConnection($"Data Source={_dbPath}");
+        await verify.OpenAsync();
+        Assert.False(await TableExistsAsync(verify, "watchlist_shared_identity"));
+        await using var migrated = verify.CreateCommand();
+        migrated.CommandText = @"
+SELECT track_id,service,target_item_id
+FROM media_server_track_metadata
+WHERE track_id IN (701,702)
+ORDER BY track_id;";
+        await using var reader = await migrated.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(701, reader.GetInt64(0));
+        Assert.Equal("plex", reader.GetString(1));
+        Assert.Equal("plex-701", reader.GetString(2));
+        Assert.False(await reader.ReadAsync());
+    }
+
+    [Fact]
     public async Task EnsureSchema_AddsAndBackfillsWatchTrackUpdatedAt_ForLegacyDatabase()
     {
         await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))

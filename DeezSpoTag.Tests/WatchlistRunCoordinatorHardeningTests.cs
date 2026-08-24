@@ -760,9 +760,9 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Contains("IsPlaylistMembershipCatchUp", hostedSource, StringComparison.Ordinal);
         Assert.Contains("IsNeverCheckedPlaylist", hostedSource, StringComparison.Ordinal);
         Assert.Contains("neverCheckedItems", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("HasDueIdentityRetryPlaylistAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("GetPlaylistsDueForIdentityRetryAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("identityRetryOnly", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasDueIdentityRetryPlaylistAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetPlaylistsDueForIdentityRetryAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("identityRetryOnly", hostedSource, StringComparison.Ordinal);
         var loopStart = hostedSource.IndexOf("foreach (var activeItem in scheduledItems)", StringComparison.Ordinal);
         var loopEnd = hostedSource.IndexOf("private static async Task PersistPlaylistProgressAsync(", loopStart, StringComparison.Ordinal);
         var loopBody = hostedSource[loopStart..loopEnd];
@@ -1044,80 +1044,6 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Equal(WatchlistWakeReason.TargetSync, processingWake.Reason);
     }
 
-    [Fact]
-    public async Task GetNextWake_WakesSinglePlaylistSliceWhenIdentityRetryDue()
-    {
-        var settings = _settingsService.LoadSettings();
-        settings.WatchPollIntervalSeconds = 3600;
-        _settingsService.SaveSettings(settings);
-
-        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-identity-due", new PlaylistWatchlistMetadataInput("Identity Due", null, null, null));
-        await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-identity-quiet", new PlaylistWatchlistMetadataInput("Identity Quiet", null, null, null));
-        await ConfigurePlaylistDestinationAsync("unsupported", "pl-identity-due");
-        await ConfigurePlaylistDestinationAsync("unsupported", "pl-identity-quiet");
-        await _repository.UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                "unsupported",
-                "pl-identity-due",
-                null,
-                1,
-                null,
-                null,
-                DateTimeOffset.UtcNow,
-                "unchanged",
-                null,
-                null,
-                0,
-                "unchanged",
-                0,
-                1,
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddMinutes(45)));
-        await _repository.UpsertPlaylistWatchStateAsync(
-            new LibraryRepository.PlaylistWatchStateUpsertInput(
-                "unsupported",
-                "pl-identity-quiet",
-                null,
-                1,
-                null,
-                null,
-                DateTimeOffset.UtcNow,
-                "unchanged",
-                null,
-                null,
-                0,
-                "unchanged",
-                0,
-                1,
-                DateTimeOffset.UtcNow,
-                DateTimeOffset.UtcNow.AddMinutes(45)));
-        await _repository.AddPlaylistWatchTracksAsync(
-            "unsupported",
-            "pl-identity-due",
-            [new PlaylistWatchTrackInsert("track-1", "ISRCIDENTITY1")]);
-        await _repository.UpdatePlaylistWatchTrackVerificationAsync(
-            "unsupported",
-            "pl-identity-due",
-            new PlaylistWatchTrackVerification("track-1", 501, "identity_verified"));
-        await _repository.UpsertWatchlistSharedIdentityAsync(
-            new WatchlistSharedIdentityUpsertInput(
-                501,
-                "plex",
-                TargetItemId: null,
-                SharedIdentityResolver.StatusPendingRefresh,
-                "No target match found.",
-                AttemptCount: 1,
-                NextRetryUtc: DateTimeOffset.UtcNow.AddMinutes(-1)));
-
-        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
-        var wake = await InvokeGetNextWakeAsync(hosted);
-        Assert.Equal(TimeSpan.Zero, wake.Delay);
-        Assert.True(wake.Reason.HasFlag(WatchlistWakeReason.ScheduledRefresh));
-        Assert.False(wake.Reason == WatchlistWakeReason.TargetSync);
-
-        var due = await _repository.GetPlaylistsDueForIdentityRetryAsync();
-        Assert.Equal("pl-identity-due", Assert.Single(due).PlaylistId);
-    }
 
     [Fact]
     public void HeartbeatAndProgress_DoNotOverwriteCurrentPhase()

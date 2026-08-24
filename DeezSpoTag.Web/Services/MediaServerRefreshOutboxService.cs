@@ -35,14 +35,35 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         var services = await _refreshService.GetConfiguredServicesAsync();
         foreach (var service in services)
         {
-            await _repository.EnqueueMediaServerRefreshAsync(
-                destinationFolderId,
-                service,
-                changedFilePaths,
-                cancellationToken: cancellationToken);
+            await EnqueueTargetAsync(destinationFolderId, service, changedFilePaths, cancellationToken);
         }
 
         if (services.Count > 0 && _wakeSignal.CurrentCount == 0)
+        {
+            _wakeSignal.Release();
+        }
+    }
+
+    public async Task EnqueueTargetAsync(
+        long destinationFolderId,
+        string targetService,
+        IReadOnlyCollection<string> changedFilePaths,
+        CancellationToken cancellationToken)
+    {
+        if (!_repository.IsConfigured
+            || destinationFolderId <= 0
+            || string.IsNullOrWhiteSpace(targetService)
+            || changedFilePaths.Count == 0)
+        {
+            return;
+        }
+
+        await _repository.EnqueueMediaServerRefreshAsync(
+            destinationFolderId,
+            targetService,
+            changedFilePaths,
+            cancellationToken: cancellationToken);
+        if (_wakeSignal.CurrentCount == 0)
         {
             _wakeSignal.Release();
         }
@@ -102,13 +123,27 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
     {
         try
         {
+            if (await RefreshAndVerifyRequestedIdentitiesAsync(job, cancellationToken))
+            {
+                await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                return;
+            }
+
             var refreshed = await _refreshService.RequestLibraryRefreshAsync(
                 job.TargetService,
                 cancellationToken);
             if (refreshed)
             {
-                await _refreshService.UpdateTrackMetadataIndexAsync(job.TargetService, cancellationToken);
-                await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                if (await RefreshAndVerifyRequestedIdentitiesAsync(job, cancellationToken))
+                {
+                    await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                    return;
+                }
+
+                await RetryAsync(
+                    job,
+                    $"{job.TargetService} scan completed, but one or more requested track IDs are still unavailable.",
+                    cancellationToken);
                 return;
             }
 
@@ -127,6 +162,36 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
                 job.DestinationFolderId);
             await RetryAsync(job, ex.Message, cancellationToken);
         }
+    }
+
+    private async Task<bool> RefreshAndVerifyRequestedIdentitiesAsync(
+        MediaServerRefreshOutboxDto job,
+        CancellationToken cancellationToken)
+    {
+        await _refreshService.UpdateTrackMetadataIndexAsync(
+            job.TargetService,
+            job.DestinationFolderId,
+            cancellationToken);
+        var trackIds = new HashSet<long>();
+        foreach (var filePath in job.ChangedFilePaths)
+        {
+            var trackId = await _repository.GetTrackIdForFilePathAsync(filePath, cancellationToken);
+            if (trackId.HasValue && trackId.Value > 0)
+            {
+                trackIds.Add(trackId.Value);
+            }
+        }
+
+        if (trackIds.Count == 0)
+        {
+            return false;
+        }
+
+        var mapped = await _repository.GetMediaServerItemIdsByTrackIdsAsync(
+            job.TargetService,
+            trackIds.ToList(),
+            cancellationToken);
+        return trackIds.All(mapped.ContainsKey);
     }
 
     private async Task RetryAsync(

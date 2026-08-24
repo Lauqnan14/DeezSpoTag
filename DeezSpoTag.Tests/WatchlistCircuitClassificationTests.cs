@@ -28,7 +28,7 @@ public sealed class WatchlistCircuitClassificationTests
         Assert.DoesNotContain("repeated failures: {targetCircuit.Reason}", worker, StringComparison.Ordinal);
         Assert.DoesNotContain("HasNoTargetCoverage", worker, StringComparison.Ordinal);
         Assert.Contains("EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync", worker, StringComparison.Ordinal);
-        Assert.Contains("PlaylistSyncResultKind.IdentityGap or PlaylistSyncResultKind.NoLocalTracks", worker, StringComparison.Ordinal);
+        Assert.DoesNotContain("PlaylistSyncResultKind.IdentityGap or PlaylistSyncResultKind.NoLocalTracks", worker, StringComparison.Ordinal);
         Assert.Contains("SyncFailureClass.IdentityMiss", worker, StringComparison.Ordinal);
         Assert.Contains("deferWithoutBurningAttempts", worker, StringComparison.Ordinal);
         Assert.Contains("TimeSpan.FromMinutes(2)", worker, StringComparison.Ordinal);

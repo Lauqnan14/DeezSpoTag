@@ -29,7 +29,6 @@ public sealed class LibraryDbService
     private const string WatchlistReconciliationRequestTable = "watchlist_reconciliation_request";
     private const string WatchlistFinalizationOutboxTable = "watchlist_finalization_outbox";
     private const string MediaServerRefreshOutboxTable = "media_server_refresh_outbox";
-    private const string WatchlistSharedIdentityTable = "watchlist_shared_identity";
     private const string PlaylistTrackCandidateCacheTable = "playlist_track_candidate_cache";
     private const string PlaylistWatchlistTable = "playlist_watchlist";
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
@@ -151,8 +150,6 @@ public sealed class LibraryDbService
             ["idx_watchlist_finalization_outbox_due"] = (WatchlistFinalizationOutboxTable, "status, next_attempt_utc, lease_until_utc, id", false)
             ,
             ["idx_media_server_refresh_outbox_due"] = (MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", false)
-            ,
-            ["idx_watchlist_shared_identity_retry"] = (WatchlistSharedIdentityTable, "status, next_retry_utc", false)
             ,
             ["idx_watchlist_reconciliation_request_updated"] = (WatchlistReconciliationRequestTable, "updated_at, kind, source, identifier", false)
             ,
@@ -628,20 +625,7 @@ CREATE TABLE IF NOT EXISTS media_server_refresh_outbox (
     UNIQUE (destination_folder_id, target_service)
 );", cancellationToken);
         await EnsureIndexAsync(connection, "idx_media_server_refresh_outbox_due", MediaServerRefreshOutboxTable, "status, next_attempt_utc, lease_until_utc, id", unique: false, cancellationToken);
-        await EnsureTableAsync(connection, @"
-CREATE TABLE IF NOT EXISTS watchlist_shared_identity (
-    local_track_id INTEGER NOT NULL,
-    target_service TEXT NOT NULL,
-    target_item_id TEXT,
-    status TEXT NOT NULL,
-    last_error TEXT,
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    next_retry_utc TEXT,
-    last_refresh_requested_utc TEXT,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (local_track_id, target_service)
-);", cancellationToken);
-        await EnsureIndexAsync(connection, "idx_watchlist_shared_identity_retry", WatchlistSharedIdentityTable, "status, next_retry_utc", unique: false, cancellationToken);
+        await MigrateAndDropWatchlistSharedIdentityAsync(connection, cancellationToken);
         await MigrateWatchlistSyncJobsToTargetsAsync(connection, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "queue_uuid", TextType, cancellationToken);
         await EnsureColumnAsync(connection, "watchlist_sync_job", "lease_owner", TextType, cancellationToken);
@@ -1702,6 +1686,42 @@ VALUES (@migrationId, @completedAtUtc);", connection, transaction))
         command.Parameters.AddWithValue("$name", table);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result != null && result != DBNull.Value;
+    }
+
+    private static async Task MigrateAndDropWatchlistSharedIdentityAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        const string legacyTable = "watchlist_shared_identity";
+        if (!await TableExistsAsync(connection, legacyTable, cancellationToken))
+        {
+            return;
+        }
+
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using (var migrate = new SqliteCommand(@"
+INSERT INTO media_server_track_metadata (track_id,service,target_item_id,file_path,updated_at_utc)
+SELECT local_track_id,lower(trim(target_service)),trim(target_item_id),NULL,COALESCE(updated_at,CURRENT_TIMESTAMP)
+FROM watchlist_shared_identity
+WHERE lower(status)='resolved'
+  AND target_item_id IS NOT NULL
+  AND trim(target_item_id)<>''
+ON CONFLICT(track_id,service) DO UPDATE SET
+    target_item_id=excluded.target_item_id,
+    updated_at_utc=excluded.updated_at_utc;", connection, transaction))
+        {
+            await migrate.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var drop = new SqliteCommand(
+                         "DROP TABLE watchlist_shared_identity;",
+                         connection,
+                         transaction))
+        {
+            await drop.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static async Task MigrateSourceMappingTablesAsync(

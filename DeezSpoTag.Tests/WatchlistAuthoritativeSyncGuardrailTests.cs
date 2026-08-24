@@ -112,9 +112,8 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.DoesNotContain("HasPlaylistImageAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("HasPlaylistImageAsync", client, StringComparison.Ordinal);
         Assert.DoesNotContain("ApplyArtworkToNewTargetAsync", service, StringComparison.Ordinal);
-        Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
-        Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", service, StringComparison.Ordinal);
-        Assert.True(CountOccurrences(service, "await TryApplyOrScheduleMembershipArtworkAsync(") >= 1);
+        Assert.DoesNotContain("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
+        Assert.Contains("ScheduleArtworkForActiveRevisionAsync", service, StringComparison.Ordinal);
         // Membership path binds target ids immediately (Plex/JF/Navidrome) plus art-only paths.
         Assert.True(CountOccurrences(service, "await PersistTargetPlaylistBindingAsync(") >= 6);
         Assert.Contains("RecreateMissingTargetPlaylistAsync", service, StringComparison.Ordinal);
@@ -255,8 +254,10 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("matchSummary.SourceTracks", service, StringComparison.Ordinal);
         Assert.Contains("IsResolvedMembershipVerified(", service, StringComparison.Ordinal);
         Assert.Contains("PlaylistSyncResultKind.IdentityGap", service, StringComparison.Ordinal);
-        Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
-        Assert.Contains("RequestLibraryRefreshAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
+        Assert.Contains("GetMediaServerIdentityRefreshFilesAsync", service, StringComparison.Ordinal);
+        Assert.Contains("EnqueueTargetAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("RequestLibraryRefreshAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("await _mediaServerRefreshService.RefreshAsync(targetService, cancellationToken)", service, StringComparison.Ordinal);
         Assert.DoesNotContain("HasNoTargetCoverage", service, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildFailedResult", service, StringComparison.Ordinal);
@@ -300,7 +301,7 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("The target playlist artwork is missing or stale.", sync, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistArtworkTargetSyncScheduler", sync, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistArtworkSyncJobAsync", repository, StringComparison.Ordinal);
-        Assert.Contains("WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0", repository, StringComparison.Ordinal);
-        Assert.Contains("WHEN lower(job.track_id) = 'playlist' THEN 1", repository, StringComparison.Ordinal);
+        Assert.DoesNotContain("WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0", repository, StringComparison.Ordinal);
+        Assert.Contains("ranked.playlist_priority ASC", repository, StringComparison.Ordinal);
     }
 }

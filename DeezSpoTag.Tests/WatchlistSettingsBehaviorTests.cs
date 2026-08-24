@@ -682,7 +682,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("GetTargetArtworkRevision", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("IsPlaylistWatchArtworkRevisionAppliedAsync", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("SetPlaylistWatchArtworkTargetStateAsync", postDownloadSource, StringComparison.Ordinal);
-        Assert.Contains("TryApplyOrScheduleMembershipArtworkAsync", syncSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("TryApplyOrScheduleMembershipArtworkAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ApplyArtworkToNewTargetAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("ScheduleArtworkForActiveRevisionAsync", syncSource, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistArtworkTargetSyncScheduler", syncSource, StringComparison.Ordinal);
@@ -1127,7 +1127,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void TargetSync_RefreshesTargetIdentityBeforeUsingCachedCandidates()
+    public void TargetSync_UsesCachedCandidatesAndQueuesTargetedIdentityRefresh()
     {
         var source = File.ReadAllText(Path.Join(
             ResolveRepoRoot(),
@@ -1136,8 +1136,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             "WatchlistPostDownloadSyncService.cs"));
 
         Assert.DoesNotContain("RefreshConfiguredMediaServerAsync", source, StringComparison.Ordinal);
-        Assert.Contains("MediaServerLibraryRefreshService", source, StringComparison.Ordinal);
-        Assert.Contains("UpdateTrackMetadataIndexAsync(request.TargetService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("MediaServerLibraryRefreshService", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateTrackMetadataIndexAsync(request.TargetService", source, StringComparison.Ordinal);
         Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", source, StringComparison.Ordinal);
     }
 

@@ -8,7 +8,7 @@ namespace DeezSpoTag.Web.Services;
 public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyncNotifier
 {
     private static readonly TimeSpan ProcessingLease = TimeSpan.FromMinutes(15);
-    private const int TargetSyncClaimBatchSize = 25;
+    private const int TargetSyncClaimBatchSize = 1;
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromMinutes(10);
     // Backoff is 15 * 2^(attempt-1) capped at MaximumRetryDelay (10 min from attempt 7 on), so 10
     // attempts is roughly 1-1.5h of accumulated retrying -- long enough to ride out a transient
@@ -716,10 +716,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return SyncAttemptOutcome.Retry("Playlist candidate cache is unavailable; reconciliation was requested.");
             }
 
-            await scope.ServiceProvider
-                .GetRequiredService<MediaServerLibraryRefreshService>()
-                .UpdateTrackMetadataIndexAsync(request.TargetService, cancellationToken);
-
             var syncResult = await scope.ServiceProvider.GetRequiredService<PlaylistSyncService>()
                 .SyncAvailablePlaylistTracksAsync(
                 playlist,
@@ -731,11 +727,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
             if (syncResult.Success)
             {
-                if (syncResult.Kind is PlaylistSyncResultKind.IdentityGap or PlaylistSyncResultKind.NoLocalTracks)
-                {
-                    return SyncAttemptOutcome.Retry(syncResult.Message, SyncFailureClass.IdentityMiss);
-                }
-
                 await AddPlaylistSyncHistoryAsync(
                     scope.ServiceProvider,
                     playlist,

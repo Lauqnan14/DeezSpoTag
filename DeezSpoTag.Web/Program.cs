@@ -1521,6 +1521,7 @@ public partial class Program
                 AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
                 PlaylistVisualService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlaylistVisualService>(),
                 MediaServerRefreshService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerLibraryRefreshService>(),
+                MediaServerRefreshOutboxService = sp.GetRequiredService<DeezSpoTag.Web.Services.MediaServerRefreshOutboxService>(),
                 SharedIdentityResolver = sp.GetRequiredService<DeezSpoTag.Web.Services.SharedIdentityResolver>(),
                 CrossDeviceSyncService = sp.GetRequiredService<DeezSpoTag.Web.Services.CrossDeviceSyncService>(),
                 WatchlistRunSignal = sp.GetService<DeezSpoTag.Web.Services.WatchlistRunSignal>(),

@@ -768,7 +768,6 @@ public sealed class MediaServerLibraryRefreshService
                 return;
         }
 
-        await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(normalizedService, cancellationToken);
     }
 
     private Task<bool> RefreshPlexAsync(PlexAuth? plex, CancellationToken cancellationToken)
@@ -824,9 +823,6 @@ public sealed class MediaServerLibraryRefreshService
             if (updateTrackIndex)
             {
                 await UpdatePlexTrackMetadataIndexAsync(configuredPlex, musicSections, folderId: null, cancellationToken);
-                await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
-                    PlexService,
-                    cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1016,9 +1012,6 @@ public sealed class MediaServerLibraryRefreshService
             if (updateTrackIndex)
             {
                 await UpdateJellyfinTrackMetadataIndexAsync(jellyfin!, folderId: null, cancellationToken);
-                await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
-                    JellyfinService,
-                    cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1529,9 +1522,6 @@ public sealed class MediaServerLibraryRefreshService
             if (updateTrackIndex)
             {
                 await UpdateNavidromeTrackMetadataIndexAsync(navidrome!, folderId: null, cancellationToken);
-                await _libraryRepository.PromoteSharedIdentitiesFromMetadataAsync(
-                    NavidromeService,
-                    cancellationToken);
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

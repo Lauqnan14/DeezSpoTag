@@ -249,12 +249,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         var pendingReconRequests = await repository.GetDueWatchlistReconciliationRequestCountAsync(cancellationToken);
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, cancellationToken);
-        var identityRetryDue = await repository.HasDueIdentityRetryPlaylistAsync(cancellationToken);
         var membershipCatchUpDue = await repository.HasMembershipCatchUpPlaylistAsync(cancellationToken);
-        if (pendingReconRequests > 0 || pollOverdue || identityRetryDue || membershipCatchUpDue)
+        if (pendingReconRequests > 0 || pollOverdue || membershipCatchUpDue)
         {
             var reason = WatchlistWakeReason.None;
-            if (pollOverdue || identityRetryDue)
+            if (pollOverdue)
             {
                 reason |= WatchlistWakeReason.ScheduledRefresh;
             }
@@ -594,14 +593,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var watchInterval = GetWatchInterval(settings);
         var sourceRefreshOverdue = DateTimeOffset.UtcNow - _lastSourceRefreshCompletedUtc >= watchInterval;
         var pollOverdue = await repository.HasPollOverduePlaylistAsync(watchInterval, stoppingToken);
-        var identityRetryPlaylists = await repository.GetPlaylistsDueForIdentityRetryAsync(stoppingToken);
         var shouldRunSourceRefresh =
             wakeReason.HasFlag(WatchlistWakeReason.ScheduledRefresh)
             || wakeReason.HasFlag(WatchlistWakeReason.Reconciliation)
             || sourceRefreshOverdue
             || pollOverdue
-            || dueReconRequestCount > 0
-            || identityRetryPlaylists.Count > 0;
+            || dueReconRequestCount > 0;
 
         if (shouldRunSourceRefresh)
         {
@@ -618,7 +615,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     scope.ServiceProvider,
                     settings,
                     reconciliationRequests,
-                    identityRetryPlaylists,
                     pollOverdue,
                     stoppingToken);
                 _lastSourceRefreshCompletedUtc = DateTimeOffset.UtcNow;
@@ -855,7 +851,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         IServiceProvider serviceProvider,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IReadOnlyList<WatchlistReconciliationRequestDto> reconciliationRequests,
-        IReadOnlyList<PlaylistIdentityRetryPlaylist> identityRetryPlaylists,
         bool pollOverdue,
         CancellationToken stoppingToken)
     {
@@ -880,16 +875,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             .Where(request => request.Kind == PlaylistKind)
             .Select(request => $"playlist:{NormalizeSource(request.Source)}:{request.Identifier}")
             .ToHashSet(StringComparer.Ordinal);
-        foreach (var identityPlaylist in identityRetryPlaylists)
-        {
-            requestedPlaylistKeys.Add(
-                $"playlist:{NormalizeSource(identityPlaylist.Source)}:{identityPlaylist.PlaylistId}");
-        }
-
-        var identityRetryOnly = !pollOverdue
-            && !hasGlobalRequest
-            && reconciliationRequests.Count == 0
-            && identityRetryPlaylists.Count > 0;
         var requestedArtistIds = hasGlobalRequest
             ? artistItems
                 .Where(item => item.Artist is not null)
@@ -923,7 +908,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             repository,
             serviceProvider,
             requestedPlaylistKeys,
-            identityRetryOnly,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
@@ -1072,19 +1056,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
         }
 
-        var refreshService = serviceProvider.GetService<MediaServerLibraryRefreshService>();
-        if (refreshService is not null)
-        {
-            try
-            {
-                await refreshService.IngestConfiguredTargetIdentitiesAsync(cancellationToken);
-            }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-            {
-                _logger.LogWarning(ex, "Watchlist target identity ingest failed.");
-            }
-        }
-
         _lastIdentityIndexRefreshUtc = DateTimeOffset.UtcNow;
     }
 
@@ -1135,7 +1106,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         LibraryRepository repository,
         IServiceProvider serviceProvider,
         IReadOnlySet<string> requestedPlaylistKeys,
-        bool identityRetryOnly,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
@@ -1247,8 +1217,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 stoppingToken);
 
             if (execution.SnapshotExpanded
-                && settings.WatchDelayBetweenPlaylistsSeconds > 0
-                && !identityRetryOnly)
+                && settings.WatchDelayBetweenPlaylistsSeconds > 0)
             {
                 await Task.Delay(
                     TimeSpan.FromSeconds(settings.WatchDelayBetweenPlaylistsSeconds),
