@@ -4399,7 +4399,6 @@ WHERE service = @service
             await EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
                 trackId,
                 service,
-                string.Empty,
                 cancellationToken);
         }
 
@@ -4470,7 +4469,19 @@ WHERE t.source=@source
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
 SELECT DISTINCT t.source, t.source_id, c.target,
-       COALESCE(NULLIF(trim(state.applied_snapshot_id), ''), '')
+       COALESCE(
+           NULLIF(trim(state.applied_snapshot_id), ''),
+           NULLIF(trim((
+               SELECT job.snapshot_id
+               FROM watchlist_sync_job job
+               WHERE job.source=t.source
+                 AND job.playlist_id=t.source_id
+                 AND lower(job.target_service)=c.target
+                 AND lower(job.track_id)='playlist'
+                 AND trim(COALESCE(job.snapshot_id, '')) <> ''
+               ORDER BY job.updated_at DESC, job.id DESC
+               LIMIT 1)), ''),
+           '')
 FROM playlist_watch_track t
 JOIN playlist_watch_configured_sync_targets c
   ON c.source = t.source AND c.source_id = t.source_id
@@ -9509,6 +9520,10 @@ SELECT watch_type,
        active_source_id,
        active_started_utc,
        last_progress_utc,
+       cycle_status,
+       cycle_started_utc,
+       cycle_completed_utc,
+       next_cycle_utc,
        updated_at
 FROM watchlist_scheduler_state
 WHERE watch_type = @watchType
@@ -9527,7 +9542,11 @@ LIMIT 1;";
             await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
             await reader.IsDBNullAsync(3, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(3)),
             await reader.IsDBNullAsync(4, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(4)),
-            await reader.IsDBNullAsync(5, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(5)));
+            await reader.IsDBNullAsync(5, cancellationToken) ? "idle" : reader.GetString(5),
+            await reader.IsDBNullAsync(6, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(6)),
+            await reader.IsDBNullAsync(7, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(7)),
+            await reader.IsDBNullAsync(8, cancellationToken) ? (DateTimeOffset?)null : ParseDateTimeOffsetInvariant(reader.GetString(8)),
+            await reader.IsDBNullAsync(9, cancellationToken) ? DateTimeOffset.MinValue : ParseDateTimeOffsetInvariant(reader.GetString(9)));
     }
 
     public async Task UpsertWatchlistSchedulerStateAsync(
@@ -9575,6 +9594,39 @@ ON CONFLICT(watch_type) DO UPDATE SET
         command.Parameters.AddWithValue("activeSourceId", (object?)activeSourceId ?? DBNull.Value);
         command.Parameters.AddWithValue("activeStartedUtc", input.ActiveStartedUtc?.ToString("O") ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("lastProgressUtc", input.LastProgressUtc?.ToString("O") ?? (object)DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task UpdateWatchlistCycleStateAsync(
+        string watchType,
+        string cycleStatus,
+        DateTimeOffset? cycleStartedUtc,
+        DateTimeOffset? cycleCompletedUtc,
+        DateTimeOffset? nextCycleUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(watchType) || string.IsNullOrWhiteSpace(cycleStatus))
+        {
+            return;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+INSERT INTO watchlist_scheduler_state (
+    watch_type, cycle_status, cycle_started_utc, cycle_completed_utc, next_cycle_utc)
+VALUES (@watchType, @cycleStatus, @cycleStartedUtc, @cycleCompletedUtc, @nextCycleUtc)
+ON CONFLICT(watch_type) DO UPDATE SET
+    cycle_status=excluded.cycle_status,
+    cycle_started_utc=excluded.cycle_started_utc,
+    cycle_completed_utc=excluded.cycle_completed_utc,
+    next_cycle_utc=excluded.next_cycle_utc,
+    updated_at=CURRENT_TIMESTAMP;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("watchType", watchType.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("cycleStatus", cycleStatus.Trim().ToLowerInvariant());
+        command.Parameters.AddWithValue("cycleStartedUtc", cycleStartedUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("cycleCompletedUtc", cycleCompletedUtc?.ToString("O") ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("nextCycleUtc", nextCycleUtc?.ToString("O") ?? (object)DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
@@ -11472,36 +11524,28 @@ WHERE source=@source
         await transaction.CommitAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<PlaylistWatchMissingTrackDto>> GetDuePlaylistWatchMissingTracksAsync(
-        string source,
-        string sourceId,
-        int limit,
+    public async Task<IReadOnlyList<PlaylistWatchMissingTrackDto>> GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(
         CancellationToken cancellationToken = default)
     {
-        if (limit <= 0
-            || !TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
-        {
-            return Array.Empty<PlaylistWatchMissingTrackDto>();
-        }
-
         await using var connection = await OpenConnectionAsync(cancellationToken);
         const string sql = @"
-SELECT id, source, source_id, track_source_id, isrc, source_position, title, artist, album,
-       duration_ms, cover_url, deezer_id, mapping_status, status, snapshot_id,
-       candidate_revision, provider_readiness_revision, queue_uuid, updated_at
-FROM playlist_watch_missing_track
-WHERE source=@source
-  AND source_id=@sourceId
-  AND lower(status) IN ('missing', 'failed')
-  AND (retry_after_utc IS NULL OR datetime(retry_after_utc) <= datetime('now'))
-ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END,
-         source_position,
-         id
-LIMIT @limit;";
+SELECT missing.id, missing.source, missing.source_id, missing.track_source_id, missing.isrc,
+       missing.source_position, missing.title, missing.artist, missing.album, missing.duration_ms,
+       missing.cover_url, missing.deezer_id, missing.mapping_status, missing.status,
+       missing.snapshot_id, missing.candidate_revision, missing.provider_readiness_revision,
+       missing.queue_uuid, missing.updated_at
+FROM playlist_watch_missing_track missing
+JOIN playlist_watchlist playlist
+  ON playlist.source=missing.source AND playlist.source_id=missing.source_id
+WHERE lower(missing.status) IN ('missing', 'failed')
+  AND (missing.retry_after_utc IS NULL OR datetime(missing.retry_after_utc) <= datetime('now'))
+ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,
+         playlist.sync_priority,
+         playlist.created_at DESC,
+         CASE WHEN missing.source_position IS NULL THEN 1 ELSE 0 END,
+         missing.source_position,
+         missing.id;";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(SourceField, normalizedSource);
-        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-        command.Parameters.AddWithValue("limit", limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var rows = new List<PlaylistWatchMissingTrackDto>();
         while (await reader.ReadAsync(cancellationToken))
@@ -11870,7 +11914,13 @@ VALUES (@source, @sourceId, @trackSourceId, @status, CURRENT_TIMESTAMP);";
 
         const string updateSql = @"
 UPDATE playlist_watch_track
-SET status = @status,
+SET status = CASE
+        WHEN local_track_id IS NOT NULL
+             AND lower(COALESCE(identity_status, '')) <> 'review'
+             AND lower(@status) <> 'review'
+          THEN 'completed'
+        ELSE @status
+    END,
     updated_at = CURRENT_TIMESTAMP,
     unavailable_reason = CASE WHEN @status = 'unavailable' THEN unavailable_reason ELSE NULL END,
     unavailable_since_utc = CASE WHEN @status = 'unavailable' THEN unavailable_since_utc ELSE NULL END,
@@ -12469,18 +12519,6 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
-    public async Task<int> GetDueWatchlistReconciliationRequestCountAsync(CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = new SqliteCommand(@"
-SELECT COUNT(*)
-FROM watchlist_reconciliation_request
-WHERE (lower(status) IN ('pending','retry')
-       AND (next_attempt_utc='' OR next_attempt_utc IS NULL OR datetime(next_attempt_utc) <= datetime('now')))
-   OR (lower(status)='processing' AND datetime(lease_until_utc) <= datetime('now'));", connection);
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
-    }
-
     public Task<bool> HasWatchlistReconciliationRequestAsync(
         string kind,
         string source,
@@ -12953,7 +12991,17 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
     public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
         long localTrackId,
         string targetService,
-        string currentRevision,
+        CancellationToken cancellationToken = default)
+        => await EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+            localTrackId,
+            targetService,
+            currentRevision: null,
+            cancellationToken);
+
+    private async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
+        long localTrackId,
+        string targetService,
+        string? currentRevision,
         CancellationToken cancellationToken = default)
     {
         if (localTrackId <= 0 || string.IsNullOrWhiteSpace(targetService))
@@ -12979,6 +13027,16 @@ JOIN (
     SELECT t2.source, t2.source_id,
            COALESCE(
                NULLIF(trim(s.applied_snapshot_id), ''),
+               NULLIF(trim((
+                   SELECT job.snapshot_id
+                   FROM watchlist_sync_job job
+                   WHERE job.source=t2.source
+                     AND job.playlist_id=t2.source_id
+                     AND lower(job.target_service)=lower(@targetService)
+                     AND lower(job.track_id)='playlist'
+                     AND trim(COALESCE(job.snapshot_id, '')) <> ''
+                   ORDER BY job.updated_at DESC, job.id DESC
+                   LIMIT 1)), ''),
                CASE
                    WHEN lower(@targetService)='plex' AND trim(@plexSnapshotId) <> '' THEN @plexSnapshotId
                    WHEN trim(@snapshotId) <> '' THEN @snapshotId
@@ -13224,54 +13282,6 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         return jobs;
-    }
-
-    public async Task<bool> HasPollOverduePlaylistAsync(
-        TimeSpan pollInterval,
-        CancellationToken cancellationToken = default)
-    {
-        var seconds = Math.Max(1, (int)Math.Ceiling(pollInterval.TotalSeconds));
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = new SqliteCommand(@"
-SELECT 1
-FROM playlist_watchlist playlist
-LEFT JOIN playlist_watch_state state
-  ON state.source = playlist.source
- AND state.source_id = playlist.source_id
-WHERE state.last_checked_utc IS NULL
-   OR datetime(state.last_checked_utc) <= datetime('now', @pollModifier)
-LIMIT 1;", connection);
-        command.Parameters.AddWithValue("pollModifier", $"-{seconds} seconds");
-        return await command.ExecuteScalarAsync(cancellationToken) is not null;
-    }
-
-    public async Task<bool> HasMembershipCatchUpPlaylistAsync(CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = new SqliteCommand(@"
-SELECT 1
-FROM playlist_watchlist playlist
-LEFT JOIN playlist_watch_state state
-  ON state.source = playlist.source
- AND state.source_id = playlist.source_id
-WHERE lower(COALESCE(state.last_run_status, '')) IN
-        ('pending', 'waiting_for_target_sync', 'media_sync_waiting', 'stale_recovered', 'reconciling', 'backoff')
-   OR EXISTS (
-        SELECT 1
-        FROM playlist_watch_track t
-        JOIN playlist_watch_configured_sync_targets c
-          ON c.source = t.source AND c.source_id = t.source_id
-        WHERE t.source = playlist.source
-          AND t.source_id = playlist.source_id
-          AND t.local_track_id IS NOT NULL
-          AND NOT EXISTS (
-                SELECT 1 FROM playlist_watch_target_membership m
-                WHERE m.source = t.source AND m.source_id = t.source_id
-                  AND m.track_source_id = t.track_source_id
-                  AND lower(m.target_service) = c.target
-                  AND lower(m.sync_status) = 'playlist_synced'))
-LIMIT 1;", connection);
-        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     public async Task<DateTimeOffset?> GetNextWatchlistSyncJobDueUtcAsync(

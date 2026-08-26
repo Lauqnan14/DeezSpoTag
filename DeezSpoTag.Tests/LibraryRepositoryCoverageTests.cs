@@ -697,6 +697,15 @@ ORDER BY service;";
                 localTrackId,
                 "identity_verified",
                 "Test identity verified."));
+        await _repository.UpdatePlaylistWatchTrackStatusAsync(
+            "spotify",
+            "pl-123",
+            "dz-song-1",
+            "failed");
+        var recoveredLocalStatus = Assert.Single(
+            await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123"),
+            status => status.TrackSourceId == "dz-song-1");
+        Assert.Equal("waiting_for_identity", recoveredLocalStatus.SyncStatus);
         var localOnlySummary = Assert.Single(
             await _repository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");

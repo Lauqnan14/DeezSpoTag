@@ -21,6 +21,17 @@ namespace DeezSpoTag.Tests;
 [Collection("Settings Config Isolation")]
 public sealed class WatchlistSettingsBehaviorTests : IDisposable
 {
+    [Fact]
+    public void WatchInterval_ExplainsCompletionAnchoredFullRunSchedule()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var settingsView = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "Settings", "Index.cshtml"));
+
+        Assert.Contains("data-tooltip-target=\"watchPollIntervalSeconds\"", settingsView, StringComparison.Ordinal);
+        Assert.Contains("countdown starts after every complete Watchlist run", settingsView, StringComparison.Ordinal);
+        Assert.Contains("every monitored item is included in each run", settingsView, StringComparison.Ordinal);
+    }
+
     private const string WatchMaxItemsPerRunName = "WatchMaxItemsPerRun";
     private const string WatchMaxReleasesPerArtistName = "WatchMaxReleasesPerArtist";
     private const string WatchMaxReleasesPerArtistJsonName = "watchMaxReleasesPerArtist";
@@ -426,7 +437,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("ResolveNextPlaylistItemAfter", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("IsRecentExplicitPlaylistFocus", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("state.LastProgressUtc.HasValue", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("foreach (var activeItem in scheduledItems)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("foreach (var activeItem in playlistItems)", hostedSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1072,7 +1083,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("BackgroundAutomationPolicy.IsEnabled(_configuration, \"Watchlist\")", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("\"Watchlist\": { \"Enabled\"", appSettingsSource, StringComparison.Ordinal);
         Assert.Contains("!persisted.WatchEnabled && settings.WatchEnabled", settingsControllerSource, StringComparison.Ordinal);
-        Assert.Contains("TriggerRunOnceAsync", settingsControllerSource, StringComparison.Ordinal);
+        Assert.Contains("StartEnabledWatchlistAsync", settingsControllerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResumePendingJobsAsync", settingsControllerSource, StringComparison.Ordinal);
     }
 

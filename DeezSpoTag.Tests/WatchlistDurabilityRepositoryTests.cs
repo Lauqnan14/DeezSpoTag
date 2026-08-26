@@ -97,6 +97,41 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task DueMissingTracks_AreReturnedInPlaylistPriorityThenSourceOrder()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "priority-a",
+            new PlaylistWatchlistMetadataInput("Priority A", null, null, 2));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "priority-b",
+            new PlaylistWatchlistMetadataInput("Priority B", null, null, 2));
+        await _repository.UpdatePlaylistWatchlistPrioritiesAsync([
+            ("spotify", "priority-a", 1),
+            ("spotify", "priority-b", 2)
+        ]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "priority-a",
+            [
+                MissingTrack("a-2", 2),
+                MissingTrack("a-1", 1)
+            ]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "priority-b",
+            [
+                MissingTrack("b-2", 2),
+                MissingTrack("b-1", 1)
+            ]);
+
+        var rows = await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync();
+
+        Assert.Equal(["a-1", "a-2", "b-1", "b-2"], rows.Select(static row => row.TrackSourceId));
+    }
+
+    [Fact]
     public async Task WatchlistDedupe_IsGlobalAcrossDestinationFoldersAndPreservesAudioVariants()
     {
         var firstRoot = Path.Join(_tempRoot, "library-a");
@@ -273,7 +308,6 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
         Assert.True(await _repository.HasWatchlistReconciliationRequestAsync(
             "playlist", "spotify", "lease-ignore", "other-owner"));
         Assert.Equal("lease-ignore", claimed.Identifier);
-        Assert.Equal(0, await _repository.GetDueWatchlistReconciliationRequestCountAsync());
         Assert.Equal(1, await _repository.GetWatchlistReconciliationRequestCountAsync());
     }
 
@@ -959,7 +993,6 @@ WHERE id=@id;",
         Assert.Empty(await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
             "spotify", "stale-applied-list", "snapshot-applied"));
 
-        Assert.True(await _repository.HasMembershipCatchUpPlaylistAsync());
         Assert.True(await _repository.EnqueueMembershipCatchUpForIncompletePlaylistsAsync() > 0);
         var job = Assert.Single(await _repository.GetWatchlistSyncJobsAsync("spotify", "stale-applied-list"));
         Assert.Equal("playlist", job.TrackId);
@@ -1412,6 +1445,22 @@ WHERE id=@id;";
         command.Parameters.AddWithValue("expired", DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O"));
         await command.ExecuteNonQueryAsync();
     }
+
+    private static PlaylistWatchMissingTrackUpsert MissingTrack(string trackId, int position)
+        => new(
+            trackId,
+            Isrc: null,
+            SourcePosition: position,
+            Title: trackId,
+            Artist: "Artist",
+            Album: "Album",
+            DurationMs: 180000,
+            CoverUrl: null,
+            DeezerId: null,
+            MappingStatus: "mapped",
+            SnapshotId: "snapshot",
+            CandidateRevision: "candidate",
+            ProviderReadinessRevision: "provider");
 
     private async Task<long> CountArtworkJobsAsync(string sourceId, string revision)
     {

@@ -1405,6 +1405,7 @@
                     <div class="form-group">
                         <label for="watchPollIntervalSeconds">Watch Interval (seconds)</label>
                         <input type="number" id="watchPollIntervalSeconds" min="1" max="86400" value="3600">
+                        <div class="warning-text" data-tooltip-target="watchPollIntervalSeconds">The countdown starts after every complete Watchlist run. The next run begins only after this interval, runs never overlap, and every monitored item is included in each run.</div>
                     </div>
                     <div class="form-group">
                         <label for="watchMaxItemsPerRun">Max Missing Tracks Queued Per Run</label>

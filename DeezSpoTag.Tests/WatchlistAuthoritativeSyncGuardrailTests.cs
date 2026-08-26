@@ -239,9 +239,28 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.Contains("EnsureColumnAsync(connection, PlaylistWatchTrackTable, \"source_position\"", database, StringComparison.Ordinal);
         Assert.Contains("EnsureIndexAsync(connection, \"idx_playlist_watch_track_admission\"", database, StringComparison.Ordinal);
         Assert.Contains("ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET", repository, StringComparison.Ordinal);
-        Assert.Contains("ORDER BY CASE WHEN source_position IS NULL THEN 1 ELSE 0 END", repository, StringComparison.Ordinal);
+        Assert.Contains("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", repository, StringComparison.Ordinal);
+        Assert.Contains("playlist.sync_priority", repository, StringComparison.Ordinal);
+        Assert.Contains("missing.source_position", repository, StringComparison.Ordinal);
         Assert.Contains("Position = statusByTrackId.TryGetValue", engine, StringComparison.Ordinal);
         Assert.Contains("foreach (var candidate in orderedCandidates)", engine, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TargetMembership_AppliesResolvedIdentitiesWithoutDestructivePartialMirror()
+    {
+        var sync = File.ReadAllText(Path.Combine(
+            Root,
+            "DeezSpoTag.Web",
+            "Services",
+            "PlaylistSyncService.cs"));
+
+        Assert.Equal(3, CountOccurrences(sync, "var partialIdentityGap = HasUnresolvedTargetIdentities"));
+        Assert.Equal(3, CountOccurrences(sync, "var appendMissingOnly = partialIdentityGap"));
+        Assert.DoesNotContain(
+            "membership was preserved while locally available tracks wait for stored",
+            sync,
+            StringComparison.Ordinal);
     }
 
     [Fact]

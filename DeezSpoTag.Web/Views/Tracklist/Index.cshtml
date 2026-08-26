@@ -1646,6 +1646,9 @@ let monitorStatusRequestSeq = 0;
 let monitorMutationInFlight = false;
 let monitoredPlaylistTrackStatuses = new Map();
 let monitoredPlaylistTracklistActive = false;
+const monitoredPlaylistTrackStatusRefreshIntervalMs = 5000;
+let monitoredPlaylistTrackStatusRefreshTimer = null;
+let monitoredPlaylistTrackStatusRefreshInFlight = false;
 let manualUnavailableRetryTimer = null;
 
 function getDeezerTracklistUrl() {
@@ -2510,6 +2513,7 @@ async function loadManualUnavailableTracklist() {
 }
 
 async function preloadMonitoredPlaylistTrackStatuses() {
+    stopMonitoredPlaylistTrackStatusRefresh();
     monitoredPlaylistTracklistActive = false;
     monitoredPlaylistTrackStatuses = new Map();
     const source = normalizeWatchlistSource(requestSource || tracklistSource, tracklistType);
@@ -2525,25 +2529,94 @@ async function preloadMonitoredPlaylistTrackStatuses() {
         }
 
         monitoredPlaylistTracklistActive = true;
-        const tracks = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`);
-        if (!Array.isArray(tracks)) {
-            return;
-        }
-
-        tracks.forEach(track => {
-            const payload = readTrackLocationStatusPayload(track);
-            const status = {
-                status: normalizeTrackLocationStatus(payload.status),
-                label: String(payload.label || '').trim() || resolveTrackLocationStatusLabel(payload.status),
-                detail: String(payload.detail || '').trim()
-            };
-            collectTrackStatusLookupKeys(track).forEach(id => {
-                monitoredPlaylistTrackStatuses.set(id, status);
-            });
-        });
+        monitoredPlaylistTrackStatuses = await fetchMonitoredPlaylistTrackStatuses(source, sourceId);
     } catch (error) {
         console.warn('Failed to preload monitored playlist track statuses.', error);
     }
+}
+
+async function fetchMonitoredPlaylistTrackStatuses(source, sourceId) {
+    const tracks = await fetchJson(`/api/library/playlists/${encodeURIComponent(source)}/${encodeURIComponent(sourceId)}/tracks`);
+    const statuses = new Map();
+    if (!Array.isArray(tracks)) {
+        return statuses;
+    }
+
+    tracks.forEach(track => {
+        const payload = readTrackLocationStatusPayload(track);
+        const status = {
+            status: normalizeTrackLocationStatus(payload.status),
+            label: String(payload.label || '').trim() || resolveTrackLocationStatusLabel(payload.status),
+            detail: String(payload.detail || '').trim()
+        };
+        collectTrackStatusLookupKeys(track).forEach(id => {
+            statuses.set(id, status);
+        });
+    });
+    return statuses;
+}
+
+function startMonitoredPlaylistTrackStatusRefresh() {
+    stopMonitoredPlaylistTrackStatusRefresh();
+    if (!monitoredPlaylistTracklistActive || isManualUnavailableTracklist() || document.hidden) {
+        return;
+    }
+    monitoredPlaylistTrackStatusRefreshTimer = window.setTimeout(
+        refreshMonitoredPlaylistTrackStatuses,
+        monitoredPlaylistTrackStatusRefreshIntervalMs);
+}
+
+function stopMonitoredPlaylistTrackStatusRefresh() {
+    if (monitoredPlaylistTrackStatusRefreshTimer !== null) {
+        window.clearTimeout(monitoredPlaylistTrackStatusRefreshTimer);
+        monitoredPlaylistTrackStatusRefreshTimer = null;
+    }
+}
+
+async function refreshMonitoredPlaylistTrackStatuses() {
+    monitoredPlaylistTrackStatusRefreshTimer = null;
+    if (!monitoredPlaylistTracklistActive || monitoredPlaylistTrackStatusRefreshInFlight) {
+        return;
+    }
+    if (document.hidden) {
+        return;
+    }
+
+    monitoredPlaylistTrackStatusRefreshInFlight = true;
+    try {
+        const source = normalizeWatchlistSource(requestSource || tracklistSource, tracklistType);
+        const sourceId = getWatchlistSourceId();
+        monitoredPlaylistTrackStatuses = await fetchMonitoredPlaylistTrackStatuses(source, sourceId);
+        updateRenderedMonitoredPlaylistTrackStatuses();
+    } catch (error) {
+        console.warn('Failed to refresh monitored playlist track statuses.', error);
+    } finally {
+        monitoredPlaylistTrackStatusRefreshInFlight = false;
+        startMonitoredPlaylistTrackStatusRefresh();
+    }
+}
+
+function updateRenderedMonitoredPlaylistTrackStatuses() {
+    document.querySelectorAll('#tracks-table-body tr[data-monitor-status-keys]').forEach(row => {
+        const cell = row.querySelector('td.track-location-status');
+        if (!cell) {
+            return;
+        }
+
+        let keys = [];
+        try {
+            keys = JSON.parse(row.dataset.monitorStatusKeys || '[]');
+        } catch {
+            keys = [];
+        }
+        const status = keys
+            .map(key => monitoredPlaylistTrackStatuses.get(String(key || '').trim()))
+            .find(Boolean) || null;
+        const html = renderTrackLocationStatusCell(status);
+        if (cell.innerHTML !== html) {
+            cell.innerHTML = html;
+        }
+    });
 }
 
 function isMonitoredPlaylistTracklistEligible(source, sourceId) {
@@ -3577,6 +3650,7 @@ function renderTracklist(data, options = {}) {
     bindManualUnavailableDeleteButtons();
     startManualUnavailableRetryCountdowns();
     scheduleAvailabilityChecks(tracks, isLocalSource);
+    startMonitoredPlaylistTrackStatusRefresh();
 
     if (!isRecommendationTracklistContext() && !isManualUnavailableTracklist()) {
         scheduleExternalTracklistMatches(tracks, tracklistSource);
@@ -6443,6 +6517,9 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
             : artistName;
         const albumId = track.album?.id || track.album_id || track.albumId || '';
         const availabilityKey = buildAvailabilityKeyFromTrack(track, spotifyId);
+        const monitorStatusKeysAttr = monitoredPlaylistTracklistActive
+            ? ` data-monitor-status-keys="${escapeHtml(JSON.stringify(collectTrackStatusLookupKeys(track)))}"`
+            : '';
         const availabilityKeyAttr = availabilityKey ? ` data-availability-key="${availabilityKey}"` : '';
         const availabilitySpotifyAttr = spotifyId ? ` data-availability-spotify-id="${spotifyId}"` : '';
         const platformIds = resolveTrackPlatformIds(track, spotifyId);
@@ -6545,7 +6622,7 @@ function renderTrackRows(tracks, isPlaylistLike, isLocalSource, fallbackAlbumTit
                 : `<td class="track-album" onclick="openAlbum('${albumId}')"><span class="track-cell-text">${albumTitle}</span></td>`)
             : '';
         return `
-	        <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityAppleAttr}${availabilityTidalAttr}${availabilityQobuzAttr}${availabilityAmazonAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${localPlaybackAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
+	        <tr${rowClass} data-track-index="${track.index ?? index}" data-track-source="${rowSourceAttr}"${spotifyId ? ` data-spotify-id="${spotifyId}"` : ''}${monitorStatusKeysAttr}${availabilityKeyAttr}${availabilitySpotifyAttr}${availabilityAppleAttr}${availabilityTidalAttr}${availabilityQobuzAttr}${availabilityAmazonAttr}${availabilityUrlAttr}${availabilityIsrcAttr}${availabilityTitleAttr}${availabilityArtistAttr}${availabilityDurationAttr}${availabilityDeezerAttr}${streamTrackIdAttr}${localPlaybackAttr}${trackTokenAttr}${md5OriginAttr}${mediaVersionAttr}>
             <td class="track-number">
                 <span class="track-num">${track.track_position || index + 1}</span>
                 <span class="material-icons preview-controls${previewClass}"
@@ -8224,6 +8301,12 @@ async function handleTracklistArtistLink(spotifyUrl) {
 
 // Load tracklist when page loads
 document.addEventListener('DOMContentLoaded', loadTracklist);
+window.addEventListener('pagehide', stopMonitoredPlaylistTrackStatusRefresh);
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && monitoredPlaylistTracklistActive && monitoredPlaylistTrackStatusRefreshTimer === null) {
+        void refreshMonitoredPlaylistTrackStatuses();
+    }
+});
 
 document.addEventListener('mouseenter', (event) => {
     if (!(event.target instanceof Element)) {

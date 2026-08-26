@@ -185,7 +185,7 @@ namespace DeezSpoTag.Web.Controllers.Api
                 {
                     if (_watchlistCoordinator != null)
                     {
-                        await _watchlistCoordinator.TriggerRunOnceAsync(HttpContext.RequestAborted);
+                        await _watchlistCoordinator.StartEnabledWatchlistAsync(HttpContext.RequestAborted);
                     }
                 }
 

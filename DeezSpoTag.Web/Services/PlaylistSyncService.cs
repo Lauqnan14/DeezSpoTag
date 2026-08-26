@@ -2187,16 +2187,6 @@ public sealed class PlaylistSyncService
             orderedTrackIds,
             cancellationToken,
             playlist.SnapshotId);
-        if (HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches))
-        {
-            return BuildIdentityGapResult(
-                BuildSyncMessage(
-                    "Plex membership was preserved while locally available tracks wait for stored Plex IDs.",
-                    matchSummary),
-                existingPlaylistId,
-                matchSummary,
-                syncedTracks: 0);
-        }
         if (matchSummary.TargetIds.Count == 0)
         {
             _logger.LogWarning(
@@ -2238,7 +2228,9 @@ public sealed class PlaylistSyncService
         }
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
-        var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        var partialIdentityGap = HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches);
+        var appendMissingOnly = partialIdentityGap
+            || string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
         var upsert = await _plexApiClient.CreateOrUpdatePlaylistAsync(
             plex.Url,
             plex.Token,
@@ -2354,16 +2346,6 @@ public sealed class PlaylistSyncService
             MissingTracks: Math.Max(0, tracks.Count - itemIds.Count),
             MetadataMatches: 0,
             SearchMatches: itemIds.Count);
-        if (HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches))
-        {
-            return BuildIdentityGapResult(
-                BuildSyncMessage(
-                    "Jellyfin membership was preserved while locally available tracks wait for stored Jellyfin IDs.",
-                    matchSummary),
-                existingPlaylistId,
-                matchSummary,
-                syncedTracks: 0);
-        }
         if (itemIds.Count == 0)
         {
             _logger.LogWarning(
@@ -2397,7 +2379,9 @@ public sealed class PlaylistSyncService
         }
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
-        var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        var partialIdentityGap = HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches);
+        var appendMissingOnly = partialIdentityGap
+            || string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
         var playlistId = existingPlaylistId;
         var metadataSynced = true;
         if (!string.IsNullOrWhiteSpace(playlistId))
@@ -2537,16 +2521,6 @@ public sealed class PlaylistSyncService
             MissingTracks: Math.Max(0, tracks.Count - itemIds.Count),
             MetadataMatches: 0,
             SearchMatches: itemIds.Count);
-        if (HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches))
-        {
-            return BuildIdentityGapResult(
-                BuildSyncMessage(
-                    "Navidrome membership was preserved while locally available tracks wait for stored Navidrome IDs.",
-                    matchSummary),
-                existingPlaylistId,
-                matchSummary,
-                syncedTracks: 0);
-        }
         if (itemIds.Count == 0)
         {
             var emptyPlaylistId = await EnsureNavidromePlaylistContainerAsync(
@@ -2570,7 +2544,9 @@ public sealed class PlaylistSyncService
         }
 
         var syncMode = NormalizeSyncMode(preference?.SyncMode);
-        var appendMissingOnly = string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
+        var partialIdentityGap = HasUnresolvedTargetIdentities(matchSummary.LocalMatches, matchSummary.TargetMatches);
+        var appendMissingOnly = partialIdentityGap
+            || string.Equals(syncMode, SyncModeAppend, StringComparison.OrdinalIgnoreCase);
         var playlistId = await _navidromeApiClient.CreateOrUpdatePlaylistAsync(
             navidrome.Url,
             navidrome.Username,
@@ -3785,7 +3761,6 @@ public sealed class PlaylistSyncService
             await _libraryRepository.EnqueueMembershipJobsForNewlyResolvedIdentityAsync(
                 item.TrackId,
                 targetService,
-                string.Empty,
                 cancellationToken);
         }
     }

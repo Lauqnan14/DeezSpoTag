@@ -76,11 +76,13 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void PlaylistWatchTriggers_DoNotWaitAndStartAnotherBudgetedRun()
+    public void PlaylistWatchTriggers_PersistWithoutInterruptingCompletionAnchoredCountdown()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
 
-        Assert.Contains("_runSignal.Request()", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("_runSignal.Request(WatchlistWakeReason.Reconciliation)", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WaitForFullRunDeadlineAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("cycleCompletedUtc + GetWatchInterval()", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("_runLock", hostedSource, StringComparison.Ordinal);
     }
 
@@ -126,7 +128,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("PlaylistReconciliationMode", hostedSource, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS playlist_watch_missing_track", schemaSource, StringComparison.Ordinal);
         Assert.Contains("UpsertPlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
-        Assert.Contains("GetDuePlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
+        Assert.Contains("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("MarkPlaylistWatchMissingTrackQueuedAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("ResolvePlaylistWatchMissingTrackAsync", repositorySource, StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -158,12 +161,11 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("DrainTargetSyncMaxJobs", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunResidualTargetSyncAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("RunInterleavedPlaylistSliceAsync", hostedSource, StringComparison.Ordinal);
-        var refreshStart = hostedSource.IndexOf("var shouldRunSourceRefresh =", StringComparison.Ordinal);
-        var refreshEnd = hostedSource.IndexOf("if (shouldRunSourceRefresh)", StringComparison.Ordinal);
-        Assert.True(refreshStart >= 0 && refreshEnd > refreshStart);
-        Assert.DoesNotContain("membershipCatchUpDue", hostedSource[refreshStart..refreshEnd], StringComparison.Ordinal);
-        Assert.Contains("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("GetDueWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("WaitForFullRunDeadlineAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("UpdateWatchlistCycleStateAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("SelectDuePlaylistItems", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetDueWatchlistReconciliationRequestCountAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetNextWakeAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("TargetSyncJobTimeout", postDownloadSource, StringComparison.Ordinal);
     }
 
@@ -174,7 +176,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
         var loopStart = hostedSource.IndexOf(
-            "foreach (var activeItem in scheduledItems)",
+            "foreach (var activeItem in playlistItems)",
             StringComparison.Ordinal);
         var loopNext = hostedSource.IndexOf(
             "private static async Task PersistPlaylistProgressAsync(",

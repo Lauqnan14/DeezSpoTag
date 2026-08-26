@@ -841,6 +841,7 @@ internal sealed class WatchlistEngine
 
     public async Task<PlaylistReconciliationResult> AdmitCachedMissingTracksAsync(
         PlaylistWatchlistDto playlist,
+        IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
         CancellationToken cancellationToken)
     {
         var source = NormalizeWatchSource(playlist.Source);
@@ -863,11 +864,6 @@ internal sealed class WatchlistEngine
         var playlistNotificationLabel = string.IsNullOrWhiteSpace(playlist.Name)
             ? ResolveSourceLabel(source)
             : playlist.Name.Trim();
-        var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksAsync(
-            source,
-            sourceId,
-            int.MaxValue,
-            cancellationToken);
         if (dueRows.Count == 0)
         {
             return new PlaylistReconciliationResult(
@@ -5834,8 +5830,9 @@ public sealed class PlaylistWatchReconciler
 
     public Task<PlaylistReconciliationResult> AdmitCachedMissingTracksAsync(
         PlaylistWatchlistDto playlist,
+        IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
         CancellationToken cancellationToken)
-        => _engine.AdmitCachedMissingTracksAsync(playlist, cancellationToken);
+        => _engine.AdmitCachedMissingTracksAsync(playlist, dueRows, cancellationToken);
 
     public Task<IReadOnlyList<PlaylistTrackCandidate>> GetPlaylistTrackCandidatesAsync(
         string source,

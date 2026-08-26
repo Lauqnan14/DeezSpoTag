@@ -664,9 +664,18 @@ CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
     active_source_id TEXT,
     active_started_utc TEXT,
     last_progress_utc TEXT,
+    cycle_status TEXT NOT NULL DEFAULT 'idle',
+    cycle_started_utc TEXT,
+    cycle_completed_utc TEXT,
+    next_cycle_utc TEXT,
     zero_queue_streak INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );", cancellationToken);
+        const string watchlistSchedulerStateTable = "watchlist_scheduler_state";
+        await EnsureColumnAsync(connection, watchlistSchedulerStateTable, "cycle_status", $"{TextType} NOT NULL DEFAULT 'idle'", cancellationToken);
+        await EnsureColumnAsync(connection, watchlistSchedulerStateTable, "cycle_started_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, watchlistSchedulerStateTable, "cycle_completed_utc", TextType, cancellationToken);
+        await EnsureColumnAsync(connection, watchlistSchedulerStateTable, "next_cycle_utc", TextType, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS watchlist_source_circuit_state (
     watch_type TEXT NOT NULL,
@@ -1142,6 +1151,21 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
+        await EnsureTableAsync(connection, @"
+UPDATE playlist_watch_track
+SET status='completed', updated_at=CURRENT_TIMESTAMP
+WHERE local_track_id IS NOT NULL
+  AND lower(COALESCE(identity_status, '')) <> 'review'
+  AND lower(COALESCE(status, '')) <> 'completed';
+DELETE FROM playlist_watch_missing_track
+WHERE EXISTS (
+    SELECT 1
+    FROM playlist_watch_track track
+    WHERE track.source=playlist_watch_missing_track.source
+      AND track.source_id=playlist_watch_missing_track.source_id
+      AND track.track_source_id=playlist_watch_missing_track.track_source_id
+      AND track.local_track_id IS NOT NULL
+      AND lower(COALESCE(track.identity_status, '')) <> 'review');", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_presentation_status;", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_track_sync_progress;", cancellationToken);
         await EnsureTableAsync(connection, "DROP VIEW IF EXISTS playlist_watch_configured_sync_targets;", cancellationToken);
@@ -1196,12 +1220,10 @@ SELECT playlist_watch_track.source AS source,
        playlist_watch_track.track_source_id AS track_source_id,
        CASE
          WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
-         WHEN COALESCE(progress.configured_target_count, 0) > 0
+         WHEN local_track_id IS NOT NULL
+              AND COALESCE(progress.configured_target_count, 0) > 0
               AND COALESCE(progress.verified_target_count, 0) >= progress.configured_target_count
            THEN 'playlist_synced'
-         WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
-         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'blocked' THEN 'blocked'
-         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'failed' THEN 'failed'
          WHEN local_track_id IS NOT NULL
               AND EXISTS (
                   SELECT 1
@@ -1215,6 +1237,9 @@ SELECT playlist_watch_track.source AS source,
                             AND lower(meta.service) = cst.target))
            THEN 'waiting_for_identity'
          WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
+         WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
+         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'blocked' THEN 'blocked'
+         WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'failed' THEN 'failed'
          ELSE playlist_watch_track.status
        END AS presentation_status
 FROM playlist_watch_track

@@ -120,6 +120,24 @@ public sealed class MonitoredPlaylistPresentationGuardrailTests
         }
     }
 
+    [Fact]
+    public void Monitored_playlist_state_column_refreshes_from_the_authoritative_endpoint()
+    {
+        var viewSource = File.ReadAllText(FindSourceFile(
+            "DeezSpoTag.Web",
+            "Views",
+            "Tracklist",
+            "Index.cshtml"));
+
+        Assert.Contains("monitoredPlaylistTrackStatusRefreshIntervalMs", viewSource, StringComparison.Ordinal);
+        Assert.Contains("fetchMonitoredPlaylistTrackStatuses(source, sourceId)", viewSource, StringComparison.Ordinal);
+        Assert.Contains("updateRenderedMonitoredPlaylistTrackStatuses()", viewSource, StringComparison.Ordinal);
+        Assert.Contains("data-monitor-status-keys", viewSource, StringComparison.Ordinal);
+        Assert.Contains("startMonitoredPlaylistTrackStatusRefresh();", viewSource, StringComparison.Ordinal);
+        Assert.Contains("window.addEventListener('pagehide', stopMonitoredPlaylistTrackStatusRefresh)", viewSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("window.setInterval", viewSource, StringComparison.Ordinal);
+    }
+
     private static string FindSourceFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

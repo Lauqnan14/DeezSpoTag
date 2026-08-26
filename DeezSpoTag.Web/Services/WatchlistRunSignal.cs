@@ -7,7 +7,8 @@ public enum WatchlistWakeReason
     ScheduledRefresh = 1,
     Reconciliation = 2,
     Finalization = 4,
-    TargetSync = 8
+    TargetSync = 8,
+    Reset = 16
 }
 
 public sealed class WatchlistRunSignal

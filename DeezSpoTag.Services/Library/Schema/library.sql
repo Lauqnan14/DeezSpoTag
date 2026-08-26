@@ -511,6 +511,10 @@ CREATE TABLE IF NOT EXISTS watchlist_scheduler_state (
     active_source_id TEXT,
     active_started_utc TEXT,
     last_progress_utc TEXT,
+    cycle_status TEXT NOT NULL DEFAULT 'idle',
+    cycle_started_utc TEXT,
+    cycle_completed_utc TEXT,
+    next_cycle_utc TEXT,
     zero_queue_streak INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

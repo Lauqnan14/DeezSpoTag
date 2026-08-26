@@ -787,6 +787,10 @@ public sealed record WatchlistSchedulerStateDto(
     string? ActiveSourceId,
     DateTimeOffset? ActiveStartedUtc,
     DateTimeOffset? LastProgressUtc,
+    string CycleStatus,
+    DateTimeOffset? CycleStartedUtc,
+    DateTimeOffset? CycleCompletedUtc,
+    DateTimeOffset? NextCycleUtc,
     DateTimeOffset UpdatedAt);
 
 public sealed record WatchlistSourceCircuitStateDto(

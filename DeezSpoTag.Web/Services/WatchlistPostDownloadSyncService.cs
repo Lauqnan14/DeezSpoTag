@@ -72,12 +72,14 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
     }
 
-    public async Task ProcessFinalizationWorkAsync(CancellationToken cancellationToken)
+    public async Task ProcessFinalizationWorkAsync(
+        CancellationToken cancellationToken,
+        Func<bool>? shouldStop = null)
     {
         try
         {
             await RepairMissingFinalizationOutboxAsync(cancellationToken);
-            await ProcessFinalizationOutboxAsync(cancellationToken);
+            await ProcessFinalizationOutboxAsync(cancellationToken, shouldStop);
         }
         catch (OperationCanceledException)
         {
@@ -113,6 +115,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (budget.ShouldStop?.Invoke() == true)
+                {
+                    break;
+                }
                 var jobs = await repository.ClaimDueWatchlistSyncJobsAsync(
                     TargetSyncClaimBatchSize,
                     ProcessingLease,
@@ -156,10 +162,16 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         return processed;
     }
 
-    private async Task ProcessFinalizationOutboxAsync(CancellationToken cancellationToken)
+    private async Task ProcessFinalizationOutboxAsync(
+        CancellationToken cancellationToken,
+        Func<bool>? shouldStop)
     {
         while (true)
         {
+            if (shouldStop?.Invoke() == true)
+            {
+                return;
+            }
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
             var outbox = await repository.ClaimDueWatchlistFinalizationOutboxAsync(
@@ -1124,18 +1136,21 @@ public sealed record TargetSyncBudget(
     (string Source, string PlaylistId)? PlaylistFilter,
     WatchlistSyncJobKind Kind,
     string? IgnoreReconciliationLeaseOwner,
-    Func<CancellationToken, Task>? OnProgress = null)
+    Func<CancellationToken, Task>? OnProgress = null,
+    Func<bool>? ShouldStop = null)
 {
     public static TargetSyncBudget DrainAll(
         WatchlistSyncJobKind kind,
         (string Source, string PlaylistId)? playlistFilter = null,
         string? ignoreReconciliationLeaseOwner = null,
-        Func<CancellationToken, Task>? onProgress = null)
+        Func<CancellationToken, Task>? onProgress = null,
+        Func<bool>? shouldStop = null)
         => new(
             PlaylistFilter: playlistFilter,
             Kind: kind,
             IgnoreReconciliationLeaseOwner: ignoreReconciliationLeaseOwner,
-            OnProgress: onProgress);
+            OnProgress: onProgress,
+            ShouldStop: shouldStop);
 }
 
 public enum SyncFailureClass
