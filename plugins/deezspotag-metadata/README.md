@@ -1,4 +1,4 @@
-# deezspotag-metadata
+# Navidrome Plugin
 
 A Navidrome `MetadataAgent` plugin that serves **artist biographies** and **top songs**
 from a DeezSpoTag instance.
