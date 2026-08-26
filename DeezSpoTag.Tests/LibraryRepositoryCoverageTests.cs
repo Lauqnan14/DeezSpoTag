@@ -112,6 +112,134 @@ ORDER BY service;";
     }
 
     [Fact]
+    public async Task TargetIdentityUpsert_ReassignsServerItemFromObsoleteTrackRow()
+    {
+        var seeded = await SeedLibraryAsync(("Current Song", "dz-current", "sp-current", "ap-current"));
+        var currentTrackId = seeded.TrackIdsByTitle["Current Song"];
+        const long obsoleteTrackId = 7001;
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+INSERT INTO media_server_track_metadata
+    (track_id,service,target_item_id,file_path,updated_at_utc)
+VALUES
+    (@obsoleteTrackId,'plex','plex-current','/old/path.flac','2026-08-01T00:00:00Z');
+INSERT INTO media_server_track_variant_metadata
+    (track_id,service,audio_variant,target_item_id,file_path,updated_at_utc)
+VALUES
+    (@obsoleteTrackId,'plex','stereo','plex-current','/old/path.flac','2026-08-01T00:00:00Z');";
+            seed.Parameters.AddWithValue("obsoleteTrackId", obsoleteTrackId);
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                currentTrackId,
+                "plex",
+                "plex-current",
+                seeded.TrackPathsByTitle["Current Song"],
+                DateTimeOffset.UtcNow)
+        ]);
+
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = @"
+SELECT track_id FROM media_server_track_metadata
+WHERE service='plex' AND target_item_id='plex-current'
+UNION ALL
+SELECT track_id FROM media_server_track_variant_metadata
+WHERE service='plex' AND target_item_id='plex-current';";
+        await using var reader = await verify.ExecuteReaderAsync();
+        var trackIds = new List<long>();
+        while (await reader.ReadAsync())
+        {
+            trackIds.Add(reader.GetInt64(0));
+        }
+
+        Assert.Equal(2, trackIds.Count);
+        Assert.All(trackIds, trackId => Assert.Equal(currentTrackId, trackId));
+    }
+
+    [Fact]
+    public async Task TargetIdentityRefreshCleanup_RemovesOnlyOrphanedRowsForSelectedServer()
+    {
+        var seeded = await SeedLibraryAsync(("Current Song", "dz-current", "sp-current", "ap-current"));
+        var currentTrackId = seeded.TrackIdsByTitle["Current Song"];
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                currentTrackId,
+                "plex",
+                "plex-current",
+                seeded.TrackPathsByTitle["Current Song"],
+                DateTimeOffset.UtcNow)
+        ]);
+
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = @"
+INSERT INTO media_server_track_metadata
+    (track_id,service,target_item_id,updated_at_utc)
+VALUES
+    (7001,'plex','plex-orphan','2026-08-01T00:00:00Z'),
+    (7002,'jellyfin','jellyfin-orphan','2026-08-01T00:00:00Z');";
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var deleted = await _repository.DeleteOrphanedMediaServerTrackMetadataAsync("plex");
+
+        Assert.Equal(1, deleted);
+        await using var verifyConnection = new SqliteConnection($"Data Source={_dbPath}");
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = @"
+SELECT service || ':' || target_item_id
+FROM media_server_track_metadata
+WHERE target_item_id IN ('plex-current','plex-orphan','jellyfin-orphan')
+ORDER BY service;";
+        await using var reader = await verify.ExecuteReaderAsync();
+        var rows = new List<string>();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        Assert.Equal(["jellyfin:jellyfin-orphan", "plex:plex-current"], rows);
+    }
+
+    [Fact]
+    public async Task TargetIdentityRefreshFiles_ReturnsOnlyTracksMissingTheSelectedServerIdentity()
+    {
+        var seeded = await SeedLibraryAsync(
+            ("Mapped Song", "dz-mapped", "sp-mapped", "ap-mapped"),
+            ("Missing Song", "dz-missing", "sp-missing", "ap-missing"));
+        var mappedTrackId = seeded.TrackIdsByTitle["Mapped Song"];
+        var missingTrackId = seeded.TrackIdsByTitle["Missing Song"];
+
+        await _repository.UpsertMediaServerTrackMetadataAsync([
+            new MediaServerTrackMetadataUpsertDto(
+                mappedTrackId,
+                "plex",
+                "plex-mapped",
+                seeded.TrackPathsByTitle["Mapped Song"],
+                DateTimeOffset.UtcNow)
+        ]);
+
+        var files = await _repository.GetMediaServerIdentityRefreshFilesAsync(
+            [mappedTrackId, missingTrackId],
+            "plex");
+
+        var file = Assert.Single(files);
+        Assert.Equal(missingTrackId, file.TrackId);
+        Assert.Equal(seeded.TrackPathsByTitle["Missing Song"], file.FilePath);
+    }
+
+    [Fact]
     public async Task ScanInfo_Settings_And_AutomationState_RoundTrip()
     {
         var initialScan = await _repository.GetScanInfoAsync();

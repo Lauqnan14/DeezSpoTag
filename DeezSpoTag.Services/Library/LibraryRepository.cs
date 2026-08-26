@@ -941,6 +941,8 @@ DELETE FROM track_other_tag;
 DELETE FROM track_plex_metadata;
 DELETE FROM track_remixer;
 DELETE FROM track_shazam_cache;
+DELETE FROM media_server_track_metadata;
+DELETE FROM media_server_track_variant_metadata;
 DELETE FROM album_local;
 DELETE FROM track_style;
 DELETE FROM audio_file;
@@ -2301,7 +2303,7 @@ WITH requested AS (
       ON mtm.track_id = tl.track_id
      AND mtm.service = @service
     WHERE f.enabled = TRUE
-      AND NULLIF(TRIM(mtm.item_id), '') IS NULL
+      AND NULLIF(TRIM(mtm.target_item_id), '') IS NULL
 )
 SELECT track_id, folder_id, path, relative_path, root_path
 FROM ranked
@@ -4227,6 +4229,51 @@ WHERE track_id IN ({scopedTracks});", connection, transaction);
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+    public async Task<int> DeleteOrphanedMediaServerTrackMetadataAsync(
+        string service,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedService = NormalizeServiceKey(service);
+        if (string.IsNullOrWhiteSpace(normalizedService))
+        {
+            return 0;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        const string deleteVariantsSql = @"
+DELETE FROM media_server_track_variant_metadata
+WHERE service = @service
+  AND NOT EXISTS (
+      SELECT 1
+      FROM track_local tl
+      WHERE tl.track_id = media_server_track_variant_metadata.track_id
+  );";
+        await using (var deleteVariants = new SqliteCommand(deleteVariantsSql, connection, transaction))
+        {
+            deleteVariants.Parameters.AddWithValue("service", normalizedService);
+            await deleteVariants.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string deleteMetadataSql = @"
+DELETE FROM media_server_track_metadata
+WHERE service = @service
+  AND NOT EXISTS (
+      SELECT 1
+      FROM track_local tl
+      WHERE tl.track_id = media_server_track_metadata.track_id
+  );";
+        int deleted;
+        await using (var deleteMetadata = new SqliteCommand(deleteMetadataSql, connection, transaction))
+        {
+            deleteMetadata.Parameters.AddWithValue("service", normalizedService);
+            deleted = await deleteMetadata.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return deleted;
+    }
+
     public async Task UpsertMediaServerTrackMetadataAsync(
         IReadOnlyCollection<MediaServerTrackMetadataUpsertDto> metadata,
         CancellationToken cancellationToken = default)
@@ -4285,6 +4332,22 @@ ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
             (SqliteTransaction)transaction);
         var existsTrackIdParameter = existsCommand.Parameters.Add("@trackId", SqliteType.Integer);
         var existsServiceParameter = existsCommand.Parameters.Add("@service", SqliteType.Text);
+        const string deleteReassignedSql = @"
+DELETE FROM media_server_track_metadata
+WHERE service = @service
+  AND target_item_id = @targetItemId
+  AND track_id <> @trackId;
+DELETE FROM media_server_track_variant_metadata
+WHERE service = @service
+  AND target_item_id = @targetItemId
+  AND track_id <> @trackId;";
+        await using var deleteReassignedCommand = new SqliteCommand(
+            deleteReassignedSql,
+            connection,
+            (SqliteTransaction)transaction);
+        var reassignedTrackIdParameter = deleteReassignedCommand.Parameters.Add("@trackId", SqliteType.Integer);
+        var reassignedServiceParameter = deleteReassignedCommand.Parameters.Add("@service", SqliteType.Text);
+        var reassignedTargetItemIdParameter = deleteReassignedCommand.Parameters.Add("@targetItemId", SqliteType.Text);
 
         foreach (var item in metadata)
         {
@@ -4299,6 +4362,11 @@ ON CONFLICT(track_id, service, audio_variant) DO UPDATE SET
             existsTrackIdParameter.Value = item.TrackId;
             existsServiceParameter.Value = normalizedService;
             var existed = await existsCommand.ExecuteScalarAsync(cancellationToken) is not null;
+
+            reassignedTrackIdParameter.Value = item.TrackId;
+            reassignedServiceParameter.Value = normalizedService;
+            reassignedTargetItemIdParameter.Value = item.TargetItemId.Trim();
+            await deleteReassignedCommand.ExecuteNonQueryAsync(cancellationToken);
 
             trackIdParameter.Value = item.TrackId;
             serviceParameter.Value = normalizedService;
@@ -17097,6 +17165,24 @@ PRAGMA busy_timeout=30000;";
 
     private static async Task CleanupOrphansAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
     {
+        const string deleteTargetMetadata = @"
+DELETE FROM media_server_track_variant_metadata
+WHERE NOT EXISTS (
+    SELECT 1 FROM track_local tl WHERE tl.track_id = media_server_track_variant_metadata.track_id
+);
+DELETE FROM media_server_track_metadata
+WHERE NOT EXISTS (
+    SELECT 1 FROM track_local tl WHERE tl.track_id = media_server_track_metadata.track_id
+);
+DELETE FROM track_plex_metadata
+WHERE NOT EXISTS (
+    SELECT 1 FROM track_local tl WHERE tl.track_id = track_plex_metadata.track_id
+);";
+        await using (var command = new SqliteCommand(deleteTargetMetadata, connection, transaction))
+        {
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         const string deleteTracks = @"
 DELETE FROM track
 WHERE NOT EXISTS (
