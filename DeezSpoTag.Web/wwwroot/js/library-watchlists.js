@@ -1400,8 +1400,7 @@ function resolvePlaylistWatchlistPresentation(item) {
         ignoredBlockedTrackCount,
         incompleteTrackCount,
         reroutedTrackCount: toNonNegativeCount(item.reroutedTrackCount),
-        waitingForTargetCount: toNonNegativeCount(item.waitingForTargetCount),
-        waitingForIdentityCount: toNonNegativeCount(item.waitingForIdentityCount),
+        reviewTrackCount: toNonNegativeCount(item.reviewTrackCount),
         missingTrackCount: toNonNegativeCount(item.missingTrackCount),
         mappingRetryCount: toNonNegativeCount(item.mappingRetryCount),
         blockedTrackCount: toNonNegativeCount(item.blockedTrackCount),
@@ -1418,8 +1417,7 @@ function formatPlaylistWatchlistRunStatus(item, presentation) {
 
     const visitFinished = runStatus === 'completed'
         || runStatus === 'unchanged'
-        || runStatus === 'metadata_refreshed'
-        || runStatus === 'media_sync_completed';
+        || runStatus === 'metadata_refreshed';
     if (presentation?.hasIncompleteSync && visitFinished) {
         return 'incomplete';
     }
@@ -1433,8 +1431,7 @@ function renderPlaylistWatchlistPresentationBadges(item) {
         syncedTrackCount,
         ignoredBlockedTrackCount,
         reroutedTrackCount,
-        waitingForTargetCount,
-        waitingForIdentityCount,
+        reviewTrackCount,
         missingTrackCount,
         mappingRetryCount,
         blockedTrackCount,
@@ -1443,8 +1440,7 @@ function renderPlaylistWatchlistPresentationBadges(item) {
     } = resolvePlaylistWatchlistPresentation(item);
     const syncBadge = hasIncompleteSync ? renderPlaylistWatchlistSyncBadge(syncedTrackCount, totalTrackCount) : '';
     const stateBadges = [
-        renderPlaylistWatchlistStateBadge(waitingForTargetCount, 'waiting-for-target', 'track waiting for target sync', 'fa-clock'),
-        renderPlaylistWatchlistStateBadge(waitingForIdentityCount, 'waiting-for-identity', 'track waiting for target identity', 'fa-fingerprint'),
+        renderPlaylistWatchlistStateBadge(reviewTrackCount, 'review', 'track requiring review', 'fa-magnifying-glass'),
         renderPlaylistWatchlistStateBadge(missingTrackCount, 'missing', 'missing downloadable track', 'fa-download'),
         renderPlaylistWatchlistStateBadge(mappingRetryCount, 'mapping-retry', 'track waiting for mapping', 'fa-link-slash'),
         renderPlaylistWatchlistStateBadge(blockedTrackCount, 'blocked', 'blocked track', 'fa-ban'),
@@ -1703,8 +1699,7 @@ async function loadPlaylistWatchlist() {
         }
         const presentation = runtime?.presentation || {};
         const presentationParts = [
-            [presentation.waitingForTarget, 'waiting for target'],
-            [presentation.waitingForIdentity, 'waiting for identity'],
+            [presentation.review, 'review'],
             [presentation.missing, 'missing'],
             [presentation.mappingRetry, 'mapping retry'],
             [presentation.blocked, 'blocked'],

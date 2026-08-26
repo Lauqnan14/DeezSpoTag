@@ -705,11 +705,11 @@ ORDER BY service;";
         var recoveredLocalStatus = Assert.Single(
             await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123"),
             status => status.TrackSourceId == "dz-song-1");
-        Assert.Equal("waiting_for_identity", recoveredLocalStatus.SyncStatus);
+        Assert.Equal("library", recoveredLocalStatus.SyncStatus);
         var localOnlySummary = Assert.Single(
             await _repository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(0, localOnlySummary.SyncedTrackCount);
+        Assert.Equal(1, localOnlySummary.SyncedTrackCount);
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
@@ -724,22 +724,18 @@ ORDER BY service;";
         var restartedRepository = new LibraryRepository(
             _configuration,
             NullLogger<LibraryRepository>.Instance);
-        // The playlist's configured sync targets are plex + jellyfin (see the preference
-        // upserted above). Only plex has confirmed membership at this point, so the track must
-        // NOT count as synced yet -- "synced" requires every configured target to confirm, not
-        // just one of them (regression coverage for the any-target undercounting bug).
+        // Playlist completeness is based on authoritative local identity. Target membership is
+        // reported independently and cannot make a local track appear missing.
         var summaryAfterRestart = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(0, summaryAfterRestart.SyncedTrackCount);
-        Assert.Equal(23, summaryAfterRestart.IncompleteTrackCount);
+        Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
         var plexOnlyStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var plexOnlyTrack = Assert.Single(plexOnlyStatuses, status => status.TrackSourceId == "dz-song-1");
-        Assert.Equal("waiting_for_identity", plexOnlyTrack.SyncStatus);
+        Assert.Equal("library", plexOnlyTrack.SyncStatus);
         Assert.Equal("plex", plexOnlyTrack.TargetService);
         Assert.Equal("plex-track-1", plexOnlyTrack.TargetItemId);
-        Assert.Equal(1, summaryAfterRestart.WaitingForIdentityCount);
-        Assert.Equal(0, summaryAfterRestart.WaitingForTargetCount);
         await _repository.UpsertMediaServerTrackMetadataAsync([
             new MediaServerTrackMetadataUpsertDto(localTrackId, "plex", "plex-track-1", FilePath: null, DateTimeOffset.UtcNow),
             new MediaServerTrackMetadataUpsertDto(localTrackId, "jellyfin", "jellyfin-track-1", FilePath: null, DateTimeOffset.UtcNow)
@@ -747,12 +743,10 @@ ORDER BY service;";
         var identityResolvedSummary = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(0, identityResolvedSummary.WaitingForIdentityCount);
-        Assert.Equal(1, identityResolvedSummary.WaitingForTargetCount);
-        Assert.Equal(23, identityResolvedSummary.IncompleteTrackCount);
+        Assert.Equal(22, identityResolvedSummary.IncompleteTrackCount);
         var identityResolvedStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var identityResolvedTrack = Assert.Single(identityResolvedStatuses, status => status.TrackSourceId == "dz-song-1");
-        Assert.Equal("waiting_for_target", identityResolvedTrack.SyncStatus);
+        Assert.Equal("library", identityResolvedTrack.SyncStatus);
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
@@ -896,17 +890,12 @@ ORDER BY service;";
         Assert.Contains("GetInt32(25)", select, StringComparison.Ordinal);
         Assert.Contains("GetInt32(26)", select, StringComparison.Ordinal);
         Assert.Contains("GetInt32(27)", select, StringComparison.Ordinal);
-        Assert.Contains("GetInt32(28)", select, StringComparison.Ordinal);
-        Assert.Contains("GetInt32(29)", select, StringComparison.Ordinal);
-        Assert.True(
-            select.IndexOf("pw.source_storefront", StringComparison.Ordinal)
-            < select.IndexOf("waiting_for_target_count", StringComparison.Ordinal));
-        Assert.Contains("WaitingForTargetCount: await reader.IsDBNullAsync(24", select, StringComparison.Ordinal);
-        Assert.Contains("WaitingForIdentityCount: await reader.IsDBNullAsync(25", select, StringComparison.Ordinal);
-        Assert.Contains("MissingTrackCount: await reader.IsDBNullAsync(26", select, StringComparison.Ordinal);
-        Assert.Contains("MappingRetryCount: await reader.IsDBNullAsync(27", select, StringComparison.Ordinal);
-        Assert.Contains("BlockedTrackCount: await reader.IsDBNullAsync(28", select, StringComparison.Ordinal);
-        Assert.Contains("FailedTrackCount: await reader.IsDBNullAsync(29", select, StringComparison.Ordinal);
+        Assert.DoesNotContain("waiting_for_target_count", select, StringComparison.Ordinal);
+        Assert.DoesNotContain("waiting_for_identity_count", select, StringComparison.Ordinal);
+        Assert.Contains("MissingTrackCount: await reader.IsDBNullAsync(24", select, StringComparison.Ordinal);
+        Assert.Contains("MappingRetryCount: await reader.IsDBNullAsync(25", select, StringComparison.Ordinal);
+        Assert.Contains("BlockedTrackCount: await reader.IsDBNullAsync(26", select, StringComparison.Ordinal);
+        Assert.Contains("FailedTrackCount: await reader.IsDBNullAsync(27", select, StringComparison.Ordinal);
         Assert.Contains("reader.GetInt32(6)", select, StringComparison.Ordinal);
         Assert.Contains("reader.GetInt32(16)", select, StringComparison.Ordinal);
         Assert.Contains("reader.GetInt32(15)", select, StringComparison.Ordinal);
@@ -992,8 +981,6 @@ ORDER BY service;";
         Assert.Equal(1, summary.BlockedTrackCount);
         Assert.Equal(1, summary.FailedTrackCount);
         Assert.Equal(1, summary.MissingTrackCount);
-        Assert.Equal(0, summary.WaitingForTargetCount);
-        Assert.Equal(0, summary.WaitingForIdentityCount);
         Assert.Equal(3, summary.IncompleteTrackCount);
         Assert.Equal(0, summary.SyncedTrackCount);
     }
@@ -1273,7 +1260,8 @@ ORDER BY service;";
         });
         Assert.False(equalQualityDecision.Allowed);
         Assert.Equal("library_quality_not_higher", equalQualityDecision.ReasonCode);
-        Assert.True(upgradeDecision.Allowed);
+        Assert.False(upgradeDecision.Allowed);
+        Assert.Equal("library_quality_not_higher", upgradeDecision.ReasonCode);
 
         await _repository.AddPlaylistWatchlistAsync(
             "spotify", "review-list", new PlaylistWatchlistMetadataInput("Review", null, null, 1));
@@ -1286,6 +1274,55 @@ ORDER BY service;";
         Assert.Equal("identity_verified", resolvedStatus.IdentityStatus);
         Assert.Equal("completed", resolvedStatus.Status);
         Assert.Equal(lowerQualityRichId, resolvedStatus.LocalTrackId);
+    }
+
+    [Fact]
+    public async Task LibraryDedupe_AllowsLosslessOnlyWhenExistingFileIsLossy()
+    {
+        var seeded = await SeedLibraryAsync(("Lossy Song", "dz-lossy", "sp-lossy", "ap-lossy"));
+        var trackId = seeded.TrackIdsByTitle["Lossy Song"];
+        await using (var connection = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+UPDATE audio_file
+SET quality_rank=2, codec='mp3', extension='.mp3'
+WHERE id IN (SELECT audio_file_id FROM track_local WHERE track_id=@trackId);";
+            command.Parameters.AddWithValue("trackId", trackId);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var dedupe = new DownloadDedupeService(
+            new DownloadQueueRepository(_configuration, NullLogger<DownloadQueueRepository>.Instance),
+            _repository,
+            NullLogger<DownloadDedupeService>.Instance,
+            new PassthroughLocalTrackAmbiguityResolver());
+        var losslessUpgrade = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Lossy Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 3
+        });
+        var lossyRepeat = await dedupe.CheckAsync(new DownloadDedupeRequest
+        {
+            Isrc = "ISRC00000001",
+            TrackTitle = "Lossy Song",
+            TrackArtist = "Artist One",
+            Album = "Album One",
+            DurationMs = 180000,
+            RequestedAudioVariant = "stereo",
+            RequestedLocalQualityRank = 2
+        });
+
+        Assert.True(losslessUpgrade.Allowed);
+        Assert.False(lossyRepeat.Allowed);
+        Assert.Equal("library_quality_not_higher", lossyRepeat.ReasonCode);
+        Assert.Equal(trackId, lossyRepeat.LocalTrackId);
     }
 
     [Fact]

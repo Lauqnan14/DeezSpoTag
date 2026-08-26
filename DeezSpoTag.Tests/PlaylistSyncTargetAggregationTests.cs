@@ -125,7 +125,6 @@ public sealed class PlaylistSyncTargetAggregationTests
         Assert.Contains("AS missing_target_service", repository, StringComparison.Ordinal);
         Assert.Contains("SyncedTargetServices = persistedStatus?.SyncedTargetServices", controller, StringComparison.Ordinal);
         Assert.Contains("MissingTargetServices = persistedStatus?.MissingTargetServices", controller, StringComparison.Ordinal);
-        Assert.Contains("status?.MissingTargetServices", controller, StringComparison.Ordinal);
     }
 
     [Fact]

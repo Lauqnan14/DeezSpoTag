@@ -1136,16 +1136,9 @@ ON CONFLICT(migration_id) DO UPDATE SET completed_at_utc = excluded.completed_at
     }
 
     /// <summary>
-    /// Single source of truth for "has this playlist watch track been verified on every one of
-    /// its playlist's currently-configured sync targets" -- both GetPlaylistWatchlistAsync (the
-    /// per-playlist synced/total badge) and GetPlaylistWatchTrackStatusesAsync (the per-track
-    /// sync_status used by the playlist detail view) read from these views instead of each
-    /// carrying their own copy of the target-matching logic. playlist_watch_track_presentation_status
-    /// also owns the list-breakdown buckets (waiting/identity/missing/mapping_retry/blocked/failed).
-    /// Views hold no data, so they are dropped and recreated on every startup rather than guarded
-    /// with IF NOT EXISTS -- that way a future change to this logic only has to be made here and
-    /// takes effect immediately, instead of risking the two consumer queries drifting out of sync
-    /// with each other again.
+    /// Shared target membership remains independent from local library existence. The presentation
+    /// view reports verified local tracks as library content while retaining target progress for
+    /// synchronization diagnostics. Views hold no data, so they are dropped and recreated on startup.
     /// </summary>
     private static async Task EnsurePlaylistWatchTargetSyncViewsAsync(
         SqliteConnection connection,
@@ -1158,7 +1151,8 @@ WHERE local_track_id IS NOT NULL
   AND lower(COALESCE(identity_status, '')) <> 'review'
   AND lower(COALESCE(status, '')) <> 'completed';
 DELETE FROM playlist_watch_missing_track
-WHERE EXISTS (
+WHERE lower(COALESCE(status, '')) NOT IN ('missing', 'failed', 'queued', 'downloading')
+  AND EXISTS (
     SELECT 1
     FROM playlist_watch_track track
     WHERE track.source=playlist_watch_missing_track.source
@@ -1220,24 +1214,14 @@ SELECT playlist_watch_track.source AS source,
        playlist_watch_track.track_source_id AS track_source_id,
        CASE
          WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
+         WHEN lower(COALESCE(missing.status, '')) IN ('queued', 'downloading', 'failed', 'missing')
+           THEN missing.status
          WHEN local_track_id IS NOT NULL
               AND COALESCE(progress.configured_target_count, 0) > 0
               AND COALESCE(progress.verified_target_count, 0) >= progress.configured_target_count
            THEN 'playlist_synced'
-         WHEN local_track_id IS NOT NULL
-              AND EXISTS (
-                  SELECT 1
-                    FROM playlist_watch_configured_sync_targets cst
-                   WHERE cst.source = playlist_watch_track.source
-                     AND cst.source_id = playlist_watch_track.source_id
-                     AND NOT EXISTS (
-                         SELECT 1
-                           FROM media_server_track_metadata meta
-                          WHERE meta.track_id = playlist_watch_track.local_track_id
-                            AND lower(meta.service) = cst.target))
-           THEN 'waiting_for_identity'
-         WHEN local_track_id IS NOT NULL THEN 'waiting_for_target'
-         WHEN lower(COALESCE(mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
+         WHEN local_track_id IS NOT NULL THEN 'library'
+         WHEN lower(COALESCE(playlist_watch_track.mapping_status, '')) = 'mapping_retry' THEN 'mapping_retry'
          WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'blocked' THEN 'blocked'
          WHEN lower(COALESCE(playlist_watch_track.status, '')) = 'failed' THEN 'failed'
          ELSE playlist_watch_track.status
@@ -1246,7 +1230,11 @@ FROM playlist_watch_track
 LEFT JOIN playlist_watch_track_sync_progress progress
   ON progress.source = playlist_watch_track.source
  AND progress.source_id = playlist_watch_track.source_id
- AND progress.track_source_id = playlist_watch_track.track_source_id;", cancellationToken);
+ AND progress.track_source_id = playlist_watch_track.track_source_id
+LEFT JOIN playlist_watch_missing_track missing
+  ON missing.source = playlist_watch_track.source
+ AND missing.source_id = playlist_watch_track.source_id
+ AND missing.track_source_id = playlist_watch_track.track_source_id;", cancellationToken);
     }
 
     private static Task EnsureTrackValueTableAsync(

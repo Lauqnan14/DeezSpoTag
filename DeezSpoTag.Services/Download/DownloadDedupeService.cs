@@ -127,6 +127,22 @@ public sealed class DownloadDedupeService
     private static bool IsLossyToLosslessUpgrade(int? requestedLocalQualityRank, int? existingLocalQualityRank)
         => requestedLocalQualityRank >= 3 && existingLocalQualityRank is > 0 and < 3;
 
+    public static int? ResolveRequestedLocalQualityRank(string? quality)
+    {
+        var catalogRank = QualityCatalog.GetLibraryFolderLocalRank(quality);
+        if (catalogRank.HasValue)
+        {
+            return catalogRank.Value;
+        }
+
+        if (int.TryParse((quality ?? string.Empty).Trim(), out var numericQuality))
+        {
+            return MediaQualityInference.MapRequestedNumericQualityToLocalRank(numericQuality);
+        }
+
+        return MediaQualityInference.InferLocalQualityRankFromText(quality, "atmos", treatPodcastAsVideo: false);
+    }
+
     public static DownloadDedupeRequest FromQueuePayload(
         EngineQueueItemBase payload,
         int? durationMs,
@@ -193,7 +209,10 @@ public sealed class DownloadDedupeService
             DestinationFolderId = intent.DestinationFolderId,
             ContentType = intent.ContentType,
             RequestedAudioVariant = requestedAudioVariant,
-            RequestedLocalQualityRank = requestedLocalQualityRank,
+            RequestedLocalQualityRank = requestedLocalQualityRank
+                ?? (intent.AllowQualityUpgrade
+                    ? ResolveRequestedLocalQualityRank(intent.Quality) ?? 3
+                    : null),
             BlockRules = blockRules
         };
     }
@@ -293,18 +312,18 @@ public sealed class DownloadDedupeService
                     audioVariant: request.RequestedAudioVariant,
                     cancellationToken: cancellationToken)
                 : identity.BestQualityRank;
-            if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value <= bestLocalQualityRank.Value)
+            if (IsLossyToLosslessUpgrade(request.RequestedLocalQualityRank, bestLocalQualityRank))
+            {
+                return DownloadDedupeDecision.AllowedDecision;
+            }
+
+            if (bestLocalQualityRank.HasValue)
             {
                 return DownloadDedupeDecision.Rejected(
                     "library_quality_not_higher",
                     "Skipped: requested quality is not higher than the file already in your library.",
                     "library",
                     localTrackId: identity.LocalTrackId);
-            }
-
-            if (bestLocalQualityRank.HasValue && request.RequestedLocalQualityRank.Value > bestLocalQualityRank.Value)
-            {
-                return DownloadDedupeDecision.AllowedDecision;
             }
         }
 

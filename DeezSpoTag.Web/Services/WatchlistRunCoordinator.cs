@@ -293,9 +293,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return;
         }
 
-        await coordinatorWork.ProcessFinalizationWorkAsync(
-            cancellationToken,
-            () => DateTimeOffset.UtcNow >= fullRunDeadlineUtc);
         await coordinatorWork.ProcessTargetSyncWorkAsync(
             TargetSyncBudget.DrainAll(
                 WatchlistSyncJobKind.All,
@@ -662,11 +659,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return;
         }
         await RecoverCoordinatorStateAsync(stoppingToken);
-        var coordinatorWork = scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>();
-        if (coordinatorWork != null)
-        {
-            await coordinatorWork.ProcessFinalizationWorkAsync(stoppingToken);
-        }
 
         var pendingRequestCount = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = pendingRequestCount });
@@ -678,12 +670,29 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             stoppingToken);
         using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         var leaseRenewal = RenewReconciliationLeasesAsync(repository, leaseRenewalCancellation.Token);
+        var queueRepository = scope.ServiceProvider.GetRequiredService<DownloadQueueRepository>();
+        var orchestrationService = scope.ServiceProvider.GetService<DownloadOrchestrationService>();
+        var queueGate = orchestrationService is null
+            ? await queueAdmission.EvaluateQueueGateAsync(queueRepository, stoppingToken)
+            : await queueAdmission.EvaluateQueueGateAsync(queueRepository, orchestrationService, stoppingToken);
+        var queueAdmissionToken = 0L;
+        if (queueGate.Allowed)
+        {
+            UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = null });
+            queueAdmissionToken = queueAdmission.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun));
+        }
+        else
+        {
+            UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
+        }
+
         try
         {
             await RunWatchCycleCoreAsync(
                 scope.ServiceProvider,
                 settings,
                 reconciliationRequests,
+                queueGate.Allowed,
                 stoppingToken);
         }
         finally
@@ -696,56 +705,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             catch (OperationCanceledException) when (leaseRenewalCancellation.IsCancellationRequested)
             {
             }
-        }
-
-        if (coordinatorWork != null)
-        {
-            await coordinatorWork.ProcessTargetSyncWorkAsync(
-                TargetSyncBudget.DrainAll(WatchlistSyncJobKind.All),
-                stoppingToken);
-        }
-
-        await ProcessPersistedQueueAdmissionsIfAllowedAsync(
-            settings,
-            repository,
-            scope.ServiceProvider,
-            queueAdmission,
-            stoppingToken);
-    }
-
-    private async Task ProcessPersistedQueueAdmissionsIfAllowedAsync(
-        DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
-        LibraryRepository repository,
-        IServiceProvider serviceProvider,
-        WatchlistQueueAdmissionService queueAdmission,
-        CancellationToken cancellationToken)
-    {
-        var queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
-        var orchestrationService = serviceProvider.GetService<DownloadOrchestrationService>();
-        var queueGate = orchestrationService is null
-            ? await queueAdmission.EvaluateQueueGateAsync(queueRepository, cancellationToken)
-            : await queueAdmission.EvaluateQueueGateAsync(
-                queueRepository,
-                orchestrationService,
-                cancellationToken);
-        if (!queueGate.Allowed)
-        {
-            UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
-            return;
-        }
-
-        UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = null });
-        var queueAdmissionToken = queueAdmission.BeginRun(Math.Max(1, settings.WatchMaxItemsPerRun));
-        try
-        {
-            await ProcessPlaylistQueueAdmissionsAsync(
-                repository,
-                serviceProvider,
-                queueAdmission,
-                cancellationToken);
-        }
-        finally
-        {
             if (queueAdmissionToken != 0)
             {
                 queueAdmission.EndRun(queueAdmissionToken);
@@ -914,6 +873,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         IServiceProvider serviceProvider,
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         IReadOnlyList<WatchlistReconciliationRequestDto> reconciliationRequests,
+        bool queueAdmissionAllowed,
         CancellationToken stoppingToken)
     {
         var repository = serviceProvider.GetRequiredService<LibraryRepository>();
@@ -946,13 +906,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         CleanupStaleState(allItems);
-        UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = null });
-
         var playlistRunResult = await ProcessPlaylistWatchItemsAsync(
             playlistItems,
             settings,
             repository,
             serviceProvider,
+            queueAdmissionAllowed,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
@@ -991,50 +950,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var remainingRequests = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingRequests });
         return playlistRunResult;
-    }
-
-    private async Task ProcessPlaylistQueueAdmissionsAsync(
-        LibraryRepository repository,
-        IServiceProvider serviceProvider,
-        WatchlistQueueAdmissionService queueAdmission,
-        CancellationToken cancellationToken)
-    {
-        if (queueAdmission.GetRemaining() <= 0)
-        {
-            return;
-        }
-
-        var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
-        var playlists = (await repository.GetPlaylistWatchlistAsync(cancellationToken))
-            .ToDictionary(
-                static playlist => $"{NormalizeSource(playlist.Source)}\n{playlist.SourceId.Trim()}",
-                StringComparer.Ordinal);
-        var dueRows = await repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
-        foreach (var playlistRows in dueRows.GroupBy(
-                     static row => $"{NormalizeSource(row.Source)}\n{row.SourceId.Trim()}",
-                     StringComparer.Ordinal))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (queueAdmission.GetRemaining() <= 0)
-            {
-                break;
-            }
-
-            if (!playlists.TryGetValue(playlistRows.Key, out var playlist))
-            {
-                continue;
-            }
-
-            var result = await reconciler.AdmitCachedMissingTracksAsync(
-                playlist,
-                playlistRows.ToList(),
-                cancellationToken);
-            if (queueAdmission.GetRemaining() <= 0
-                || string.Equals(result.QueueStopReason, WatchQueueStopReason.RunBudget.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                break;
-            }
-        }
     }
 
     private async Task RefreshWatchlistIdentityIndexAsync(
@@ -1137,6 +1052,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         LibraryRepository repository,
         IServiceProvider serviceProvider,
+        bool queueAdmissionAllowed,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
@@ -1208,6 +1124,35 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
 
             var playlistResult = execution.PlaylistResult;
+            if (queueAdmissionAllowed
+                && activeItem.Playlist is not null)
+            {
+                var queueAdmission = serviceProvider.GetRequiredService<WatchlistQueueAdmissionService>();
+                var dueRows = (await repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(stoppingToken))
+                    .Where(row => string.Equals(NormalizeSource(row.Source), NormalizeSource(activeItem.Playlist.Source), StringComparison.Ordinal)
+                                  && string.Equals(row.SourceId.Trim(), activeItem.Playlist.SourceId.Trim(), StringComparison.Ordinal))
+                    .ToList();
+                if (dueRows.Count > 0 && queueAdmission.GetRemaining() > 0)
+                {
+                    var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+                    var admission = await reconciler.AdmitCachedMissingTracksAsync(
+                        activeItem.Playlist,
+                        dueRows,
+                        stoppingToken);
+                    playlistResult = MergeVisitAdmission(playlistResult, admission);
+                }
+                else if (dueRows.Count > 0)
+                {
+                    await PersistPlaylistSchedulerStateAsync(
+                        activeItem,
+                        serviceProvider,
+                        WatchlistPlaylistState.QueueBudgetReached,
+                        "The shared missing-track queue limit was reached for this run.",
+                        null,
+                        0,
+                        stoppingToken);
+                }
+            }
             if (playlistResult is { } systemicFailureResult && ShouldRecordSystemicFailure(systemicFailureResult))
             {
                 await OpenSourceCircuitAsync(
@@ -1756,6 +1701,30 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         return null;
+    }
+
+    private static PlaylistReconciliationResult MergeVisitAdmission(
+        PlaylistReconciliationResult? visit,
+        PlaylistReconciliationResult admission)
+    {
+        if (visit is null)
+        {
+            return admission;
+        }
+
+        return visit with
+        {
+            Success = visit.Success && admission.Success,
+            Message = admission.QueuedTracks > 0 || admission.AttemptedTracks > 0
+                ? admission.Message
+                : visit.Message,
+            QueuedTracks = admission.QueuedTracks,
+            AttemptedTracks = admission.AttemptedTracks,
+            FailedTracks = visit.FailedTracks + admission.FailedTracks,
+            Deferred = visit.Deferred || admission.Deferred,
+            QueueStopReason = admission.QueueStopReason ?? visit.QueueStopReason,
+            RemainingQueueableTracks = admission.RemainingQueueableTracks
+        };
     }
 
     private sealed record WatchItem(

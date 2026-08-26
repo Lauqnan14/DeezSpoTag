@@ -140,7 +140,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     await ProcessClaimedJobAsync(
                         repository,
                         job,
-                        budget.IgnoreReconciliationLeaseOwner,
                         cancellationToken);
                     processed++;
                     if (budget.OnProgress != null)
@@ -377,7 +376,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private async Task ProcessClaimedJobAsync(
         LibraryRepository repository,
         WatchlistSyncJobDto job,
-        string? ignoreReconciliationLeaseOwner,
         CancellationToken cancellationToken)
     {
         using var leaseRenewalCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -410,7 +408,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             var outcome = await TrySyncOnceAsync(
                 request,
                 job.AttemptCount + 1,
-                ignoreReconciliationLeaseOwner,
                 cancellationToken);
             switch (outcome.Kind)
             {
@@ -438,15 +435,10 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                                 job.SnapshotId ?? string.Empty,
                                 cancellationToken);
                         }
-
-                        await ResumePlaylistReconciliationAfterInitialSyncAsync(repository, job, cancellationToken);
                     }
                     return;
                 case SyncAttemptOutcomeKind.Obsolete:
-                    if (await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken))
-                    {
-                        await ResumePlaylistReconciliationAfterInitialSyncAsync(repository, job, cancellationToken);
-                    }
+                    await repository.DeleteObsoleteWatchlistSyncJobAsync(job, _leaseOwner, cancellationToken);
                     return;
                 case SyncAttemptOutcomeKind.Blocked:
                     await repository.BlockWatchlistSyncJobAsync(job.Id, _leaseOwner, outcome.Message, cancellationToken);
@@ -547,47 +539,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
         }
     }
 
-    private async Task ResumePlaylistReconciliationAfterInitialSyncAsync(
-        LibraryRepository repository,
-        WatchlistSyncJobDto completedJob,
-        CancellationToken cancellationToken)
-    {
-        if (!IsPlaylistJob(completedJob.TrackId))
-        {
-            return;
-        }
-
-        var remainingInitialJobs = (await repository.GetWatchlistSyncJobsAsync(
-                completedJob.Source,
-                completedJob.PlaylistId,
-                cancellationToken))
-            .Any(static job => IsPlaylistJob(job.TrackId));
-        if (remainingInitialJobs)
-        {
-            return;
-        }
-
-        var state = await repository.GetPlaylistWatchStateAsync(
-            completedJob.Source,
-            completedJob.PlaylistId,
-            cancellationToken);
-        if (state == null
-            || !string.Equals(
-                state.LastRunStatus,
-                WatchlistStateService.ToPersistedStatus(WatchlistPlaylistState.WaitingForTargetSync),
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        await repository.EnqueueWatchlistReconciliationRequestAsync(
-            "playlist",
-            completedJob.Source,
-            completedJob.PlaylistId,
-            cancellationToken);
-        _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
-    }
-
     private async Task RenewLeaseAsync(LibraryRepository repository, WatchlistSyncJobDto job, CancellationToken cancellationToken)
     {
         var interval = TimeSpan.FromTicks(ProcessingLease.Ticks / 3);
@@ -613,7 +564,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
     private async Task<SyncAttemptOutcome> TrySyncOnceAsync(
         SyncRequest request,
         int attempt,
-        string? ignoreReconciliationLeaseOwner,
         CancellationToken cancellationToken)
     {
         try
@@ -701,17 +651,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                     : SyncAttemptOutcome.Retry(artworkResult.Message);
             }
 
-            if (await repository.HasWatchlistReconciliationRequestAsync(
-                    "playlist",
-                    playlist.Source,
-                    playlist.SourceId,
-                    ignoreReconciliationLeaseOwner,
-                    cancellationToken))
-            {
-                _coordinatorSignal.Request(WatchlistWakeReason.Reconciliation);
-                return SyncAttemptOutcome.Retry("Waiting for the durable playlist reconciliation request to complete.");
-            }
-
             var watcher = scope.ServiceProvider.GetRequiredService<PlaylistWatchReconciler>();
             var candidates = await watcher.GetCachedPlaylistTrackCandidatesAsync(
                 playlist.Source,
@@ -739,11 +678,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 
             if (syncResult.Success)
             {
-                await AddPlaylistSyncHistoryAsync(
-                    scope.ServiceProvider,
-                    playlist,
-                    WatchlistHistoryStatus.MediaSyncCompleted,
-                    cancellationToken);
                 LogSyncCompleted(request, attempt, syncResult.SyncedTracks);
                 return SyncAttemptOutcome.Completed(
                     syncResult.Message,
@@ -753,11 +687,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             }
 
             var terminalFailure = IsTerminalSyncFailure(syncResult);
-            await AddPlaylistSyncHistoryAsync(
-                scope.ServiceProvider,
-                playlist,
-                terminalFailure ? WatchlistHistoryStatus.MediaSyncBlocked : WatchlistHistoryStatus.MediaSyncWaiting,
-                cancellationToken);
             LogSyncNotReady(request, attempt, syncResult.Message);
             var failureClass = ClassifySyncFailureClass(syncResult);
             return terminalFailure
@@ -901,26 +830,6 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
             NormalizeTargetService(target),
             normalizedTarget,
             StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static async Task AddPlaylistSyncHistoryAsync(
-        IServiceProvider serviceProvider,
-        PlaylistWatchlistDto playlist,
-        WatchlistHistoryStatus status,
-        CancellationToken cancellationToken)
-    {
-        await serviceProvider.GetRequiredService<WatchlistHistoryService>().RecordAsync(
-            new WatchlistHistoryWrite(
-                playlist.Source,
-                "playlist",
-                playlist.SourceId,
-                WatchlistHistoryService.PlaylistItemKey(playlist.Source, playlist.SourceId),
-                playlist.Name,
-                "playlist",
-                playlist.TrackCount ?? 0,
-                status,
-                null),
-            cancellationToken);
     }
 
     private void LogPlaylistMissing(SyncRequest request)
@@ -1135,20 +1044,17 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
 public sealed record TargetSyncBudget(
     (string Source, string PlaylistId)? PlaylistFilter,
     WatchlistSyncJobKind Kind,
-    string? IgnoreReconciliationLeaseOwner,
     Func<CancellationToken, Task>? OnProgress = null,
     Func<bool>? ShouldStop = null)
 {
     public static TargetSyncBudget DrainAll(
         WatchlistSyncJobKind kind,
         (string Source, string PlaylistId)? playlistFilter = null,
-        string? ignoreReconciliationLeaseOwner = null,
         Func<CancellationToken, Task>? onProgress = null,
         Func<bool>? shouldStop = null)
         => new(
             PlaylistFilter: playlistFilter,
             Kind: kind,
-            IgnoreReconciliationLeaseOwner: ignoreReconciliationLeaseOwner,
             OnProgress: onProgress,
             ShouldStop: shouldStop);
 }
@@ -1173,13 +1079,9 @@ public enum WatchlistHistoryStatus
     MetadataRefreshed,
     SourceUpdated,
     MediaSyncSkippedSyncServiceUnavailable,
-    MediaSyncCompleted,
-    MediaSyncWaiting,
-    MediaSyncBlocked,
     MissingTracksQueued,
     DuplicateSharedTrackLinked,
     WatchlistDisabled,
-    MediaSyncDeferredQueueActive,
     QueueBudgetReached,
     TrackQueueDeferred,
     SourceFailure,

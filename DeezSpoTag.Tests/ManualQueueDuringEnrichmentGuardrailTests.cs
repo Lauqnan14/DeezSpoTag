@@ -60,6 +60,7 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
             ReadSource("DeezSpoTag.Services", "Download", "Queue", "DownloadQueueRepository.cs"),
             StringComparison.Ordinal);
         Assert.Contains("intentService.EnqueueAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("skipDownloadGate: true", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("intentService.EnqueueManualAsync", watchSource, StringComparison.Ordinal);
     }
 

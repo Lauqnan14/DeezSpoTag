@@ -1745,17 +1745,15 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
-            await _libraryRepository.UpsertWatchlistFinalizationOutboxAsync(
+            await _libraryRepository.ResolvePlaylistWatchMissingTracksByQueueAsync(
                 item.QueueUuid,
-                item.PayloadJson,
-                itemFinalPaths,
                 cancellationToken);
             queued |= itemFinalPaths.Count > 0;
         }
         if (queued)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _watchlistRunSignal?.Request(WatchlistWakeReason.Finalization);
+            _watchlistRunSignal?.Request(WatchlistWakeReason.TargetSync);
         }
     }
 

@@ -255,7 +255,8 @@ public sealed class DownloadIntentService
         CancellationToken cancellationToken,
         bool preferIsrcOnly = false,
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules = null,
-        bool allowAutomaticSecondaryQuality = true)
+        bool allowAutomaticSecondaryQuality = true,
+        bool skipDownloadGate = false)
         => EnqueueCoreAsync(
             intent,
             preferIsrcOnly,
@@ -263,7 +264,8 @@ public sealed class DownloadIntentService
             blockRules,
             allowAutomaticSecondaryQuality,
             "queued",
-            cancellationToken);
+            cancellationToken,
+            skipDownloadGate);
 
     public Task<DownloadIntentResult> EnqueueManualAsync(
         DownloadIntent intent,
@@ -411,7 +413,8 @@ public sealed class DownloadIntentService
         IReadOnlyList<PlaylistTrackBlockRule>? blockRules,
         bool allowAutomaticSecondaryQuality,
         string initialStatus,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool skipDownloadGate = false)
     {
         var resolution = await TryPrepareEnqueueResolutionAsync(
             intent,
@@ -419,7 +422,8 @@ public sealed class DownloadIntentService
             allowManualQueueDuringEnrichment,
             allowAutomaticSecondaryQuality,
             sourceSettingsSnapshot: null,
-            cancellationToken);
+            cancellationToken,
+            skipDownloadGate);
         if (resolution.Failure != null)
         {
             return resolution.Failure;
@@ -1353,12 +1357,16 @@ public sealed class DownloadIntentService
         bool allowManualQueueDuringEnrichment,
         bool allowAutomaticSecondaryQuality,
         QueueSourceSettingsSnapshot? sourceSettingsSnapshot,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool skipDownloadGate = false)
     {
-        var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment, cancellationToken);
-        if (gateFailure != null)
+        if (!skipDownloadGate)
         {
-            return (gateFailure, null);
+            var gateFailure = await TryBlockByDownloadGateAsync(allowManualQueueDuringEnrichment, cancellationToken);
+            if (gateFailure != null)
+            {
+                return (gateFailure, null);
+            }
         }
 
         var preparation = await PrepareEnqueueAsync(intent, allowManualQueueDuringEnrichment, cancellationToken, sourceSettingsSnapshot);

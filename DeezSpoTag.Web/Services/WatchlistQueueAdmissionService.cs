@@ -46,17 +46,11 @@ public enum WatchlistPlaylistState
     Backoff,
     CircuitOpen,
     WatchlistDisabled,
-    MediaSyncDeferredQueueActive,
     QueueBudgetReached,
     TrackQueueDeferred,
     SourceFailure,
     Deferred,
     SyncConfigurationError,
-    WaitingForDownloads,
-    WaitingForTargetSync,
-    MediaSyncCompleted,
-    MediaSyncWaiting,
-    MediaSyncBlocked,
     MetadataRefreshed,
     ConfigurationRequired
 }
@@ -134,17 +128,11 @@ public sealed class WatchlistStateService
             "backoff" => WatchlistPlaylistState.Backoff,
             "circuit_open" => WatchlistPlaylistState.CircuitOpen,
             "watchlist_disabled" => WatchlistPlaylistState.WatchlistDisabled,
-            "media_sync_deferred_queue_active" => WatchlistPlaylistState.MediaSyncDeferredQueueActive,
             "queue_budget_reached" => WatchlistPlaylistState.QueueBudgetReached,
             "track_queue_deferred" => WatchlistPlaylistState.TrackQueueDeferred,
             "source_failure" => WatchlistPlaylistState.SourceFailure,
             "deferred" => WatchlistPlaylistState.Deferred,
             "sync_configuration_error" => WatchlistPlaylistState.SyncConfigurationError,
-            "waiting_for_downloads" => WatchlistPlaylistState.WaitingForDownloads,
-            "waiting_for_target_sync" => WatchlistPlaylistState.WaitingForTargetSync,
-            "media_sync_completed" => WatchlistPlaylistState.MediaSyncCompleted,
-            "media_sync_waiting" => WatchlistPlaylistState.MediaSyncWaiting,
-            "media_sync_blocked" => WatchlistPlaylistState.MediaSyncBlocked,
             "metadata_refreshed" => WatchlistPlaylistState.MetadataRefreshed,
             "configuration_required" => WatchlistPlaylistState.ConfigurationRequired,
             _ => LogUnknownAndPending(status)
@@ -174,9 +162,7 @@ public sealed class WatchlistStateService
             return null;
         }
 
-        if (state is WatchlistPlaylistState.WaitingForTargetSync
-            or WatchlistPlaylistState.Reconciling
-            or WatchlistPlaylistState.WaitingForDownloads
+        if (state is WatchlistPlaylistState.Reconciling
             or WatchlistPlaylistState.DeltaDetected
             or WatchlistPlaylistState.Expanding
             or WatchlistPlaylistState.HeadFetching)
@@ -194,16 +180,10 @@ public sealed class WatchlistStateService
             WatchlistPlaylistState.DeltaDetected => "delta_detected",
             WatchlistPlaylistState.CircuitOpen => "circuit_open",
             WatchlistPlaylistState.WatchlistDisabled => "watchlist_disabled",
-            WatchlistPlaylistState.MediaSyncDeferredQueueActive => "media_sync_deferred_queue_active",
             WatchlistPlaylistState.QueueBudgetReached => "queue_budget_reached",
             WatchlistPlaylistState.TrackQueueDeferred => "track_queue_deferred",
             WatchlistPlaylistState.SourceFailure => "source_failure",
             WatchlistPlaylistState.SyncConfigurationError => "sync_configuration_error",
-            WatchlistPlaylistState.WaitingForDownloads => "waiting_for_downloads",
-            WatchlistPlaylistState.WaitingForTargetSync => "waiting_for_target_sync",
-            WatchlistPlaylistState.MediaSyncCompleted => "media_sync_completed",
-            WatchlistPlaylistState.MediaSyncWaiting => "media_sync_waiting",
-            WatchlistPlaylistState.MediaSyncBlocked => "media_sync_blocked",
             WatchlistPlaylistState.MetadataRefreshed => "metadata_refreshed",
             _ => ToSnakeCase(state.ToString())
         };

@@ -691,8 +691,6 @@ public sealed record PlaylistWatchlistDto(
     int? ReviewTrackCount = null,
     string? SourceUrl = null,
     string? SourceStorefront = null,
-    int? WaitingForTargetCount = null,
-    int? WaitingForIdentityCount = null,
     int? MissingTrackCount = null,
     int? MappingRetryCount = null,
     int? BlockedTrackCount = null,

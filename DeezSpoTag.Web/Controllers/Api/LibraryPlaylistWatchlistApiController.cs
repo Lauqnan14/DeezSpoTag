@@ -241,8 +241,7 @@ public partial class WatchlistApiController : ControllerBase
             targetSyncJobs = syncJobs,
             presentation = new
             {
-                waitingForTarget = playlists.Sum(static item => item.WaitingForTargetCount ?? 0),
-                waitingForIdentity = playlists.Sum(static item => item.WaitingForIdentityCount ?? 0),
+                review = playlists.Sum(static item => item.ReviewTrackCount ?? 0),
                 missing = playlists.Sum(static item => item.MissingTrackCount ?? 0),
                 mappingRetry = playlists.Sum(static item => item.MappingRetryCount ?? 0),
                 blocked = playlists.Sum(static item => item.BlockedTrackCount ?? 0),
@@ -1608,26 +1607,12 @@ public partial class WatchlistApiController : ControllerBase
                     $"Verified in {status?.TargetService ?? "the target server"} playlist.");
         }
 
-        if (syncStatus == "waiting_for_identity")
+        if (status?.LocalTrackId.HasValue == true)
         {
-            var missingTargets = string.IsNullOrWhiteSpace(status?.MissingTargetServices)
-                ? status?.TargetService
-                : status.MissingTargetServices;
             return new PlaylistTrackLocationStatus(
-                "waiting_for_identity",
-                $"Waiting for {missingTargets ?? "identity"}",
-                "Available locally but the shared-library identity is not resolved on every target.");
-        }
-
-        if (syncStatus is "target_visible" or "waiting_for_target")
-        {
-            var missingTargets = string.IsNullOrWhiteSpace(status?.MissingTargetServices)
-                ? status?.TargetService
-                : status.MissingTargetServices;
-            return new PlaylistTrackLocationStatus(
-                "waiting_for_target",
-                $"Waiting for {missingTargets ?? "target"}",
-                "Available locally but not verified in the target playlist.");
+                "library",
+                "In Library",
+                "Available in the local library.");
         }
 
         if (syncStatus == "mapping_retry")

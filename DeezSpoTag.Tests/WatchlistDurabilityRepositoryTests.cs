@@ -81,10 +81,7 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
         var global = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
             1, TimeSpan.FromMinutes(1), "worker-c"));
         Assert.Equal("all", global.Kind);
-        await Task.Delay(5);
-        Assert.False(await _repository.HasWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
         Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
-        Assert.True(await _repository.HasWatchlistReconciliationRequestAsync("playlist", "tidal", "list-c"));
         Assert.Equal(1, await _repository.CompleteClaimedWatchlistReconciliationRequestsAsync([global], "worker-c"));
 
         var originalListB = Assert.Single(initiallyClaimed, request => request.Identifier == "list-b");
@@ -123,12 +120,21 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
             "priority-b",
             [
                 MissingTrack("b-2", 2),
-                MissingTrack("b-1", 1)
+                MissingTrack("b-1", 1),
+                MissingTrack("b-review", 3)
             ]);
+        await _repository.MarkPlaylistWatchMissingTrackStatusAsync(
+            "spotify",
+            "priority-b",
+            "b-review",
+            "review",
+            null,
+            null);
 
         var rows = await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync();
 
         Assert.Equal(["a-1", "a-2", "b-1", "b-2"], rows.Select(static row => row.TrackSourceId));
+        Assert.DoesNotContain(rows, static row => row.TrackSourceId == "b-review");
     }
 
     [Fact]
@@ -293,22 +299,6 @@ INSERT INTO track_local (track_id, audio_file_id) VALUES (9001, 9001);",
             WatchlistSyncJobKind.Membership);
         Assert.All(remainingMembership, job => Assert.Equal("playlist", job.TrackId));
         Assert.DoesNotContain(remainingMembership, job => job.TrackId.StartsWith("artwork:", StringComparison.OrdinalIgnoreCase));
-    }
-
-    [Fact]
-    public async Task HasWatchlistReconciliationRequest_IgnoresOwnProcessingLease()
-    {
-        Assert.True(await _repository.EnqueueWatchlistReconciliationRequestAsync("playlist", "spotify", "lease-ignore"));
-        var claimed = Assert.Single(await _repository.ClaimDueWatchlistReconciliationRequestsAsync(
-            1, TimeSpan.FromMinutes(15), "coord-owner"));
-
-        Assert.True(await _repository.HasWatchlistReconciliationRequestAsync("playlist", "spotify", "lease-ignore"));
-        Assert.False(await _repository.HasWatchlistReconciliationRequestAsync(
-            "playlist", "spotify", "lease-ignore", "coord-owner"));
-        Assert.True(await _repository.HasWatchlistReconciliationRequestAsync(
-            "playlist", "spotify", "lease-ignore", "other-owner"));
-        Assert.Equal("lease-ignore", claimed.Identifier);
-        Assert.Equal(1, await _repository.GetWatchlistReconciliationRequestCountAsync());
     }
 
     [Fact]

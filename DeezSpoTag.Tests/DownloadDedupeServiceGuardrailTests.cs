@@ -136,6 +136,8 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.Contains("CheckFinalDestinationAsync", qobuz, StringComparison.Ordinal);
         Assert.Contains("CheckFinalDestinationAsync", tidal, StringComparison.Ordinal);
         Assert.Contains("CheckFinalDestinationAsync", amazon, StringComparison.Ordinal);
+        Assert.Contains("IsLossyToLosslessUpgrade(request.RequestedLocalQualityRank, bestLocalQualityRank)", dedupe, StringComparison.Ordinal);
+        Assert.DoesNotContain("request.RequestedLocalQualityRank.Value > bestLocalQualityRank.Value", dedupe, StringComparison.Ordinal);
         Assert.DoesNotContain("TryResolveExistingDownloadPath", qobuz, StringComparison.Ordinal);
         Assert.DoesNotContain("TryResolveExpectedExisting", qobuz, StringComparison.Ordinal);
         Assert.DoesNotContain("CleanUnverifiedExpectedOutput", qobuz, StringComparison.Ordinal);
@@ -178,8 +180,8 @@ public sealed class DownloadDedupeServiceGuardrailTests
         Assert.Contains("if (!IsFinalDestinationDedupeBlock(failureMessage))", source, StringComparison.Ordinal);
         Assert.Contains("Skipped before download: final destination already contains", source, StringComparison.Ordinal);
         Assert.Contains("TryCompleteWatchlistFinalDestinationDedupeAsync", source, StringComparison.Ordinal);
-        Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", source, StringComparison.Ordinal);
-        Assert.Contains("RequestPlaylistSyncAsync", source, StringComparison.Ordinal);
+        Assert.Contains("ResolvePlaylistWatchMissingTracksByQueueAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertWatchlistFinalizationOutboxAsync", source, StringComparison.Ordinal);
 
         var qobuz = ReadSource("DeezSpoTag.Services", "Download", "Qobuz", "QobuzEngineProcessor.cs");
         var apple = ReadSource("DeezSpoTag.Services", "Download", "Apple", "AppleEngineProcessor.cs");
@@ -315,6 +317,8 @@ public sealed class DownloadDedupeServiceGuardrailTests
             "private readonly record struct PreQueueDedupeHandledResult");
 
         Assert.Contains("dedupeService.CheckAsync", selection, StringComparison.Ordinal);
+        Assert.Contains("ResolveWatchRequestedLocalQualityRank(preparedIntent)", selection, StringComparison.Ordinal);
+        Assert.Contains("AllowQualityUpgrade = true", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveLocalCandidateIdsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("AddLocalMetadataMatchesAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("TryHandleKnownPlaylistTrackAsync", source, StringComparison.Ordinal);

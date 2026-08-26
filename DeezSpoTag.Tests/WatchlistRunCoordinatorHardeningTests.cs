@@ -980,7 +980,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
         Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("stale_recovered"));
         Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse(unknown));
         Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse(unknown));
-        Assert.Equal(WatchlistPlaylistState.WaitingForTargetSync, WatchlistStateService.Parse("waiting_for_target_sync"));
+        Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("waiting_for_target_sync"));
         Assert.Equal(WatchlistPlaylistState.Pending, WatchlistStateService.Parse("pending"));
         Assert.Equal(1, logger.Entries.Count(entry =>
             entry.Level == LogLevel.Warning

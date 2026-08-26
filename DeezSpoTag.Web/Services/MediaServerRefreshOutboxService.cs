@@ -14,17 +14,20 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
     private readonly LibraryRepository _repository;
     private readonly MediaServerLibraryRefreshService _refreshService;
     private readonly ILogger<MediaServerRefreshOutboxService> _logger;
+    private readonly WatchlistRunSignal? _watchlistRunSignal;
     private readonly SemaphoreSlim _wakeSignal = new(0, 1);
     private readonly string _leaseOwner = $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
 
     public MediaServerRefreshOutboxService(
         LibraryRepository repository,
         MediaServerLibraryRefreshService refreshService,
-        ILogger<MediaServerRefreshOutboxService> logger)
+        ILogger<MediaServerRefreshOutboxService> logger,
+        WatchlistRunSignal? watchlistRunSignal = null)
     {
         _repository = repository;
         _refreshService = refreshService;
         _logger = logger;
+        _watchlistRunSignal = watchlistRunSignal;
     }
 
     public async Task EnqueueAsync(
@@ -152,6 +155,7 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
             if (await RefreshAndVerifyRequestedIdentitiesAsync(job, cancellationToken))
             {
                 await _repository.CompleteMediaServerRefreshAsync(job.Id, _leaseOwner, cancellationToken);
+                _watchlistRunSignal?.Request(WatchlistWakeReason.TargetSync);
                 return;
             }
 
@@ -233,13 +237,27 @@ public sealed class MediaServerRefreshOutboxService : BackgroundService
         CancellationToken cancellationToken)
     {
         var attempt = job.AttemptCount + 1;
-        var delaySeconds = attempt == 1 ? 5 : Math.Min(30, attempt * 5);
         await _repository.RetryMediaServerRefreshAsync(
             job.Id,
             _leaseOwner,
             attempt,
-            DateTimeOffset.UtcNow.AddSeconds(delaySeconds),
+            DateTimeOffset.UtcNow.Add(ResolveIdentityImportRetryDelay(attempt)),
             error,
             cancellationToken);
+    }
+
+    internal static TimeSpan ResolveIdentityImportRetryDelay(int attempt)
+    {
+        if (attempt <= 1)
+        {
+            return TimeSpan.FromMinutes(2);
+        }
+
+        if (attempt == 2)
+        {
+            return TimeSpan.FromMinutes(3);
+        }
+
+        return TimeSpan.FromMinutes(5);
     }
 }

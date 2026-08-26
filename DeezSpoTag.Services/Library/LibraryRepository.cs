@@ -8317,7 +8317,13 @@ SELECT id,
        created_at,
        pws.last_checked_utc,
        pws.snapshot_id,
-       pws.last_run_status,
+       CASE
+         WHEN lower(COALESCE(pws.last_run_status, '')) IN (
+              'waiting_for_target_sync', 'media_sync_waiting', 'media_sync_completed',
+              'media_sync_blocked', 'media_sync_deferred_queue_active', 'waiting_for_downloads')
+           THEN NULL
+         ELSE pws.last_run_status
+       END,
        pws.last_run_message,
        pws.next_attempt_utc,
        pws.consecutive_failures,
@@ -8331,8 +8337,6 @@ SELECT id,
        COALESCE(state_summary.review_count, 0),
        pw.source_url,
        pw.source_storefront,
-       COALESCE(state_breakdown.waiting_for_target_count, 0),
-       COALESCE(state_breakdown.waiting_for_identity_count, 0),
        COALESCE(missing_summary.missing_count, 0),
        COALESCE(state_breakdown.mapping_retry_count, 0),
        COALESCE(state_breakdown.blocked_count, 0),
@@ -8342,21 +8346,13 @@ LEFT JOIN playlist_watch_state pws
     ON pws.source = pw.source
    AND pws.source_id = pw.source_id
 LEFT JOIN (
-    -- A track counts as verified-synced only once it has been confirmed on every currently
-    -- configured target, not just one of them -- see playlist_watch_track_sync_progress
-    -- (shared with GetPlaylistWatchTrackStatusesAsync so this logic is defined exactly once).
-    SELECT progress.source,
-           progress.source_id,
-           COUNT(DISTINCT progress.track_source_id) AS verified_sync_count
-    FROM playlist_watch_track_sync_progress progress
-    JOIN playlist_watch_track track
-      ON track.source = progress.source
-     AND track.source_id = progress.source_id
-     AND track.track_source_id = progress.track_source_id
+    SELECT track.source,
+           track.source_id,
+           COUNT(DISTINCT track.track_source_id) AS verified_sync_count
+    FROM playlist_watch_track track
     WHERE lower(COALESCE(track.identity_status, '')) <> 'review'
-      AND progress.configured_target_count > 0
-      AND progress.verified_target_count >= progress.configured_target_count
-    GROUP BY progress.source, progress.source_id
+      AND track.local_track_id IS NOT NULL
+    GROUP BY track.source, track.source_id
 ) track_summary
     ON track_summary.source = pw.source
    AND track_summary.source_id = pw.source_id
@@ -8380,12 +8376,8 @@ LEFT JOIN (
     ON state_summary.source = pw.source
    AND state_summary.source_id = pw.source_id
 LEFT JOIN (
-    -- Presentation buckets share the track CASE in playlist_watch_track_presentation_status
-    -- (ordinals 24-29 are appended after source_storefront so 0-23 stay valid).
     SELECT source,
            source_id,
-           COUNT(DISTINCT CASE WHEN presentation_status = 'waiting_for_target' THEN track_source_id END) AS waiting_for_target_count,
-           COUNT(DISTINCT CASE WHEN presentation_status = 'waiting_for_identity' THEN track_source_id END) AS waiting_for_identity_count,
            COUNT(DISTINCT CASE WHEN presentation_status = 'missing' THEN track_source_id END) AS missing_count,
            COUNT(DISTINCT CASE WHEN presentation_status = 'mapping_retry' THEN track_source_id END) AS mapping_retry_count,
            COUNT(DISTINCT CASE WHEN presentation_status = 'blocked' THEN track_source_id END) AS blocked_count,
@@ -8451,12 +8443,10 @@ ORDER BY CASE WHEN pw.sync_priority IS NULL OR pw.sync_priority <= 0 THEN 1 ELSE
                 ReviewTrackCount: await reader.IsDBNullAsync(21, cancellationToken) ? 0 : reader.GetInt32(21),
                 SourceUrl: await reader.IsDBNullAsync(22, cancellationToken) ? null : reader.GetString(22),
                 SourceStorefront: await reader.IsDBNullAsync(23, cancellationToken) ? null : reader.GetString(23),
-                WaitingForTargetCount: await reader.IsDBNullAsync(24, cancellationToken) ? 0 : reader.GetInt32(24),
-                WaitingForIdentityCount: await reader.IsDBNullAsync(25, cancellationToken) ? 0 : reader.GetInt32(25),
-                MissingTrackCount: await reader.IsDBNullAsync(26, cancellationToken) ? 0 : reader.GetInt32(26),
-                MappingRetryCount: await reader.IsDBNullAsync(27, cancellationToken) ? 0 : reader.GetInt32(27),
-                BlockedTrackCount: await reader.IsDBNullAsync(28, cancellationToken) ? 0 : reader.GetInt32(28),
-                FailedTrackCount: await reader.IsDBNullAsync(29, cancellationToken) ? 0 : reader.GetInt32(29)));
+                MissingTrackCount: await reader.IsDBNullAsync(24, cancellationToken) ? 0 : reader.GetInt32(24),
+                MappingRetryCount: await reader.IsDBNullAsync(25, cancellationToken) ? 0 : reader.GetInt32(25),
+                BlockedTrackCount: await reader.IsDBNullAsync(26, cancellationToken) ? 0 : reader.GetInt32(26),
+                FailedTrackCount: await reader.IsDBNullAsync(27, cancellationToken) ? 0 : reader.GetInt32(27)));
         }
 
         return items;
@@ -11496,9 +11486,52 @@ ON CONFLICT(source, source_id, track_source_id) DO UPDATE SET
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        const string resolveLocalSql = @"
+        var keepMissingIds = tracks
+            .Where(static item => !string.IsNullOrWhiteSpace(item.TrackSourceId))
+            .Select(static item => item.TrackSourceId.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var resolveLocalSql = @"
 UPDATE playlist_watch_missing_track
 SET status='resolved',
+    queue_uuid=NULL,
+    last_error=NULL,
+    retry_after_utc=NULL,
+    updated_at=CURRENT_TIMESTAMP
+WHERE source=@source
+  AND source_id=@sourceId
+  AND lower(COALESCE(status, '')) NOT IN ('queued', 'downloading')
+  AND EXISTS (
+      SELECT 1
+      FROM playlist_watch_track track
+      WHERE track.source=playlist_watch_missing_track.source
+        AND track.source_id=playlist_watch_missing_track.source_id
+        AND track.track_source_id=playlist_watch_missing_track.track_source_id
+        AND track.local_track_id IS NOT NULL
+        AND lower(COALESCE(track.identity_status, '')) <> 'review'
+  )";
+        if (keepMissingIds.Count > 0)
+        {
+            resolveLocalSql += " AND track_source_id NOT IN ("
+                + string.Join(", ", keepMissingIds.Select(static (_, index) => "@keepMissing" + index))
+                + ")";
+        }
+
+        await using (var resolveLocalCommand = new SqliteCommand(resolveLocalSql, connection, transaction))
+        {
+            resolveLocalCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            resolveLocalCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            for (var index = 0; index < keepMissingIds.Count; index++)
+            {
+                resolveLocalCommand.Parameters.AddWithValue("keepMissing" + index, keepMissingIds[index]);
+            }
+
+            await resolveLocalCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        const string markReviewSql = @"
+UPDATE playlist_watch_missing_track
+SET status='review',
     queue_uuid=NULL,
     last_error=NULL,
     retry_after_utc=NULL,
@@ -11511,14 +11544,13 @@ WHERE source=@source
       WHERE track.source=playlist_watch_missing_track.source
         AND track.source_id=playlist_watch_missing_track.source_id
         AND track.track_source_id=playlist_watch_missing_track.track_source_id
-        AND track.local_track_id IS NOT NULL
-        AND lower(COALESCE(track.identity_status, '')) <> 'review'
+        AND lower(COALESCE(track.identity_status, '')) = 'review'
   );";
-        await using (var resolveLocalCommand = new SqliteCommand(resolveLocalSql, connection, transaction))
+        await using (var markReviewCommand = new SqliteCommand(markReviewSql, connection, transaction))
         {
-            resolveLocalCommand.Parameters.AddWithValue(SourceField, normalizedSource);
-            resolveLocalCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
-            await resolveLocalCommand.ExecuteNonQueryAsync(cancellationToken);
+            markReviewCommand.Parameters.AddWithValue(SourceField, normalizedSource);
+            markReviewCommand.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+            await markReviewCommand.ExecuteNonQueryAsync(cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -12519,42 +12551,6 @@ WHERE kind=@kind AND source=@source AND identifier=@identifier AND lease_owner=@
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
     }
 
-    public Task<bool> HasWatchlistReconciliationRequestAsync(
-        string kind,
-        string source,
-        string identifier,
-        CancellationToken cancellationToken = default)
-        => HasWatchlistReconciliationRequestAsync(kind, source, identifier, ignoreLeaseOwner: null, cancellationToken);
-
-    public async Task<bool> HasWatchlistReconciliationRequestAsync(
-        string kind,
-        string source,
-        string identifier,
-        string? ignoreLeaseOwner,
-        CancellationToken cancellationToken = default)
-    {
-        await using var connection = await OpenConnectionAsync(cancellationToken);
-        await using var command = new SqliteCommand(@"
-SELECT 1
-FROM watchlist_reconciliation_request
-WHERE kind=@kind AND source=@source AND identifier=@identifier
-  AND lower(status) IN ('pending', 'retry', 'processing')
-  AND NOT (
-        @ignoreLeaseOwner IS NOT NULL
-        AND lease_owner=@ignoreLeaseOwner
-        AND lower(status)='processing'
-        AND datetime(lease_until_utc) > datetime('now')
-      )
-LIMIT 1;", connection);
-        command.Parameters.AddWithValue("kind", kind.Trim().ToLowerInvariant());
-        command.Parameters.AddWithValue(SourceField, NormalizePlaylistWatchSource(source));
-        command.Parameters.AddWithValue("identifier", identifier.Trim());
-        command.Parameters.AddWithValue(
-            "ignoreLeaseOwner",
-            string.IsNullOrWhiteSpace(ignoreLeaseOwner) ? DBNull.Value : ignoreLeaseOwner.Trim());
-        return await command.ExecuteScalarAsync(cancellationToken) is not null;
-    }
-
     public async Task UpsertWatchlistFinalizationOutboxAsync(
         string queueUuid,
         string? payloadJson,
@@ -12927,6 +12923,35 @@ LIMIT 1;", connection);
         string snapshotId,
         bool force,
         CancellationToken cancellationToken = default)
+        => await EnqueueWatchlistPlaylistSyncJobsAsync(
+            source,
+            playlistId,
+            snapshotId,
+            targetService: null,
+            force,
+            cancellationToken);
+
+    public async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistSyncJobAsync(
+        string source,
+        string playlistId,
+        string snapshotId,
+        string targetService,
+        CancellationToken cancellationToken = default)
+        => await EnqueueWatchlistPlaylistSyncJobsAsync(
+            source,
+            playlistId,
+            snapshotId,
+            targetService,
+            force: true,
+            cancellationToken);
+
+    private async Task<IReadOnlyList<WatchlistSyncJobDto>> EnqueueWatchlistPlaylistSyncJobsAsync(
+        string source,
+        string playlistId,
+        string snapshotId,
+        string? targetService,
+        bool force,
+        CancellationToken cancellationToken)
     {
         if (!TryNormalizePlaylistWatchKey(source, playlistId, out var normalizedSource, out var normalizedPlaylistId))
         {
@@ -12956,6 +12981,7 @@ FROM playlist_watch_preferences preference,
      END) configured
 WHERE preference.source=@source AND preference.source_id=@playlistId
   AND lower(trim(configured.value)) IN ('plex','jellyfin','navidrome')
+  AND (@targetService IS NULL OR lower(trim(configured.value))=@targetService)
 {skipApplied}
 ON CONFLICT(source, playlist_id, track_id, target_service) DO UPDATE SET
  attempt_count=CASE WHEN watchlist_sync_job.snapshot_id=excluded.snapshot_id
@@ -12979,6 +13005,9 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
         command.Parameters.AddWithValue("playlistId", normalizedPlaylistId);
         command.Parameters.AddWithValue("snapshotId", snapshotId);
         command.Parameters.AddWithValue("plexSnapshotId", $"{snapshotId}:plex-membership-v2");
+        command.Parameters.AddWithValue(
+            "targetService",
+            string.IsNullOrWhiteSpace(targetService) ? DBNull.Value : targetService.Trim().ToLowerInvariant());
         var jobs = new List<WatchlistSyncJobDto>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))

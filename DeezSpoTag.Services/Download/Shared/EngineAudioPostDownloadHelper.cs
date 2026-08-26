@@ -3125,10 +3125,20 @@ public static partial class EngineAudioPostDownloadHelper
         var resolvedQueueUuid = ResolveQueueUuid(queueUuid, payload);
         if (string.Equals(status, CompletedStatus, StringComparison.OrdinalIgnoreCase))
         {
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                resolvedQueueUuid,
+                payload.WatchlistSource,
+                payload.WatchlistPlaylistId,
+                payload.WatchlistTrackId,
+                CompletedStatus,
+                cancellationToken);
             await MarkSharedWatchDownloadClaimsDownloadedAsync(
                 libraryRepository,
                 resolvedQueueUuid,
                 payload,
+                cancellationToken);
+            await libraryRepository.ResolvePlaylistWatchMissingTracksByQueueAsync(
+                resolvedQueueUuid,
                 cancellationToken);
             return;
         }
@@ -3194,6 +3204,13 @@ public static partial class EngineAudioPostDownloadHelper
                 claim.SourceId,
                 claim.TrackSourceId,
                 DownloadedStatus,
+                cancellationToken);
+            await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
+                queueUuid,
+                claim.Source,
+                claim.SourceId,
+                claim.TrackSourceId,
+                CompletedStatus,
                 cancellationToken);
         }
     }
@@ -3505,12 +3522,14 @@ public static partial class EngineAudioPostDownloadHelper
             return false;
         }
 
-        var payloadJson = JsonSerializer.Serialize(payload);
-        await libraryRepository.UpsertWatchlistFinalizationOutboxAsync(
+        await libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
             queueUuid,
-            payloadJson,
-            new[] { finalPath },
+            payload.WatchlistSource,
+            payload.WatchlistPlaylistId,
+            payload.WatchlistTrackId,
+            CompletedStatus,
             cancellationToken);
+        await libraryRepository.ResolvePlaylistWatchMissingTracksByQueueAsync(queueUuid, cancellationToken);
 
         await context.QueueRepository.UpdateStatusAsync(
             queueUuid,

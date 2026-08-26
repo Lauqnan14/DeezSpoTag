@@ -113,7 +113,7 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.DoesNotContain("HasPlaylistImageAsync", client, StringComparison.Ordinal);
         Assert.DoesNotContain("ApplyArtworkToNewTargetAsync", service, StringComparison.Ordinal);
         Assert.DoesNotContain("TryApplyOrScheduleMembershipArtworkAsync", service, StringComparison.Ordinal);
-        Assert.Contains("ScheduleArtworkForActiveRevisionAsync", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("ScheduleArtworkForActiveRevisionAsync", service, StringComparison.Ordinal);
         // Membership path binds target ids immediately (Plex/JF/Navidrome) plus art-only paths.
         Assert.True(CountOccurrences(service, "await PersistTargetPlaylistBindingAsync(") >= 6);
         Assert.Contains("RecreateMissingTargetPlaylistAsync", service, StringComparison.Ordinal);
@@ -174,7 +174,7 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "Services",
             "WatchlistEngine.cs"));
 
-        Assert.Contains("ProcessPlaylistQueueAdmissionsAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("AdmitCachedMissingTracksAsync", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistReconciliationMode", coordinator, StringComparison.Ordinal);
         Assert.Contains("AdmitCachedMissingTracksAsync", engine, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildSystemicFingerprint", engine, StringComparison.Ordinal);
@@ -302,7 +302,7 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
     }
 
     [Fact]
-    public void ArtworkJobs_ScheduleImmediatelyAndPreferArtworkOverPlaylistJobs()
+    public void PlaylistVisit_AppliesArtworkInlineAndQueuesOnlyFailedTargetWork()
     {
         var engine = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
         var repository = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
@@ -314,10 +314,15 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "Playlist artwork must be cached before initial target synchronization.",
             engine,
             StringComparison.Ordinal);
-        Assert.Contains("SchedulePlaylistArtworkTargetSyncAsync", engine, StringComparison.Ordinal);
-        Assert.Contains("ScheduleArtworkForActiveRevisionAsync", sync, StringComparison.Ordinal);
+        Assert.Contains("ApplyKnownTargetMembershipInlineAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("SyncAvailablePlaylistTracksAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("ApplyArtworkInlineForTargetAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("SyncPlaylistArtworkToTargetAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistSyncJobAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("EnqueueWatchlistPlaylistArtworkSyncJobAsync", engine, StringComparison.Ordinal);
         Assert.Contains("ScheduleArtworkForTargetAsync", sync, StringComparison.Ordinal);
-        Assert.Contains("The target playlist artwork is missing or stale.", sync, StringComparison.Ordinal);
+        Assert.Contains("SyncPlaylistArtworkToTargetAsync", sync, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistArtworkTargetSyncScheduler", sync, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistPlaylistArtworkSyncJobAsync", repository, StringComparison.Ordinal);
         Assert.DoesNotContain("WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0", repository, StringComparison.Ordinal);

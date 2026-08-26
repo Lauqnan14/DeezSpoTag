@@ -431,7 +431,13 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("unresolvedPaths.Count > 0", outbox, StringComparison.Ordinal);
         Assert.Contains("job.AttemptCount == 0", outbox, StringComparison.Ordinal);
         Assert.Contains("scan submitted; waiting for requested track IDs", outbox, StringComparison.Ordinal);
+        Assert.Contains("ResolveIdentityImportRetryDelay", outbox, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(2)", outbox, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(3)", outbox, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(5)", outbox, StringComparison.Ordinal);
+        Assert.Contains("WatchlistWakeReason.TargetSync", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("AddMinutes(delayMinutes)", outbox, StringComparison.Ordinal);
+        Assert.DoesNotContain("attempt == 1 ? 5 : Math.Min(30, attempt * 5)", outbox, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -529,7 +535,8 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.DoesNotContain("NotifyQueueItemFinalizedAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("UpdateFinalDestinationsAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("PersistWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
-        Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "WatchlistPostDownloadSyncService.cs"), StringComparison.Ordinal);
+        Assert.Contains("ResolvePlaylistWatchMissingTracksByQueueAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
+        Assert.DoesNotContain("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
         Assert.DoesNotContain("RequestAllPlaylistSyncAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);
