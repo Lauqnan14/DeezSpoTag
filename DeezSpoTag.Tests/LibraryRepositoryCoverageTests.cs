@@ -986,6 +986,60 @@ ORDER BY service;";
     }
 
     [Fact]
+    public async Task PlaylistWatchMissingLedger_ReconcilesLibraryMatchesAcrossPlaylistsBeforeAdmission()
+    {
+        var seeded = await SeedLibraryAsync(("Shared File", "dz-shared", "sp-shared", "ap-shared"));
+        var localTrackId = seeded.TrackIdsByTitle["Shared File"];
+
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "playlist-a",
+            new PlaylistWatchlistMetadataInput("Playlist A", null, null, 1));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "playlist-b",
+            new PlaylistWatchlistMetadataInput("Playlist B", null, null, 1));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "playlist-a",
+            [new PlaylistWatchTrackInsert("sp-shared", "ISRC00000001", SourcePosition: 1, Title: "Shared File", Artist: "Artist One", Album: "Album One")]);
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "playlist-b",
+            [new PlaylistWatchTrackInsert("sp-shared", "ISRC00000001", SourcePosition: 1, Title: "Shared File", Artist: "Artist One", Album: "Album One")]);
+        var missing = new PlaylistWatchMissingTrackUpsert(
+            "sp-shared",
+            "ISRC00000001",
+            SourcePosition: 1,
+            Title: "Shared File",
+            Artist: "Artist One",
+            Album: "Album One",
+            DurationMs: 180000,
+            CoverUrl: null,
+            DeezerId: "dz-shared",
+            MappingStatus: "matched",
+            SnapshotId: null,
+            CandidateRevision: null,
+            ProviderReadinessRevision: null);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", "playlist-a", [missing]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync("spotify", "playlist-b", [missing]);
+
+        Assert.Equal(2, (await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync()).Count);
+
+        var resolved = await _repository.ReconcilePlaylistWatchMissingTracksWithLibraryAsync();
+
+        Assert.Equal(2, resolved);
+        Assert.Empty(await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync());
+        foreach (var playlistId in new[] { "playlist-a", "playlist-b" })
+        {
+            var status = Assert.Single(await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", playlistId));
+            Assert.Equal(localTrackId, status.LocalTrackId);
+            Assert.Equal("completed", status.Status);
+            Assert.Equal("identity_verified", status.IdentityStatus);
+        }
+    }
+
+    [Fact]
     public async Task PlayHistory_Queries_ReturnExpectedTrackOrdering()
     {
         var seeded = await SeedLibraryAsync(

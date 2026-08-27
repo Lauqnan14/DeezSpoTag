@@ -246,10 +246,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         var watchlistScriptSource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
 
         Assert.DoesNotContain(WatchMaxItemsPerRunName, artistWatchSource, StringComparison.Ordinal);
-        Assert.Contains("BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun)", playlistWatchSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun)", playlistWatchSource, StringComparison.Ordinal);
         Assert.DoesNotContain(
             WatchMaxItemsPerRunName,
-            playlistWatchSource.Replace("BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun)", string.Empty, StringComparison.Ordinal),
+            playlistWatchSource,
             StringComparison.Ordinal);
         Assert.Contains(WatchMaxItemsPerRunName, hostedSource, StringComparison.Ordinal);
         Assert.Contains(WatchMaxReleasesPerArtistName, artistWatchSource, StringComparison.Ordinal);
@@ -438,7 +438,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("ResolutionBudget", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.QueuedTracks <= 0)", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("if (result.KeepActivePlaylist)", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("queueAdmission.GetRemaining() > 0", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("_queueAdmission.GetRemaining() <= 0", serviceSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveInitialPlaylistItem", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("AdvanceToNextPlaylistAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResolveNextPlaylistItemAfter", hostedSource, StringComparison.Ordinal);

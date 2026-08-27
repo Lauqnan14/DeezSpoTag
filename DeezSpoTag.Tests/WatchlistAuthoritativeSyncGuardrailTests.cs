@@ -174,9 +174,10 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
             "Services",
             "WatchlistEngine.cs"));
 
-        Assert.Contains("AdmitCachedMissingTracksAsync", coordinator, StringComparison.Ordinal);
+        Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", coordinator, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistReconciliationMode", coordinator, StringComparison.Ordinal);
         Assert.Contains("AdmitCachedMissingTracksAsync", engine, StringComparison.Ordinal);
+        Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", engine, StringComparison.Ordinal);
         Assert.DoesNotContain("BuildSystemicFingerprint", engine, StringComparison.Ordinal);
         Assert.DoesNotContain("new WatchFailureClassification(true", engine, StringComparison.Ordinal);
     }

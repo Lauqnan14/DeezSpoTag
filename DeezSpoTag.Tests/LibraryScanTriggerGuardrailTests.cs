@@ -61,6 +61,23 @@ public sealed class LibraryScanTriggerGuardrailTests
     }
 
     [Fact]
+    public void ManualEnrichmentAutoMove_QueuesTargetIdentityRefreshForMovedFiles()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "AutoTagService.cs");
+        var ingestionIndex = source.IndexOf(
+            "await _knownFileIngestionService.IngestAndVerifyAsync(",
+            StringComparison.Ordinal);
+        var refreshOutboxIndex = source.IndexOf(
+            "await EnqueueTargetIdentityRefreshForAutoMoveAsync(",
+            StringComparison.Ordinal);
+
+        Assert.True(ingestionIndex >= 0);
+        Assert.True(refreshOutboxIndex > ingestionIndex);
+        Assert.Contains("_mediaServerRefreshOutboxService.EnqueueAsync(folderId, files, cancellationToken)", source, StringComparison.Ordinal);
+        Assert.Contains("Manual enrichment", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OrdinaryMediaServerRefresh_DoesNotRebuildTargetTrackIndexes()
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");

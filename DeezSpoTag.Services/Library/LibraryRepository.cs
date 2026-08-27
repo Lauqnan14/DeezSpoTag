@@ -11588,6 +11588,101 @@ ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0
         return rows;
     }
 
+    public async Task<int> ReconcilePlaylistWatchMissingTracksWithLibraryAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured)
+        {
+            return 0;
+        }
+
+        var rows = await GetOpenPlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
+        if (rows.Count == 0)
+        {
+            return 0;
+        }
+
+        var inputs = rows
+            .Select(static row => BuildPlaylistWatchMissingTrackIdentityInput(row))
+            .ToList();
+        var identities = await ResolveLocalTrackIdentitiesAsync(inputs, cancellationToken);
+        var resolved = 0;
+        for (var index = 0; index < rows.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var identity = identities[index];
+            if (!identity.LocalTrackId.HasValue || identity.IsAmbiguous)
+            {
+                continue;
+            }
+
+            var row = rows[index];
+            await UpdatePlaylistWatchTrackVerificationAsync(
+                row.Source,
+                row.SourceId,
+                new PlaylistWatchTrackVerification(
+                    row.TrackSourceId,
+                    identity.LocalTrackId,
+                    "identity_verified",
+                    identity.Reason),
+                cancellationToken);
+            resolved++;
+        }
+
+        return resolved;
+    }
+
+    private async Task<IReadOnlyList<PlaylistWatchMissingTrackDto>> GetOpenPlaylistWatchMissingTracksInPriorityOrderAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT missing.id, missing.source, missing.source_id, missing.track_source_id, missing.isrc,
+       missing.source_position, missing.title, missing.artist, missing.album, missing.duration_ms,
+       missing.cover_url, missing.deezer_id, missing.mapping_status, missing.status,
+       missing.snapshot_id, missing.candidate_revision, missing.provider_readiness_revision,
+       missing.queue_uuid, missing.updated_at
+FROM playlist_watch_missing_track missing
+JOIN playlist_watchlist playlist
+  ON playlist.source=missing.source AND playlist.source_id=missing.source_id
+WHERE lower(COALESCE(missing.status, '')) NOT IN ('resolved', 'review')
+ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,
+         playlist.sync_priority,
+         playlist.created_at DESC,
+         CASE WHEN missing.source_position IS NULL THEN 1 ELSE 0 END,
+         missing.source_position,
+         missing.id;";
+        await using var command = new SqliteCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rows = new List<PlaylistWatchMissingTrackDto>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(await ReadPlaylistWatchMissingTrackAsync(reader, cancellationToken));
+        }
+
+        return rows;
+    }
+
+    private static LibraryExistenceInput BuildPlaylistWatchMissingTrackIdentityInput(PlaylistWatchMissingTrackDto row)
+    {
+        var source = row.Source;
+        var sourceId = row.TrackSourceId;
+        if (!string.IsNullOrWhiteSpace(row.DeezerId))
+        {
+            source = DeezerSource;
+            sourceId = row.DeezerId;
+        }
+
+        return new LibraryExistenceInput(
+            row.Isrc,
+            row.Title,
+            row.Artist,
+            row.DurationMs,
+            source,
+            sourceId,
+            row.Album);
+    }
+
     public async Task<int> MarkPlaylistWatchMissingTrackQueuedAsync(
         string source,
         string sourceId,
@@ -16633,6 +16728,10 @@ SELECT f.root_path, af.relative_path, af.path
         }
 
         await transaction.CommitAsync(cancellationToken);
+        if (tracks.Count > 0)
+        {
+            await ReconcilePlaylistWatchMissingTracksWithLibraryAsync(cancellationToken);
+        }
     }
 
     private static List<FolderRoot> BuildFolderRoots(IReadOnlyList<FolderDto> folders)

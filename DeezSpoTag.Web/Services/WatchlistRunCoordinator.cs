@@ -911,11 +911,22 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             settings,
             repository,
             serviceProvider,
-            queueAdmissionAllowed,
             stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
             return playlistRunResult;
+        }
+
+        if (queueAdmissionAllowed)
+        {
+            var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+            await repository.ReconcilePlaylistWatchMissingTracksWithLibraryAsync(stoppingToken);
+            var playlists = playlistItems
+                .Select(static item => item.Playlist)
+                .Where(static playlist => playlist is not null)
+                .Select(static playlist => playlist!)
+                .ToList();
+            await reconciler.AdmitDueMissingTracksFromLedgerAsync(playlists, stoppingToken);
         }
 
         var processedArtistIds = await ProcessArtistWatchItemsAsync(
@@ -1052,7 +1063,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         DeezSpoTag.Core.Models.Settings.DeezSpoTagSettings settings,
         LibraryRepository repository,
         IServiceProvider serviceProvider,
-        bool queueAdmissionAllowed,
         CancellationToken stoppingToken)
     {
         var runStartedUtc = DateTimeOffset.UtcNow;
@@ -1124,35 +1134,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             }
 
             var playlistResult = execution.PlaylistResult;
-            if (queueAdmissionAllowed
-                && activeItem.Playlist is not null)
-            {
-                var queueAdmission = serviceProvider.GetRequiredService<WatchlistQueueAdmissionService>();
-                var dueRows = (await repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(stoppingToken))
-                    .Where(row => string.Equals(NormalizeSource(row.Source), NormalizeSource(activeItem.Playlist.Source), StringComparison.Ordinal)
-                                  && string.Equals(row.SourceId.Trim(), activeItem.Playlist.SourceId.Trim(), StringComparison.Ordinal))
-                    .ToList();
-                if (dueRows.Count > 0 && queueAdmission.GetRemaining() > 0)
-                {
-                    var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
-                    var admission = await reconciler.AdmitCachedMissingTracksAsync(
-                        activeItem.Playlist,
-                        dueRows,
-                        stoppingToken);
-                    playlistResult = MergeVisitAdmission(playlistResult, admission);
-                }
-                else if (dueRows.Count > 0)
-                {
-                    await PersistPlaylistSchedulerStateAsync(
-                        activeItem,
-                        serviceProvider,
-                        WatchlistPlaylistState.QueueBudgetReached,
-                        "The shared missing-track queue limit was reached for this run.",
-                        null,
-                        0,
-                        stoppingToken);
-                }
-            }
             if (playlistResult is { } systemicFailureResult && ShouldRecordSystemicFailure(systemicFailureResult))
             {
                 await OpenSourceCircuitAsync(
@@ -1701,30 +1682,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
 
         return null;
-    }
-
-    private static PlaylistReconciliationResult MergeVisitAdmission(
-        PlaylistReconciliationResult? visit,
-        PlaylistReconciliationResult admission)
-    {
-        if (visit is null)
-        {
-            return admission;
-        }
-
-        return visit with
-        {
-            Success = visit.Success && admission.Success,
-            Message = admission.QueuedTracks > 0 || admission.AttemptedTracks > 0
-                ? admission.Message
-                : visit.Message,
-            QueuedTracks = admission.QueuedTracks,
-            AttemptedTracks = admission.AttemptedTracks,
-            FailedTracks = visit.FailedTracks + admission.FailedTracks,
-            Deferred = visit.Deferred || admission.Deferred,
-            QueueStopReason = admission.QueueStopReason ?? visit.QueueStopReason,
-            RemainingQueueableTracks = admission.RemainingQueueableTracks
-        };
     }
 
     private sealed record WatchItem(

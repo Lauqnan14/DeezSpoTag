@@ -103,7 +103,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_AdmitsCachedMissingTracksInsideTheOrderedPlaylistWalk()
+    public void HostedCycle_AdmitsCachedMissingTracksFromGlobalLedgerOutsideTheOrderedPlaylistWalk()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
@@ -114,19 +114,27 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var snapshotIndex = hostedSource.IndexOf("await RunWatchCycleCoreAsync(", StringComparison.Ordinal);
         var beginRunIndex = hostedSource.IndexOf("queueAdmission.BeginRun", StringComparison.Ordinal);
         var loopIndex = hostedSource.IndexOf("foreach (var activeItem in playlistItems)", StringComparison.Ordinal);
-        var admissionIndex = hostedSource.IndexOf("AdmitCachedMissingTracksAsync", loopIndex, StringComparison.Ordinal);
+        var admissionIndex = hostedSource.IndexOf("AdmitDueMissingTracksFromLedgerAsync", StringComparison.Ordinal);
+        var loopEnd = hostedSource.IndexOf(
+            "private static async Task PersistPlaylistProgressAsync(",
+            loopIndex + 1,
+            StringComparison.Ordinal);
+        var loopBody = hostedSource[loopIndex..loopEnd];
 
         Assert.True(snapshotIndex >= 0);
         Assert.True(evaluateIndex >= 0 && evaluateIndex < snapshotIndex);
         Assert.True(beginRunIndex >= 0 && beginRunIndex < snapshotIndex);
-        Assert.True(loopIndex >= 0 && admissionIndex > loopIndex);
+        Assert.True(admissionIndex >= 0);
+        Assert.True(loopIndex >= 0);
+        Assert.DoesNotContain("AdmitCachedMissingTracksAsync", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", loopBody, StringComparison.Ordinal);
         Assert.Contains("repository.GetPlaylistWatchlistAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasActiveDownloadPipelineAsync", admissionSource, StringComparison.Ordinal);
         Assert.DoesNotContain("EvaluateBatchAsync", admissionSource, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistReconciliationMode", hostedSource, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS playlist_watch_missing_track", schemaSource, StringComparison.Ordinal);
         Assert.Contains("UpsertPlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
-        Assert.Contains("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", engineSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("MarkPlaylistWatchMissingTrackQueuedAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("ResolvePlaylistWatchMissingTrackAsync", repositorySource, StringComparison.Ordinal);
@@ -146,9 +154,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.DoesNotContain("ProcessFinalizationWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("AdmitCachedMissingTracksAsync", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("MergeVisitAdmission", hostedSource, StringComparison.Ordinal);
-        Assert.Contains("QueuedTracks = admission.QueuedTracks", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", hostedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("MergeVisitAdmission", hostedSource, StringComparison.Ordinal);
         Assert.Contains("TargetSyncBudget", postDownloadSource, StringComparison.Ordinal);
         Assert.Contains("shouldStop: () => DateTimeOffset.UtcNow >= fullRunDeadlineUtc", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("protected override async Task ExecuteAsync", postDownloadSource, StringComparison.Ordinal);
@@ -170,7 +177,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_UsesInlineTargetApplyThenPerPlaylistAdmission()
+    public void HostedCycle_UsesInlineTargetApplyThenGlobalMissingLedgerAdmission()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
@@ -185,8 +192,9 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var loopBody = hostedSource[loopStart..loopNext];
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("ProcessTargetSyncWorkAsync(", loopBody, StringComparison.Ordinal);
-        Assert.Contains("AdmitCachedMissingTracksAsync", loopBody, StringComparison.Ordinal);
-        Assert.Contains("MergeVisitAdmission", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdmitCachedMissingTracksAsync", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("MergeVisitAdmission", loopBody, StringComparison.Ordinal);
+        Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("timeBudget", loopBody + postDownloadSource, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("IgnoreReconciliationLeaseOwner", postDownloadSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasWatchlistReconciliationRequestAsync", postDownloadSource, StringComparison.Ordinal);
@@ -215,7 +223,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var watchSource = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
 
-        Assert.Contains("AdmitCachedMissingTracksAsync", watchSource, StringComparison.Ordinal);
+        Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistReconciliationMode", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("queuePlanningAllowed", watchSource, StringComparison.Ordinal);
         Assert.Contains("GetCachedPlaylistTrackCandidatesAsync", postDownloadSource, StringComparison.Ordinal);

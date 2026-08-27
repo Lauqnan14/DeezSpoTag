@@ -309,25 +309,6 @@ public sealed class WatchlistQueueAdmissionService
         }
     }
 
-    public long BeginRunIfInactive(int queueBudget)
-    {
-        lock (_gate)
-        {
-            if (_activeGeneration != 0)
-            {
-                return 0;
-            }
-
-            _generation++;
-            _activeGeneration = _generation;
-            _executionGeneration.Value = _activeGeneration;
-            _limit = Math.Max(0, queueBudget);
-            _remaining = _limit;
-            _admittedIdentities.Clear();
-            return _activeGeneration;
-        }
-    }
-
     public void EndRun(long token)
     {
         lock (_gate)

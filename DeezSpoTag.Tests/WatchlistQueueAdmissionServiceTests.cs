@@ -167,22 +167,6 @@ public sealed class WatchlistQueueAdmissionServiceTests
     }
 
     [Fact]
-    public void BeginRunIfInactive_OpensBudgetForDirectReconciliationOnlyWhenNoRunOwnsContext()
-    {
-        var service = new WatchlistQueueAdmissionService();
-
-        var directToken = service.BeginRunIfInactive(2);
-
-        Assert.NotEqual(0, directToken);
-        Assert.True(service.TryReserve(1));
-        Assert.Equal(1, service.GetRemaining());
-        Assert.Equal(0, service.BeginRunIfInactive(5));
-
-        service.EndRun(directToken);
-        Assert.Equal(0, service.GetRemaining());
-    }
-
-    [Fact]
     public async Task EvaluateQueueGate_AllowsAdmitWhenDownloadPipelineIsBusy()
     {
         var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-admit-pipeline-" + Path.GetRandomFileName());

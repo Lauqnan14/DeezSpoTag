@@ -891,6 +891,63 @@ internal sealed class WatchlistEngine
             RemainingQueueableTracks: queueResult.RemainingQueueableCount);
     }
 
+    public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
+    {
+        if (playlists.Count == 0 || _queueAdmission.GetRemaining() <= 0)
+        {
+            return [];
+        }
+
+        var playlistByKey = playlists
+            .GroupBy(playlist => BuildPlaylistWatchKey(playlist.Source, playlist.SourceId), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
+        if (dueRows.Count == 0)
+        {
+            return [];
+        }
+
+        var groupedRows = new List<(PlaylistWatchlistDto Playlist, List<PlaylistWatchMissingTrackDto> Rows)>();
+        var groupIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in dueRows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var key = BuildPlaylistWatchKey(row.Source, row.SourceId);
+            if (!playlistByKey.TryGetValue(key, out var playlist))
+            {
+                continue;
+            }
+
+            if (!groupIndexByKey.TryGetValue(key, out var groupIndex))
+            {
+                groupIndex = groupedRows.Count;
+                groupIndexByKey[key] = groupIndex;
+                groupedRows.Add((playlist, []));
+            }
+
+            groupedRows[groupIndex].Rows.Add(row);
+        }
+
+        var results = new List<PlaylistReconciliationResult>();
+        foreach (var (playlist, rows) in groupedRows)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_queueAdmission.GetRemaining() <= 0)
+            {
+                break;
+            }
+
+            results.Add(await AdmitCachedMissingTracksAsync(playlist, rows, cancellationToken));
+        }
+
+        return results;
+    }
+
+    private static string BuildPlaylistWatchKey(string source, string sourceId)
+        => $"{NormalizeWatchSource(source)}:{(sourceId ?? string.Empty).Trim()}";
+
     private async Task RecordPlaylistSelectionHistoryAsync(
         string source,
         string sourceId,
@@ -4583,12 +4640,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         string? firstFailureMessage = null;
         var deferred = false;
         var stopReason = WatchQueueStopReason.None;
-        var localBudgetToken = enforcePlaylistRunBudget
-            ? _queueAdmission.BeginRunIfInactive(watchSettings.WatchMaxItemsPerRun)
-            : 0;
-        try
-        {
-            for (var index = 0; index < trackList.Count; index++)
+        for (var index = 0; index < trackList.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var track = trackList[index];
@@ -4690,14 +4742,6 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
                     unavailableCount++;
                 }
             }
-        }
-        finally
-        {
-            if (localBudgetToken != 0)
-            {
-                _queueAdmission.EndRun(localBudgetToken);
-            }
-        }
 
         if (stopReason == WatchQueueStopReason.None)
         {
@@ -5897,6 +5941,11 @@ public sealed class PlaylistWatchReconciler
         IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
         CancellationToken cancellationToken)
         => _engine.AdmitCachedMissingTracksAsync(playlist, dueRows, cancellationToken);
+
+    public Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
+        => _engine.AdmitDueMissingTracksFromLedgerAsync(playlists, cancellationToken);
 
     public Task<IReadOnlyList<PlaylistTrackCandidate>> GetPlaylistTrackCandidatesAsync(
         string source,

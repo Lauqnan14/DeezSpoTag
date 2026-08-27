@@ -2954,6 +2954,10 @@ public partial class AutoTagService
                     $"Post auto-move direct library ingestion incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) are missing from the library DB."));
                 AppendLog(job, $"post auto-move direct library ingestion incomplete; {ingestion.MissingFilePaths.Count} moved audio file(s) missing from DB");
             }
+            await EnqueueTargetIdentityRefreshForAutoMoveAsync(
+                job,
+                changedFilesByFolder,
+                cancellationToken);
             return;
         }
 
@@ -2962,6 +2966,33 @@ public partial class AutoTagService
             "info",
             $"Post auto-move direct library ingestion skipped because no changed file paths were reported (folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})."));
         AppendLog(job, $"post auto-move direct library ingestion skipped (no changed file paths; folders={string.Join(", ", changedFolderIds)}, moved={autoMoveSummary.MovedCount}, skipped={autoMoveSummary.SkippedCount}, failed={autoMoveSummary.FailedCount})");
+    }
+
+    private async Task EnqueueTargetIdentityRefreshForAutoMoveAsync(
+        AutoTagJob job,
+        IReadOnlyDictionary<long, List<string>> changedFilesByFolder,
+        CancellationToken cancellationToken)
+    {
+        if (changedFilesByFolder.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (folderId, files) in changedFilesByFolder)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (files.Count == 0)
+            {
+                continue;
+            }
+
+            await _mediaServerRefreshOutboxService.EnqueueAsync(folderId, files, cancellationToken);
+        }
+
+        var label = IsManualEnrichmentRunIntent(job.RunIntent)
+            ? "Manual enrichment"
+            : "AutoTag";
+        AppendLog(job, $"{label} target track ID refresh queued for {changedFilesByFolder.Count} folder scope(s).");
     }
 
     private async Task<List<long>> ResolveChangedLibraryFolderIdsAsync(

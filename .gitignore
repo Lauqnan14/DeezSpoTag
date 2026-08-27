@@ -116,4 +116,5 @@ codeql-db-csharp-fresh/
 codeql-db-csharp/
 src.code-workspace
 CLAUDE.md
+AGENTS.md
 docs/watchlist-smooth-sync-integration.md
