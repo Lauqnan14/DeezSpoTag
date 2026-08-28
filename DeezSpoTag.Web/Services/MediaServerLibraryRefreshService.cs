@@ -7,6 +7,13 @@ using DeezSpoTag.Services.Library;
 
 namespace DeezSpoTag.Web.Services;
 
+public sealed record TargetIdentityFetchResult(
+    string Service,
+    bool Success,
+    int DeletedRows,
+    TargetServerIdentityCoverageDto? Coverage,
+    string? Error);
+
 public sealed class MediaServerLibraryRefreshService
 {
     private const int PlexTrackPageSize = 500;
@@ -478,6 +485,64 @@ public sealed class MediaServerLibraryRefreshService
             services.Add(NavidromeService);
         }
         return services;
+    }
+
+    public async Task<TargetIdentityFetchResult> FetchTargetIdentitiesAsync(
+        string service,
+        long? folderId,
+        bool resetFirst,
+        CancellationToken cancellationToken)
+    {
+        var normalizedService = (service ?? string.Empty).Trim().ToLowerInvariant();
+        var deleted = 0;
+        try
+        {
+            if (resetFirst)
+            {
+                deleted = await _libraryRepository.DeleteMediaServerTrackMetadataForScopeAsync(
+                    normalizedService,
+                    folderId,
+                    cancellationToken);
+                var resetCoverage = await _libraryRepository.GetTargetServerIdentityCoverageAsync(
+                    [normalizedService],
+                    folderId,
+                    cancellationToken);
+                StartTargetIdentityResetProgress(
+                    normalizedService,
+                    folderId,
+                    resetCoverage.FirstOrDefault()
+                    ?? new TargetServerIdentityCoverageDto(normalizedService, 0, 0, 0));
+                await RebuildTrackMetadataIndexAsync(normalizedService, folderId, cancellationToken);
+            }
+            else
+            {
+                await UpdateTrackMetadataIndexAsync(normalizedService, folderId, cancellationToken);
+            }
+
+            var coverage = await _libraryRepository.GetTargetServerIdentityCoverageAsync(
+                [normalizedService],
+                folderId,
+                cancellationToken);
+            return new TargetIdentityFetchResult(
+                normalizedService,
+                Success: true,
+                deleted,
+                coverage.FirstOrDefault(),
+                Error: null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
+        {
+            return new TargetIdentityFetchResult(
+                normalizedService,
+                Success: false,
+                deleted,
+                Coverage: null,
+                ex.Message);
+        }
     }
 
     public async Task<bool> RequestLibraryRefreshAsync(

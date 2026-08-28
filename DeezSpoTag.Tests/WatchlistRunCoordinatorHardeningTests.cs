@@ -327,6 +327,43 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SpotifyAuthRecovery_DoesNotCreateWatchlistWorkWhileDisabled()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "auth-failed-disabled",
+            new PlaylistWatchlistMetadataInput("Auth failed while disabled", null, null, 10));
+        var stateService = new WatchlistStateService(_repository);
+        await stateService.TransitionPlaylistAsync(
+            new WatchlistPlaylistStateTransition(
+                "spotify",
+                "auth-failed-disabled",
+                WatchlistPlaylistState.SourceFailure,
+                "Playlist source failed (spotify_auth_client_token_failed); the previous valid snapshot was preserved.",
+                10,
+                "snapshot-auth-disabled",
+                DateTimeOffset.UtcNow.AddMinutes(5),
+                1,
+                TouchLastChecked: false),
+            CancellationToken.None);
+        var settings = _settingsService.LoadSettings();
+        settings.WatchEnabled = false;
+        _settingsService.SaveSettings(settings);
+
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        await InvokeSpotifyAuthRecoveryAsync(
+            hosted,
+            new SpotifyPathfinderMetadataClient.PathfinderAuthRecovery(
+                "incident-disabled",
+                "spotify_auth_client_token_failed"));
+
+        var unchanged = await _repository.GetPlaylistWatchStateAsync("spotify", "auth-failed-disabled");
+        Assert.NotNull(unchanged);
+        Assert.Equal("source_failure", unchanged!.LastRunStatus);
+        Assert.Equal(0, await _repository.GetWatchlistReconciliationRequestCountAsync());
+    }
+
+    [Fact]
     public async Task RunOnce_DoesNotDeferAdmissionWhenDownloadPipelineIsBusy()
     {
         await _repository.AddPlaylistWatchlistAsync("unsupported", "pl-queue-gate", new PlaylistWatchlistMetadataInput("Queue Gate", null, null, null));
@@ -349,6 +386,29 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 StringComparison.Ordinal));
         var state = await _repository.GetPlaylistWatchStateAsync("unsupported", "pl-queue-gate", CancellationToken.None);
         Assert.NotNull(state?.LastCheckedUtc);
+    }
+
+    [Fact]
+    public async Task DisableWatchlist_CancelsTheActiveCycleImmediately()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchEnabled = false;
+        _settingsService.SaveSettings(settings);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+        using var activeCycle = new CancellationTokenSource();
+        var activeCycleField = typeof(WatchlistRunCoordinator).GetField(
+            "_activeCycleCancellation",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(activeCycleField);
+        activeCycleField!.SetValue(hosted, activeCycle);
+
+        var disableMethod = typeof(WatchlistRunCoordinator).GetMethod("DisableWatchlistAsync");
+        Assert.NotNull(disableMethod);
+        var disableTask = Assert.IsAssignableFrom<Task>(disableMethod!.Invoke(hosted, [CancellationToken.None]));
+        await disableTask;
+
+        Assert.True(activeCycle.IsCancellationRequested);
+        Assert.False(hosted.GetRuntimeHealth().IsRunning);
     }
 
     [Fact]

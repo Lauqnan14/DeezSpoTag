@@ -126,7 +126,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.True(beginRunIndex >= 0 && beginRunIndex < snapshotIndex);
         Assert.True(admissionIndex >= 0);
         Assert.True(loopIndex >= 0);
-        Assert.DoesNotContain("AdmitCachedMissingTracksAsync", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdmitCached" + "MissingTracksAsync", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", loopBody, StringComparison.Ordinal);
         Assert.Contains("repository.GetPlaylistWatchlistAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("HasActiveDownloadPipelineAsync", admissionSource, StringComparison.Ordinal);
@@ -135,6 +135,8 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("CREATE TABLE IF NOT EXISTS playlist_watch_missing_track", schemaSource, StringComparison.Ordinal);
         Assert.Contains("UpsertPlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", engineSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdmitCached" + "MissingTracksAsync", engineSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdmitMissing" + "TrackRowsAsync", engineSource, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("MarkPlaylistWatchMissingTrackQueuedAsync", engineSource, StringComparison.Ordinal);
         Assert.Contains("ResolvePlaylistWatchMissingTrackAsync", repositorySource, StringComparison.Ordinal);
@@ -192,7 +194,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var loopBody = hostedSource[loopStart..loopNext];
         Assert.Contains("TryProcessItemAsync(", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("ProcessTargetSyncWorkAsync(", loopBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("AdmitCachedMissingTracksAsync", loopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdmitCached" + "MissingTracksAsync", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("MergeVisitAdmission", loopBody, StringComparison.Ordinal);
         Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", hostedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("timeBudget", loopBody + postDownloadSource, StringComparison.OrdinalIgnoreCase);

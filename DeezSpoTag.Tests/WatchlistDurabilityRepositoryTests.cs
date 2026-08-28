@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download;
 using DeezSpoTag.Services.Library;
@@ -1237,6 +1238,46 @@ INSERT INTO artist_watch_state(artist_id,current_phase) VALUES(99,'reconciling')
     }
 
     [Fact]
+    public async Task DisabledRuntimeCleanup_PreservesAdmittedDownloadFinalizationState()
+    {
+        await AddPlaylistWithTargetsAsync("disabled-list", ["plex"]);
+        await _repository.EnqueueWatchlistReconciliationRequestAsync("all", null, null);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync("spotify", "disabled-list", "snapshot");
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync("spotify", "disabled-list", "track-1", ["queue-disabled"], 42);
+        await _repository.UpsertWatchlistFinalizationOutboxAsync("queue-disabled", "{}", ["/music/final.flac"]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "disabled-list",
+            [MissingTrack("track-1", 1)]);
+        await _repository.MarkPlaylistWatchMissingTrackQueuedAsync(
+            "spotify",
+            "disabled-list",
+            "track-1",
+            "queue-disabled");
+        await ExecuteSqlAsync(@"
+INSERT INTO watchlist_scheduler_state(watch_type,active_source) VALUES('playlist','spotify');
+INSERT INTO watchlist_source_circuit_state(watch_type,source,is_open) VALUES('playlist','spotify',1);
+INSERT INTO watchlist_target_circuit_state(target_service,is_open) VALUES('jellyfin',1);");
+
+        var method = typeof(LibraryRepository).GetMethod("ClearDisabledWatchlistRuntimeAsync");
+        Assert.NotNull(method);
+        var cleanupTask = Assert.IsType<Task<LibraryRepository.WatchlistRuntimeCleanupResult>>(
+            method!.Invoke(_repository, [CancellationToken.None]));
+        var cleanup = await cleanupTask;
+
+        Assert.Equal(1, cleanup.ReconciliationRequestsDeleted);
+        Assert.Equal(1, cleanup.SyncJobsDeleted);
+        Assert.Equal(0, cleanup.FinalizationOutboxDeleted);
+        Assert.Equal(0, cleanup.ClaimsDeleted);
+        Assert.Equal(0, await CountRowsAsync("watchlist_reconciliation_request"));
+        Assert.Equal(0, await CountRowsAsync("watchlist_sync_job"));
+        Assert.Equal(0, await CountRowsAsync("watchlist_scheduler_state"));
+        Assert.Equal(1, await CountRowsAsync("watchlist_finalization_outbox"));
+        Assert.Equal(1, await CountRowsAsync("playlist_watch_download_claim"));
+        Assert.Equal(1, await CountRowsAsync("playlist_watch_missing_track"));
+    }
+
+    [Fact]
     public async Task TargetCircuitState_RoundTripsAndIsKeyedByTargetServiceOnly()
     {
         Assert.Null(await _repository.GetWatchlistTargetCircuitStateAsync("jellyfin"));
@@ -1500,7 +1541,8 @@ WHERE identifier='leased-list';", ("due", DateTimeOffset.UtcNow.AddMinutes(-1).T
         {
             "watchlist_reconciliation_request", "watchlist_sync_job", "watchlist_finalization_outbox",
             "playlist_watch_download_claim", "watchlist_scheduler_state", "watchlist_source_circuit_state",
-            "watchlist_target_circuit_state", "playlist_watch_state", "artist_watch_state", "artist_watchlist"
+            "watchlist_target_circuit_state", "playlist_watch_state", "artist_watch_state", "artist_watchlist",
+            "playlist_watch_missing_track"
         };
         Assert.Contains(table, allowed);
         await using var connection = new SqliteConnection($"Data Source={_dbPath}");

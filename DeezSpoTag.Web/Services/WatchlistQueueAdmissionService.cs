@@ -15,6 +15,7 @@ public enum WatchQueueStopReason
     RunBudget,
     TrackDeferred,
     SystemicFailure,
+    Incomplete,
     Completed,
     TrackFailures
 }
@@ -40,6 +41,7 @@ public enum WatchlistPlaylistState
     Reconciling,
     Syncing,
     Queued,
+    Incomplete,
     Completed,
     Unavailable,
     Failed,
@@ -122,6 +124,7 @@ public sealed class WatchlistStateService
             "reconciling" => WatchlistPlaylistState.Reconciling,
             "syncing" => WatchlistPlaylistState.Syncing,
             "queued" => WatchlistPlaylistState.Queued,
+            "incomplete" => WatchlistPlaylistState.Incomplete,
             "completed" => WatchlistPlaylistState.Completed,
             "unavailable" => WatchlistPlaylistState.Unavailable,
             "failed" => WatchlistPlaylistState.Failed,
@@ -155,6 +158,7 @@ public sealed class WatchlistStateService
         DateTimeOffset? existingDeadline)
     {
         if (state is WatchlistPlaylistState.Completed
+            or WatchlistPlaylistState.Incomplete
             or WatchlistPlaylistState.Failed
             or WatchlistPlaylistState.Backoff
             or WatchlistPlaylistState.SourceFailure)

@@ -366,9 +366,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
             < source.IndexOf("ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal),
             "Inline target apply must run after the current snapshot has populated the missing-track ledger.");
         Assert.True(
-            source.IndexOf("public async Task<PlaylistReconciliationResult> AdmitCachedMissingTracksAsync(", StringComparison.Ordinal)
+            source.IndexOf("public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(", StringComparison.Ordinal)
             > source.IndexOf("ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal),
             "Queue admission must use the cached missing-track ledger after snapshot reconciliation.");
+        Assert.DoesNotContain("AdmitMissing" + "TrackRowsAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("PlaylistReconciliationMode.QueueMissingOnly", source, StringComparison.Ordinal);
         Assert.DoesNotContain("ShouldBlockTrack(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
@@ -376,6 +377,22 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("options.WatchlistOrigin", source, StringComparison.Ordinal);
         Assert.Contains("ArtistWatchOrigin", source, StringComparison.Ordinal);
         Assert.Contains("enforcePlaylistRunBudget", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlaylistWatch_PersistsIncompleteUntilNoOutstandingWorkRemains()
+    {
+        var repoRoot = ResolveRepoRoot();
+        var engine = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var admission = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "WatchlistQueueAdmissionService.cs"));
+        var ui = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "library-watchlists.js"));
+
+        Assert.Contains("WatchlistPlaylistState.Incomplete", engine, StringComparison.Ordinal);
+        Assert.Contains("WatchQueueStopReason.Incomplete", engine, StringComparison.Ordinal);
+        Assert.Contains("RemainingQueueableCount > 0", engine, StringComparison.Ordinal);
+        Assert.Contains("Incomplete,", admission, StringComparison.Ordinal);
+        Assert.DoesNotContain("const visitFinished =", ui, StringComparison.Ordinal);
+        Assert.DoesNotContain("presentation?.hasIncompleteSync && visitFinished", ui, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -394,9 +411,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("TrySyncAvailablePlaylistTracksAsync(", source, StringComparison.Ordinal);
 
         var syncCallIndex = source.IndexOf("ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal);
-        var queueAdmissionIndex = source.IndexOf("public async Task<PlaylistReconciliationResult> AdmitCachedMissingTracksAsync(", StringComparison.Ordinal);
+        var queueAdmissionIndex = source.IndexOf("public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(", StringComparison.Ordinal);
         Assert.True(syncCallIndex >= 0);
         Assert.True(queueAdmissionIndex > syncCallIndex);
+        Assert.DoesNotContain("AdmitMissing" + "TrackRowsAsync", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -578,6 +596,9 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("WHEN @localTrackId IS NOT NULL AND @identityStatus <> 'review' THEN 'completed'", repositorySource, StringComparison.Ordinal);
         Assert.Contains("WHEN @identityStatus = 'missing' AND lower(status) IN ('completed', 'complete', 'downloaded') THEN 'missing'", repositorySource, StringComparison.Ordinal);
         Assert.Contains("UpdatePlaylistWatchDownloadClaimStatusAsync(\n                item.QueueUuid,\n                notification.Source,", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("DeezSpoTagSettingsService settingsService", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("if (_settingsService.LoadSettings().WatchEnabled)", finalizationSource, StringComparison.Ordinal);
+        Assert.Contains("if (sent > 0 && _settingsService.LoadSettings().WatchEnabled)", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", watchSource, StringComparison.Ordinal);
         Assert.DoesNotContain("DownloadQueueRecoveryPolicy.IsWatchlistClaimOwnedByQueue", hostedSource, StringComparison.Ordinal);
         Assert.Contains("PostDownloadPendingLease", recoveryPolicySource, StringComparison.Ordinal);
@@ -1098,6 +1119,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("\"Watchlist\": { \"Enabled\"", appSettingsSource, StringComparison.Ordinal);
         Assert.Contains("!persisted.WatchEnabled && settings.WatchEnabled", settingsControllerSource, StringComparison.Ordinal);
         Assert.Contains("StartEnabledWatchlistAsync", settingsControllerSource, StringComparison.Ordinal);
+        Assert.Contains("persisted.WatchEnabled && !settings.WatchEnabled", settingsControllerSource, StringComparison.Ordinal);
+        Assert.Contains("DisableWatchlistAsync", settingsControllerSource, StringComparison.Ordinal);
         Assert.DoesNotContain("ResumePendingJobsAsync", settingsControllerSource, StringComparison.Ordinal);
     }
 

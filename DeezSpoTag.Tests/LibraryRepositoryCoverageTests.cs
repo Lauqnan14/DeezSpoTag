@@ -348,6 +348,41 @@ ORDER BY service;";
     }
 
     [Fact]
+    public async Task MediaServerRefreshOutbox_RetryPersistsOnlyRemainingIdentityWork()
+    {
+        await _repository.EnqueueMediaServerRefreshAsync(
+            31,
+            "plex",
+            ["/music/resolved.flac", "/music/missing.flac"],
+            [101, 102],
+            TimeSpan.Zero);
+        var claimed = Assert.Single(await _repository.ClaimDueMediaServerRefreshesAsync(
+            1,
+            TimeSpan.FromMinutes(5),
+            "retry-worker"));
+
+        Assert.True(await _repository.RetryMediaServerRefreshAsync(
+            claimed.Id,
+            "retry-worker",
+            2,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            "One requested identity remains unresolved.",
+            ["/music/missing.flac"],
+            [102]));
+
+        var restartedRepository = new LibraryRepository(
+            _configuration,
+            NullLogger<LibraryRepository>.Instance);
+        var retried = Assert.Single(await restartedRepository.ClaimDueMediaServerRefreshesAsync(
+            1,
+            TimeSpan.FromMinutes(5),
+            "restarted-retry-worker"));
+        Assert.Equal(["/music/missing.flac"], retried.ChangedFilePaths);
+        Assert.Equal([102L], retried.RequestedTrackIds);
+        Assert.Equal(2, retried.AttemptCount);
+    }
+
+    [Fact]
     public async Task Logs_And_QualityScannerRun_Workflow_Completes()
     {
         await _repository.AddLogAsync(new LibraryLogEntry(DateTimeOffset.UtcNow.AddMinutes(-2), "info", "first"));

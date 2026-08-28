@@ -12920,18 +12920,52 @@ WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         DateTimeOffset nextAttemptUtc,
         string error,
         CancellationToken cancellationToken = default)
+        => await RetryMediaServerRefreshAsync(
+            id,
+            leaseOwner,
+            attemptCount,
+            nextAttemptUtc,
+            error,
+            changedFilePaths: null,
+            requestedTrackIds: null,
+            cancellationToken);
+
+    public async Task<bool> RetryMediaServerRefreshAsync(
+        long id,
+        string leaseOwner,
+        int attemptCount,
+        DateTimeOffset nextAttemptUtc,
+        string error,
+        IReadOnlyCollection<string>? changedFilePaths,
+        IReadOnlyCollection<long>? requestedTrackIds,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var command = new SqliteCommand(@"
 UPDATE media_server_refresh_outbox
 SET status='retry',attempt_count=@attemptCount,next_attempt_utc=@nextAttemptUtc,
+    changed_file_paths_json=COALESCE(@paths,changed_file_paths_json),
+    requested_track_ids_json=COALESCE(@trackIds,requested_track_ids_json),
     lease_owner=NULL,lease_until_utc=NULL,last_error=@error,updated_at=CURRENT_TIMESTAMP
 WHERE id=@id AND lease_owner=@leaseOwner;", connection);
         command.Parameters.AddWithValue("id", id);
         command.Parameters.AddWithValue("leaseOwner", leaseOwner);
-        command.Parameters.AddWithValue("attemptCount", Math.Max(1, attemptCount));
+        command.Parameters.AddWithValue("attemptCount", Math.Max(0, attemptCount));
         command.Parameters.AddWithValue("nextAttemptUtc", nextAttemptUtc.ToString("O"));
         command.Parameters.AddWithValue("error", error);
+        command.Parameters.AddWithValue(
+            "paths",
+            changedFilePaths == null
+                ? DBNull.Value
+                : JsonSerializer.Serialize(changedFilePaths
+                    .Where(static path => !string.IsNullOrWhiteSpace(path))
+                    .Select(static path => path.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)));
+        command.Parameters.AddWithValue(
+            "trackIds",
+            requestedTrackIds == null
+                ? DBNull.Value
+                : JsonSerializer.Serialize(requestedTrackIds.Where(static trackId => trackId > 0).Distinct()));
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
     }
 
@@ -13225,6 +13259,19 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
 
     public async Task<WatchlistRuntimeCleanupResult> ClearWatchlistRuntimeAsync(
         CancellationToken cancellationToken = default)
+        => await ClearWatchlistRuntimeCoreAsync(
+            preserveDownloadFinalization: false,
+            cancellationToken);
+
+    public async Task<WatchlistRuntimeCleanupResult> ClearDisabledWatchlistRuntimeAsync(
+        CancellationToken cancellationToken = default)
+        => await ClearWatchlistRuntimeCoreAsync(
+            preserveDownloadFinalization: true,
+            cancellationToken);
+
+    private async Task<WatchlistRuntimeCleanupResult> ClearWatchlistRuntimeCoreAsync(
+        bool preserveDownloadFinalization,
+        CancellationToken cancellationToken)
     {
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
@@ -13244,16 +13291,20 @@ RETURNING id,source,playlist_id,track_id,target_service,destination_folder_id,fi
             transaction,
             "DELETE FROM playlist_watch_target_sync_state;",
             cancellationToken);
-        var finalizationOutboxDeleted = await ExecuteRuntimeCleanupAsync(
-            connection,
-            transaction,
-            "DELETE FROM watchlist_finalization_outbox;",
-            cancellationToken);
-        var claimsDeleted = await ExecuteRuntimeCleanupAsync(
-            connection,
-            transaction,
-            "DELETE FROM playlist_watch_download_claim;",
-            cancellationToken);
+        var finalizationOutboxDeleted = preserveDownloadFinalization
+            ? 0
+            : await ExecuteRuntimeCleanupAsync(
+                connection,
+                transaction,
+                "DELETE FROM watchlist_finalization_outbox;",
+                cancellationToken);
+        var claimsDeleted = preserveDownloadFinalization
+            ? 0
+            : await ExecuteRuntimeCleanupAsync(
+                connection,
+                transaction,
+                "DELETE FROM playlist_watch_download_claim;",
+                cancellationToken);
         var schedulerRowsDeleted = await ExecuteRuntimeCleanupAsync(
             connection,
             transaction,

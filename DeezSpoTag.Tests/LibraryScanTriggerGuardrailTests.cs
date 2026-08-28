@@ -107,8 +107,10 @@ public sealed class LibraryScanTriggerGuardrailTests
 
         Assert.Contains("api/library/target-identities", controller, StringComparison.Ordinal);
         Assert.Contains("GetTargetServerIdentityCoverageAsync", controller, StringComparison.Ordinal);
-        Assert.Contains("DeleteMediaServerTrackMetadataForScopeAsync", controller, StringComparison.Ordinal);
-        Assert.Contains("UpdateTrackMetadataIndexAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("FetchTargetIdentitiesAsync", controller, StringComparison.Ordinal);
+        var refreshService = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
+        Assert.Contains("DeleteMediaServerTrackMetadataForScopeAsync", refreshService, StringComparison.Ordinal);
+        Assert.Contains("UpdateTrackMetadataIndexAsync", refreshService, StringComparison.Ordinal);
         Assert.Contains("data-target-identity-service=\"plex\"", libraryView, StringComparison.Ordinal);
         Assert.Contains("data-target-identity-service=\"jellyfin\"", libraryView, StringComparison.Ordinal);
         Assert.Contains("data-target-identity-service=\"navidrome\"", libraryView, StringComparison.Ordinal);
@@ -121,7 +123,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("state?.progress?.running === true", libraryScript, StringComparison.Ordinal);
         Assert.Contains("Target track IDs fetched for all connected servers.", libraryScript, StringComparison.Ordinal);
         Assert.Contains("GetTargetIdentityRefreshProgress", controller, StringComparison.Ordinal);
-        Assert.Contains("StartTargetIdentityResetProgress", controller, StringComparison.Ordinal);
+        Assert.Contains("StartTargetIdentityResetProgress", refreshService, StringComparison.Ordinal);
         Assert.Contains("statusRefreshed", libraryScript, StringComparison.Ordinal);
         Assert.Contains("ReportTargetIdentityProgress", ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs"), StringComparison.Ordinal);
         Assert.Contains("fetchTargetTrackIdsButton", extrasScript, StringComparison.Ordinal);
@@ -137,8 +139,9 @@ public sealed class LibraryScanTriggerGuardrailTests
         var jellyfin = ReadSource("DeezSpoTag.Integrations", "Jellyfin", "JellyfinApiClient.cs");
         var navidrome = ReadSource("DeezSpoTag.Integrations", "Navidrome", "NavidromeApiClient.cs");
 
-        Assert.Contains("UpdateTrackMetadataIndexAsync(service, request?.FolderId", controller, StringComparison.Ordinal);
-        Assert.Contains("RebuildTrackMetadataIndexAsync(service, request?.FolderId", controller, StringComparison.Ordinal);
+        Assert.Contains("FetchTargetIdentitiesAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("UpdateTrackMetadataIndexAsync(normalizedService, folderId", service, StringComparison.Ordinal);
+        Assert.Contains("RebuildTrackMetadataIndexAsync(normalizedService, folderId", service, StringComparison.Ordinal);
         Assert.Contains("Task.WhenAll(resultTasks)", controller, StringComparison.Ordinal);
         Assert.Contains("GetTargetServerIdentityLocalTracksAsync", repository, StringComparison.Ordinal);
         Assert.Contains("TargetServerIdentityLocalTrackDto", repository, StringComparison.Ordinal);
@@ -439,22 +442,41 @@ public sealed class LibraryScanTriggerGuardrailTests
     {
         var source = ReadSource("DeezSpoTag.Web", "Services", "PlaylistSyncService.cs");
         var outbox = ReadSource("DeezSpoTag.Web", "Services", "MediaServerRefreshOutboxService.cs");
+        var controller = ReadSource("DeezSpoTag.Web", "Controllers", "Api", "LibraryTargetIdentitiesApiController.cs");
+        var refresh = ReadSource("DeezSpoTag.Web", "Services", "MediaServerLibraryRefreshService.cs");
 
         Assert.Contains("GetMediaServerIdentityRefreshFilesAsync", source, StringComparison.Ordinal);
         Assert.Contains("EnqueueTargetAsync", source, StringComparison.Ordinal);
         Assert.DoesNotContain("RequestTargetLibraryRefreshAsync", source, StringComparison.Ordinal);
         Assert.Contains("job.DestinationFolderId", outbox, StringComparison.Ordinal);
         Assert.Contains("job.RequestedTrackIds", outbox, StringComparison.Ordinal);
-        Assert.Contains("unresolvedPaths.Count > 0", outbox, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (unresolvedPaths.Count > 0 || trackIds.Count == 0)", outbox, StringComparison.Ordinal);
         Assert.Contains("job.AttemptCount == 0", outbox, StringComparison.Ordinal);
         Assert.Contains("scan submitted; waiting for requested track IDs", outbox, StringComparison.Ordinal);
+        Assert.Contains("FetchTargetIdentitiesAsync", outbox, StringComparison.Ordinal);
+        Assert.Contains("FetchTargetIdentitiesAsync", controller, StringComparison.Ordinal);
+        Assert.Contains("public async Task<TargetIdentityFetchResult> FetchTargetIdentitiesAsync", refresh, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateTrackMetadataIndexAsync(\n            job.TargetService", outbox.Replace("\r\n", "\n"), StringComparison.Ordinal);
         Assert.Contains("ResolveIdentityImportRetryDelay", outbox, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromSeconds(60)", outbox, StringComparison.Ordinal);
         Assert.Contains("TimeSpan.FromMinutes(2)", outbox, StringComparison.Ordinal);
         Assert.Contains("TimeSpan.FromMinutes(3)", outbox, StringComparison.Ordinal);
         Assert.Contains("TimeSpan.FromMinutes(5)", outbox, StringComparison.Ordinal);
         Assert.Contains("WatchlistWakeReason.TargetSync", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("AddMinutes(delayMinutes)", outbox, StringComparison.Ordinal);
         Assert.DoesNotContain("attempt == 1 ? 5 : Math.Min(30, attempt * 5)", outbox, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(1, 60)]
+    [InlineData(2, 120)]
+    [InlineData(3, 180)]
+    [InlineData(4, 300)]
+    public void MediaServerRefreshOutbox_UsesPostScanIdentityImportSchedule(int attempt, int expectedSeconds)
+    {
+        Assert.Equal(
+            TimeSpan.FromSeconds(expectedSeconds),
+            MediaServerRefreshOutboxService.ResolveIdentityImportRetryDelay(attempt));
     }
 
     [Fact]

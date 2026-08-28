@@ -1409,17 +1409,10 @@ function resolvePlaylistWatchlistPresentation(item) {
     };
 }
 
-function formatPlaylistWatchlistRunStatus(item, presentation) {
+function formatPlaylistWatchlistRunStatus(item) {
     const runStatus = String(item.lastRunStatus || '').trim().toLowerCase();
     if (!runStatus) {
         return 'never checked yet';
-    }
-
-    const visitFinished = runStatus === 'completed'
-        || runStatus === 'unchanged'
-        || runStatus === 'metadata_refreshed';
-    if (presentation?.hasIncompleteSync && visitFinished) {
-        return 'incomplete';
     }
 
     return runStatus.replaceAll('_', ' ');
@@ -1772,7 +1765,7 @@ async function loadPlaylistWatchlist() {
                 ? formatRelativeTime(item.nextAttemptUtc)
                 : '';
             const presentationCounts = resolvePlaylistWatchlistPresentation(item);
-            const statusLabel = formatPlaylistWatchlistRunStatus(item, presentationCounts);
+            const statusLabel = formatPlaylistWatchlistRunStatus(item);
             const statusParts = [statusLabel];
             if (isActive) {
                 statusParts.push('active');

@@ -5,6 +5,7 @@ using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Download.Shared;
 using DeezSpoTag.Services.Download.Utils;
 using DeezSpoTag.Services.Library;
+using DeezSpoTag.Services.Settings;
 
 namespace DeezSpoTag.Web.Services;
 
@@ -23,6 +24,7 @@ public sealed class WatchlistFinalizationService
     private readonly PlaylistWatchReconciler _playlistWatchReconciler;
     private readonly WatchlistRunSignal _runSignal;
     private readonly WatchlistLocalIdentityResolver _localIdentityResolver;
+    private readonly DeezSpoTagSettingsService _settingsService;
     private readonly ILogger<WatchlistFinalizationService> _logger;
 
     public WatchlistFinalizationService(
@@ -31,6 +33,7 @@ public sealed class WatchlistFinalizationService
         PlaylistWatchReconciler playlistWatchReconciler,
         WatchlistRunSignal runSignal,
         WatchlistLocalIdentityResolver localIdentityResolver,
+        DeezSpoTagSettingsService settingsService,
         ILogger<WatchlistFinalizationService> logger)
     {
         _queueRepository = queueRepository;
@@ -38,6 +41,7 @@ public sealed class WatchlistFinalizationService
         _playlistWatchReconciler = playlistWatchReconciler;
         _runSignal = runSignal;
         _localIdentityResolver = localIdentityResolver;
+        _settingsService = settingsService;
         _logger = logger;
     }
 
@@ -100,11 +104,14 @@ public sealed class WatchlistFinalizationService
         var sent = 0;
         foreach (var notification in notifications)
         {
-            await _libraryRepository.EnqueueWatchlistReconciliationRequestAsync(
-                "playlist",
-                notification.Source,
-                notification.PlaylistId,
-                cancellationToken);
+            if (_settingsService.LoadSettings().WatchEnabled)
+            {
+                await _libraryRepository.EnqueueWatchlistReconciliationRequestAsync(
+                    "playlist",
+                    notification.Source,
+                    notification.PlaylistId,
+                    cancellationToken);
+            }
             await _libraryRepository.UpdatePlaylistWatchDownloadClaimStatusAsync(
                 item.QueueUuid,
                 notification.Source,
@@ -115,7 +122,7 @@ public sealed class WatchlistFinalizationService
             sent++;
         }
 
-        if (sent > 0)
+        if (sent > 0 && _settingsService.LoadSettings().WatchEnabled)
         {
             _runSignal.Request(WatchlistWakeReason.Reconciliation | WatchlistWakeReason.TargetSync);
         }

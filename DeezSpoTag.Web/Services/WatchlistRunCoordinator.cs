@@ -139,6 +139,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         SpotifyPathfinderMetadataClient.PathfinderAuthRecovery recovery,
         CancellationToken cancellationToken)
     {
+        if (!IsWatchlistEnabled())
+        {
+            return;
+        }
+
         using var scope = _serviceProvider.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
         if (!repository.IsConfigured)
@@ -469,12 +474,28 @@ public sealed class WatchlistRunCoordinator : BackgroundService
     }
 
     public async Task<WatchlistRuntimeResetResult> ResetRuntimeAsync(CancellationToken cancellationToken)
+        => await ResetRuntimeCoreAsync(
+            preserveDownloadFinalization: false,
+            restartWhenEnabled: true,
+            cancellationToken);
+
+    public async Task DisableWatchlistAsync(CancellationToken cancellationToken)
+        => _ = await ResetRuntimeCoreAsync(
+            preserveDownloadFinalization: true,
+            restartWhenEnabled: false,
+            cancellationToken);
+
+    private async Task<WatchlistRuntimeResetResult> ResetRuntimeCoreAsync(
+        bool preserveDownloadFinalization,
+        bool restartWhenEnabled,
+        CancellationToken cancellationToken)
     {
         Interlocked.Exchange(ref _runtimeResetRequested, 1);
         lock (_activeCycleGate)
         {
             _activeCycleCancellation?.Cancel();
         }
+        _runSignal.Request(WatchlistWakeReason.Reset);
 
         var acquired = false;
         try
@@ -483,7 +504,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             acquired = true;
             using var scope = _serviceProvider.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
-            var cleanup = await repository.ClearWatchlistRuntimeAsync(cancellationToken);
+            var cleanup = preserveDownloadFinalization
+                ? await repository.ClearDisabledWatchlistRuntimeAsync(cancellationToken)
+                : await repository.ClearWatchlistRuntimeAsync(cancellationToken);
 
             _consecutiveFailures.Clear();
             _lastDestinationRepairUtc = DateTimeOffset.MinValue;
@@ -491,7 +514,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             UpdateRuntimeHealth(_ => new WatchlistRuntimeHealth(false, false, null, DateTimeOffset.UtcNow, null, 0));
 
             var triggerStatus = WatchlistTriggerStatus.Disabled;
-            if (IsWatchlistEnabled())
+            if (restartWhenEnabled && IsWatchlistEnabled())
             {
                 var accepted = await repository.EnqueueWatchlistReconciliationRequestAsync(
                     "all",
@@ -505,7 +528,6 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                     cycleCompletedUtc: null,
                     nextCycleUtc: DateTimeOffset.UtcNow,
                     cancellationToken);
-                _runSignal.Request(WatchlistWakeReason.Reset);
                 triggerStatus = accepted ? WatchlistTriggerStatus.Accepted : WatchlistTriggerStatus.Coalesced;
             }
 
@@ -580,7 +602,9 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         finally
         {
             var cycleCompletedUtc = DateTimeOffset.UtcNow;
-            if (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _runtimeResetRequested) == 0)
+            if (!stoppingToken.IsCancellationRequested
+                && Volatile.Read(ref _runtimeResetRequested) == 0
+                && IsWatchlistEnabled())
             {
                 using var scope = _serviceProvider.CreateScope();
                 var repository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
@@ -876,6 +900,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         bool queueAdmissionAllowed,
         CancellationToken stoppingToken)
     {
+        ThrowIfWatchlistStopped(stoppingToken);
         var repository = serviceProvider.GetRequiredService<LibraryRepository>();
         if (!repository.IsConfigured)
         {
@@ -885,11 +910,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         var profileResolutionService = serviceProvider.GetRequiredService<AutoTagProfileResolutionService>();
         await TryRepairWatchlistDestinationIntegrityAsync(repository, profileResolutionService, stoppingToken);
+        ThrowIfWatchlistStopped(stoppingToken);
         await RepairLegacyApplePlaylistStorefrontsAsync(repository, settings, stoppingToken);
         await RefreshWatchlistIdentityIndexAsync(
             serviceProvider,
             profileResolutionService,
             stoppingToken);
+        ThrowIfWatchlistStopped(stoppingToken);
         var playlistItems = BuildPlaylistWatchItems(await repository.GetPlaylistWatchlistAsync(stoppingToken));
         var artistItems = BuildArtistWatchItems(await repository.GetWatchlistAsync(stoppingToken));
         var allItems = BuildCombinedWatchItems(playlistItems, artistItems);
@@ -912,6 +939,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             repository,
             serviceProvider,
             stoppingToken);
+        ThrowIfWatchlistStopped(stoppingToken);
         if (playlistRunResult.AbortedRun)
         {
             return playlistRunResult;
@@ -919,6 +947,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
 
         if (queueAdmissionAllowed)
         {
+            ThrowIfWatchlistStopped(stoppingToken);
             var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
             await repository.ReconcilePlaylistWatchMissingTracksWithLibraryAsync(stoppingToken);
             var playlists = playlistItems
@@ -929,6 +958,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             await reconciler.AdmitDueMissingTracksFromLedgerAsync(playlists, stoppingToken);
         }
 
+        ThrowIfWatchlistStopped(stoppingToken);
         var processedArtistIds = await ProcessArtistWatchItemsAsync(
             artistItems,
             settings,
@@ -961,6 +991,15 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var remainingRequests = await repository.GetWatchlistReconciliationRequestCountAsync(stoppingToken);
         UpdateRuntimeHealth(health => health with { PendingReconciliationRequests = remainingRequests });
         return playlistRunResult;
+    }
+
+    private void ThrowIfWatchlistStopped(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsWatchlistEnabled())
+        {
+            throw new OperationCanceledException("Watchlist was disabled.", cancellationToken);
+        }
     }
 
     private async Task RefreshWatchlistIdentityIndexAsync(

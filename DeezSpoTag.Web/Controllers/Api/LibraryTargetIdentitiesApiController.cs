@@ -102,53 +102,11 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
         var resultTasks = runnable.Select(async service =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var deleted = 0;
-            try
-            {
-                if (resetFirst)
-                {
-                    deleted = await _repository.DeleteMediaServerTrackMetadataForScopeAsync(
-                        service,
-                        request?.FolderId,
-                        cancellationToken);
-                    var resetCoverage = await _repository.GetTargetServerIdentityCoverageAsync(
-                        [service],
-                        request?.FolderId,
-                        cancellationToken);
-                    _refreshService.StartTargetIdentityResetProgress(
-                        service,
-                        request?.FolderId,
-                        resetCoverage.FirstOrDefault() ?? new TargetServerIdentityCoverageDto(service, 0, 0, 0));
-                }
-
-                if (resetFirst)
-                {
-                    await _refreshService.RebuildTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
-                }
-                else
-                {
-                    await _refreshService.UpdateTrackMetadataIndexAsync(service, request?.FolderId, cancellationToken);
-                }
-                var coverage = await _repository.GetTargetServerIdentityCoverageAsync(
-                    [service],
-                    request?.FolderId,
-                    cancellationToken);
-                return new TargetIdentityRefreshResult(
-                    service,
-                    Success: true,
-                    deleted,
-                    coverage.FirstOrDefault(),
-                    Error: null);
-            }
-            catch (Exception ex) when (DeezSpoTag.Core.Diagnostics.ExpectedExceptionPolicy.IsRecoverable(ex))
-            {
-                return new TargetIdentityRefreshResult(
-                    service,
-                    Success: false,
-                    deleted,
-                    Coverage: null,
-                    ex.Message);
-            }
+            return await _refreshService.FetchTargetIdentitiesAsync(
+                service,
+                request?.FolderId,
+                resetFirst,
+                cancellationToken);
         });
         var results = (await Task.WhenAll(resultTasks)).ToList();
 
@@ -215,10 +173,4 @@ public sealed class LibraryTargetIdentitiesApiController : ControllerBase
         string Label,
         bool Connected);
 
-    private sealed record TargetIdentityRefreshResult(
-        string Service,
-        bool Success,
-        int DeletedRows,
-        TargetServerIdentityCoverageDto? Coverage,
-        string? Error);
 }

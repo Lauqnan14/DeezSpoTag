@@ -15,6 +15,15 @@ namespace DeezSpoTag.Tests;
 public sealed class WatchlistQueueAdmissionServiceTests
 {
     [Fact]
+    public void IncompletePlaylistState_RoundTripsThroughPersistedStatus()
+    {
+        var state = WatchlistStateService.Parse("incomplete");
+
+        Assert.Equal("Incomplete", state.ToString());
+        Assert.Equal("incomplete", WatchlistStateService.ToPersistedStatus(state));
+    }
+
+    [Fact]
     public void GetRemaining_WhenNoRunActive_DeniesWatchlistQueueing()
     {
         var service = new WatchlistQueueAdmissionService();

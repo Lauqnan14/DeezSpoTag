@@ -188,6 +188,10 @@ namespace DeezSpoTag.Web.Controllers.Api
                         await _watchlistCoordinator.StartEnabledWatchlistAsync(HttpContext.RequestAborted);
                     }
                 }
+                else if (persisted.WatchEnabled && !settings.WatchEnabled && _watchlistCoordinator != null)
+                {
+                    await _watchlistCoordinator.DisableWatchlistAsync(HttpContext.RequestAborted);
+                }
 
                 _logger.LogInformation("Settings saved successfully.");
 
