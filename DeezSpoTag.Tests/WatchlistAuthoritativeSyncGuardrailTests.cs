@@ -330,4 +330,14 @@ public sealed class WatchlistAuthoritativeSyncGuardrailTests
         Assert.DoesNotContain("WHEN lower(job.track_id) LIKE 'artwork:%' THEN 0", repository, StringComparison.Ordinal);
         Assert.Contains("ranked.playlist_priority ASC", repository, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void LedgerAdmission_CannotOverwritePlaylistWideCompletionState()
+    {
+        var engine = File.ReadAllText(Path.Combine(Root, "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var body = ExtractMethodBody(engine, "public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksFromLedgerAsync(");
+
+        Assert.DoesNotContain("UpdatePlaylistStateAsync(", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("ResolvePlaylistRunStatus(", body, StringComparison.Ordinal);
+    }
 }

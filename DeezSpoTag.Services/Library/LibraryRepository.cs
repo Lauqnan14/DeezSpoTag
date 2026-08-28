@@ -8350,8 +8350,14 @@ LEFT JOIN (
            track.source_id,
            COUNT(DISTINCT track.track_source_id) AS verified_sync_count
     FROM playlist_watch_track track
+    JOIN playlist_watch_track_sync_progress progress
+      ON progress.source = track.source
+     AND progress.source_id = track.source_id
+     AND progress.track_source_id = track.track_source_id
     WHERE lower(COALESCE(track.identity_status, '')) <> 'review'
       AND track.local_track_id IS NOT NULL
+      AND progress.configured_target_count > 0
+      AND progress.verified_target_count >= progress.configured_target_count
     GROUP BY track.source, track.source_id
 ) track_summary
     ON track_summary.source = pw.source
@@ -11586,6 +11592,62 @@ ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0
         }
 
         return rows;
+    }
+
+    public async Task<int> ReopenOrphanedQueuedPlaylistWatchMissingTracksAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE playlist_watch_missing_track
+SET status='missing',
+    queue_uuid=NULL,
+    last_error=NULL,
+    retry_after_utc=NULL,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(COALESCE(status, '')) IN ('queued', 'downloading')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM playlist_watch_download_claim claim
+      WHERE claim.source=playlist_watch_missing_track.source
+        AND claim.source_id=playlist_watch_missing_track.source_id
+        AND claim.track_source_id=playlist_watch_missing_track.track_source_id
+        AND claim.queue_uuid=playlist_watch_missing_track.queue_uuid
+        AND lower(COALESCE(claim.status, ''))='pending'
+  );";
+        await using var command = new SqliteCommand(sql, connection);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> HasOutstandingPlaylistWatchOperationalWorkAsync(
+        string source,
+        string sourceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryNormalizePlaylistWatchKey(source, sourceId, out var normalizedSource, out var normalizedSourceId))
+        {
+            return false;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT EXISTS (
+    SELECT 1 FROM playlist_watch_missing_track
+    WHERE source=@source AND source_id=@sourceId
+      AND lower(COALESCE(status, 'missing')) <> 'resolved'
+    UNION ALL
+    SELECT 1 FROM playlist_watch_download_claim
+    WHERE source=@source AND source_id=@sourceId
+      AND lower(COALESCE(status, 'pending'))='pending'
+    UNION ALL
+    SELECT 1 FROM watchlist_sync_job
+    WHERE source=@source AND playlist_id=@sourceId
+      AND lower(COALESCE(status, 'pending')) IN
+          ('pending','retry','processing','repair_required','blocked')
+);", connection);
+        command.Parameters.AddWithValue(SourceField, normalizedSource);
+        command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 0;
     }
 
     public async Task<int> ReconcilePlaylistWatchMissingTracksWithLibraryAsync(

@@ -1745,6 +1745,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
+            await _libraryRepository.UpsertWatchlistFinalizationOutboxAsync(
+                item.QueueUuid,
+                item.PayloadJson,
+                itemFinalPaths,
+                cancellationToken);
             await _libraryRepository.ResolvePlaylistWatchMissingTracksByQueueAsync(
                 item.QueueUuid,
                 cancellationToken);
@@ -1753,7 +1758,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         if (queued)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _watchlistRunSignal?.Request(WatchlistWakeReason.TargetSync);
+            _watchlistRunSignal?.Request(WatchlistWakeReason.Finalization | WatchlistWakeReason.TargetSync);
         }
     }
 

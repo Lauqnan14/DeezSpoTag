@@ -14,6 +14,22 @@ namespace DeezSpoTag.Tests;
 
 public sealed class WatchlistQueueAdmissionServiceTests
 {
+    [Theory]
+    [InlineData(19, 20, false)]
+    [InlineData(20, 20, true)]
+    [InlineData(9, 10, false)]
+    [InlineData(10, 10, true)]
+    [InlineData(20, 0, false)]
+    public void QuotaAwareAdmission_TriggersOnlyWhenEligibleRowsFillRemainingQuota(
+        int eligibleRows,
+        int remainingQuota,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            WatchlistQueueAdmissionService.ShouldAdmitBeforeRunEnd(eligibleRows, remainingQuota));
+    }
+
     [Fact]
     public void IncompletePlaylistState_RoundTripsThroughPersistedStatus()
     {
@@ -43,6 +59,27 @@ public sealed class WatchlistQueueAdmissionServiceTests
         Assert.Equal(3, service.GetRemaining());
 
         service.EndRun(token);
+        Assert.Equal(0, service.GetRemaining());
+    }
+
+    [Fact]
+    public void OrderedLedgerAdmission_FillsExactlyTheConfiguredQuotaWithoutSkippingAhead()
+    {
+        var service = new WatchlistQueueAdmissionService();
+        _ = service.BeginRun(3);
+        var orderedRows = new[] { "priority-1-track-1", "priority-1-track-2", "priority-2-track-1", "priority-2-track-2" };
+        var admitted = new List<string>();
+
+        foreach (var row in orderedRows)
+        {
+            if (!service.TryAdmitTrack().Allowed)
+            {
+                break;
+            }
+            admitted.Add(row);
+        }
+
+        Assert.Equal(orderedRows[..3], admitted);
         Assert.Equal(0, service.GetRemaining());
     }
 

@@ -1714,10 +1714,15 @@ public sealed class PlaylistSyncService
 
         if (results.Count == 1)
         {
-            return results[0].Result;
+            var single = results[0].Result;
+            return single.Kind == PlaylistSyncResultKind.Completed
+                ? single
+                : single with { Success = false };
         }
 
-        var successfulResults = results.Where(item => item.Result.Success).ToList();
+        var successfulResults = results
+            .Where(item => item.Result.Success && item.Result.Kind == PlaylistSyncResultKind.Completed)
+            .ToList();
         var message = string.Join(
             " ",
             results.Select(item => string.Concat(
@@ -1727,7 +1732,9 @@ public sealed class PlaylistSyncService
 
         if (successfulResults.Count != results.Count)
         {
-            var first = results.First(item => !item.Result.Success).Result;
+            var first = results
+                .First(item => !item.Result.Success || item.Result.Kind != PlaylistSyncResultKind.Completed)
+                .Result;
             return first with
             {
                 Success = false,
@@ -1741,9 +1748,6 @@ public sealed class PlaylistSyncService
         }
 
         var aggregate = successfulResults[0].Result;
-        var combinedKind = successfulResults.Any(item => item.Result.Kind == PlaylistSyncResultKind.IdentityGap)
-            ? PlaylistSyncResultKind.IdentityGap
-            : aggregate.Kind;
         return aggregate with
         {
             Success = true,
@@ -1752,7 +1756,7 @@ public sealed class PlaylistSyncService
             TargetMatches = successfulResults.Sum(item => item.Result.TargetMatches),
             MetadataMatches = successfulResults.Sum(item => item.Result.MetadataMatches),
             SearchMatches = successfulResults.Sum(item => item.Result.SearchMatches),
-            Kind = combinedKind
+            Kind = PlaylistSyncResultKind.Completed
         };
     }
 

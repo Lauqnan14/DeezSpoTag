@@ -6,6 +6,20 @@ namespace DeezSpoTag.Tests;
 
 public sealed class WatchlistQueueCoordinationGuardrailTests
 {
+    [Fact]
+    public void ActiveWatchCycle_DrainsTargetJobsWithoutWaitingForSourceReconciliationToFinish()
+    {
+        var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var cycleStart = hostedSource.IndexOf("private async Task RunOneWatchCycleAsync(", StringComparison.Ordinal);
+        Assert.True(cycleStart > 0);
+        var cycleBody = hostedSource[cycleStart..(cycleStart + 7500)];
+        var targetPump = cycleBody.IndexOf("RunActiveCycleTargetWorkAsync(", StringComparison.Ordinal);
+        var sourceRun = cycleBody.IndexOf("await RunWatchCycleCoreAsync(", StringComparison.Ordinal);
+
+        Assert.True(targetPump > 0 && sourceRun > targetPump);
+        Assert.Contains("activeTargetWorkCancellation.Cancel()", cycleBody, StringComparison.Ordinal);
+        Assert.Contains("await activeTargetWork", cycleBody, StringComparison.Ordinal);
+    }
     private static readonly string RepoRoot = Path.GetFullPath(
         Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."));
 
@@ -103,7 +117,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
     }
 
     [Fact]
-    public void HostedCycle_AdmitsCachedMissingTracksFromGlobalLedgerOutsideTheOrderedPlaylistWalk()
+    public void HostedCycle_AdmitsWhenQuotaIsReachedAndRetainsFinalUnderQuotaAdmission()
     {
         var hostedSource = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
         var admissionSource = ReadSource("DeezSpoTag.Web/Services/WatchlistQueueAdmissionService.cs");
@@ -120,12 +134,23 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
             loopIndex + 1,
             StringComparison.Ordinal);
         var loopBody = hostedSource[loopIndex..loopEnd];
+        var cycleCoreStart = hostedSource.IndexOf(
+            "private async Task<PlaylistRunResult> RunWatchCycleCoreAsync(",
+            StringComparison.Ordinal);
+        var cycleCoreEnd = hostedSource.IndexOf(
+            "private void ThrowIfWatchlistStopped(",
+            cycleCoreStart + 1,
+            StringComparison.Ordinal);
+        var cycleCoreBody = hostedSource[cycleCoreStart..cycleCoreEnd];
 
         Assert.True(snapshotIndex >= 0);
         Assert.True(evaluateIndex >= 0 && evaluateIndex < snapshotIndex);
         Assert.True(beginRunIndex >= 0 && beginRunIndex < snapshotIndex);
         Assert.True(admissionIndex >= 0);
         Assert.True(loopIndex >= 0);
+        Assert.Contains("AdmitDueMissingTracksWhenQuotaReadyAsync", loopBody, StringComparison.Ordinal);
+        Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", cycleCoreBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("AdmitDueMissingTracksFromLedgerAsync", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("AdmitCached" + "MissingTracksAsync", loopBody, StringComparison.Ordinal);
         Assert.DoesNotContain("GetDuePlaylistWatchMissingTracksInPriorityOrderAsync", loopBody, StringComparison.Ordinal);
         Assert.Contains("repository.GetPlaylistWatchlistAsync", hostedSource, StringComparison.Ordinal);
@@ -153,7 +178,7 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         var postDownloadSource = ReadSource("DeezSpoTag.Web/Services/WatchlistPostDownloadSyncService.cs");
         var programSource = ReadSource("DeezSpoTag.Web/Program.cs");
 
-        Assert.DoesNotContain("ProcessFinalizationWorkAsync", hostedSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessFinalizationWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync", hostedSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", hostedSource, StringComparison.Ordinal);
         Assert.Contains("AdmitDueMissingTracksFromLedgerAsync", hostedSource, StringComparison.Ordinal);

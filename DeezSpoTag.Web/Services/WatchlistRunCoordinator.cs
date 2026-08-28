@@ -298,11 +298,35 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             return;
         }
 
+        await coordinatorWork.ProcessFinalizationWorkAsync(
+            cancellationToken,
+            shouldStop: () => DateTimeOffset.UtcNow >= fullRunDeadlineUtc);
         await coordinatorWork.ProcessTargetSyncWorkAsync(
             TargetSyncBudget.DrainAll(
                 WatchlistSyncJobKind.All,
                 shouldStop: () => DateTimeOffset.UtcNow >= fullRunDeadlineUtc),
             cancellationToken);
+    }
+
+    private static async Task RunActiveCycleTargetWorkAsync(
+        WatchlistPostDownloadSyncService coordinatorWork,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await coordinatorWork.ProcessFinalizationWorkAsync(
+                cancellationToken,
+                shouldStop: () => cancellationToken.IsCancellationRequested);
+            var processed = await coordinatorWork.ProcessTargetSyncWorkAsync(
+                TargetSyncBudget.DrainAll(
+                    WatchlistSyncJobKind.All,
+                    shouldStop: () => cancellationToken.IsCancellationRequested),
+                cancellationToken);
+            if (processed == 0)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+            }
+        }
     }
 
     public Task<WatchlistTriggerResult> TriggerRunOnceAsync(CancellationToken cancellationToken = default)
@@ -645,7 +669,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             var disabledRepository = scope.ServiceProvider.GetRequiredService<LibraryRepository>();
             if (disabledRepository.IsConfigured)
             {
-                var cleanup = await disabledRepository.ClearWatchlistRuntimeAsync(stoppingToken);
+                var finalizationWork = scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>();
+                if (finalizationWork is not null)
+                {
+                    await finalizationWork.ProcessFinalizationWorkAsync(stoppingToken);
+                }
+                var cleanup = await disabledRepository.ClearDisabledWatchlistRuntimeAsync(stoppingToken);
                 _consecutiveFailures.Clear();
                 if (_logger.IsEnabled(LogLevel.Information)
                     && (cleanup.ReconciliationRequestsDeleted > 0
@@ -710,6 +739,11 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             UpdateRuntimeHealth(health => health with { LastAdmissionBlockReason = queueGate.Message });
         }
 
+        using var activeTargetWorkCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var targetSyncWork = scope.ServiceProvider.GetService<WatchlistPostDownloadSyncService>();
+        var activeTargetWork = targetSyncWork is null
+            ? Task.CompletedTask
+            : RunActiveCycleTargetWorkAsync(targetSyncWork, activeTargetWorkCancellation.Token);
         try
         {
             await RunWatchCycleCoreAsync(
@@ -721,6 +755,14 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         }
         finally
         {
+            activeTargetWorkCancellation.Cancel();
+            try
+            {
+                await activeTargetWork;
+            }
+            catch (OperationCanceledException) when (activeTargetWorkCancellation.IsCancellationRequested)
+            {
+            }
             leaseRenewalCancellation.Cancel();
             try
             {
@@ -1115,6 +1157,12 @@ public sealed class WatchlistRunCoordinator : BackgroundService
         var succeeded = 0;
         var failed = 0;
         var skippedByLockBusy = 0;
+        var reconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+        var playlists = playlistItems
+            .Select(static item => item.Playlist)
+            .Where(static playlist => playlist is not null)
+            .Select(static playlist => playlist!)
+            .ToList();
         foreach (var activeItem in playlistItems)
         {
             stoppingToken.ThrowIfCancellationRequested();
@@ -1144,6 +1192,7 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             var execution = await TryProcessItemAsync(activeItem, settings, serviceProvider, stoppingToken);
             await TouchPlaylistHeartbeatAsync(repository, activeItem, stoppingToken);
             await PersistPlaylistProgressAsync(repository, activeItem, stoppingToken);
+            await reconciler.AdmitDueMissingTracksWhenQuotaReadyAsync(playlists, stoppingToken);
             if (execution.Outcome == WatchItemRunOutcome.LockBusy)
             {
                 await PersistPlaylistSchedulerStateAsync(

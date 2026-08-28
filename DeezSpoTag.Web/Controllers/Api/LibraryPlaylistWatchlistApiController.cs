@@ -324,6 +324,15 @@ public partial class WatchlistApiController : ControllerBase
             normalizedSource,
             sourceId,
             cancellationToken);
+        var trackStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync(
+            normalizedSource,
+            sourceId,
+            cancellationToken);
+        var incompleteTargets = trackStatuses
+            .SelectMany(status => (status.MissingTargetServices ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Select(target => target.ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var jobsByTarget = jobs
             .GroupBy(job => job.TargetService, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
@@ -363,7 +372,9 @@ public partial class WatchlistApiController : ControllerBase
                         : targetJobs.Any(job => string.Equals(job.Status, "blocked", StringComparison.OrdinalIgnoreCase))
                             ? "blocked"
                             : "waiting"
-                    : target switch
+                    : incompleteTargets.Contains(target)
+                        ? "waiting"
+                        : target switch
                     {
                         "plex" when !string.IsNullOrWhiteSpace(preference?.PlexPlaylistId) => "completed",
                         "jellyfin" when !string.IsNullOrWhiteSpace(preference?.JellyfinPlaylistId) => "completed",
@@ -1657,7 +1668,7 @@ public partial class WatchlistApiController : ControllerBase
         }
 
         var queueState = ResolveQueueLocationStatus(normalized);
-        if (queueState != null)
+        if (queueState != null && normalized is "failed" or "canceled" or "cancelled")
         {
             return queueState;
         }

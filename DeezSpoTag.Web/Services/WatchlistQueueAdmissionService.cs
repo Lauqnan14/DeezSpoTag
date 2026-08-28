@@ -232,6 +232,9 @@ public sealed class WatchlistQueueAdmissionService
         _publicApiReadiness = publicApiReadiness;
     }
 
+    internal static bool ShouldAdmitBeforeRunEnd(int eligibleRows, int remainingQuota)
+        => remainingQuota > 0 && eligibleRows >= remainingQuota;
+
     public async Task<WatchlistQueueAdmissionDecision> EvaluateDownloadGateAsync(
         DownloadOrchestrationService orchestrationService,
         CancellationToken cancellationToken)

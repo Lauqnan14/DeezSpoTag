@@ -42,7 +42,7 @@ public sealed class PlaylistSyncTargetAggregationTests
     }
 
     [Fact]
-    public void CombinePlaylistSyncTargetResults_TreatsIdentityGapWithCompletedAsSuccess()
+    public void CombinePlaylistSyncTargetResults_TreatsIdentityGapWithCompletedAsIncomplete()
     {
         var result = PlaylistSyncService.CombinePlaylistSyncTargetResults(new List<(string Service, PlaylistSyncResult Result)>
         {
@@ -50,8 +50,22 @@ public sealed class PlaylistSyncTargetAggregationTests
             ("jellyfin", PlaylistSyncResult.Completed("Playlist synced to Jellyfin.", "jellyfin-1", syncedTracks: 129, sourceTracks: 267, localMatches: 129, targetMatches: 129))
         });
 
-        Assert.True(result.Success);
+        Assert.False(result.Success);
         Assert.Equal(PlaylistSyncResultKind.IdentityGap, result.Kind);
+    }
+
+    [Fact]
+    public void InlineWatchlistSync_AggregatesEveryConfiguredTargetResult()
+    {
+        var source = File.ReadAllText(Path.Join(
+            FindRepoRoot(), "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
+        var start = source.IndexOf("> ApplyKnownTargetMembershipInlineAsync(", StringComparison.Ordinal);
+        Assert.True(start > 0);
+        var body = source[start..(start + 3400)];
+
+        Assert.Contains("results.Add((target, targetResult))", body, StringComparison.Ordinal);
+        Assert.Contains("PlaylistSyncService.CombinePlaylistSyncTargetResults(results)", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("result = targetResult", body, StringComparison.Ordinal);
     }
 
     [Fact]

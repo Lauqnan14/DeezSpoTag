@@ -575,7 +575,7 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("UpdateFinalDestinationsAsync", moveSource, StringComparison.Ordinal);
         Assert.Contains("PersistWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
         Assert.Contains("ResolvePlaylistWatchMissingTracksByQueueAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
-        Assert.DoesNotContain("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
+        Assert.Contains("UpsertWatchlistFinalizationOutboxAsync", ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"), StringComparison.Ordinal);
         Assert.DoesNotContain("RequestAllPlaylistSyncAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("EnqueueWatchlistReconciliationRequestAsync", finalizationSource, StringComparison.Ordinal);
         Assert.Contains("RepairPlaylistAsync", finalizationSource, StringComparison.Ordinal);

@@ -139,6 +139,187 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task EarlyAdmissionEligibility_DoesNotCountOrderedLedgerRowsWithoutADownloadDestination()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "priority-without-destination",
+            new PlaylistWatchlistMetadataInput("Without destination", null, null, 1));
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "priority-with-destination",
+            new PlaylistWatchlistMetadataInput("With destination", null, null, 2));
+        await _repository.UpdatePlaylistWatchlistPrioritiesAsync([
+            ("spotify", "priority-without-destination", 1),
+            ("spotify", "priority-with-destination", 2)
+        ]);
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "spotify",
+                SourceId: "priority-with-destination",
+                DestinationFolderId: 42,
+                Service: null,
+                SyncTargets: [],
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: "mirror",
+                UpdateArtwork: false,
+                ReuseSavedArtwork: false));
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "priority-without-destination",
+            [MissingTrack("not-eligible", 1)]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "priority-with-destination",
+            [MissingTrack("eligible", 1)]);
+
+        var dueRows = await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync();
+        var destinationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "spotify:priority-with-destination"
+        };
+
+        var eligibleRows = WatchlistEngine.SelectEarlyAdmissionEligibleRows(
+            dueRows,
+            destinationKeys,
+            static _ => false);
+
+        Assert.Equal(["not-eligible", "eligible"], dueRows.Select(static row => row.TrackSourceId));
+        Assert.Equal(["eligible"], eligibleRows.Select(static row => row.TrackSourceId));
+        Assert.False(WatchlistQueueAdmissionService.ShouldAdmitBeforeRunEnd(eligibleRows.Count, remainingQuota: 2));
+    }
+
+    [Fact]
+    public async Task ReopenOrphanedQueuedMissingTracks_ReturnsRowsWithoutPendingClaimsToAdmission()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "orphaned-queue",
+            new PlaylistWatchlistMetadataInput("Orphaned queue", null, null, 1));
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "orphaned-queue",
+            [MissingTrack("track-1", 1)]);
+        await _repository.MarkPlaylistWatchMissingTrackQueuedAsync(
+            "spotify",
+            "orphaned-queue",
+            "track-1",
+            "missing-queue-item");
+
+        Assert.Empty(await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync());
+
+        Assert.Equal(1, await _repository.ReopenOrphanedQueuedPlaylistWatchMissingTracksAsync());
+        var reopened = Assert.Single(await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync());
+        Assert.Equal("track-1", reopened.TrackSourceId);
+        Assert.Equal("missing", reopened.Status);
+        Assert.Null(reopened.QueueUuid);
+    }
+
+    [Fact]
+    public async Task OutstandingOperationalWork_IncludesClaimsMissingRowsAndTargetJobs()
+    {
+        await AddPlaylistWithTargetsAsync("operational-missing", ["plex"]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "operational-missing",
+            [MissingTrack("track-missing", 1)]);
+        Assert.True(await _repository.HasOutstandingPlaylistWatchOperationalWorkAsync(
+            "spotify", "operational-missing"));
+
+        await AddPlaylistWithTargetsAsync("operational-claim", ["plex"]);
+        await _repository.UpsertPlaylistWatchDownloadClaimsAsync(
+            "spotify", "operational-claim", "track-claim", ["queue-claim"], 42);
+        Assert.True(await _repository.HasOutstandingPlaylistWatchOperationalWorkAsync(
+            "spotify", "operational-claim"));
+
+        await AddPlaylistWithTargetsAsync("operational-target", ["plex"]);
+        await _repository.EnqueueWatchlistPlaylistSyncJobsAsync(
+            "spotify", "operational-target", "snapshot");
+        Assert.True(await _repository.HasOutstandingPlaylistWatchOperationalWorkAsync(
+            "spotify", "operational-target"));
+
+        await AddPlaylistWithTargetsAsync("operational-clear", ["plex"]);
+        Assert.False(await _repository.HasOutstandingPlaylistWatchOperationalWorkAsync(
+            "spotify", "operational-clear"));
+    }
+
+    [Fact]
+    public async Task ThreeVerifiedTracks_CountAsSyncedOnlyAfterMembershipOnAllThreeTargets()
+    {
+        const string playlistId = "three-target-completion";
+        await AddPlaylistWithTargetsAsync(playlistId, ["plex", "jellyfin", "navidrome"]);
+        await _repository.UpdatePlaylistWatchlistMetadataAsync(
+            "spotify",
+            playlistId,
+            new PlaylistWatchlistMetadataInput(playlistId, null, null, 3));
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            playlistId,
+            [
+                new PlaylistWatchTrackInsert("track-1", "ISRC00000001"),
+                new PlaylistWatchTrackInsert("track-2", "ISRC00000002"),
+                new PlaylistWatchTrackInsert("track-3", "ISRC00000003")
+            ]);
+        for (var index = 1; index <= 3; index++)
+        {
+            await _repository.UpdatePlaylistWatchTrackVerificationAsync(
+                "spotify",
+                playlistId,
+                new PlaylistWatchTrackVerification($"track-{index}", 100 + index, "identity_verified"));
+        }
+
+        foreach (var target in new[] { "plex", "jellyfin", "navidrome" })
+        {
+            var membershipTrackCount = target == "plex" ? 2 : 3;
+            await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+                "spotify",
+                playlistId,
+                target,
+                $"{target}-playlist",
+                Enumerable.Range(1, membershipTrackCount)
+                    .Select(index => new PlaylistWatchTargetMembershipWrite(
+                        $"track-{index}", 100 + index, $"{target}-track-{index}", "playlist_synced"))
+                    .ToList());
+        }
+
+        var partialStatuses = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", playlistId);
+        Assert.Equal("playlist_synced", partialStatuses.Single(status => status.TrackSourceId == "track-1").SyncStatus);
+        Assert.Equal("playlist_synced", partialStatuses.Single(status => status.TrackSourceId == "track-2").SyncStatus);
+        var unresolvedPlexTrack = partialStatuses.Single(status => status.TrackSourceId == "track-3");
+        Assert.Equal("library", unresolvedPlexTrack.SyncStatus);
+        Assert.Equal("plex", unresolvedPlexTrack.MissingTargetServices);
+        var partialSummary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            playlist => playlist.SourceId == playlistId);
+        Assert.Equal(2, partialSummary.SyncedTrackCount);
+
+        await _repository.ReplacePlaylistWatchTargetMembershipAsync(
+            "spotify",
+            playlistId,
+            "plex",
+            "plex-playlist",
+            Enumerable.Range(1, 3)
+                .Select(index => new PlaylistWatchTargetMembershipWrite(
+                    $"track-{index}", 100 + index, $"plex-track-{index}", "playlist_synced"))
+                .ToList());
+
+        var statuses = await _repository.GetPlaylistWatchTrackStatusesAsync("spotify", playlistId);
+        Assert.Equal(3, statuses.Count);
+        Assert.All(statuses, status =>
+        {
+            Assert.Equal("playlist_synced", status.SyncStatus);
+            Assert.Null(status.MissingTargetServices);
+        });
+        var summary = Assert.Single(
+            await _repository.GetPlaylistWatchlistAsync(),
+            playlist => playlist.SourceId == playlistId);
+        Assert.Equal(3, summary.SyncedTrackCount);
+        Assert.Equal(0, summary.IncompleteTrackCount);
+    }
+
+    [Fact]
     public async Task WatchlistDedupe_IsGlobalAcrossDestinationFoldersAndPreservesAudioVariants()
     {
         var firstRoot = Path.Join(_tempRoot, "library-a");

@@ -22,6 +22,21 @@ namespace DeezSpoTag.Tests;
 
 public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
 {
+    [Theory]
+    [InlineData(3, 0, true)]
+    [InlineData(3, 2, true)]
+    [InlineData(3, 3, false)]
+    [InlineData(0, 0, false)]
+    public void AuthoritativeSnapshotCountDisagreement_RemainsIncomplete(
+        int sourceTrackCount,
+        int candidateCount,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            WatchlistEngine.HasAuthoritativeCandidateCountDisagreement(sourceTrackCount, candidateCount));
+    }
+
     private string _tempRoot = string.Empty;
     private LibraryRepository _repository = default!;
     private PlaylistSyncService _syncService = default!;
@@ -163,6 +178,40 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
         var tracks = (System.Collections.IEnumerable)result.GetType().GetField("Item1")!.GetValue(result)!;
 
         Assert.Equal(2, tracks.Cast<object>().Count());
+    }
+
+    [Fact]
+    public void PreserveVerifiedIdentity_WhenWeakerRematchFindsNothingAndFileStillExists()
+    {
+        var existing = new PlaylistWatchTrackStatusDto(
+            "track-1", null, "completed", DateTimeOffset.UtcNow,
+            null, null, null, null, null,
+            LocalTrackId: 42,
+            IdentityStatus: "identity_verified");
+        var unresolved = new LibraryRepository.LocalTrackIdentityResult(
+            null,
+            "none",
+            "No local track metadata match.",
+            Array.Empty<long>());
+
+        Assert.True(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(existing, unresolved, existingFileExists: true));
+    }
+
+    [Fact]
+    public void DoNotPreserveVerifiedIdentity_WhenTheIndexedFileNoLongerExists()
+    {
+        var existing = new PlaylistWatchTrackStatusDto(
+            "track-1", null, "completed", DateTimeOffset.UtcNow,
+            null, null, null, null, null,
+            LocalTrackId: 42,
+            IdentityStatus: "identity_verified");
+        var unresolved = new LibraryRepository.LocalTrackIdentityResult(
+            null,
+            "none",
+            "No local track metadata match.",
+            Array.Empty<long>());
+
+        Assert.False(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(existing, unresolved, existingFileExists: false));
     }
 
     private static PlaylistWatchlistDto CreatePlaylist()

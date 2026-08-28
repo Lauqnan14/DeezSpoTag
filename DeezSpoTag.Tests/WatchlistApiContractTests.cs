@@ -217,6 +217,44 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task TargetSyncDiagnostics_DoNotTreatAPlaylistBindingAsCompletedMembership()
+    {
+        await _repository.AddPlaylistWatchlistAsync(
+            "spotify",
+            "bound-but-incomplete",
+            new PlaylistWatchlistMetadataInput("Bound but incomplete", null, null, 1));
+        await _repository.UpsertPlaylistWatchPreferenceAsync(
+            new LibraryRepository.PlaylistWatchPreferenceUpsertInput(
+                Source: "spotify",
+                SourceId: "bound-but-incomplete",
+                DestinationFolderId: 1,
+                Service: "plex",
+                SyncTargets: ["plex"],
+                PreferredEngine: null,
+                DownloadEngineOrder: null,
+                DownloadVariantMode: null,
+                SyncMode: "mirror",
+                UpdateArtwork: false,
+                ReuseSavedArtwork: false));
+        await _repository.UpdatePlaylistWatchTargetPlaylistIdAsync(
+            "spotify", "bound-but-incomplete", "plex", "plex-playlist-1");
+        await _repository.AddPlaylistWatchTracksAsync(
+            "spotify",
+            "bound-but-incomplete",
+            [new PlaylistWatchTrackInsert("track-1", "ISRC00000001")]);
+
+        var result = await CreatePlaylistWatchlistController().GetTargetSyncJobs(
+            "spotify",
+            "bound-but-incomplete",
+            CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(result);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
+        var plex = Assert.Single(document.RootElement.EnumerateArray());
+
+        Assert.Equal("waiting", GetStringProperty(plex, "state"));
+    }
+
+    [Fact]
     public async Task PlaylistWatchlist_Add_InvalidRequest_ReturnsBadRequest()
     {
         var controller = CreatePlaylistWatchlistController();

@@ -744,7 +744,7 @@ ORDER BY service;";
         var localOnlySummary = Assert.Single(
             await _repository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(1, localOnlySummary.SyncedTrackCount);
+        Assert.Equal(0, localOnlySummary.SyncedTrackCount);
         await _repository.ReplacePlaylistWatchTargetMembershipAsync(
             "spotify",
             "pl-123",
@@ -759,13 +759,13 @@ ORDER BY service;";
         var restartedRepository = new LibraryRepository(
             _configuration,
             NullLogger<LibraryRepository>.Instance);
-        // Playlist completeness is based on authoritative local identity. Target membership is
-        // reported independently and cannot make a local track appear missing.
+        // Local identity alone is not playlist completion. Every configured target must confirm
+        // playlist membership before the track contributes to the synced count.
         var summaryAfterRestart = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(1, summaryAfterRestart.SyncedTrackCount);
-        Assert.Equal(22, summaryAfterRestart.IncompleteTrackCount);
+        Assert.Equal(0, summaryAfterRestart.SyncedTrackCount);
+        Assert.Equal(23, summaryAfterRestart.IncompleteTrackCount);
         var plexOnlyStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var plexOnlyTrack = Assert.Single(plexOnlyStatuses, status => status.TrackSourceId == "dz-song-1");
         Assert.Equal("library", plexOnlyTrack.SyncStatus);
@@ -778,7 +778,8 @@ ORDER BY service;";
         var identityResolvedSummary = Assert.Single(
             await restartedRepository.GetPlaylistWatchlistAsync(),
             item => item.Source == "spotify" && item.SourceId == "pl-123");
-        Assert.Equal(22, identityResolvedSummary.IncompleteTrackCount);
+        Assert.Equal(0, identityResolvedSummary.SyncedTrackCount);
+        Assert.Equal(23, identityResolvedSummary.IncompleteTrackCount);
         var identityResolvedStatuses = await restartedRepository.GetPlaylistWatchTrackStatusesAsync("spotify", "pl-123");
         var identityResolvedTrack = Assert.Single(identityResolvedStatuses, status => status.TrackSourceId == "dz-song-1");
         Assert.Equal("library", identityResolvedTrack.SyncStatus);

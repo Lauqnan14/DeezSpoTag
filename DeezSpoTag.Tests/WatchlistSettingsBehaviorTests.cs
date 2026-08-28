@@ -389,7 +389,8 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
 
         Assert.Contains("WatchlistPlaylistState.Incomplete", engine, StringComparison.Ordinal);
         Assert.Contains("WatchQueueStopReason.Incomplete", engine, StringComparison.Ordinal);
-        Assert.Contains("RemainingQueueableCount > 0", engine, StringComparison.Ordinal);
+        Assert.Contains("remainingQueueableTracks > 0", engine, StringComparison.Ordinal);
+        Assert.Contains("hasIncompleteTargetSync", engine, StringComparison.Ordinal);
         Assert.Contains("Incomplete,", admission, StringComparison.Ordinal);
         Assert.DoesNotContain("const visitFinished =", ui, StringComparison.Ordinal);
         Assert.DoesNotContain("presentation?.hasIncompleteSync && visitFinished", ui, StringComparison.Ordinal);
@@ -507,6 +508,12 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Equal(
             "missing",
             WatchlistApiController.ResolvePlaylistTrackLocationStatus(false, null, null).Status);
+        Assert.Equal(
+            "missing",
+            WatchlistApiController.ResolvePlaylistTrackLocationStatus(
+                false,
+                CreatePlaylistTrackStatus(status: "queued"),
+                null).Status);
         Assert.Equal(
             "blocked",
             WatchlistApiController.ResolvePlaylistTrackLocationStatus(true, synced, "running").Status);
@@ -1139,7 +1146,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("ClaimDueWatchlistSyncJobsAsync", syncSource, StringComparison.Ordinal);
         Assert.Contains("public async Task ProcessFinalizationWorkAsync(", syncSource, StringComparison.Ordinal);
         Assert.Contains("public async Task<int> ProcessTargetSyncWorkAsync(", syncSource, StringComparison.Ordinal);
-        Assert.DoesNotContain("ProcessFinalizationWorkAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("ProcessFinalizationWorkAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ProcessTargetSyncWorkAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("WatchlistPostDownloadSyncService", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("TargetSyncBudget", syncSource, StringComparison.Ordinal);
@@ -1190,7 +1197,7 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
     }
 
     [Fact]
-    public void Watchlist_DisabledCleanupClearsFinalizationOutbox()
+    public void Watchlist_DisabledCleanupPreservesAdmittedDownloadFinalization()
     {
         var repoRoot = ResolveRepoRoot();
         var repositorySource = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Services", "Library", "LibraryRepository.cs"));
@@ -1201,6 +1208,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("DELETE FROM watchlist_finalization_outbox;", repositorySource, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM watchlist_sync_job;", repositorySource, StringComparison.Ordinal);
         Assert.Contains("DELETE FROM playlist_watch_download_claim;", repositorySource, StringComparison.Ordinal);
+        Assert.Contains("ClearDisabledWatchlistRuntimeAsync", coordinatorSource, StringComparison.Ordinal);
+        var disabledCycle = ExtractMethodBody(coordinatorSource, "private async Task RunOneWatchCycleAsync(");
+        Assert.Contains("ClearDisabledWatchlistRuntimeAsync", disabledCycle, StringComparison.Ordinal);
+        Assert.DoesNotContain("ClearWatchlistRuntimeAsync(stoppingToken)", disabledCycle, StringComparison.Ordinal);
         Assert.Contains("finalizationOutbox={FinalizationOutbox}", coordinatorSource, StringComparison.Ordinal);
     }
 

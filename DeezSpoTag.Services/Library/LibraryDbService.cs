@@ -1214,7 +1214,7 @@ SELECT playlist_watch_track.source AS source,
        playlist_watch_track.track_source_id AS track_source_id,
        CASE
          WHEN lower(COALESCE(identity_status, '')) = 'review' THEN 'review'
-         WHEN lower(COALESCE(missing.status, '')) IN ('queued', 'downloading', 'failed', 'missing')
+         WHEN lower(COALESCE(missing.status, '')) IN ('failed', 'missing')
            THEN missing.status
          WHEN local_track_id IS NOT NULL
               AND COALESCE(progress.configured_target_count, 0) > 0

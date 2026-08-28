@@ -589,6 +589,31 @@ internal sealed class WatchlistEngine
                 WatchlistHistoryStatus.SourceUpdated,
                 cancellationToken);
         }
+        if (HasAuthoritativeCandidateCountDisagreement(liveTrackCount, candidates.Count))
+        {
+            const string candidateCountMismatchMessage = "Playlist source track count does not match the complete candidate snapshot; reconciliation will retry.";
+            await UpdatePlaylistStateAsync(
+                source,
+                sourceId,
+                liveTrackCount,
+                liveSnapshot.SnapshotId,
+                WatchlistPlaylistState.SourceFailure,
+                candidateCountMismatchMessage,
+                nextAttemptUtc: null,
+                consecutiveFailures: null,
+                cancellationToken);
+            return new PlaylistReconciliationResult(
+                false,
+                candidateCountMismatchMessage,
+                liveTrackCount,
+                0, 0, 0, 0, 0, 1, null,
+                SystemicFailures: 1,
+                FailureFingerprint: "source_candidate_count_mismatch",
+                FailureMessage: candidateCountMismatchMessage,
+                QueueStopReason: WatchQueueStopReason.SystemicFailure.ToString(),
+                RemainingQueueableTracks: liveTrackCount);
+        }
+
         if (candidates.Count == 0)
         {
             if (!liveSnapshot.IsComplete)
@@ -750,9 +775,14 @@ internal sealed class WatchlistEngine
         var syncRequestAccepted = !forcedSyncWithoutTargets;
         var hasIncompleteTargetSync = visitSyncResult is { Success: false }
             || visitSyncResult is { MissingTracks: > 0 };
+        var hasOutstandingOperationalWork = await _libraryRepository.HasOutstandingPlaylistWatchOperationalWorkAsync(
+            source,
+            sourceId,
+            cancellationToken);
         var hasOutstandingPlaylistWork = selection.MissingTracks.Count > 0
             || remainingQueueableTracks > 0
-            || hasIncompleteTargetSync;
+            || hasIncompleteTargetSync
+            || hasOutstandingOperationalWork;
         var reconciliationMessage = (forcedSyncWithoutTargets
                 ? NoTargetServerSelectedMessage
                 : null)
@@ -802,15 +832,103 @@ internal sealed class WatchlistEngine
             return [];
         }
 
-        var playlistByKey = playlists
-            .GroupBy(playlist => BuildPlaylistWatchKey(playlist.Source, playlist.SourceId), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
         if (dueRows.Count == 0)
         {
             return [];
         }
 
+        return await AdmitDueMissingTrackRowsAsync(playlists, dueRows, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksWhenQuotaReadyAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
+    {
+        var remainingQuota = _queueAdmission.GetRemaining();
+        if (playlists.Count == 0 || remainingQuota <= 0)
+        {
+            return [];
+        }
+
+        var dueRows = await _libraryRepository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync(cancellationToken);
+        var playlistKeys = playlists
+            .Select(playlist => BuildPlaylistWatchKey(playlist.Source, playlist.SourceId ?? string.Empty))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var destinationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var inspectedPreferenceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in dueRows)
+        {
+            var key = BuildPlaylistWatchKey(row.Source, row.SourceId ?? string.Empty);
+            if (!playlistKeys.Contains(key) || !inspectedPreferenceKeys.Add(key))
+            {
+                continue;
+            }
+
+            var preference = await _libraryRepository.GetPlaylistWatchPreferenceAsync(
+                NormalizeWatchSource(row.Source),
+                (row.SourceId ?? string.Empty).Trim(),
+                cancellationToken);
+            if (HasDownloadDestination(preference))
+            {
+                destinationKeys.Add(key);
+            }
+        }
+
+        var eligibleRows = SelectEarlyAdmissionEligibleRows(
+            dueRows,
+            destinationKeys,
+            _queueAdmission.HasAnyAdmittedIdentity);
+        if (!WatchlistQueueAdmissionService.ShouldAdmitBeforeRunEnd(eligibleRows.Count, remainingQuota))
+        {
+            return [];
+        }
+
+        return await AdmitDueMissingTrackRowsAsync(playlists, eligibleRows, cancellationToken);
+    }
+
+    internal static IReadOnlyList<PlaylistWatchMissingTrackDto> SelectEarlyAdmissionEligibleRows(
+        IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
+        IReadOnlySet<string> playlistKeysWithDownloadDestination,
+        Func<IReadOnlyList<string>, bool> hasAlreadyAdmittedIdentity)
+    {
+        var eligibleIdentityKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var eligibleRows = new List<PlaylistWatchMissingTrackDto>();
+        foreach (var row in dueRows)
+        {
+            if (!playlistKeysWithDownloadDestination.Contains(BuildPlaylistWatchKey(row.Source, row.SourceId ?? string.Empty)))
+            {
+                continue;
+            }
+
+            var track = BuildWatchIntentTrackFromMissingTrack(row);
+            if (track is null)
+            {
+                continue;
+            }
+
+            var identityKeys = BuildWatchIdentityKeys(track.TrackId, track.Isrc, track.Intent);
+            if (hasAlreadyAdmittedIdentity(identityKeys)
+                || identityKeys.Any(eligibleIdentityKeys.Contains))
+            {
+                continue;
+            }
+
+            eligibleRows.Add(row);
+            eligibleIdentityKeys.UnionWith(identityKeys);
+        }
+
+        return eligibleRows;
+    }
+
+    private async Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTrackRowsAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        IReadOnlyList<PlaylistWatchMissingTrackDto> dueRows,
+        CancellationToken cancellationToken)
+    {
+        var playlistByKey = playlists
+            .GroupBy(playlist => BuildPlaylistWatchKey(playlist.Source, playlist.SourceId), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         var groupedRows = new List<(PlaylistWatchlistDto Playlist, List<PlaylistWatchMissingTrackDto> Rows)>();
         var groupIndexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in dueRows)
@@ -906,17 +1024,6 @@ internal sealed class WatchlistEngine
 
             var success = queueResult.FailedCount == 0;
             var message = ResolveReconciliationMessage(queueResult);
-            await UpdatePlaylistStateAsync(
-                source,
-                sourceId,
-                playlist.TrackCount ?? missingTracks.Count,
-                playlist.SnapshotId,
-                WatchlistStateService.Parse(ResolvePlaylistRunStatus(queueResult, success)),
-                message,
-                nextAttemptUtc: null,
-                consecutiveFailures: null,
-                cancellationToken,
-                touchLastChecked: true);
             results.Add(new PlaylistReconciliationResult(
                 success,
                 message,
@@ -1002,7 +1109,7 @@ internal sealed class WatchlistEngine
         bool force,
         CancellationToken cancellationToken)
     {
-        PlaylistSyncResult? result = null;
+        var results = new List<(string Service, PlaylistSyncResult Result)>();
         var revision = PlaylistCandidateContract.BuildTargetSyncRevision(
             candidateIdentityRevision ?? string.Empty,
             localTrackStatuses);
@@ -1017,7 +1124,7 @@ internal sealed class WatchlistEngine
                 target,
                 force,
                 cancellationToken);
-            result = targetResult;
+            results.Add((target, targetResult));
             if (targetResult.Success)
             {
                 var catchUpJobs = await _libraryRepository.EnqueueMembershipJobsForResolvedUnsyncedIdentitiesAsync(
@@ -1052,7 +1159,9 @@ internal sealed class WatchlistEngine
             _serviceProvider.GetService<WatchlistRunSignal>()?.Request(WatchlistWakeReason.TargetSync);
         }
 
-        return result;
+        return results.Count == 0
+            ? null
+            : PlaylistSyncService.CombinePlaylistSyncTargetResults(results);
     }
 
     private async Task<bool> ApplyArtworkInlineForTargetAsync(
@@ -1534,6 +1643,19 @@ internal sealed class WatchlistEngine
             inputs,
             cancellationToken,
             audioVariant: "stereo_preferred");
+        var existingByTrackId = (await _libraryRepository.GetPlaylistWatchTrackStatusesAsync(
+                source,
+                sourceId,
+                cancellationToken))
+            .Where(static status => !string.IsNullOrWhiteSpace(status.TrackSourceId))
+            .GroupBy(static status => status.TrackSourceId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var existingLocalIds = existingByTrackId.Values
+            .Where(static status => status.LocalTrackId is > 0)
+            .Select(static status => status.LocalTrackId!.Value)
+            .Distinct()
+            .ToList();
+        var existingPaths = await _libraryRepository.GetTrackPrimaryFilePathsAsync(existingLocalIds, cancellationToken);
         var localTrackCount = 0;
         for (var index = 0; index < candidates.Count; index++)
         {
@@ -1541,6 +1663,18 @@ internal sealed class WatchlistEngine
                 inputs[index],
                 identities[index],
                 cancellationToken);
+            existingByTrackId.TryGetValue(candidates[index].TrackSourceId, out var existing);
+            var existingFileExists = existing?.LocalTrackId is > 0
+                && existingPaths.TryGetValue(existing.LocalTrackId.Value, out var existingPath)
+                && File.Exists(existingPath);
+            if (ShouldPreserveVerifiedLocalIdentity(existing, identity, existingFileExists))
+            {
+                identity = new LibraryRepository.LocalTrackIdentityResult(
+                    existing!.LocalTrackId,
+                    "preserved_verified_identity",
+                    "Retained the verified local identity because the indexed audio file still exists and the latest source candidate supplied no stronger contradictory identity.",
+                    [existing.LocalTrackId!.Value]);
+            }
             var identityStatus = identity.IsAmbiguous
                 ? "review"
                 : identity.LocalTrackId.HasValue
@@ -1563,6 +1697,16 @@ internal sealed class WatchlistEngine
 
         return localTrackCount;
     }
+
+    internal static bool ShouldPreserveVerifiedLocalIdentity(
+        PlaylistWatchTrackStatusDto? existing,
+        LibraryRepository.LocalTrackIdentityResult latest,
+        bool existingFileExists)
+        => existingFileExists
+           && existing?.LocalTrackId is > 0
+           && string.Equals(existing.IdentityStatus, "identity_verified", StringComparison.OrdinalIgnoreCase)
+           && !latest.LocalTrackId.HasValue
+           && !latest.IsAmbiguous;
 
     private readonly record struct PreQueueDedupeHandledResult(
         bool Handled,
@@ -1757,6 +1901,7 @@ internal sealed class WatchlistEngine
     {
         var pendingClaims = await _libraryRepository.GetAllPlaylistWatchDownloadClaimsAsync("pending", cancellationToken);
         var recovered = await RecoverInvalidPendingWatchClaimsAsync(pendingClaims, cancellationToken);
+        recovered += await _libraryRepository.ReopenOrphanedQueuedPlaylistWatchMissingTracksAsync(cancellationToken);
         await _libraryRepository.DeleteTerminalPlaylistWatchDownloadClaimsOlderThanAsync(
             DateTimeOffset.UtcNow.AddDays(-30),
             cancellationToken);
@@ -2113,41 +2258,6 @@ internal sealed class WatchlistEngine
             WatchQueueStopReason.TrackFailures => WatchlistHistoryStatus.Failed,
             _ => WatchlistHistoryStatus.Deferred
         };
-
-    private static string ResolvePlaylistRunStatus(QueueWatchResult queueResult, bool success)
-    {
-        if (!success)
-        {
-            if (queueResult.FailedCount > 0)
-            {
-                return FailedStatus;
-            }
-
-            return ResolveQueueStopStatus(queueResult.StopReason);
-        }
-
-        if (queueResult.Deferred)
-        {
-            return ResolveQueueStopStatus(queueResult.StopReason);
-        }
-
-        if (queueResult.QueuedCount > 0)
-        {
-            return QueuedStatus;
-        }
-
-        if (queueResult.UnavailableCount > 0)
-        {
-            return UnavailableStatus;
-        }
-
-        if (queueResult.RemainingQueueableCount > 0)
-        {
-            return IncompleteStatus;
-        }
-
-        return CompletedStatus;
-    }
 
     private static string ResolveQueueStopStatus(WatchQueueStopReason stopReason)
         => stopReason switch
@@ -4263,6 +4373,11 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
         return remaining;
     }
 
+    internal static bool HasAuthoritativeCandidateCountDisagreement(
+        int sourceTrackCount,
+        int candidateCount)
+        => sourceTrackCount != candidateCount;
+
     internal static DownloadIntent? BuildWatchDownloadIntentFromCandidate(
         string source,
         PlaylistTrackCandidate candidate)
@@ -5937,6 +6052,11 @@ public sealed class PlaylistWatchReconciler
         IReadOnlyList<PlaylistWatchlistDto> playlists,
         CancellationToken cancellationToken)
         => _engine.AdmitDueMissingTracksFromLedgerAsync(playlists, cancellationToken);
+
+    public Task<IReadOnlyList<PlaylistReconciliationResult>> AdmitDueMissingTracksWhenQuotaReadyAsync(
+        IReadOnlyList<PlaylistWatchlistDto> playlists,
+        CancellationToken cancellationToken)
+        => _engine.AdmitDueMissingTracksWhenQuotaReadyAsync(playlists, cancellationToken);
 
     public Task<IReadOnlyList<PlaylistTrackCandidate>> GetPlaylistTrackCandidatesAsync(
         string source,
