@@ -57,14 +57,30 @@ public sealed class BoomplayApiController : ControllerBase
 
         if (BoomplayMetadataService.TryParseBoomplayUrl(url, out var type, out var id))
         {
-            var resolvedId = await _boomplayMetadataService.ResolveContentIdAsync(type, id, cancellationToken);
+            string? resolvedId;
+            try
+            {
+                resolvedId = await _boomplayMetadataService.ResolveContentIdAsync(type, id, cancellationToken);
+            }
+            catch (BoomplaySourceException ex)
+            {
+                return Ok(new
+                {
+                    type = string.Empty,
+                    id = string.Empty,
+                    error = ex.FailureCode,
+                    message = ResolveSourceFailureMessage(ex.FailureCode)
+                });
+            }
+
             if (string.IsNullOrWhiteSpace(resolvedId))
             {
                 return Ok(new
                 {
                     type = string.Empty,
                     id = string.Empty,
-                    error = "Boomplay item could not be resolved."
+                    error = BoomplayFailureCodes.ItemUnresolved,
+                    message = "Boomplay item could not be resolved."
                 });
             }
 
@@ -84,6 +100,14 @@ public sealed class BoomplayApiController : ControllerBase
             error = "Link is not recognizable."
         });
     }
+
+    private static string ResolveSourceFailureMessage(string failureCode)
+        => failureCode switch
+        {
+            BoomplayFailureCodes.SessionMissing => "A verified Boomplay browser session is required.",
+            BoomplayFailureCodes.SessionChallenged => "Boomplay challenged the saved browser session. Save a fresh cookie and try again.",
+            _ => "Boomplay item could not be resolved."
+        };
 
     [HttpGet("search")]
     public async Task<IActionResult> Search(

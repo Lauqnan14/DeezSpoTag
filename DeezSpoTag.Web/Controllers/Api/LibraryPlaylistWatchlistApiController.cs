@@ -447,7 +447,7 @@ public partial class WatchlistApiController : ControllerBase
                 sourceUrl = $"https://music.apple.com/{sourceStorefront}/playlist/{Uri.EscapeDataString(normalizedSourceId)}";
             }
         }
-        else
+        else if (!string.Equals(normalizedSource, "boomplay", StringComparison.OrdinalIgnoreCase))
         {
             sourceUrl = null;
             sourceStorefront = null;
@@ -455,10 +455,28 @@ public partial class WatchlistApiController : ControllerBase
 
         if (string.Equals(normalizedSource, "boomplay", StringComparison.OrdinalIgnoreCase))
         {
-            var resolvedSourceId = await _boomplayMetadataService.ResolveContentIdAsync(
-                "playlist",
-                normalizedSourceId,
-                cancellationToken);
+            if (string.IsNullOrWhiteSpace(sourceUrl))
+            {
+                sourceUrl = $"https://www.boomplay.com/playlists/{Uri.EscapeDataString(normalizedSourceId)}";
+            }
+            else if (!BoomplayMetadataService.TryParseBoomplayUrl(sourceUrl, out var sourceType, out _)
+                     || !string.Equals(sourceType, "playlist", StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest("Boomplay playlist URL is invalid.");
+            }
+
+            string? resolvedSourceId;
+            try
+            {
+                resolvedSourceId = await _boomplayMetadataService.ResolveContentIdAsync(
+                    "playlist",
+                    normalizedSourceId,
+                    cancellationToken);
+            }
+            catch (BoomplaySourceException ex)
+            {
+                return BadRequest(new { error = ex.FailureCode });
+            }
             if (string.IsNullOrWhiteSpace(resolvedSourceId))
             {
                 return BadRequest("Boomplay playlist id could not be resolved.");

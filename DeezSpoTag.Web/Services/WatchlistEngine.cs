@@ -1326,7 +1326,18 @@ internal sealed class WatchlistEngine
                 cancellationToken);
         }
 
-        var playlist = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
+        BoomplayPlaylistWatchData? playlist;
+        try
+        {
+            playlist = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
+        }
+        catch (BoomplaySourceException ex)
+        {
+            return BuildLivePlaylistSnapshot(
+                Array.Empty<PlaylistTrackCandidate>(),
+                new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: ex.FailureCode));
+        }
+
         return BuildLivePlaylistSnapshot(
             Array.Empty<PlaylistTrackCandidate>(),
             new LivePlaylistSnapshotMetadata(
@@ -2598,9 +2609,17 @@ internal sealed class WatchlistEngine
             return new LivePlaylistSnapshotMetadata();
         }
 
-        var playlist = string.Equals(sourceId, "trending-songs", StringComparison.OrdinalIgnoreCase)
-            ? await _boomplayMetadataService.GetTrendingSongsAsync(includeTracks: false, cancellationToken)
-            : await _boomplayMetadataService.GetPlaylistAsync(sourceId, cancellationToken);
+        BoomplayPlaylistMetadata? playlist;
+        try
+        {
+            playlist = string.Equals(sourceId, "trending-songs", StringComparison.OrdinalIgnoreCase)
+                ? await _boomplayMetadataService.GetTrendingSongsAsync(includeTracks: false, cancellationToken)
+                : await _boomplayMetadataService.GetPlaylistAsync(sourceId, cancellationToken);
+        }
+        catch (BoomplaySourceException ex)
+        {
+            return new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: ex.FailureCode);
+        }
         if (playlist == null)
         {
             return new LivePlaylistSnapshotMetadata();
@@ -3196,7 +3215,17 @@ internal sealed class WatchlistEngine
         string sourceId,
         CancellationToken cancellationToken)
     {
-        var playlistData = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
+        BoomplayPlaylistWatchData? playlistData;
+        try
+        {
+            playlistData = await GetBoomplayPlaylistWatchDataAsync(sourceId, cancellationToken);
+        }
+        catch (BoomplaySourceException ex)
+        {
+            return BuildLivePlaylistSnapshot(
+                Array.Empty<PlaylistTrackCandidate>(),
+                new LivePlaylistSnapshotMetadata(IsComplete: false, FailureCode: ex.FailureCode));
+        }
         var candidates = await MapBoomplayWatchIntentTrackCandidatesAsync(playlistData?.Tracks, cancellationToken);
         var sourceTrackCount = playlistData?.TrackCount;
         return BuildLivePlaylistSnapshot(
@@ -3889,10 +3918,9 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     }
 
     private static bool IsPlaylistScopedSourceFailure(string? failureCode)
-        => string.Equals(
-            failureCode,
-            "apple_storefront_not_persisted",
-            StringComparison.OrdinalIgnoreCase);
+        => string.Equals(failureCode, "apple_storefront_not_persisted", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(failureCode, BoomplayFailureCodes.SessionMissing, StringComparison.OrdinalIgnoreCase)
+           || string.Equals(failureCode, BoomplayFailureCodes.SessionChallenged, StringComparison.OrdinalIgnoreCase);
 
     private static string BuildSourceFailureFingerprint(string failureCode, string? incidentId)
         => string.IsNullOrWhiteSpace(incidentId)

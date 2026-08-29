@@ -14,6 +14,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.DataProtection;
 using System.Net.Http;
 using Xunit;
 
@@ -157,6 +158,48 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
         Assert.Equal(appleUrl, GetStringProperty(document.RootElement, "sourceUrl"));
         Assert.Equal("us", GetStringProperty(document.RootElement, "sourceStorefront"));
+    }
+
+    [Fact]
+    public async Task BoomplayPlaylistWatchlist_PersistsPublicUrlWithResolvedNumericId()
+    {
+        const string publicUrl = "https://www.boomplay.com/playlists/EQFGpOEkQenBdQefk4jpozq2";
+        var environment = new StubWebHostEnvironment(_tempRoot);
+        var auth = new PlatformAuthService(
+            environment,
+            NullLogger<PlatformAuthService>.Instance,
+            DataProtectionProvider.Create(new DirectoryInfo(Path.Join(_tempRoot, "keys"))));
+        await auth.UpdateAsync(state =>
+        {
+            state.Boomplay = new BoomplayAuth
+            {
+                Cookie = "sessionID=authenticated",
+                UserAgent = "Mozilla/5.0 TestBrowser/1.0",
+                SessionValid = true
+            };
+            return state.Boomplay;
+        });
+        var metadata = new BoomplayMetadataService(
+            new StubHttpClientFactory("<main id=\"playlistsDetails\" data-cid=\"6990547\"></main>"),
+            auth,
+            NullLogger<BoomplayMetadataService>.Instance);
+        var controller = CreatePlaylistWatchlistController(metadata);
+
+        var result = await controller.Add(
+            new WatchlistApiController.PlaylistWatchlistRequest(
+                Source: "boomplay",
+                SourceId: "EQFGpOEkQenBdQefk4jpozq2",
+                Name: "Bongo Love",
+                ImageUrl: null,
+                Description: null,
+                TrackCount: 25,
+                SourceUrl: publicUrl),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(ok.Value));
+        Assert.Equal("6990547", GetStringProperty(document.RootElement, "sourceId"));
+        Assert.Equal(publicUrl, GetStringProperty(document.RootElement, "sourceUrl"));
     }
 
     [Fact]
@@ -557,7 +600,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             NullLogger<AutoTagProfileResolutionService>.Instance);
     }
 
-    private WatchlistApiController CreatePlaylistWatchlistController()
+    private WatchlistApiController CreatePlaylistWatchlistController(BoomplayMetadataService? boomplayMetadataService = null)
         => new(new LibraryPlaylistWatchlistDependencies
         {
             Repository = _repository,
@@ -567,7 +610,7 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
             PlaylistVisualService = _playlistVisualService,
             QueueRepository = null!,
             ProfileResolutionService = CreateProfileResolutionService(),
-            BoomplayMetadataService = null!
+            BoomplayMetadataService = boomplayMetadataService!
         });
 
     private sealed class StubHostEnvironment : IHostEnvironment
@@ -602,9 +645,18 @@ public sealed class WatchlistApiContractTests : IAsyncLifetime
         public IFileProvider WebRootFileProvider { get; set; }
     }
 
-    private sealed class StubHttpClientFactory : IHttpClientFactory
+    private sealed class StubHttpClientFactory(string responseBody = "") : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new();
+        public HttpClient CreateClient(string name) => new(new StubHttpHandler(responseBody));
+    }
+
+    private sealed class StubHttpHandler(string responseBody) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(responseBody)
+            });
     }
 
     private static string? GetStringProperty(JsonElement element, string propertyName)

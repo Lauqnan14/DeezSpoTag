@@ -3,6 +3,7 @@ namespace DeezSpoTag.Web.Services;
 internal static class BoomplaySessionCookie
 {
     private const int MaxCookieHeaderLength = 8192;
+    private const int MaxUserAgentLength = 1024;
 
     public static bool TryNormalize(string? rawCookie, out string normalizedCookie)
     {
@@ -43,6 +44,24 @@ internal static class BoomplaySessionCookie
         }
 
         normalizedCookie = string.Join("; ", pairs);
+        return true;
+    }
+
+    public static bool TryNormalizeUserAgent(string? rawUserAgent, out string normalizedUserAgent)
+    {
+        normalizedUserAgent = string.Empty;
+        if (string.IsNullOrWhiteSpace(rawUserAgent))
+        {
+            return false;
+        }
+
+        var trimmed = rawUserAgent.Trim();
+        if (trimmed.Length > MaxUserAgentLength || ContainsControlCharacter(trimmed))
+        {
+            return false;
+        }
+
+        normalizedUserAgent = trimmed;
         return true;
     }
 

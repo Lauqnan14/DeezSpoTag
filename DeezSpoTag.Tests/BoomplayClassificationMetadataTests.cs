@@ -111,6 +111,16 @@ public sealed class BoomplayClassificationMetadataTests
                 environment,
                 NullLogger<PlatformAuthService>.Instance,
                 DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            await auth.UpdateAsync(state =>
+            {
+                state.Boomplay = new BoomplayAuth
+                {
+                    Cookie = "sessionID=authenticated",
+                    UserAgent = "Mozilla/5.0 TestBrowser/1.0",
+                    SessionValid = true
+                };
+                return state.Boomplay;
+            });
             string Route(HttpRequestMessage request)
             {
                 var uri = request.RequestUri ?? throw new InvalidOperationException("Request URI is required.");
@@ -192,6 +202,267 @@ public sealed class BoomplayClassificationMetadataTests
             Assert.Equal("49847968", track.Id);
             Assert.Equal("Mother Matty", track.Title);
             Assert.Equal("Norris Cole", track.Artist);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveContentIdAsync_ReplaysSavedBoomplayCookieAndUserAgent()
+    {
+        const string publicId = "EQFGpOEkQenBdQefk4jpozq2";
+        const string cookie = "sessionID=authenticated; cf_clearance=verified";
+        const string userAgent = "Mozilla/5.0 SavedBoomplayBrowser/1.0";
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-session-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            await auth.UpdateAsync(state =>
+            {
+                state.Boomplay = new BoomplayAuth
+                {
+                    Cookie = cookie,
+                    UserAgent = userAgent,
+                    SessionValid = true
+                };
+                return state.Boomplay;
+            });
+
+            using var httpClientFactory = new RoutingHttpClientFactory(request =>
+            {
+                Assert.Equal(cookie, Assert.Single(request.Headers.GetValues("Cookie")));
+                Assert.Equal(userAgent, request.Headers.UserAgent.ToString());
+                return """
+                <html><body><main id="playlistsDetails" data-cid="6990547"></main></body></html>
+                """;
+            });
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+
+            var resolved = await service.ResolveContentIdAsync("playlist", publicId, CancellationToken.None);
+
+            Assert.Equal("6990547", resolved);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveContentIdAsync_RequiresSavedSessionForPublicId()
+    {
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-missing-session-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            using var httpClientFactory = new RoutingHttpClientFactory(_ =>
+                throw new InvalidOperationException("Public Boomplay pages must not be requested anonymously."));
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+
+            var error = await Assert.ThrowsAsync<BoomplaySourceException>(() =>
+                service.ResolveContentIdAsync(
+                    "playlist",
+                    "EQFGpOEkQenBdQefk4jpozq2",
+                    CancellationToken.None));
+
+            Assert.Equal(BoomplayFailureCodes.SessionMissing, error.FailureCode);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task GetPlaylistAsync_ReplaysSavedBoomplaySessionForWebSnapshot()
+    {
+        const string cookie = "sessionID=authenticated";
+        const string userAgent = "Mozilla/5.0 SavedBoomplayBrowser/1.0";
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-playlist-session-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            await auth.UpdateAsync(state =>
+            {
+                state.Boomplay = new BoomplayAuth
+                {
+                    Cookie = cookie,
+                    UserAgent = userAgent,
+                    SessionValid = true
+                };
+                return state.Boomplay;
+            });
+
+            using var httpClientFactory = new RoutingHttpClientFactory(request =>
+            {
+                Assert.Equal(cookie, Assert.Single(request.Headers.GetValues("Cookie")));
+                Assert.Equal(userAgent, request.Headers.UserAgent.ToString());
+                return """
+                <html><head><meta property="og:title" content="Authenticated Playlist" /></head>
+                <body><main id="playlistsDetails" data-cid="6990547"></main></body></html>
+                """;
+            });
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+
+            var playlist = await service.GetPlaylistAsync("6990547", CancellationToken.None);
+
+            Assert.NotNull(playlist);
+            Assert.Equal("Authenticated Playlist", playlist.Title);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ValidateSessionAsync_ClassifiesCloudflareChallenge()
+    {
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-challenge-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            using var httpClientFactory = new ResponseHttpClientFactory(_ =>
+            {
+                var response = new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+                {
+                    Content = new StringContent("<html><title>Just a moment...</title></html>")
+                };
+                response.Headers.TryAddWithoutValidation("cf-mitigated", "challenge");
+                return response;
+            });
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+
+            var result = await service.ValidateSessionAsync(
+                "sessionID=authenticated; cf_clearance=expired",
+                "Mozilla/5.0 SavedBoomplayBrowser/1.0",
+                "https://www.boomplay.com/playlists/EQFGpOEkQenBdQefk4jpozq2",
+                CancellationToken.None);
+
+            Assert.False(result.Success);
+            Assert.Equal(BoomplayFailureCodes.SessionChallenged, result.FailureCode);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ParseLink_ReportsCloudflareChallengeFailureCode()
+    {
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-parse-challenge-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            await auth.UpdateAsync(state =>
+            {
+                state.Boomplay = new BoomplayAuth
+                {
+                    Cookie = "sessionID=authenticated; cf_clearance=expired",
+                    UserAgent = "Mozilla/5.0 SavedBoomplayBrowser/1.0",
+                    SessionValid = true
+                };
+                return state.Boomplay;
+            });
+            using var httpClientFactory = new ResponseHttpClientFactory(_ =>
+                new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+                {
+                    Content = new StringContent("<html><title>Just a moment...</title></html>")
+                });
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+            var controller = new BoomplayApiController(
+                service,
+                null,
+                null,
+                httpClientFactory,
+                NullLogger<BoomplayApiController>.Instance);
+
+            var response = Assert.IsType<OkObjectResult>(await controller.ParseLink(
+                "https://www.boomplay.com/playlists/EQFGpOEkQenBdQefk4jpozq2",
+                CancellationToken.None));
+            var json = JsonConvert.SerializeObject(response.Value);
+
+            Assert.Contains($"\"error\":\"{BoomplayFailureCodes.SessionChallenged}\"", json, StringComparison.Ordinal);
+            var saved = await auth.LoadAsync();
+            Assert.False(saved.Boomplay?.SessionValid);
+            Assert.Equal(BoomplayFailureCodes.SessionChallenged, saved.Boomplay?.LastStatus);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ValidateSessionAsync_RequiresNumericDetailIdentity()
+    {
+        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-validation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var environment = new TestWebHostEnvironment(root);
+            var auth = new PlatformAuthService(
+                environment,
+                NullLogger<PlatformAuthService>.Instance,
+                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
+            using var httpClientFactory = new RoutingHttpClientFactory(_ =>
+                "<html><body><main id=\"playlistsDetails\"></main></body></html>");
+            var service = new BoomplayMetadataService(
+                httpClientFactory,
+                auth,
+                NullLogger<BoomplayMetadataService>.Instance);
+
+            var result = await service.ValidateSessionAsync(
+                "sessionID=authenticated",
+                "Mozilla/5.0 SavedBoomplayBrowser/1.0",
+                "https://www.boomplay.com/playlists/EQFGpOEkQenBdQefk4jpozq2",
+                CancellationToken.None);
+
+            Assert.False(result.Success);
+            Assert.Equal(BoomplayFailureCodes.ItemUnresolved, result.FailureCode);
         }
         finally
         {
@@ -587,6 +858,19 @@ public sealed class BoomplayClassificationMetadataTests
                 Content = new StringContent(body)
             });
         }
+    }
+
+    private sealed class ResponseHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> route) : IHttpClientFactory, IDisposable
+    {
+        private readonly HttpClient _client = new(new ResponseHandler(route)) { Timeout = TimeSpan.FromSeconds(30) };
+        public HttpClient CreateClient(string name) => _client;
+        public void Dispose() => _client.Dispose();
+    }
+
+    private sealed class ResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> route) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(route(request));
     }
 
     private sealed class TestWebHostEnvironment(string contentRootPath) : IWebHostEnvironment

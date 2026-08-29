@@ -576,6 +576,10 @@
                             <span class="block mb-2">Cookie</span>
                             <input type="password" id="boomplayCookie" placeholder="Boomplay cookie" class="w-full" autocomplete="off" />
                         </label>
+                        <label class="block mb-4">
+                            <span class="block mb-2">Boomplay verification URL</span>
+                            <input type="url" id="boomplayVerificationUrl" placeholder="https://www.boomplay.com/playlists/EQ..." class="w-full" autocomplete="off" required />
+                        </label>
                         <button class="btn btn-primary action-btn" type="submit">Save</button>
                         <p class="text-muted" id="boomplayStatus">@(!initialBoomplayConnected ? initialBoomplayStatus : "")</p>
                     </form>
@@ -2036,7 +2040,9 @@ document.addEventListener('DOMContentLoaded', function() {
         boomplayForm.addEventListener('submit', async function(e) {
             e.preventDefault();
             await savePlatformAuth('/api/platform-auth/boomplay', {
-                cookie: document.getElementById('boomplayCookie').value.trim()
+                cookie: document.getElementById('boomplayCookie').value.trim(),
+                userAgent: navigator.userAgent,
+                verificationUrl: document.getElementById('boomplayVerificationUrl').value.trim()
             }, 'boomplayStatus', true);
         });
     }
@@ -4772,7 +4778,14 @@ async function savePlatformAuth(url, payload, statusElementId, isConnected) {
             return;
         }
         if (!response.ok) {
-            showToast('Failed to save credentials', 'error');
+            let failureMessage = 'Failed to save credentials';
+            try {
+                const failure = await response.json();
+                failureMessage = failure?.message || failure?.error || failureMessage;
+            } catch {
+                // Keep the generic message for non-JSON responses.
+            }
+            showToast(failureMessage, 'error');
             return;
         }
 

@@ -253,10 +253,13 @@ public sealed class BoomplayMetadataService
         }
 
         var normalizedUrl = url!.Trim();
-        var html = await GetHtmlAsync(
-            normalizedUrl,
-            new BoomplaySessionSnapshot(false, null, "anon"),
-            cancellationToken);
+        var session = await GetBoomplaySessionAsync();
+        if (!session.HasSession)
+        {
+            throw new BoomplaySourceException(BoomplayFailureCodes.SessionMissing);
+        }
+
+        var html = await GetHtmlAsync(normalizedUrl, session, cancellationToken);
         if (string.IsNullOrWhiteSpace(html))
         {
             return null;
@@ -303,6 +306,53 @@ public sealed class BoomplayMetadataService
         return resolved != null && string.Equals(resolved.Type, normalizedType, StringComparison.OrdinalIgnoreCase)
             ? resolved.NumericId
             : null;
+    }
+
+    public async Task<BoomplaySessionValidationResult> ValidateSessionAsync(
+        string? cookie,
+        string? userAgent,
+        string? verificationUrl,
+        CancellationToken cancellationToken)
+    {
+        if (!BoomplaySessionCookie.TryNormalize(cookie, out var normalizedCookie)
+            || !BoomplaySessionCookie.TryNormalizeUserAgent(userAgent, out var normalizedUserAgent))
+        {
+            return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.SessionMissing, null);
+        }
+
+        if (!TryParseBoomplayUrl(verificationUrl, out var type, out var publicId)
+            || type is "trending")
+        {
+            return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+        }
+
+        var session = new BoomplaySessionSnapshot(
+            true,
+            normalizedCookie,
+            normalizedUserAgent,
+            $"validation:{ComputeSessionCacheKey(normalizedCookie)}");
+        try
+        {
+            var html = await GetHtmlAsync(verificationUrl!.Trim(), session, cancellationToken);
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+            }
+
+            var doc = new HtmlDocument();
+            doc.LoadHtml(html);
+            var nodeId = string.Equals(type, "playlist", StringComparison.OrdinalIgnoreCase)
+                ? "playlistsDetails"
+                : "songsDetails";
+            var numericId = doc.GetElementbyId(nodeId)?.GetAttributeValue("data-cid", string.Empty)?.Trim();
+            return IsNumericBoomplayId(numericId)
+                ? new BoomplaySessionValidationResult(true, string.Empty, numericId)
+                : new BoomplaySessionValidationResult(false, BoomplayFailureCodes.ItemUnresolved, null);
+        }
+        catch (BoomplaySourceException ex)
+        {
+            return new BoomplaySessionValidationResult(false, ex.FailureCode, null);
+        }
     }
 
     private static string ResolveContentPath(string type)
@@ -1243,7 +1293,7 @@ public sealed class BoomplayMetadataService
             return null;
         }
 
-        var session = new BoomplaySessionSnapshot(false, null, "anon");
+        var session = await GetBoomplaySessionAsync();
         var cacheKey = BuildPlaylistCacheKey(playlistId, session);
         if (_playlistCache.TryGetValue(cacheKey, out BoomplayPlaylistMetadata? cached)
             && cached != null)
@@ -1252,7 +1302,14 @@ public sealed class BoomplayMetadataService
         }
 
         var url = $"{BoomplayBaseUrl}/playlists/{playlistId}";
-        var html = await GetHtmlAsync(url, session, cancellationToken);
+        if (!session.HasSession && !IsNumericBoomplayId(playlistId))
+        {
+            throw new BoomplaySourceException(BoomplayFailureCodes.SessionMissing);
+        }
+
+        var html = session.HasSession
+            ? await GetHtmlAsync(url, session, cancellationToken)
+            : string.Empty;
         var parsed = string.IsNullOrWhiteSpace(html)
             ? new BoomplayPlaylistMetadata { Id = playlistId, Url = url }
             : ParsePlaylistHtml(playlistId, html, url);
@@ -1742,18 +1799,35 @@ public sealed class BoomplayMetadataService
             request.Headers.Referrer = new Uri(BoomplayBaseUrl);
             ApplyBoomplaySession(request, session, url);
             using var response = await client.SendAsync(request, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            var cloudflareChallenge = response.StatusCode == HttpStatusCode.Forbidden
+                                      || response.Headers.TryGetValues("cf-mitigated", out var mitigationValues)
+                                         && mitigationValues.Any(value => value.Contains("challenge", StringComparison.OrdinalIgnoreCase))
+                                      || responseBody.Contains("<title>Just a moment...", StringComparison.OrdinalIgnoreCase)
+                                      || responseBody.Contains("/cdn-cgi/challenge-platform/", StringComparison.OrdinalIgnoreCase);
+            if (cloudflareChallenge)
+            {
+                if (session.HasSession
+                    && !session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal))
+                {
+                    await MarkBoomplaySessionChallengedAsync(session.Cookie);
+                }
+
+                throw new BoomplaySourceException(BoomplayFailureCodes.SessionChallenged);
+            }
+
             if (!response.IsSuccessStatusCode)
             {
                 return string.Empty;
             }
 
-            return await response.Content.ReadAsStringAsync(cancellationToken);
+            return responseBody;
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (ex is not OperationCanceledException and not BoomplaySourceException)
         {
             _logger.LogDebug(ex, "Boomplay request failed for Url");
             return string.Empty;
@@ -4151,19 +4225,29 @@ public sealed class BoomplayMetadataService
         return target.Genres.Count > before;
     }
 
-    private readonly record struct BoomplaySessionSnapshot(bool HasSession, string? Cookie, string CacheKeySuffix);
+    private readonly record struct BoomplaySessionSnapshot(
+        bool HasSession,
+        string? Cookie,
+        string? UserAgent,
+        string CacheKeySuffix);
     private readonly record struct SongAttemptParseResult(BoomplayTrackMetadata Metadata);
     private readonly record struct Id3Frame(string FrameId, int FrameOffset, int FrameSize);
 
     private async Task<BoomplaySessionSnapshot> GetBoomplaySessionAsync()
     {
         var auth = (await _platformAuthService.LoadAsync()).Boomplay;
-        if (!BoomplaySessionCookie.TryNormalize(auth?.Cookie, out var cookie) || auth?.SessionValid == false)
+        if (!BoomplaySessionCookie.TryNormalize(auth?.Cookie, out var cookie)
+            || !BoomplaySessionCookie.TryNormalizeUserAgent(auth?.UserAgent, out var userAgent)
+            || auth?.SessionValid != true)
         {
-            return new BoomplaySessionSnapshot(false, null, "anon");
+            return new BoomplaySessionSnapshot(false, null, null, "anon");
         }
 
-        return new BoomplaySessionSnapshot(true, cookie, $"auth:{ComputeSessionCacheKey(cookie)}");
+        return new BoomplaySessionSnapshot(
+            true,
+            cookie,
+            userAgent,
+            $"auth:{ComputeSessionCacheKey(cookie)}");
     }
 
     private static string BuildPlaylistCacheKey(string id, BoomplaySessionSnapshot session)
@@ -4173,6 +4257,26 @@ public sealed class BoomplayMetadataService
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(cookie));
         return Convert.ToHexString(bytes, 0, 8);
+    }
+
+    private async Task MarkBoomplaySessionChallengedAsync(string? challengedCookie)
+    {
+        if (string.IsNullOrWhiteSpace(challengedCookie))
+        {
+            return;
+        }
+
+        await _platformAuthService.UpdateAsync(state =>
+        {
+            if (state.Boomplay != null
+                && string.Equals(state.Boomplay.Cookie, challengedCookie, StringComparison.Ordinal))
+            {
+                state.Boomplay.SessionValid = false;
+                state.Boomplay.LastStatus = BoomplayFailureCodes.SessionChallenged;
+            }
+
+            return state.Boomplay;
+        });
     }
 
     private static void ApplyBoomplaySession(HttpRequestMessage request, BoomplaySessionSnapshot session, string url)
@@ -4206,7 +4310,13 @@ public sealed class BoomplayMetadataService
     {
         var client = _httpClientFactory.CreateClient(nameof(BoomplayMetadataService));
         client.Timeout = TimeSpan.FromSeconds(25);
-        if (client.DefaultRequestHeaders.UserAgent.Count == 0)
+        if (session is { HasSession: true } authenticatedSession
+            && !string.IsNullOrWhiteSpace(authenticatedSession.UserAgent))
+        {
+            client.DefaultRequestHeaders.Remove("User-Agent");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", authenticatedSession.UserAgent);
+        }
+        else if (client.DefaultRequestHeaders.UserAgent.Count == 0)
         {
             client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", DefaultUserAgent);
         }
@@ -4316,6 +4426,20 @@ public sealed class BoomplayTrackHint
 }
 
 public sealed record BoomplayResolvedLink(string Type, string NumericId, string CanonicalUrl);
+
+public static class BoomplayFailureCodes
+{
+    public const string SessionMissing = "boomplay_session_missing";
+    public const string SessionChallenged = "boomplay_session_challenged";
+    public const string ItemUnresolved = "boomplay_item_unresolved";
+}
+
+public sealed record BoomplaySessionValidationResult(bool Success, string FailureCode, string? NumericId);
+
+public sealed class BoomplaySourceException(string failureCode) : Exception(failureCode)
+{
+    public string FailureCode { get; } = failureCode;
+}
 
 public sealed class BoomplayAlbumMetadata
 {

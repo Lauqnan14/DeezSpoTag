@@ -1050,7 +1050,7 @@ async function handleUnifiedSearchUrlInput(input, parsedUrl) {
         const itemId = String(parsed?.id || '').trim();
         const itemType = String(parsed?.type || '').trim().toLowerCase();
         if (!itemId || !itemType || parsed?.error) {
-            throw new Error(parsed?.error || 'Boomplay link did not resolve to a supported item.');
+            throw new Error(parsed?.message || parsed?.error || 'Boomplay link did not resolve to a supported item.');
         }
 
         globalThis.location.href = `/Tracklist?id=${encodeURIComponent(itemId)}&type=${encodeURIComponent(itemType)}&source=boomplay`;

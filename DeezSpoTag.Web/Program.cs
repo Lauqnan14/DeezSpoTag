@@ -1406,6 +1406,7 @@ public partial class Program
             new DeezSpoTag.Web.Controllers.Api.PlatformAuthApiDependencies
             {
                 AuthService = sp.GetRequiredService<DeezSpoTag.Web.Services.PlatformAuthService>(),
+                BoomplayMetadataService = sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplayMetadataService>(),
                 DiscogsApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Discogs.DiscogsApiClient>(),
                 PlexApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Plex.PlexApiClient>(),
                 JellyfinApiClient = sp.GetRequiredService<DeezSpoTag.Integrations.Jellyfin.JellyfinApiClient>(),

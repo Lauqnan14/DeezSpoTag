@@ -30,6 +30,7 @@ internal sealed record BeatportPlatformStatus(
 public sealed class PlatformAuthApiDependencies
 {
     public required PlatformAuthService AuthService { get; init; }
+    public required BoomplayMetadataService BoomplayMetadataService { get; init; }
     public required DiscogsApiClient DiscogsApiClient { get; init; }
     public required PlexApiClient PlexApiClient { get; init; }
     public required JellyfinApiClient JellyfinApiClient { get; init; }
@@ -52,6 +53,8 @@ public sealed class PlatformAuthApiDependencies
 public sealed class BoomplayLoginRequest
 {
     public string? Cookie { get; set; }
+    public string? UserAgent { get; set; }
+    public string? VerificationUrl { get; set; }
 }
 
 public sealed class AmazonMusicLoginRequest
@@ -68,6 +71,7 @@ public sealed class AmazonMusicLoginRequest
 public class PlatformAuthApiController : ControllerBase
 {
     private readonly PlatformAuthService _authService;
+    private readonly BoomplayMetadataService _boomplayMetadataService;
     private readonly DiscogsApiClient _discogsApiClient;
     private readonly PlexApiClient _plexApiClient;
     private readonly JellyfinApiClient _jellyfinApiClient;
@@ -88,6 +92,7 @@ public class PlatformAuthApiController : ControllerBase
     public PlatformAuthApiController(PlatformAuthApiDependencies dependencies)
     {
         _authService = dependencies.AuthService;
+        _boomplayMetadataService = dependencies.BoomplayMetadataService;
         _discogsApiClient = dependencies.DiscogsApiClient;
         _plexApiClient = dependencies.PlexApiClient;
         _jellyfinApiClient = dependencies.JellyfinApiClient;
@@ -595,7 +600,9 @@ public class PlatformAuthApiController : ControllerBase
 
     [ValidateAntiForgeryToken]
     [HttpPost("boomplay")]
-    public async Task<IActionResult> SaveBoomplay([FromBody] BoomplayLoginRequest request)
+    public async Task<IActionResult> SaveBoomplay(
+        [FromBody] BoomplayLoginRequest request,
+        CancellationToken cancellationToken)
     {
         var gate = EnsureAccess();
         if (gate != null) return gate;
@@ -611,13 +618,38 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("Boomplay cookie is required.");
         }
 
+        var requestedUserAgent = string.IsNullOrWhiteSpace(request.UserAgent)
+            ? previous?.UserAgent
+            : request.UserAgent;
+        if (!BoomplaySessionCookie.TryNormalizeUserAgent(requestedUserAgent, out var userAgent))
+        {
+            return BadRequest("Boomplay browser user agent is required.");
+        }
+
+        var validation = await _boomplayMetadataService.ValidateSessionAsync(
+            existingCookie,
+            userAgent,
+            request.VerificationUrl,
+            cancellationToken);
+        if (!validation.Success)
+        {
+            return BadRequest(new
+            {
+                error = validation.FailureCode,
+                message = validation.FailureCode == BoomplayFailureCodes.SessionChallenged
+                    ? "Boomplay challenged this browser session. Copy a fresh cookie and try again."
+                    : "Boomplay session could not resolve the verification URL."
+            });
+        }
+
         var boomplay = await _authService.UpdateAsync(state =>
         {
             state.Boomplay = new BoomplayAuth
             {
                 Cookie = existingCookie,
+                UserAgent = userAgent,
                 SessionValid = true,
-                LastStatus = "session_saved",
+                LastStatus = "session_verified",
                 SavedAt = DateTimeOffset.UtcNow
             };
 
@@ -1052,7 +1084,7 @@ public class PlatformAuthApiController : ControllerBase
         {
             cookieSaved = configured,
             configured,
-            connected = configured && auth?.SessionValid != false,
+            connected = configured && auth?.SessionValid == true,
             status,
             savedAt = auth?.SavedAt
         };

@@ -1216,7 +1216,7 @@ async function routeSearchUrlDirectly(input) {
         const itemId = String(parsed?.id || '').trim();
         const itemType = String(parsed?.type || '').trim().toLowerCase();
         if (!itemId || !itemType || parsed?.error) {
-            throw new Error(parsed?.error || 'Boomplay link did not resolve to a supported item.');
+            throw new Error(parsed?.message || parsed?.error || 'Boomplay link did not resolve to a supported item.');
         }
 
         navigateToTracklist(itemId, itemType, 'boomplay', { externalUrl: parsed?.canonicalUrl || normalizedInput });

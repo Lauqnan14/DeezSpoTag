@@ -30,6 +30,15 @@ public sealed class BoomplaySecurityGuardrailTests
     }
 
     [Fact]
+    public void Boomplay_user_agent_rejects_header_injection()
+    {
+        Assert.False(BoomplaySessionCookie.TryNormalizeUserAgent(
+            "Mozilla/5.0\r\nX-Injected: yes",
+            out var normalized));
+        Assert.Empty(normalized);
+    }
+
+    [Fact]
     public void Boomplay_resource_cipher_does_not_store_literal_secret_strings()
     {
         var source = File.ReadAllText(Path.Combine(
