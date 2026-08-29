@@ -110,6 +110,42 @@ public sealed class DownloadQueueRepositoryDuplicateTests
     }
 
     [Fact]
+    public async Task StartupRecovery_ReopensIdentityOnlyDestinationPreviouslyMisclassifiedAsFailed()
+    {
+        await using var context = await CreateContextAsync();
+        var stagingPath = Path.Join(context.TempRoot, "downloads", "Artist", "Track.flac");
+        var item = CreateQueueItem("identity-failed", "Artist", "Track", 17) with
+        {
+            Status = "completed",
+            FinalizationStatus = "failed",
+            EnrichmentStatus = "not_required",
+            FinalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                [stagingPath] = stagingPath
+            })
+        };
+        await context.QueueRepository.EnqueueAsync(item, CancellationToken.None);
+        await context.QueueRepository.UpdateFinalDestinationsAsync(
+            item.QueueUuid,
+            item.FinalDestinationsJson,
+            cancellationToken: CancellationToken.None);
+        await context.QueueRepository.MarkMoveFailedAsync(item.QueueUuid, CancellationToken.None);
+        await context.QueueRepository.SetEnrichmentStatusAsync(
+            item.QueueUuid,
+            "not_required",
+            CancellationToken.None);
+
+        var restartedRepository = new DownloadQueueRepository(
+            context.Configuration,
+            NullLogger<DownloadQueueRepository>.Instance);
+        var recovered = await restartedRepository.GetByUuidAsync(item.QueueUuid, CancellationToken.None);
+
+        Assert.NotNull(recovered);
+        Assert.Equal("pending", recovered!.FinalizationStatus);
+        Assert.Equal("pending", recovered.EnrichmentStatus);
+    }
+
+    [Fact]
     public async Task ExistsDuplicateAsync_DoesNotTreatSharedAlbumOrArtistIdsAsTrackDuplicates()
     {
         await using var context = await CreateContextAsync();

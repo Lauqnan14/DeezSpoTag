@@ -1251,7 +1251,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var closedMarkers = new Dictionary<string, DateTimeOffset>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in pendingItems)
         {
-            if (PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+            if (HasExistingSourceUnderRoot(item, downloadRootPath))
             {
                 remaining.Add(item);
                 continue;
@@ -3068,7 +3068,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var itemsWithSourceFiles = items
                 .Where(item => !recoveryQueueUuids.Contains(item.QueueUuid))
-                .Where(item => PayloadHasExistingSourceUnderRoot(item.PayloadJson, downloadRootPath))
+                .Where(item => HasExistingSourceUnderRoot(item, downloadRootPath))
                 .ToList();
             AddPipelineWorkGroup(
                 groups,
@@ -3447,7 +3447,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             }
 
             if (IsFinalizationComplete(currentItem.FinalizationStatus)
-                || !PayloadHasExistingSourceUnderRoot(currentItem.PayloadJson, context.DownloadRootPath))
+                || !HasExistingSourceUnderRoot(currentItem, context.DownloadRootPath))
             {
                 safeMarkers[marker] = currentItem.UpdatedAt > updatedAt ? currentItem.UpdatedAt : updatedAt;
             }
@@ -3827,6 +3827,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             {
                 files.Add(sourceFile);
             }
+
+            CollectFinalDestinationStagingAudioPaths(
+                item.FinalDestinationsJson,
+                rootPath,
+                requireExisting: true,
+                files);
         }
 
         return files
@@ -3841,38 +3847,40 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in items)
         {
-            if (string.IsNullOrWhiteSpace(item.PayloadJson))
+            if (!string.IsNullOrWhiteSpace(item.PayloadJson))
             {
-                continue;
-            }
-
-            try
-            {
-                using var document = JsonDocument.Parse(item.PayloadJson);
-                var root = document.RootElement;
-                AddRecordedAudioPath(root, "filePath", rootPath, files);
-                if (!TryGetPropertyIgnoreCase(root, "files", out var filesElement)
-                    || filesElement.ValueKind != JsonValueKind.Array)
+                try
                 {
-                    continue;
-                }
-
-                foreach (var fileElement in filesElement.EnumerateArray())
-                {
-                    if (fileElement.ValueKind != JsonValueKind.Object
-                        || TryReadStringPropertyIgnoreCase(fileElement, "type", out var type)
-                        && string.Equals(type, "artwork", StringComparison.OrdinalIgnoreCase))
+                    using var document = JsonDocument.Parse(item.PayloadJson);
+                    var root = document.RootElement;
+                    AddRecordedAudioPath(root, "filePath", rootPath, files);
+                    if (TryGetPropertyIgnoreCase(root, "files", out var filesElement)
+                        && filesElement.ValueKind == JsonValueKind.Array)
                     {
-                        continue;
-                    }
+                        foreach (var fileElement in filesElement.EnumerateArray())
+                        {
+                            if (fileElement.ValueKind != JsonValueKind.Object
+                                || TryReadStringPropertyIgnoreCase(fileElement, "type", out var type)
+                                && string.Equals(type, "artwork", StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
 
-                    AddRecordedAudioPath(fileElement, "path", rootPath, files);
+                            AddRecordedAudioPath(fileElement, "path", rootPath, files);
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Final-destination ownership remains available when the payload is malformed.
                 }
             }
-            catch (JsonException)
-            {
-                // Malformed queue payloads are handled by the normal lost-artifact path.
-            }
+
+            CollectFinalDestinationStagingAudioPaths(
+                item.FinalDestinationsJson,
+                rootPath,
+                requireExisting: false,
+                files);
         }
 
         return files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
@@ -3965,9 +3973,69 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private static bool PayloadHasExistingSourceUnderRoot(string? payloadJson, string rootPath)
+    private static bool HasExistingSourceUnderRoot(DownloadQueueItem item, string rootPath)
     {
-        return ResolveExistingSourceAudioFilesUnderRoot(payloadJson, rootPath).Count > 0;
+        return ResolveExistingSourceAudioFilesUnderRoot([item], rootPath).Count > 0;
+    }
+
+    private static void CollectFinalDestinationStagingAudioPaths(
+        string? finalDestinationsJson,
+        string rootPath,
+        bool requireExisting,
+        ISet<string> files)
+    {
+        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
+        {
+            return;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(finalDestinationsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                AddFinalDestinationStagingAudioPath(property.Name, rootPath, requireExisting, files);
+                if (property.Value.ValueKind == JsonValueKind.String)
+                {
+                    AddFinalDestinationStagingAudioPath(
+                        property.Value.GetString(),
+                        rootPath,
+                        requireExisting,
+                        files);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Malformed durable mappings provide no safe file ownership evidence.
+        }
+    }
+
+    private static void AddFinalDestinationStagingAudioPath(
+        string? path,
+        string rootPath,
+        bool requireExisting,
+        ISet<string> files)
+    {
+        if (string.IsNullOrWhiteSpace(path)
+            || !IsPathUnderRoot(rootPath, path)
+            || !StagingAudioExtensions.Contains(Path.GetExtension(path)))
+        {
+            return;
+        }
+
+        var ioPath = DownloadPathResolver.ResolveIoPath(path);
+        if (string.IsNullOrWhiteSpace(ioPath) || requireExisting && !File.Exists(ioPath))
+        {
+            return;
+        }
+
+        files.Add(NormalizePathScope(ioPath));
     }
 
     private static void CollectPayloadSourcePaths(JsonElement root, HashSet<string> paths)

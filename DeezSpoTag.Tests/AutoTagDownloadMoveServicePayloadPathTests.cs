@@ -65,6 +65,64 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     }
 
     [Fact]
+    public void ResolveExistingSourceAudioFilesUnderRoot_UsesDurableSelfMappingWhenPayloadIsMissing()
+    {
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "ResolveExistingSourceAudioFilesUnderRoot",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: [typeof(IEnumerable<DownloadQueueItem>), typeof(string)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("ResolveExistingSourceAudioFilesUnderRoot was not found.");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-owned-staging-{Guid.NewGuid():N}");
+        var stagingPath = Path.Combine(tempRoot, "Artist", "Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(stagingPath)!);
+        File.WriteAllText(stagingPath, "audio");
+
+        try
+        {
+            var item = CreateQueueItem("pending", "pending") with
+            {
+                PayloadJson = null,
+                FinalDestinationsJson = JsonSerializer.Serialize(
+                    new Dictionary<string, string> { [stagingPath] = stagingPath })
+            };
+
+            var resolved = Assert.IsType<List<string>>(method.Invoke(null, [new[] { item }, tempRoot]));
+
+            Assert.Equal([stagingPath], resolved);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void ResolveExistingSourceAudioFilesUnderRoot_RejectsMissingSelfMappedFile()
+    {
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "ResolveExistingSourceAudioFilesUnderRoot",
+            BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: [typeof(IEnumerable<DownloadQueueItem>), typeof(string)],
+            modifiers: null)
+            ?? throw new InvalidOperationException("ResolveExistingSourceAudioFilesUnderRoot was not found.");
+        var root = Path.Combine(Path.GetTempPath(), $"deezspotag-missing-owned-{Guid.NewGuid():N}");
+        var missing = Path.Combine(root, "Artist", "Missing.flac");
+        var item = CreateQueueItem("pending", "pending") with
+        {
+            PayloadJson = null,
+            FinalDestinationsJson = JsonSerializer.Serialize(
+                new Dictionary<string, string> { [missing] = missing })
+        };
+
+        var resolved = Assert.IsType<List<string>>(method.Invoke(null, [new[] { item }, root]));
+
+        Assert.Empty(resolved);
+    }
+
+    [Fact]
     public void TryApplyFinalDestinationTransitions_RejectsIdentityAndMissingDestinations()
     {
         var method = GetPrivateStaticMethod("TryApplyFinalDestinationTransitions");

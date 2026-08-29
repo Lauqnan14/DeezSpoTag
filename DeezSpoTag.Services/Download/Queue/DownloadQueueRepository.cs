@@ -3429,7 +3429,7 @@ SET move_status = '" + MoveStatusPending + @"',
     updated_at = CURRENT_TIMESTAMP
 WHERE lower(status) IN ('completed', 'complete')
   AND destination_folder_id IS NOT NULL
-  AND lower(COALESCE(move_status, '')) IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"')
+  AND lower(COALESCE(move_status, '')) IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"', '" + MoveStatusFailed + @"')
   AND json_valid(final_destinations_json)
   AND EXISTS (SELECT 1 FROM json_each(final_destinations_json))
   AND NOT EXISTS (
