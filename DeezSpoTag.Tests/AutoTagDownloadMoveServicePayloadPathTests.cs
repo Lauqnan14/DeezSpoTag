@@ -123,6 +123,44 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
     }
 
     [Fact]
+    public void HasVerifiedFinalDestination_RejectsSelfMappingAndRequiresExistingDestinationOutsideStagingRoot()
+    {
+        var method = typeof(DownloadOrchestrationService).GetMethod(
+            "HasVerifiedFinalDestination",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("HasVerifiedFinalDestination was not found.");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-orchestration-final-{Guid.NewGuid():N}");
+        var stagingRoot = Path.Combine(tempRoot, "downloads");
+        var sourcePath = Path.Combine(stagingRoot, "Artist", "Track.flac");
+        var stagingDestination = Path.Combine(stagingRoot, "Other", "Track.flac");
+        var libraryDestination = Path.Combine(tempRoot, "library", "Artist", "Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(libraryDestination)!);
+        File.WriteAllText(libraryDestination, "audio");
+
+        try
+        {
+            var item = CreateQueueItem("completed", "moved");
+
+            Assert.False((bool)method.Invoke(null, [
+                item with { FinalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string> { [sourcePath] = sourcePath }) },
+                stagingRoot
+            ])!);
+            Assert.False((bool)method.Invoke(null, [
+                item with { FinalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string> { [sourcePath] = stagingDestination }) },
+                stagingRoot
+            ])!);
+            Assert.True((bool)method.Invoke(null, [
+                item with { FinalDestinationsJson = JsonSerializer.Serialize(new Dictionary<string, string> { [sourcePath] = libraryDestination }) },
+                stagingRoot
+            ])!);
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
     public void TryApplyFinalDestinationTransitions_RewritesPascalCaseQueuePayload()
     {
         var method = GetPrivateStaticMethod("TryApplyFinalDestinationTransitions");

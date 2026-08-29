@@ -3425,14 +3425,11 @@ WHERE lower(trim(COALESCE(enrichment_status, ''))) = 'cancelled';";
         const string sql = @"
 UPDATE download_task
 SET move_status = '" + MoveStatusPending + @"',
-    enrichment_status = CASE
-        WHEN lower(COALESCE(enrichment_status, '')) IN ('" + EnrichmentStatusCompleted + @"', '" + EnrichmentStatusNotRequired + @"') THEN enrichment_status
-        ELSE '" + EnrichmentStatusPending + @"'
-    END,
+    enrichment_status = '" + EnrichmentStatusPending + @"',
     updated_at = CURRENT_TIMESTAMP
 WHERE lower(status) IN ('completed', 'complete')
   AND destination_folder_id IS NOT NULL
-  AND lower(COALESCE(move_status, '')) = '" + MoveStatusMoved + @"'
+  AND lower(COALESCE(move_status, '')) IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"')
   AND json_valid(final_destinations_json)
   AND EXISTS (SELECT 1 FROM json_each(final_destinations_json))
   AND NOT EXISTS (

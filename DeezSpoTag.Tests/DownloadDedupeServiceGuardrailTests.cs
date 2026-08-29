@@ -44,8 +44,9 @@ public sealed class DownloadDedupeServiceGuardrailTests
 
         Assert.DoesNotContain("IsStaleCompletedDuplicate", source, StringComparison.Ordinal);
         Assert.DoesNotContain("IsCompletedStatus(item.Status) && !HasExistingMaterializedFile(item)", source, StringComparison.Ordinal);
-        Assert.Contains("HasRecordedFinalDestination(item)", orchestration, StringComparison.Ordinal);
-        Assert.Contains("already recorded final destinations; no staging artifact remains to finalize", orchestration, StringComparison.Ordinal);
+        Assert.Contains("HasVerifiedFinalDestination(item, downloadRootPath)", orchestration, StringComparison.Ordinal);
+        Assert.DoesNotContain("HasRecordedFinalDestination(item)", orchestration, StringComparison.Ordinal);
+        Assert.DoesNotContain("already recorded final destinations; no staging artifact remains to finalize", orchestration, StringComparison.Ordinal);
     }
 
     [Fact]
