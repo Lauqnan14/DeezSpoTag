@@ -167,7 +167,10 @@ Use the `Login` page to configure platform credentials.
 ### Boomplay
 
 - `Boomplay Session`:
-  - `Cookie` from a logged-in Boomplay browser session is required.
+  - A cookie from a logged-in Boomplay browser session is used for playlist access.
+  - Optional: when Cloudflare challenges the session, DeezSpoTag recovers it automatically with a
+    headless browser (first run downloads Chromium). The saved cookie then works as an
+    override/fallback if automatic recovery is unavailable.
 
 ### Plex
 

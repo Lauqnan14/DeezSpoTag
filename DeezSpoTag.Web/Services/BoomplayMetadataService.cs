@@ -139,6 +139,7 @@ public sealed class BoomplayMetadataService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly PlatformAuthService _platformAuthService;
     private readonly ILogger<BoomplayMetadataService> _logger;
+    private readonly IBoomplaySessionRecoveryService? _sessionRecovery;
     private readonly MemoryCache _songCache = new(new MemoryCacheOptions { SizeLimit = SongCacheSizeLimit });
     private readonly MemoryCache _playlistCache = new(new MemoryCacheOptions { SizeLimit = PlaylistCacheSizeLimit });
     private readonly MemoryCache _searchCache = new(new MemoryCacheOptions { SizeLimit = SearchCacheSizeLimit });
@@ -178,11 +179,13 @@ public sealed class BoomplayMetadataService
     public BoomplayMetadataService(
         IHttpClientFactory httpClientFactory,
         PlatformAuthService platformAuthService,
-        ILogger<BoomplayMetadataService> logger)
+        ILogger<BoomplayMetadataService> logger,
+        IBoomplaySessionRecoveryService? sessionRecovery = null)
     {
         _httpClientFactory = httpClientFactory;
         _platformAuthService = platformAuthService;
         _logger = logger;
+        _sessionRecovery = sessionRecovery;
     }
 
     public static bool TryParseBoomplayUrl(string? url, out string type, out string id)
@@ -1788,7 +1791,8 @@ public sealed class BoomplayMetadataService
     private async Task<string> GetHtmlAsync(
         string url,
         BoomplaySessionSnapshot session,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowRecovery = true)
     {
         try
         {
@@ -1811,6 +1815,21 @@ public sealed class BoomplayMetadataService
                     && !session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal))
                 {
                     await MarkBoomplaySessionChallengedAsync(session.Cookie);
+                }
+
+                // Automatic self-healing: solve the managed challenge with a real browser, then
+                // retry exactly once with the refreshed session. Recursion depth is capped so a
+                // second challenge falls back to the persisted SessionChallenged failure.
+                if (allowRecovery
+                    && _sessionRecovery is not null
+                    && !session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal)
+                    && await _sessionRecovery.TryRecoverAsync("cloudflare_challenge", cancellationToken))
+                {
+                    return await GetHtmlAsync(
+                        url,
+                        await GetBoomplaySessionAsync(),
+                        cancellationToken,
+                        allowRecovery: false);
                 }
 
                 throw new BoomplaySourceException(BoomplayFailureCodes.SessionChallenged);

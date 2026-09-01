@@ -1467,6 +1467,16 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayMetadataService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayDeezerMatchService>();
         services.AddSingleton<DeezSpoTag.Web.Services.BoomplayWatchlistMappingService>();
+        // Boomplay Cloudflare session recovery (automatic browser challenge solving; the manual
+        // cookie path on the Login page remains as the override/fallback).
+        services.Configure<DeezSpoTag.Web.Services.BoomplaySessionRecoveryOptions>(
+            configuration.GetSection("Boomplay:SessionRecovery"));
+        services.AddSingleton<DeezSpoTag.Web.Services.PlaywrightBoomplayChallengeSolver>();
+        services.AddSingleton<DeezSpoTag.Web.Services.IBoomplayChallengeSolver>(static sp =>
+            sp.GetRequiredService<DeezSpoTag.Web.Services.PlaywrightBoomplayChallengeSolver>());
+        services.AddSingleton<DeezSpoTag.Web.Services.BoomplaySessionRecoveryService>();
+        services.AddSingleton<DeezSpoTag.Web.Services.IBoomplaySessionRecoveryService>(static sp =>
+            sp.GetRequiredService<DeezSpoTag.Web.Services.BoomplaySessionRecoveryService>());
         services.AddSingleton<DeezSpoTag.Web.Services.DownloadControllerServices>();
         services.AddScoped<DeezSpoTag.Web.Services.LinkMapping.DeezerLinkMappingService>();
         services.AddScoped<DeezSpoTag.Services.Metadata.IMetadataResolver, DeezSpoTag.Web.Services.QobuzMetadataResolver>();

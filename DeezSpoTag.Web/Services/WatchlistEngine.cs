@@ -4406,6 +4406,7 @@ private async Task<ApplePlaylistWatchData?> GetApplePlaylistWatchDataAsync(
     {
         artistId = 0;
         if (!IsArtistWatchContainerKey(sourceId)
+            || sourceId is null
             || !long.TryParse(sourceId["artist:".Length..], out var parsed))
         {
             return false;
