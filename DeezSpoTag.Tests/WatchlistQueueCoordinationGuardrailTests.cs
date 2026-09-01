@@ -373,6 +373,43 @@ public sealed class WatchlistQueueCoordinationGuardrailTests
         Assert.Contains("ManualUnavailableRetryService", programSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void ActiveWatchCycle_ProcessesArtistLedgerAdmissionAfterPlaylistWork()
+    {
+        // Artists are a separate domain but must never jump ahead of playlists: discovery and
+        // ledger admission both run after the playlist reconciliation and playlist admission
+        // steps inside the same cycle.
+        var coordinator = ReadSource("DeezSpoTag.Web/Services/WatchlistRunCoordinator.cs");
+        var playlistAdmission = coordinator.IndexOf(
+            "await reconciler.AdmitDueMissingTracksFromLedgerAsync(",
+            StringComparison.Ordinal);
+        var artistDiscovery = coordinator.IndexOf(
+            "await ProcessArtistWatchItemsAsync(",
+            StringComparison.Ordinal);
+        var artistAdmission = coordinator.IndexOf(
+            "await artistReconciler.AdmitArtistWatchMissingTracksFromLedgerAsync(",
+            StringComparison.Ordinal);
+
+        Assert.True(playlistAdmission > 0);
+        Assert.True(artistDiscovery > playlistAdmission);
+        Assert.True(artistAdmission > artistDiscovery);
+    }
+
+    [Fact]
+    public void LedgerAdmission_ReconcilesLiveQueueOwnershipBeforeOrdering()
+    {
+        // Stale 'queued' ledger rows must be validated against the live download queue before
+        // ordered admission reads the due rows, from both admission entry points.
+        var engine = ReadSource("DeezSpoTag.Web/Services/WatchlistEngine.cs");
+        Assert.Contains(
+            "private async Task<int> ReconcileLedgerOwnershipWithLiveQueueAsync(",
+            engine,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            3,
+            engine.Split("await ReconcileLedgerOwnershipWithLiveQueueAsync(cancellationToken);").Length - 1);
+    }
+
     private static string ReadSource(string relativePath)
         => File.ReadAllText(Path.Combine(RepoRoot, relativePath));
 }

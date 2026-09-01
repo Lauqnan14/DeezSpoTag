@@ -324,7 +324,10 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 cancellationToken);
             if (processed == 0)
             {
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                // Idle backoff: an empty drain is the common case during long cycles, and polling
+                // claims every second only adds SQLite chatter. Jobs enqueued mid-cycle (for
+                // example by inline membership work) wait at most this long before draining.
+                await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken);
             }
         }
     }
@@ -676,6 +679,18 @@ public sealed class WatchlistRunCoordinator : BackgroundService
                 }
                 var cleanup = await disabledRepository.ClearDisabledWatchlistRuntimeAsync(stoppingToken);
                 _consecutiveFailures.Clear();
+                // Schedule the next cycle even while disabled: the end-of-cycle scheduling in
+                // ExecuteRunAsync is gated on the watchlist being enabled, and without a
+                // next_cycle_utc the wait phase returns immediately — the coordinator would
+                // otherwise busy-loop cleanup every few milliseconds for as long as the
+                // watchlist stays disabled.
+                await disabledRepository.UpdateWatchlistCycleStateAsync(
+                    PlaylistWatchType,
+                    "completed",
+                    cycleStartedUtc: null,
+                    cycleCompletedUtc: DateTimeOffset.UtcNow,
+                    nextCycleUtc: DateTimeOffset.UtcNow + GetWatchInterval(settings),
+                    stoppingToken);
                 if (_logger.IsEnabled(LogLevel.Information)
                     && (cleanup.ReconciliationRequestsDeleted > 0
                         || cleanup.SyncJobsDeleted > 0
@@ -1006,6 +1021,13 @@ public sealed class WatchlistRunCoordinator : BackgroundService
             settings,
             serviceProvider,
             stoppingToken);
+        if (queueAdmissionAllowed)
+        {
+            // Artist discovery wrote missing-ledger rows; give them the remaining run quota now
+            // so the same ordered, budgeted admission that serves playlists serves artists.
+            var artistReconciler = serviceProvider.GetRequiredService<PlaylistWatchReconciler>();
+            await artistReconciler.AdmitArtistWatchMissingTracksFromLedgerAsync(stoppingToken);
+        }
         var completedRequests = reconciliationRequests.Where(request =>
                 request.Kind == "all"
                     ? playlistRunResult.ProcessedKeys.Count == playlistItems.Count

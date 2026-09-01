@@ -375,8 +375,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.DoesNotContain("HandleBlockedWatchIntentAsync", source, StringComparison.Ordinal);
         Assert.Contains("public static DownloadDedupeRequest FromDownloadIntent(", dedupeSource, StringComparison.Ordinal);
         Assert.Contains("options.WatchlistOrigin", source, StringComparison.Ordinal);
-        Assert.Contains("ArtistWatchOrigin", source, StringComparison.Ordinal);
-        Assert.Contains("enforcePlaylistRunBudget", source, StringComparison.Ordinal);
+        // The artist-origin budget bypass was removed: every queue admission enforces the
+        // per-run budget through the shared ledger path.
+        Assert.DoesNotContain("ArtistWatchOrigin", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("enforcePlaylistRunBudget", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1250,7 +1252,10 @@ public sealed class WatchlistSettingsBehaviorTests : IDisposable
         Assert.Contains("WatchlistStateService", admission, StringComparison.Ordinal);
         Assert.Contains("WatchlistHistoryService", postSync, StringComparison.Ordinal);
         Assert.Contains("PlaylistWatchReconciler", playlist, StringComparison.Ordinal);
-        Assert.Contains("WatchlistQueueService", playlist, StringComparison.Ordinal);
+        // The direct artist queuing facade was removed; artist tracks flow through the shared
+        // ledger admission owned by the reconciler.
+        Assert.DoesNotContain("WatchlistQueueService", playlist, StringComparison.Ordinal);
+        Assert.Contains("AdmitArtistWatchMissingTracksFromLedgerAsync", playlist, StringComparison.Ordinal);
         Assert.Contains("IPlaylistSourceAdapter", playlist, StringComparison.Ordinal);
         Assert.Contains("WatchlistSelectionPolicy", playlist, StringComparison.Ordinal);
     }

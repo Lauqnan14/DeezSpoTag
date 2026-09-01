@@ -140,7 +140,7 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
                 qobuzApiClient: null!,
                 tidalTokens: null!,
                 httpClientFactory: null!),
-            new WatchlistQueueService(playlistWatchService),
+            new PlaylistWatchReconciler(playlistWatchService),
             _settingsService,
             activitiesRealtime: null!,
             NullLogger<ArtistWatchService>.Instance);
@@ -409,6 +409,30 @@ public sealed class WatchlistRunCoordinatorHardeningTests : IAsyncLifetime
 
         Assert.True(activeCycle.IsCancellationRequested);
         Assert.False(hosted.GetRuntimeHealth().IsRunning);
+    }
+
+    [Fact]
+    public async Task RunOnce_WhileDisabled_SchedulesTheNextCycleInsteadOfBusyLooping()
+    {
+        var settings = _settingsService.LoadSettings();
+        settings.WatchEnabled = false;
+        _settingsService.SaveSettings(settings);
+        var hosted = new WatchlistRunCoordinator(_provider, NullLogger<WatchlistRunCoordinator>.Instance);
+
+        await InvokeRunOnceAsync(hosted);
+        var firstState = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
+        Assert.NotNull(firstState);
+        Assert.Equal("completed", firstState!.CycleStatus);
+        Assert.True(
+            firstState.NextCycleUtc is { } firstNext && firstNext > DateTimeOffset.UtcNow,
+            "A disabled coordinator must schedule a future next cycle so the wait phase sleeps.");
+
+        // Running the next cycle once more must not strand the scheduler without a future
+        // next_cycle_utc — that is the condition behind the disabled busy-loop.
+        await InvokeRunOnceAsync(hosted);
+        var secondState = await _repository.GetWatchlistSchedulerStateAsync("playlist", CancellationToken.None);
+        Assert.NotNull(secondState);
+        Assert.True(secondState!.NextCycleUtc is { } secondNext && secondNext > DateTimeOffset.UtcNow);
     }
 
     [Fact]

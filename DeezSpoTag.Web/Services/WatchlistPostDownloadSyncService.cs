@@ -480,8 +480,11 @@ public sealed class WatchlistPostDownloadSyncService : IWatchlistPostDownloadSyn
                 return;
             }
 
+            // Identity-miss defers do not burn attempts, so without a floor they would poll at a
+            // fixed cadence forever. 15 minutes keeps the wait patient while identities resolve
+            // through library ingestion or target index refreshes.
             var retryDelay = deferWithoutBurningAttempts
-                ? TimeSpan.FromMinutes(2)
+                ? TimeSpan.FromMinutes(15)
                 : TimeSpan.FromSeconds(Math.Min(MaximumRetryDelay.TotalSeconds, 15 * Math.Pow(2, Math.Min(Math.Max(attempt, 1) - 1, 6))));
             await repository.RetryWatchlistSyncJobAsync(
                 job.Id,

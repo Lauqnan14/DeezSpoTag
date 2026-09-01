@@ -11573,7 +11573,7 @@ SELECT missing.id, missing.source, missing.source_id, missing.track_source_id, m
        missing.snapshot_id, missing.candidate_revision, missing.provider_readiness_revision,
        missing.queue_uuid, missing.updated_at
 FROM playlist_watch_missing_track missing
-JOIN playlist_watchlist playlist
+LEFT JOIN playlist_watchlist playlist
   ON playlist.source=missing.source AND playlist.source_id=missing.source_id
 WHERE lower(missing.status) IN ('missing', 'failed')
   AND (missing.retry_after_utc IS NULL OR datetime(missing.retry_after_utc) <= datetime('now'))
@@ -11619,6 +11619,65 @@ WHERE lower(COALESCE(status, '')) IN ('queued', 'downloading')
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Distinct queue uuids currently referenced by ledger rows that believe they own a live
+    /// download ('queued'/'downloading'). Used to validate ownership against the live queue.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetQueuedPlaylistWatchMissingTrackQueueUuidsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+SELECT DISTINCT trim(queue_uuid)
+FROM playlist_watch_missing_track
+WHERE lower(COALESCE(status, '')) IN ('queued', 'downloading')
+  AND trim(COALESCE(queue_uuid, '')) <> '';";
+        await using var command = new SqliteCommand(sql, connection);
+        var uuids = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            uuids.Add(reader.GetString(0));
+        }
+
+        return uuids;
+    }
+
+    /// <summary>
+    /// Returns ledger rows to 'missing' when their owning queue items no longer exist (or
+    /// terminally failed without an event), clearing the stale queue ownership so ordered
+    /// admission can pick them up again.
+    /// </summary>
+    public async Task<int> ReopenPlaylistWatchMissingTracksByQueueUuidsAsync(
+        IReadOnlyCollection<string> queueUuids,
+        string? reason,
+        CancellationToken cancellationToken = default)
+    {
+        var requested = queueUuids
+            .Where(static uuid => !string.IsNullOrWhiteSpace(uuid))
+            .Select(static uuid => uuid.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (requested.Count == 0)
+        {
+            return 0;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+UPDATE playlist_watch_missing_track
+SET status='missing',
+    queue_uuid=NULL,
+    last_error=@reason,
+    retry_after_utc=NULL,
+    updated_at=CURRENT_TIMESTAMP
+WHERE lower(COALESCE(status, '')) IN ('queued', 'downloading')
+  AND lower(trim(queue_uuid)) IN (SELECT lower(value) FROM json_each(@uuidsJson));", connection);
+        command.Parameters.AddWithValue("reason", (object?)reason ?? DBNull.Value);
+        command.Parameters.AddWithValue("uuidsJson", System.Text.Json.JsonSerializer.Serialize(requested));
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<bool> HasOutstandingPlaylistWatchOperationalWorkAsync(
         string source,
         string sourceId,
@@ -11643,7 +11702,7 @@ SELECT EXISTS (
     SELECT 1 FROM watchlist_sync_job
     WHERE source=@source AND playlist_id=@sourceId
       AND lower(COALESCE(status, 'pending')) IN
-          ('pending','retry','processing','repair_required','blocked')
+          ('pending','retry','processing')
 );", connection);
         command.Parameters.AddWithValue(SourceField, normalizedSource);
         command.Parameters.AddWithValue(SourceIdField, normalizedSourceId);
@@ -11705,7 +11764,7 @@ SELECT missing.id, missing.source, missing.source_id, missing.track_source_id, m
        missing.snapshot_id, missing.candidate_revision, missing.provider_readiness_revision,
        missing.queue_uuid, missing.updated_at
 FROM playlist_watch_missing_track missing
-JOIN playlist_watchlist playlist
+LEFT JOIN playlist_watchlist playlist
   ON playlist.source=missing.source AND playlist.source_id=missing.source_id
 WHERE lower(COALESCE(missing.status, '')) NOT IN ('resolved', 'review')
 ORDER BY CASE WHEN playlist.sync_priority IS NULL OR playlist.sync_priority <= 0 THEN 1 ELSE 0 END,

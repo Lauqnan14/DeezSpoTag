@@ -1625,9 +1625,6 @@ public partial class Program
         services.AddSingleton<DeezSpoTag.Web.Services.PlaylistWatchReconciler>(sp =>
             new DeezSpoTag.Web.Services.PlaylistWatchReconciler(
                 sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
-        services.AddSingleton<DeezSpoTag.Web.Services.WatchlistQueueService>(sp =>
-            new DeezSpoTag.Web.Services.WatchlistQueueService(
-                sp.GetRequiredService<DeezSpoTag.Web.Services.WatchlistEngine>()));
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistPostDownloadSyncService>();
         services.AddSingleton<DeezSpoTag.Web.Services.WatchlistRunSignal>();
         services.AddSingleton<DeezSpoTag.Services.Download.Shared.IWatchlistPostDownloadSyncNotifier>(

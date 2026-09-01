@@ -252,6 +252,41 @@ WHERE queue_uuid = @queueUuid;";
         return UpdateProgressAsync(queueUuid, progress, downloaded: null, failed: null, cancellationToken);
     }
 
+    /// <summary>
+    /// Batch lookup of queue item existence and status for watchlist ledger ownership
+    /// reconciliation. Returns only the requested uuids that still exist, keyed by uuid.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, string>> GetLiveQueueUuidStatusesAsync(
+        IReadOnlyCollection<string> queueUuids,
+        CancellationToken cancellationToken = default)
+    {
+        var requested = queueUuids
+            .Where(static uuid => !string.IsNullOrWhiteSpace(uuid))
+            .Select(static uuid => uuid.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (requested.Count == 0)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT queue_uuid, status
+FROM download_task
+WHERE lower(queue_uuid) IN (SELECT lower(value) FROM json_each(@uuidsJson));", connection);
+        command.Parameters.AddWithValue("uuidsJson", System.Text.Json.JsonSerializer.Serialize(requested));
+        var results = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results[reader.GetString(0)] = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+        }
+
+        return results;
+    }
+
     public async Task<DownloadQueueItem?> GetByUuidAsync(string queueUuid, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(queueUuid))

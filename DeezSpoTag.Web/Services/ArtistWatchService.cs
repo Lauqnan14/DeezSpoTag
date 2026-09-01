@@ -81,7 +81,7 @@ public sealed class ArtistWatchService
     private readonly IQobuzApiClient _qobuzApiClient;
     private readonly ITidalAccessTokenProvider _tidalTokens;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly WatchlistQueueService _watchlistQueue;
+    private readonly PlaylistWatchReconciler _reconciler;
     private readonly DeezSpoTagSettingsService _settingsService;
     private readonly WatchlistHistoryService _watchlistHistory;
     private readonly ILogger<ArtistWatchService> _logger;
@@ -89,7 +89,7 @@ public sealed class ArtistWatchService
     public ArtistWatchService(
         LibraryRepository libraryRepository,
         ArtistWatchPlatformDependencies platformDependencies,
-        WatchlistQueueService watchlistQueue,
+        PlaylistWatchReconciler watchlistReconciler,
         DeezSpoTagSettingsService settingsService,
         ActivitiesRealtimeService activitiesRealtime,
         ILogger<ArtistWatchService> logger,
@@ -104,7 +104,7 @@ public sealed class ArtistWatchService
         _qobuzApiClient = platformDependencies.QobuzApiClient;
         _tidalTokens = platformDependencies.TidalTokens;
         _httpClientFactory = platformDependencies.HttpClientFactory;
-        _watchlistQueue = watchlistQueue;
+        _reconciler = watchlistReconciler;
         _settingsService = settingsService;
         _watchlistHistory = watchlistHistory ?? new WatchlistHistoryService(libraryRepository, activitiesRealtime);
         _logger = logger;
@@ -226,24 +226,34 @@ public sealed class ArtistWatchService
         List<ArtistWatchAlbumInsert> insertedAlbums,
         CancellationToken cancellationToken)
     {
+        var releaseIndex = 0;
         foreach (var album in albums.Where(album => !string.IsNullOrWhiteSpace(album.Id) && !existing.Contains(album.Id)))
         {
-            await QueueSpotifyAlbumReleaseAsync(artist, album, insertedAlbums, cancellationToken);
+            await QueueSpotifyAlbumReleaseAsync(
+                artist,
+                album,
+                releaseIndex * ArtistWatchQueueOptions.ReleasePositionStride,
+                insertedAlbums,
+                cancellationToken);
+            releaseIndex++;
         }
     }
 
     private async Task QueueSpotifyAlbumReleaseAsync(
         WatchlistArtistDto artist,
         SpotifyAlbum album,
+        int releasePositionBase,
         List<ArtistWatchAlbumInsert> insertedAlbums,
         CancellationToken cancellationToken)
     {
         var tracks = await _spotifyMetadataService.FetchAlbumTracksAsync(album.Id, cancellationToken);
         if (tracks.Count > 0)
         {
-            var outcome = await _watchlistQueue.QueueSpotifyWatchTracksWithOutcomeAsync(
+            var outcome = await _reconciler.AdmitSpotifyWatchTracksToLedgerAsync(
+                artist,
                 tracks,
                 BuildArtistQueueOptions(artist, album.Name ?? string.Empty, AlbumGroup),
+                releasePositionBase,
                 cancellationToken);
             await AddSpotifyAlbumWatchHistoryIfQueuedAsync(artist, album, outcome.Queued, cancellationToken);
             if (outcome.IsSettled)
@@ -363,9 +373,11 @@ public sealed class ArtistWatchService
             .Select(track => MapSpotifyTopTrackSummary(track, artist.ArtistName))
             .ToList();
         var collectionName = $"{artist.ArtistName} - Top Songs";
-        var outcome = await _watchlistQueue.QueueSpotifyWatchTracksWithOutcomeAsync(
+        var outcome = await _reconciler.AdmitSpotifyWatchTracksToLedgerAsync(
+            artist,
             summaries,
             BuildArtistQueueOptions(artist, collectionName, TopSongsGroup),
+            0,
             cancellationToken);
         if (outcome.Queued > 0)
         {
@@ -646,10 +658,12 @@ public sealed class ArtistWatchService
             return null;
         }
 
-        var outcome = await _watchlistQueue.QueueWatchIntentsWithOutcomeAsync(
+        var outcome = await _reconciler.AdmitWatchIntentsToLedgerAsync(
+            artist,
             intents,
             BuildArtistQueueOptions(artist, albumName, AlbumGroup),
             "Qobuz",
+            0,
             cancellationToken);
         if (outcome.Queued > 0)
         {
@@ -853,10 +867,12 @@ public sealed class ArtistWatchService
             return null;
         }
 
-        var outcome = await _watchlistQueue.QueueWatchIntentsWithOutcomeAsync(
+        var outcome = await _reconciler.AdmitWatchIntentsToLedgerAsync(
+            artist,
             intents,
             BuildArtistQueueOptions(artist, albumName, AlbumGroup),
             "Tidal",
+            0,
             cancellationToken);
         if (outcome.Queued > 0)
         {
@@ -1019,9 +1035,11 @@ public sealed class ArtistWatchService
         List<DownloadIntent> intents,
         CancellationToken cancellationToken)
     {
-        var outcome = await _watchlistQueue.QueueAppleWatchIntentsWithOutcomeAsync(
+        var outcome = await _reconciler.AdmitAppleWatchIntentsToLedgerAsync(
+            artist,
             intents,
             BuildArtistQueueOptions(artist, albumName, AlbumGroup),
+            0,
             cancellationToken);
 
         if (outcome.Queued > 0)
@@ -1102,9 +1120,11 @@ public sealed class ArtistWatchService
         var tracks = await _deezerClient.GetAlbumTracksAsync(albumId);
         if (tracks.Count > 0)
         {
-            var outcome = await _watchlistQueue.QueueDeezerWatchTracksWithOutcomeAsync(
+            var outcome = await _reconciler.AdmitDeezerWatchTracksToLedgerAsync(
+                artist,
                 tracks,
                 BuildArtistQueueOptions(artist, albumName, AlbumGroup),
+                0,
                 cancellationToken);
             if (outcome.Queued > 0)
             {

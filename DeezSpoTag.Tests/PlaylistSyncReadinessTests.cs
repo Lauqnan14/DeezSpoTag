@@ -194,7 +194,9 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             "No local track metadata match.",
             Array.Empty<long>());
 
-        Assert.True(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(existing, unresolved, existingFileExists: true));
+        Assert.True(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(
+            existing, unresolved, existingFileExists: true, out var preservedReason));
+        Assert.False(string.IsNullOrWhiteSpace(preservedReason));
     }
 
     [Fact]
@@ -211,7 +213,45 @@ public sealed class PlaylistSyncReadinessTests : IAsyncLifetime
             "No local track metadata match.",
             Array.Empty<long>());
 
-        Assert.False(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(existing, unresolved, existingFileExists: false));
+        Assert.False(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(
+            existing, unresolved, existingFileExists: false, out _));
+    }
+
+    [Fact]
+    public void PreserveVerifiedIdentity_WhenARematchPointsAtADifferentTrackWithoutEvidence()
+    {
+        var existing = new PlaylistWatchTrackStatusDto(
+            "track-1", null, "completed", DateTimeOffset.UtcNow,
+            null, null, null, null, null,
+            LocalTrackId: 42,
+            IdentityStatus: "identity_verified");
+        var conflicting = new LibraryRepository.LocalTrackIdentityResult(
+            99,
+            "metadata_match",
+            "Matched a different local track.",
+            new[] { 99L });
+
+        Assert.True(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(
+            existing, conflicting, existingFileExists: true, out var reason));
+        Assert.Contains("local track 99", reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DoNotPreserveVerifiedIdentity_WhenTheRematchPointsAtTheSameTrack()
+    {
+        var existing = new PlaylistWatchTrackStatusDto(
+            "track-1", null, "completed", DateTimeOffset.UtcNow,
+            null, null, null, null, null,
+            LocalTrackId: 42,
+            IdentityStatus: "identity_verified");
+        var same = new LibraryRepository.LocalTrackIdentityResult(
+            42,
+            "metadata_match",
+            "Matched the same local track.",
+            new[] { 42L });
+
+        Assert.False(WatchlistEngine.ShouldPreserveVerifiedLocalIdentity(
+            existing, same, existingFileExists: true, out _));
     }
 
     private static PlaylistWatchlistDto CreatePlaylist()

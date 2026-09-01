@@ -31,7 +31,7 @@ public sealed class WatchlistCircuitClassificationTests
         Assert.DoesNotContain("PlaylistSyncResultKind.IdentityGap or PlaylistSyncResultKind.NoLocalTracks", worker, StringComparison.Ordinal);
         Assert.Contains("SyncFailureClass.IdentityMiss", worker, StringComparison.Ordinal);
         Assert.Contains("deferWithoutBurningAttempts", worker, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromMinutes(2)", worker, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromMinutes(15)", worker, StringComparison.Ordinal);
     }
 
     [Theory]

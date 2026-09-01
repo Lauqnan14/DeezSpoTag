@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DeezSpoTag.Services.Download;
+using DeezSpoTag.Services.Download.Queue;
 using DeezSpoTag.Services.Library;
 using DeezSpoTag.Web.Services;
 using Microsoft.Data.Sqlite;
@@ -21,6 +22,7 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
     private string _dbPath = string.Empty;
     private IConfiguration _configuration = default!;
     private LibraryRepository _repository = default!;
+    private DownloadQueueRepository _queueRepository = default!;
 
     public async Task InitializeAsync()
     {
@@ -30,11 +32,13 @@ public sealed class WatchlistDurabilityRepositoryTests : IAsyncLifetime
         _configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Library"] = $"Data Source={_dbPath}"
+                ["ConnectionStrings:Library"] = $"Data Source={_dbPath}",
+                ["ConnectionStrings:Queue"] = $"Data Source={Path.Join(_tempRoot, "queue.db")}"
             })
             .Build();
         await new LibraryDbService(_configuration, NullLogger<LibraryDbService>.Instance).EnsureSchemaAsync();
         _repository = NewRepository();
+        _queueRepository = new DownloadQueueRepository(_configuration, NullLogger<DownloadQueueRepository>.Instance);
     }
 
     public Task DisposeAsync()
@@ -1620,8 +1624,144 @@ VALUES
     private static PlaylistTrackCandidate Candidate(string id, string title, string artist)
         => new(id, null, title, artist, string.Empty, null, null, null, []);
 
+    [Fact]
+    public async Task DueLedgerOrdering_PlaysPlaylistContainersBeforeArtistContainers()
+    {
+        // AddPlaylistWatchlistAsync auto-assigns equal priorities, so the two playlist
+        // containers order by track position; the artist container (no playlist row) must
+        // still sort after every playlist container.
+        await AddPlaylistWithTargetsAsync("playlist-a", ["plex"]);
+        await AddPlaylistWithTargetsAsync("playlist-b", ["plex"]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "playlist-a",
+            [MissingTrack("playlist-a-track", 9)]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "playlist-b",
+            [MissingTrack("playlist-b-track", 1)]);
+
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "artist:777",
+            [MissingTrack("artist-track", 1)]);
+
+        var playlists = await _repository.GetPlaylistWatchlistAsync();
+        Assert.All(playlists, playlist => Assert.True(playlist.SyncPriority is > 0));
+
+        var dueOrder = (await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync())
+            .Select(row => row.SourceId)
+            .ToList();
+
+        Assert.Equal(
+            new[] { "playlist-b", "playlist-a", "artist:777" },
+            dueOrder);
+    }
+
+    [Fact]
+    public async Task DueLedgerOrdering_PriorityOneAdmitsBeforePriorityTwo()
+    {
+        await AddPlaylistWithTargetsAsync("priority-two", ["plex"]);
+        await AddPlaylistWithTargetsAsync("priority-one", ["plex"]);
+        await _repository.UpdatePlaylistWatchlistPrioritiesAsync(
+        [
+            ("spotify", "priority-one", 1),
+            ("spotify", "priority-two", 2),
+        ]);
+        // The lower-priority playlist's track sits at an earlier source position and was
+        // inserted first — ordering must still follow the playlist priority.
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "priority-two",
+            [MissingTrack("p2-track", 1)]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify",
+            "priority-one",
+            [MissingTrack("p1-track", 9)]);
+
+        var dueOrder = (await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync())
+            .Select(row => row.SourceId)
+            .ToList();
+
+        Assert.Equal(
+            new[] { "priority-one", "priority-two" },
+            dueOrder);
+    }
+
+    [Fact]
+    public async Task StaleLedgerQueueOwnership_ReopensAgainstLiveQueueEvidence()
+    {
+        await AddPlaylistWithTargetsAsync("ownership-live", ["plex"]);
+        await AddPlaylistWithTargetsAsync("ownership-vanished", ["plex"]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify", "ownership-live", [MissingTrack("live-track", 1)]);
+        await _repository.UpsertPlaylistWatchMissingTracksAsync(
+            "spotify", "ownership-vanished", [MissingTrack("vanished-track", 1)]);
+
+        // Both rows believe they own a live download...
+        await _repository.MarkPlaylistWatchMissingTrackQueuedAsync(
+            "spotify", "ownership-live", "live-track", "queue-live");
+        await _repository.MarkPlaylistWatchMissingTrackQueuedAsync(
+            "spotify", "ownership-vanished", "vanished-track", "queue-vanished");
+
+        // ...but only one queue item still exists in the live queue.
+        await _queueRepository.EnqueueAsync(
+            CreateQueueItem("queue-live", "queued"),
+            CancellationToken.None);
+        var liveStatuses = await _queueRepository.GetLiveQueueUuidStatusesAsync(
+            ["queue-live", "queue-vanished"]);
+        Assert.Single(liveStatuses);
+        var ownedUuids = await _repository.GetQueuedPlaylistWatchMissingTrackQueueUuidsAsync();
+        Assert.Equal(2, ownedUuids.Count);
+
+        var stale = ownedUuids.Where(uuid => !liveStatuses.ContainsKey(uuid)).ToList();
+        Assert.Equal(["queue-vanished"], stale);
+        var reopened = await _repository.ReopenPlaylistWatchMissingTracksByQueueUuidsAsync(
+            stale,
+            "Queued download no longer owns a live queue item; returned to missing for ordered admission.");
+        Assert.Equal(1, reopened);
+
+        var dueAfter = await _repository.GetDuePlaylistWatchMissingTracksInPriorityOrderAsync();
+        var vanishedRow = Assert.Single(dueAfter, row => row.TrackSourceId == "vanished-track");
+        Assert.Equal("missing", vanishedRow.Status);
+        Assert.Null(vanishedRow.QueueUuid);
+        // The row whose queue item still exists stays 'queued' and must NOT re-enter admission.
+        Assert.DoesNotContain(dueAfter, row => row.TrackSourceId == "live-track");
+    }
+
     private LibraryRepository NewRepository()
         => new(_configuration, NullLogger<LibraryRepository>.Instance);
+
+    private static DownloadQueueItem CreateQueueItem(string queueUuid, string status)
+        => new(
+            Id: 0,
+            QueueUuid: queueUuid,
+            Engine: "qobuz",
+            ArtistName: "Artist",
+            TrackTitle: queueUuid,
+            Isrc: null,
+            DeezerTrackId: null,
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: null,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: null,
+            DestinationFolderId: 1,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: "stereo",
+            Status: status,
+            PayloadJson: null,
+            Progress: 0,
+            Downloaded: 0,
+            Failed: 0,
+            Error: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
 
     private async Task AddPlaylistWithTargetsAsync(string sourceId, IReadOnlyList<string> targets)
     {

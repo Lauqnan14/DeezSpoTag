@@ -296,7 +296,7 @@ public sealed class PlaylistSyncTargetAggregationTests
         Assert.Contains("api.tidal.com/v1/artists/", service, StringComparison.Ordinal);
         Assert.Contains("BuildTidalAlbumIntents", service, StringComparison.Ordinal);
         Assert.Contains("BuildQobuzAlbumIntents", service, StringComparison.Ordinal);
-        Assert.Contains("QueueWatchIntentsWithOutcomeAsync", service, StringComparison.Ordinal);
+        Assert.Contains("AdmitWatchIntentsToLedgerAsync", service, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -305,8 +305,11 @@ public sealed class PlaylistSyncTargetAggregationTests
         var engine = File.ReadAllText(Path.Join(
             FindRepoRoot(), "DeezSpoTag.Web", "Services", "WatchlistEngine.cs"));
 
-        Assert.Contains("BuildQueueSourceLabel(platformLabel", engine, StringComparison.Ordinal);
-        Assert.DoesNotContain("BuildQueueSourceLabel(\"Apple Music\", options.CollectionType", engine, StringComparison.Ordinal);
+        // Platform labeling moved to admission time: the container label (artist name) is
+        // resolved when ledger rows are admitted, and the label helper was deleted along with
+        // the direct artist queuing path.
+        Assert.Contains("AdmitWatchIntentsToLedgerAsync", engine, StringComparison.Ordinal);
+        Assert.DoesNotContain("BuildQueueSourceLabel", engine, StringComparison.Ordinal);
     }
 
     [Fact]
