@@ -2452,6 +2452,16 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             settings.SaveAnimatedArtwork = config.SaveAnimatedArtwork.Value;
         }
 
+        if (config.SaveSquareAnimatedArtwork.HasValue)
+        {
+            settings.SaveSquareAnimatedArtwork = config.SaveSquareAnimatedArtwork.Value;
+        }
+
+        if (config.SaveTallAnimatedArtwork.HasValue)
+        {
+            settings.SaveTallAnimatedArtwork = config.SaveTallAnimatedArtwork.Value;
+        }
+
         if (!string.IsNullOrWhiteSpace(config.AnimatedArtworkFormats))
         {
             settings.AnimatedArtworkFormats = config.AnimatedArtworkFormats.Trim();
@@ -2803,7 +2813,9 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
                     CollectionType = string.IsNullOrWhiteSpace(appleIdentity?.AppleAlbumId) ? null : "album",
                     CollectionId = appleIdentity?.AppleAlbumId,
                     OutputFormats = AppleQueueHelpers.ResolveAnimatedArtworkFormats(settings),
-                    MaxSizeMb = AppleQueueHelpers.ResolveAnimatedArtworkMaxSizeMb(settings)
+                    MaxSizeMb = AppleQueueHelpers.ResolveAnimatedArtworkMaxSizeMb(settings),
+                    SaveSquareVariant = settings.SaveAnimatedArtwork && settings.SaveSquareAnimatedArtwork,
+                    SaveTallVariant = settings.SaveAnimatedArtwork && settings.SaveTallAnimatedArtwork
                 },
                 token);
 
@@ -4386,6 +4398,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
             DlAlbumcoverForPlaylist = raw.DlAlbumcoverForPlaylist,
             SaveArtworkArtist = raw.SaveArtworkArtist,
             SaveAnimatedArtwork = raw.SaveAnimatedArtwork,
+            SaveSquareAnimatedArtwork = raw.SaveSquareAnimatedArtwork,
+            SaveTallAnimatedArtwork = raw.SaveTallAnimatedArtwork,
             AnimatedArtworkFormats = raw.AnimatedArtworkFormats,
             CoverImageTemplate = raw.CoverImageTemplate,
             AnimatedArtworkSquareFileName = raw.AnimatedArtworkSquareFileName,
@@ -10782,6 +10796,8 @@ public sealed class LocalAutoTagRunner : IAutoTagRunner
         public bool? DlAlbumcoverForPlaylist { get; set; }
         public bool? SaveArtworkArtist { get; set; }
         public bool? SaveAnimatedArtwork { get; set; }
+        public bool? SaveSquareAnimatedArtwork { get; set; }
+        public bool? SaveTallAnimatedArtwork { get; set; }
         public string? AnimatedArtworkFormats { get; set; }
         public string? CoverImageTemplate { get; set; }
         public string? AnimatedArtworkSquareFileName { get; set; }

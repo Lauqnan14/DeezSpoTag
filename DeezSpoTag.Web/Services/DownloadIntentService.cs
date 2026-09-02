@@ -2854,7 +2854,9 @@ public sealed class DownloadIntentService
 
     private static bool ShouldResolveAppleIdentityForArtwork(DeezSpoTagSettings settings)
     {
-        if (settings.SaveAnimatedArtwork)
+        if (settings.SaveAnimatedArtwork
+            || settings.SaveSquareAnimatedArtwork
+            || settings.SaveTallAnimatedArtwork)
         {
             return true;
         }

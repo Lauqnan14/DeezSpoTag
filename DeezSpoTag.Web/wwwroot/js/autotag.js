@@ -5976,8 +5976,8 @@
     function refreshArtworkTemplateFieldState() {
         setTemplateInputEnabled("saveArtwork", "coverImageTemplateGroup", "coverImageTemplate");
         setTemplateInputEnabled("saveArtworkArtist", "artistImageTemplateGroup", "artistImageTemplate");
-        setTemplateInputEnabled("saveAnimatedArtwork", "animatedArtworkSquareFileNameGroup", "animatedArtworkSquareFileName");
-        setTemplateInputEnabled("saveAnimatedArtwork", "animatedArtworkTallFileNameGroup", "animatedArtworkTallFileName");
+        setTemplateInputEnabled("saveSquareAnimatedArtwork", "animatedArtworkSquareFileNameGroup", "animatedArtworkSquareFileName");
+        setTemplateInputEnabled("saveTallAnimatedArtwork", "animatedArtworkTallFileNameGroup", "animatedArtworkTallFileName");
     }
 
     function setupFallbackSourceSelectors() {
@@ -6039,10 +6039,12 @@
         if (saveArtworkArtist) {
             saveArtworkArtist.addEventListener("change", refreshArtworkTemplateFieldState);
         }
-        const saveAnimatedArtwork = document.getElementById("saveAnimatedArtwork");
-        if (saveAnimatedArtwork) {
-            saveAnimatedArtwork.addEventListener("change", refreshArtworkTemplateFieldState);
-        }
+        ["saveSquareAnimatedArtwork", "saveTallAnimatedArtwork"].forEach((animatedToggleId) => {
+            const animatedToggle = document.getElementById(animatedToggleId);
+            if (animatedToggle) {
+                animatedToggle.addEventListener("change", refreshArtworkTemplateFieldState);
+            }
+        });
         refreshArtworkTemplateFieldState();
 
         updateCoverMaintenanceTargetResolutionPolicyUI();
@@ -6233,7 +6235,9 @@
         const getNumber = (id, fallback = 0) => Number.parseInt(getValue(id, ""), 10) || fallback;
 
         settings.saveArtwork = getChecked("saveArtwork", settings.saveArtwork ?? false);
-        settings.saveAnimatedArtwork = getChecked("saveAnimatedArtwork", settings.saveAnimatedArtwork ?? false);
+        settings.saveSquareAnimatedArtwork = getChecked("saveSquareAnimatedArtwork", settings.saveSquareAnimatedArtwork ?? false);
+        settings.saveTallAnimatedArtwork = getChecked("saveTallAnimatedArtwork", settings.saveTallAnimatedArtwork ?? false);
+        settings.saveAnimatedArtwork = settings.saveSquareAnimatedArtwork || settings.saveTallAnimatedArtwork;
         settings.animatedArtworkFormats = collectAnimatedArtworkFormats(settings.animatedArtworkFormats);
         settings.dlAlbumcoverForPlaylist = getChecked("dlAlbumcoverForPlaylist", settings.dlAlbumcoverForPlaylist ?? true);
         settings.saveArtworkArtist = getChecked("saveArtworkArtist", settings.saveArtworkArtist ?? false);
@@ -6442,6 +6446,8 @@
         applyFieldCheckedWhenBoolean("enhancementRenameSpotifyArtistFolders", source.renameSpotifyArtistFolders);
 
         applyFieldCheckedWhenBoolean("saveArtwork", source.saveArtwork);
+        applyFieldCheckedWhenBoolean("saveSquareAnimatedArtwork", source.saveSquareAnimatedArtwork);
+        applyFieldCheckedWhenBoolean("saveTallAnimatedArtwork", source.saveTallAnimatedArtwork);
         setAnimatedArtworkFormatControls(source.animatedArtworkFormats || "mp4");
         applyFieldCheckedWhenBoolean("dlAlbumcoverForPlaylist", source.dlAlbumcoverForPlaylist);
         applyFieldCheckedWhenBoolean("saveArtworkArtist", source.saveArtworkArtist);
@@ -6514,7 +6520,8 @@
 
     function getAnimatedArtworkControls() {
         return [
-            "saveAnimatedArtwork"
+            "saveSquareAnimatedArtwork",
+            "saveTallAnimatedArtwork"
         ]
             .map((id) => el(id))
             .filter((field) => field instanceof HTMLInputElement);
@@ -6531,7 +6538,7 @@
         if (controls.length === 0) {
             return fallback === true;
         }
-        return controls[0].checked;
+        return controls.some((field) => field.checked);
     }
 
     function normalizeAnimatedArtworkFormats(value) {
@@ -7493,7 +7500,8 @@
         scheduleProfileAutoSave();
     });
     [
-        "saveAnimatedArtwork",
+        "saveSquareAnimatedArtwork",
+        "saveTallAnimatedArtwork",
         "animatedArtworkFormatMp4",
         "animatedArtworkFormatWebp",
         "animatedArtworkFormatGif"
@@ -7501,9 +7509,6 @@
         const field = el(id);
         if (field instanceof HTMLInputElement) {
             field.addEventListener("change", () => {
-                if (id === "saveAnimatedArtwork") {
-                    setAnimatedArtworkControls(field.checked);
-                }
                 ensureCustomDefaults();
                 state.config.custom.itunes.animated_artwork = getAnimatedArtworkValue();
                 state.autoTagDefaultsDirty = true;

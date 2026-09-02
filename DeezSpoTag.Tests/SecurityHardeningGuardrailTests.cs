@@ -25,6 +25,7 @@ public sealed class SecurityHardeningGuardrailTests
             .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => !path.EndsWith("SecurityHardeningGuardrailTests.cs", StringComparison.Ordinal))
             .Where(path => File.ReadAllText(path).Contains(taskRunPattern, StringComparison.Ordinal))
             .ToList();
@@ -42,6 +43,7 @@ public sealed class SecurityHardeningGuardrailTests
             .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path =>
             {
                 var source = File.ReadAllText(path);
@@ -66,6 +68,7 @@ public sealed class SecurityHardeningGuardrailTests
         var srcRoot = ResolveSrcRoot();
         var offenders = Directory
             .EnumerateFiles(srcRoot, "*.csproj", SearchOption.AllDirectories)
+            .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}.dsh-worktrees{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => File.ReadAllText(path).Contains("Include=\"TagLibSharp\"", StringComparison.Ordinal))
             .ToList();
 

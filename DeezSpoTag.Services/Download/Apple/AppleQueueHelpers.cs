@@ -64,6 +64,8 @@ public static class AppleQueueHelpers
         public string? SquareFileName { get; init; }
         public string? TallFileName { get; init; }
         public int MaxSizeMb { get; init; } = DefaultAnimatedArtworkMaxSizeMb;
+        public bool SaveSquareVariant { get; init; } = true;
+        public bool SaveTallVariant { get; init; } = true;
     }
 
     public sealed record AnimatedArtworkSaveResult(
@@ -120,7 +122,25 @@ public static class AppleQueueHelpers
     private const string AnimatedArtworkSquareVariant = "square";
     private const string AnimatedArtworkTallVariant = "tall";
     private const int AnimatedArtworkEncodeDurationSeconds = 6;
-    private const int AnimatedArtworkMaxFps = 8;
+    private const int AnimatedArtworkMaxFps = 12;
+    // The configured size budget is a target, not just a ceiling: conversions probe the
+    // encoder quality (WebP) / CRF (MP4) / frame rate (GIF) toward the largest output that
+    // still fits the budget instead of stepping through coarse fixed ladders.
+    private const int AnimatedArtworkWebpQualityFloor = 45;
+    private const int AnimatedArtworkWebpQualityGranularity = 6;
+    private const int AnimatedArtworkGifFpsFloor = 2;
+    private const int AnimatedArtworkGifFpsGranularity = 1;
+    private const int AnimatedArtworkMp4CrfSpan = 8;
+    private const int AnimatedArtworkMp4CrfGranularity = 2;
+    private const int AnimatedArtworkMaxEncodeProbes = 14;
+    private const string AnimatedArtworkBudgetMarkerSuffix = "size-budget";
+    // Budget searches reuse a one-time fast-decode intermediate of the source instead of
+    // re-fetching/re-decoding it on every probe (the dominant cost on low-power NAS hosts).
+    private const int AnimatedArtworkIntermediateCrf = 12;
+    private const int AnimatedArtworkMaxIntermediateEntries = 4;
+    // Two concurrent ffmpeg processes keep a multi-core NAS busy without starving the
+    // rest of the app (deliberately fixed, not user-configurable).
+    private const int AnimatedArtworkFfmpegMaxConcurrency = 2;
     private const string ResultsKey = "results";
     private const string ArtistNameKey = "artistName";
     private const string AttributesKey = "attributes";
@@ -133,8 +153,11 @@ public static class AppleQueueHelpers
         new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, Lazy<Task<string?>>> AnimatedArtworkConversions =
         new(StringComparer.OrdinalIgnoreCase);
-    private static readonly SemaphoreSlim AnimatedArtworkFfmpegGate = new(1, 1);
+    private static readonly SemaphoreSlim AnimatedArtworkFfmpegGate = new(AnimatedArtworkFfmpegMaxConcurrency, AnimatedArtworkFfmpegMaxConcurrency);
     private static readonly TimeSpan AnimatedArtworkFfmpegTimeout = TimeSpan.FromMinutes(5);
+    private static readonly object AnimatedArtworkIntermediateLock = new();
+    private static readonly ConcurrentDictionary<string, Lazy<Task<AnimatedArtworkIntermediateEntry?>>> AnimatedArtworkIntermediates =
+        new(StringComparer.Ordinal);
     private static readonly string? FfmpegExecutable = ResolveExecutablePath(
         OperatingSystem.IsWindows()
             ? new[] { "ffmpeg.exe" }
@@ -1486,7 +1509,7 @@ public static class AppleQueueHelpers
         var outputFormats = ResolveAnimatedArtworkFormats(request.OutputFormats);
         var maxSizeBytes = ResolveAnimatedArtworkMaxSizeBytes(request);
 
-        if (!string.IsNullOrWhiteSpace(motion.SquareUrl))
+        if (request.SaveSquareVariant && !string.IsNullOrWhiteSpace(motion.SquareUrl))
         {
             savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
                 motion.SquareUrl,
@@ -1498,13 +1521,13 @@ public static class AppleQueueHelpers
                 request.OverwriteExisting));
         }
 
-        if (!string.IsNullOrWhiteSpace(motion.TallUrl))
+        if (request.SaveTallVariant && !string.IsNullOrWhiteSpace(motion.TallUrl))
         {
             savedPaths.AddRange(await SaveAnimatedArtworkVariantAsync(
                 motion.TallUrl,
                 Path.Join(outputDir, stems.Tall),
                 outputFormats,
-                maxSizeBytes: 0,
+                maxSizeBytes,
                 request.Logger,
                 cancellationToken,
                 request.OverwriteExisting));
@@ -1522,12 +1545,12 @@ public static class AppleQueueHelpers
             cancellationToken);
         RemoveOldAnimatedArtworkFiles(request);
         var expectedOutputPaths = new List<string>();
-        if (!string.IsNullOrWhiteSpace(motion.SquareUrl))
+        if (request.SaveSquareVariant && !string.IsNullOrWhiteSpace(motion.SquareUrl))
         {
             expectedOutputPaths.AddRange(outputFormats.Select(format =>
                 Path.Join(outputDir, $"{stems.Square}.{format}")));
         }
-        if (!string.IsNullOrWhiteSpace(motion.TallUrl))
+        if (request.SaveTallVariant && !string.IsNullOrWhiteSpace(motion.TallUrl))
         {
             expectedOutputPaths.AddRange(outputFormats.Select(format =>
                 Path.Join(outputDir, $"{stems.Tall}.{format}")));
@@ -1600,16 +1623,18 @@ public static class AppleQueueHelpers
         }
 
         var stems = ResolveAnimatedArtworkStems(request);
-        var missingExpectedOutput = (!string.IsNullOrWhiteSpace(motion.SquareUrl)
+        var missingExpectedOutput = (request.SaveSquareVariant
+                && !string.IsNullOrWhiteSpace(motion.SquareUrl)
                 && outputFormats.Any(format => !IsValidAnimatedArtworkOutput(
                     Path.Join(request.OutputDir, $"{stems.Square}.{format}"),
                     format,
                     ResolveAnimatedArtworkMaxSizeBytes(request))))
-            || (!string.IsNullOrWhiteSpace(motion.TallUrl)
+            || (request.SaveTallVariant
+                && !string.IsNullOrWhiteSpace(motion.TallUrl)
                 && outputFormats.Any(format => !IsValidAnimatedArtworkOutput(
                     Path.Join(request.OutputDir, $"{stems.Tall}.{format}"),
                     format,
-                    maxSizeBytes: 0)));
+                    ResolveAnimatedArtworkMaxSizeBytes(request))));
         if (!missingExpectedOutput)
         {
             return;
@@ -1643,25 +1668,33 @@ public static class AppleQueueHelpers
 
         var stems = ResolveAnimatedArtworkStems(request);
         var outputFormats = ResolveAnimatedArtworkFormats(request.OutputFormats);
-        var squarePaths = outputFormats
-            .Select(format => Path.Join(request.OutputDir, $"{stems.Square}.{format}"))
-            .ToList();
-        if (!squarePaths.All(path => IsValidAnimatedArtworkOutput(
-                path,
-                Path.GetExtension(path).TrimStart('.'),
-                ResolveAnimatedArtworkMaxSizeBytes(request))))
+        if (request.SaveSquareVariant)
         {
-            return false;
+            var squarePaths = outputFormats
+                .Select(format => Path.Join(request.OutputDir, $"{stems.Square}.{format}"))
+                .ToList();
+            if (!squarePaths.All(path => IsValidAnimatedArtworkOutput(
+                    path,
+                    Path.GetExtension(path).TrimStart('.'),
+                    ResolveAnimatedArtworkMaxSizeBytes(request))))
+            {
+                return false;
+            }
         }
 
         var tallPaths = outputFormats
             .Select(format => Path.Join(request.OutputDir, $"{stems.Tall}.{format}"))
             .ToList();
+        if (!request.SaveTallVariant)
+        {
+            return true;
+        }
+
         return !tallPaths.Any(File.Exists)
             || tallPaths.All(path => IsValidAnimatedArtworkOutput(
                 path,
                 Path.GetExtension(path).TrimStart('.'),
-                maxSizeBytes: 0));
+                ResolveAnimatedArtworkMaxSizeBytes(request)));
     }
 
     public static async Task<IReadOnlyList<string>> SaveExistingAnimatedArtworkVariantsAsync(
@@ -1680,6 +1713,14 @@ public static class AppleQueueHelpers
         var savedPaths = new List<string>();
         foreach (var variant in new[] { AnimatedArtworkSquareVariant, AnimatedArtworkTallVariant })
         {
+            var variantEnabled = variant == AnimatedArtworkSquareVariant
+                ? request.SaveSquareVariant
+                : request.SaveTallVariant;
+            if (!variantEnabled)
+            {
+                continue;
+            }
+
             var outputBase = Path.Join(outputDir, variant == AnimatedArtworkSquareVariant ? stems.Square : stems.Tall);
             if (request.RenameExistingArtwork)
             {
@@ -1693,9 +1734,7 @@ public static class AppleQueueHelpers
                     logger);
             }
 
-            var maxSizeBytes = variant == AnimatedArtworkSquareVariant
-                ? ResolveAnimatedArtworkMaxSizeBytes(request)
-                : 0;
+            var maxSizeBytes = ResolveAnimatedArtworkMaxSizeBytes(request);
             var existingMp4 = $"{outputBase}.{AnimatedArtworkMp4}";
             if (File.Exists(existingMp4))
             {
@@ -1725,7 +1764,7 @@ public static class AppleQueueHelpers
                 }
                 else if (File.Exists(existingOutput))
                 {
-                    DeleteFileIfExists(existingOutput);
+                    DeleteAnimatedArtworkOutput(existingOutput);
                 }
             }
         }
@@ -1822,13 +1861,8 @@ public static class AppleQueueHelpers
         => (long)NormalizeAnimatedArtworkMaxSizeMb(request.MaxSizeMb) * 1024L * 1024L;
 
     private static long ResolveAnimatedArtworkOutputMaxSizeBytes(AnimatedArtworkSaveRequest request, string path)
-    {
-        var stems = ResolveAnimatedArtworkStems(request);
-        var stem = Path.GetFileNameWithoutExtension(path);
-        return AnimatedArtworkNaming.IsTallStem(stem, stems.Tall)
-            ? 0
-            : ResolveAnimatedArtworkMaxSizeBytes(request);
-    }
+        // Square and tall variants share the same configured size budget.
+        => ResolveAnimatedArtworkMaxSizeBytes(request);
 
     public static IReadOnlyList<string> ResolveAnimatedArtworkFormats(DeezSpoTagSettings settings)
         => ResolveAnimatedArtworkFormats((settings.AnimatedArtworkFormats ?? string.Empty)
@@ -1880,11 +1914,12 @@ public static class AppleQueueHelpers
             {
                 if (IsValidAnimatedArtworkOutput(outputPath, format, maxSizeBytes))
                 {
+                    DeleteAnimatedArtworkBudgetMarker(outputPath);
                     savedPaths.Add(outputPath);
                     continue;
                 }
 
-                DeleteFileIfExists(outputPath);
+                DeleteAnimatedArtworkOutput(outputPath);
             }
 
             if (format.Equals(AnimatedArtworkMp4, StringComparison.OrdinalIgnoreCase)
@@ -1899,6 +1934,7 @@ public static class AppleQueueHelpers
                 try
                 {
                     File.Delete(outputPath);
+                    DeleteAnimatedArtworkBudgetMarker(outputPath);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -1921,7 +1957,7 @@ public static class AppleQueueHelpers
                 }
                 else
                 {
-                    DeleteFileIfExists(converted);
+                    DeleteAnimatedArtworkOutput(converted);
                 }
             }
         }
@@ -1965,6 +2001,7 @@ public static class AppleQueueHelpers
                 return false;
             }
 
+            DeleteAnimatedArtworkBudgetMarker(outputPath);
             File.Copy(inputPath, outputPath, overwrite);
             return IsValidAnimatedArtworkOutput(outputPath, AnimatedArtworkMp4, maxSizeBytes);
         }
@@ -2694,55 +2731,64 @@ public static class AppleQueueHelpers
         }
 
         var ladder = GetAnimatedArtworkEncodeLadder(format, maxSizeBytes);
-        string? bestPath = null;
-        var bestLength = long.MaxValue;
+        var probeContext = new AnimatedArtworkProbeContext(inputUrl, logger);
+        var probesRemaining = AnimatedArtworkMaxEncodeProbes;
+        string? bestFittingPath = null;
+        var bestFittingLength = -1L;
+        string? bestEffortPath = null;
+        var bestEffortLength = long.MaxValue;
         try
         {
-            for (var index = 0; index < ladder.Count; index++)
+            for (var index = 0; index < ladder.Count && probesRemaining > 0; index++)
             {
-                var candidatePath = Path.Join(
-                    outputDirectory ?? Path.GetTempPath(),
-                    $".{Path.GetFileNameWithoutExtension(outputPath)}.{Guid.NewGuid():N}.tmp{Path.GetExtension(outputPath)}");
-                var length = await RunSingleAnimatedArtworkEncodeAsync(
-                    inputUrl,
-                    candidatePath,
+                var probe = await EncodeAnimatedArtworkRungAsync(
+                    probeContext,
+                    outputPath,
                     format,
                     ladder[index],
+                    maxSizeBytes,
                     logger,
-                    cancellationToken);
-                if (length <= 0)
+                    cancellationToken,
+                    probesRemaining);
+                probesRemaining -= probe.ProbeCount;
+
+                if (!string.IsNullOrWhiteSpace(probe.FittingPath))
                 {
-                    DeleteFileIfExists(candidatePath);
-                    continue;
+                    if (probe.FittingLength > bestFittingLength)
+                    {
+                        DeleteFileIfExists(bestFittingPath);
+                        bestFittingPath = probe.FittingPath;
+                        bestFittingLength = probe.FittingLength;
+                    }
+                    else
+                    {
+                        DeleteFileIfExists(probe.FittingPath);
+                    }
                 }
 
-                if (length < bestLength)
+                if (!string.IsNullOrWhiteSpace(probe.OversizePath))
                 {
-                    DeleteFileIfExists(bestPath);
-                    bestPath = candidatePath;
-                    bestLength = length;
-                }
-                else
-                {
-                    DeleteFileIfExists(candidatePath);
+                    if (probe.OversizeLength < bestEffortLength)
+                    {
+                        DeleteFileIfExists(bestEffortPath);
+                        bestEffortPath = probe.OversizePath;
+                        bestEffortLength = probe.OversizeLength;
+                    }
+                    else
+                    {
+                        DeleteFileIfExists(probe.OversizePath);
+                    }
                 }
 
-                if (maxSizeBytes <= 0 || length <= maxSizeBytes)
+                // The first geometry whose quality search fits the budget wins; the search
+                // already maximized the encoder quality for that geometry.
+                if (bestFittingPath != null)
                 {
                     break;
                 }
-
-                if (index == ladder.Count - 1)
-                {
-                    logger.LogInformation(
-                        "Animated artwork {Output} is {ActualBytes} bytes after the smallest encode step and still exceeds the {BudgetBytes} byte budget.",
-                        LogSanitizer.OneLine(Path.GetFileName(outputPath)),
-                        bestLength,
-                        maxSizeBytes);
-                }
             }
 
-            if (bestPath == null)
+            if (bestFittingPath == null && bestEffortPath == null)
             {
                 return null;
             }
@@ -2754,18 +2800,39 @@ public static class AppleQueueHelpers
                     return outputPath;
                 }
 
-                DeleteFileIfExists(outputPath);
+                DeleteAnimatedArtworkOutput(outputPath);
                 return null;
             }
 
-            File.Move(bestPath, outputPath);
-            bestPath = null;
+            string chosenPath;
+            if (bestFittingPath != null)
+            {
+                chosenPath = bestFittingPath;
+                bestFittingPath = null;
+                DeleteAnimatedArtworkBudgetMarker(outputPath);
+                File.Move(chosenPath, outputPath);
+            }
+            else
+            {
+                // Best-effort: no encode step could satisfy the budget, so keep the closest
+                // attempt and record the budget it was produced against.
+                chosenPath = bestEffortPath!;
+                bestEffortPath = null;
+                logger.LogInformation(
+                    "Animated artwork {Output} could not be encoded within the {BudgetBytes} byte budget; keeping the closest attempt at {ActualBytes} bytes.",
+                    LogSanitizer.OneLine(Path.GetFileName(outputPath)),
+                    bestEffortLength,
+                    maxSizeBytes);
+                File.Move(chosenPath, outputPath);
+                WriteAnimatedArtworkBudgetMarker(outputPath, maxSizeBytes);
+            }
+
             if (IsValidAnimatedArtworkOutput(outputPath, format, maxSizeBytes))
             {
                 return outputPath;
             }
 
-            DeleteFileIfExists(outputPath);
+            DeleteAnimatedArtworkOutput(outputPath);
             return null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -2775,7 +2842,8 @@ public static class AppleQueueHelpers
         }
         finally
         {
-            DeleteFileIfExists(bestPath);
+            DeleteFileIfExists(bestFittingPath);
+            DeleteFileIfExists(bestEffortPath);
         }
     }
 
@@ -2785,6 +2853,62 @@ public static class AppleQueueHelpers
         {
             File.Delete(path);
         }
+    }
+
+    private static string AnimatedArtworkBudgetMarkerPath(string outputPath)
+        => $"{outputPath}.{AnimatedArtworkBudgetMarkerSuffix}";
+
+    private static void WriteAnimatedArtworkBudgetMarker(string outputPath, long maxSizeBytes)
+    {
+        try
+        {
+            File.WriteAllText(
+                AnimatedArtworkBudgetMarkerPath(outputPath),
+                maxSizeBytes.ToString(CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The marker only prevents redundant re-encodes of a best-effort oversize file.
+        }
+    }
+
+    private static bool TryReadAnimatedArtworkBudgetMarker(string outputPath, long maxSizeBytes)
+    {
+        try
+        {
+            var markerPath = AnimatedArtworkBudgetMarkerPath(outputPath);
+            if (!File.Exists(markerPath))
+            {
+                return false;
+            }
+
+            return long.TryParse(File.ReadAllText(markerPath).Trim(), out var markerBudget)
+                && markerBudget == maxSizeBytes;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static void DeleteAnimatedArtworkBudgetMarker(string outputPath)
+    {
+        try
+        {
+            if (File.Exists(AnimatedArtworkBudgetMarkerPath(outputPath)))
+            {
+                File.Delete(AnimatedArtworkBudgetMarkerPath(outputPath));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void DeleteAnimatedArtworkOutput(string path)
+    {
+        DeleteFileIfExists(path);
+        DeleteAnimatedArtworkBudgetMarker(path);
     }
 
     private static bool IsValidAnimatedArtworkOutput(string? path, string? format, long maxSizeBytes)
@@ -2802,7 +2926,10 @@ public static class AppleQueueHelpers
 
         if (maxSizeBytes > 0 && info.Length > maxSizeBytes)
         {
-            return false;
+            // An oversize file is only valid when it was deliberately kept as a best-effort
+            // result against exactly this budget (recorded in the size-budget marker), so a
+            // changed budget still triggers a re-encode.
+            return TryReadAnimatedArtworkBudgetMarker(path, maxSizeBytes);
         }
 
         var normalizedFormat = NormalizeAnimatedArtworkFormat(format);
@@ -2912,6 +3039,394 @@ public static class AppleQueueHelpers
         }
     }
 
+    private sealed record AnimatedArtworkRungEncodeResult(
+        string? FittingPath,
+        long FittingLength,
+        string? OversizePath,
+        long OversizeLength,
+        int ProbeCount);
+
+    /// <summary>
+    /// Encodes one ladder rung, bisecting the encoder knob (WebP quality, MP4 CRF or GIF fps)
+    /// toward the largest output that still fits the size budget. Returns at most one fitting
+    /// candidate and one oversize candidate; files that lose the search are deleted.
+    /// </summary>
+    private static async Task<AnimatedArtworkRungEncodeResult> EncodeAnimatedArtworkRungAsync(
+        AnimatedArtworkProbeContext probeContext,
+        string outputPath,
+        string format,
+        AnimatedArtworkEncodeRung rung,
+        long maxSizeBytes,
+        ILogger logger,
+        CancellationToken cancellationToken,
+        int probeBudget)
+    {
+        var probes = 0;
+
+        if (format.Equals(AnimatedArtworkMp4, StringComparison.OrdinalIgnoreCase)
+            && rung.MaxWidth <= 0 && rung.Quality <= 0 && rung.Fps <= 0)
+        {
+            // Stream-copy rung: a single probe, there is no quality knob to search.
+            var (copyPath, copyLength) = await EncodeAnimatedArtworkProbeAsync(
+                probeContext, outputPath, format, rung, logger, cancellationToken);
+            probes++;
+            return ClassifyAnimatedArtworkProbe(copyPath, copyLength, maxSizeBytes, probes);
+        }
+
+        if (format.Equals(AnimatedArtworkMp4, StringComparison.OrdinalIgnoreCase))
+        {
+            // Larger CRF values produce smaller files, so search upward from the best CRF.
+            var crfBest = rung.Quality;
+            var crfSmallest = rung.Quality + AnimatedArtworkMp4CrfSpan;
+            var (bestPath, bestLength) = await EncodeAnimatedArtworkProbeAsync(
+                probeContext, outputPath, format, rung, logger, cancellationToken);
+            probes++;
+            if (bestPath != null && (maxSizeBytes <= 0 || bestLength <= maxSizeBytes))
+            {
+                return new AnimatedArtworkRungEncodeResult(bestPath, bestLength, null, 0, probes);
+            }
+
+            var (floorPath, floorLength) = await EncodeAnimatedArtworkProbeAsync(
+                probeContext, outputPath, format, rung with { Quality = crfSmallest }, logger, cancellationToken);
+            probes++;
+            if (floorPath == null || floorLength > maxSizeBytes)
+            {
+                return OversizeAnimatedArtworkProbes(
+                    PickSmallerProbe(bestPath, bestLength, floorPath, floorLength),
+                    bestPath, floorPath, probes);
+            }
+
+            var lo = crfBest;
+            var hi = crfSmallest;
+            while (hi - lo > AnimatedArtworkMp4CrfGranularity && probes < probeBudget)
+            {
+                var mid = lo + (hi - lo) / 2;
+                var (midPath, midLength) = await EncodeAnimatedArtworkProbeAsync(
+                    probeContext, outputPath, format, rung with { Quality = mid }, logger, cancellationToken);
+                probes++;
+                if (midPath != null && midLength <= maxSizeBytes)
+                {
+                    DeleteFileIfExists(floorPath);
+                    floorPath = midPath;
+                    floorLength = midLength;
+                    hi = mid;
+                }
+                else
+                {
+                    DeleteFileIfExists(midPath);
+                    lo = mid;
+                }
+            }
+
+            return new AnimatedArtworkRungEncodeResult(floorPath, floorLength, null, 0, probes);
+        }
+
+        var isWebp = format.Equals(AnimatedArtworkWebp, StringComparison.OrdinalIgnoreCase);
+        var knobTop = isWebp ? rung.Quality : rung.Fps;
+        var knobFloor = isWebp ? AnimatedArtworkWebpQualityFloor : AnimatedArtworkGifFpsFloor;
+        var granularity = isWebp ? AnimatedArtworkWebpQualityGranularity : AnimatedArtworkGifFpsGranularity;
+
+        var (topPath, topLength) = await EncodeAnimatedArtworkProbeAsync(
+            probeContext, outputPath, format, rung, logger, cancellationToken);
+        probes++;
+        if (topPath != null && (maxSizeBytes <= 0 || topLength <= maxSizeBytes))
+        {
+            return new AnimatedArtworkRungEncodeResult(topPath, topLength, null, 0, probes);
+        }
+
+        var floorRung = isWebp ? rung with { Quality = knobFloor } : rung with { Fps = knobFloor };
+        var (bottomPath, bottomLength) = await EncodeAnimatedArtworkProbeAsync(
+            probeContext, outputPath, format, floorRung, logger, cancellationToken);
+        probes++;
+        if (bottomPath == null || bottomLength > maxSizeBytes)
+        {
+            return OversizeAnimatedArtworkProbes(
+                PickSmallerProbe(topPath, topLength, bottomPath, bottomLength),
+                topPath, bottomPath, probes);
+        }
+
+        // knobFloor is known to fit, knobTop is known to exceed the budget (or failed):
+        // bisect toward the largest knob value that still fits.
+        var low = knobFloor;
+        var high = knobTop;
+        var fittingPath = bottomPath;
+        var fittingLength = bottomLength;
+        while (high - low > granularity && probes < probeBudget)
+        {
+            var mid = low + (high - low) / 2;
+            var midRung = isWebp ? rung with { Quality = mid } : rung with { Fps = mid };
+            var (midPath, midLength) = await EncodeAnimatedArtworkProbeAsync(
+                probeContext, outputPath, format, midRung, logger, cancellationToken);
+            probes++;
+            if (midPath != null && midLength <= maxSizeBytes)
+            {
+                DeleteFileIfExists(fittingPath);
+                fittingPath = midPath;
+                fittingLength = midLength;
+                low = mid;
+            }
+            else
+            {
+                DeleteFileIfExists(midPath);
+                high = mid;
+            }
+        }
+
+        return new AnimatedArtworkRungEncodeResult(fittingPath, fittingLength, null, 0, probes);
+    }
+
+    private static AnimatedArtworkRungEncodeResult OversizeAnimatedArtworkProbes(
+        (string? Path, long Length) chosen,
+        string? firstPath,
+        string? secondPath,
+        int probes)
+    {
+        if (chosen.Path != firstPath)
+        {
+            DeleteFileIfExists(firstPath);
+        }
+
+        if (chosen.Path != secondPath)
+        {
+            DeleteFileIfExists(secondPath);
+        }
+
+        return new AnimatedArtworkRungEncodeResult(null, 0, chosen.Path, chosen.Length, probes);
+    }
+
+    private static async Task<(string? Path, long Length)> EncodeAnimatedArtworkProbeAsync(
+        AnimatedArtworkProbeContext probeContext,
+        string outputPath,
+        string format,
+        AnimatedArtworkEncodeRung rung,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var candidatePath = Path.Join(
+            Path.GetDirectoryName(outputPath) ?? Path.GetTempPath(),
+            $".{Path.GetFileNameWithoutExtension(outputPath)}.{Guid.NewGuid():N}.tmp{Path.GetExtension(outputPath)}");
+        var probeSource = await probeContext.ResolveSourceAsync(cancellationToken);
+        var length = await RunSingleAnimatedArtworkEncodeAsync(
+            probeSource,
+            candidatePath,
+            format,
+            rung,
+            logger,
+            cancellationToken);
+        if (length <= 0)
+        {
+            DeleteFileIfExists(candidatePath);
+            return (null, 0);
+        }
+
+        return (candidatePath, length);
+    }
+
+    private static AnimatedArtworkRungEncodeResult ClassifyAnimatedArtworkProbe(
+        string? path,
+        long length,
+        long maxSizeBytes,
+        int probes)
+        => path == null
+            ? new AnimatedArtworkRungEncodeResult(null, 0, null, 0, probes)
+            : maxSizeBytes <= 0 || length <= maxSizeBytes
+                ? new AnimatedArtworkRungEncodeResult(path, length, null, 0, probes)
+                : new AnimatedArtworkRungEncodeResult(null, 0, path, length, probes);
+
+    private static (string? Path, long Length) PickSmallerProbe(
+        string? firstPath,
+        long firstLength,
+        string? secondPath,
+        long secondLength)
+    {
+        if (firstPath == null)
+        {
+            return (secondPath, secondLength);
+        }
+
+        if (secondPath == null)
+        {
+            return (firstPath, firstLength);
+        }
+
+        return secondLength < firstLength ? (secondPath, secondLength) : (firstPath, firstLength);
+    }
+
+    private sealed record AnimatedArtworkIntermediateEntry(string Path, DateTimeOffset CreatedUtc);
+
+    /// <summary>
+    /// Resolves the input for one encode probe. The first probe of a conversion reads the
+    /// original source (URL or local file); later probes read a one-time fast-decode
+    /// intermediate so repeated probes never re-fetch/re-decode the source. The intermediate
+    /// is shared process-wide across formats working from the same source.
+    /// </summary>
+    private sealed class AnimatedArtworkProbeContext(string inputUrl, ILogger logger)
+    {
+        private int _probes;
+        private bool _intermediateFailed;
+
+        public async Task<string> ResolveSourceAsync(CancellationToken cancellationToken)
+        {
+            var existing = TryGetAnimatedArtworkIntermediate(inputUrl);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            if (Interlocked.Increment(ref _probes) <= 1
+                || _intermediateFailed
+                || string.IsNullOrWhiteSpace(FfmpegExecutable))
+            {
+                return inputUrl;
+            }
+
+            var created = await GetOrCreateAnimatedArtworkIntermediateAsync(inputUrl, logger, cancellationToken);
+            if (created == null || !File.Exists(created.Path))
+            {
+                _intermediateFailed = true;
+                return inputUrl;
+            }
+
+            return created.Path;
+        }
+    }
+
+    private static string? TryGetAnimatedArtworkIntermediate(string inputUrl)
+    {
+        if (!AnimatedArtworkIntermediates.TryGetValue(inputUrl, out var lazy)
+            || !lazy.Value.IsCompletedSuccessfully)
+        {
+            return null;
+        }
+
+        var entry = lazy.Value.Result;
+        return entry != null && File.Exists(entry.Path) ? entry.Path : null;
+    }
+
+    private static async Task<AnimatedArtworkIntermediateEntry?> GetOrCreateAnimatedArtworkIntermediateAsync(
+        string inputUrl,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        var lazy = AnimatedArtworkIntermediates.GetOrAdd(
+            inputUrl,
+            _ => new Lazy<Task<AnimatedArtworkIntermediateEntry?>>(
+                () => CreateAnimatedArtworkIntermediateAsync(inputUrl, logger),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+        return await lazy.Value;
+    }
+
+    private static async Task<AnimatedArtworkIntermediateEntry?> CreateAnimatedArtworkIntermediateAsync(
+        string inputUrl,
+        ILogger logger)
+    {
+        try
+        {
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(inputUrl)));
+            var intermediatePath = Path.Join(
+                Path.GetTempPath(),
+                $".deezspotag-motion-{hash[..24]}.mp4");
+            DeleteFileIfExists(intermediatePath);
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = FfmpegExecutable,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("-loglevel");
+            startInfo.ArgumentList.Add("error");
+            startInfo.ArgumentList.Add("-nostdin");
+            startInfo.ArgumentList.Add("-threads");
+            startInfo.ArgumentList.Add("1");
+            startInfo.ArgumentList.Add("-y");
+            startInfo.ArgumentList.Add("-i");
+            startInfo.ArgumentList.Add(inputUrl);
+            startInfo.ArgumentList.Add("-t");
+            startInfo.ArgumentList.Add(AnimatedArtworkEncodeDurationSeconds.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("-map");
+            startInfo.ArgumentList.Add("0:v:0");
+            startInfo.ArgumentList.Add("-sn");
+            startInfo.ArgumentList.Add("-dn");
+            startInfo.ArgumentList.Add("-an");
+            startInfo.ArgumentList.Add("-c:v");
+            startInfo.ArgumentList.Add("libx264");
+            startInfo.ArgumentList.Add("-preset");
+            startInfo.ArgumentList.Add("veryfast");
+            startInfo.ArgumentList.Add("-crf");
+            startInfo.ArgumentList.Add(AnimatedArtworkIntermediateCrf.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add("-pix_fmt");
+            startInfo.ArgumentList.Add("yuv420p");
+            startInfo.ArgumentList.Add(intermediatePath);
+
+            await AnimatedArtworkFfmpegGate.WaitAsync();
+            AnimatedArtworkIntermediateEntry? entry;
+            try
+            {
+                var result = await RunAnimatedArtworkFfmpegProcessAsync(
+                    startInfo,
+                    logger,
+                    CancellationToken.None,
+                    "animated artwork probe-source intermediate");
+                if (!result.Started
+                    || result.TimedOut
+                    || result.ExitCode != 0
+                    || !File.Exists(intermediatePath)
+                    || new FileInfo(intermediatePath).Length <= 0)
+                {
+                    DeleteFileIfExists(intermediatePath);
+                    logger.LogDebug("Animated artwork probe-source intermediate was not created.");
+                    return null;
+                }
+
+                entry = new AnimatedArtworkIntermediateEntry(intermediatePath, DateTimeOffset.UtcNow);
+            }
+            finally
+            {
+                AnimatedArtworkFfmpegGate.Release();
+            }
+
+            EvictAnimatedArtworkIntermediates();
+            return entry;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Animated artwork probe-source intermediate creation failed.");
+            return null;
+        }
+    }
+
+    private static void EvictAnimatedArtworkIntermediates()
+    {
+        lock (AnimatedArtworkIntermediateLock)
+        {
+            while (AnimatedArtworkIntermediates.Count > AnimatedArtworkMaxIntermediateEntries)
+            {
+                var oldestKey = AnimatedArtworkIntermediates
+                    .Where(static pair => pair.Value.IsValueCreated
+                        && pair.Value.Value.IsCompletedSuccessfully
+                        && pair.Value.Value.Result != null)
+                    .OrderBy(static pair => pair.Value.Value.Result!.CreatedUtc)
+                    .Select(static pair => (KeyValuePair<string, Lazy<Task<AnimatedArtworkIntermediateEntry?>>>?)pair)
+                    .FirstOrDefault();
+                if (oldestKey == null)
+                {
+                    break;
+                }
+
+                if (AnimatedArtworkIntermediates.TryRemove(oldestKey.Value.Key, out var removed)
+                    && removed.Value.IsCompletedSuccessfully
+                    && removed.Value.Result != null)
+                {
+                    DeleteFileIfExists(removed.Value.Result.Path);
+                }
+            }
+        }
+    }
+
     private static async Task<long> RunSingleAnimatedArtworkEncodeAsync(
         string inputUrl,
         string temporaryPath,
@@ -2977,6 +3492,42 @@ public static class AppleQueueHelpers
         }
         startInfo.ArgumentList.Add(temporaryPath);
 
+        var result = await RunAnimatedArtworkFfmpegProcessAsync(
+            startInfo,
+            logger,
+            cancellationToken,
+            $"format {format} at width {rung.MaxWidth}");
+        if (!result.Started || result.TimedOut)
+        {
+            DeleteFileIfExists(temporaryPath);
+            return 0;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            logger.LogDebug(
+                "ffmpeg animated artwork encode failed for {Format} at width {MaxWidth}: {Error}",
+                format,
+                rung.MaxWidth,
+                LogSanitizer.OneLine(result.StdError.Trim()));
+            return 0;
+        }
+
+        return File.Exists(temporaryPath) ? new FileInfo(temporaryPath).Length : 0;
+    }
+
+    private sealed record AnimatedArtworkFfmpegRunResult(
+        bool Started,
+        bool TimedOut,
+        int ExitCode,
+        string StdError);
+
+    private static async Task<AnimatedArtworkFfmpegRunResult> RunAnimatedArtworkFfmpegProcessAsync(
+        ProcessStartInfo startInfo,
+        ILogger logger,
+        CancellationToken cancellationToken,
+        string description)
+    {
         using var process = new Process { StartInfo = startInfo };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(AnimatedArtworkFfmpegTimeout);
@@ -2986,8 +3537,8 @@ public static class AppleQueueHelpers
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            logger.LogDebug(ex, "Failed to start ffmpeg animated artwork encode.");
-            return 0;
+            logger.LogDebug(ex, "Failed to start ffmpeg animated artwork process.");
+            return new AnimatedArtworkFfmpegRunResult(false, false, 0, string.Empty);
         }
 
         var stderrTask = process.StandardError.ReadToEndAsync();
@@ -2999,32 +3550,19 @@ public static class AppleQueueHelpers
         {
             KillAnimatedArtworkFfmpeg(process, logger);
             logger.LogWarning(
-                "ffmpeg animated artwork encode timed out after {TimeoutSeconds}s for {Format} at width {MaxWidth}.",
+                "ffmpeg animated artwork process timed out after {TimeoutSeconds}s ({Description}).",
                 (int)AnimatedArtworkFfmpegTimeout.TotalSeconds,
-                format,
-                rung.MaxWidth);
-            DeleteFileIfExists(temporaryPath);
-            return 0;
+                LogSanitizer.OneLine(description));
+            return new AnimatedArtworkFfmpegRunResult(true, true, 0, string.Empty);
         }
         catch (OperationCanceledException)
         {
             KillAnimatedArtworkFfmpeg(process, logger);
-            DeleteFileIfExists(temporaryPath);
             throw;
         }
 
         var stderr = await stderrTask;
-        if (process.ExitCode != 0)
-        {
-            logger.LogDebug(
-                "ffmpeg animated artwork encode failed for {Format} at width {MaxWidth}: {Error}",
-                format,
-                rung.MaxWidth,
-                LogSanitizer.OneLine(stderr.Trim()));
-            return 0;
-        }
-
-        return File.Exists(temporaryPath) ? new FileInfo(temporaryPath).Length : 0;
+        return new AnimatedArtworkFfmpegRunResult(true, false, process.ExitCode, stderr);
     }
 
     private static void KillAnimatedArtworkFfmpeg(Process process, ILogger logger)
@@ -3115,13 +3653,17 @@ public static class AppleQueueHelpers
 
     private static IReadOnlyList<AnimatedArtworkEncodeRung> GetAnimatedArtworkEncodeLadder(string format, long maxSizeBytes)
     {
-        var squareBudgetedOutput = maxSizeBytes > 0;
+        // Geometry rungs step down only while no encode at that geometry fits the budget;
+        // the quality knob (WebP quality / MP4 CRF / GIF fps) is bisected within each rung.
+        // Widths never upscale (scale='min(iw,…)'), so a wide top rung is safe for any source.
+        var budgetedOutput = maxSizeBytes > 0;
         return format switch
         {
-            AnimatedArtworkMp4 => squareBudgetedOutput
+            AnimatedArtworkMp4 => budgetedOutput
                 ?
                 [
                     new AnimatedArtworkEncodeRung(0, 0, 0),
+                    new AnimatedArtworkEncodeRung(960, 25, 8),
                     new AnimatedArtworkEncodeRung(640, 27, 8),
                     new AnimatedArtworkEncodeRung(512, 29, 8),
                     new AnimatedArtworkEncodeRung(400, 31, 6),
@@ -3130,29 +3672,23 @@ public static class AppleQueueHelpers
                 :
                 [
                     new AnimatedArtworkEncodeRung(0, 0, 0),
-                    new AnimatedArtworkEncodeRung(800, 25, 8),
-                    new AnimatedArtworkEncodeRung(640, 27, 8)
+                    new AnimatedArtworkEncodeRung(960, 25, 8)
                 ],
-            AnimatedArtworkWebp => squareBudgetedOutput
+            AnimatedArtworkWebp => budgetedOutput
                 ?
                 [
-                    new AnimatedArtworkEncodeRung(960, 90, 8),
-                    new AnimatedArtworkEncodeRung(800, 88, 8),
+                    new AnimatedArtworkEncodeRung(1200, 92, 12),
+                    new AnimatedArtworkEncodeRung(960, 90, 10),
+                    new AnimatedArtworkEncodeRung(800, 88, 10),
                     new AnimatedArtworkEncodeRung(640, 85, 8),
                     new AnimatedArtworkEncodeRung(512, 80, 8),
-                    new AnimatedArtworkEncodeRung(400, 72, 7),
-                    new AnimatedArtworkEncodeRung(320, 68, 6),
-                    new AnimatedArtworkEncodeRung(240, 62, 5)
+                    new AnimatedArtworkEncodeRung(400, 72, 6),
+                    new AnimatedArtworkEncodeRung(320, 62, 6),
+                    new AnimatedArtworkEncodeRung(240, 55, 5)
                 ]
                 :
-                [
-                    new AnimatedArtworkEncodeRung(960, 90, 8),
-                    new AnimatedArtworkEncodeRung(800, 88, 8),
-                    new AnimatedArtworkEncodeRung(640, 85, 8),
-                    new AnimatedArtworkEncodeRung(512, 80, 8),
-                    new AnimatedArtworkEncodeRung(400, 70, 6)
-                ],
-            AnimatedArtworkGif => squareBudgetedOutput
+                [new AnimatedArtworkEncodeRung(1200, 92, 12)],
+            AnimatedArtworkGif => budgetedOutput
                 ?
                 [
                     new AnimatedArtworkEncodeRung(640, 0, 8, "bayer:bayer_scale=4"),
@@ -3163,12 +3699,7 @@ public static class AppleQueueHelpers
                     new AnimatedArtworkEncodeRung(200, 0, 4, "none")
                 ]
                 :
-                [
-                    new AnimatedArtworkEncodeRung(640, 0, 8, "bayer:bayer_scale=4"),
-                    new AnimatedArtworkEncodeRung(512, 0, 8, "bayer:bayer_scale=4"),
-                    new AnimatedArtworkEncodeRung(400, 0, 6, "bayer:bayer_scale=5"),
-                    new AnimatedArtworkEncodeRung(320, 0, 5, "none")
-                ],
+                [new AnimatedArtworkEncodeRung(640, 0, 8, "bayer:bayer_scale=4")],
             _ => [new AnimatedArtworkEncodeRung(0, 0, 0)]
         };
     }
@@ -3226,6 +3757,31 @@ public static class AppleQueueHelpers
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 request.Logger.LogDebug(ex, "Animated artwork leftover delete failed for {Path}.", path);
+            }
+        }
+
+        removed |= RemoveOrphanedAnimatedArtworkBudgetMarkers(request.OutputDir, request.Logger, removed);
+        return removed;
+    }
+
+    private static bool RemoveOrphanedAnimatedArtworkBudgetMarkers(string outputDir, ILogger logger, bool removed)
+    {
+        foreach (var markerPath in Directory.EnumerateFiles(outputDir, $"*.{AnimatedArtworkBudgetMarkerSuffix}").ToList())
+        {
+            var mediaPath = markerPath[..^("." + AnimatedArtworkBudgetMarkerSuffix).Length];
+            if (File.Exists(mediaPath))
+            {
+                continue;
+            }
+
+            try
+            {
+                File.Delete(markerPath);
+                removed = true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                logger.LogDebug(ex, "Animated artwork budget marker delete failed for {Path}.", markerPath);
             }
         }
 

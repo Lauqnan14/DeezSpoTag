@@ -52,9 +52,8 @@ public sealed class AnimatedArtworkSizeBudgetTests
         Assert.Contains("scale='min(iw,", source, StringComparison.Ordinal);
         Assert.DoesNotContain("startInfo.ArgumentList.Add(\"fps=15,scale=iw:-2:flags=lanczos\");", source, StringComparison.Ordinal);
         Assert.DoesNotContain("new AnimatedArtworkEncodeRung(0, 90, 15)", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("new AnimatedArtworkEncodeRung(0, 0, 12, \"sierra2_4a\")", source, StringComparison.Ordinal);
         Assert.Contains("AnimatedArtworkEncodeDurationSeconds", source, StringComparison.Ordinal);
-        Assert.Contains("new AnimatedArtworkEncodeRung(960, 90, 8", source, StringComparison.Ordinal);
+        Assert.Contains("new AnimatedArtworkEncodeRung(1200, 92, 12)", source, StringComparison.Ordinal);
         Assert.Contains("new AnimatedArtworkEncodeRung(640, 0, 8", source, StringComparison.Ordinal);
         Assert.Contains("AnimatedArtworkMaxFps", source, StringComparison.Ordinal);
         Assert.Contains("startInfo.ArgumentList.Add(\"-map\");", source, StringComparison.Ordinal);
@@ -62,12 +61,12 @@ public sealed class AnimatedArtworkSizeBudgetTests
     }
 
     [Fact]
-    public void SquareBudgetedAnimatedArtworkStartsAtHighQualityBeforeSteppingDown()
+    public void EncodeLadderStartsHighAndStepsDownWithinTheBudget()
     {
         var source = ReadHelpers();
 
-        var highQualityWebp = source.IndexOf("new AnimatedArtworkEncodeRung(960, 90, 8)", StringComparison.Ordinal);
-        var lowQualityWebp = source.IndexOf("new AnimatedArtworkEncodeRung(240, 62, 5)", StringComparison.Ordinal);
+        var highQualityWebp = source.IndexOf("new AnimatedArtworkEncodeRung(1200, 92, 12)", StringComparison.Ordinal);
+        var lowQualityWebp = source.IndexOf("new AnimatedArtworkEncodeRung(240, 55, 5)", StringComparison.Ordinal);
         var highQualityGif = source.IndexOf("new AnimatedArtworkEncodeRung(640, 0, 8, \"bayer:bayer_scale=4\")", StringComparison.Ordinal);
         var lowQualityGif = source.IndexOf("new AnimatedArtworkEncodeRung(200, 0, 4, \"none\")", StringComparison.Ordinal);
 
@@ -78,16 +77,86 @@ public sealed class AnimatedArtworkSizeBudgetTests
     }
 
     [Fact]
-    public void SquareOnlyUsesTheConfiguredAnimatedArtworkBudget()
+    public void EncoderKnobIsBisectedTowardTheBudget()
+    {
+        var source = ReadHelpers();
+
+        Assert.Contains("EncodeAnimatedArtworkRungAsync", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkWebpQualityFloor", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkGifFpsFloor", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkMp4CrfSpan", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkMaxEncodeProbes", source, StringComparison.Ordinal);
+        // The best candidate is the largest one that fits, not the smallest overall.
+        Assert.Contains("probe.FittingLength > bestFittingLength", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProbeSourcesAreReusedThroughAFastIntermediate()
+    {
+        var source = ReadHelpers();
+
+        Assert.Contains("AnimatedArtworkProbeContext", source, StringComparison.Ordinal);
+        Assert.Contains("ResolveSourceAsync", source, StringComparison.Ordinal);
+        Assert.Contains("CreateAnimatedArtworkIntermediateAsync", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkIntermediateCrf", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkMaxIntermediateEntries", source, StringComparison.Ordinal);
+        // The intermediate is built once per source and shared across probe formats.
+        Assert.Contains("TryGetAnimatedArtworkIntermediate(inputUrl)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OversizeArtworkIsRetainedAsBestEffortWithABudgetMarker()
+    {
+        var source = ReadHelpers();
+
+        Assert.Contains("AnimatedArtworkBudgetMarkerSuffix", source, StringComparison.Ordinal);
+        Assert.Contains("WriteAnimatedArtworkBudgetMarker(outputPath, maxSizeBytes);", source, StringComparison.Ordinal);
+        Assert.Contains("TryReadAnimatedArtworkBudgetMarker(path, maxSizeBytes)", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TallAnimatedArtworkSharesTheSquareSizeBudget()
     {
         var source = ReadHelpers();
 
         Assert.Contains("ResolveAnimatedArtworkOutputMaxSizeBytes", source, StringComparison.Ordinal);
-        Assert.Contains("AnimatedArtworkNaming.IsTallStem(stem, stems.Tall)", source, StringComparison.Ordinal);
-        Assert.Contains("? 0", source, StringComparison.Ordinal);
-        Assert.Contains(": ResolveAnimatedArtworkMaxSizeBytes(request)", source, StringComparison.Ordinal);
-        Assert.Contains("Path.Join(outputDir, stems.Square),\n                outputFormats,\n                maxSizeBytes,", source, StringComparison.Ordinal);
-        Assert.Contains("Path.Join(outputDir, stems.Tall),\n                outputFormats,\n                maxSizeBytes: 0,", source, StringComparison.Ordinal);
+        Assert.Contains("=> ResolveAnimatedArtworkMaxSizeBytes(request);", source, StringComparison.Ordinal);
+        Assert.Contains("Path.Join(outputDir, stems.Tall),\n                outputFormats,\n                maxSizeBytes,", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("maxSizeBytes: 0", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnOversizeOutputIsOnlyValidWithAMatchingBudgetMarker()
+    {
+        var root = CreateTempDirectory();
+        var oversize = Path.Join(root, "cover.webp");
+        await File.WriteAllBytesAsync(oversize, BuildFakeWebpBytes(2L * 1024 * 1024));
+        var request = () => new AppleQueueHelpers.AnimatedArtworkSaveRequest
+        {
+            OutputDir = root,
+            BaseFileName = "cover",
+            OutputFormats = new[] { "webp" },
+            MaxSizeMb = 1,
+            Logger = NullLogger.Instance
+        };
+
+        Assert.False(
+            AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(request()),
+            "An oversize file without a budget marker must not be treated as valid.");
+
+        await File.WriteAllTextAsync(
+            Path.Join(root, "cover.webp.size-budget"),
+            (1L * 1024 * 1024).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.True(
+            AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(request()),
+            "A best-effort oversize file with a matching budget marker must be treated as valid.");
+
+        await File.WriteAllTextAsync(
+            Path.Join(root, "cover.webp.size-budget"),
+            (5L * 1024 * 1024).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.False(
+            AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(request()),
+            "A budget marker recorded against a different budget must not satisfy the current budget.");
     }
 
     [Fact]
@@ -96,15 +165,16 @@ public sealed class AnimatedArtworkSizeBudgetTests
         var source = ReadHelpers();
 
         Assert.DoesNotContain("startInfo.ArgumentList.Add(\"quiet\");", source, StringComparison.Ordinal);
-        Assert.Contains("stderr.Trim()", source, StringComparison.Ordinal);
+        Assert.Contains("result.StdError.Trim()", source, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AnimatedArtworkFfmpegIsSerializedAndBounded()
+    public void AnimatedArtworkFfmpegIsBoundedAndDoesNotRunUnbounded()
     {
         var source = ReadHelpers();
 
         Assert.Contains("AnimatedArtworkFfmpegGate", source, StringComparison.Ordinal);
+        Assert.Contains("AnimatedArtworkFfmpegMaxConcurrency = 2", source, StringComparison.Ordinal);
         Assert.Contains("AnimatedArtworkFfmpegTimeout", source, StringComparison.Ordinal);
         Assert.Contains("process.Kill(entireProcessTree: true)", source, StringComparison.Ordinal);
         Assert.Contains("startInfo.ArgumentList.Add(\"-nostdin\");", source, StringComparison.Ordinal);
@@ -138,6 +208,9 @@ public sealed class AnimatedArtworkSizeBudgetTests
         Assert.True(
             length <= 2L * 1024 * 1024,
             $"webp was {length} bytes, which exceeds the 2 MB budget.");
+        Assert.True(
+            length >= 1_000_000,
+            $"webp was only {length} bytes; the budget search must land near the 2 MB budget instead of over-compressing.");
     }
 
     [Fact]
@@ -226,6 +299,47 @@ public sealed class AnimatedArtworkSizeBudgetTests
         Assert.False(complete, "Tall animated artwork must not skip the required square variant.");
     }
 
+    [Fact]
+    public async Task DisabledVariantsAreNotRequiredForCompleteness()
+    {
+        var root = CreateTempDirectory();
+        await BuildSmallSourceAsync(Path.Join(root, "cover_tall.webp"));
+
+        var squareRequiredButMissing = new AppleQueueHelpers.AnimatedArtworkSaveRequest
+        {
+            OutputDir = root,
+            BaseFileName = "cover",
+            OutputFormats = new[] { "webp" },
+            SaveTallVariant = false,
+            Logger = NullLogger.Instance
+        };
+        Assert.False(
+            AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(squareRequiredButMissing),
+            "The square variant stays mandatory while Save square animated artwork is enabled.");
+
+        var squareDisabled = new AppleQueueHelpers.AnimatedArtworkSaveRequest
+        {
+            OutputDir = root,
+            BaseFileName = "cover",
+            OutputFormats = new[] { "webp" },
+            SaveSquareVariant = false,
+            Logger = NullLogger.Instance
+        };
+        Assert.True(
+            AppleQueueHelpers.AreAllCanonicalAnimatedArtworkOutputsValid(squareDisabled),
+            "A tall-only request must be complete when the square variant is disabled.");
+    }
+
+    [Fact]
+    public void SquareAndTallVariantsDefaultToEnabled()
+    {
+        var settings = new DeezSpoTagSettings();
+
+        Assert.True(settings.SaveSquareAnimatedArtwork);
+        Assert.True(settings.SaveTallAnimatedArtwork);
+        Assert.True(settings.SaveAnimatedArtwork);
+    }
+
     private static string ReadHelpers()
         => File.ReadAllText(Path.Join(
             FindRepoRoot(), "DeezSpoTag.Services", "Download", "Apple", "AppleQueueHelpers.cs"));
@@ -241,6 +355,20 @@ public sealed class AnimatedArtworkSizeBudgetTests
         => RunFfmpegAsync(
             "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1080x1080:rate=30",
             "-t", "12", "-c:v", "libx264", "-pix_fmt", "yuv420p", path);
+
+    private static byte[] BuildFakeWebpBytes(long length)
+    {
+        var bytes = new byte[length];
+        bytes[0] = (byte)'R';
+        bytes[1] = (byte)'I';
+        bytes[2] = (byte)'F';
+        bytes[3] = (byte)'F';
+        bytes[8] = (byte)'W';
+        bytes[9] = (byte)'E';
+        bytes[10] = (byte)'B';
+        bytes[11] = (byte)'P';
+        return bytes;
+    }
 
     private static Task BuildSmallSourceAsync(string path)
         => RunFfmpegAsync(

@@ -121,10 +121,21 @@ public class DeezSpoTagSettingsValidator
                 () => settings.SaveArtworkArtist, (v) => settings.SaveArtworkArtist = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveAnimatedArtwork),
                 () => settings.SaveAnimatedArtwork, (v) => settings.SaveAnimatedArtwork = v);
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveSquareAnimatedArtwork),
+                () => settings.SaveSquareAnimatedArtwork, (v) => settings.SaveSquareAnimatedArtwork = v);
+            changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.SaveTallAnimatedArtwork),
+                () => settings.SaveTallAnimatedArtwork, (v) => settings.SaveTallAnimatedArtwork = v);
             changes += ValidateStringProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkFormats),
                 () => settings.AnimatedArtworkFormats, (v) => settings.AnimatedArtworkFormats = v);
             changes += ValidateIntegerProperty(settings, defaultSettings, nameof(settings.AnimatedArtworkMaxSizeMb),
                 () => settings.AnimatedArtworkMaxSizeMb, (v) => settings.AnimatedArtworkMaxSizeMb = v);
+            // Legacy migration: configs saved before the square/tall split only carried the
+            // master switch, so keep both variants off when the legacy master is disabled.
+            if (!settings.SaveAnimatedArtwork)
+            {
+                settings.SaveSquareAnimatedArtwork = false;
+                settings.SaveTallAnimatedArtwork = false;
+            }
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.AlbumVariousArtists),
                 () => settings.AlbumVariousArtists, (v) => settings.AlbumVariousArtists = v);
             changes += ValidateBooleanProperty(settings, defaultSettings, nameof(settings.RemoveAlbumVersion),
@@ -561,6 +572,8 @@ public class DeezSpoTagSettingsValidator
             LrcFormat = "richlyrics",
             LrcTimingPreference = LrcTimingModes.PreferEnhanced,
             SaveAnimatedArtwork = true,
+            SaveSquareAnimatedArtwork = true,
+            SaveTallAnimatedArtwork = true,
             AnimatedArtworkFormats = "mp4",
             AnimatedArtworkMaxSizeMb = 10,
             LimitMax = 200,

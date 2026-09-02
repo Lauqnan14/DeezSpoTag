@@ -159,7 +159,10 @@ public class DeezSpoTagSettings
     public string AuthorizationToken { get; set; } = "";
     public string LrcType { get; set; } = "lyrics,syllable-lyrics,ttml-lyrics,unsynced-lyrics";
     public string LrcFormat { get; set; } = "both";
+    // Legacy master switch, kept in sync by the UI as square OR tall.
     public bool SaveAnimatedArtwork { get; set; } = true;
+    public bool SaveSquareAnimatedArtwork { get; set; } = true;
+    public bool SaveTallAnimatedArtwork { get; set; } = true;
     public string AnimatedArtworkFormats { get; set; } = "mp4";
     public int AnimatedArtworkMaxSizeMb { get; set; } = 10;
     public int LimitMax { get; set; } = 200;

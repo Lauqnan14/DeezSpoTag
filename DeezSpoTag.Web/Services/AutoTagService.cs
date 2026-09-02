@@ -3448,6 +3448,8 @@ public partial class AutoTagService
             TracknameTemplateKey,
             "saveArtwork",
             "saveAnimatedArtwork",
+            "saveSquareAnimatedArtwork",
+            "saveTallAnimatedArtwork",
             "animatedArtworkFormats",
             "dlAlbumcoverForPlaylist",
             "saveArtworkArtist",
