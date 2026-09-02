@@ -4786,10 +4786,24 @@
                         groupId,
                         { scope: recentOnly ? "recent" : "full", targetFiles: scopes[index].targetFiles });
                     completedJobs += 1;
-                    const failed = ["failed", "error", "interrupted", "canceled"].includes(
-                        String(job?.status || "").toLowerCase());
+                    const jobStatus = String(job?.status || "").toLowerCase();
+                    const failed = ["failed", "error", "interrupted", "canceled", "paused"].includes(jobStatus);
                     if (failed) {
-                        failures.push(job?.error || "job failed");
+                        failures.push(job?.error || `job ${jobStatus}`);
+                    }
+                    // A paused/interrupted scope is resumable — stop the loop instead of
+                    // silently continuing with the remaining scopes, and offer Resume.
+                    if (["interrupted", "paused"].includes(jobStatus)) {
+                        if (window.EnhancementResume?.offerResume && job?.id) {
+                            window.EnhancementResume.offerResume(job.id, job);
+                        }
+                        if (index + 1 < scopes.length) {
+                            const remaining = scopes.length - index - 1;
+                            const stopMessage = `Stopped after group ${index + 1}/${scopes.length} (${jobStatus}); ${remaining} group(s) not run.`;
+                            setEnhancementStatus(statusElementId, stopMessage);
+                            showToast(stopMessage, "warning");
+                        }
+                        break;
                     }
                 } catch (error) {
                     failures.push(error?.message || String(error));
@@ -4797,7 +4811,10 @@
             }
 
             if (failures.length > 0) {
-                throw new Error(failures.join("; "));
+                const completedNote = completedJobs > 0
+                    ? ` Completed ${completedJobs} job(s) before stopping.`
+                    : "";
+                throw new Error(failures.join("; ") + completedNote);
             }
             const message = `Completed ${labels} across ${completedJobs} job(s).`;
             setEnhancementStatus(statusElementId, message);
@@ -6726,7 +6743,11 @@
             return;
         }
 
-        const response = await fetch(`/api/autotag/jobs/${encodeURIComponent(activeJobId)}/stop`, { method: "POST" });
+        const response = await fetch(`/api/autotag/jobs/${encodeURIComponent(activeJobId)}/stop`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ actor: "user" })
+        });
         if (!response.ok) {
             if (response.status === 404) {
                 localStorage.removeItem("autotagJobId");
@@ -6737,9 +6758,9 @@
             return;
         }
 
-        updateStatus(activeJobId, "canceled");
+        updateStatus(activeJobId, "paused");
         localStorage.removeItem("autotagJobId");
-        showToast("AutoTag stopped.", "success");
+        showToast("AutoTag paused — resume from the banner on reload.", "success");
     }
 
     function hasStatusUI() {
@@ -6780,6 +6801,11 @@
             if (job.status === "running") {
                 schedulePoll();
             } else {
+                // Do not silently forget the run: surface the resume banner for
+                // paused/interrupted enhancement jobs before clearing the stored id.
+                if (window.EnhancementResume?.offerResume) {
+                    window.EnhancementResume.offerResume(job.id || activeJobId, job);
+                }
                 localStorage.removeItem("autotagJobId");
             }
         } catch (error) {

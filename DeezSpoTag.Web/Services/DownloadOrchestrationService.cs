@@ -135,6 +135,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         public DateTimeOffset? LastEnrichmentFinishedUtc { get; set; }
         public DateTimeOffset? EnhancementResumeNotBeforeUtc { get; set; }
         public List<string> PendingEnhancementResumeFolderIds { get; set; } = new();
+
+        /// <summary>Legacy field: root paths are no longer persisted (one canonical representation).
+        /// Kept for load-time migration of pre-existing state files; always written empty.</summary>
         public List<string> PendingEnhancementResumeRootPaths { get; set; } = new();
     }
 
@@ -183,6 +186,8 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private const string QueueStatusComplete = "complete";
     private const string QueueStatusCancelled = "cancelled";
     private static readonly TimeSpan EnhancementResumeDelay = TimeSpan.FromMinutes(30);
+    private const int StagingCloseBlockedThreshold = 3;
+    private const string FinalizationStatusBlocked = "blocked";
     private const string FolderContentVideo = "video";
     private const string FolderContentPodcast = "podcast";
     private const string FolderContentAtmos = "atmos";
@@ -226,6 +231,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private readonly HashSet<string> _pendingEnhancementResumeFolderIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pendingEnhancementResumeRootPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _processedCompletionByQueueItem = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _stagingCloseAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _processedCompletionStateLock = new();
     private readonly object _phaseLock = new();
     private volatile bool _processedCompletionStateLoaded;
@@ -288,8 +294,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         _orchestrationStatePath = Path.Join(autoTagDataDir, "download-orchestration-state.json");
         DownloadQueueRepository.QueueStateChanged += OnQueueStateChanged;
         _autoTagService.JobCompleted += OnAutoTagJobCompleted;
+        _autoTagService.JobRecovered += OnAutoTagJobRecovered;
         LoadOrchestrationRuntimeState();
     }
+
+    private void OnAutoTagJobRecovered(AutoTagJob job)
+        => QueueInterruptedEnhancementResume(job);
 
     public bool TaggingInProgress => _taggingInProgress || _autoTagService.HasRunningJobs();
 
@@ -336,6 +346,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         SaveOrchestrationRuntimeState();
         DownloadQueueRepository.QueueStateChanged -= OnQueueStateChanged;
         _autoTagService.JobCompleted -= OnAutoTagJobCompleted;
+        _autoTagService.JobRecovered -= OnAutoTagJobRecovered;
         base.Dispose();
     }
 
@@ -389,8 +400,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 EnhancementInterruptedByEnrichment = _enhancementInterruptedByEnrichment,
                 LastEnrichmentFinishedUtc = _lastEnrichmentFinishedUtc,
                 EnhancementResumeNotBeforeUtc = _enhancementResumeNotBeforeUtc,
-                PendingEnhancementResumeFolderIds = _pendingEnhancementResumeFolderIds.ToList(),
-                PendingEnhancementResumeRootPaths = _pendingEnhancementResumeRootPaths.ToList()
+                PendingEnhancementResumeFolderIds = _pendingEnhancementResumeFolderIds.ToList()
+                // PendingEnhancementResumeRootPaths is deliberately not persisted: root paths
+                // live in memory only and are resolved into folder IDs at consume time. If the
+                // app restarts first, JobRecovered re-queues them from the interrupted jobs.
             };
 
             var json = JsonSerializer.Serialize(state, ScheduleJsonOptions);
@@ -429,25 +442,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                     }
                 }
             }
-        }
-    }
-
-    private void QueueEnhancementResumeFolder(string folderId)
-    {
-        if (string.IsNullOrWhiteSpace(folderId))
-        {
-            return;
-        }
-
-        var queued = false;
-        lock (_enhancementResumeLock)
-        {
-            queued = _pendingEnhancementResumeFolderIds.Add(folderId.Trim());
-        }
-
-        if (queued)
-        {
-            MarkEnhancementResumeQueued();
         }
     }
 
@@ -699,7 +693,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private void QueueInterruptedEnhancementResume(AutoTagJob? job)
     {
         if (job == null
-            || !string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase)
+            // Symmetry rule: both enhancement intents are pauseable, so both must auto-resume.
+            // manual_enrichment is resumed explicitly by the user (POST /jobs/{id}/resume).
+            || (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementOnly, StringComparison.OrdinalIgnoreCase) == false
+                && string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase) == false)
             || string.IsNullOrWhiteSpace(job.RootPath))
         {
             return;
@@ -1283,10 +1280,38 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             {
                 closedMarkers[unrecoverableMarker] = item.UpdatedAt;
             }
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                ErrorLogLevel,
-                $"Automation: completed download {item.QueueUuid} lost its staging artifact before enrichment/finalization and has no verified library destination; closing it so the pipeline can settle."));
+            var attempts = _stagingCloseAttempts.AddOrUpdate(
+                item.QueueUuid,
+                1,
+                static (_, existing) => existing + 1);
+            if (attempts >= StagingCloseBlockedThreshold)
+            {
+                // Park permanently: the resurrection sweep (NormalizeCompletedFinalizationStatusesAsync)
+                // only resets moved/not_required/failed, so "blocked" stays terminal and the item
+                // finally leaves the pending set instead of erroring every sweep.
+                await _queueRepository.MarkMoveBlockedAsync(item.QueueUuid, cancellationToken);
+                await _queueRepository.SetEnrichmentStatusAsync(item.QueueUuid, EnrichmentStatusNotRequired, cancellationToken);
+                _stagingCloseAttempts.TryRemove(item.QueueUuid, out _);
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    WarningLogLevel,
+                    $"Automation: completed download {item.QueueUuid} repeatedly lost its staging artifact ({attempts} sweep(s)); parked as blocked so the pipeline can settle."));
+                _notifications.Raise(
+                    "download_blocked",
+                    "Download parked: staging artifact missing",
+                    $"Completed download {item.QueueUuid} lost its staging artifact before finalization and could not be recovered. It was parked as blocked.",
+                    "Warning",
+                    $"download_blocked:{item.QueueUuid}",
+                    "download",
+                    item.QueueUuid);
+            }
+            else
+            {
+                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                    DateTimeOffset.UtcNow,
+                    ErrorLogLevel,
+                    $"Automation: completed download {item.QueueUuid} lost its staging artifact before enrichment/finalization and has no verified library destination; closing it so the pipeline can settle."));
+            }
         }
 
         if (closedMarkers.Count > 0)
@@ -2692,19 +2717,21 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             $"Automation: enhancement ({sourceLabel}) finished for {target.RootPath} "
             + $"({attemptedJobs.Count} section job(s), last status={enhancementJob?.Status ?? "skipped"})."));
 
+        // Single decision point after the pause: TryPauseEnhancementAsync already queued the
+        // resume folders (QueueResumeFoldersForPausedEnhancementJob), so this block only logs
+        // the outcome and reports PausedForEnrichment upstream — never double-queues.
         if (enhancementJob != null
             && (string.Equals(enhancementJob.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(enhancementJob.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(enhancementJob.Status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase))
             && _enhancementPauseRequested)
         {
-            QueueEnhancementResumeFolder(target.FolderId);
-                _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                    DateTimeOffset.UtcNow,
-                    "info",
-                    $"Automation: enhancement paused to prioritize pending post-download enrichment ({target.RootPath})."));
-                return new EnhancementTargetRunResult(false, true);
-            }
+            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
+                DateTimeOffset.UtcNow,
+                "info",
+                $"Automation: enhancement paused to prioritize pending post-download enrichment ({target.RootPath})."));
+            return new EnhancementTargetRunResult(false, true);
+        }
 
         var attempted = attemptedJobs.Any(job =>
             !string.Equals(job.Status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
@@ -2931,8 +2958,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return;
         }
 
+        // Symmetry rule: every intent that pause-for-pipeline may stop must be resumable.
+        // download_enrichment runs are managed by their own pipeline; manual_enrichment is
+        // resumed explicitly by the user via POST /jobs/{id}/resume.
         if (string.Equals(job.RunIntent, AutoTagLiterals.RunIntentDownloadEnrichment, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(job.RunIntent, AutoTagLiterals.RunIntentEnhancementRecentDownloads, StringComparison.OrdinalIgnoreCase))
+            || string.Equals(job.RunIntent, AutoTagLiterals.RunIntentManualEnrichment, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -3659,7 +3689,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private static bool IsFinalizationComplete(string? finalizationStatus)
     {
         var normalized = finalizationStatus?.Trim().ToLowerInvariant();
-        return normalized is "moved" or "not_required";
+        // "blocked" is terminal for pipeline purposes: the item was parked because its
+        // staging artifact is unrecoverable, so no finalization/enrichment work remains.
+        return normalized is "moved" or "not_required" or FinalizationStatusBlocked;
     }
 
     private static Dictionary<string, DateTimeOffset> BuildCompletionMarkers(IEnumerable<DownloadQueueItem> items)

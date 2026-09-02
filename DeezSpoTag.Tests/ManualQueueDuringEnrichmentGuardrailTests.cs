@@ -244,15 +244,18 @@ public sealed class ManualQueueDuringEnrichmentGuardrailTests
     }
 
     [Fact]
-    public void InterruptedEnhancementResume_ExcludesRecentDownloadEnhancement()
+    public void InterruptedEnhancementResume_CoversBothEnhancementIntents()
     {
         var orchestrationSource = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
         var queueInterruptedBody = ExtractMethodBody(orchestrationSource, "private void QueueInterruptedEnhancementResume");
         var queuePausedBody = ExtractMethodBody(orchestrationSource, "private void QueueResumeFoldersForPausedEnhancementJob");
 
+        // Symmetry invariant: both pauseable enhancement intents must be resumable. The old
+        // exclusion of enhancement_recent_downloads left paused recent-download runs stuck
+        // forever ("interrupted and never resumed").
         Assert.Contains("AutoTagLiterals.RunIntentEnhancementOnly", queueInterruptedBody, StringComparison.Ordinal);
-        Assert.DoesNotContain("RunIntentEnhancementRecentDownloads", queueInterruptedBody, StringComparison.Ordinal);
-        Assert.Contains("AutoTagLiterals.RunIntentEnhancementRecentDownloads", queuePausedBody, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.RunIntentEnhancementRecentDownloads", queueInterruptedBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("AutoTagLiterals.RunIntentEnhancementRecentDownloads", queuePausedBody, StringComparison.Ordinal);
     }
 
     [Fact]

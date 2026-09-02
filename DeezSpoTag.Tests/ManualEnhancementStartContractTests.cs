@@ -94,27 +94,35 @@ public sealed class ManualEnhancementStartContractTests
     }
 
     [Fact]
-    public void AutoTagStopReason_LabelsUserEnhancementStopsAsStopped()
+    public void AutoTagStopReason_LabelsUserEnhancementStopsAsResumablePause()
     {
         var repoRoot = FindRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
 
-        Assert.Contains("? AutoTagLiterals.CanceledStatus", source, StringComparison.Ordinal);
-        Assert.Contains("_ => \"Stopped by user.\"", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("_ => \"Interrupted by user. Resume is available.\"", source, StringComparison.Ordinal);
+        // Invariant: enhancement runs are never cancelled outright — a user stop is a
+        // resumable pause so POST /jobs/{id}/resume can continue it.
+        Assert.Contains("_ => \"Paused by user. Resume is available.\"", source, StringComparison.Ordinal);
+        var stopStatus = ExtractSourceSpan(
+            source,
+            "private static string ResolveStopStatus",
+            "private static string NormalizeStopReason");
+        Assert.Contains("AutoTagLiterals.PausedStatus", stopStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("? AutoTagLiterals.CanceledStatus", stopStatus, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void AutoTagStopReason_NormalizesLegacyManualEnhancementStops()
+    public void AutoTagStopReason_DoesNotRewriteArchivedEnhancementStops()
     {
         var repoRoot = FindRepoRoot();
         var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
 
-        Assert.Contains("NormalizeLegacyUserStoppedEnhancement(job);", source, StringComparison.Ordinal);
-        Assert.Contains("NormalizeLegacyUserStoppedEnhancement(summary);", source, StringComparison.Ordinal);
-        Assert.Contains("IsLegacyUserInterruptedStopMessage", source, StringComparison.Ordinal);
-        Assert.Contains("run.Status = AutoTagLiterals.CanceledStatus;", source, StringComparison.Ordinal);
-        Assert.Contains("run.Error = \"Stopped by user.\";", source, StringComparison.Ordinal);
+        // Guardrail: the legacy rewriter must stay removed. It reclassified
+        // restart-interrupted manual enhancement runs as "Stopped by user." and destroyed
+        // their resume eligibility.
+        Assert.DoesNotContain("NormalizeLegacyUserStoppedEnhancement", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsLegacyUserInterruptedStopMessage", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("RecordStaleRecoveryPending", source, StringComparison.Ordinal);
+        Assert.Contains("Archived run summaries are immutable history", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -135,6 +143,100 @@ public sealed class ManualEnhancementStartContractTests
         Assert.DoesNotContain("AutoTagLiterals.CanceledStatus", preserveRuntimeConfig, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.InterruptedStatus", resumeCandidate, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.PausedStatus", resumeCandidate, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagResume_ExplicitEndpointSeedsFromNamedJobAndMarksSourceResumed()
+    {
+        var repoRoot = FindRepoRoot();
+        var controller = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Controllers", "Api", "AutoTagApiController.cs"));
+        var service = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+
+        Assert.Contains("jobs/{id}/resume", controller, StringComparison.Ordinal);
+        Assert.Contains("ResumeJobAsync(id, cancellationToken)", controller, StringComparison.Ordinal);
+        Assert.Contains("public async Task<ResumeJobOutcome?> ResumeJobAsync", service, StringComparison.Ordinal);
+        Assert.Contains("ResumeFromJobId: job.Id", service, StringComparison.Ordinal);
+        Assert.Contains("AutoTagLiterals.ResumedStatus", service, StringComparison.Ordinal);
+        // The resume endpoint must not depend on the passive scope lookup: it names the source job.
+        Assert.Contains("if (!string.IsNullOrWhiteSpace(options.ResumeFromJobId))", service, StringComparison.Ordinal);
+        // Checkpoint must be persisted with the job so resume survives runtime-config cleanup.
+        Assert.Contains("public string? ResumeConfigJson { get; set; }", service, StringComparison.Ordinal);
+        Assert.Contains("job.ResumeConfigJson = persistedConfigJson;", service, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AutoTagCheckpoint_FallsBackWhenNextIndexesMissing()
+    {
+        var repoRoot = FindRepoRoot();
+        var source = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "AutoTagService.cs"));
+        var update = ExtractSourceSpan(
+            source,
+            "private static void TryUpdateResumeCheckpoint",
+            "private static AutoTagResumeCursor? ResolveResumeCursor");
+
+        // Invariant: every successfully processed file advances the checkpoint — no silent skips.
+        Assert.Contains("Fallback: some terminal statuses", update, StringComparison.Ordinal);
+        Assert.Contains("nextFileIndex = currentFile + 1;", update, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementResumeQueueing_SymmetryForBothEnhancementIntents()
+    {
+        var repoRoot = FindRepoRoot();
+        var orchestration = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
+
+        // Pauseable intents must be resumable: both queue paths handle recent-downloads runs.
+        var queueFolders = ExtractSourceSpan(
+            orchestration,
+            "private void QueueResumeFoldersForPausedEnhancementJob",
+            "private static bool PathScopesOverlap");
+        Assert.DoesNotContain("AutoTagLiterals.RunIntentEnhancementRecentDownloads", queueFolders, StringComparison.Ordinal);
+
+        var queueInterrupted = ExtractSourceSpan(
+            orchestration,
+            "private void QueueInterruptedEnhancementResume",
+            "private static bool IsAutomationPausedEnhancementJob");
+        Assert.Contains("AutoTagLiterals.RunIntentEnhancementRecentDownloads", queueInterrupted, StringComparison.Ordinal);
+
+        // The pause handler must still cover both intents.
+        var shouldPause = ExtractSourceSpan(
+            orchestration,
+            "private static bool ShouldPauseEnhancementJobForEnrichment",
+            "private sealed record EnhancementExecutionResult");
+        Assert.Contains("AutoTagLiterals.RunIntentEnhancementRecentDownloads", shouldPause, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementResumeState_HasOnePersistentRepresentation()
+    {
+        var repoRoot = FindRepoRoot();
+        var orchestration = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs"));
+        var save = ExtractSourceSpan(
+            orchestration,
+            "private void SaveOrchestrationRuntimeState",
+            "private void RestorePendingEnhancementResumeWork");
+
+        // Root paths live in memory only; folder IDs are the single persisted representation.
+        Assert.DoesNotContain("PendingEnhancementResumeRootPaths = _pendingEnhancementResumeRootPaths", save, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnhancementClient_SurfacesResumeBannerAndStopsLoopOnInterrupt()
+    {
+        var repoRoot = FindRepoRoot();
+        var script = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "autotag.js"));
+        var resumeModule = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "wwwroot", "js", "enhancement-resume.js"));
+        var view = File.ReadAllText(Path.Join(repoRoot, "DeezSpoTag.Web", "Views", "AutoTag", "Index.cshtml"));
+        var sections = ExtractFunction(script, "async function runEnhancementSections");
+        var poll = ExtractFunction(script, "async function pollJob");
+
+        Assert.Contains("~/js/enhancement-resume.js", view, StringComparison.Ordinal);
+        Assert.Contains("/api/autotag/jobs/\" + encodeURIComponent(jobId) + \"/resume", resumeModule, StringComparison.Ordinal);
+        Assert.Contains("window.EnhancementResume?.offerResume", poll, StringComparison.Ordinal);
+        Assert.Contains("window.EnhancementResume?.offerResume", sections, StringComparison.Ordinal);
+        // Interrupted scope stops the section loop instead of silently continuing.
+        Assert.Contains("break;", sections, StringComparison.Ordinal);
+        Assert.Contains("group(s) not run.", sections, StringComparison.Ordinal);
     }
 
     [Fact]

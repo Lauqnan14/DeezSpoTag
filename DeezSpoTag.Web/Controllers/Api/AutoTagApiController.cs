@@ -934,16 +934,39 @@ public class AutoTagJobsController : ControllerBase
     }
 
     [HttpPost("jobs/{id}/stop")]
-    public async Task<IActionResult> StopJob(string id)
+    public async Task<IActionResult> StopJob(string id, [FromBody] AutoTagStopRequest? request)
     {
-        var stopped = await _autoTagService.StopJobAsync(id);
+        var stopped = await _autoTagService.StopJobAsync(id, request?.Actor);
         if (!stopped)
         {
             return NotFound();
         }
 
-        return Ok(new { id, status = "canceled" });
+        return Ok(new { id, status = "paused" });
     }
+
+    [HttpPost("jobs/{id}/resume")]
+    public async Task<IActionResult> ResumeJob(string id, CancellationToken cancellationToken)
+    {
+        var outcome = await _autoTagService.ResumeJobAsync(id, cancellationToken);
+        if (outcome == null)
+        {
+            return NotFound();
+        }
+
+        if (!outcome.Success)
+        {
+            return Conflict(new { id, error = outcome.Error });
+        }
+
+        return Ok(new { id, resumedJobId = outcome.ResumedJobId, status = "running" });
+    }
+}
+
+public class AutoTagStopRequest
+{
+    /// <summary>Optional stop actor: user | automation | schedule | recovery. Defaults to user.</summary>
+    public string? Actor { get; set; }
 }
 
 public class AutoTagStartRequest

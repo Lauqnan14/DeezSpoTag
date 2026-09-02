@@ -55,6 +55,7 @@ internal static class AutoTagLiterals
     internal const string PausedStatus = "paused";
     internal const string FailedStatus = "failed";
     internal const string CompletedStatus = "completed";
+    internal const string ResumedStatus = "resumed";
     internal const string EnrichmentStage = "enrichment";
     internal const string EnhancementStage = "enhancement";
     internal const string MultiPlatformKey = "multiplatform";
@@ -139,6 +140,11 @@ public abstract class AutoTagRunState
 public class AutoTagJob : AutoTagRunState
 {
     public string? CurrentPlatform { get; set; }
+    /// <summary>
+    /// Redacted, sanitized config captured when the job last ran, so the explicit resume
+    /// endpoint can restart this exact scope even after runtime-config cleanup.
+    /// </summary>
+    public string? ResumeConfigJson { get; set; }
     public TaggingStatusWrap? LastStatus { get; set; }
     public List<TaggingStatusSnapshot> StatusHistory { get; } = new();
     public List<string> Logs { get; } = new();
@@ -576,6 +582,12 @@ public partial class AutoTagService
 
     public event Action<AutoTagJob>? JobCompleted;
 
+    /// <summary>
+    /// Raised when a persisted job is found running at load time without an active owner
+    /// (i.e. it was interrupted by an application restart). Consumers queue the resume.
+    /// </summary>
+    public event Action<AutoTagJob>? JobRecovered;
+
     public AutoTagService(
         IWebHostEnvironment env,
         ILogger<AutoTagService> logger,
@@ -705,7 +717,8 @@ public partial class AutoTagService
         string? RunIntent = null,
         FolderStructureSettings? FolderStructureOverride = null,
         string? EnhancementFeature = null,
-        string? EnhancementGroupId = null);
+        string? EnhancementGroupId = null,
+        string? ResumeFromJobId = null);
 
     public async Task<AutoTagJob?> StartJob(
         string path,
@@ -716,8 +729,33 @@ public partial class AutoTagService
         var normalizedPath = NormalizePathForJob(path);
         var normalizedTrigger = NormalizeRunTrigger(options.Trigger);
         var normalizedRunIntent = NormalizeRunIntent(options.RunIntent);
-        var resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, options.ProfileId);
-        var resumeSourceJob = resumeSeed == null ? null : GetJob(resumeSeed.SourceJobId) ?? LoadJob(resumeSeed.SourceJobId);
+        ResumeCheckpointSeed? resumeSeed;
+        AutoTagJob? resumeSourceJob;
+        if (!string.IsNullOrWhiteSpace(options.ResumeFromJobId))
+        {
+            // Explicit resume: seed from the named source job instead of the scope lookup,
+            // so the exact requested job's checkpoint is used even if newer interrupted
+            // jobs exist in the same scope.
+            var resumeSource = GetJob(options.ResumeFromJobId) ?? LoadJob(options.ResumeFromJobId);
+            if (resumeSource == null || resumeSource.ResumeCheckpoint == null)
+            {
+                _logger.LogWarning(
+                    "Explicit resume seed failed: job {JobId} not found or has no resume checkpoint.",
+                    options.ResumeFromJobId);
+                resumeSeed = null;
+                resumeSourceJob = null;
+            }
+            else
+            {
+                resumeSeed = BuildResumeCheckpointSeed(resumeSource);
+                resumeSourceJob = resumeSource;
+            }
+        }
+        else
+        {
+            resumeSeed = TryResolveResumeCheckpointSeed(normalizedPath, normalizedRunIntent, options.ProfileId);
+            resumeSourceJob = resumeSeed == null ? null : GetJob(resumeSeed.SourceJobId) ?? LoadJob(resumeSeed.SourceJobId);
+        }
         var resumedJobId = resumeSeed?.ResumeJobId ?? Guid.NewGuid().ToString("N");
         var resumedStartedAt = resumeSeed?.StartedAt ?? DateTimeOffset.UtcNow;
 
@@ -832,6 +870,13 @@ public partial class AutoTagService
             var persistedConfigJson = RedactSensitiveConfigJson(runtimeConfigJson);
             var runtimeConfigPath = WriteRuntimeConfigFile(job.Id, "base", runtimeConfigJson);
             TrySaveLastConfig(persistedConfigJson);
+            // Persist the redacted config on the job so POST /jobs/{id}/resume can restart
+            // this exact scope even if runtime-config files were cleaned up meanwhile.
+            if (!string.Equals(job.ResumeConfigJson, persistedConfigJson, StringComparison.Ordinal))
+            {
+                job.ResumeConfigJson = persistedConfigJson;
+                SaveJob(job);
+            }
             AppendLog(job, "runtime config ready");
 
             await RunJobAsync(job, normalizedPath, runtimeConfigPath);
@@ -2140,6 +2185,108 @@ public partial class AutoTagService
         return false;
     }
 
+    /// <summary>
+    /// Outcome of an explicit resume attempt for API surfacing.
+    /// </summary>
+    public sealed record ResumeJobOutcome(bool Success, string? Error, string? ResumedJobId);
+
+    /// <summary>
+    /// Explicitly resumes a paused/interrupted/failed AutoTag job from its checkpoint.
+    /// Bypasses the automation resume cooldown: the user is present and acting.
+    /// </summary>
+    public async Task<ResumeJobOutcome?> ResumeJobAsync(string id, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        AutoTagJob? job;
+        if (_jobs.TryGetValue(id, out var cached) && cached != null)
+        {
+            job = cached;
+        }
+        else
+        {
+            job = LoadJob(id);
+            if (job == null)
+            {
+                return null; // 404
+            }
+            NormalizeLoadedJobState(job);
+        }
+
+        var status = job.Status?.Trim();
+        var resumeEligible = string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.FailedStatus, StringComparison.OrdinalIgnoreCase);
+        if (!resumeEligible)
+        {
+            return new ResumeJobOutcome(false, $"Job is '{status}' and cannot be resumed. Only paused, interrupted, or failed jobs can resume.", null);
+        }
+
+        if (job.ResumeCheckpoint == null)
+        {
+            return new ResumeJobOutcome(false, "Job has no resume checkpoint; start a new run over the same scope instead.", null);
+        }
+
+        if (string.IsNullOrWhiteSpace(job.RootPath))
+        {
+            return new ResumeJobOutcome(false, "Job root path is missing; resume is not possible.", null);
+        }
+
+        var configJson = job.ResumeConfigJson;
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            var runtimeConfigPath = TryFindRuntimeConfigPath(job.Id, "base");
+            if (!string.IsNullOrWhiteSpace(runtimeConfigPath) && File.Exists(runtimeConfigPath))
+            {
+                try
+                {
+                    configJson = await File.ReadAllTextAsync(runtimeConfigPath, cancellationToken);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Failed reading runtime config for resume of job {JobId}.", id);
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(configJson))
+        {
+            return new ResumeJobOutcome(false, "No stored config is available for this run; start a new run over the same scope instead.", null);
+        }
+
+        if (HasRunningJobs())
+        {
+            return new ResumeJobOutcome(false, "Another AutoTag job is running; resume is unavailable until it settles.", null);
+        }
+
+        var resumed = await StartJob(
+            job.RootPath!,
+            configJson,
+            new StartJobOptions(
+                Trigger: AutoTagLiterals.RecoveryTrigger,
+                ProfileId: job.ProfileId,
+                ProfileName: job.ProfileName,
+                RunIntent: job.RunIntent,
+                EnhancementFeature: job.EnhancementFeature,
+                ResumeFromJobId: job.Id));
+        if (resumed == null)
+        {
+            return new ResumeJobOutcome(false, "Resume was blocked (downloads are active or another run holds the scope).", null);
+        }
+
+        // Mark the source job as resumed AFTER StartJob consumed its checkpoint seed.
+        job.Status = AutoTagLiterals.ResumedStatus;
+        job.Error = $"Resumed by successor job {resumed.Id}.";
+        AppendLog(job, $"resume: successor job {resumed.Id} started from checkpoint {job.ResumeCheckpoint.StageName}.");
+        AppendActivityLog(job.Id, $"autotag resumed by successor job {resumed.Id}");
+        SaveJob(job);
+
+        return new ResumeJobOutcome(true, null, resumed.Id);
+    }
+
     private void NotifyRunStopped(AutoTagJob job, string stopStatus, string stopReason)
     {
         if (!string.Equals(stopStatus, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
@@ -2166,10 +2313,12 @@ public partial class AutoTagService
             return AutoTagLiterals.CanceledStatus;
         }
 
+        // Enhancement runs are never cancelled outright: every stop is a pause that the
+        // explicit resume endpoint (POST /jobs/{id}/resume) can continue from.
         return string.Equals(stopReason, AutoTagLiterals.AutomationTrigger, StringComparison.OrdinalIgnoreCase)
             ? AutoTagLiterals.PausedStatus
             : string.Equals(stopReason, "user", StringComparison.OrdinalIgnoreCase)
-                ? AutoTagLiterals.CanceledStatus
+                ? AutoTagLiterals.PausedStatus
                 : AutoTagLiterals.InterruptedStatus;
     }
 
@@ -2208,7 +2357,7 @@ public partial class AutoTagService
             AutoTagLiterals.AutomationTrigger => "Paused by automation. Resume is available after download finalization.",
             AutoTagLiterals.ScheduleTrigger => "Interrupted after schedule change. Resume is available.",
             AutoTagLiterals.RecoveryTrigger => "Interrupted by stale recovery. Resume is available.",
-            _ => "Stopped by user."
+            _ => "Paused by user. Resume is available."
         };
     }
 
@@ -2627,8 +2776,14 @@ public partial class AutoTagService
             return new StageExecutionResult(false);
         }
 
-        job.Status = AutoTagLiterals.CanceledStatus;
-        job.Error = "Stopped by user.";
+        // The runner stopped without StopJobAsync having stamped a status (external kill).
+        // Enhancement runs stay resumable: interrupted, never canceled.
+        job.Status = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
+            ? AutoTagLiterals.InterruptedStatus
+            : AutoTagLiterals.CanceledStatus;
+        job.Error = IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent)
+            ? "Interrupted. Resume is available."
+            : "Stopped by user.";
         return new StageExecutionResult(false);
     }
 
@@ -5292,22 +5447,41 @@ public partial class AutoTagService
             return;
         }
 
-        if (status.NextPlatformIndex is not int nextPlatformIndex
-            || status.NextFileIndex is not int nextFileIndex
+        var nextPlatformIndex = status.NextPlatformIndex;
+        var nextFileIndex = status.NextFileIndex;
+        if (nextPlatformIndex is not int
+            || nextFileIndex is not int
             || status.PlatformCount is not int platformCount
             || status.FileCount is not int fileCount
             || platformCount <= 0
             || fileCount <= 0)
         {
-            return;
+            // Fallback: some terminal statuses (workflow tails, batch boundaries) omit the
+            // next-indexes. If the current indexes are known, advance by one so every
+            // successfully processed file still advances the checkpoint (no silent skips).
+            if (status.PlatformIndex is not int currentPlatform
+                || status.FileIndex is not int currentFile)
+            {
+                return;
+            }
+
+            platformCount = Math.Max(1, status.PlatformCount ?? 0);
+            fileCount = Math.Max(1, status.FileCount ?? 0);
+            nextPlatformIndex = currentPlatform;
+            nextFileIndex = currentFile + 1;
+            if (nextFileIndex >= fileCount)
+            {
+                nextFileIndex = 0;
+                nextPlatformIndex = Math.Min(platformCount, currentPlatform + 1);
+            }
         }
 
         job.ResumeCheckpoint = new AutoTagResumeCheckpoint
         {
             StageName = stageName,
             StageConfigHash = stageConfigHash,
-            PlatformIndex = Math.Max(0, nextPlatformIndex),
-            FileIndex = Math.Max(0, nextFileIndex),
+            PlatformIndex = Math.Max(0, nextPlatformIndex ?? 0),
+            FileIndex = Math.Max(0, nextFileIndex ?? 0),
             PlatformCount = platformCount,
             FileCount = fileCount,
             LastPath = status.Status?.Path,
@@ -6132,6 +6306,7 @@ public partial class AutoTagService
             || string.Equals(status, AutoTagLiterals.CanceledStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.PausedStatus, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, AutoTagLiterals.ResumedStatus, StringComparison.OrdinalIgnoreCase)
             || string.Equals(status, AutoTagLiterals.SkippedStatus, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -6671,7 +6846,7 @@ public partial class AutoTagService
             return null;
         }
 
-        NormalizeLegacyUserStoppedEnhancement(summary);
+        // Archived run summaries are immutable history: statuses/errors are never rewritten on load.
         if (string.IsNullOrWhiteSpace(summary.ResumeFromJobId))
         {
             summary.ResumeFromJobId = TryReadJobResumeFromJobId(summary.Id);
@@ -7396,7 +7571,6 @@ public partial class AutoTagService
     {
         job.Trigger = NormalizeRunTrigger(job.Trigger);
         job.RunIntent = NormalizeRunIntent(job.RunIntent);
-        NormalizeLegacyUserStoppedEnhancement(job);
         if (job.LastActivityAt <= DateTimeOffset.MinValue)
         {
             job.LastActivityAt = ResolveLastActivityTimestamp(job);
@@ -7417,38 +7591,13 @@ public partial class AutoTagService
         job.FinishedAt ??= DateTimeOffset.UtcNow;
         job.Error ??= "AutoTag job was interrupted by an application restart; resume is available.";
         SaveJob(job);
-        RecordStaleRecoveryPending(job);
-    }
-
-    private static void NormalizeLegacyUserStoppedEnhancement(AutoTagRunState run)
-    {
-        if (!IsEnhancementRunIntent(run.RunIntent)
-            && !IsManualEnrichmentRunIntent(run.RunIntent))
+        // Archived summaries and job records are immutable history beyond this point:
+        // restart-interrupted enhancement runs are queued for resume, never rewritten.
+        if (IsEnhancementRunIntent(job.RunIntent) || IsManualEnrichmentRunIntent(job.RunIntent))
         {
-            return;
+            AppendLog(job, "stale recovery: job interrupted by application restart; resume queued for enhancement.");
+            JobRecovered?.Invoke(job);
         }
-
-        if (!string.Equals(NormalizeRunTrigger(run.Trigger), AutoTagLiterals.ManualTrigger, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(run.Status, AutoTagLiterals.InterruptedStatus, StringComparison.OrdinalIgnoreCase)
-            || !IsLegacyUserInterruptedStopMessage(run.Error))
-        {
-            return;
-        }
-
-        run.Status = AutoTagLiterals.CanceledStatus;
-        run.Error = "Stopped by user.";
-    }
-
-    private static bool IsLegacyUserInterruptedStopMessage(string? error)
-    {
-        if (string.IsNullOrWhiteSpace(error))
-        {
-            return false;
-        }
-
-        var normalized = error.Trim();
-        return string.Equals(normalized, "Interrupted by user. Resume is available.", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(normalized, "Interrupted. Resume is available.", StringComparison.OrdinalIgnoreCase);
     }
 
     private static DateTimeOffset ResolveLastActivityTimestamp(AutoTagJob job)
@@ -7593,11 +7742,11 @@ public partial class AutoTagService
         job.Error = $"AutoTag job had no progress for {FormatDuration(idleFor)} and was recovered as interrupted.";
         SaveJob(job);
         AppendLog(job, "stuck watchdog: recovered stale running job; resume checkpoint preserved.");
+        AppendLog(job, "stale recovery: auto-move disabled; file finalization remains owned by its authoritative pipeline");
         AppendActivityLog(job.Id, "autotag interrupted by stuck watchdog");
 
         if (!restartStalePersistedJobs)
         {
-            RecordStaleRecoveryPending(job);
             return;
         }
 
@@ -7609,14 +7758,12 @@ public partial class AutoTagService
         if (job.ResumeCheckpoint == null)
         {
             AppendLog(job, "stuck watchdog: auto-resume skipped because no resume checkpoint is available.");
-            RecordStaleRecoveryPending(job);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(job.RootPath))
         {
             AppendLog(job, "stuck watchdog: auto-resume skipped because the job root path is missing.");
-            RecordStaleRecoveryPending(job);
             return;
         }
 
@@ -7624,7 +7771,6 @@ public partial class AutoTagService
         if (string.IsNullOrWhiteSpace(runtimeConfigPath) || !File.Exists(runtimeConfigPath))
         {
             AppendLog(job, "stuck watchdog: auto-resume skipped because the runtime config was not found.");
-            RecordStaleRecoveryPending(job);
             return;
         }
 
@@ -7634,7 +7780,6 @@ public partial class AutoTagService
             if (string.IsNullOrWhiteSpace(configJson))
             {
                 AppendLog(job, "stuck watchdog: auto-resume skipped because the runtime config is empty.");
-                RecordStaleRecoveryPending(job);
                 return;
             }
 
@@ -7663,7 +7808,6 @@ public partial class AutoTagService
         {
             _logger.LogWarning(ex, "AutoTag stuck watchdog failed to auto-resume job {JobId}.", job.Id);
             AppendLog(job, $"stuck watchdog: auto-resume failed: {ex.Message}");
-            RecordStaleRecoveryPending(job);
         }
     }
 
@@ -7737,11 +7881,6 @@ public partial class AutoTagService
         }
 
         return $"{Math.Max(1, duration.TotalMinutes):0}m";
-    }
-
-    private void RecordStaleRecoveryPending(AutoTagJob job)
-    {
-        AppendLog(job, "stale recovery: auto-move disabled; file finalization remains owned by its authoritative pipeline");
     }
 
     private string? TryFindRuntimeConfigPath(string jobId, string stage)
