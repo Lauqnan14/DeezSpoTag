@@ -200,6 +200,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
     private readonly DeezSpoTag.Services.Download.Shared.Models.INotificationSink _notifications;
     private readonly DownloadQueueRepository _queueRepository;
+    private readonly DownloadQueueRecoveryService _queueRecoveryService;
     private readonly LibraryRepository _libraryRepository;
     private readonly AutoTagService _autoTagService;
     private readonly AutoTagDownloadMoveService _downloadMoveService;
@@ -238,7 +239,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private int _wakeSignalPending;
 
     private DateTimeOffset? _queueIdleSince;
-    private DateTimeOffset _lastPipelineCompletedAt = DateTimeOffset.UtcNow;
     private bool _pipelineRequested;
     private bool _wasQueueActive;
     private bool _taggingInProgress;
@@ -264,6 +264,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     {
         _notifications = serviceProvider.GetRequiredService<DeezSpoTag.Services.Download.Shared.Models.INotificationSink>();
         _queueRepository = serviceProvider.GetRequiredService<DownloadQueueRepository>();
+        _queueRecoveryService = serviceProvider.GetRequiredService<DownloadQueueRecoveryService>();
         _libraryRepository = serviceProvider.GetRequiredService<LibraryRepository>();
         _autoTagService = serviceProvider.GetRequiredService<AutoTagService>();
         _downloadMoveService = serviceProvider.GetRequiredService<AutoTagDownloadMoveService>();
@@ -805,6 +806,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
 
         await _workCoordinator.WaitForStartupGraceAsync(stoppingToken);
+        await _queueRecoveryService.RecoverPendingPostDownloadWorkAsync(
+            demoteRunningPipelineStates: true,
+            stoppingToken);
         var orphanedHeldItems = await _queueRepository.CancelOrphanedEnhancementBatchesAsync(stoppingToken);
         if (orphanedHeldItems > 0)
         {
@@ -841,6 +845,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private async Task TickAsync(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
+        await _queueRecoveryService.RecoverPendingPostDownloadWorkAsync(cancellationToken);
         var runnableDownloadCount = await _queueRepository.GetRunnableDownloadCountAsync(cancellationToken);
         _lastKnownActiveDownloadCount = runnableDownloadCount;
         var hasRunnableDownloads = runnableDownloadCount > 0;
@@ -1096,11 +1101,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
 
                 if (!IsFinalizationAllowed(enrichmentResult.Status))
                 {
-                    await MarkPostDownloadFinalizationBlockedAsync(group, cancellationToken);
+                    await MarkPostDownloadFinalizationPendingAsync(group, cancellationToken);
                     _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
                         DateTimeOffset.UtcNow,
                         WarningLogLevel,
-                        $"Automation: post-download finalization blocked for destination folder {group.DestinationFolderId} (enrichment status={enrichmentResult.Status})."));
+                        $"Automation: post-download enrichment did not finish for destination folder {group.DestinationFolderId} (enrichment status={enrichmentResult.Status}); move left pending so this destination group can retry."));
                     allGroupsFinalized = false;
                     continue;
                 }
@@ -1213,19 +1218,11 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return null;
         }
 
-        var recoveredCount = pendingItems.Count(item => item.UpdatedAt <= _lastPipelineCompletedAt);
-        if (recoveredCount > 0)
+        if (_logger.IsEnabled(LogLevel.Information))
         {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation(
-                    "Orchestration recovered {RecoveredCount} stale completed download task(s) from download root for post-download enrichment.",
-                    recoveredCount);
-            }
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Automation: recovered {recoveredCount} stale completed download task(s) from download root for enrichment."));
+            _logger.LogInformation(
+                "Orchestration queued {PendingCount} completed download task(s) for post-download enrichment.",
+                pendingItems.Count);
         }
 
         return new PipelineRunContext(
@@ -1403,13 +1400,9 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         IReadOnlyCollection<string> sourceFilePaths,
         CancellationToken cancellationToken)
     {
-        if (sourceFilePaths.Count == 0 || !HasCandidateStagingAudioFiles(sourceFilePaths))
+        if (sourceFilePaths.Count == 0)
         {
-            _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
-                DateTimeOffset.UtcNow,
-                "info",
-                $"Automation: post-download enrichment skipped for destination folder {destinationFolderId} (no candidate audio files under {downloadRootPath})."));
-            return new PipelineEnrichmentResult("skipped_no_candidate_files", SafeToContinue: true, SafeToPersist: true);
+            return new PipelineEnrichmentResult(AutoTagLiterals.SkippedStatus, SafeToContinue: true, SafeToPersist: true);
         }
 
         _configStore.AddLog(new LibraryConfigStore.LibraryLogEntry(
@@ -1764,14 +1757,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         }
     }
 
-    private async Task MarkPostDownloadFinalizationBlockedAsync(PipelineWorkGroup group, CancellationToken cancellationToken)
-    {
-        foreach (var queueUuid in group.PendingQueueUuids)
-        {
-            await _queueRepository.MarkMoveBlockedAsync(queueUuid, cancellationToken);
-        }
-    }
-
     private async Task MarkPostDownloadFinalizationNotRequiredAsync(PipelineWorkGroup group, CancellationToken cancellationToken)
     {
         foreach (var queueUuid in group.PendingQueueUuids)
@@ -1779,14 +1764,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             await _queueRepository.MarkMoveNotRequiredAsync(queueUuid, cancellationToken);
         }
 
-    }
-
-    private static bool HasCandidateStagingAudioFiles(IEnumerable<string> sourceFilePaths)
-    {
-        return sourceFilePaths.Any(path =>
-            !string.IsNullOrWhiteSpace(path)
-            && File.Exists(path)
-            && StagingAudioExtensions.Contains(Path.GetExtension(path)));
     }
 
     private static PipelineEnrichmentResult ResolvePipelineEnrichmentResult(AutoTagJob? enrichmentJob)
@@ -1832,7 +1809,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             AutoTagLiterals.CompletedStatus => EnrichmentStatusCompleted,
             AutoTagLiterals.SkippedStatus => EnrichmentStatusNotRequired,
             "skipped_no_enrichment_tags" => EnrichmentStatusNotRequired,
-            "skipped_no_candidate_files" => EnrichmentStatusInterrupted,
             "skipped_downloads_active" => EnrichmentStatusInterrupted,
             "blocked" => EnrichmentStatusInterrupted,
             AutoTagLiterals.CanceledStatus => EnrichmentStatusCanceled,
@@ -2149,14 +2125,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     private async Task<bool> HasPendingPostDownloadEnrichmentAsync(CancellationToken cancellationToken)
     {
         var pendingItems = await GetPendingPostDownloadItemsAsync(cancellationToken);
-        if (pendingItems.Count > 0 && TryResolveDownloadEnrichmentRoot(out var downloadRootPath, out _))
-        {
-            pendingItems = await CloseCompletedItemsWithoutStagingFilesAsync(
-                pendingItems,
-                downloadRootPath,
-                cancellationToken);
-        }
-
         return pendingItems.Count > 0;
     }
 
@@ -3385,24 +3353,12 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         LogCompletedDownloadEligibilityDiagnostics(completedItems, foldersById);
         completedItems = completedItems
             .Where(item => item.DestinationFolderId.HasValue)
+            .Where(IsCompletedItemUnprocessed)
+            .Where(NeedsEnrichmentPipelineWork)
             .OrderByDescending(item => item.UpdatedAt)
             .ThenByDescending(item => item.Id)
             .ToList();
-        var freshItems = completedItems
-            .Where(item => item.UpdatedAt > _lastPipelineCompletedAt)
-            .Where(IsCompletedItemUnprocessed)
-            .Where(NeedsEnrichmentPipelineWork)
-            .ToList();
-        if (freshItems.Count > 0)
-        {
-            return await FilterAutoTagEligiblePendingItemsAsync(freshItems, foldersById, cancellationToken);
-        }
-
-        var recoveredItems = completedItems
-            .Where(IsCompletedItemUnprocessed)
-            .Where(NeedsEnrichmentPipelineWork)
-            .ToList();
-        return await FilterAutoTagEligiblePendingItemsAsync(recoveredItems, foldersById, cancellationToken);
+        return await FilterAutoTagEligiblePendingItemsAsync(completedItems, foldersById, cancellationToken);
     }
 
     private void LogCompletedDownloadEligibilityDiagnostics(
@@ -3448,7 +3404,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
     {
         var safeMarkers = await FilterCompletedMarkersReadyToPersistAsync(context, group, cancellationToken);
         MarkCompletedItemsAsProcessed(safeMarkers);
-        _lastPipelineCompletedAt = context.PipelineStartedAt;
     }
 
     private async Task<IReadOnlyDictionary<string, DateTimeOffset>> FilterCompletedMarkersReadyToPersistAsync(
@@ -3540,7 +3495,7 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
                 destinationFolderId,
                 cancellationToken);
 
-            if (TryRewritePayloadDestinationFolderId(item.PayloadJson, destinationFolderId, out var payloadJson))
+            if (QueuePayloadFileHelper.TryRewriteDestinationFolderId(item.PayloadJson, destinationFolderId, out var payloadJson))
             {
                 await _queueRepository.UpdatePayloadAsync(item.QueueUuid, payloadJson, cancellationToken);
             }
@@ -3598,31 +3553,6 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
             return hasSource && hasPlaylist
                 && !string.IsNullOrWhiteSpace(source)
                 && !string.IsNullOrWhiteSpace(playlistId);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
-    private static bool TryRewritePayloadDestinationFolderId(
-        string payloadJson,
-        long destinationFolderId,
-        out string updatedPayloadJson)
-    {
-        updatedPayloadJson = payloadJson;
-        try
-        {
-            var node = JsonNode.Parse(payloadJson) as JsonObject;
-            if (node == null)
-            {
-                return false;
-            }
-
-            node["destinationFolderId"] = destinationFolderId;
-            node["DestinationFolderId"] = destinationFolderId;
-            updatedPayloadJson = node.ToJsonString(ScheduleJsonOptions);
-            return true;
         }
         catch (JsonException)
         {
@@ -3855,16 +3785,10 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in items)
         {
-            foreach (var sourceFile in ResolveExistingSourceAudioFilesUnderRoot(item.PayloadJson, rootPath))
+            foreach (var sourceFile in DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles(item, rootPath))
             {
                 files.Add(sourceFile);
             }
-
-            CollectFinalDestinationStagingAudioPaths(
-                item.FinalDestinationsJson,
-                rootPath,
-                requireExisting: true,
-                files);
         }
 
         return files
@@ -3879,248 +3803,22 @@ public sealed class DownloadOrchestrationService : BackgroundService, IDownloadQ
         var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in items)
         {
-            if (!string.IsNullOrWhiteSpace(item.PayloadJson))
+            foreach (var sourceFile in DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles(
+                         item,
+                         rootPath,
+                         requireExisting: false))
             {
-                try
-                {
-                    using var document = JsonDocument.Parse(item.PayloadJson);
-                    var root = document.RootElement;
-                    AddRecordedAudioPath(root, "filePath", rootPath, files);
-                    if (TryGetPropertyIgnoreCase(root, "files", out var filesElement)
-                        && filesElement.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var fileElement in filesElement.EnumerateArray())
-                        {
-                            if (fileElement.ValueKind != JsonValueKind.Object
-                                || TryReadStringPropertyIgnoreCase(fileElement, "type", out var type)
-                                && string.Equals(type, "artwork", StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
-
-                            AddRecordedAudioPath(fileElement, "path", rootPath, files);
-                        }
-                    }
-                }
-                catch (JsonException)
-                {
-                    // Final-destination ownership remains available when the payload is malformed.
-                }
-            }
-
-            CollectFinalDestinationStagingAudioPaths(
-                item.FinalDestinationsJson,
-                rootPath,
-                requireExisting: false,
-                files);
-        }
-
-        return files.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    private static void AddRecordedAudioPath(
-        JsonElement source,
-        string propertyName,
-        string rootPath,
-        ISet<string> files)
-    {
-        if (!TryReadStringPropertyIgnoreCase(source, propertyName, out var path)
-            || !IsPathUnderRoot(rootPath, path)
-            || !StagingAudioExtensions.Contains(Path.GetExtension(path)))
-        {
-            return;
-        }
-
-        files.Add(NormalizePathScope(path));
-    }
-
-    private static List<string> ResolveExistingSourceAudioFilesUnderRoot(string? payloadJson, string rootPath)
-    {
-        var files = new List<string>();
-        if (string.IsNullOrWhiteSpace(payloadJson) || string.IsNullOrWhiteSpace(rootPath))
-        {
-            return files;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(payloadJson);
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return files;
-            }
-
-            var candidatePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            CollectPayloadSourcePaths(root, candidatePaths);
-
-            foreach (var candidatePath in candidatePaths)
-            {
-                if (!IsPathUnderRoot(rootPath, candidatePath))
-                {
-                    continue;
-                }
-
-                var ioPath = DownloadPathResolver.ResolveIoPath(candidatePath);
-                if (string.IsNullOrWhiteSpace(ioPath))
-                {
-                    continue;
-                }
-
-                AddExistingAudioFiles(ioPath, files);
+                files.Add(sourceFile);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return files;
-        }
 
-        return files;
-    }
-
-    private static void AddExistingAudioFiles(string ioPath, List<string> files)
-    {
-        if (File.Exists(ioPath))
-        {
-            var extension = Path.GetExtension(ioPath);
-            if (!string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension))
-            {
-                files.Add(NormalizePathScope(ioPath));
-            }
-            return;
-        }
-
-        if (!Directory.Exists(ioPath))
-        {
-            return;
-        }
-
-        foreach (var file in Directory.EnumerateFiles(ioPath, "*", SearchOption.AllDirectories))
-        {
-            var extension = Path.GetExtension(file);
-            if (!string.IsNullOrWhiteSpace(extension) && StagingAudioExtensions.Contains(extension))
-            {
-                files.Add(NormalizePathScope(file));
-            }
-        }
+        return files
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static bool HasExistingSourceUnderRoot(DownloadQueueItem item, string rootPath)
-    {
-        return ResolveExistingSourceAudioFilesUnderRoot([item], rootPath).Count > 0;
-    }
-
-    private static void CollectFinalDestinationStagingAudioPaths(
-        string? finalDestinationsJson,
-        string rootPath,
-        bool requireExisting,
-        ISet<string> files)
-    {
-        if (string.IsNullOrWhiteSpace(finalDestinationsJson))
-        {
-            return;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(finalDestinationsJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Object)
-            {
-                return;
-            }
-
-            foreach (var property in document.RootElement.EnumerateObject())
-            {
-                AddFinalDestinationStagingAudioPath(property.Name, rootPath, requireExisting, files);
-                if (property.Value.ValueKind == JsonValueKind.String)
-                {
-                    AddFinalDestinationStagingAudioPath(
-                        property.Value.GetString(),
-                        rootPath,
-                        requireExisting,
-                        files);
-                }
-            }
-        }
-        catch (JsonException)
-        {
-            // Malformed durable mappings provide no safe file ownership evidence.
-        }
-    }
-
-    private static void AddFinalDestinationStagingAudioPath(
-        string? path,
-        string rootPath,
-        bool requireExisting,
-        ISet<string> files)
-    {
-        if (string.IsNullOrWhiteSpace(path)
-            || !IsPathUnderRoot(rootPath, path)
-            || !StagingAudioExtensions.Contains(Path.GetExtension(path)))
-        {
-            return;
-        }
-
-        var ioPath = DownloadPathResolver.ResolveIoPath(path);
-        if (string.IsNullOrWhiteSpace(ioPath) || requireExisting && !File.Exists(ioPath))
-        {
-            return;
-        }
-
-        files.Add(NormalizePathScope(ioPath));
-    }
-
-    private static void CollectPayloadSourcePaths(JsonElement root, HashSet<string> paths)
-    {
-        if (TryReadStringPropertyIgnoreCase(root, "filePath", out var filePath))
-        {
-            paths.Add(filePath);
-        }
-
-        if (TryReadStringPropertyIgnoreCase(root, "albumPath", out var albumPath))
-        {
-            paths.Add(albumPath);
-        }
-
-        if (TryReadStringPropertyIgnoreCase(root, "artistPath", out var artistPath))
-        {
-            paths.Add(artistPath);
-        }
-
-        if (TryReadStringPropertyIgnoreCase(root, "extrasPath", out var extrasPath))
-        {
-            paths.Add(extrasPath);
-        }
-
-        if (!TryGetPropertyIgnoreCase(root, "files", out var filesElement)
-            || filesElement.ValueKind != JsonValueKind.Array)
-        {
-            return;
-        }
-
-        foreach (var fileElement in filesElement.EnumerateArray())
-        {
-            if (fileElement.ValueKind != JsonValueKind.Object)
-            {
-                continue;
-            }
-
-            if (TryReadStringPropertyIgnoreCase(fileElement, "path", out var path))
-            {
-                paths.Add(path);
-            }
-
-            if (TryReadStringPropertyIgnoreCase(fileElement, "albumPath", out var nestedAlbumPath))
-            {
-                paths.Add(nestedAlbumPath);
-            }
-
-            if (TryReadStringPropertyIgnoreCase(fileElement, "artistPath", out var nestedArtistPath))
-            {
-                paths.Add(nestedArtistPath);
-            }
-        }
-    }
+        => DownloadStagingFileOwnership.HasOwnedStagingAudio(item, rootPath);
 
     private static void CollectFinalDestinationJsonPaths(string? finalDestinationsJson, HashSet<string> paths)
     {

@@ -862,16 +862,84 @@ SET move_status=CASE
         ELSE enrichment_status END
 WHERE lower(status) IN ('completed', 'complete')
   AND destination_folder_id IS NOT NULL
-  AND datetime(updated_at) < datetime(@expiredBeforeUtc)
   AND (
       lower(COALESCE(move_status, ''))='running'
       OR lower(COALESCE(enrichment_status, ''))='running'
   );";
         await using var command = new SqliteCommand(sql, connection);
-        command.Parameters.AddWithValue(
-            "expiredBeforeUtc",
-            (DateTimeOffset.UtcNow - DownloadQueueRecoveryPolicy.PostDownloadPendingLease).ToString("O"));
         return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<DownloadQueueItem>> GetPostDownloadRecoveryCandidatesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var items = await GetTasksAsync(cancellationToken: cancellationToken);
+        return items.Where(IsPostDownloadRecoveryCandidate).ToList();
+    }
+
+    public async Task PromoteToPendingPostDownloadAsync(
+        string queueUuid,
+        long? destinationFolderId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(queueUuid))
+        {
+            return;
+        }
+
+        await EnsureSchemaAsync(cancellationToken);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        const string sql = @"
+UPDATE download_task
+SET status = 'completed',
+    failed = 0,
+    downloaded = 1,
+    progress = 100,
+    error = NULL,
+    destination_folder_id = COALESCE(@destinationFolderId, destination_folder_id),
+    move_status = CASE
+        WHEN lower(COALESCE(move_status, '')) IN ('" + MoveStatusMoved + @"', '" + MoveStatusNotRequired + @"') THEN move_status
+        ELSE '" + MoveStatusPending + @"'
+    END,
+    enrichment_status = CASE
+        WHEN lower(COALESCE(enrichment_status, '')) IN ('" + EnrichmentStatusCompleted + @"', '" + EnrichmentStatusNotRequired + @"') THEN enrichment_status
+        ELSE '" + EnrichmentStatusPending + @"'
+    END,
+    updated_at = CURRENT_TIMESTAMP
+WHERE queue_uuid = @queueUuid;";
+        await using var command = new SqliteCommand(sql, connection);
+        command.Parameters.AddWithValue("queueUuid", queueUuid);
+        command.Parameters.AddWithValue("destinationFolderId", (object?)destinationFolderId ?? DBNull.Value);
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (updated > 0)
+        {
+            PublishQueueStateChanged(queueUuid, "completed");
+        }
+    }
+
+    private static bool IsPostDownloadRecoveryCandidate(DownloadQueueItem item)
+    {
+        if (DownloadStagingFileOwnership.ReadDestinationFolderId(item) is not > 0)
+        {
+            return false;
+        }
+
+        var status = item.Status?.Trim().ToLowerInvariant();
+        if (status is "running" or "downloading" or "failed" or "retrying")
+        {
+            return true;
+        }
+
+        if (status is not "completed" and not "complete")
+        {
+            return false;
+        }
+
+        var enrichment = item.EnrichmentStatus?.Trim().ToLowerInvariant();
+        var move = item.FinalizationStatus?.Trim().ToLowerInvariant();
+        var enrichmentDone = enrichment is EnrichmentStatusCompleted or EnrichmentStatusNotRequired;
+        var moveDone = move is MoveStatusMoved or MoveStatusNotRequired;
+        return !enrichmentDone || !moveDone;
     }
 
     public async Task<bool> HasActiveWatchlistDownloadsAsync(CancellationToken cancellationToken = default)

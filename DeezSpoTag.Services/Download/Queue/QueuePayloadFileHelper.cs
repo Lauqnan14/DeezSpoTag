@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using DeezSpoTag.Services.Download.Shared.Models;
 using DeezSpoTag.Services.Download.Utils;
 
@@ -69,6 +70,71 @@ public static class QueuePayloadFileHelper
                 ["artistPath"] = DownloadPathResolver.NormalizeDisplayPath(pathResult.ArtistPath ?? pathResult.FilePath)
             });
         }
+    }
+
+    public static bool TryRewriteDestinationFolderId(
+        string payloadJson,
+        long? destinationFolderId,
+        out string updatedPayloadJson)
+    {
+        updatedPayloadJson = payloadJson;
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        JsonObject? root;
+        try
+        {
+            root = JsonNode.Parse(payloadJson) as JsonObject;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (root is null || !TrySetNullableInt64Property(root, "destinationFolderId", destinationFolderId))
+        {
+            return false;
+        }
+
+        updatedPayloadJson = root.ToJsonString();
+        return true;
+    }
+
+    private static bool TrySetNullableInt64Property(JsonObject root, string propertyName, long? value)
+    {
+        var key = root.Select(property => property.Key)
+                      .FirstOrDefault(existing => string.Equals(existing, propertyName, StringComparison.OrdinalIgnoreCase))
+                  ?? propertyName;
+        root.TryGetPropertyValue(key, out var existingNode);
+        var existingValue = TryReadNullableInt64(existingNode);
+        if (existingValue == value)
+        {
+            return false;
+        }
+
+        root[key] = value.HasValue ? JsonValue.Create(value.Value) : null;
+        return true;
+    }
+
+    private static long? TryReadNullableInt64(JsonNode? node)
+    {
+        if (node is JsonValue value)
+        {
+            if (value.TryGetValue<long>(out var number))
+            {
+                return number;
+            }
+
+            if (value.TryGetValue<string>(out var text)
+                && long.TryParse(text, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
     }
 
 }

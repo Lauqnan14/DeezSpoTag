@@ -225,6 +225,9 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("RunPipelineEnrichmentAsync(context, group, cancellationToken)", source, StringComparison.Ordinal);
         Assert.Contains("BatchScopedFilesOnly = true", source, StringComparison.Ordinal);
         Assert.Contains("group.SourceFilePaths", source, StringComparison.Ordinal);
+        Assert.Contains("DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CollectPayloadSourcePaths", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddExistingAudioFiles", source, StringComparison.Ordinal);
         Assert.Contains("FilterQueueItemsToBatchScope", ReadSource("DeezSpoTag.Web", "Services", "AutoTagDownloadMoveService.cs"), StringComparison.Ordinal);
         Assert.Contains("includeTargetFiles: true", autoTagSource, StringComparison.Ordinal);
         Assert.DoesNotContain("The latest completed item will determine the AutoTag profile", source, StringComparison.Ordinal);
@@ -254,6 +257,37 @@ public sealed class LibraryScanTriggerGuardrailTests
         Assert.Contains("Automation: post-download finalization completed", source, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.FailedStatus", source, StringComparison.Ordinal);
         Assert.Contains("AutoTagLiterals.InterruptedStatus", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("skipped_no_candidate_files", source, StringComparison.Ordinal);
+        var allowedStart = source.IndexOf("private static bool IsFinalizationAllowed", StringComparison.Ordinal);
+        Assert.True(allowedStart >= 0);
+        var allowedEnd = source.IndexOf("private async Task<Dictionary<long, List<string>>> GetRecentMovedAudioFilesByDestinationAsync", allowedStart, StringComparison.Ordinal);
+        Assert.True(allowedEnd > allowedStart);
+        var allowedBody = source[allowedStart..allowedEnd];
+        Assert.DoesNotContain("skipped_no_candidate_files", allowedBody, StringComparison.Ordinal);
+        Assert.Contains("skipped_no_enrichment_tags", allowedBody, StringComparison.Ordinal);
+
+        var pipelineStart = source.IndexOf("private async Task<bool> RunPipelineAsync", StringComparison.Ordinal);
+        Assert.True(pipelineStart >= 0);
+        var pipelineEnd = source.IndexOf("private async Task<bool> ResumePausedEnhancementAsync", pipelineStart, StringComparison.Ordinal);
+        Assert.True(pipelineEnd > pipelineStart);
+        var pipelineBody = source[pipelineStart..pipelineEnd];
+        Assert.Contains("MarkPostDownloadFinalizationPendingAsync", pipelineBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("MarkPostDownloadFinalizationBlockedAsync", pipelineBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("MarkMoveBlockedAsync", pipelineBody, StringComparison.Ordinal);
+        Assert.Contains("move left pending so this destination group can retry", pipelineBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DownloadOrchestration_PendingCheckDoesNotCloseStagingItems()
+    {
+        var source = ReadSource("DeezSpoTag.Web", "Services", "DownloadOrchestrationService.cs");
+        var start = source.IndexOf("private async Task<bool> HasPendingPostDownloadEnrichmentAsync", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        var end = source.IndexOf("private async Task RunScheduledRecentDownloadEnhancementIfDueAsync", start, StringComparison.Ordinal);
+        Assert.True(end > start);
+        var method = source[start..end];
+        Assert.Contains("GetPendingPostDownloadItemsAsync", method, StringComparison.Ordinal);
+        Assert.DoesNotContain("CloseCompletedItemsWithoutStagingFilesAsync", method, StringComparison.Ordinal);
     }
 
     [Fact]

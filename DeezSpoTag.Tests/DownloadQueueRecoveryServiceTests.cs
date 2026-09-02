@@ -56,6 +56,7 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         _settingsService = new DeezSpoTagSettingsService(NullLogger<DeezSpoTagSettingsService>.Instance);
         var settings = _settingsService.LoadSettings();
         settings.MaxRetries = 0;
+        settings.DownloadLocation = _tempRoot;
         _settingsService.SaveSettings(settings);
 
         var retryScheduler = new DownloadRetryScheduler(
@@ -90,6 +91,7 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             _queueRepository,
             _cancellationRegistry,
             runtime,
+            _settingsService,
             NullLogger<DownloadQueueRecoveryService>.Instance);
     }
 
@@ -169,6 +171,187 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         Assert.Equal("running", persisted!.Status);
     }
 
+    [Fact]
+    public async Task RecoverStaleRunningTasksAsync_PromotesAcquiredAudioWithDestinationInsteadOfRetrying()
+    {
+        var queueUuid = "recovery-acquired-audio";
+        var audioPath = Path.Join(_tempRoot, "Artist", "Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(audioPath)!);
+        await File.WriteAllTextAsync(audioPath, "audio");
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid,
+            Engine = "qobuz",
+            SourceService = "qobuz",
+            Title = "Recovered Track",
+            Artist = "Recovered Artist",
+            Quality = "27",
+            FilePath = audioPath,
+            AudioAcquired = true,
+            AcquiredAudioPath = audioPath,
+            DestinationFolderId = 9,
+            FallbackPlan = new List<FallbackPlanStep>
+            {
+                new("qobuz-27", "qobuz", "27", QobuzSourceUrlInput, "direct_url")
+            }
+        };
+
+        await EnqueueRunningItemAsync(queueUuid, payload, destinationFolderId: 9);
+        await AgeQueueItemAsync(queueUuid, DownloadQueueRecoveryPolicy.OrphanedRunningThreshold + TimeSpan.FromSeconds(5));
+
+        await _recoveryService.RecoverStaleRunningTasksAsync(CancellationToken.None);
+
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal("completed", recovered!.Status);
+        Assert.Equal("pending", recovered.EnrichmentStatus);
+        Assert.Equal("pending", recovered.FinalizationStatus);
+        Assert.Equal(9, recovered.DestinationFolderId);
+        Assert.True(File.Exists(audioPath));
+    }
+
+    [Fact]
+    public async Task RecoverStaleRunningTasksAsync_DoesNotPromoteRunningItemWithoutAcquiredAudio()
+    {
+        var queueUuid = "recovery-no-audio";
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid,
+            Engine = "qobuz",
+            SourceService = "qobuz",
+            Title = "Incomplete Track",
+            Artist = "Incomplete Artist",
+            Quality = "27",
+            DestinationFolderId = 9,
+            FallbackPlan = new List<FallbackPlanStep>
+            {
+                new("qobuz-27", "qobuz", "27", QobuzSourceUrlInput, "direct_url")
+            }
+        };
+
+        await EnqueueRunningItemAsync(queueUuid, payload, destinationFolderId: 9);
+        await AgeQueueItemAsync(queueUuid, DownloadQueueRecoveryPolicy.RunningStallThreshold + TimeSpan.FromMinutes(1));
+
+        await _recoveryService.RecoverStaleRunningTasksAsync(CancellationToken.None);
+
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal("failed", recovered!.Status);
+    }
+
+    [Fact]
+    public async Task RecoverPendingPostDownloadWorkAsync_ReopensFailedItemWithAcquiredStagingFile()
+    {
+        var queueUuid = "recovery-failed-acquired";
+        var audioPath = Path.Join(_tempRoot, "Artist", "Failed Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(audioPath)!);
+        await File.WriteAllTextAsync(audioPath, "audio");
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid,
+            Engine = "qobuz",
+            Title = "Failed Track",
+            Artist = "Artist",
+            FilePath = audioPath,
+            AudioAcquired = true,
+            AcquiredAudioPath = audioPath,
+            DestinationFolderId = 12
+        };
+        var queueItem = new DownloadQueueItem(
+            Id: 0,
+            QueueUuid: queueUuid,
+            Engine: "qobuz",
+            ArtistName: payload.Artist,
+            TrackTitle: payload.Title,
+            Isrc: null,
+            DeezerTrackId: null,
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: null,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: null,
+            DestinationFolderId: 12,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: "stereo",
+            FinalizationStatus: "failed",
+            EnrichmentStatus: "not_required",
+            Status: "failed",
+            PayloadJson: JsonSerializer.Serialize(payload),
+            Progress: 100,
+            Downloaded: 1,
+            Failed: 1,
+            Error: "recovered after restart",
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
+        await _queueRepository.EnqueueAsync(queueItem, CancellationToken.None);
+
+        await _recoveryService.RecoverPendingPostDownloadWorkAsync(CancellationToken.None);
+
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal("completed", recovered!.Status);
+        Assert.Equal("not_required", recovered.EnrichmentStatus);
+        Assert.Equal("pending", recovered.FinalizationStatus);
+        Assert.Equal(12, recovered.DestinationFolderId);
+    }
+
+    [Fact]
+    public async Task RecoverPendingPostDownloadWorkAsync_LeavesCompletedPendingRowsUnchanged()
+    {
+        var queueUuid = "recovery-completed-pending";
+        var audioPath = Path.Join(_tempRoot, "Artist", "Pending Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(audioPath)!);
+        await File.WriteAllTextAsync(audioPath, "audio");
+        await EnqueueCompletedItemAsync(
+            queueUuid,
+            audioPath,
+            destinationFolderId: 4,
+            enrichmentStatus: "pending",
+            finalizationStatus: "pending");
+
+        await _recoveryService.RecoverPendingPostDownloadWorkAsync(CancellationToken.None);
+
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal("completed", recovered!.Status);
+        Assert.Equal("pending", recovered.EnrichmentStatus);
+        Assert.Equal("pending", recovered.FinalizationStatus);
+        Assert.Equal(4, recovered.DestinationFolderId);
+        Assert.True(File.Exists(audioPath));
+        var candidates = await _queueRepository.GetPostDownloadRecoveryCandidatesAsync(CancellationToken.None);
+        Assert.Contains(candidates, item => item.QueueUuid == queueUuid);
+    }
+
+    [Fact]
+    public async Task RecoverPendingPostDownloadWorkAsync_ReopensBlockedRowWhenStagingFileExists()
+    {
+        var queueUuid = "recovery-blocked-staging";
+        var audioPath = Path.Join(_tempRoot, "Artist", "Blocked Track.flac");
+        Directory.CreateDirectory(Path.GetDirectoryName(audioPath)!);
+        await File.WriteAllTextAsync(audioPath, "audio");
+        await EnqueueCompletedItemAsync(
+            queueUuid,
+            audioPath,
+            destinationFolderId: 8,
+            enrichmentStatus: "interrupted",
+            finalizationStatus: "blocked");
+
+        await _recoveryService.RecoverPendingPostDownloadWorkAsync(CancellationToken.None);
+
+        var recovered = await _queueRepository.GetByUuidAsync(queueUuid, CancellationToken.None);
+        Assert.NotNull(recovered);
+        Assert.Equal("completed", recovered!.Status);
+        Assert.Equal("pending", recovered.EnrichmentStatus);
+        Assert.Equal("pending", recovered.FinalizationStatus);
+        Assert.Equal(8, recovered.DestinationFolderId);
+        Assert.True(File.Exists(audioPath));
+    }
+
     public void Dispose()
     {
         _configScope.Dispose();
@@ -182,7 +365,62 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
         }
     }
 
-    private async Task EnqueueRunningItemAsync(string queueUuid, QobuzQueueItem payload)
+    private async Task EnqueueCompletedItemAsync(
+        string queueUuid,
+        string audioPath,
+        long destinationFolderId,
+        string enrichmentStatus,
+        string finalizationStatus)
+    {
+        var payload = new QobuzQueueItem
+        {
+            Id = queueUuid,
+            Engine = "qobuz",
+            Title = "Track",
+            Artist = "Artist",
+            FilePath = audioPath,
+            AudioAcquired = true,
+            AcquiredAudioPath = audioPath,
+            DestinationFolderId = destinationFolderId
+        };
+        var queueItem = new DownloadQueueItem(
+            Id: 0,
+            QueueUuid: queueUuid,
+            Engine: "qobuz",
+            ArtistName: payload.Artist,
+            TrackTitle: payload.Title,
+            Isrc: null,
+            DeezerTrackId: null,
+            DeezerAlbumId: null,
+            DeezerArtistId: null,
+            SpotifyTrackId: null,
+            SpotifyAlbumId: null,
+            SpotifyArtistId: null,
+            AppleTrackId: null,
+            AppleAlbumId: null,
+            AppleArtistId: null,
+            DurationMs: null,
+            DestinationFolderId: destinationFolderId,
+            QualityRank: null,
+            QueueOrder: null,
+            ContentType: "stereo",
+            FinalizationStatus: finalizationStatus,
+            EnrichmentStatus: enrichmentStatus,
+            Status: "completed",
+            PayloadJson: JsonSerializer.Serialize(payload),
+            Progress: 100,
+            Downloaded: 1,
+            Failed: 0,
+            Error: null,
+            CreatedAt: DateTimeOffset.UtcNow,
+            UpdatedAt: DateTimeOffset.UtcNow);
+        await _queueRepository.EnqueueAsync(queueItem, CancellationToken.None);
+    }
+
+    private async Task EnqueueRunningItemAsync(
+        string queueUuid,
+        QobuzQueueItem payload,
+        long? destinationFolderId = null)
     {
         var queueItem = new DownloadQueueItem(
             Id: 0,
@@ -201,7 +439,7 @@ public sealed class DownloadQueueRecoveryServiceTests : IDisposable
             AppleAlbumId: null,
             AppleArtistId: null,
             DurationMs: payload.DurationSeconds > 0 ? payload.DurationSeconds * 1000 : null,
-            DestinationFolderId: null,
+            DestinationFolderId: destinationFolderId,
             QualityRank: null,
             QueueOrder: null,
             Status: "running",

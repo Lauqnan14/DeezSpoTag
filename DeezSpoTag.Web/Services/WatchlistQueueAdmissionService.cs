@@ -268,8 +268,6 @@ public sealed class WatchlistQueueAdmissionService
         DownloadQueueRepository queueRepository,
         CancellationToken cancellationToken)
     {
-        await queueRepository.RecoverExpiredPostDownloadPipelineStatesAsync(cancellationToken);
-
         if (_publicApiReadiness is not null)
         {
             var readiness = await _publicApiReadiness.EvaluateAsync(cancellationToken);

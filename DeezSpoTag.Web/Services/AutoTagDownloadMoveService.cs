@@ -430,31 +430,7 @@ public sealed class AutoTagDownloadMoveService
             return new List<DownloadQueueItem>();
         }
 
-        return items.Where(item => PayloadContainsBatchFile(item.PayloadJson, rootPath, allowed)).ToList();
-    }
-
-    private static bool PayloadContainsBatchFile(
-        string? payloadJson,
-        string rootPath,
-        IReadOnlySet<string> allowed)
-    {
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(payloadJson);
-            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            CollectPayloadPaths(rootPath, document.RootElement, files, roots);
-            return files.Select(NormalizePathForComparison).Any(allowed.Contains);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
+        return items.Where(item => DownloadStagingFileOwnership.OwnsAnyPath(item, rootPath, allowed)).ToList();
     }
 
     private static bool IsUnderRoot(string rootPath, string candidatePath)
@@ -649,7 +625,7 @@ public sealed class AutoTagDownloadMoveService
             }
 
             var updatedPayloadJson = item.PayloadJson;
-            var payloadUpdated = TryRewritePayloadDestinationFolderId(
+            var payloadUpdated = QueuePayloadFileHelper.TryRewriteDestinationFolderId(
                 item.PayloadJson,
                 routedDestinationFolderId,
                 out var rewrittenPayloadJson);
@@ -1036,71 +1012,7 @@ public sealed class AutoTagDownloadMoveService
         string payloadJson,
         long? destinationFolderId,
         out string updatedPayloadJson)
-    {
-        updatedPayloadJson = payloadJson;
-        if (string.IsNullOrWhiteSpace(payloadJson))
-        {
-            return false;
-        }
-
-        JsonObject? root;
-        try
-        {
-            root = JsonNode.Parse(payloadJson) as JsonObject;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return false;
-        }
-
-        if (root is null || !TrySetNullableInt64Property(root, "destinationFolderId", destinationFolderId))
-        {
-            return false;
-        }
-
-        updatedPayloadJson = root.ToJsonString();
-        return true;
-    }
-
-    private static bool TrySetNullableInt64Property(JsonObject root, string propertyName, long? value)
-    {
-        var key = root.Select(property => property.Key)
-                      .FirstOrDefault(existing => string.Equals(existing, propertyName, StringComparison.OrdinalIgnoreCase))
-                  ?? propertyName;
-        root.TryGetPropertyValue(key, out var existingNode);
-        var existingValue = TryReadNullableInt64(existingNode);
-        if (existingValue == value)
-        {
-            return false;
-        }
-
-        root[key] = value.HasValue ? JsonValue.Create(value.Value) : null;
-        return true;
-    }
-
-    private static long? TryReadNullableInt64(JsonNode? node)
-    {
-        if (node is null)
-        {
-            return null;
-        }
-
-        if (node is JsonValue valueNode)
-        {
-            if (valueNode.TryGetValue<long>(out var number))
-            {
-                return number;
-            }
-
-            if (valueNode.TryGetValue<string>(out var text)
-                && long.TryParse(text, out var parsed))
-            {
-                return parsed;
-            }
-        }
-
-        return null;
-    }
+        => QueuePayloadFileHelper.TryRewriteDestinationFolderId(payloadJson, destinationFolderId, out updatedPayloadJson);
 
     private static void PopulatePayloadSourceMaps(
         IReadOnlyList<DownloadQueueItem> items,
@@ -1109,7 +1021,7 @@ public sealed class AutoTagDownloadMoveService
     {
         foreach (var item in items)
         {
-            if (!IsCompletedStatus(item.Status) || string.IsNullOrWhiteSpace(item.PayloadJson))
+            if (!IsCompletedStatus(item.Status))
             {
                 continue;
             }
@@ -2686,37 +2598,41 @@ public sealed class AutoTagDownloadMoveService
         DownloadQueueItem item,
         string rootPath)
     {
-        if (string.IsNullOrWhiteSpace(item.PayloadJson))
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? qualityBucket = null;
+        long destinationKey = item.DestinationFolderId ?? 0;
+
+        if (!string.IsNullOrWhiteSpace(item.PayloadJson))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(item.PayloadJson);
+                var root = document.RootElement;
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    CollectPayloadPaths(rootPath, root, files, roots);
+                    qualityBucket = NormalizeQualityBucket(ReadStringProperty(root, "qualityBucket"));
+                    destinationKey = ResolveDestinationKey(item, root);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Ignore malformed payloads; owned staging files still move.
+            }
+        }
+
+        foreach (var owned in DownloadStagingFileOwnership.ResolveOwnedStagingAudioFiles(item, rootPath))
+        {
+            files.Add(owned);
+        }
+
+        if (files.Count == 0 && roots.Count == 0)
         {
             return;
         }
 
-        try
-        {
-            using var document = JsonDocument.Parse(item.PayloadJson);
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return;
-            }
-
-            var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            CollectPayloadPaths(rootPath, root, files, roots);
-
-            if (files.Count == 0 && roots.Count == 0)
-            {
-                return;
-            }
-
-            var qualityBucket = NormalizeQualityBucket(ReadStringProperty(root, "qualityBucket"));
-            var destinationKey = ResolveDestinationKey(item, root);
-            AddPathsToPayloadMaps(maps, item.QueueUuid, destinationKey, qualityBucket, files, roots);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // Ignore malformed payloads; move pass should stay best-effort.
-        }
+        AddPathsToPayloadMaps(maps, item.QueueUuid, destinationKey, qualityBucket, files, roots);
     }
 
     private static long ResolveDestinationKey(DownloadQueueItem item, JsonElement payloadRoot)

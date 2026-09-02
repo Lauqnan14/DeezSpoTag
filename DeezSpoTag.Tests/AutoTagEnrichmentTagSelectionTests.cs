@@ -127,6 +127,33 @@ public sealed class AutoTagEnrichmentTagSelectionTests
         Assert.True(canFinalize);
     }
 
+    [Theory]
+    [InlineData("failed", "failed", false)]
+    [InlineData("interrupted", "interrupted", false)]
+    [InlineData("canceled", "canceled", false)]
+    [InlineData("completed", "completed", true)]
+    [InlineData("skipped_no_enrichment_tags", "not_required", true)]
+    public void RequiredEnrichmentFailure_LeavesMovePendingInsteadOfAllowingFinalization(
+        string enrichmentResult,
+        string expectedQueueStatus,
+        bool canMove)
+    {
+        var mapStatus = typeof(DownloadOrchestrationService).GetMethod(
+            "MapEnrichmentResultToQueueStatus",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var finalizationAllowed = typeof(DownloadOrchestrationService).GetMethod(
+            "IsFinalizationAllowed",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(mapStatus);
+        Assert.NotNull(finalizationAllowed);
+
+        var mappedStatus = mapStatus!.Invoke(null, new object?[] { enrichmentResult }) as string;
+        var allowed = Assert.IsType<bool>(finalizationAllowed!.Invoke(null, new object?[] { enrichmentResult }));
+
+        Assert.Equal(expectedQueueStatus, mappedStatus);
+        Assert.Equal(canMove, allowed);
+    }
+
     [Fact]
     public void ResolveEnrichmentRequestedTags_ManualEnrichmentRetainsLyricsTags()
     {

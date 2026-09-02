@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using DeezSpoTag.Core.Models.Settings;
@@ -247,6 +248,51 @@ public sealed class AutoTagDownloadMoveServicePayloadPathTests
             using var updatedDocument = JsonDocument.Parse(updatedPayload);
             Assert.Equal(destinationPath, updatedDocument.RootElement.GetProperty("FilePath").GetString());
             Assert.Equal(destinationPath, updatedDocument.RootElement.GetProperty("Files")[0].GetProperty("Path").GetString());
+        }
+        finally
+        {
+            TryDeleteDirectory(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void FilterQueueItemsToBatchScope_KeepsOnlyTheDestinationWhoseFilesWereRequested()
+    {
+        var method = GetPrivateStaticMethod("FilterQueueItemsToBatchScope");
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"deezspotag-batch-dests-{Guid.NewGuid():N}");
+        var album = Path.Combine(tempRoot, "Artist", "Album");
+        var destOnePath = Path.Combine(album, "Library A.flac");
+        var destTwoPath = Path.Combine(album, "Library B.flac");
+        Directory.CreateDirectory(album);
+        File.WriteAllText(destOnePath, "a");
+        File.WriteAllText(destTwoPath, "b");
+
+        try
+        {
+            var destOne = CreateQueueItem("pending", "pending") with
+            {
+                QueueUuid = "dest-one",
+                DestinationFolderId = 11,
+                PayloadJson = JsonSerializer.Serialize(new { filePath = destOnePath, files = new[] { new { path = destOnePath } } })
+            };
+            var destTwo = CreateQueueItem("pending", "pending") with
+            {
+                QueueUuid = "dest-two",
+                DestinationFolderId = 22,
+                PayloadJson = JsonSerializer.Serialize(new { filePath = destTwoPath, files = new[] { new { path = destTwoPath } } })
+            };
+
+            var filtered = Assert.IsType<List<DownloadQueueItem>>(method.Invoke(
+                null,
+                new object[]
+                {
+                    new List<DownloadQueueItem> { destOne, destTwo },
+                    tempRoot,
+                    new List<string> { destOnePath },
+                    Array.Empty<string>()
+                }));
+
+            Assert.Equal("dest-one", Assert.Single(filtered).QueueUuid);
         }
         finally
         {
