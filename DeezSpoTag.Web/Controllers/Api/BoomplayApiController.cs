@@ -104,8 +104,10 @@ public sealed class BoomplayApiController : ControllerBase
     private static string ResolveSourceFailureMessage(string failureCode)
         => failureCode switch
         {
-            BoomplayFailureCodes.SessionMissing => "A verified Boomplay browser session is required.",
-            BoomplayFailureCodes.SessionChallenged => "Boomplay challenged the saved browser session. Save a fresh cookie and try again.",
+            BoomplayFailureCodes.SessionMissing
+                => "Boomplay links resolve by numeric ID through the mobile API. Open the playlist in your browser and use the Boomplay Import bookmarklet (Login → Boomplay → Session Verification) once — the app remembers the numeric ID and fetches it without a session from then on.",
+            BoomplayFailureCodes.SessionChallenged
+                => "Boomplay links resolve by numeric ID through the mobile API. Use the Boomplay Import bookmarklet (Login → Boomplay → Session Verification) once — the app remembers the numeric ID and fetches it without a session from then on.",
             _ => "Boomplay item could not be resolved."
         };
 
@@ -221,6 +223,52 @@ public sealed class BoomplayApiController : ControllerBase
             title = DecodeBoomplayText(track.Album),
             cover_medium = DecodeBoomplayText(track.CoverUrl)
         };
+
+    /// <summary>
+    /// Receives the numeric playlist/album ID captured by the Boomplay Import bookmarklet on
+    /// the user's browser. The bookmarklet runs on www.boomplay.com (where Cloudflare is already
+    /// resolved by the real browser) and navigates here. The slug → numeric mapping is
+    /// persisted so every later fetch/save of the same playlist rides the mobile API
+    /// unattended (no Cloudflare session), then the browser is redirected to the tracklist.
+    /// </summary>
+    [HttpGet("resolved-id")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ResolvedId([FromQuery] string? url, [FromQuery] string? colID, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(colID) || !BoomplayMetadataService.IsNumericBoomplayId(colID))
+        {
+            return BadRequest(new { error = "A valid numeric Boomplay ID is required." });
+        }
+
+        var type = "playlist";
+        string? parsedId = null;
+        if (!string.IsNullOrWhiteSpace(url)
+            && BoomplayMetadataService.TryParseBoomplayUrl(url, out var parsedType, out var id))
+        {
+            type = parsedType;
+            parsedId = id;
+        }
+
+        // Persist slug → numeric so ResolveContentIdAsync (watchlist save, durable resolve,
+        // re-fetch) never needs the Cloudflare-challenged web page again.
+        if (!string.IsNullOrWhiteSpace(parsedId)
+            && !BoomplayMetadataService.IsNumericBoomplayId(parsedId)
+            && _libraryRepository is not null)
+        {
+            try
+            {
+                await _libraryRepository.UpsertBoomplaySlugMappingAsync(
+                    new LibraryRepository.BoomplaySlugMappingUpsertInput(type, parsedId, colID.Trim(), url),
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed to persist Boomplay slug mapping for {Type} {Slug}", type, parsedId);
+            }
+        }
+
+        return Redirect($"/Tracklist?id={Uri.EscapeDataString(colID.Trim())}&source=boomplay&type={Uri.EscapeDataString(type)}");
+    }
 
     [HttpGet("tracklist")]
     public async Task<IActionResult> GetTracklist(

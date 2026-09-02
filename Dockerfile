@@ -53,21 +53,6 @@ RUN apt-get update -o Acquire::Retries=5 \
        aria2 \
        ffmpeg \
        unzip \
-       libnss3 \
-       libnspr4 \
-       libatk1.0-0 \
-       libatk-bridge2.0-0 \
-       libcups2 \
-       libdrm2 \
-       libxkbcommon0 \
-       libxcomposite1 \
-       libxdamage1 \
-       libxfixes3 \
-       libxrandr2 \
-       libgbm1 \
-       libpango-1.0-0 \
-       libcairo2 \
-       libasound2 \
     && if ! apt-get install -y --no-install-recommends gpac; then \
          os_id="$(. /etc/os-release && echo "${ID}")"; \
          codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
@@ -178,7 +163,6 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 ENV OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf \
     HOME=/data/home \
     XDG_CACHE_HOME=/data/.cache \
-    PLAYWRIGHT_BROWSERS_PATH=/data/ms-playwright \
     PIP_CACHE_DIR=/data/.cache/pip \
     PIP_NO_CACHE_DIR=1 \
     DEEZSPOTAG_CONFIG_DIR=/data \

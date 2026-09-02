@@ -1313,6 +1313,11 @@ globalThis.DeezSpoTag = {
             }
         });
 
+        // Boomplay works without any login, so it is always listed and always connected.
+        if (this.platformIconMap.boomplay) {
+            ids.add('boomplay');
+        }
+
         selected.forEach((id) => {
             if (this.platformIconMap[id]) {
                 ids.add(id);
@@ -1428,7 +1433,7 @@ globalThis.DeezSpoTag = {
         const baseline = this.buildInitialPlatformStates(Array.from(selectedSet));
         const normalized = this.normalizeConnectedPlatformStates(snapshotStates);
         Object.entries(normalized).forEach(([id, status]) => {
-            if (!this.authRequiredPlatforms.has(id) && !selectedSet.has(id)) {
+            if (!this.authRequiredPlatforms.has(id) && !selectedSet.has(id) && id !== 'boomplay') {
                 return;
             }
             this.setPlatformState(baseline, id, status?.active === true, status?.reason || null);
@@ -1897,8 +1902,10 @@ globalThis.DeezSpoTag = {
             platformStates,
             'navidrome',
             'credentials');
+        // Boomplay requires no login: the platform is always connected regardless of
+        // whether an optional session is saved.
         this.applySimpleCredentialState(
-            authData.boomplay?.connected === true || authData.boomplay?.cookieSaved === true,
+            true,
             connected,
             platformStates,
             'boomplay',

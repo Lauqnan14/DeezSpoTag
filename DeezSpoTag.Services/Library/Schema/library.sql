@@ -576,6 +576,19 @@ CREATE INDEX IF NOT EXISTS idx_boomplay_deezer_track_mapping_deezer
 CREATE INDEX IF NOT EXISTS idx_boomplay_deezer_track_mapping_retry
     ON boomplay_deezer_track_mapping (status, next_retry_utc);
 
+CREATE TABLE IF NOT EXISTS boomplay_slug_mapping (
+    content_type TEXT NOT NULL,
+    boomplay_slug TEXT NOT NULL,
+    numeric_id TEXT NOT NULL,
+    source_url TEXT,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (content_type, boomplay_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_boomplay_slug_mapping_numeric
+    ON boomplay_slug_mapping (numeric_id);
+
 CREATE TABLE IF NOT EXISTS recommendation_rejection (
     library_id BIGINT NOT NULL,
     folder_id BIGINT,

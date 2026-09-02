@@ -38,6 +38,20 @@ public sealed class LibraryRepository
         string? LastError,
         DateTimeOffset? NextRetryUtc);
 
+    public sealed record BoomplaySlugMappingDto(
+        string ContentType,
+        string BoomplaySlug,
+        string NumericId,
+        string? SourceUrl,
+        string CreatedAtUtc,
+        string UpdatedAtUtc);
+
+    public sealed record BoomplaySlugMappingUpsertInput(
+        string ContentType,
+        string BoomplaySlug,
+        string NumericId,
+        string? SourceUrl);
+
     private sealed record ExistingTrackRecord(
         long Id,
         int? DurationMs,
@@ -10228,6 +10242,75 @@ ON CONFLICT(boomplay_track_id) DO UPDATE SET
         command.Parameters.AddWithValue("status", normalizedStatus);
         command.Parameters.AddWithValue("lastError", string.IsNullOrWhiteSpace(input.LastError) ? DBNull.Value : input.LastError.Trim());
         command.Parameters.AddWithValue("nextRetryUtc", input.NextRetryUtc?.ToString("O") ?? (object)DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<BoomplaySlugMappingDto?> GetBoomplaySlugMappingAsync(
+        string contentType,
+        string boomplaySlug,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedType = contentType?.Trim().ToLowerInvariant();
+        var normalizedSlug = boomplaySlug?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedType) || string.IsNullOrWhiteSpace(normalizedSlug))
+        {
+            return null;
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+SELECT content_type,
+       boomplay_slug,
+       numeric_id,
+       source_url,
+       created_at_utc,
+       updated_at_utc
+FROM boomplay_slug_mapping
+WHERE content_type=@contentType AND boomplay_slug=@boomplaySlug
+LIMIT 1;", connection);
+        command.Parameters.AddWithValue("contentType", normalizedType);
+        command.Parameters.AddWithValue("boomplaySlug", normalizedSlug);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new BoomplaySlugMappingDto(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.GetString(4),
+            reader.GetString(5));
+    }
+
+    public async Task UpsertBoomplaySlugMappingAsync(
+        BoomplaySlugMappingUpsertInput input,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedType = input.ContentType?.Trim().ToLowerInvariant();
+        var normalizedSlug = input.BoomplaySlug?.Trim();
+        var normalizedNumericId = input.NumericId?.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedType)
+            || string.IsNullOrWhiteSpace(normalizedSlug)
+            || string.IsNullOrWhiteSpace(normalizedNumericId))
+        {
+            throw new ArgumentException("A valid Boomplay content type, slug, and numeric ID are required.", nameof(input));
+        }
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = new SqliteCommand(@"
+INSERT INTO boomplay_slug_mapping (content_type, boomplay_slug, numeric_id, source_url, updated_at_utc)
+VALUES (@contentType, @boomplaySlug, @numericId, @sourceUrl, CURRENT_TIMESTAMP)
+ON CONFLICT(content_type, boomplay_slug) DO UPDATE SET
+    numeric_id = excluded.numeric_id,
+    source_url = excluded.source_url,
+    updated_at_utc = CURRENT_TIMESTAMP;", connection);
+        command.Parameters.AddWithValue("contentType", normalizedType);
+        command.Parameters.AddWithValue("boomplaySlug", normalizedSlug);
+        command.Parameters.AddWithValue("numericId", normalizedNumericId);
+        command.Parameters.AddWithValue("sourceUrl", string.IsNullOrWhiteSpace(input.SourceUrl) ? DBNull.Value : input.SourceUrl!.Trim());
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

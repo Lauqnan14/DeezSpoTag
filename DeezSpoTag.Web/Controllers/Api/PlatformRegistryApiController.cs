@@ -51,6 +51,9 @@ public class PlatformRegistryApiController : ControllerBase
         .Select((id, index) => new { id, index })
         .ToDictionary(item => item.id, item => item.index, StringComparer.OrdinalIgnoreCase);
 
+    // Boomplay is deliberately NOT in this set: it works without any login (playlist
+    // fetching rides the sessionless mobile API), so it must not show the
+    // "requires an account" padlock or gate platform selection on a session.
     private static readonly HashSet<string> AuthRequiredPlatforms = new(StringComparer.OrdinalIgnoreCase)
     {
         "deezer",
@@ -66,7 +69,6 @@ public class PlatformRegistryApiController : ControllerBase
         QobuzPlatform,
         TidalPlatform,
         SoulseekPlatform,
-        BoomplayPlatform,
         "beatport"
     };
 

@@ -626,20 +626,34 @@ public class PlatformAuthApiController : ControllerBase
             return BadRequest("Boomplay browser user agent is required.");
         }
 
-        var validation = await _boomplayMetadataService.ValidateSessionAsync(
-            existingCookie,
-            userAgent,
-            request.VerificationUrl,
-            cancellationToken);
-        if (!validation.Success)
+        // Live HTML validation is optional: the session is a fallback (playlist fetching is
+        // sessionless via the mobile API), and the Cloudflare-gated page fetch is an
+        // unreliable test even for a good cookie. Without a verification URL the pair is
+        // stored as-is; a provided URL still validates live.
+        string lastStatus;
+        if (!string.IsNullOrWhiteSpace(request.VerificationUrl))
         {
-            return BadRequest(new
+            var validation = await _boomplayMetadataService.ValidateSessionAsync(
+                existingCookie,
+                userAgent,
+                request.VerificationUrl,
+                cancellationToken);
+            if (!validation.Success)
             {
-                error = validation.FailureCode,
-                message = validation.FailureCode == BoomplayFailureCodes.SessionChallenged
-                    ? "Boomplay challenged this browser session. Copy a fresh cookie and try again."
-                    : "Boomplay session could not resolve the verification URL."
-            });
+                return BadRequest(new
+                {
+                    error = validation.FailureCode,
+                    message = validation.FailureCode == BoomplayFailureCodes.SessionChallenged
+                        ? "Boomplay challenged this browser session. Copy a fresh cookie and try again."
+                        : "Boomplay session could not resolve the verification URL."
+                });
+            }
+
+            lastStatus = "session_verified";
+        }
+        else
+        {
+            lastStatus = "session_saved";
         }
 
         var boomplay = await _authService.UpdateAsync(state =>
@@ -649,7 +663,7 @@ public class PlatformAuthApiController : ControllerBase
                 Cookie = existingCookie,
                 UserAgent = userAgent,
                 SessionValid = true,
-                LastStatus = "session_verified",
+                LastStatus = lastStatus,
                 SavedAt = DateTimeOffset.UtcNow
             };
 

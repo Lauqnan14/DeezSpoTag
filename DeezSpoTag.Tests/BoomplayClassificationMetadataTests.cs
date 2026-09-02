@@ -291,56 +291,9 @@ public sealed class BoomplayClassificationMetadataTests
         }
     }
 
-    [Fact]
-    public async Task GetPlaylistAsync_ReplaysSavedBoomplaySessionForWebSnapshot()
-    {
-        const string cookie = "sessionID=authenticated";
-        const string userAgent = "Mozilla/5.0 SavedBoomplayBrowser/1.0";
-        var root = Path.Join(Path.GetTempPath(), $"deezspotag-boomplay-playlist-session-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
-        try
-        {
-            var environment = new TestWebHostEnvironment(root);
-            var auth = new PlatformAuthService(
-                environment,
-                NullLogger<PlatformAuthService>.Instance,
-                DataProtectionProvider.Create(new DirectoryInfo(Path.Join(root, "keys"))));
-            await auth.UpdateAsync(state =>
-            {
-                state.Boomplay = new BoomplayAuth
-                {
-                    Cookie = cookie,
-                    UserAgent = userAgent,
-                    SessionValid = true
-                };
-                return state.Boomplay;
-            });
-
-            using var httpClientFactory = new RoutingHttpClientFactory(request =>
-            {
-                Assert.Equal(cookie, Assert.Single(request.Headers.GetValues("Cookie")));
-                Assert.Equal(userAgent, request.Headers.UserAgent.ToString());
-                return """
-                <html><head><meta property="og:title" content="Authenticated Playlist" /></head>
-                <body><main id="playlistsDetails" data-cid="6990547"></main></body></html>
-                """;
-            });
-            var service = new BoomplayMetadataService(
-                httpClientFactory,
-                auth,
-                NullLogger<BoomplayMetadataService>.Instance);
-
-            var playlist = await service.GetPlaylistAsync("6990547", CancellationToken.None);
-
-            Assert.NotNull(playlist);
-            Assert.Equal("Authenticated Playlist", playlist.Title);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
+    // GetPlaylistAsync_ReplaysSavedBoomplaySessionForWebSnapshot removed: the web-page
+    // snapshot flow was replaced by the mobile-API path (getMusicsByColID), which needs no
+    // Cloudflare session for numeric playlist IDs.
     [Fact]
     public async Task ValidateSessionAsync_ClassifiesCloudflareChallenge()
     {
@@ -426,9 +379,11 @@ public sealed class BoomplayClassificationMetadataTests
             var json = JsonConvert.SerializeObject(response.Value);
 
             Assert.Contains($"\"error\":\"{BoomplayFailureCodes.SessionChallenged}\"", json, StringComparison.Ordinal);
+            // The Cloudflare challenge is a separate session type: it must NEVER invalidate
+            // the original logged-in session or pollute its status.
             var saved = await auth.LoadAsync();
-            Assert.False(saved.Boomplay?.SessionValid);
-            Assert.Equal(BoomplayFailureCodes.SessionChallenged, saved.Boomplay?.LastStatus);
+            Assert.True(saved.Boomplay?.SessionValid);
+            Assert.NotEqual(BoomplayFailureCodes.SessionChallenged, saved.Boomplay?.LastStatus);
         }
         finally
         {

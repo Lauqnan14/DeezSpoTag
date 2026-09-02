@@ -139,7 +139,7 @@ public sealed class BoomplayMetadataService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly PlatformAuthService _platformAuthService;
     private readonly ILogger<BoomplayMetadataService> _logger;
-    private readonly IBoomplaySessionRecoveryService? _sessionRecovery;
+    private readonly DeezSpoTag.Services.Library.LibraryRepository? _libraryRepository;
     private readonly MemoryCache _songCache = new(new MemoryCacheOptions { SizeLimit = SongCacheSizeLimit });
     private readonly MemoryCache _playlistCache = new(new MemoryCacheOptions { SizeLimit = PlaylistCacheSizeLimit });
     private readonly MemoryCache _searchCache = new(new MemoryCacheOptions { SizeLimit = SearchCacheSizeLimit });
@@ -180,12 +180,12 @@ public sealed class BoomplayMetadataService
         IHttpClientFactory httpClientFactory,
         PlatformAuthService platformAuthService,
         ILogger<BoomplayMetadataService> logger,
-        IBoomplaySessionRecoveryService? sessionRecovery = null)
+        DeezSpoTag.Services.Library.LibraryRepository? libraryRepository = null)
     {
         _httpClientFactory = httpClientFactory;
         _platformAuthService = platformAuthService;
         _logger = logger;
-        _sessionRecovery = sessionRecovery;
+        _libraryRepository = libraryRepository;
     }
 
     public static bool TryParseBoomplayUrl(string? url, out string type, out string id)
@@ -302,13 +302,76 @@ public sealed class BoomplayMetadataService
             return normalized;
         }
 
+        // Slug → numeric resolution. The mobile API (the only Cloudflare-free path) speaks
+        // numeric IDs exclusively, so a resolved mapping is persisted and reused forever:
+        // one bookmarklet handoff per slug, then fully unattended fetching and saving.
+        var slug = ExtractBoomplaySlug(normalizedType, normalized);
+        if (!string.IsNullOrWhiteSpace(slug) && _libraryRepository is not null)
+        {
+            try
+            {
+                var mapped = await _libraryRepository.GetBoomplaySlugMappingAsync(normalizedType, slug, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(mapped?.NumericId))
+                {
+                    return mapped.NumericId;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed to read Boomplay slug mapping for {Type} {Slug}", normalizedType, slug);
+            }
+        }
+
         var url = Uri.TryCreate(normalized, UriKind.Absolute, out _)
             ? normalized
             : $"{BoomplayBaseUrl}/{ResolveContentPath(normalizedType)}/{Uri.EscapeDataString(normalized)}";
         var resolved = await ResolveLinkAsync(url, cancellationToken);
-        return resolved != null && string.Equals(resolved.Type, normalizedType, StringComparison.OrdinalIgnoreCase)
-            ? resolved.NumericId
-            : null;
+        if (resolved == null
+            || !string.Equals(resolved.Type, normalizedType, StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrWhiteSpace(resolved.NumericId))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(slug) && _libraryRepository is not null)
+        {
+            try
+            {
+                await _libraryRepository.UpsertBoomplaySlugMappingAsync(
+                    new DeezSpoTag.Services.Library.LibraryRepository.BoomplaySlugMappingUpsertInput(
+                        normalizedType,
+                        slug,
+                        resolved.NumericId,
+                        Uri.TryCreate(normalized, UriKind.Absolute, out _) ? normalized : url),
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Failed to persist Boomplay slug mapping for {Type} {Slug}", normalizedType, slug);
+            }
+        }
+
+        return resolved.NumericId;
+    }
+
+    private static string? ExtractBoomplaySlug(string type, string idOrUrl)
+    {
+        if (string.IsNullOrWhiteSpace(idOrUrl))
+        {
+            return null;
+        }
+
+        var candidate = idOrUrl.Trim();
+        if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
+            && !string.IsNullOrWhiteSpace(uri.AbsolutePath))
+        {
+            var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            // .../playlists/<slug> — the slug is the last path segment.
+            candidate = segments.Length > 0 ? segments[^1] : string.Empty;
+        }
+
+        candidate = Uri.UnescapeDataString(candidate).Trim();
+        return string.IsNullOrWhiteSpace(candidate) || IsNumericBoomplayId(candidate) ? null : candidate;
     }
 
     public async Task<BoomplaySessionValidationResult> ValidateSessionAsync(
@@ -361,7 +424,7 @@ public sealed class BoomplayMetadataService
     private static string ResolveContentPath(string type)
         => string.Equals(type, "playlist", StringComparison.OrdinalIgnoreCase) ? "playlists" : "songs";
 
-    private static bool IsNumericBoomplayId(string? value)
+    public static bool IsNumericBoomplayId(string? value)
         => !string.IsNullOrWhiteSpace(value) && value.All(char.IsDigit);
 
     public static bool IsBoomplayUrl(string? url)
@@ -1310,19 +1373,41 @@ public sealed class BoomplayMetadataService
             throw new BoomplaySourceException(BoomplayFailureCodes.SessionMissing);
         }
 
-        var html = session.HasSession
-            ? await GetHtmlAsync(url, session, cancellationToken)
-            : string.Empty;
-        var parsed = string.IsNullOrWhiteSpace(html)
-            ? new BoomplayPlaylistMetadata { Id = playlistId, Url = url }
-            : ParsePlaylistHtml(playlistId, html, url);
-        var resolvedPlaylistId = parsed.Id;
-        var official = IsNumericBoomplayId(resolvedPlaylistId)
-            ? await GetOfficialPlaylistSnapshotAsync(resolvedPlaylistId, session, cancellationToken)
-            : null;
-        if (string.IsNullOrWhiteSpace(html) && official == null)
+        // API-first: numeric playlist IDs resolve entirely through the mobile API
+        // (getMusicsByColID), which is not behind the web Cloudflare challenge. The HTML page
+        // fetch is only a fallback for slug resolution with a saved session, where the API
+        // cannot serve.
+        BoomplayOfficialPlaylistSnapshot? official = null;
+        var html = string.Empty;
+        BoomplayPlaylistMetadata parsed;
+        if (IsNumericBoomplayId(playlistId))
         {
-            return null;
+            official = await GetOfficialPlaylistSnapshotAsync(playlistId, session, cancellationToken);
+            if (official == null)
+            {
+                return null;
+            }
+
+            parsed = new BoomplayPlaylistMetadata { Id = playlistId, Url = url };
+            ApplyOfficialPlaylistMetadata(parsed, official);
+            parsed.TrackIds = official.Tracks
+                .Select(static track => track.Id)
+                .Where(static id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+        else
+        {
+            html = await GetHtmlAsync(url, session, cancellationToken);
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return null;
+            }
+
+            parsed = ParsePlaylistHtml(playlistId, html, url);
+            official = IsNumericBoomplayId(parsed.Id)
+                ? await GetOfficialPlaylistSnapshotAsync(parsed.Id, session, cancellationToken)
+                : null;
         }
 
         var invalidWebPage = LooksLikeNotFoundPlaylistPage(html);
@@ -1791,8 +1876,7 @@ public sealed class BoomplayMetadataService
     private async Task<string> GetHtmlAsync(
         string url,
         BoomplaySessionSnapshot session,
-        CancellationToken cancellationToken,
-        bool allowRecovery = true)
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -1814,22 +1898,7 @@ public sealed class BoomplayMetadataService
                 if (session.HasSession
                     && !session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal))
                 {
-                    await MarkBoomplaySessionChallengedAsync(session.Cookie);
-                }
-
-                // Automatic self-healing: solve the managed challenge with a real browser, then
-                // retry exactly once with the refreshed session. Recursion depth is capped so a
-                // second challenge falls back to the persisted SessionChallenged failure.
-                if (allowRecovery
-                    && _sessionRecovery is not null
-                    && !session.CacheKeySuffix.StartsWith("validation:", StringComparison.Ordinal)
-                    && await _sessionRecovery.TryRecoverAsync("cloudflare_challenge", cancellationToken))
-                {
-                    return await GetHtmlAsync(
-                        url,
-                        await GetBoomplaySessionAsync(),
-                        cancellationToken,
-                        allowRecovery: false);
+                    await MarkBoomplayCloudflareChallengedAsync(session.Cookie);
                 }
 
                 throw new BoomplaySourceException(BoomplayFailureCodes.SessionChallenged);
@@ -4278,7 +4347,14 @@ public sealed class BoomplayMetadataService
         return Convert.ToHexString(bytes, 0, 8);
     }
 
-    private async Task MarkBoomplaySessionChallengedAsync(string? challengedCookie)
+    /// <summary>
+    /// Marks the CLOUDFLARE clearance session as challenged in its own dedicated flag.
+    /// This is a separate session type from the original logged-in session (as designed
+    /// before commit 81b264294 introduced the conflation): the saved cookie, its
+    /// SessionValid flag and its LastStatus are deliberately left untouched — the
+    /// challenge surfaces only as the per-request SessionChallenged failure code.
+    /// </summary>
+    private async Task MarkBoomplayCloudflareChallengedAsync(string? challengedCookie)
     {
         if (string.IsNullOrWhiteSpace(challengedCookie))
         {
@@ -4290,8 +4366,7 @@ public sealed class BoomplayMetadataService
             if (state.Boomplay != null
                 && string.Equals(state.Boomplay.Cookie, challengedCookie, StringComparison.Ordinal))
             {
-                state.Boomplay.SessionValid = false;
-                state.Boomplay.LastStatus = BoomplayFailureCodes.SessionChallenged;
+                state.Boomplay.CloudflareChallenged = true;
             }
 
             return state.Boomplay;

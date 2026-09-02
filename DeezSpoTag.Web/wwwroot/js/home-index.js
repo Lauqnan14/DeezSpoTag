@@ -1050,6 +1050,23 @@ async function handleUnifiedSearchUrlInput(input, parsedUrl) {
         const itemId = String(parsed?.id || '').trim();
         const itemType = String(parsed?.type || '').trim().toLowerCase();
         if (!itemId || !itemType || parsed?.error) {
+            // Unresolved slug (no numeric mapping yet): the mobile API only speaks numeric
+            // IDs and the web page is Cloudflare-gated for the server, so the bridge runs
+            // once in the user's own browser — open the page there; one click of the
+            // Boomplay Import bookmarklet hands the numeric ID to the app, which persists
+            // it. Every later paste of this URL resolves sessionlessly.
+            const failureCode = String(parsed?.error || '');
+            const needsBridge = failureCode === 'boomplay_session_missing'
+                || failureCode === 'boomplay_session_challenged'
+                || failureCode === 'boomplay_item_unresolved';
+            if (needsBridge) {
+                const bridgeTab = window.open(input, '_blank');
+                DeezSpoTag.ui.alert(bridgeTab
+                    ? 'Boomplay page opened in a new tab — click "Boomplay Import" in your bookmarks bar there. This is one-time per playlist: the app saves the numeric ID, then fetches it without a session from then on.'
+                    : 'Open this Boomplay page in your browser and click "Boomplay Import" in your bookmarks bar (drag it there once from Login → Boomplay → Session Verification). One-time per playlist; the numeric ID is remembered afterwards.',
+                    { title: 'Search' });
+                return true;
+            }
             throw new Error(parsed?.message || parsed?.error || 'Boomplay link did not resolve to a supported item.');
         }
 

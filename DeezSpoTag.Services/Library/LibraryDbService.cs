@@ -34,6 +34,7 @@ public sealed class LibraryDbService
     private const string PlaylistWatchIgnoreTable = "playlist_watch_ignore";
     private const string RecommendationRejectionTable = "recommendation_rejection";
     private const string BoomplayDeezerTrackMappingTable = "boomplay_deezer_track_mapping";
+    private const string BoomplaySlugMappingTable = "boomplay_slug_mapping";
     private const string WatchlistHistoryTable = "watchlist_history";
     private const string ArtistWatchlistTable = "artist_watchlist";
     private const string TrackAnalysisTable = "track_analysis";
@@ -156,6 +157,8 @@ public sealed class LibraryDbService
             ["idx_watchlist_source_circuit_open"] = (WatchlistSourceCircuitStateTable, "watch_type, is_open, open_until_utc", false)
             ,
             ["idx_boomplay_deezer_track_mapping_deezer"] = (BoomplayDeezerTrackMappingTable, "deezer_track_id", false)
+            ,
+            ["idx_boomplay_slug_mapping_numeric"] = (BoomplaySlugMappingTable, "numeric_id", false)
             ,
             ["idx_boomplay_deezer_track_mapping_retry"] = (BoomplayDeezerTrackMappingTable, "status, next_retry_utc", false)
             ,
@@ -788,6 +791,17 @@ CREATE TABLE IF NOT EXISTS boomplay_deezer_track_mapping (
 );", cancellationToken);
         await EnsureIndexAsync(connection, "idx_boomplay_deezer_track_mapping_deezer", BoomplayDeezerTrackMappingTable, "deezer_track_id", unique: false, cancellationToken);
         await EnsureIndexAsync(connection, "idx_boomplay_deezer_track_mapping_retry", BoomplayDeezerTrackMappingTable, "status, next_retry_utc", unique: false, cancellationToken);
+        await EnsureTableAsync(connection, @"
+CREATE TABLE IF NOT EXISTS boomplay_slug_mapping (
+    content_type TEXT NOT NULL,
+    boomplay_slug TEXT NOT NULL,
+    numeric_id TEXT NOT NULL,
+    source_url TEXT,
+    created_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at_utc TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (content_type, boomplay_slug)
+);", cancellationToken);
+        await EnsureIndexAsync(connection, "idx_boomplay_slug_mapping_numeric", BoomplaySlugMappingTable, "numeric_id", unique: false, cancellationToken);
         await EnsureTableAsync(connection, @"
 CREATE TABLE IF NOT EXISTS recommendation_rejection (
     library_id BIGINT NOT NULL,

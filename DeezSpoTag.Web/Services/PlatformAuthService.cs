@@ -156,7 +156,21 @@ public class BoomplayAuth
 {
     public string? Cookie { get; set; }
     public string? UserAgent { get; set; }
+
+    /// <summary>
+    /// Validity of the ORIGINAL logged-in session (the saved browser cookie). Only the
+    /// explicit save/validation flow and disconnect manage this flag — Cloudflare
+    /// challenges must never touch it.
+    /// </summary>
     public bool? SessionValid { get; set; }
+
+    /// <summary>
+    /// State of the separate Cloudflare/clearance session. A managed challenge on a web
+    /// fetch marks THIS flag, never <see cref="SessionValid"/> — the two session types
+    /// are independent.
+    /// </summary>
+    public bool? CloudflareChallenged { get; set; }
+
     public string? LastStatus { get; set; }
     public DateTimeOffset? SavedAt { get; set; }
 }
