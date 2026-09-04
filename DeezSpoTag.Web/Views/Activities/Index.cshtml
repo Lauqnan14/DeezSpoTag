@@ -5312,13 +5312,28 @@ async function clearCanceledTasks() {
 	            : progressValue;
 	        queueProgressCache[taskId] = progressStart;
 	        const hasMeasuredProgress = progressValue > 0 || progressStart > 0;
+	        const frozenProgressLabels = {
+	            failed: 'Stopped at',
+	            unavailable: 'Stopped at',
+	            canceled: 'Stopped at',
+	            paused: 'Paused at',
+	            retrying: 'Retrying from',
+	            queued: 'Queued at'
+	        };
+	        const frozenProgressLabel = frozenProgressLabels[statusForUi] || '';
 		        const progressHtml = statusForUi === 'running'
 		            ? (hasMeasuredProgress
 		                ? `<div class="progress-text"><span>Downloading...</span><span class="progress-value" data-progress-start="${progressStart}" data-progress-target="${progressValue}">${formatQueueProgressPercent(progressStart)}%</span></div>
 		                   <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%" data-progress-start="${progressStart}" data-progress-target="${progressValue}"></div></div>`
 		                : `<div class="progress-text"><span>Downloading...</span><span class="progress-value">Working</span></div>
 		                   <div class="progress-bar is-indeterminate"><div class="progress-fill"></div></div>`)
-		            : '';
+		            // Persisted progress is shown as a frozen bar for non-running
+		            // states, so a page refresh (or a failure) no longer erases the
+		            // percentage the download had reached.
+		            : (frozenProgressLabel && hasMeasuredProgress
+		                ? `<div class="progress-text"><span>${frozenProgressLabel}</span><span class="progress-value">${formatQueueProgressPercent(progressStart)}%</span></div>
+		                   <div class="progress-bar"><div class="progress-fill" style="width: ${progressStart}%"></div></div>`
+		                : '');
 		        if (statusForUi !== 'running' && queueProgressTextAnimationByTask[taskId] != null) {
 		            cancelAnimationFrame(queueProgressTextAnimationByTask[taskId]);
 		            delete queueProgressTextAnimationByTask[taskId];
@@ -5877,6 +5892,7 @@ function mapQueueItem(item) {
     const mappedStatus = mapStatus(item.status);
     const lyricsBadges = resolveLyricsBadgesForQueueItem(item);
     const lyricsRevision = getLyricsArtifactRevision(item.lyricsArtifacts ?? item.LyricsArtifacts);
+    const lrcTiming = getLrcTimingFromArtifacts(item.lyricsArtifacts ?? item.LyricsArtifacts);
     const artworkBadges = resolveArtworkBadgesForQueueItem(item);
     return {
         taskId,
@@ -5901,6 +5917,7 @@ function mapQueueItem(item) {
         canClear: getQueueBoolFlag(item, 'canClear', 'CanClear'),
         canMonitorUnavailable: getQueueBoolFlag(item, 'canMonitorUnavailable', 'CanMonitorUnavailable'),
         lyricsBadges,
+        lrcTiming,
         artworkBadges,
         requestedQuality: readQueueItemText(item, ['requestedQuality', 'RequestedQuality']),
         deliveredQuality: readQueueItemText(item, ['deliveredQuality', 'DeliveredQuality']),
@@ -6010,6 +6027,7 @@ function mergeQueueTask(existing, incoming) {
         existing.status,
         incoming.status);
     const mergedStatus = resolveMergedQueueStatus(existing.status, incoming.status, mergedProgress);
+    const mergedLyrics = mergeLyricsBadgeState(existing, incoming);
 
     return {
         ...existing,
@@ -6036,12 +6054,9 @@ function mergeQueueTask(existing, incoming) {
         error: incoming.error !== null && incoming.error !== undefined
             ? incoming.error
             : (mergedStatus === 'running' || mergedStatus === 'queued' ? null : existing.error),
-        lyricsRevision: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
-            ? incoming.lyricsRevision
-            : existing.lyricsRevision,
-        lyricsBadges: incoming.lyricsRevision >= (existing.lyricsRevision || 0)
-            ? incoming.lyricsBadges
-            : existing.lyricsBadges,
+        lyricsRevision: mergedLyrics.lyricsRevision,
+        lyricsBadges: mergedLyrics.lyricsBadges,
+        lrcTiming: mergedLyrics.lrcTiming,
         artworkBadges: incoming.artworkBadges && incoming.artworkBadges.length
             ? incoming.artworkBadges
             : (existing.artworkBadges || []),
@@ -6697,9 +6712,19 @@ function applyQueueRealtimeUpdate(payload) {
     const nextLyricsBadges = getLyricsBadgesFromRealtimeUpdate(update);
     if (nextLyricsBadges
         && incomingLyricsRevision >= (task.lyricsRevision || 0)) {
-        if (!areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
-            task.lyricsBadges = nextLyricsBadges;
-            taskChanged = true;
+        const incomingTiming = getLrcTimingFromArtifacts(incomingLyricsArtifacts);
+        // Sticky timing: an unknown incoming lrcTiming must not downgrade a
+        // known word-timed badge to plain "synced" (see mergeLyricsBadgeState).
+        const downgradesTiming = !incomingTiming
+            && task.lrcTiming === 'word'
+            && hasLyricsBadge(task.lyricsBadges, 'enhanced-synchronized')
+            && hasLyricsBadge(nextLyricsBadges, 'synced');
+        if (!downgradesTiming) {
+            if (!areSameBadgeSet(task.lyricsBadges, nextLyricsBadges)) {
+                task.lyricsBadges = nextLyricsBadges;
+                taskChanged = true;
+            }
+            task.lrcTiming = incomingTiming || task.lrcTiming || '';
         }
         task.lyricsRevision = incomingLyricsRevision;
     }
@@ -7152,6 +7177,54 @@ function getLyricsArtifactRevision(artifacts) {
     }
     const value = Number(artifacts.revision ?? artifacts.Revision ?? 0);
     return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function getLrcTimingFromArtifacts(artifacts) {
+    if (!artifacts || typeof artifacts !== 'object') {
+        return '';
+    }
+    return String(artifacts.lrcTiming ?? artifacts.LrcTiming ?? '').trim().toLowerCase();
+}
+
+function hasLyricsBadge(badges, name) {
+    return Array.isArray(badges) && badges.some(value => String(value).toLowerCase() === name);
+}
+
+function mergeLyricsBadgeState(existing, incoming) {
+    const existingBadges = Array.isArray(existing?.lyricsBadges) ? existing.lyricsBadges : [];
+    const incomingBadges = Array.isArray(incoming?.lyricsBadges) ? incoming.lyricsBadges : [];
+    const existingRevision = existing?.lyricsRevision || 0;
+    const incomingRevision = incoming?.lyricsRevision || 0;
+    if (incomingRevision < existingRevision) {
+        return {
+            lyricsBadges: existingBadges,
+            lyricsRevision: existingRevision,
+            lrcTiming: existing?.lrcTiming || ''
+        };
+    }
+
+    const incomingTiming = String(incoming?.lrcTiming || '').trim().toLowerCase();
+    const existingTiming = String(existing?.lrcTiming || '').trim().toLowerCase();
+    // Sticky timing: an unknown incoming lrcTiming (older payload, or an
+    // unreadable sidecar while the destination move is in flight) must not
+    // downgrade a known word-timed badge to plain "synced" - only an explicit
+    // "line" value may do that.
+    if (!incomingTiming
+        && existingTiming === 'word'
+        && hasLyricsBadge(existingBadges, 'enhanced-synchronized')
+        && hasLyricsBadge(incomingBadges, 'synced')) {
+        return {
+            lyricsBadges: existingBadges,
+            lyricsRevision: incomingRevision,
+            lrcTiming: existingTiming
+        };
+    }
+
+    return {
+        lyricsBadges: incomingBadges,
+        lyricsRevision: incomingRevision,
+        lrcTiming: incomingTiming
+    };
 }
 
 function areSameBadgeSet(left, right) {

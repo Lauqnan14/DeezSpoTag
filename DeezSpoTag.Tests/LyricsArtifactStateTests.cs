@@ -140,6 +140,94 @@ public sealed class LyricsArtifactStateTests
     }
 
     [Fact]
+    public void ApplyDownloadedFiles_YieldsUnknownTimingWhenLrcFileIsMissing()
+    {
+        // A missing sidecar must not be claimed as line-timed: the timing is
+        // simply unknown until the file can actually be read.
+        var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["lrc"], ["musixmatch"], false));
+        state.ApplyDownloadedFiles(new Dictionary<string, string> { ["lrc"] = "/music/missing/track.lrc" });
+
+        Assert.Null(state.LrcTiming);
+    }
+
+    [Fact]
+    public void ApplyRebasedFiles_PreservesWordTimingWhenDestinationFileHasNotLandedYet()
+    {
+        var state = new LyricsArtifactState
+        {
+            Revision = 7,
+            Status = "completed",
+            ResolvedFormats = ["lrc"],
+            DownloadedFormats = ["lrc"],
+            FilesByFormat = new Dictionary<string, string> { ["lrc"] = "/staging/track.lrc" },
+            LrcTiming = "word"
+        };
+
+        state.ApplyRebasedFiles(new Dictionary<string, string>
+        {
+            ["lrc"] = "/library/Artist/Album/01 - Track.lrc"
+        });
+
+        Assert.Equal("/library/Artist/Album/01 - Track.lrc", state.FilesByFormat["lrc"]);
+        Assert.Equal("word", state.LrcTiming);
+        Assert.Equal("completed", state.Status);
+    }
+
+    [Fact]
+    public void ApplyRebasedFiles_RecomputesTimingWhenDestinationFileIsReadable()
+    {
+        var tempRoot = Path.Join(Path.GetTempPath(), "deezspotag-lrc-rebase-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            var destination = Path.Join(tempRoot, "library", "01 - Track.lrc");
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.WriteAllText(destination, "[00:01.00]Oh yeah");
+
+            var state = new LyricsArtifactState
+            {
+                Revision = 7,
+                Status = "completed",
+                ResolvedFormats = ["lrc"],
+                DownloadedFormats = ["lrc"],
+                FilesByFormat = new Dictionary<string, string> { ["lrc"] = "/staging/renamed-source.lrc" },
+                LrcTiming = "word"
+            };
+
+            state.ApplyRebasedFiles(new Dictionary<string, string> { ["lrc"] = destination });
+
+            Assert.Equal(destination, state.FilesByFormat["lrc"]);
+            Assert.Equal("line", state.LrcTiming);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ApplyRebasedFiles_ClearsTimingWhenLrcIsNoLongerPartOfTheArtifacts()
+    {
+        var state = new LyricsArtifactState
+        {
+            Revision = 7,
+            Status = "completed",
+            ResolvedFormats = ["lrc"],
+            DownloadedFormats = ["lrc"],
+            FilesByFormat = new Dictionary<string, string> { ["lrc"] = "/staging/track.lrc" },
+            LrcTiming = "word"
+        };
+
+        state.ApplyRebasedFiles(new Dictionary<string, string>
+        {
+            ["ttml"] = "/library/Artist/Album/01 - Track.ttml"
+        });
+
+        Assert.Null(state.LrcTiming);
+        Assert.False(state.FilesByFormat.ContainsKey("lrc"));
+    }
+
+    [Fact]
     public void ApplyDownloadedFiles_RecordsEveryRichLyricsFormat()
     {
         var state = LyricsArtifactState.Fetching(new LyricsResolutionPlan(["ttml", "lrc"], ["musixmatch"], false));

@@ -956,8 +956,6 @@ SET status = @status,
     progress = CASE
         WHEN @progress IS NOT NULL
             THEN @progress
-        WHEN lower(@status) IN ('queued', 'inqueue', 'retrying')
-            THEN 0
         WHEN lower(@status) IN ('completed', 'complete')
             THEN 100
         ELSE progress
@@ -1553,16 +1551,21 @@ WHERE queue_uuid = @queueUuid
 
     private static void MergeFileArrays(JsonObject current, JsonObject incoming)
     {
-        if (current["Files"] is not JsonArray currentFiles || currentFiles.Count == 0)
+        // Payload writers disagree on casing: engine serialization emits "Files"
+        // (PascalCase) while UpdatePrefetchFilesAndArtworkAsync writes "files"
+        // (camelCase). Treat them as the same array, otherwise artwork/file
+        // entries persisted under one casing are silently dropped by the other.
+        var currentFiles = current["Files"] as JsonArray ?? current["files"] as JsonArray;
+        if (currentFiles is not { Count: > 0 })
         {
             return;
         }
 
-        var merged = incoming["Files"] is JsonArray incomingFiles
-            ? (JsonArray)incomingFiles.DeepClone()
-            : new JsonArray();
+        var incomingFiles = (incoming["Files"] as JsonArray ?? incoming["files"] as JsonArray)
+            ?.DeepClone() as JsonArray
+            ?? new JsonArray();
         var serialized = new HashSet<string>(
-            merged.Where(node => node != null).Select(node => node!.ToJsonString()),
+            incomingFiles.Where(node => node != null).Select(node => node!.ToJsonString()),
             StringComparer.Ordinal);
         foreach (var file in currentFiles)
         {
@@ -1571,10 +1574,11 @@ WHERE queue_uuid = @queueUuid
                 continue;
             }
 
-            merged.Add(file.DeepClone());
+            incomingFiles.Add(file.DeepClone());
         }
 
-        incoming["Files"] = merged;
+        incoming["Files"] = incomingFiles;
+        incoming["files"] = incomingFiles.DeepClone();
     }
 
     public async Task UpdatePrefetchFilesAndArtworkAsync(
@@ -1591,7 +1595,13 @@ UPDATE download_task
 SET payload = CASE
         WHEN json_valid(payload) THEN json_set(
             payload,
+            -- Write both casings: engine payloads serialize the Files property as
+            -- PascalCase, while this path historically wrote camelCase. Keeping both
+            -- in sync prevents the artwork/file entries from being dropped by
+            -- case-sensitive deserialization (QueueHelperUtils.ParseQueuePayload) or
+            -- by MergeFileArrays.
             '$.files', json(@files),
+            '$.Files', json(@files),
             '$.ArtworkStatus', @artworkStatus,
             '$.ArtworkError', @artworkError)
         ELSE payload
@@ -1859,7 +1869,11 @@ WHERE queue_uuid = @queueUuid;";
             }
 
             var stateBeforeRebase = JsonSerializer.Serialize(state);
-            state.ApplyDownloadedFiles(rebasedFiles);
+            // Rebase must not re-derive lrcTiming from a destination file that may
+            // not exist yet (the move is still in flight) — ApplyRebasedFiles
+            // preserves the fetch-time timing in that case instead of claiming
+            // line timing from a failed read.
+            state.ApplyRebasedFiles(rebasedFiles);
             if (string.Equals(stateBeforeRebase, JsonSerializer.Serialize(state), StringComparison.Ordinal))
             {
                 return payloadJson;
@@ -1887,10 +1901,33 @@ WHERE queue_uuid = @queueUuid;";
             return mapped;
         }
 
-        return destinations
+        var candidates = destinations
             .Where(pair => IsLyricsFormatPath(pair.Value, format))
             .Select(pair => pair.Value)
-            .FirstOrDefault();
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            // Prefer the candidate with the same file stem; never guess between
+            // several equally-named sidecars of neighbouring tracks.
+            var sourceStem = Path.GetFileNameWithoutExtension(source);
+            var stemMatch = candidates.FirstOrDefault(candidate =>
+                string.Equals(
+                    Path.GetFileNameWithoutExtension(candidate),
+                    sourceStem,
+                    StringComparison.OrdinalIgnoreCase));
+            if (stemMatch != null)
+            {
+                return stemMatch;
+            }
+        }
+
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 
     private static bool IsLyricsFormatPath(string? path, string format)
@@ -2668,6 +2705,9 @@ WHERE (
             AND NULLIF(trim(COALESCE(content_type, '')), '') IS NULL
         )
     )
+    -- Rows the user cleared from Activities are no longer in the queue:
+    -- they must not block re-downloading the same track.
+    AND activities_cleared_at IS NULL
 ORDER BY
     CASE
         WHEN lower(status) IN ('queued', 'inqueue', 'running', 'downloading', 'paused', 'retrying') THEN 0

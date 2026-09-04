@@ -283,12 +283,13 @@ public class TrackDownloader
         }
         catch (DownloadException)
         {
-            downloadObject.CompleteTrackProgress(listener);
+            // Keep the failure-point progress: wiping it here broadcast+persisted
+            // progress = 0, so failed items lost their percentage in the UI
+            // and after a page refresh.
             throw;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            downloadObject.CompleteTrackProgress(listener);
             _logger.LogError(ex, "Error downloading track: {TrackId}", track.Id);
             throw new DownloadException($"Download failed: {ex.Message}", ex, "downloadError");
         }
