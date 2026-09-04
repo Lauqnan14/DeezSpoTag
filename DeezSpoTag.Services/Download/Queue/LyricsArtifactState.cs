@@ -153,14 +153,81 @@ public sealed class LyricsArtifactState
                 ResolvedFormats.Add(format);
             }
         }
-        LrcTiming = ResolveLrcTiming();
+        LrcTiming = TryReadLrcTiming(
+            FilesByFormat.TryGetValue("lrc", out var lrcPath) ? lrcPath : null);
         SuppressPlainWhenRichExists();
         Status = ResolvedFormats.Count > 0 ? "completed" : Status;
     }
 
-    private string? ResolveLrcTiming()
+    /// <summary>
+    /// Applies move-rebased sidecar paths (staging → library). Unlike
+    /// <see cref="ApplyDownloadedFiles"/>, this never downgrades timing precision
+    /// because a file was temporarily unreadable: when the sidecar has not landed
+    /// at its destination path yet (the destination move is still in flight), the
+    /// timing verified at fetch time is preserved instead of being re-derived
+    /// from a failed read.
+    /// </summary>
+    public void ApplyRebasedFiles(IReadOnlyDictionary<string, string> rebasedFiles)
     {
-        if (!FilesByFormat.TryGetValue("lrc", out var lrcPath) || string.IsNullOrWhiteSpace(lrcPath))
+        Revision++;
+        var previousFiles = new Dictionary<string, string>(FilesByFormat, StringComparer.OrdinalIgnoreCase);
+        var previousTiming = LrcTiming;
+        FilesByFormat = rebasedFiles
+            .Where(pair => IsSupportedFormat(pair.Key) && !string.IsNullOrWhiteSpace(pair.Value))
+            .ToDictionary(
+                pair => pair.Key.Trim().ToLowerInvariant(),
+                pair => DownloadPathResolver.NormalizeDisplayPath(pair.Value),
+                StringComparer.OrdinalIgnoreCase);
+        DownloadedFormats = NormalizeFormats(FilesByFormat.Keys);
+        var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var format in FilesByFormat.Keys)
+        {
+            if (previousFiles.TryGetValue(format, out var previousPath)
+                && FileHashesByFormat.TryGetValue(format, out var previousHash)
+                && string.Equals(previousPath, FilesByFormat[format], StringComparison.OrdinalIgnoreCase))
+            {
+                // Same file, same content: keep the verified hash.
+                hashes[format] = previousHash;
+                continue;
+            }
+
+            var hash = TryComputeFileHash(DownloadPathResolver.ResolveIoPath(FilesByFormat[format]));
+            if (!string.IsNullOrWhiteSpace(hash))
+            {
+                hashes[format] = hash;
+            }
+        }
+
+        FileHashesByFormat = hashes;
+        foreach (var format in DownloadedFormats)
+        {
+            if (!ResolvedFormats.Contains(format, StringComparer.OrdinalIgnoreCase))
+            {
+                ResolvedFormats.Add(format);
+            }
+        }
+
+        if (FilesByFormat.TryGetValue("lrc", out var rebasedLrcPath))
+        {
+            LrcTiming = TryReadLrcTiming(rebasedLrcPath)
+                ?? (previousFiles.ContainsKey("lrc") ? previousTiming : null);
+        }
+        else
+        {
+            LrcTiming = null;
+        }
+
+        SuppressPlainWhenRichExists();
+        Status = ResolvedFormats.Count > 0 ? "completed" : Status;
+    }
+
+    /// <summary>
+    /// Reads timing precision from the sidecar on disk. A missing or unreadable
+    /// file yields <c>null</c> (unknown) — never a false "line" claim.
+    /// </summary>
+    private static string? TryReadLrcTiming(string? lrcPath)
+    {
+        if (string.IsNullOrWhiteSpace(lrcPath))
         {
             return null;
         }
@@ -168,7 +235,12 @@ public sealed class LyricsArtifactState
         try
         {
             var path = DownloadPathResolver.ResolveIoPath(lrcPath);
-            return File.Exists(path) && LrcContent.IsWordSynchronized(File.ReadAllText(path))
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            return LrcContent.IsWordSynchronized(File.ReadAllText(path))
                 ? "word"
                 : "line";
         }

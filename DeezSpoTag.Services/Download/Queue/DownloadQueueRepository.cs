@@ -1937,7 +1937,11 @@ WHERE queue_uuid = @queueUuid;";
             }
 
             var stateBeforeRebase = JsonSerializer.Serialize(state);
-            state.ApplyDownloadedFiles(rebasedFiles);
+            // Rebase must not re-derive lrcTiming from a destination file that may
+            // not exist yet (the move is still in flight) — ApplyRebasedFiles
+            // preserves the fetch-time timing in that case instead of claiming
+            // line timing from a failed read.
+            state.ApplyRebasedFiles(rebasedFiles);
             if (string.Equals(stateBeforeRebase, JsonSerializer.Serialize(state), StringComparison.Ordinal))
             {
                 return payloadJson;
@@ -1965,10 +1969,33 @@ WHERE queue_uuid = @queueUuid;";
             return mapped;
         }
 
-        return destinations
+        var candidates = destinations
             .Where(pair => IsLyricsFormatPath(pair.Value, format))
             .Select(pair => pair.Value)
-            .FirstOrDefault();
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(source))
+        {
+            // Prefer the candidate with the same file stem; never guess between
+            // several equally-named sidecars of neighbouring tracks.
+            var sourceStem = Path.GetFileNameWithoutExtension(source);
+            var stemMatch = candidates.FirstOrDefault(candidate =>
+                string.Equals(
+                    Path.GetFileNameWithoutExtension(candidate),
+                    sourceStem,
+                    StringComparison.OrdinalIgnoreCase));
+            if (stemMatch != null)
+            {
+                return stemMatch;
+            }
+        }
+
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 
     private static bool IsLyricsFormatPath(string? path, string format)

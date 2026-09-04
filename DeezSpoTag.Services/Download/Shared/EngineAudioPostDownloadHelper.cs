@@ -3342,6 +3342,18 @@ public static partial class EngineAudioPostDownloadHelper
             return null;
         }
 
+        // Respect the preferences captured when this item was enqueued (lyrics
+        // formats/timing, provider fallback order, source routing). This mirrors
+        // EngineFallbackCoordinator.ResolveEffectiveSettings, so directly
+        // processed items and fallback advances run under the same preferences
+        // instead of whatever happens to be configured at processing time. The
+        // destination folder's tagging profile is applied afterwards and still
+        // wins where it specifies its own values.
+        if (payload.SourceSettingsSnapshot is { HasValues: true } sourceSnapshot)
+        {
+            sourceSnapshot.ApplyTo(context.Settings);
+        }
+
         await DownloadEngineSettingsHelper.ResolveAndApplyProfileAsync(
             context.TagSettingsResolver,
             context.Settings,
